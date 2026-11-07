@@ -36,6 +36,7 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut options = ConnectionOptions::new(Endpoint::parse(&args.endpoint)?);
+    options.read_only = true;
     options.ca_certificate = args.ca_cert;
     options.certificate_fingerprint = args.cert_sha256;
     options.accept_invalid_certificates = args.insecure;

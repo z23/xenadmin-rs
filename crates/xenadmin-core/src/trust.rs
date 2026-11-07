@@ -141,6 +141,7 @@ pub struct ConnectionOptions {
     /// Skip certificate identity/validity checks for this connection and its discovered endpoints.
     /// Overrides pins and custom CA settings; HTTPS and handshake signatures remain enabled.
     pub accept_invalid_certificates: bool,
+    pub read_only: bool,
     pub request_timeout: Duration,
     additional_pins: BTreeMap<String, CertificateFingerprint>,
 }
@@ -151,6 +152,7 @@ impl ConnectionOptions {
             ca_certificate: None,
             certificate_fingerprint: None,
             accept_invalid_certificates: false,
+            read_only: false,
             request_timeout: Duration::from_secs(45),
             additional_pins: BTreeMap::new(),
         }
@@ -181,8 +183,14 @@ impl ConnectionOptions {
     }
     pub(crate) fn for_endpoint(&self, endpoint: Endpoint) -> Self {
         let mut options = self.clone();
+        if let Some(fingerprint) = &self.certificate_fingerprint {
+            options
+                .additional_pins
+                .insert(self.endpoint.to_string(), fingerprint.clone());
+        }
         if endpoint.as_str() != self.endpoint.as_str() {
-            options.certificate_fingerprint = self.additional_pins.get(endpoint.as_str()).cloned();
+            options.certificate_fingerprint =
+                options.additional_pins.get(endpoint.as_str()).cloned();
         }
         options.endpoint = endpoint;
         options
@@ -330,6 +338,27 @@ mod tests {
                 .to_string(),
             "bb".repeat(32)
         );
+    }
+    #[test]
+    fn original_member_pin_survives_coordinator_redirect_and_console_return() {
+        let member = Endpoint::parse("https://member.example").unwrap();
+        let coordinator = Endpoint::parse("https://coordinator.example").unwrap();
+        let mut options = ConnectionOptions::new(member.clone());
+        options.certificate_fingerprint = Some("aa".repeat(32).parse().unwrap());
+        options.add_host_certificate(coordinator.clone(), "bb".repeat(32).parse().unwrap());
+        let redirected = options.for_endpoint(coordinator);
+        assert_eq!(
+            redirected.certificate_fingerprint.unwrap(),
+            "bb".repeat(32).parse().unwrap()
+        );
+        let returned = options
+            .for_endpoint(Endpoint::parse("https://coordinator.example").unwrap())
+            .for_endpoint(member);
+        assert_eq!(
+            returned.certificate_fingerprint.unwrap(),
+            "aa".repeat(32).parse().unwrap()
+        );
+        assert!(!returned.accept_invalid_certificates);
     }
     #[test]
     fn endpoints_reject_embedded_secrets_and_remote_plaintext() {

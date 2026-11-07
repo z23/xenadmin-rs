@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use std::{future::Future, pin::Pin};
 use std::{
     sync::{
         Arc, Mutex,
@@ -40,11 +41,43 @@ async fn mock(expire_once: bool, denied: bool) -> Mock {
 async fn mock_console(expire_once: bool, denied: bool, console_location: Option<String>) -> Mock {
     mock_full(expire_once, denied, console_location, false).await
 }
+enum RpcReply {
+    Json(Value),
+    Drop,
+}
+type RpcOverride =
+    Arc<dyn Fn(Value) -> Pin<Box<dyn Future<Output = Option<RpcReply>> + Send>> + Send + Sync>;
+fn override_rpc<F, Fut>(callback: F) -> RpcOverride
+where
+    F: Fn(Value) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Option<RpcReply>> + Send + 'static,
+{
+    Arc::new(move |value| Box::pin(callback(value)))
+}
+async fn mock_overridden(overrides: RpcOverride) -> Mock {
+    mock_with_overrides(false, false, None, false, Some(overrides)).await
+}
 async fn mock_full(
     expire_once: bool,
     denied: bool,
     console_location: Option<String>,
     drop_mutation_reply: bool,
+) -> Mock {
+    mock_with_overrides(
+        expire_once,
+        denied,
+        console_location,
+        drop_mutation_reply,
+        None,
+    )
+    .await
+}
+async fn mock_with_overrides(
+    expire_once: bool,
+    denied: bool,
+    console_location: Option<String>,
+    drop_mutation_reply: bool,
+    overrides: Option<RpcOverride>,
 ) -> Mock {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = Endpoint::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
@@ -65,6 +98,7 @@ async fn mock_full(
                 let (methods, logins, event_calls) =
                     (methods.clone(), logins.clone(), event_calls.clone());
                 let console_location = console_location.clone();
+                let overrides = overrides.clone();
                 let pool_uuid = pool_uuid.clone();
                 let mutations = mutations.clone();
                 tokio::spawn(async move {
@@ -91,47 +125,56 @@ async fn mock_full(
                     let request: Value = serde_json::from_slice(&bytes).unwrap();
                     let method = request["method"].as_str().unwrap();
                     methods.lock().unwrap().push(method.into());
-                    let result = match method {
-                        "session.login_with_password" => {
-                            logins.fetch_add(1, Ordering::SeqCst);
-                            if denied {
-                                json!({"error":{"code":1,"message":"SESSION_AUTHENTICATION_FAILED","data":["never-return-this-password"]}})
-                            } else {
-                                json!({"result":"OpaqueRef:fixture-session"})
+                    let injected = if let Some(callback) = overrides {
+                        callback(request.clone()).await
+                    } else {
+                        None
+                    };
+                    let result = match injected {
+                        Some(RpcReply::Json(response)) => response,
+                        Some(RpcReply::Drop) => return,
+                        None => match method {
+                            "session.login_with_password" => {
+                                logins.fetch_add(1, Ordering::SeqCst);
+                                if denied {
+                                    json!({"error":{"code":1,"message":"SESSION_AUTHENTICATION_FAILED","data":["never-return-this-password"]}})
+                                } else {
+                                    json!({"result":"OpaqueRef:fixture-session"})
+                                }
                             }
-                        }
-                        "event.from" => {
-                            let n = event_calls.fetch_add(1, Ordering::SeqCst);
-                            if expire_once && n == 1 {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                                json!({"error":{"code":1,"message":"SESSION_INVALID","data":[]}})
-                            } else if request["params"][2] == "" {
-                                let mut initial =
-                                    batch("initial", if n == 0 { "Halted" } else { "Running" });
-                                initial["events"][0]["snapshot"]["uuid"] = json!(pool_uuid);
-                                json!({"result":initial})
-                            } else {
-                                assert_eq!(request["params"][2], "initial");
-                                tokio::time::sleep(Duration::from_secs(60)).await;
-                                json!({"result":{"token":"initial","events":[]}})
+                            "event.from" => {
+                                let n = event_calls.fetch_add(1, Ordering::SeqCst);
+                                if expire_once && n == 1 {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                    json!({"error":{"code":1,"message":"SESSION_INVALID","data":[]}})
+                                } else if request["params"][2] == "" {
+                                    let mut initial =
+                                        batch("initial", if n == 0 { "Halted" } else { "Running" });
+                                    initial["events"][0]["snapshot"]["uuid"] = json!(pool_uuid);
+                                    json!({"result":initial})
+                                } else {
+                                    assert_eq!(request["params"][2], "initial");
+                                    tokio::time::sleep(Duration::from_secs(60)).await;
+                                    json!({"result":{"token":"initial","events":[]}})
+                                }
                             }
-                        }
-                        "Async.VM.start" => {
-                            mutations.fetch_add(1, Ordering::SeqCst);
-                            if drop_mutation_reply {
-                                return;
+                            "Async.VM.start" => {
+                                mutations.fetch_add(1, Ordering::SeqCst);
+                                if drop_mutation_reply {
+                                    return;
+                                }
+                                json!({"result":"OpaqueRef:task"})
                             }
-                            json!({"result":"OpaqueRef:task"})
-                        }
-                        "task.get_record" => {
-                            json!({"result":{"uuid":"44444444-4444-4444-4444-444444444444","status":"success","progress":1.0,"allowed_operations":[]}})
-                        }
-                        "session.logout" => json!({"result":null}),
-                        "VM.get_consoles" => json!({"result":["OpaqueRef:console"]}),
-                        "console.get_record" => {
-                            json!({"result":{"protocol":"rfb","location":console_location}})
-                        }
-                        other => panic!("Unexpected API method: {other}"),
+                            "task.get_record" => {
+                                json!({"result":{"uuid":"44444444-4444-4444-4444-444444444444","status":"success","progress":1.0,"allowed_operations":[]}})
+                            }
+                            "session.logout" | "task.destroy" => json!({"result":null}),
+                            "VM.get_consoles" => json!({"result":["OpaqueRef:console"]}),
+                            "console.get_record" => {
+                                json!({"result":{"protocol":"rfb","location":console_location}})
+                            }
+                            other => panic!("Unexpected API method: {other}"),
+                        },
                     };
                     let mut response = result;
                     response["id"] = request["id"].clone();
@@ -161,7 +204,8 @@ async fn mock_full(
 #[tokio::test]
 async fn direct_login_bootstrap_and_logout_need_no_xo() {
     let server = mock(false, false).await;
-    let backend = Backend::start().unwrap();
+    let state_directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
     let connection = backend.connect(
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
@@ -183,7 +227,8 @@ async fn direct_login_bootstrap_and_logout_need_no_xo() {
 #[tokio::test]
 async fn session_expiry_resynchronizes_in_a_new_generation() {
     let server = mock(true, false).await;
-    let backend = Backend::start().unwrap();
+    let state_directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
     let connection = backend.connect(
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
@@ -234,7 +279,8 @@ async fn session_expiry_resynchronizes_in_a_new_generation() {
 async fn a_vm_observation_cannot_be_used_in_another_pool_with_the_same_vm_uuid() {
     let first = mock(false, false).await;
     let second = mock(false, false).await;
-    let backend = Backend::start().unwrap();
+    let state_directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
     let a = backend.connect(
         ConnectionOptions::new(first.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
@@ -266,7 +312,8 @@ async fn a_vm_observation_cannot_be_used_in_another_pool_with_the_same_vm_uuid()
 #[tokio::test]
 async fn reconnecting_the_same_pool_rejects_the_previous_connection_observation() {
     let server = mock(false, false).await;
-    let backend = Backend::start().unwrap();
+    let state_directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
     let a = backend.connect(
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
@@ -304,7 +351,8 @@ async fn reconnecting_the_same_pool_rejects_the_previous_connection_observation(
 #[tokio::test]
 async fn authentication_failure_is_terminal_and_does_not_expose_error_data() {
     let server = mock(false, true).await;
-    let backend = Backend::start().unwrap();
+    let state_directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
     let connection = backend.connect(
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
@@ -401,7 +449,8 @@ async fn authenticated_console_preserves_the_handshake_and_transmits_input() {
         }
     });
     let server = mock_console(false, false, Some(location)).await;
-    let backend = Backend::start().unwrap();
+    let state_directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
     let connection = backend.connect(
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
@@ -418,10 +467,11 @@ async fn authenticated_console_preserves_the_handshake_and_transmits_input() {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let snapshot = console.latest();
-            if let Some(frame) = &snapshot.frame {
+            if let Some(frame) = &snapshot.frame
+                && *frame.rgba == [255, 0, 0, 255, 0, 255, 0, 255]
+            {
                 assert_eq!(snapshot.state, ConsoleState::Connected);
                 assert_eq!((frame.width, frame.height), (2, 1));
-                assert_eq!(&*frame.rgba, &[255, 0, 0, 255, 0, 255, 0, 255]);
                 break;
             }
             if let ConsoleState::Failed(error) = &snapshot.state {
@@ -562,5 +612,426 @@ async fn lost_mutation_reply_remains_unknown_and_blocks_a_second_mutation() {
         1,
         "restart must not replay the mutation"
     );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn task_progress_does_not_cancel_the_inventory_long_poll() {
+    let polls = Arc::new(AtomicUsize::new(0));
+    let events = Arc::new(AtomicUsize::new(0));
+    let server=mock_overridden(override_rpc({let polls=polls.clone();let events=events.clone();move|request|{
+        let (polls,events)=(polls.clone(),events.clone());async move {
+            match request["method"].as_str()? {
+                "task.get_record"=>{
+                    let count=polls.fetch_add(1,Ordering::SeqCst);
+                    Some(RpcReply::Json(json!({"result":{"status":if count<4 {"pending"} else {"success"},"progress":0.1*count as f64,"allowed_operations":[]}})))
+                }
+                "event.from" if request["params"][2]!=""=>{
+                    events.fetch_add(1,Ordering::SeqCst);
+                    if request["params"][2]=="initial" {
+                        tokio::time::sleep(Duration::from_millis(1500)).await;
+                        Some(RpcReply::Json(json!({"result":{"token":"changed","events":[batch("unused","Running")["events"][2].clone()]}})))
+                    } else {tokio::time::sleep(Duration::from_secs(60)).await;None}
+                }
+                _=>None,
+            }
+        }
+    }})).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = inventory.guests().next().unwrap().id;
+    let observed = connection.latest().observe_vm(vm).unwrap();
+    let _operation = connection
+        .power_action(
+            xenadmin_core::OperationId::new(),
+            observed,
+            xenadmin_core::PowerAction::Start,
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if connection
+                .latest()
+                .inventory()
+                .is_some_and(|inventory| inventory.vms[&vm].power_state == PowerState::Running)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("inventory change must arrive while task progress continues");
+    assert!(polls.load(Ordering::SeqCst) >= 2);
+    assert!(
+        events.load(Ordering::SeqCst) <= 2,
+        "progress must not restart event.from"
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_transient_task_read_failure_does_not_abandon_the_task_or_repeat_the_mutation() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server = mock_overridden(override_rpc({
+        let calls = calls.clone();
+        move |request| {
+            let calls = calls.clone();
+            async move {
+                if request["method"] == "task.get_record"
+                    && calls.fetch_add(1, Ordering::SeqCst) == 0
+                {
+                    Some(RpcReply::Drop)
+                } else {
+                    None
+                }
+            }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let observed = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let operation = connection
+        .power_action(
+            xenadmin_core::OperationId::new(),
+            observed,
+            xenadmin_core::PowerAction::Start,
+        )
+        .unwrap();
+    assert_eq!(
+        finish(&operation).await,
+        xenadmin_core::OperationState::Succeeded
+    );
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn failed_tasks_show_the_safe_host_error_code_and_are_cleaned_up() {
+    let server=mock_overridden(override_rpc(|request|async move {
+        (request["method"]=="task.get_record").then(||RpcReply::Json(json!({"result":{"status":"failure","progress":0,"error_info":["NO_HOSTS_AVAILABLE","sensitive-host-detail"],"allowed_operations":[]}})))
+    })).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let observed = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let operation = connection
+        .power_action(
+            xenadmin_core::OperationId::new(),
+            observed,
+            xenadmin_core::PowerAction::Start,
+        )
+        .unwrap();
+    assert_eq!(
+        finish(&operation).await,
+        xenadmin_core::OperationState::Failed
+    );
+    assert!(operation.latest().detail.contains("NO_HOSTS_AVAILABLE"));
+    assert!(!operation.latest().detail.contains("sensitive-host-detail"));
+    connection.close().await;
+    assert_eq!(
+        server
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| method.as_str() == "task.destroy")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn suspended_and_paused_guests_have_nondestructive_recovery_actions() {
+    use xenadmin_core::{OperationId, OperationState, PowerAction};
+    for (state, action, wire) in [
+        ("Suspended", PowerAction::Resume, "resume"),
+        ("Paused", PowerAction::Unpause, "unpause"),
+    ] {
+        let server = mock_overridden(override_rpc(move |request| async move {
+            if request["method"] == "event.from" && request["params"][2] == "" {
+                let mut initial = batch("initial", state);
+                initial["events"][2]["snapshot"]["allowed_operations"] = json!([wire]);
+                Some(RpcReply::Json(json!({"result":initial})))
+            } else if request["method"] == format!("Async.VM.{wire}") {
+                assert_eq!(
+                    request["params"].as_array().unwrap().len(),
+                    if action == PowerAction::Resume { 4 } else { 2 }
+                );
+                if action == PowerAction::Resume {
+                    assert_eq!(request["params"][2], false);
+                    assert_eq!(request["params"][3], false);
+                }
+                Some(RpcReply::Json(json!({"result":"OpaqueRef:task"})))
+            } else {
+                None
+            }
+        }))
+        .await;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let connection = backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("fixture".into(), "fixture".into()),
+        );
+        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let vm = inventory.guests().next().unwrap();
+        assert_eq!(vm.allowed_actions, vec![action]);
+        let operation = connection
+            .power_action(
+                OperationId::new(),
+                connection.latest().observe_vm(vm.id).unwrap(),
+                action,
+            )
+            .unwrap();
+        assert_eq!(finish(&operation).await, OperationState::Succeeded);
+        connection.close().await;
+    }
+}
+
+#[tokio::test]
+async fn an_established_session_follows_a_new_coordinator_in_a_new_generation() {
+    let destination = mock_overridden(override_rpc(|request| async move {
+        (request["method"] == "event.from" && request["params"][2] == "")
+            .then(|| RpcReply::Json(json!({"result":batch("initial","Running")})))
+    }))
+    .await;
+    let redirect = destination.endpoint.to_string();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let source = mock_overridden(override_rpc({
+        let release = release.clone();
+        move |request| {
+            let (redirect, release) = (redirect.clone(), release.clone());
+            async move {
+                if request["method"] == "event.from" && request["params"][2] == "" {
+                    Some(RpcReply::Json(json!({"result":batch("initial","Halted")})))
+                } else if request["method"] == "event.from" {
+                    release.notified().await;
+                    Some(RpcReply::Json(
+                        json!({"error":{"code":1,"message":"HOST_IS_SLAVE","data":[redirect]}}),
+                    ))
+                } else {
+                    None
+                }
+            }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(source.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let first = connection.latest().generation();
+    release.notify_one();
+    tokio::time::timeout(Duration::from_secs(6), async {
+        loop {
+            let snapshot = connection.latest();
+            if snapshot.is_current() && snapshot.generation() != first {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(source.logins.load(Ordering::SeqCst), 1);
+    assert_eq!(destination.logins.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        connection
+            .latest()
+            .inventory()
+            .unwrap()
+            .guests()
+            .next()
+            .unwrap()
+            .power_state,
+        PowerState::Running
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn cancellation_after_reconnect_reaches_the_recovered_task() {
+    use xenadmin_core::{OperationControl, OperationId, OperationState, PowerAction};
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server=mock_overridden(override_rpc({let cancelled=cancelled.clone();move|request|{let cancelled=cancelled.clone();async move {
+        match request["method"].as_str()? {
+            "task.get_record"=>Some(RpcReply::Json(json!({"result":{"status":if cancelled.load(Ordering::SeqCst){"cancelled"}else{"pending"},"progress":0.2,"allowed_operations":["cancel"]}}))),
+            "task.cancel"=>{cancelled.store(true,Ordering::SeqCst);Some(RpcReply::Json(json!({"result":null})))},
+            _=>None,
+        }
+    }}})).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connect = || {
+        backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("fixture".into(), "fixture".into()),
+        )
+    };
+    let connection = connect();
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let id = OperationId::new();
+    let old = connection
+        .power_action(
+            id,
+            connection
+                .latest()
+                .observe_vm(inventory.guests().next().unwrap().id)
+                .unwrap(),
+            PowerAction::Start,
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !old.latest().has_task() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    connection.close().await;
+    let replacement = connect();
+    replacement
+        .wait_ready(Duration::from_secs(3))
+        .await
+        .unwrap();
+    replacement
+        .control_operation(id, OperationControl::RequestCancellation)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if replacement
+                .operation_history()
+                .iter()
+                .any(|record| record.id == id && record.state == OperationState::Cancelled)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let current = replacement
+        .operation_history()
+        .iter()
+        .find(|record| record.id == id)
+        .unwrap()
+        .clone();
+    assert!(current.supersedes(&old.latest()));
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
+    replacement.close().await;
+    assert_eq!(
+        server
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| method.as_str() == "task.cancel")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn terminal_persistence_failure_is_visible_and_keeps_the_vm_reserved() {
+    use xenadmin_core::{OperationId, OperationState, PowerAction};
+    let server = mock(false, false).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    // Create the journal through a first operation, then inject a durable-write failure.
+    let observed = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let first = connection
+        .power_action(OperationId::new(), observed, PowerAction::Start)
+        .unwrap();
+    assert_eq!(finish(&first).await, OperationState::Succeeded);
+    let database = rusqlite::Connection::open(directory.path().join("operations.sqlite3")).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_terminal BEFORE UPDATE ON operations WHEN NEW.terminal=1 BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
+    let operation = connection
+        .power_action(OperationId::new(), observed, PowerAction::Start)
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::OutcomeUnknown);
+    assert!(!operation.latest().state.terminal());
+    let another = connection
+        .power_action(OperationId::new(), observed, PowerAction::Start)
+        .unwrap();
+    assert_eq!(finish(&another).await, OperationState::Rejected);
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 2);
+    database
+        .execute_batch("DROP TRIGGER fail_terminal")
+        .unwrap();
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn read_only_connections_do_not_open_the_journal_or_admit_mutations() {
+    let server = mock(false, false).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let mut options = ConnectionOptions::new(server.endpoint.clone());
+    options.read_only = true;
+    let connection = backend.connect(
+        options,
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let observed = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    assert!(matches!(
+        connection.power_action(
+            xenadmin_core::OperationId::new(),
+            observed,
+            xenadmin_core::PowerAction::Start
+        ),
+        Err(xenadmin_core::Error::ReadOnly)
+    ));
+    assert!(matches!(
+        connection.control_operation(
+            xenadmin_core::OperationId::new(),
+            xenadmin_core::OperationControl::RequestCancellation
+        ),
+        Err(xenadmin_core::Error::ReadOnly)
+    ));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!directory.path().join("operations.sqlite3").exists());
+    assert!(matches!(
+        connection.open_console(observed),
+        Err(xenadmin_core::Error::ReadOnly)
+    ));
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 0);
     connection.close().await;
 }

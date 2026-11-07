@@ -66,10 +66,16 @@ provide keyring integration yet. Host actions are enabled from the host's advert
 capabilities, and XAPI checks authorization again.
 
 Force operations require an explicit review. Closing an operation's observer does not
-cancel the host task. **Request cancellation** asks the host and waits for its reported
-outcome. An interrupted request can remain **OutcomeUnknown**. Inspect the host before
-taking further action. This alpha preserves unresolved entries and blocks conflicting
-mutations; it does not yet provide an operator acknowledgement screen to clear them.
+cancel the host task. **Request cancellation** records the request durably, asks the host
+when supported, and waits for its reported outcome. Cancellation remains attached to the
+operation after reconnect. The client retries transient task-read failures without
+repeating the original mutation.
+
+An interrupted request can remain **OutcomeUnknown** and block another mutation on that VM.
+Use **Recheck host task** when a saved task is available. **Review unknown outcome** allows
+an explicit acknowledgement after you inspect the host and stop other instances handling
+the operation. This releases the local block; the result remains unverified and any host
+task may still continue. Close older application versions before using the updated journal.
 
 ## Use the read-only host probe
 

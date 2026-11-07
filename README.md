@@ -19,6 +19,8 @@ The first qualification target is XCP-ng 8.3 LTS on Linux x86-64.
 See the [actual results and remaining gaps](docs/reports/2026-11-07-alpha.md).
 Version 0.1.1 adds a connection-wide certificate-validation opt-out and fixes inventory
 bootstrap with unknown storage sizes; see the [connection fix report](docs/reports/2026-11-07-connection-fixes.md).
+Version 0.1.2 strengthens interrupted-operation recovery and adds resume/unpause controls;
+see the [recovery foundation report](docs/reports/2026-11-07-recovery-foundation.md).
 
 ## Run it
 

@@ -66,7 +66,12 @@ struct State {
     show_details: bool,
     operations: Vec<xenadmin_core::Operation>,
     operation_rows: Vec<xenadmin_core::OperationRecord>,
-    force_action: Option<(xenadmin_core::ObservedVm, xenadmin_core::PowerAction)>,
+    unknown_review: Option<(xenadmin_core::OperationId, String)>,
+    force_action: Option<(
+        xenadmin_core::ObservedVm,
+        xenadmin_core::PowerAction,
+        String,
+    )>,
     console: Option<xenadmin_core::Console>,
     console_snapshot: Option<Arc<xenadmin_core::ConsoleSnapshot>>,
     console_pixels: rune::Pixels,
@@ -115,6 +120,7 @@ fn init() -> State {
         show_details: false,
         operations: Vec::new(),
         operation_rows: Vec::new(),
+        unknown_review: None,
         force_action: None,
         console: None,
         console_snapshot: None,
@@ -154,6 +160,19 @@ fn init() -> State {
     s
 }
 impl State {
+    fn control_operation(
+        &mut self,
+        id: xenadmin_core::OperationId,
+        control: xenadmin_core::OperationControl,
+    ) {
+        self.error = self
+            .connection
+            .as_ref()
+            .ok_or(xenadmin_core::Error::Closed)
+            .and_then(|connection| connection.control_operation(id, control))
+            .err()
+            .map(|error| error.to_string());
+    }
     fn request_power(&mut self, action: xenadmin_core::PowerAction) {
         if let Some(vm) = self.selected().and_then(|row| row.vm) {
             let Some(observed) = self
@@ -165,7 +184,11 @@ impl State {
                 return;
             };
             if action.is_force() {
-                self.force_action = Some((observed, action));
+                let name = self
+                    .selected()
+                    .map(|row| row.name.clone())
+                    .unwrap_or_default();
+                self.force_action = Some((observed, action, name));
             } else {
                 self.submit_power(observed, action);
             }
@@ -222,6 +245,8 @@ impl State {
     }
     fn connect(&mut self) {
         self.console = None;
+        self.force_action = None;
+        self.unknown_review = None;
         let result = (|| {
             let mut options = ConnectionOptions::new(
                 Endpoint::parse(&self.endpoint.text).map_err(|e| e.to_string())?,
@@ -475,14 +500,13 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         let record = operation.latest();
         if rows
             .get(&record.id)
-            .is_none_or(|existing: &xenadmin_core::OperationRecord| {
-                !existing.state.terminal() || record.state.terminal()
-            })
+            .is_none_or(|existing: &xenadmin_core::OperationRecord| record.supersedes(existing))
         {
             rows.insert(record.id, record.as_ref().clone());
         }
     }
-    let rows: Vec<_> = rows.into_values().collect();
+    let mut rows: Vec<_> = rows.into_values().collect();
+    rows.sort_by_key(|record| record.created_at_ms);
     if rows != s.operation_rows {
         s.operation_rows = rows;
         changed = true;
@@ -653,7 +677,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let table = if s.window_width >= 900.0 && matches!(s.page, Page::Guests | Page::Templates) {
         table
             .column(TableColumn::new("cpu", "vCPUs").width(64.0).sortable())
-            .column(TableColumn::new("memory", "Memory").width(96.0))
+            .column(TableColumn::new("memory", "Memory limit").width(110.0))
     } else if s.page == Page::Storage {
         table.column(TableColumn::new("memory", "Capacity").width(96.0))
     } else {
@@ -906,10 +930,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let base = shell.build(&k);
     let root = if s.show_connect {
         rune_kit::root(base, [connection_dialog(s, &k)])
-    } else if let Some((vm, action)) = s.force_action {
+    } else if let Some((vm, action, name)) = &s.force_action {
+        let (vm, action) = (*vm, *action);
         let dialog=col().w(460.0).padding(24.0).gap(16.0).radius(10.0).fill(k.c.bg_base)
             .child(heading(format!("{} this VM?",action.label()),&k))
-            .child(caption(format!("Target: {vm}"),&k).wrap())
+            .child(caption(format!("Target: {name}\nUUID: {vm}"),&k).wrap_anywhere())
             .child(caption("This interrupts the guest immediately and can lose unsaved data. A clean shutdown is safer when the guest responds.",&k).wrap())
             .child(row().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.force_action=None).build(&k))
                 .child(Button::new(action.label()).variant(ButtonVariant::Danger).on_press(move|s:&mut State|s.submit_power(vm,action)).build(&k)));
@@ -924,6 +949,29 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .role("dialog")
                 .label("Confirm force operation")
                 .modal(false, |s: &mut State| s.force_action = None)
+                .child(dialog)],
+        )
+    } else if let Some((id, name)) = &s.unknown_review {
+        let id = *id;
+        let dialog = col().w(460.0).padding(24.0).gap(16.0).radius(10.0).fill(k.c.bg_base)
+            .child(heading("Acknowledge unknown outcome?", &k))
+            .child(caption(format!("VM: {name}"), &k).wrap_anywhere())
+            .child(caption("The earlier operation may still be running. Inspect the host and stop other client instances handling it before continuing. Acknowledging releases this client's VM block; it does not cancel the host task or establish its result.", &k).wrap())
+            .child(row().gap(8.0).justify_end()
+                .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.unknown_review=None).build(&k))
+                .child(Button::new("Acknowledge outcome").variant(ButtonVariant::Warning)
+                    .on_press(move|s:&mut State|{s.control_operation(id,xenadmin_core::OperationControl::AcknowledgeUnknown);s.unknown_review=None;}).build(&k)));
+        rune_kit::root(
+            base,
+            [el()
+                .w_full()
+                .h_full()
+                .absolute(0.0, 0.0)
+                .center()
+                .fill(rune::Color::BLACK.alpha(0.5))
+                .role("dialog")
+                .label("Acknowledge unknown outcome")
+                .modal(false, |s: &mut State| s.unknown_review = None)
                 .child(dialog)],
         )
     } else {
@@ -989,7 +1037,7 @@ fn details(s: &State, k: &Kit) -> El {
         ));
     if selected.vm.is_some() {
         detail = detail
-            .child(field("Memory", &selected.memory))
+            .child(field("Static memory maximum", &selected.memory))
             .child(field("Virtual CPUs", &selected.cpu));
     }
     if s.page != Page::Guests || selected.vm.is_none() {
@@ -1000,13 +1048,10 @@ fn details(s: &State, k: &Kit) -> El {
         .vm
         .and_then(|id| s.inventory.as_ref().and_then(|i| i.vms.get(&id)))
     {
-        for action in [
-            xenadmin_core::PowerAction::Start,
-            xenadmin_core::PowerAction::CleanShutdown,
-            xenadmin_core::PowerAction::Reboot,
-            xenadmin_core::PowerAction::HardShutdown,
-            xenadmin_core::PowerAction::HardReboot,
-        ] {
+        for action in xenadmin_core::PowerAction::ALL {
+            if !s.demo && !vm.allowed_actions.contains(&action) {
+                continue;
+            }
             let enabled = !s.demo
                 && s.snapshot
                     .as_ref()
@@ -1025,7 +1070,7 @@ fn details(s: &State, k: &Kit) -> El {
             );
         }
     }
-    for record in s
+    let mut recent: Vec<_> = s
         .operation_rows
         .iter()
         .filter(|record| {
@@ -1034,9 +1079,14 @@ fn details(s: &State, k: &Kit) -> El {
                     .as_ref()
                     .is_some_and(|inventory| inventory.pool_id == record.pool)
         })
-        .rev()
-        .take(5)
-    {
+        .collect();
+    recent.sort_by_key(|record| {
+        (
+            record.state.terminal(),
+            std::cmp::Reverse(record.created_at_ms),
+        )
+    });
+    for record in recent.into_iter().take(10) {
         actions = actions.child(
             col()
                 .gap(4.0)
@@ -1046,21 +1096,45 @@ fn details(s: &State, k: &Kit) -> El {
                 ))
                 .child(caption(&record.detail, k).wrap()),
         );
-        if let Some(handle) = s
-            .operations
-            .iter()
-            .find(|op| op.latest().id == record.id)
-            .filter(|_| !record.state.terminal())
-        {
-            let id = handle.latest().id;
+        if let Some(error) = &record.local_error {
+            actions = actions.child(
+                caption(error, k)
+                    .wrap()
+                    .color(k.c.danger.icon)
+                    .role("alert"),
+            );
+        }
+        if record.can_cancel && !record.cancel_requested && !record.state.terminal() {
+            let id = record.id;
             actions = actions.child(
                 Button::new("Request cancellation")
                     .variant(ButtonVariant::Ghost)
                     .on_press(move |s: &mut State| {
-                        if let Some(op) = s.operations.iter().find(|op| op.latest().id == id) {
-                            op.request_cancel();
-                        }
+                        s.control_operation(
+                            id,
+                            xenadmin_core::OperationControl::RequestCancellation,
+                        );
                     })
+                    .build(k),
+            );
+        }
+        if record.state == xenadmin_core::OperationState::OutcomeUnknown {
+            let id = record.id;
+            if record.has_task() {
+                actions = actions.child(
+                    Button::new("Recheck host task")
+                        .variant(ButtonVariant::Outline)
+                        .on_press(move |s: &mut State| {
+                            s.control_operation(id, xenadmin_core::OperationControl::Recheck)
+                        })
+                        .build(k),
+                );
+            }
+            let name = selected.name.clone();
+            actions = actions.child(
+                Button::new("Review unknown outcome")
+                    .variant(ButtonVariant::Warning)
+                    .on_press(move |s: &mut State| s.unknown_review = Some((id, name.clone())))
                     .build(k),
             );
         }
@@ -1114,7 +1188,11 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .padding(24.0).gap(12.0).radius(12.0).fill(k.c.bg_base).border(1.0, k.c.border_weak)
         .child(heading("Connect to XCP-ng", k))
         .child(caption("Use a host management address. Credentials go directly to that host over HTTPS.", k).wrap())
-        .child(field("Host endpoint", &s.endpoint, |s| &mut s.endpoint, "https://xcp-host.example"))
+        .child(col().gap(6.0).child(caption("Host endpoint",k))
+            .child(TextInput::new(&s.endpoint).label("Host endpoint").placeholder("https://xcp-host.example")
+                .on_edit(|s:&mut State|&mut s.endpoint)
+                .on_change(|s:&mut State,_|s.accept_invalid_certificates=false)
+                .build(k).key("host-endpoint")))
         .child(field("Username", &s.username, |s| &mut s.username, "root"))
         .child(col().gap(6.0).child(caption("Password • this session only", k))
             .child(TextInput::new(&s.password).secure().label("Password").placeholder("Host password")
@@ -1190,6 +1268,8 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
 }
 fn demo(s: &mut State) {
     s.console = None;
+    s.force_action = None;
+    s.unknown_review = None;
     s.connection = None;
     s.snapshot = None;
     s.demo = true;
@@ -1308,6 +1388,37 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editing_the_host_resets_a_remembered_certificate_bypass() {
+        use rune::{Env, Key, Runtime};
+        let mut state = init();
+        state.show_connect = true;
+        state.endpoint.text = "https://original.example".into();
+        state.accept_invalid_certificates = true;
+        let mut rt = Runtime::new(
+            state,
+            view,
+            (1440.0, 900.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (x, y) = rt.find("host-endpoint").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.key(Key::Text("another".into()).into());
+        rt.frame(0.0);
+        assert!(
+            !rt.state.accept_invalid_certificates,
+            "a new host needs its own explicit choice"
+        );
+        assert!(rt.find("certificate-options").is_some());
+    }
     #[test]
     fn connection_form_exposes_one_opt_out_and_keeps_verified_options_available() {
         use rune::{Env, Runtime};

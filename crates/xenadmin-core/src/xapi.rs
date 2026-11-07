@@ -123,15 +123,7 @@ impl Session {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("UNKNOWN_API_ERROR");
-            let safe_code = if code.len() <= 100
-                && code
-                    .bytes()
-                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-            {
-                code
-            } else {
-                "UNKNOWN_API_ERROR"
-            };
+            let safe_code = safe_error_code(code);
             if safe_code == "HOST_IS_SLAVE"
                 && let Some(host) = error
                     .get("data")
@@ -174,6 +166,19 @@ impl Session {
 
     pub(crate) async fn logout(&self) {
         let _ = self.call("session.logout", vec![]).await;
+    }
+}
+
+pub(crate) fn safe_error_code(code: &str) -> &str {
+    if code.len() <= 100
+        && !code.is_empty()
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        code
+    } else {
+        "UNKNOWN_API_ERROR"
     }
 }
 
@@ -314,20 +319,16 @@ impl Store {
             vms.insert(
                 id,
                 Vm {
-                    allowed_actions: [
-                        crate::PowerAction::Start,
-                        crate::PowerAction::CleanShutdown,
-                        crate::PowerAction::Reboot,
-                        crate::PowerAction::HardShutdown,
-                        crate::PowerAction::HardReboot,
-                    ]
-                    .into_iter()
-                    .filter(|action| {
-                        value["allowed_operations"]
-                            .as_array()
-                            .is_some_and(|operations| operations.iter().any(|v| v == action.wire()))
-                    })
-                    .collect(),
+                    allowed_actions: crate::PowerAction::ALL
+                        .into_iter()
+                        .filter(|action| {
+                            value["allowed_operations"]
+                                .as_array()
+                                .is_some_and(|operations| {
+                                    operations.iter().any(|v| v == action.wire())
+                                })
+                        })
+                        .collect(),
                     id,
                     name: label(value),
                     description: string(value, "name_description"),

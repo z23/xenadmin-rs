@@ -32,15 +32,34 @@ impl std::fmt::Display for OperationId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PowerAction {
     Start,
+    Resume,
+    Unpause,
+    Pause,
+    Suspend,
     CleanShutdown,
     Reboot,
     HardShutdown,
     HardReboot,
 }
 impl PowerAction {
+    pub const ALL: [Self; 9] = [
+        Self::Start,
+        Self::Resume,
+        Self::Unpause,
+        Self::Pause,
+        Self::Suspend,
+        Self::CleanShutdown,
+        Self::Reboot,
+        Self::HardShutdown,
+        Self::HardReboot,
+    ];
     pub fn label(self) -> &'static str {
         match self {
             Self::Start => "Start",
+            Self::Resume => "Resume",
+            Self::Unpause => "Unpause",
+            Self::Pause => "Pause",
+            Self::Suspend => "Suspend",
             Self::CleanShutdown => "Shut down",
             Self::Reboot => "Reboot",
             Self::HardShutdown => "Force shut down",
@@ -53,6 +72,10 @@ impl PowerAction {
     pub(crate) fn wire(self) -> &'static str {
         match self {
             Self::Start => "start",
+            Self::Resume => "resume",
+            Self::Unpause => "unpause",
+            Self::Pause => "pause",
+            Self::Suspend => "suspend",
             Self::CleanShutdown => "clean_shutdown",
             Self::Reboot => "clean_reboot",
             Self::HardShutdown => "hard_shutdown",
@@ -71,13 +94,18 @@ pub enum OperationState {
     Failed,
     Cancelled,
     OutcomeUnknown,
+    AcknowledgedUnknown,
     Rejected,
 }
 impl OperationState {
     pub fn terminal(&self) -> bool {
         matches!(
             self,
-            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Rejected
+            Self::Succeeded
+                | Self::Failed
+                | Self::Cancelled
+                | Self::Rejected
+                | Self::AcknowledgedUnknown
         )
     }
 }
@@ -90,21 +118,54 @@ pub struct OperationRecord {
     pub state: OperationState,
     pub progress: Option<f64>,
     pub detail: String,
+    #[serde(default)]
+    pub created_at_ms: u64,
+    #[serde(default)]
+    pub cancel_requested: bool,
+    #[serde(default)]
+    cancel_dispatched: bool,
+    #[serde(default)]
+    pub can_cancel: bool,
+    #[serde(skip)]
+    revision: u64,
+    #[serde(skip)]
+    pub local_error: Option<String>,
     #[serde(default, skip_serializing)]
     pub(crate) task: Option<String>,
+}
+impl OperationRecord {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn has_task(&self) -> bool {
+        self.task.is_some()
+    }
+    pub fn supersedes(&self, other: &Self) -> bool {
+        (
+            self.revision,
+            self.local_error.is_some(),
+            self.revision == 0 && self.state == OperationState::Rejected,
+        ) > (
+            other.revision,
+            other.local_error.is_some(),
+            other.revision == 0 && other.state == OperationState::Rejected,
+        )
+    }
+}
+#[derive(Clone, Copy, Debug)]
+pub enum OperationControl {
+    RequestCancellation,
+    Recheck,
+    AcknowledgeUnknown,
 }
 
 pub struct Operation {
     receiver: watch::Receiver<Arc<OperationRecord>>,
-    cancel: CancellationToken,
     runtime: tokio::runtime::Handle,
 }
 impl Operation {
     pub fn latest(&self) -> Arc<OperationRecord> {
         self.receiver.borrow().clone()
-    }
-    pub fn request_cancel(&self) {
-        self.cancel.cancel();
     }
     pub fn notify_on_change(&self, callback: Arc<dyn Fn() + Send + Sync>) {
         let mut receiver = self.receiver.clone();
@@ -120,8 +181,27 @@ pub(crate) struct PowerRequest {
     pub generation: u64,
     pub record: OperationRecord,
     sender: watch::Sender<Arc<OperationRecord>>,
-    cancel: CancellationToken,
-    updates: Option<mpsc::Sender<OperationRecord>>,
+    updates: Option<mpsc::Sender<OperationUpdate>>,
+}
+pub(crate) enum OperationUpdate {
+    Record(OperationRecord),
+    Coordinator(crate::Endpoint),
+}
+struct DispatchPermit(crate::PowerAction);
+impl DispatchPermit {
+    async fn send(
+        self,
+        session: &Session,
+        reference: String,
+        cancel: &CancellationToken,
+    ) -> Result<serde_json::Value, Error> {
+        let mut params = vec![json!(reference)];
+        if matches!(self.0, PowerAction::Start | PowerAction::Resume) {
+            params.extend([json!(false), json!(false)]);
+        }
+        let method = format!("Async.VM.{}", self.0.wire());
+        tokio::select! { _=cancel.cancelled()=>Err(Error::Closed), result=session.call(&method,params)=>result }
+    }
 }
 pub(crate) fn channel(
     id: OperationId,
@@ -139,21 +219,24 @@ pub(crate) fn channel(
         state: OperationState::Submitting,
         progress: None,
         detail: "Waiting for admission".into(),
+        created_at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|time| time.as_millis() as u64)
+            .unwrap_or(0),
+        revision: 0,
+        local_error: None,
+        cancel_requested: false,
+        cancel_dispatched: false,
+        can_cancel: false,
         task: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
-    let cancel = CancellationToken::new();
     (
-        Operation {
-            receiver,
-            cancel: cancel.clone(),
-            runtime,
-        },
+        Operation { receiver, runtime },
         PowerRequest {
             generation,
             record,
             sender,
-            cancel,
             updates: None,
         },
     )
@@ -200,29 +283,34 @@ impl Journal {
         connection
             .busy_timeout(Duration::from_secs(2))
             .map_err(|_| Error::Journal)?;
-        connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL);").map_err(|_| Error::Journal)?;
+        connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|_| Error::Journal)?;
+        let has_revision: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')", [], |row| row.get(0)).map_err(|_| Error::Journal)?;
+        if !has_revision
+            && connection.execute_batch("ALTER TABLE operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0").is_err()
+                && !connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')", [], |row| row.get::<_, bool>(0)).unwrap_or(false) { return Err(Error::Journal); }
         Ok(Self(connection))
     }
-    fn load(&self, id: OperationId) -> Result<Option<OperationRecord>, Error> {
-        let value: Option<(String, Option<String>)> = self
+    pub(crate) fn load(&self, id: OperationId) -> Result<Option<OperationRecord>, Error> {
+        let value: Option<(String, Option<String>, u64)> = self
             .0
             .query_row(
-                "SELECT payload,task FROM operations WHERE id=?1",
+                "SELECT payload,task,revision FROM operations WHERE id=?1",
                 [id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(|_| Error::Journal)?;
         value
-            .map(|(payload, task)| {
+            .map(|(payload, task, revision)| {
                 let mut record: OperationRecord =
                     serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
                 record.task = task;
+                record.revision = revision;
                 Ok(record)
             })
             .transpose()
     }
-    fn admit(&mut self, record: &OperationRecord) -> Result<bool, Error> {
+    fn admit(&mut self, record: &mut OperationRecord) -> Result<bool, Error> {
         self.0
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::Journal)?;
@@ -252,8 +340,11 @@ impl Journal {
                     |row| row.get(0),
                 )
                 .map_err(|_| Error::Journal)?;
-            if pending > 0 || total >= 1000 {
-                return Err(Error::Busy);
+            if pending > 0 {
+                return Err(Error::ConflictingOperation);
+            }
+            if total >= 1000 {
+                return Err(Error::JournalFull);
             }
             self.save(record)?;
             self.0.execute("DELETE FROM operations WHERE terminal=1 AND rowid NOT IN (SELECT rowid FROM operations WHERE terminal=1 ORDER BY rowid DESC LIMIT 500)", []).map_err(|_| Error::Journal)?;
@@ -266,136 +357,266 @@ impl Journal {
         }
         result
     }
-    fn save(&self, record: &OperationRecord) -> Result<(), Error> {
-        self.0.execute("INSERT INTO operations(id,pool,vm,payload,task,terminal) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,terminal=excluded.terminal WHERE operations.terminal=0 OR excluded.terminal=1", rusqlite::params![record.id.to_string(), record.pool.to_string(), record.vm.to_string(), serde_json::to_string(record).map_err(|_| Error::Journal)?, record.task, record.state.terminal()]).map_err(|_| Error::Journal)?;
+    fn save(&self, record: &mut OperationRecord) -> Result<(), Error> {
+        if let Some(previous) = self.load(record.id)? {
+            if previous.pool != record.pool
+                || previous.vm != record.vm
+                || previous.action != record.action
+            {
+                return Err(Error::OperationConflict);
+            }
+            if (previous.state.terminal() && previous.state != record.state)
+                || (previous.task.is_some() && previous.task != record.task)
+                || (previous.cancel_requested && !record.cancel_requested)
+                || (previous.cancel_dispatched && !record.cancel_dispatched)
+            {
+                return Err(Error::JournalChanged);
+            }
+        }
+        let changed = self.0.execute("INSERT INTO operations(id,pool,vm,payload,task,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,terminal=excluded.terminal,revision=excluded.revision WHERE operations.revision=?7 AND (operations.terminal=0 OR excluded.terminal=1)", rusqlite::params![record.id.to_string(), record.pool.to_string(), record.vm.to_string(), serde_json::to_string(record).map_err(|_| Error::Journal)?, record.task, record.state.terminal(), record.revision]).map_err(|_| Error::Journal)?;
+        if changed != 1 {
+            return Err(Error::JournalChanged);
+        }
+        record.revision += 1;
         Ok(())
+    }
+    fn mark_dispatching(&self, record: &mut OperationRecord) -> Result<DispatchPermit, Error> {
+        if record.state != OperationState::Submitting
+            || record.task.is_some()
+            || record.cancel_requested
+        {
+            return Err(Error::JournalChanged);
+        }
+        record.state = OperationState::Dispatching;
+        record.detail = "Submitting to XAPI".into();
+        self.save(record)?;
+        Ok(DispatchPermit(record.action))
+    }
+    fn attach_task(&self, evidence: &OperationRecord) -> Result<OperationRecord, Error> {
+        let Some(task) = &evidence.task else {
+            return self.load(evidence.id)?.ok_or(Error::Journal);
+        };
+        for _ in 0..16 {
+            let mut current = self.load(evidence.id)?.ok_or(Error::Journal)?;
+            if current.pool != evidence.pool
+                || current.vm != evidence.vm
+                || current.action != evidence.action
+            {
+                return Err(Error::OperationConflict);
+            }
+            if let Some(existing) = &current.task {
+                if existing != task {
+                    return Err(Error::Protocol("conflicting task-reference evidence"));
+                }
+                return Ok(current);
+            }
+            if current.state == OperationState::Submitting {
+                return Err(Error::JournalChanged);
+            }
+            current.task = Some(task.clone());
+            if !current.state.terminal() {
+                current.state = OperationState::Tracking;
+                current.detail = "Host accepted the operation; tracking its task".into();
+            }
+            match self.save(&mut current) {
+                Ok(()) => return Ok(current),
+                Err(Error::JournalChanged) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
+    pub(crate) fn control(
+        &self,
+        pool: PoolId,
+        id: OperationId,
+        acknowledge: bool,
+    ) -> Result<OperationRecord, Error> {
+        for _ in 0..16 {
+            let mut record = self
+                .load(id)?
+                .filter(|record| record.pool == pool)
+                .ok_or(Error::OperationConflict)?;
+            if acknowledge {
+                if record.state != OperationState::OutcomeUnknown {
+                    return Err(Error::UnavailableAction);
+                }
+                record.state = OperationState::AcknowledgedUnknown;
+                record.can_cancel = false;
+                record.detail = "Outcome remains unverified. Operator acknowledged it and released the local VM reservation.".into();
+            } else {
+                if record.state.terminal() || record.task.is_none() {
+                    return Err(Error::UnavailableAction);
+                }
+                record.cancel_requested = true;
+                record.detail = "Cancellation requested; waiting for the host task".into();
+            }
+            match self.save(&mut record) {
+                Ok(()) => return Ok(record),
+                Err(Error::JournalChanged) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Error::JournalChanged)
     }
     pub(crate) fn history(&self) -> Result<Vec<OperationRecord>, Error> {
         let mut query = self
             .0
-            .prepare("SELECT payload,task FROM operations ORDER BY rowid DESC LIMIT 1500")
+            .prepare("SELECT payload,task,revision FROM operations ORDER BY rowid DESC LIMIT 1500")
             .map_err(|_| Error::Journal)?;
         let rows = query
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, u64>(2)?,
+                ))
             })
             .map_err(|_| Error::Journal)?;
         rows.map(|row| {
-            let (payload, task) = row.map_err(|_| Error::Journal)?;
+            let (payload, task, revision) = row.map_err(|_| Error::Journal)?;
             let mut record: OperationRecord =
                 serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
             record.task = task;
+            record.revision = revision;
             Ok(record)
         })
         .collect()
     }
 }
 
-pub(crate) async fn recover(
-    session: Arc<Session>,
-    directory: PathBuf,
-    pool: PoolId,
-    cancel: CancellationToken,
-    updates: mpsc::Sender<OperationRecord>,
-) {
+pub(crate) fn recover(directory: &Path, pool: PoolId) -> Result<Vec<OperationRecord>, Error> {
     if !directory.join("operations.sqlite3").exists() {
-        return;
+        return Ok(Vec::new());
     }
-    let Ok(journal) = Journal::open(&directory) else {
-        return;
-    };
-    let Ok(records) = journal.history() else {
-        return;
-    };
-    for mut record in records.into_iter().filter(|record| record.pool == pool) {
+    let journal = Journal::open(directory)?;
+    let mut recovered = Vec::new();
+    for mut record in journal
+        .history()?
+        .into_iter()
+        .filter(|record| record.pool == pool)
+    {
         if !record.state.terminal() && record.task.is_none() {
             record.state = if record.state == OperationState::Submitting {
                 OperationState::Failed
             } else {
                 OperationState::OutcomeUnknown
             };
-            record.detail="Interrupted operation. No saved task reference is available; inspect the host before taking further action.".into();
-            let _ = journal.save(&record);
-        }
-        let _ = updates.send(record.clone()).await;
-        if !record.state.terminal() && record.task.is_some() {
-            let (sender, _) = watch::channel(Arc::new(record.clone()));
-            let mut request = PowerRequest {
-                generation: 0,
-                record,
-                sender,
-                cancel: CancellationToken::new(),
-                updates: Some(updates.clone()),
-            };
-            let (session, directory, cancel) = (session.clone(), directory.clone(), cancel.clone());
-            tokio::spawn(async move {
-                let Ok(mut journal) = Journal::open(&directory) else {
-                    return;
-                };
-                request.record.state = OperationState::Tracking;
-                request.record.detail =
-                    "Reconciling an existing host task; the mutation is not repeated".into();
-                if request.publish(&mut journal).await.is_err() {
-                    return;
+            record.detail = "Interrupted operation without a saved task reference. Inspect the host before acknowledging its unknown outcome.".into();
+            match journal.save(&mut record) {
+                Ok(()) => {}
+                Err(Error::JournalChanged) => {
+                    record = journal.load(record.id)?.ok_or(Error::Journal)?;
                 }
-                if let Err(error) = request.track(&session, &mut journal, &cancel).await {
-                    request.record.state = OperationState::OutcomeUnknown;
-                    request.record.detail = error.to_string();
-                    let _ = request.publish(&mut journal).await;
-                }
-            });
+                Err(error) => return Err(error),
+            }
         }
+        recovered.push(record);
     }
+    Ok(recovered)
 }
 
 impl PowerRequest {
+    pub(crate) fn tracking(record: OperationRecord) -> Self {
+        let (sender, _) = watch::channel(Arc::new(record.clone()));
+        Self {
+            generation: 0,
+            record,
+            sender,
+            updates: None,
+        }
+    }
     pub(crate) fn reject(mut self, error: Error) {
         self.record.state = OperationState::Rejected;
         self.record.detail = error.to_string();
         self.sender.send_replace(Arc::new(self.record));
     }
-    async fn publish(&self, journal: &mut Journal) -> Result<(), Error> {
-        journal.save(&self.record)?;
+    async fn emit(&self) {
         self.sender.send_replace(Arc::new(self.record.clone()));
         if let Some(updates) = &self.updates {
-            let _ = updates.send(self.record.clone()).await;
+            let _ = updates
+                .send(OperationUpdate::Record(self.record.clone()))
+                .await;
         }
+    }
+    async fn publish(&mut self, journal: &mut Journal) -> Result<(), Error> {
+        journal.save(&mut self.record)?;
+        self.emit().await;
         Ok(())
     }
     pub(crate) async fn run(
         mut self,
         session: Arc<Session>,
-        reference: String,
+        reference: Option<String>,
         directory: PathBuf,
         connection_cancel: CancellationToken,
-        updates: mpsc::Sender<OperationRecord>,
+        updates: mpsc::Sender<OperationUpdate>,
     ) {
         self.updates = Some(updates);
-        let result = self
-            .execute(&session, reference, &directory, &connection_cancel)
-            .await;
+        let result = if let Some(reference) = reference {
+            self.execute(&session, reference, &directory, &connection_cancel)
+                .await
+        } else {
+            match Journal::open(&directory) {
+                Ok(mut journal) => self.track(&session, &mut journal, &connection_cancel).await,
+                Err(error) => Err(error),
+            }
+        };
         if let Err(error) = result {
-            if self.record.state.terminal() {
-                return;
+            if let Error::Coordinator(endpoint) = &error
+                && let Some(updates) = &self.updates
+            {
+                let _ = updates
+                    .send(OperationUpdate::Coordinator(endpoint.clone()))
+                    .await;
+            }
+            let journal = Journal::open(&directory);
+            if let Ok(journal) = &journal {
+                if self.record.task.is_some()
+                    && let Ok(current) = journal.attach_task(&self.record)
+                    && current.revision != self.record.revision
+                {
+                    self.record = current;
+                    self.emit().await;
+                    return;
+                }
+                if let Ok(Some(current)) = journal.load(self.record.id)
+                    && (current.revision != self.record.revision || current.state.terminal())
+                {
+                    self.record = current;
+                    self.emit().await;
+                    return;
+                }
             }
             self.record.state = if self.record.state == OperationState::Submitting {
                 OperationState::Rejected
             } else if self.record.state == OperationState::Dispatching
-                && matches!(error, Error::Api(_))
+                && matches!(error, Error::Api(_) | Error::Coordinator(_))
             {
                 OperationState::Failed
             } else {
                 OperationState::OutcomeUnknown
             };
             self.record.detail = error.to_string();
-            if let Ok(journal) = Journal::open(&directory) {
-                let _ = journal.save(&self.record);
+            self.record.can_cancel = false;
+            if let Ok(journal) = journal {
+                match journal.save(&mut self.record) {
+                    Ok(()) => {}
+                    Err(Error::JournalChanged) => {
+                        if let Ok(Some(current)) = journal.load(self.record.id) {
+                            self.record = current;
+                        }
+                    }
+                    Err(_) => {
+                        self.record.state = OperationState::OutcomeUnknown;
+                        self.record.local_error = Some(Error::Journal.to_string());
+                    }
+                }
+            } else {
+                self.record.state = OperationState::OutcomeUnknown;
+                self.record.local_error = Some(Error::Journal.to_string());
             }
-            self.sender.send_replace(Arc::new(self.record));
-            let record = self.sender.borrow().as_ref().clone();
-            if let Some(updates) = &self.updates {
-                let _ = updates.send(record).await;
-            }
+            self.emit().await;
         }
     }
     async fn execute(
@@ -406,7 +627,7 @@ impl PowerRequest {
         connection_cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut journal = Journal::open(directory)?;
-        let new = match journal.admit(&self.record) {
+        let new = match journal.admit(&mut self.record) {
             Ok(new) => new,
             Err(error) => {
                 self.record.state = OperationState::Rejected;
@@ -427,27 +648,20 @@ impl PowerRequest {
                 tokio::select! { _=connection_cancel.cancelled()=>return Ok(()), _=tokio::time::sleep(Duration::from_millis(250))=>{} }
             }
         }
-        self.record.state = OperationState::Dispatching;
-        self.record.detail = "Submitting to XAPI".into();
-        self.publish(&mut journal).await?;
-        let mut params = vec![json!(reference)];
-        if self.record.action == PowerAction::Start {
-            params.extend([json!(false), json!(false)]);
+        if connection_cancel.is_cancelled() {
+            return Err(Error::Closed);
         }
-        let method = format!("Async.VM.{}", self.record.action.wire());
-        let task = tokio::select! {
-            _=connection_cancel.cancelled()=>return Err(Error::Closed),
-            result=session.call(&method,params)=>result?,
-        };
+        let permit = journal.mark_dispatching(&mut self.record)?;
+        self.emit().await;
+        let task = permit.send(session, reference, connection_cancel).await?;
         self.record.task = Some(
             task.as_str()
-                .filter(|t| t.starts_with("OpaqueRef:"))
+                .filter(|task| task.starts_with("OpaqueRef:") && *task != "OpaqueRef:NULL")
                 .ok_or(Error::Protocol("invalid task reference"))?
                 .into(),
         );
-        self.record.state = OperationState::Tracking;
-        self.record.detail = "Host task is running".into();
-        self.publish(&mut journal).await?;
+        self.record = journal.attach_task(&self.record)?;
+        self.emit().await;
         self.track(session, &mut journal, connection_cancel).await
     }
     async fn track(
@@ -461,52 +675,119 @@ impl PowerRequest {
             .task
             .clone()
             .ok_or(Error::Protocol("task reference is unavailable"))?;
-        let mut cancellation_sent = false;
+        let mut retry_delay = 1;
         loop {
-            let task = tokio::select! {_=connection_cancel.cancelled()=>return Err(Error::Closed), result=session.call("task.get_record",vec![json!(reference)])=>result?};
+            self.record = journal.load(self.record.id)?.ok_or(Error::Journal)?;
+            if self.record.state.terminal() {
+                self.emit().await;
+                return Ok(());
+            }
+            if self.record.task.as_ref() != Some(&reference) {
+                return Err(Error::Protocol("task identity changed"));
+            }
+            let task = tokio::select! {
+                _=connection_cancel.cancelled()=>return Err(Error::Closed),
+                result=session.call("task.get_record",vec![json!(&reference)])=>result,
+            };
+            let task = match task {
+                Ok(task) => {
+                    retry_delay = 1;
+                    task
+                }
+                Err(error @ Error::Coordinator(_)) => return Err(error),
+                Err(error) if error.retryable() => {
+                    self.record.state = OperationState::Tracking;
+                    self.record.detail = format!("Cannot query the host task; retrying: {error}");
+                    match self.publish(journal).await {
+                        Ok(()) | Err(Error::JournalChanged) => {}
+                        Err(error) => return Err(error),
+                    }
+                    tokio::select! {_=connection_cancel.cancelled()=>return Err(Error::Closed),_=tokio::time::sleep(Duration::from_secs(retry_delay))=>{}}
+                    retry_delay = (retry_delay * 2).min(10);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             self.record.progress = task["progress"]
                 .as_f64()
-                .or_else(|| task["progress"].as_str().and_then(|s| s.parse().ok()))
-                .filter(|p| p.is_finite())
-                .map(|p| p.clamp(0.0, 1.0));
+                .or_else(|| {
+                    task["progress"]
+                        .as_str()
+                        .and_then(|value| value.parse().ok())
+                })
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 1.0));
+            self.record.can_cancel = task["allowed_operations"]
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == "cancel"));
+            self.record.state = if self.record.cancel_requested {
+                OperationState::CancellationRequested
+            } else {
+                OperationState::Tracking
+            };
             match task["status"].as_str() {
                 Some("success") => {
                     self.record.state = OperationState::Succeeded;
                     self.record.detail = "Host task completed".into();
                     self.record.progress = Some(1.0);
-                    self.publish(journal).await?;
-                    return Ok(());
                 }
                 Some("failure") => {
                     self.record.state = OperationState::Failed;
+                    let code = task["error_info"]
+                        .as_array()
+                        .and_then(|values| values.first())
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("UNKNOWN_API_ERROR");
                     self.record.detail =
-                        "Host task failed. Inspect the host task log for details.".into();
-                    self.publish(journal).await?;
-                    return Ok(());
+                        format!("Host task failed: {}", crate::xapi::safe_error_code(code));
                 }
                 Some("cancelled") => {
                     self.record.state = OperationState::Cancelled;
                     self.record.detail = "Host confirmed task cancellation".into();
-                    self.publish(journal).await?;
-                    return Ok(());
                 }
                 Some("pending" | "cancelling") => {}
                 _ => return Err(Error::Protocol("unknown task status")),
             }
-            if self.cancel.is_cancelled() && !cancellation_sent {
-                cancellation_sent = true;
-                if task["allowed_operations"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v == "cancel"))
-                {
-                    session.call("task.cancel", vec![json!(reference)]).await?;
-                    self.record.state = OperationState::CancellationRequested;
-                    self.record.detail = "Waiting for the host to confirm cancellation".into();
-                } else {
-                    self.record.detail = "This host task does not advertise cancellation".into();
+            if self.record.state.terminal() {
+                self.record.can_cancel = false;
+                match self.publish(journal).await {
+                    Ok(()) => {}
+                    Err(Error::JournalChanged) => continue,
+                    Err(error) => return Err(error),
                 }
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    session.call("task.destroy", vec![json!(&reference)]),
+                )
+                .await;
+                return Ok(());
             }
-            self.publish(journal).await?;
+            if self.record.cancel_requested
+                && !self.record.cancel_dispatched
+                && self.record.can_cancel
+            {
+                self.record.cancel_dispatched = true;
+                self.record.detail = "Waiting for the host to confirm cancellation".into();
+                match self.publish(journal).await {
+                    Ok(()) => {}
+                    Err(Error::JournalChanged) => continue,
+                    Err(error) => return Err(error),
+                }
+                if let Err(error) = session.call("task.cancel", vec![json!(&reference)]).await {
+                    if matches!(error, Error::Coordinator(_)) {
+                        return Err(error);
+                    }
+                    self.record.detail = format!(
+                        "Cancellation was not confirmed: {error}. Still tracking the original task."
+                    );
+                }
+            } else if self.record.cancel_requested && !self.record.can_cancel {
+                self.record.detail = "Cancellation requested, but the host task does not currently advertise cancellation".into();
+            }
+            match self.publish(journal).await {
+                Ok(()) | Err(Error::JournalChanged) => {}
+                Err(error) => return Err(error),
+            }
             tokio::select! {_=connection_cancel.cancelled()=>return Err(Error::Closed),_=tokio::time::sleep(Duration::from_secs(1))=>{}}
         }
     }
@@ -524,23 +805,32 @@ mod tests {
             state: OperationState::Dispatching,
             progress: None,
             detail: "test".into(),
+            created_at_ms: 0,
+            revision: 0,
+            local_error: None,
             task: None,
+            cancel_requested: false,
+            cancel_dispatched: false,
+            can_cancel: false,
         }
     }
     #[test]
     fn journal_deduplicates_ids_and_reserves_unresolved_targets() {
         let dir = tempfile::tempdir().unwrap();
         let mut journal = Journal::open(dir.path()).unwrap();
-        let record = record();
-        assert!(journal.admit(&record).unwrap());
-        assert!(!journal.admit(&record).unwrap());
+        let mut record = record();
+        assert!(journal.admit(&mut record).unwrap());
+        assert!(!journal.admit(&mut record).unwrap());
         let mut another = record.clone();
         another.id = OperationId::new();
-        assert!(matches!(journal.admit(&another), Err(Error::Busy)));
+        assert!(matches!(
+            journal.admit(&mut another),
+            Err(Error::ConflictingOperation)
+        ));
         another.id = record.id;
         another.action = PowerAction::Reboot;
         assert!(matches!(
-            journal.admit(&another),
+            journal.admit(&mut another),
             Err(Error::OperationConflict)
         ));
         drop(journal);
@@ -549,5 +839,147 @@ mod tests {
             journal.load(record.id).unwrap().unwrap().state,
             OperationState::Dispatching
         );
+    }
+    #[test]
+    fn stale_recovery_cannot_release_a_dispatched_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let mut submitted = record();
+        submitted.state = OperationState::Submitting;
+        journal.admit(&mut submitted).unwrap();
+        let mut recovery = journal.load(submitted.id).unwrap().unwrap();
+        let mut worker = recovery.clone();
+        worker.state = OperationState::Dispatching;
+        journal.save(&mut worker).unwrap();
+        recovery.state = OperationState::Failed;
+        assert!(
+            journal.save(&mut recovery).is_err(),
+            "stale recovery must lose its compare-and-swap"
+        );
+        assert_eq!(
+            journal.load(submitted.id).unwrap().unwrap().state,
+            OperationState::Dispatching
+        );
+        submitted.id = OperationId::new();
+        assert!(
+            journal.admit(&mut submitted).is_err(),
+            "the dispatched operation still reserves the VM"
+        );
+    }
+    #[test]
+    fn recovery_before_dispatch_revokes_the_stale_workers_permission() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let mut initial = record();
+        initial.state = OperationState::Submitting;
+        journal.admit(&mut initial).unwrap();
+        let mut worker = initial.clone();
+        assert_eq!(
+            recover(dir.path(), initial.pool).unwrap()[0].state,
+            OperationState::Failed
+        );
+        assert!(matches!(
+            journal.mark_dispatching(&mut worker),
+            Err(Error::JournalChanged)
+        ));
+        assert_eq!(
+            journal.load(initial.id).unwrap().unwrap().state,
+            OperationState::Failed
+        );
+    }
+    #[test]
+    fn late_task_evidence_survives_recovery_and_keeps_the_vm_reserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let mut initial = record();
+        initial.state = OperationState::Submitting;
+        journal.admit(&mut initial).unwrap();
+        let _permit = journal.mark_dispatching(&mut initial).unwrap();
+        assert_eq!(
+            recover(dir.path(), initial.pool).unwrap()[0].state,
+            OperationState::OutcomeUnknown
+        );
+        initial.task = Some("OpaqueRef:late-task".into());
+        let tracked = journal.attach_task(&initial).unwrap();
+        assert_eq!(tracked.task.as_deref(), Some("OpaqueRef:late-task"));
+        assert_eq!(tracked.state, OperationState::Tracking);
+        assert!(tracked.revision() > initial.revision());
+        initial.id = OperationId::new();
+        initial.revision = 0;
+        assert!(matches!(
+            journal.admit(&mut initial),
+            Err(Error::ConflictingOperation)
+        ));
+    }
+    #[test]
+    fn cancellation_is_durable_and_unknown_acknowledgement_does_not_claim_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let mut initial = record();
+        initial.state = OperationState::Submitting;
+        journal.admit(&mut initial).unwrap();
+        let _permit = journal.mark_dispatching(&mut initial).unwrap();
+        initial.task = Some("OpaqueRef:task".into());
+        let mut tracked = journal.attach_task(&initial).unwrap();
+        let requested = journal.control(initial.pool, initial.id, false).unwrap();
+        assert!(requested.cancel_requested);
+        assert!(matches!(
+            journal.save(&mut tracked),
+            Err(Error::JournalChanged)
+        ));
+        let mut current = recover(dir.path(), initial.pool).unwrap().remove(0);
+        assert!(current.cancel_requested);
+        current.state = OperationState::OutcomeUnknown;
+        journal.save(&mut current).unwrap();
+        let acknowledged = journal.control(initial.pool, initial.id, true).unwrap();
+        assert_eq!(acknowledged.state, OperationState::AcknowledgedUnknown);
+        assert_eq!(acknowledged.task.as_deref(), Some("OpaqueRef:task"));
+        initial.id = OperationId::new();
+        initial.revision = 0;
+        initial.task = None;
+        initial.state = OperationState::Submitting;
+        assert!(journal.admit(&mut initial).unwrap());
+    }
+    #[test]
+    fn legacy_journal_migration_preserves_the_task_and_unresolved_reservation() {
+        let dir = tempfile::tempdir().unwrap();
+        let initial = record();
+        let database = rusqlite::Connection::open(dir.path().join("operations.sqlite3")).unwrap();
+        database.execute_batch("CREATE TABLE operations (id TEXT PRIMARY KEY,pool TEXT NOT NULL,vm TEXT NOT NULL,payload TEXT NOT NULL,task TEXT,terminal INTEGER NOT NULL)").unwrap();
+        let payload = json!({"id":initial.id,"pool":initial.pool,"vm":initial.vm,"action":"Start","state":"Tracking","progress":0.5,"detail":"Legacy task"});
+        database
+            .execute(
+                "INSERT INTO operations VALUES(?1,?2,?3,?4,?5,0)",
+                rusqlite::params![
+                    initial.id.to_string(),
+                    initial.pool.to_string(),
+                    initial.vm.to_string(),
+                    payload.to_string(),
+                    "OpaqueRef:legacy-task"
+                ],
+            )
+            .unwrap();
+        drop(database);
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let migrated = journal.load(initial.id).unwrap().unwrap();
+        assert_eq!(migrated.task.as_deref(), Some("OpaqueRef:legacy-task"));
+        assert_eq!(migrated.revision(), 0);
+        assert!(!migrated.cancel_requested);
+        let mut another = record();
+        assert!(matches!(
+            journal.admit(&mut another),
+            Err(Error::ConflictingOperation)
+        ));
+    }
+    #[test]
+    fn recovery_returns_large_history_without_a_bounded_channel_barrier() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        for _ in 0..200 {
+            let mut row = record();
+            row.state = OperationState::Succeeded;
+            journal.admit(&mut row).unwrap();
+        }
+        assert_eq!(recover(dir.path(), record().pool).unwrap().len(), 200);
     }
 }

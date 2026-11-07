@@ -8,7 +8,9 @@ mod xapi;
 pub use connection::{Backend, Connection, ConnectionSnapshot, ConnectionState, ObservedVm};
 pub use console::{Console, ConsoleFrame, ConsoleInput, ConsoleSnapshot, ConsoleState};
 pub use model::{Host, HostId, Inventory, Network, PoolId, PowerState, Storage, Vm, VmId};
-pub use operations::{Operation, OperationId, OperationRecord, OperationState, PowerAction};
+pub use operations::{
+    Operation, OperationControl, OperationId, OperationRecord, OperationState, PowerAction,
+};
 pub use trust::{CertificateFingerprint, ConnectionOptions, Credentials, Endpoint};
 
 #[derive(Debug, thiserror::Error)]
@@ -64,10 +66,22 @@ pub enum Error {
     ConsoleEndpoint,
     #[error("The console protocol failed or the connection closed")]
     ConsoleProtocol,
-    #[error("The operation journal is unavailable. No new mutation was dispatched")]
+    #[error(
+        "Cannot read or save the operation journal. Further mutations are blocked until it is available"
+    )]
     Journal,
+    #[error("The operation record changed while this worker was running")]
+    JournalChanged,
+    #[error(
+        "Another operation on this VM is still running or unresolved. Inspect operation history before submitting another action"
+    )]
+    ConflictingOperation,
+    #[error("The operation journal has reached its unresolved-operation limit")]
+    JournalFull,
     #[error("The requested action is unavailable for this VM")]
     UnavailableAction,
+    #[error("This connection is read-only")]
+    ReadOnly,
     #[error("The operation ID was already used for a different request")]
     OperationConflict,
 }
@@ -76,7 +90,7 @@ impl Error {
     pub fn retryable(&self) -> bool {
         matches!(
             self,
-            Self::Timeout | Self::Transport | Self::Http(502..=504)
+            Self::Timeout | Self::Transport | Self::Http(502..=504) | Self::Coordinator(_)
         ) || matches!(self, Self::Api(code) if code == "SESSION_INVALID" || code == "EVENT_FROM_TOKEN_PARSE_FAILURE")
     }
 }
