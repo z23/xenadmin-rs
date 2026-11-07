@@ -614,37 +614,48 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .flex(2.0)
             .min(180.0)
             .sortable(),
-    )
-    .column(
-        TableColumn::new("state", "State")
+    );
+    let table = if s.page != Page::Networks {
+        table.column(
+            TableColumn::new(
+                "state",
+                if s.page == Page::Storage {
+                    "Type"
+                } else {
+                    "State"
+                },
+            )
             .width(100.0)
             .min(90.0)
             .sortable(),
-    );
-    let table = if s.window_width >= 600.0 {
-        table.column(
-            TableColumn::new("location", "Host / location")
-                .flex(1.0)
-                .min(120.0)
-                .sortable(),
         )
     } else {
         table
     };
-    let table = if s.window_width >= 900.0 {
+    let table = if s.window_width >= 600.0 || s.page == Page::Networks {
+        table.column(
+            TableColumn::new(
+                "location",
+                match s.page {
+                    Page::Guests | Page::Templates => "Host",
+                    Page::Hosts => "Address",
+                    Page::Storage => "Used",
+                    Page::Networks => "Bridge",
+                },
+            )
+            .flex(1.0)
+            .min(120.0)
+            .sortable(),
+        )
+    } else {
+        table
+    };
+    let table = if s.window_width >= 900.0 && matches!(s.page, Page::Guests | Page::Templates) {
         table
             .column(TableColumn::new("cpu", "vCPUs").width(64.0).sortable())
-            .column(
-                TableColumn::new(
-                    "memory",
-                    if s.page == Page::Storage {
-                        "Capacity"
-                    } else {
-                        "Memory"
-                    },
-                )
-                .width(96.0),
-            )
+            .column(TableColumn::new("memory", "Memory").width(96.0))
+    } else if s.page == Page::Storage {
+        table.column(TableColumn::new("memory", "Capacity").width(96.0))
     } else {
         table
     };
@@ -981,6 +992,9 @@ fn details(s: &State, k: &Kit) -> El {
             .child(field("Memory", &selected.memory))
             .child(field("Virtual CPUs", &selected.cpu));
     }
+    if s.page != Page::Guests || selected.vm.is_none() {
+        return detail;
+    }
     let mut actions = col().gap(8.0);
     if let Some(vm) = selected
         .vm
@@ -1243,8 +1257,18 @@ fn demo(s: &mut State) {
         coordinator: Some(host_ids[0]),
         hosts,
         vms,
-        storage: vec![],
-        networks: vec![],
+        storage: vec![xenadmin_core::Storage {
+            uuid: uuid::Uuid::from_u128(0x40000000000000000000000000000001),
+            name: "Demo storage".into(),
+            kind: "nfs".into(),
+            capacity_bytes: Some(2 << 40),
+            used_bytes: Some(512 << 30),
+        }],
+        networks: vec![xenadmin_core::Network {
+            uuid: uuid::Uuid::from_u128(0x50000000000000000000000000000001),
+            name: "Demo network".into(),
+            bridge: "xenbr0".into(),
+        }],
         revision: 1,
     }));
     s.page = Page::Guests;
