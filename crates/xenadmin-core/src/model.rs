@@ -81,8 +81,9 @@ pub struct Storage {
     pub uuid: Uuid,
     pub name: String,
     pub kind: String,
-    pub capacity_bytes: u64,
-    pub used_bytes: u64,
+    /// Unknown or unreported capacity, including XAPI's -1 sentinel, is None.
+    pub capacity_bytes: Option<u64>,
+    pub used_bytes: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

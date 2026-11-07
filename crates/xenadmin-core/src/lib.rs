@@ -41,6 +41,11 @@ pub enum Error {
     Coordinator(Endpoint),
     #[error("Invalid XAPI response: {0}")]
     Protocol(&'static str),
+    #[error("Invalid XAPI response: invalid inventory number in {field} (expected {expected})")]
+    InventoryNumber {
+        field: &'static str,
+        expected: &'static str,
+    },
     #[error("The configured certificate file cannot be read or decoded")]
     CertificateFile,
     #[error("The background runtime could not start")]

@@ -337,8 +337,8 @@ impl Store {
                         .and_then(Value::as_str)
                         .and_then(|r| host_refs.get(r))
                         .copied(),
-                    vcpus: number(value, "VCPUs_at_startup")?,
-                    memory_bytes: number(value, "memory_static_max")?,
+                    vcpus: number(value, "VCPUs_at_startup", "VM.VCPUs_at_startup")?,
+                    memory_bytes: number(value, "memory_static_max", "VM.memory_static_max")?,
                     is_template: value["is_a_template"].as_bool().unwrap_or(false),
                     is_snapshot: value["is_a_snapshot"].as_bool().unwrap_or(false),
                     is_control_domain: value["is_control_domain"].as_bool().unwrap_or(false),
@@ -353,8 +353,12 @@ impl Store {
                     .map_err(|_| Error::Protocol("invalid SR UUID"))?,
                 name: label(value),
                 kind: string(value, "type"),
-                capacity_bytes: number(value, "physical_size")?,
-                used_bytes: number(value, "physical_utilisation")?,
+                capacity_bytes: storage_number(value, "physical_size", "SR.physical_size")?,
+                used_bytes: storage_number(
+                    value,
+                    "physical_utilisation",
+                    "SR.physical_utilisation",
+                )?,
             });
         }
         let mut networks = Vec::new();
@@ -401,16 +405,33 @@ fn label(record: &Value) -> String {
         .unwrap_or("Unnamed")
         .into()
 }
-fn number(record: &Value, key: &str) -> Result<u64, Error> {
+fn integer(record: &Value, key: &str, field: &'static str) -> Result<Option<i64>, Error> {
+    let invalid = || Error::InventoryNumber {
+        field,
+        expected: "a signed 64-bit integer",
+    };
     match record.get(key) {
-        None | Some(Value::Null) => Ok(0),
-        Some(Value::Number(n)) => n
-            .as_u64()
-            .ok_or(Error::Protocol("invalid inventory number")),
-        Some(Value::String(n)) => n
-            .parse()
-            .map_err(|_| Error::Protocol("invalid inventory number")),
-        _ => Err(Error::Protocol("invalid inventory number")),
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n.as_i64().map(Some).ok_or_else(invalid),
+        Some(Value::String(n)) => n.parse::<i64>().map(Some).map_err(|_| invalid()),
+        _ => Err(invalid()),
+    }
+}
+fn number(record: &Value, key: &str, field: &'static str) -> Result<u64, Error> {
+    u64::try_from(integer(record, key, field)?.unwrap_or(0)).map_err(|_| Error::InventoryNumber {
+        field,
+        expected: "a non-negative integer",
+    })
+}
+fn storage_number(record: &Value, key: &str, field: &'static str) -> Result<Option<u64>, Error> {
+    match integer(record, key, field)? {
+        None | Some(-1) => Ok(None),
+        Some(value) => u64::try_from(value)
+            .map(Some)
+            .map_err(|_| Error::InventoryNumber {
+                field,
+                expected: "a non-negative integer or -1 for unknown",
+            }),
     }
 }
 
@@ -435,6 +456,66 @@ mod tests {
         let inventory = store.inventory().unwrap();
         assert_eq!(inventory.guests().count(), 1);
         assert_eq!(inventory.revision, 1);
+    }
+    #[test]
+    fn storage_unknown_sizes_do_not_prevent_inventory_bootstrap() {
+        for unknown in [json!(-1), json!("-1")] {
+            let mut batch = initial();
+            batch.events.push(
+                serde_json::from_value(json!({
+                    "class":"SR", "operation":"add", "ref":"OpaqueRef:sr",
+                    "snapshot":{"uuid":"00000000-0000-0000-0000-000000000003",
+                        "name_label":"Unscanned storage", "type":"iso",
+                        "physical_size":unknown, "physical_utilisation":unknown}
+                }))
+                .unwrap(),
+            );
+            let mut store = Store::default();
+            let inventory = store
+                .apply(&batch)
+                .expect("XAPI introduces SRs with -1 sizes");
+            assert_eq!(inventory.guests().count(), 1);
+            assert_eq!(inventory.storage.len(), 1);
+            assert_eq!(inventory.storage[0].capacity_bytes, None);
+            assert_eq!(inventory.storage[0].used_bytes, None);
+            batch.events.last_mut().unwrap().snapshot["physical_size"] = json!("9007199254740993");
+            batch.events.last_mut().unwrap().snapshot["physical_utilisation"] = json!(0);
+            let inventory = store.apply(&batch).unwrap();
+            assert_eq!(
+                inventory.storage[0].capacity_bytes,
+                Some(9_007_199_254_740_993)
+            );
+            assert_eq!(inventory.storage[0].used_bytes, Some(0));
+            for invalid in [json!(-2), json!(0.5), json!("bad-size")] {
+                batch.events.last_mut().unwrap().snapshot["physical_size"] = invalid;
+                assert!(
+                    store
+                        .apply(&batch)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("SR.physical_size")
+                );
+                assert_eq!(store.inventory().unwrap().revision, 2);
+            }
+        }
+    }
+    #[test]
+    fn malformed_numbers_identify_the_field_and_leave_inventory_unchanged() {
+        let mut store = Store::default();
+        store.apply(&initial()).unwrap();
+        for invalid in [
+            json!("not-a-number"),
+            json!(1.5),
+            json!(-2),
+            json!("9223372036854775808"),
+        ] {
+            let mut batch = initial();
+            batch.events[1].snapshot["memory_static_max"] = invalid;
+            let error = store.apply(&batch).unwrap_err().to_string();
+            assert!(error.contains("VM.memory_static_max"));
+            assert!(!error.contains("not-a-number"));
+            assert_eq!(store.inventory().unwrap().revision, 1);
+        }
     }
     #[test]
     fn unknown_power_states_survive_and_deletes_remove_objects() {

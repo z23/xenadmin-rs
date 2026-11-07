@@ -8,6 +8,7 @@ pub struct Preferences {
     pub username: String,
     pub fingerprint: String,
     pub host_certificates: String,
+    pub accept_invalid_certificates: bool,
     pub sidebar_width: f32,
     pub columns: BTreeMap<String, f32>,
 }
@@ -18,6 +19,7 @@ impl Default for Preferences {
             username: "root".into(),
             fingerprint: String::new(),
             host_certificates: String::new(),
+            accept_invalid_certificates: false,
             sidebar_width: 260.0,
             columns: BTreeMap::new(),
         }

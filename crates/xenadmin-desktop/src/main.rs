@@ -4,7 +4,7 @@ mod preferences;
 use preferences::Preferences;
 use rune::{AppSpec, Cx, El, Icon, TextEdit, Tx, Waker, col, el, icon, row, text};
 use rune_kit::{
-    Button, ButtonVariant, Cell, Kit, PaneState, SortDir, SplitView, Table, TableColumn,
+    Button, ButtonVariant, Cell, Checkbox, Kit, PaneState, SortDir, SplitView, Table, TableColumn,
     TableState, TextInput, Toolbar, Tree, TreeItem, TreeModel,
 };
 use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
@@ -92,6 +92,9 @@ struct State {
     password: TextEdit,
     fingerprint: TextEdit,
     host_certificates: TextEdit,
+    accept_invalid_certificates: bool,
+    active_insecure: bool,
+    show_certificate_details: bool,
     show_connect: bool,
     error: Option<String>,
     preferences: Preferences,
@@ -138,6 +141,9 @@ fn init() -> State {
         password: secure_field(),
         fingerprint: TextEdit::new(&preferences.fingerprint),
         host_certificates: TextEdit::new(&preferences.host_certificates),
+        accept_invalid_certificates: preferences.accept_invalid_certificates,
+        active_insecure: false,
+        show_certificate_details: false,
         show_connect: false,
         error: None,
         preferences,
@@ -220,7 +226,8 @@ impl State {
             let mut options = ConnectionOptions::new(
                 Endpoint::parse(&self.endpoint.text).map_err(|e| e.to_string())?,
             );
-            if !self.fingerprint.text.trim().is_empty() {
+            options.accept_invalid_certificates = self.accept_invalid_certificates;
+            if !self.accept_invalid_certificates && !self.fingerprint.text.trim().is_empty() {
                 options.certificate_fingerprint = Some(
                     self.fingerprint
                         .text
@@ -228,9 +235,11 @@ impl State {
                         .map_err(|e: xenadmin_core::Error| e.to_string())?,
                 );
             }
-            options
-                .add_host_certificates(&self.host_certificates.text)
-                .map_err(|error| error.to_string())?;
+            if !self.accept_invalid_certificates {
+                options
+                    .add_host_certificates(&self.host_certificates.text)
+                    .map_err(|error| error.to_string())?;
+            }
             let backend = self.backend.as_ref().map_err(Clone::clone)?;
             if self.username.text.trim().is_empty() || self.password.text.is_empty() {
                 return Err("Enter the host username and password.".into());
@@ -243,6 +252,7 @@ impl State {
                 connection.notify_on_change(waker.clone());
             }
             self.connection = Some(connection);
+            self.active_insecure = self.accept_invalid_certificates;
             self.snapshot = None;
             self.inventory = None;
             self.password = secure_field();
@@ -253,6 +263,7 @@ impl State {
             self.preferences.username = self.username.text.trim().into();
             self.preferences.fingerprint = self.fingerprint.text.trim().into();
             self.preferences.host_certificates = self.host_certificates.text.trim().into();
+            self.preferences.accept_invalid_certificates = self.accept_invalid_certificates;
             self.rebuild();
             self.save_preferences();
             Ok::<(), String>(())
@@ -383,9 +394,12 @@ impl State {
                         id: sr.uuid.to_string(),
                         name: sr.name.clone(),
                         state: sr.kind.clone(),
-                        location: format!("{} used", bytes(sr.used_bytes)),
+                        location: sr
+                            .used_bytes
+                            .map(|value| format!("{} used", storage_bytes(Some(value))))
+                            .unwrap_or_else(|| "Usage unknown".into()),
                         cpu: "—".into(),
-                        memory: bytes(sr.capacity_bytes),
+                        memory: storage_bytes(sr.capacity_bytes),
                         description: "Storage repository".into(),
                         vm: None,
                     });
@@ -513,6 +527,13 @@ fn bytes(value: u64) -> String {
         format!("{:.1} GiB", value as f64 / (1u64 << 30) as f64)
     } else {
         format!("{:.0} MiB", value as f64 / (1u64 << 20) as f64)
+    }
+}
+fn storage_bytes(value: Option<u64>) -> String {
+    match value {
+        None => "Unknown".into(),
+        Some(0) => "0 B".into(),
+        Some(value) => bytes(value),
     }
 }
 fn caption(value: impl Into<String>, k: &Kit) -> El {
@@ -674,7 +695,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             )
         },
     );
-    let status = if s.demo {
+    let mut status = if s.demo {
         "Demo inventory • no host connection".into()
     } else {
         match s.snapshot.as_ref().map(|snapshot| snapshot.state()) {
@@ -688,6 +709,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             _ => "No host connected".into(),
         }
     };
+    if !s.demo && s.connection.is_some() && s.active_insecure {
+        status.push_str(" • TLS verification disabled");
+    }
     let mut content = col()
         .w_full()
         .h_full()
@@ -1071,18 +1095,71 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
                 .build(k),
         )
     };
-    let dialog = col().w(480.0).max_h(620.0).scroll(rune::ScrollSpec{stick_bottom:false}).padding(24.0).gap(12.0).radius(12.0).fill(k.c.bg_base).border(1.0, k.c.border_weak)
-        .child(heading("Connect to XCP-ng", k)).child(caption("Use a host management address. Credentials go directly to that host over HTTPS.", k).wrap())
+    let mut dialog = col().w(480.0).max_h(620.0)
+        .scroll(rune::ScrollSpec { stick_bottom: false })
+        .padding(24.0).gap(12.0).radius(12.0).fill(k.c.bg_base).border(1.0, k.c.border_weak)
+        .child(heading("Connect to XCP-ng", k))
+        .child(caption("Use a host management address. Credentials go directly to that host over HTTPS.", k).wrap())
         .child(field("Host endpoint", &s.endpoint, |s| &mut s.endpoint, "https://xcp-host.example"))
         .child(field("Username", &s.username, |s| &mut s.username, "root"))
-        .child(col().gap(6.0).child(caption("Password • this session only", k)).child(TextInput::new(&s.password).secure().label("Password").placeholder("Host password").on_edit(|s: &mut State| &mut s.password).on_submit(|s: &mut State, _| s.connect()).build(k).key("password")))
-        .child(field("Certificate SHA-256 • optional", &s.fingerprint, |s| &mut s.fingerprint, "Verified fingerprint for a self-signed host"))
-        .child(caption("Leave the fingerprint empty for CA and hostname verification. Verify a fingerprint through a trusted channel before using it.", k).wrap())
-        .child(col().gap(6.0).child(caption("Other pool host certificates • optional",k))
-            .child(rune_kit::TextArea::new(&s.host_certificates).label("Additional host certificates").placeholder("One https://host=SHA256 entry per line").on_edit(|s:&mut State|&mut s.host_certificates).build(k).h(72.0)))
-        .child(if let Some(error) = &s.error { text(error.to_owned()).font(k.ty.text_small).color(k.c.danger.icon).wrap().role("alert") } else { el() })
-        .child(row().justify_end().gap(8.0).child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut State| { s.show_connect = false; s.password = secure_field(); }).build(k).key("cancel-connect"))
-            .child(Button::new("Connect").on_press(State::connect).build(k).key("connect")));
+        .child(col().gap(6.0).child(caption("Password • this session only", k))
+            .child(TextInput::new(&s.password).secure().label("Password").placeholder("Host password")
+                .on_edit(|s: &mut State| &mut s.password)
+                .on_submit(|s: &mut State, _| s.connect()).build(k).key("password")))
+        .child(Checkbox::new(s.accept_invalid_certificates)
+            .label("Disable certificate validation")
+            .on_toggle(|s: &mut State| s.accept_invalid_certificates = !s.accept_invalid_certificates)
+            .build(k).key("insecure-tls"))
+        .child(caption("Applies to this connection, coordinator redirects and consoles. Host identity is not verified.", k).wrap());
+    if !s.accept_invalid_certificates {
+        dialog = dialog.child(
+            Button::new("Certificate options")
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut State| s.show_certificate_details = !s.show_certificate_details)
+                .build(k)
+                .key("certificate-options"),
+        );
+    }
+    if !s.accept_invalid_certificates && s.show_certificate_details {
+        dialog = dialog
+            .child(field("Certificate SHA-256 • optional", &s.fingerprint, |s| &mut s.fingerprint, "Verified fingerprint for a self-signed host"))
+            .child(caption("Leave the fingerprint empty for CA and hostname verification. Verify a fingerprint through a trusted channel before using it.", k).wrap())
+            .child(col().gap(6.0).child(caption("Other pool host certificates • optional", k))
+                .child(rune_kit::TextArea::new(&s.host_certificates).label("Additional host certificates")
+                    .placeholder("One https://host=SHA256 entry per line")
+                    .on_edit(|s: &mut State| &mut s.host_certificates).build(k).h(72.0)));
+    }
+    dialog = dialog
+        .child(if let Some(error) = &s.error {
+            text(error.to_owned())
+                .font(k.ty.text_small)
+                .color(k.c.danger.icon)
+                .wrap()
+                .role("alert")
+        } else {
+            el()
+        })
+        .child(
+            row()
+                .justify_end()
+                .gap(8.0)
+                .child(
+                    Button::new("Cancel")
+                        .variant(ButtonVariant::Ghost)
+                        .on_press(|s: &mut State| {
+                            s.show_connect = false;
+                            s.password = secure_field();
+                        })
+                        .build(k)
+                        .key("cancel-connect"),
+                )
+                .child(
+                    Button::new("Connect")
+                        .on_press(State::connect)
+                        .build(k)
+                        .key("connect"),
+                ),
+        );
     el().key("connect-dialog")
         .role("dialog")
         .label("Connect to XCP-ng")
@@ -1177,7 +1254,14 @@ fn main() {
     let spec = AppSpec {
         setup: Some(setup),
         poll: Some(poll),
-        scenes: &[("demo", demo), ("connect", |s| s.show_connect = true)],
+        scenes: &[
+            ("demo", demo),
+            ("connect", |s| s.show_connect = true),
+            ("connect-insecure", |s| {
+                s.show_connect = true;
+                s.accept_invalid_certificates = true;
+            }),
+        ],
         min_size: Some((480.0, 640.0)),
         ..AppSpec::new("XenAdmin RS", (1440.0, 900.0), init, view)
     };
@@ -1200,6 +1284,59 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn connection_form_exposes_one_opt_out_and_keeps_verified_options_available() {
+        use rune::{Env, Runtime};
+        let mut state = init();
+        state.show_connect = true;
+        state.accept_invalid_certificates = false;
+        let mut rt = Runtime::new(
+            state,
+            view,
+            (1440.0, 900.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (x, y) = rt.find("insecure-tls").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert!(rt.state.accept_invalid_certificates);
+        assert!(rt.find("certificate-options").is_none());
+        assert!(
+            rt.accessibility_json()
+                .to_string()
+                .contains("coordinator redirects and consoles")
+        );
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (x, y) = rt.find("insecure-tls").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert!(!rt.state.accept_invalid_certificates);
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (x, y) = rt.find("certificate-options").unwrap();
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert!(rt.state.show_certificate_details);
+        assert!(
+            rt.accessibility_json()
+                .to_string()
+                .contains("Certificate SHA-256")
+        );
+        assert_eq!(storage_bytes(None), "Unknown");
+        assert_eq!(storage_bytes(Some(0)), "0 B");
+    }
     #[test]
     fn search_and_host_filter_select_matching_objects() {
         let mut s = init();

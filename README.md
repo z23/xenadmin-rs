@@ -17,6 +17,8 @@ Local protocol and TLS fixtures, Rune widget interactions, headless rendering, a
 window smoke test pass. **This build has not connected to a real XCP-ng host yet.**
 The first qualification target is XCP-ng 8.3 LTS on Linux x86-64.
 See the [actual results and remaining gaps](docs/reports/2026-11-07-alpha.md).
+Version 0.1.1 adds a connection-wide certificate-validation opt-out and fixes inventory
+bootstrap with unknown storage sizes; see the [connection fix report](docs/reports/2026-11-07-connection-fixes.md).
 
 ## Run it
 

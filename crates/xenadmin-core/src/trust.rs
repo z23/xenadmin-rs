@@ -138,6 +138,9 @@ pub struct ConnectionOptions {
     pub endpoint: Endpoint,
     pub ca_certificate: Option<PathBuf>,
     pub certificate_fingerprint: Option<CertificateFingerprint>,
+    /// Skip certificate identity/validity checks for this connection and its discovered endpoints.
+    /// Overrides pins and custom CA settings; HTTPS and handshake signatures remain enabled.
+    pub accept_invalid_certificates: bool,
     pub request_timeout: Duration,
     additional_pins: BTreeMap<String, CertificateFingerprint>,
 }
@@ -147,6 +150,7 @@ impl ConnectionOptions {
             endpoint,
             ca_certificate: None,
             certificate_fingerprint: None,
+            accept_invalid_certificates: false,
             request_timeout: Duration::from_secs(45),
             additional_pins: BTreeMap::new(),
         }
@@ -191,28 +195,33 @@ impl ConnectionOptions {
             .connect_timeout(Duration::from_secs(10))
             .timeout(self.request_timeout)
             .user_agent(concat!("xenadmin-rs/", env!("CARGO_PKG_VERSION")));
-        if let Some(path) = &self.ca_certificate {
+        if !self.accept_invalid_certificates
+            && let Some(path) = &self.ca_certificate
+        {
             let pem = std::fs::read(path).map_err(|_| Error::CertificateFile)?;
             builder = builder.add_root_certificate(
                 reqwest::Certificate::from_pem(&pem).map_err(|_| Error::CertificateFile)?,
             );
         }
-        if let Some(fingerprint) = &self.certificate_fingerprint {
-            let config = rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(PinVerifier(fingerprint.clone())))
-                .with_no_client_auth();
-            builder = builder.use_preconfigured_tls(config);
+        if self.accept_invalid_certificates || self.certificate_fingerprint.is_some() {
+            builder = builder.use_preconfigured_tls(self.tls_config()?);
         }
         builder.build().map_err(|_| Error::Transport)
     }
 
     pub(crate) fn tls_config(&self) -> Result<rustls::ClientConfig, Error> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        if let Some(fingerprint) = &self.certificate_fingerprint {
+        let verifier = if self.accept_invalid_certificates {
+            Some(CertificateVerifier::Unverified)
+        } else {
+            self.certificate_fingerprint
+                .clone()
+                .map(CertificateVerifier::Pinned)
+        };
+        if let Some(verifier) = verifier {
             return Ok(rustls::ClientConfig::builder()
                 .dangerous()
-                .with_custom_certificate_verifier(Arc::new(PinVerifier(fingerprint.clone())))
+                .with_custom_certificate_verifier(Arc::new(verifier))
                 .with_no_client_auth());
         }
         let mut roots = rustls::RootCertStore::empty();
@@ -234,8 +243,11 @@ impl ConnectionOptions {
 }
 
 #[derive(Debug)]
-struct PinVerifier(CertificateFingerprint);
-impl ServerCertVerifier for PinVerifier {
+enum CertificateVerifier {
+    Pinned(CertificateFingerprint),
+    Unverified,
+}
+impl ServerCertVerifier for CertificateVerifier {
     fn verify_server_cert(
         &self,
         cert: &CertificateDer<'_>,
@@ -244,7 +256,10 @@ impl ServerCertVerifier for PinVerifier {
         _: &[u8],
         _: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if Sha256::digest(cert.as_ref()).as_slice() == self.0.0 {
+        if match self {
+            Self::Unverified => true,
+            Self::Pinned(fingerprint) => Sha256::digest(cert.as_ref()).as_slice() == fingerprint.0,
+        } {
             Ok(ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::InvalidCertificate(

@@ -16,6 +16,9 @@ struct Args {
     /// Verified SHA-256 fingerprint of this endpoint's certificate.
     #[arg(long)]
     cert_sha256: Option<CertificateFingerprint>,
+    /// Disable certificate validation for the initial host, coordinator redirects and consoles.
+    #[arg(long)]
+    insecure: bool,
     /// Additional trusted host certificate, as https://host=SHA256. May be repeated.
     #[arg(long)]
     host_cert: Vec<String>,
@@ -35,7 +38,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut options = ConnectionOptions::new(Endpoint::parse(&args.endpoint)?);
     options.ca_certificate = args.ca_cert;
     options.certificate_fingerprint = args.cert_sha256;
-    options.add_host_certificates(&args.host_cert.join("\n"))?;
+    options.accept_invalid_certificates = args.insecure;
+    if args.insecure {
+        eprintln!(
+            "Certificate validation is disabled for this connection and coordinator redirects"
+        );
+    }
+    if !args.insecure {
+        options.add_host_certificates(&args.host_cert.join("\n"))?;
+    }
     let password = if args.password_stdin {
         let mut password = String::new();
         std::io::stdin().read_line(&mut password)?;

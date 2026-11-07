@@ -47,13 +47,18 @@ other GPUs, software rendering, and clean-distribution installation remain to be
 
 1. Click **Add connection**.
 2. Enter a host management URL, username, and password.
-3. Use normal CA verification, or enter a certificate SHA-256 fingerprint verified through
+3. Leave **Disable certificate validation** unchecked for normal CA verification. Under
+   **Certificate options**, you can enter a certificate SHA-256 fingerprint verified through
    a separate trusted channel. Certificate pins apply to exact endpoints, including ports.
-4. If the pool's other hosts use self-signed certificates, add their verified pins as
+4. To bypass certificate validation, check **Disable certificate validation** once. This
+   applies to the initial member, coordinator redirects, and consoles for that connection.
+   HTTPS remains enabled, but certificate identity and validity checks are skipped. The
+   choice is remembered with the last endpoint and shown in the connection status.
+5. With validation enabled, if other pool hosts use self-signed certificates, add their verified pins as
    `https://host=SHA256` entries, one per line. Coordinator redirects and console tunnels
    verify their destination independently.
-5. Click **Connect** and wait for current inventory.
-6. Select a VM. Use the available power controls or click **Open console**.
+6. Click **Connect** and wait for current inventory.
+7. Select a VM. Use the available power controls or click **Open console**.
 
 The password stays in the running session. The current build remembers the last endpoint,
 username, accepted pins, sidebar width, and column widths. It does not save passwords or
@@ -77,6 +82,8 @@ standard input for an existing secret-manager command. Do not put passwords in a
 Use `--ca-cert PATH` for a private CA, `--cert-sha256 HEX` for the initial endpoint, and
 repeat `--host-cert https://member=HEX` for other verified pool endpoints. `--watch SECONDS`
 observes inventory after the first synchronization.
+`--insecure` disables certificate validation for the entire connection, including coordinator
+redirects. It overrides certificate pins and custom CA settings.
 
 ## Local state
 
