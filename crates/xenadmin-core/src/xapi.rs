@@ -219,16 +219,33 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    pub(crate) fn allows(&self, vm: VmId, action: crate::PowerAction) -> bool {
+    pub(crate) fn allows(&self, vm: VmId, action: &crate::OperationAction) -> bool {
         self.class("vm")
             .find(|(_, value)| value["uuid"].as_str() == Some(vm.to_string().as_str()))
             .is_some_and(|(_, value)| {
                 value["is_control_domain"] != true
                     && value["is_a_template"] != true
                     && value["is_a_snapshot"] != true
-                    && value["allowed_operations"]
-                        .as_array()
-                        .is_some_and(|operations| operations.iter().any(|v| v == action.wire()))
+                    && match action {
+                        crate::OperationAction::Power(action) => advertises(value, action.wire()),
+                        crate::OperationAction::Snapshot(crate::SnapshotOperation::Create {
+                            ..
+                        }) => advertises(value, "snapshot"),
+                        crate::OperationAction::Snapshot(crate::SnapshotOperation::Revert {
+                            snapshot,
+                        }) => {
+                            value["power_state"] == "Halted"
+                                && self.class("vm").any(|(reference, candidate)| {
+                                    candidate["uuid"].as_str()
+                                        == Some(snapshot.to_string().as_str())
+                                        && candidate["is_a_snapshot"] == true
+                                        && candidate["snapshot_of"].as_str()
+                                            == self.vm_reference(vm).as_deref()
+                                        && reference != "OpaqueRef:NULL"
+                                        && advertises(candidate, "revert")
+                                })
+                        }
+                    }
             })
     }
     pub(crate) fn vm_reference(&self, id: VmId) -> Option<String> {
@@ -305,20 +322,63 @@ impl Store {
             .and_then(Value::as_str)
             .and_then(|r| host_refs.get(r))
             .copied();
+        let mut vm_refs = BTreeMap::new();
+        for (reference, value) in self
+            .class("vm")
+            .filter(|(_, value)| value["is_a_snapshot"] != true)
+        {
+            vm_refs.insert(
+                reference.as_str(),
+                VmId::parse(required(value, "uuid")?)
+                    .map_err(|_| Error::Protocol("invalid VM UUID"))?,
+            );
+        }
         let mut vms = BTreeMap::new();
+        let mut snapshots = crate::SnapshotInventory::default();
         for (_, value) in self.class("vm") {
+            if value["is_a_snapshot"] == true {
+                let allowed = |operation: &str| {
+                    value["allowed_operations"]
+                        .as_array()
+                        .is_some_and(|items| items.iter().any(|item| item == operation))
+                };
+                let mut actions = Vec::new();
+                if allowed("revert") {
+                    actions.push(crate::SnapshotAction::Revert);
+                }
+                if allowed("destroy") || allowed("hard_shutdown") {
+                    actions.push(crate::SnapshotAction::Delete);
+                }
+                if allowed("clone") {
+                    actions.push(crate::SnapshotAction::Clone);
+                }
+                snapshots.insert(crate::Snapshot {
+                    id: crate::SnapshotId::parse(required(value, "uuid")?)
+                        .map_err(|_| Error::Protocol("invalid snapshot UUID"))?,
+                    vm: value["snapshot_of"]
+                        .as_str()
+                        .and_then(|reference| vm_refs.get(reference))
+                        .copied(),
+                    name: label(value),
+                    description: string(value, "name_description"),
+                    created_at: value["snapshot_time"]
+                        .as_str()
+                        .filter(|time| !time.is_empty())
+                        .map(str::to_owned),
+                    power_state: decode_power_state(value)?,
+                    allowed_actions: actions,
+                });
+                continue;
+            }
             let id = VmId::parse(required(value, "uuid")?)
                 .map_err(|_| Error::Protocol("invalid VM UUID"))?;
-            let power_state = match required(value, "power_state")? {
-                "Running" => PowerState::Running,
-                "Halted" => PowerState::Halted,
-                "Paused" => PowerState::Paused,
-                "Suspended" => PowerState::Suspended,
-                other => PowerState::Unknown(other.into()),
-            };
+            let power_state = decode_power_state(value)?;
             vms.insert(
                 id,
                 Vm {
+                    can_snapshot: value["allowed_operations"]
+                        .as_array()
+                        .is_some_and(|items| items.iter().any(|item| item == "snapshot")),
                     allowed_actions: crate::PowerAction::ALL
                         .into_iter()
                         .filter(|action| {
@@ -341,7 +401,6 @@ impl Store {
                     vcpus: number(value, "VCPUs_at_startup", "VM.VCPUs_at_startup")?,
                     memory_bytes: number(value, "memory_static_max", "VM.memory_static_max")?,
                     is_template: value["is_a_template"].as_bool().unwrap_or(false),
-                    is_snapshot: value["is_a_snapshot"].as_bool().unwrap_or(false),
                     is_control_domain: value["is_control_domain"].as_bool().unwrap_or(false),
                 },
             );
@@ -378,11 +437,159 @@ impl Store {
             coordinator,
             hosts,
             vms,
+            snapshots,
             storage,
             networks,
             revision: self.revision,
         })
     }
+}
+
+fn advertises(record: &Value, action: &str) -> bool {
+    record["allowed_operations"]
+        .as_array()
+        .is_some_and(|operations| operations.iter().any(|value| value == action))
+}
+
+pub(crate) async fn prepare_mutation(
+    session: &Session,
+    operation: &crate::OperationRecord,
+    parent: String,
+) -> Result<String, Error> {
+    use crate::{OperationAction, SnapshotOperation};
+    if matches!(operation.action, OperationAction::Power(_)) {
+        return Ok(parent);
+    }
+    let record = session.call("VM.get_record", vec![json!(&parent)]).await?;
+    if record["uuid"].as_str() != Some(operation.vm.to_string().as_str())
+        || record["is_a_snapshot"] != false
+        || record["is_a_template"] != false
+        || record["is_control_domain"] != false
+    {
+        return Err(Error::Stale);
+    }
+    match &operation.action {
+        OperationAction::Snapshot(SnapshotOperation::Create { name }) => {
+            crate::SnapshotName::new(name)?;
+            if !advertises(&record, "snapshot") {
+                return Err(Error::UnavailableAction);
+            }
+            Ok(parent)
+        }
+        OperationAction::Snapshot(SnapshotOperation::Revert { snapshot }) => {
+            if record["power_state"] != "Halted" {
+                return Err(Error::SnapshotRequiresHaltedVm);
+            }
+            let reference = session
+                .call("VM.get_by_uuid", vec![json!(snapshot.to_string())])
+                .await?;
+            let reference = opaque_reference(&reference)?;
+            let candidate = session
+                .call("VM.get_record", vec![json!(&reference)])
+                .await?;
+            if candidate["uuid"].as_str() != Some(snapshot.to_string().as_str())
+                || candidate["is_a_snapshot"] != true
+                || candidate["is_control_domain"] != false
+                || candidate["snapshot_of"].as_str() != Some(&parent)
+            {
+                return Err(Error::Stale);
+            }
+            if !advertises(&candidate, "revert") {
+                return Err(Error::UnavailableAction);
+            }
+            Ok(reference)
+        }
+        OperationAction::Power(_) => unreachable!(),
+    }
+}
+
+fn opaque_reference(value: &Value) -> Result<String, Error> {
+    value
+        .as_str()
+        .filter(|value| {
+            value.starts_with("OpaqueRef:")
+                && *value != "OpaqueRef:NULL"
+                && value.len() > "OpaqueRef:".len()
+                && value.len() <= 1024
+                && value.bytes().all(|byte| byte.is_ascii_graphic())
+        })
+        .map(str::to_owned)
+        .ok_or(Error::Protocol("invalid object reference"))
+}
+
+pub(crate) fn snapshot_task_result(task: &Value) -> Result<String, Error> {
+    let xml = task["result"]
+        .as_str()
+        .filter(|value| value.len() <= 4096)
+        .ok_or(Error::Protocol("missing or oversized snapshot result"))?;
+    let doc = roxmltree::Document::parse_with_options(
+        xml,
+        roxmltree::ParsingOptions {
+            allow_dtd: false,
+            nodes_limit: 16,
+        },
+    )
+    .map_err(|_| Error::Protocol("invalid snapshot result XML"))?;
+    let root = doc.root_element();
+    let children: Vec<_> = root.children().filter(|node| node.is_element()).collect();
+    if root.tag_name().name() != "value" || root.attributes().len() != 0 {
+        return Err(Error::Protocol("invalid snapshot result value"));
+    }
+    let content = match children.as_slice() {
+        [] => root.text(),
+        [child]
+            if child.tag_name().name() == "string"
+                && child.attributes().len() == 0
+                && !child.children().any(|node| node.is_element())
+                && root
+                    .children()
+                    .filter(|node| node.is_text())
+                    .all(|node| node.text().unwrap_or("").trim().is_empty()) =>
+        {
+            child.text()
+        }
+        _ => None,
+    }
+    .ok_or(Error::Protocol("invalid snapshot result value"))?;
+    opaque_reference(&json!(content))
+}
+
+pub(crate) async fn verify_created_snapshot(
+    session: &Session,
+    vm: VmId,
+    reference: &str,
+) -> Result<crate::SnapshotId, Error> {
+    let parent = session
+        .call("VM.get_by_uuid", vec![json!(vm.to_string())])
+        .await?;
+    let parent = opaque_reference(&parent)?;
+    let result = session
+        .call("VM.get_record", vec![json!(reference)])
+        .await?;
+    let id = result["uuid"]
+        .as_str()
+        .and_then(|value| crate::SnapshotId::parse(value).ok())
+        .ok_or(Error::Protocol("invalid created snapshot UUID"))?;
+    if result["is_a_snapshot"] != true
+        || result["is_control_domain"] != false
+        || result["snapshot_of"].as_str() != Some(&parent)
+        || id.to_string() == vm.to_string()
+    {
+        return Err(Error::Protocol(
+            "snapshot result does not belong to the selected VM",
+        ));
+    }
+    Ok(id)
+}
+
+fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
+    Ok(match required(record, "power_state")? {
+        "Running" => PowerState::Running,
+        "Halted" => PowerState::Halted,
+        "Paused" => PowerState::Paused,
+        "Suspended" => PowerState::Suspended,
+        other => PowerState::Unknown(other.into()),
+    })
 }
 
 fn required<'a>(record: &'a Value, key: &str) -> Result<&'a str, Error> {
@@ -439,6 +646,55 @@ fn storage_number(record: &Value, key: &str, field: &'static str) -> Result<Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_results_require_one_bounded_xml_value_and_a_non_null_reference() {
+        for xml in [
+            "<value>OpaqueRef:snapshot</value>",
+            "<value><string>OpaqueRef:snapshot</string></value>",
+        ] {
+            assert_eq!(
+                snapshot_task_result(&json!({"result":xml})).unwrap(),
+                "OpaqueRef:snapshot"
+            );
+        }
+        for xml in [
+            "OpaqueRef:snapshot",
+            "<value>OpaqueRef:NULL</value>",
+            "<value>OpaqueRef:</value>",
+            "<value><string>OpaqueRef:first</string><string>OpaqueRef:second</string></value>",
+            "<value>extra<string>OpaqueRef:snapshot</string></value>",
+            "<!DOCTYPE value [<!ENTITY ref 'OpaqueRef:secret'>]><value>&ref;</value>",
+            &format!("<value>{}</value>", "x".repeat(4096)),
+        ] {
+            assert!(
+                snapshot_task_result(&json!({"result":xml})).is_err(),
+                "accepted malformed task result"
+            );
+        }
+    }
+    #[test]
+    fn snapshot_inventory_rebuilds_relationships_atomically_and_excludes_snapshots_from_vms() {
+        let mut store = Store::default();
+        let mut batch = initial();
+        batch.events.insert(0, serde_json::from_value(json!({"class":"VM","operation":"add","ref":"OpaqueRef:s","snapshot":{"uuid":"00000000-0000-0000-0000-000000000003","name_label":"Before update","is_a_snapshot":true,"is_a_template":true,"snapshot_of":"OpaqueRef:v","power_state":"Halted","allowed_operations":["revert"]}})).unwrap());
+        let inventory = store.apply(&batch).unwrap();
+        let vm = inventory.guests().next().unwrap().id;
+        assert_eq!(inventory.vms.len(), 1);
+        assert_eq!(inventory.snapshots.for_vm(vm).count(), 1);
+        let serialized = serde_json::to_string(&inventory).unwrap();
+        let decoded: Inventory = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(decoded.snapshots.for_vm(vm).count(), 1);
+        let orphan = serde_json::from_value(
+            json!({"token":"two","events":[{"class":"VM","operation":"del","ref":"OpaqueRef:v"}]}),
+        )
+        .unwrap();
+        let inventory = store.apply(&orphan).unwrap();
+        assert!(inventory.vms.is_empty());
+        assert_eq!(inventory.snapshots.len(), 1);
+        assert!(inventory.snapshots.iter().next().unwrap().vm.is_none());
+        let deleted = serde_json::from_value(json!({"token":"three","events":[{"class":"VM","operation":"del","ref":"OpaqueRef:s"}]})).unwrap();
+        assert!(store.apply(&deleted).unwrap().snapshots.is_empty());
+    }
     fn initial() -> EventBatch {
         serde_json::from_value(json!({"token":"one", "events":[
             {"class":"pool","operation":"add","ref":"OpaqueRef:p","snapshot":{"uuid":"00000000-0000-0000-0000-000000000001","name_label":"Lab"}},

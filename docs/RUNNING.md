@@ -77,6 +77,27 @@ an explicit acknowledgement after you inspect the host and stop other instances 
 the operation. This releases the local block; the result remains unverified and any host
 task may still continue. Close older application versions before using the updated journal.
 
+## Manage VM snapshots
+
+Select a virtual machine and choose **Snapshots** in Details. The view lists snapshots
+from the same direct XAPI inventory, with their names, creation times and UUIDs.
+**Create snapshot** takes a name and captures disks/configuration without guest memory
+or application quiescing. Shut down the guest or quiesce its applications first if the
+workload requires application-consistent data. The host controls snapshot capability.
+
+To restore, shut down the VM, select a snapshot and choose **Restore snapshot**. Review
+both UUIDs before confirming: restoration replaces the configuration and disk contents,
+and newer changes are lost. The backend rechecks the halted state, snapshot identity and
+parent relationship immediately before dispatch. It does not automatically start or resume
+the restored VM. Inspect its resulting state and use the appropriate power action.
+
+Snapshot actions share the operation history, cancellation and unknown-outcome handling
+above. A successful create is reported only after verifying the returned snapshot identity.
+A lost reply never causes automatic recreation. The demo previews both dialogs but cannot
+confirm host changes. Snapshot deletion, clone-to-VM, quiesced snapshots and memory-checkpoint
+creation are not included in this increment. Snapshot writes are fixture-verified; live
+qualification requires an explicitly designated disposable lab.
+
 ## Use the read-only host probe
 
 ```sh

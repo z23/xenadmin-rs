@@ -11,7 +11,7 @@ The client requires a reachable XAPI service and the user's host permissions.
 
 Development alpha. The Cargo workspace builds a Rune desktop application and a read-only
 host probe. It implements direct XAPI login, event inventory, VM power tasks, durable
-operation tracking, and an embedded RFB console. No Xen Orchestra service is used.
+operation tracking, snapshot listing/creation/restore, and an embedded RFB console. No Xen Orchestra service is used.
 
 Local protocol and TLS fixtures, Rune widget interactions, headless rendering, and a native
 window smoke test pass. **Successful live-host qualification is pending.**
@@ -21,6 +21,8 @@ Version 0.1.1 adds a connection-wide certificate-validation opt-out and fixes in
 bootstrap with unknown storage sizes; see the [connection fix report](docs/reports/2026-11-07-connection-fixes.md).
 Version 0.1.2 strengthens interrupted-operation recovery and adds resume/unpause controls;
 see the [recovery foundation report](docs/reports/2026-11-07-recovery-foundation.md).
+Version 0.2.0 adds per-VM snapshot views, disk-snapshot creation, and guarded restore;
+see the [snapshot report](docs/reports/2026-11-07-snapshots.md) and [feature comparison](docs/PARITY.md).
 
 ## Run it
 
@@ -55,7 +57,7 @@ checks; `./scripts/package.sh` builds a release archive under `artifacts/`.
 
 The recovery release acceptance gate is to locate, start, and use the console of an XO VM
 with XO unreachable. This requires a designated disposable lab and authorized test scope.
-Later releases add creation, snapshots, migration, storage and network administration,
+Later releases extend snapshot workflows and add VM creation, migration, storage and network administration,
 metrics, and import and export.
 
 ## Development

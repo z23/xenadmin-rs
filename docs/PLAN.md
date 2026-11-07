@@ -26,7 +26,9 @@ workflow list. [Architecture](ARCHITECTURE.md) owns the implementation boundarie
 ## Current state
 
 A development alpha implements the Rune shell, direct JSON-RPC session and event inventory,
-VM power operations with a durable journal, and an embedded console adapter. Local protocol,
+VM power operations with a durable journal, and an embedded console adapter. A later
+[snapshot increment](reports/2026-11-07-snapshots.md) adds listing, disk-snapshot creation
+and halted-VM restore through that same journal. Local protocol,
 TLS, RFB, and Rune interaction fixtures exercise these paths. A native window smoke test and
 a local release archive have also run. See the [alpha report](reports/2026-11-07-alpha.md).
 

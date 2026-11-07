@@ -13,3 +13,8 @@ target/debug/xenadmin-rs --snap artifacts/demo.png --tree artifacts/demo.json --
 target/debug/xenadmin-rs --snap artifacts/connect.png --tree artifacts/connect.json --scene connect --theme dark --size 1440x900 --scale 1
 target/debug/xenadmin-rs --snap artifacts/compact.png --tree artifacts/compact.json --scene demo --theme dark --size 513x652 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/connect-insecure.png --tree artifacts/connect-insecure.json --scene connect-insecure --theme dark --size 513x652 --scale 1 --at 1
+
+target/debug/xenadmin-rs --snap artifacts/snapshots.png --tree artifacts/snapshots.json --scene snapshots --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/snapshot-create.png --tree artifacts/snapshot-create.json --scene snapshot-create --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/snapshot-restore.png --tree artifacts/snapshot-restore.json --scene snapshot-restore --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/snapshots-compact.png --tree artifacts/snapshots-compact.json --scene snapshots --theme dark --size 513x652 --scale 1 --at 1

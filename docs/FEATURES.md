@@ -1,7 +1,8 @@
 # Feature scope
 
 This table defines target workflow coverage. The [alpha report](reports/2026-11-07-alpha.md)
-records the implemented subset and its limitations. No complete milestone has passed its
+records the initial implemented subset and its limitations; the
+[snapshot report](reports/2026-11-07-snapshots.md) records the 0.2.0 extension. No complete milestone has passed its
 live-host acceptance gate. A milestone becomes complete only when its acceptance evidence
 is recorded in [verification](VERIFICATION.md).
 Milestone order and dependencies are defined in the [implementation plan](PLAN.md).

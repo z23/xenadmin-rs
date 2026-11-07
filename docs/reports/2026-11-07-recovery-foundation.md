@@ -36,6 +36,11 @@ ordering, late evidence, old-schema migration, more than 128 recovery records, t
 task reads, long-poll continuity, recovered cancellation, coordinator change, power recovery,
 terminal-write failure and read-only admission. No live mutation is claimed by these results.
 
+[Ubuntu 24.04 CI](https://github.com/z23/xenadmin-rs/actions/runs/42370080881) passed the same
+checks for source `4f18f6aa8afc3e91553a27fdd31dae524085cab9`. The local 0.1.2 archive is
+`artifacts/xenadmin-rs-0.1.2-linux-x86_64.tar.gz`, SHA-256
+`ae0ead2ed649e1dfb367a96c46812a845f640c14262598f6b2914915806dbd21`.
+
 The whole-batch inventory rejection remains intentional: silently dropping a malformed
 required record would break the coherent-inventory contract. More schema qualification,
 endpoint failover, full console input coverage and performance measurements remain open.

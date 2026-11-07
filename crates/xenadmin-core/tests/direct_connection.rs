@@ -265,10 +265,12 @@ async fn session_expiry_resynchronizes_in_a_new_generation() {
     .unwrap();
     assert_eq!(server.logins.load(Ordering::SeqCst), 2);
     assert!(matches!(
-        connection.power_action(
+        connection.submit(
             xenadmin_core::OperationId::new(),
-            observed,
-            xenadmin_core::PowerAction::Start
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: xenadmin_core::PowerAction::Start
+            }
         ),
         Err(xenadmin_core::Error::Stale)
     ));
@@ -297,10 +299,12 @@ async fn a_vm_observation_cannot_be_used_in_another_pool_with_the_same_vm_uuid()
         .observe_vm(inventory_a.guests().next().unwrap().id)
         .unwrap();
     assert!(matches!(
-        b.power_action(
+        b.submit(
             xenadmin_core::OperationId::new(),
-            observed,
-            xenadmin_core::PowerAction::Start
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: xenadmin_core::PowerAction::Start
+            }
         ),
         Err(xenadmin_core::Error::Stale)
     ));
@@ -333,10 +337,12 @@ async fn reconnecting_the_same_pool_rejects_the_previous_connection_observation(
         inventory.pool_id
     );
     assert!(matches!(
-        b.power_action(
+        b.submit(
             xenadmin_core::OperationId::new(),
-            observed,
-            xenadmin_core::PowerAction::Start
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: xenadmin_core::PowerAction::Start
+            }
         ),
         Err(xenadmin_core::Error::Stale)
     ));
@@ -542,9 +548,25 @@ async fn power_action_tracks_the_host_task_and_deduplicates_submission() {
         .observe_vm(inventory.guests().next().unwrap().id)
         .unwrap();
     let id = OperationId::new();
-    let operation = connection.power_action(id, vm, PowerAction::Start).unwrap();
+    let operation = connection
+        .submit(
+            id,
+            xenadmin_core::VmCommand::Power {
+                vm,
+                action: PowerAction::Start,
+            },
+        )
+        .unwrap();
     assert_eq!(finish(&operation).await, OperationState::Succeeded);
-    let duplicate = connection.power_action(id, vm, PowerAction::Start).unwrap();
+    let duplicate = connection
+        .submit(
+            id,
+            xenadmin_core::VmCommand::Power {
+                vm,
+                action: PowerAction::Start,
+            },
+        )
+        .unwrap();
     assert_eq!(finish(&duplicate).await, OperationState::Succeeded);
     assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
     let database = std::fs::read(directory.path().join("operations.sqlite3")).unwrap();
@@ -577,11 +599,23 @@ async fn lost_mutation_reply_remains_unknown_and_blocks_a_second_mutation() {
         .observe_vm(inventory.guests().next().unwrap().id)
         .unwrap();
     let operation = connection
-        .power_action(OperationId::new(), vm, PowerAction::Start)
+        .submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Power {
+                vm,
+                action: PowerAction::Start,
+            },
+        )
         .unwrap();
     assert_eq!(finish(&operation).await, OperationState::OutcomeUnknown);
     let second = connection
-        .power_action(OperationId::new(), vm, PowerAction::Start)
+        .submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Power {
+                vm,
+                action: PowerAction::Start,
+            },
+        )
         .unwrap();
     assert_eq!(finish(&second).await, OperationState::Rejected);
     assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
@@ -647,10 +681,12 @@ async fn task_progress_does_not_cancel_the_inventory_long_poll() {
     let vm = inventory.guests().next().unwrap().id;
     let observed = connection.latest().observe_vm(vm).unwrap();
     let _operation = connection
-        .power_action(
+        .submit(
             xenadmin_core::OperationId::new(),
-            observed,
-            xenadmin_core::PowerAction::Start,
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: xenadmin_core::PowerAction::Start,
+            },
         )
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -706,10 +742,12 @@ async fn a_transient_task_read_failure_does_not_abandon_the_task_or_repeat_the_m
         .observe_vm(inventory.guests().next().unwrap().id)
         .unwrap();
     let operation = connection
-        .power_action(
+        .submit(
             xenadmin_core::OperationId::new(),
-            observed,
-            xenadmin_core::PowerAction::Start,
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: xenadmin_core::PowerAction::Start,
+            },
         )
         .unwrap();
     assert_eq!(
@@ -737,10 +775,12 @@ async fn failed_tasks_show_the_safe_host_error_code_and_are_cleaned_up() {
         .observe_vm(inventory.guests().next().unwrap().id)
         .unwrap();
     let operation = connection
-        .power_action(
+        .submit(
             xenadmin_core::OperationId::new(),
-            observed,
-            xenadmin_core::PowerAction::Start,
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: xenadmin_core::PowerAction::Start,
+            },
         )
         .unwrap();
     assert_eq!(
@@ -799,10 +839,12 @@ async fn suspended_and_paused_guests_have_nondestructive_recovery_actions() {
         let vm = inventory.guests().next().unwrap();
         assert_eq!(vm.allowed_actions, vec![action]);
         let operation = connection
-            .power_action(
+            .submit(
                 OperationId::new(),
-                connection.latest().observe_vm(vm.id).unwrap(),
-                action,
+                xenadmin_core::VmCommand::Power {
+                    vm: connection.latest().observe_vm(vm.id).unwrap(),
+                    action,
+                },
             )
             .unwrap();
         assert_eq!(finish(&operation).await, OperationState::Succeeded);
@@ -897,13 +939,15 @@ async fn cancellation_after_reconnect_reaches_the_recovered_task() {
     let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
     let id = OperationId::new();
     let old = connection
-        .power_action(
+        .submit(
             id,
-            connection
-                .latest()
-                .observe_vm(inventory.guests().next().unwrap().id)
-                .unwrap(),
-            PowerAction::Start,
+            xenadmin_core::VmCommand::Power {
+                vm: connection
+                    .latest()
+                    .observe_vm(inventory.guests().next().unwrap().id)
+                    .unwrap(),
+                action: PowerAction::Start,
+            },
         )
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -974,18 +1018,36 @@ async fn terminal_persistence_failure_is_visible_and_keeps_the_vm_reserved() {
         .observe_vm(inventory.guests().next().unwrap().id)
         .unwrap();
     let first = connection
-        .power_action(OperationId::new(), observed, PowerAction::Start)
+        .submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: PowerAction::Start,
+            },
+        )
         .unwrap();
     assert_eq!(finish(&first).await, OperationState::Succeeded);
     let database = rusqlite::Connection::open(directory.path().join("operations.sqlite3")).unwrap();
     database.execute_batch("CREATE TRIGGER fail_terminal BEFORE UPDATE ON operations WHEN NEW.terminal=1 BEGIN SELECT RAISE(ABORT,'injected write failure'); END;").unwrap();
     let operation = connection
-        .power_action(OperationId::new(), observed, PowerAction::Start)
+        .submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: PowerAction::Start,
+            },
+        )
         .unwrap();
     assert_eq!(finish(&operation).await, OperationState::OutcomeUnknown);
     assert!(!operation.latest().state.terminal());
     let another = connection
-        .power_action(OperationId::new(), observed, PowerAction::Start)
+        .submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: PowerAction::Start,
+            },
+        )
         .unwrap();
     assert_eq!(finish(&another).await, OperationState::Rejected);
     assert_eq!(server.mutations.load(Ordering::SeqCst), 2);
@@ -1012,10 +1074,12 @@ async fn read_only_connections_do_not_open_the_journal_or_admit_mutations() {
         .observe_vm(inventory.guests().next().unwrap().id)
         .unwrap();
     assert!(matches!(
-        connection.power_action(
+        connection.submit(
             xenadmin_core::OperationId::new(),
-            observed,
-            xenadmin_core::PowerAction::Start
+            xenadmin_core::VmCommand::Power {
+                vm: observed,
+                action: xenadmin_core::PowerAction::Start
+            }
         ),
         Err(xenadmin_core::Error::ReadOnly)
     ));
@@ -1034,4 +1098,393 @@ async fn read_only_connections_do_not_open_the_journal_or_admit_mutations() {
     ));
     assert_eq!(server.mutations.load(Ordering::SeqCst), 0);
     connection.close().await;
+}
+
+const SNAPSHOT_UUID: &str = "55555555-5555-5555-5555-555555555555";
+const CREATED_UUID: &str = "66666666-6666-6666-6666-666666666666";
+const GUEST_UUID: &str = "33333333-3333-3333-3333-333333333333";
+#[derive(Default)]
+struct SnapshotFaults {
+    running_on_preflight: bool,
+    reparent_on_preflight: bool,
+    wrong_created_parent: bool,
+    drop_create_reply: bool,
+    stop_verification: bool,
+    created: bool,
+}
+fn snapshot_record(created: bool) -> Value {
+    json!({"uuid":if created {CREATED_UUID} else {SNAPSHOT_UUID},"name_label":"Before upgrade","name_description":"Fixture disk snapshot","is_a_snapshot":true,"is_a_template":false,"is_control_domain":false,"snapshot_of":"OpaqueRef:vm","snapshot_time":"20261107T10:00:00Z","power_state":"Halted","allowed_operations":["revert","destroy","clone"]})
+}
+async fn snapshot_mock(faults: Arc<Mutex<SnapshotFaults>>, calls: Arc<Mutex<Vec<Value>>>) -> Mock {
+    mock_overridden(override_rpc(move |request| {
+        let faults = faults.clone();
+        let calls = calls.clone();
+        async move {
+            calls.lock().unwrap().push(request.clone());
+            let method = request["method"].as_str().unwrap();
+            if method == "event.from" {
+                if request["params"][2] != "" {return None;}
+                let mut initial = batch("initial", "Halted");
+                let vm = &mut initial["events"][2]["snapshot"];
+                vm["is_a_snapshot"]=json!(false);vm["is_a_template"]=json!(false);vm["is_control_domain"]=json!(false);
+                vm["allowed_operations"]=json!(["snapshot","start"]);
+                // Deliberately publish the snapshot before its parent in this batch.
+                initial["events"].as_array_mut().unwrap().insert(0,json!({"class":"VM","operation":"add","ref":"OpaqueRef:snapshot","snapshot":snapshot_record(false)}));
+                return Some(RpcReply::Json(json!({"result":initial})));
+            }
+            let mut state = faults.lock().unwrap();
+            let result = match method {
+                "VM.get_record" if request["params"][1] == "OpaqueRef:vm" => {
+                    let mut vm=batch("unused","Halted")["events"][2]["snapshot"].clone();
+                    vm["is_a_snapshot"]=json!(false);vm["is_a_template"]=json!(false);vm["is_control_domain"]=json!(false);
+                    vm["allowed_operations"]=json!(["snapshot","start"]);
+                    if state.running_on_preflight {vm["power_state"]=json!("Running");}
+                    vm
+                }
+                "VM.get_record" => {
+                    let created=request["params"][1]=="OpaqueRef:created";
+                    if created && state.stop_verification {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"HANDLE_INVALID","data":[]}})));}
+                    let mut record=snapshot_record(created);
+                    if (created && state.wrong_created_parent) || (!created && state.reparent_on_preflight) {record["snapshot_of"]=json!("OpaqueRef:other-vm");}
+                    record
+                }
+                "VM.get_by_uuid" => if request["params"][1]==GUEST_UUID {json!("OpaqueRef:vm")} else {assert_eq!(request["params"][1],SNAPSHOT_UUID);json!("OpaqueRef:snapshot")},
+                "Async.VM.snapshot" => {
+                    state.created=true;
+                    if state.drop_create_reply {return Some(RpcReply::Drop);}
+                    json!("OpaqueRef:snapshot-task")
+                }
+                "Async.VM.revert" => json!("OpaqueRef:revert-task"),
+                "task.get_record" => json!({"status":"success","progress":1.0,"allowed_operations":[],"result":"<value>OpaqueRef:created</value>"}),
+                _=>return None,
+            };
+            Some(RpcReply::Json(json!({"result":result})))
+        }
+    })).await
+}
+
+#[tokio::test]
+async fn snapshot_creation_verifies_result_identity_and_deduplicates_the_full_intent() {
+    use xenadmin_core::{OperationId, OperationState, SnapshotName, VmCommand};
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let server = snapshot_mock(Default::default(), calls.clone()).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    assert_eq!(inventory.vms.len(), 1);
+    let vm = inventory.guests().next().unwrap().id;
+    assert_eq!(inventory.snapshots.for_vm(vm).count(), 1);
+    let observed = connection.latest().observe_vm(vm).unwrap();
+    let id = OperationId::new();
+    let create = || VmCommand::CreateSnapshot {
+        vm: observed,
+        name: SnapshotName::new("  Before maintenance  ").unwrap(),
+    };
+    let operation = connection.submit(id, create()).unwrap();
+    assert_eq!(finish(&operation).await, OperationState::Succeeded);
+    assert_eq!(
+        operation.latest().created_snapshot.unwrap().to_string(),
+        CREATED_UUID
+    );
+    assert_eq!(
+        finish(&connection.submit(id, create()).unwrap()).await,
+        OperationState::Succeeded
+    );
+    let conflict = connection
+        .submit(
+            id,
+            VmCommand::CreateSnapshot {
+                vm: observed,
+                name: SnapshotName::new("Different intent").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(finish(&conflict).await, OperationState::Rejected);
+    let requests = calls.lock().unwrap().clone();
+    let writes: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"] == "Async.VM.snapshot")
+        .collect();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0]["params"],
+        json!([
+            "OpaqueRef:fixture-session",
+            "OpaqueRef:vm",
+            "Before maintenance"
+        ])
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn snapshot_restore_uses_snapshot_reference_and_never_starts_the_guest() {
+    use xenadmin_core::{OperationId, OperationState, VmCommand};
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let server = snapshot_mock(Default::default(), calls.clone()).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = inventory.guests().next().unwrap().id;
+    let observed = connection
+        .latest()
+        .observe_snapshot(vm, xenadmin_core::SnapshotId::parse(SNAPSHOT_UUID).unwrap())
+        .unwrap();
+    let operation = connection
+        .submit(
+            OperationId::new(),
+            VmCommand::RevertSnapshot { snapshot: observed },
+        )
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::Succeeded);
+    connection.close().await;
+    let requests = calls.lock().unwrap();
+    let writes: Vec<_> = requests
+        .iter()
+        .filter(|r| r["method"].as_str().unwrap().starts_with("Async.VM."))
+        .collect();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["method"], "Async.VM.revert");
+    assert_eq!(
+        writes[0]["params"],
+        json!(["OpaqueRef:fixture-session", "OpaqueRef:snapshot"])
+    );
+}
+
+#[tokio::test]
+async fn snapshot_restore_rechecks_power_state_and_parent_relationship_before_dispatch() {
+    use xenadmin_core::{OperationId, OperationState, VmCommand};
+    for reparent in [false, true] {
+        let faults = Arc::new(Mutex::new(SnapshotFaults {
+            running_on_preflight: !reparent,
+            reparent_on_preflight: reparent,
+            ..Default::default()
+        }));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let server = snapshot_mock(faults, calls.clone()).await;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let connection = backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("root".into(), "fixture".into()),
+        );
+        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let vm = inventory.guests().next().unwrap().id;
+        let snapshot = connection
+            .latest()
+            .observe_snapshot(vm, xenadmin_core::SnapshotId::parse(SNAPSHOT_UUID).unwrap())
+            .unwrap();
+        let operation = connection
+            .submit(OperationId::new(), VmCommand::RevertSnapshot { snapshot })
+            .unwrap();
+        assert_eq!(finish(&operation).await, OperationState::Rejected);
+        assert!(
+            !calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r["method"] == "Async.VM.revert")
+        );
+        connection.close().await;
+    }
+}
+
+#[tokio::test]
+async fn unverified_snapshot_creation_preserves_evidence_and_blocks_conflicting_writes() {
+    use xenadmin_core::{OperationId, OperationState, SnapshotName, VmCommand};
+    for drop_reply in [false, true] {
+        let faults = Arc::new(Mutex::new(SnapshotFaults {
+            wrong_created_parent: !drop_reply,
+            drop_create_reply: drop_reply,
+            ..Default::default()
+        }));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let server = snapshot_mock(faults, calls.clone()).await;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let connection = backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("root".into(), "fixture".into()),
+        );
+        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let vm = connection
+            .latest()
+            .observe_vm(inventory.guests().next().unwrap().id)
+            .unwrap();
+        let create = || VmCommand::CreateSnapshot {
+            vm,
+            name: SnapshotName::new("Before maintenance").unwrap(),
+        };
+        let operation = connection.submit(OperationId::new(), create()).unwrap();
+        assert_eq!(finish(&operation).await, OperationState::OutcomeUnknown);
+        assert_eq!(operation.latest().created_snapshot, None);
+        let duplicate = connection.submit(OperationId::new(), create()).unwrap();
+        assert_eq!(finish(&duplicate).await, OperationState::Rejected);
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r["method"] == "Async.VM.snapshot")
+                .count(),
+            1
+        );
+        assert!(
+            !calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r["method"] == "task.destroy")
+        );
+        connection.close().await;
+    }
+}
+
+#[tokio::test]
+async fn saved_snapshot_result_can_be_verified_after_reconnect_without_the_task_record() {
+    use xenadmin_core::{OperationControl, OperationId, OperationState, SnapshotName, VmCommand};
+    let faults = Arc::new(Mutex::new(SnapshotFaults {
+        stop_verification: true,
+        ..Default::default()
+    }));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let server = snapshot_mock(faults.clone(), calls.clone()).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connect = || {
+        backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("root".into(), "fixture".into()),
+        )
+    };
+    let first = connect();
+    let inventory = first.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = first
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let id = OperationId::new();
+    let operation = first
+        .submit(
+            id,
+            VmCommand::CreateSnapshot {
+                vm,
+                name: SnapshotName::new("Before maintenance").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::OutcomeUnknown);
+    first.close().await;
+    faults.lock().unwrap().stop_verification = false;
+    let task_reads = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r["method"] == "task.get_record")
+        .count();
+    let second = connect();
+    second.wait_ready(Duration::from_secs(3)).await.unwrap();
+    second
+        .control_operation(id, OperationControl::Recheck)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if second.operation_history().iter().any(|r| {
+                r.id == id && r.state == OperationState::Succeeded && r.created_snapshot.is_some()
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    second.close().await;
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|r| r["method"] == "Async.VM.snapshot")
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|r| r["method"] == "task.get_record")
+            .count(),
+        task_reads
+    );
+}
+
+#[tokio::test]
+async fn snapshot_observations_are_connection_scoped_and_read_only_mode_cannot_mutate() {
+    use xenadmin_core::{Error, OperationId, SnapshotId, SnapshotName, VmCommand};
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let server = snapshot_mock(Default::default(), calls.clone()).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let options = ConnectionOptions::new(server.endpoint.clone());
+    let first = backend.connect(
+        options.clone(),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = first.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = inventory.guests().next().unwrap().id;
+    let id = SnapshotId::parse(SNAPSHOT_UUID).unwrap();
+    let snapshot = first.latest().observe_snapshot(vm, id).unwrap();
+    assert!(
+        first
+            .latest()
+            .observe_snapshot(vm, SnapshotId::parse(CREATED_UUID).unwrap())
+            .is_err()
+    );
+    let second = backend.connect(
+        options.clone(),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    second.wait_ready(Duration::from_secs(3)).await.unwrap();
+    assert!(matches!(
+        second.submit(OperationId::new(), VmCommand::RevertSnapshot { snapshot }),
+        Err(Error::Stale)
+    ));
+    let mut options = options;
+    options.read_only = true;
+    let read_only = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
+    read_only.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let observed = read_only.latest().observe_vm(vm).unwrap();
+    assert!(matches!(
+        read_only.submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: observed,
+                name: SnapshotName::new("Fixture").unwrap()
+            }
+        ),
+        Err(Error::ReadOnly)
+    ));
+    let snapshot = read_only.latest().observe_snapshot(vm, id).unwrap();
+    assert!(matches!(
+        read_only.submit(OperationId::new(), VmCommand::RevertSnapshot { snapshot }),
+        Err(Error::ReadOnly)
+    ));
+    assert!(!directory.path().join("operations.sqlite3").exists());
+    assert!(
+        !calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["method"].as_str().unwrap().starts_with("Async."))
+    );
+    first.close().await;
+    second.close().await;
+    read_only.close().await;
 }

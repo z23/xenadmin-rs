@@ -1,5 +1,6 @@
 mod console_view;
 mod preferences;
+mod vm_snapshots;
 
 use preferences::Preferences;
 use rune::{AppSpec, Cx, El, Icon, TextEdit, Tx, Waker, col, el, icon, row, text};
@@ -62,6 +63,11 @@ struct DisplayRow {
     vm: Option<VmId>,
 }
 struct State {
+    snapshot_view: Option<VmId>,
+    snapshot_rows: Vec<xenadmin_core::Snapshot>,
+    snapshot_table: TableState,
+    snapshot_dialog: Option<vm_snapshots::Dialog>,
+    snapshot_name: TextEdit,
     window_width: f32,
     show_details: bool,
     operations: Vec<xenadmin_core::Operation>,
@@ -116,6 +122,11 @@ fn init() -> State {
         table.set_column_width(name, *width);
     }
     let mut s = State {
+        snapshot_view: None,
+        snapshot_rows: Vec::new(),
+        snapshot_table: TableState::new().key("snapshots-table"),
+        snapshot_dialog: None,
+        snapshot_name: TextEdit::new(""),
         window_width: 1440.0,
         show_details: false,
         operations: Vec::new(),
@@ -195,6 +206,10 @@ impl State {
         }
     }
     fn submit_power(&mut self, vm: xenadmin_core::ObservedVm, action: xenadmin_core::PowerAction) {
+        self.submit_command(xenadmin_core::VmCommand::Power { vm, action });
+        self.force_action = None;
+    }
+    fn submit_command(&mut self, command: xenadmin_core::VmCommand) {
         let result = (|| {
             if self.demo {
                 return Err(xenadmin_core::Error::Stale);
@@ -208,17 +223,17 @@ impl State {
                 .connection
                 .as_ref()
                 .ok_or(xenadmin_core::Error::Closed)?
-                .power_action(xenadmin_core::OperationId::new(), vm, action)?;
+                .submit(xenadmin_core::OperationId::new(), command)?;
             if let Some(waker) = &self.waker {
                 operation.notify_on_change(waker.clone());
             }
             self.operations.push(operation);
             Ok::<(), xenadmin_core::Error>(())
         })();
-        self.force_action = None;
         self.error = result.err().map(|error| error.to_string());
     }
     fn open_console(&mut self) {
+        self.snapshot_view = None;
         let result = (|| {
             let vm = self
                 .selected()
@@ -244,6 +259,8 @@ impl State {
         self.error = result.err().map(|e| e.to_string());
     }
     fn connect(&mut self) {
+        self.snapshot_view = None;
+        self.snapshot_dialog = None;
         self.console = None;
         self.force_action = None;
         self.unknown_review = None;
@@ -307,6 +324,7 @@ impl State {
         }
     }
     fn rebuild(&mut self) {
+        vm_snapshots::refresh(self);
         let selected = self.table.cursor().map(str::to_owned);
         let previous = &self.tree;
         let mut tree = TreeModel::new().key("inventory-tree");
@@ -383,7 +401,6 @@ impl State {
             Page::Guests | Page::Templates => {
                 for vm in inventory.vms.values().filter(|v| {
                     !v.is_control_domain
-                        && !v.is_snapshot
                         && v.is_template == (self.page == Page::Templates)
                         && self.host_filter.is_none_or(|id| v.host == Some(id))
                 }) {
@@ -597,6 +614,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                     return;
                 };
                 let (host, vm) = (node.host, node.vm);
+                s.snapshot_view = None;
                 s.host_filter = host;
                 s.page = Page::Guests;
                 s.filter_rows();
@@ -719,6 +737,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                         ButtonVariant::Ghost
                     })
                     .on_press(move |s: &mut State| {
+                        s.snapshot_view = None;
                         s.page = page;
                         s.host_filter = None;
                         s.filter_rows();
@@ -835,6 +854,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 600.0
             })),
     );
+    if s.snapshot_view.is_some() {
+        content = vm_snapshots::view(s, &k);
+    }
     if s.console.is_some() {
         content = console_view::view(s, &k);
     }
@@ -845,11 +867,15 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .min_h(0.0)
             .gap(8.0)
             .child(
-                Button::new("Back to inventory")
-                    .variant(ButtonVariant::Ghost)
-                    .on_press(|s: &mut State| s.show_details = false)
-                    .build(&k)
-                    .key("back-to-inventory"),
+                Button::new(if s.snapshot_view.is_some() {
+                    "Back to snapshots"
+                } else {
+                    "Back to inventory"
+                })
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut State| s.show_details = false)
+                .build(&k)
+                .key("back-to-inventory"),
             )
             .child(details(s, &k).grow(1.0).min_h(0.0));
     }
@@ -930,6 +956,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let base = shell.build(&k);
     let root = if s.show_connect {
         rune_kit::root(base, [connection_dialog(s, &k)])
+    } else if s.snapshot_dialog.is_some() {
+        rune_kit::root(base, [vm_snapshots::dialog(s, &k)])
     } else if let Some((vm, action, name)) = &s.force_action {
         let (vm, action) = (*vm, *action);
         let dialog=col().w(460.0).padding(24.0).gap(16.0).radius(10.0).fill(k.c.bg_base)
@@ -1006,24 +1034,33 @@ fn details(s: &State, k: &Kit) -> El {
                 .selectable(true),
         )
     };
-    detail = detail
-        .child(
-            row()
-                .gap(8.0)
-                .center_y()
-                .child(
-                    icon(
-                        if selected.vm.is_some() {
-                            &GUEST
-                        } else {
-                            &SERVER
-                        },
-                        20.0,
-                    )
-                    .color(accent()),
+    detail = detail.child(
+        row()
+            .gap(8.0)
+            .center_y()
+            .child(
+                icon(
+                    if selected.vm.is_some() {
+                        &GUEST
+                    } else {
+                        &SERVER
+                    },
+                    20.0,
                 )
-                .child(heading(&selected.name, k)),
-        )
+                .color(accent()),
+            )
+            .child(heading(&selected.name, k)),
+    );
+    if s.page == Page::Guests && selected.vm.is_some() {
+        detail = detail.child(
+            Button::new("Snapshots")
+                .variant(ButtonVariant::Outline)
+                .on_press(vm_snapshots::open)
+                .build(k)
+                .key("open-snapshots"),
+        );
+    }
+    detail = detail
         .child(field("UUID", &selected.id))
         .child(field("State", &selected.state))
         .child(field("Location", &selected.location))
@@ -1163,7 +1200,7 @@ fn details(s: &State, k: &Kit) -> El {
                 if s.demo {
                     "Demo mode cannot change infrastructure."
                 } else {
-                    "Power actions use XAPI tasks. Interrupted outcomes remain in the local operation history."
+                    "VM actions use XAPI tasks. Interrupted outcomes remain in the local operation history."
                 },
                 k,
             )
@@ -1267,6 +1304,8 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .child(dialog)
 }
 fn demo(s: &mut State) {
+    s.snapshot_view = None;
+    s.snapshot_dialog = None;
     s.console = None;
     s.force_action = None;
     s.unknown_review = None;
@@ -1310,6 +1349,7 @@ fn demo(s: &mut State) {
             id,
             Vm {
                 allowed_actions: vec![],
+                can_snapshot: true,
                 id,
                 name: if i < 8 {
                     names[i].into()
@@ -1326,7 +1366,6 @@ fn demo(s: &mut State) {
                 vcpus: if i % 3 == 0 { 4 } else { 2 },
                 memory_bytes: (2 + i % 4) as u64 * (1 << 30),
                 is_template: false,
-                is_snapshot: false,
                 is_control_domain: false,
             },
         );
@@ -1337,6 +1376,22 @@ fn demo(s: &mut State) {
         coordinator: Some(host_ids[0]),
         hosts,
         vms,
+        snapshots: xenadmin_core::SnapshotInventory::from(BTreeMap::from_iter((0..3).map(|i| {
+            let id = xenadmin_core::SnapshotId::parse(&format!("60000000-0000-0000-0000-{i:012}"))
+                .unwrap();
+            (
+                id,
+                xenadmin_core::Snapshot {
+                    id,
+                    vm: Some(VmId::parse("30000000-0000-0000-0000-000000000000").unwrap()),
+                    name: ["Before upgrade", "Known good", "Initial installation"][i].into(),
+                    description: "Synthetic disk snapshot".into(),
+                    created_at: Some(format!("2026110{}T10:00:00Z", 7 - i)),
+                    power_state: PowerState::Halted,
+                    allowed_actions: vec![xenadmin_core::SnapshotAction::Revert],
+                },
+            )
+        }))),
         storage: vec![xenadmin_core::Storage {
             uuid: uuid::Uuid::from_u128(0x40000000000000000000000000000001),
             name: "Demo storage".into(),
@@ -1360,6 +1415,27 @@ fn main() {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("snapshots", |s| {
+                demo(s);
+                let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
+                s.table.select(id.to_string());
+                vm_snapshots::open(s);
+            }),
+            ("snapshot-create", |s| {
+                demo(s);
+                let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
+                s.table.select(id.to_string());
+                vm_snapshots::open(s);
+                vm_snapshots::begin_create(s);
+            }),
+            ("snapshot-restore", |s| {
+                demo(s);
+                let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
+                s.table.select(id.to_string());
+                vm_snapshots::open(s);
+                s.snapshot_table.select(s.snapshot_rows[0].id.to_string());
+                vm_snapshots::begin_restore(s);
+            }),
             ("connect", |s| s.show_connect = true),
             ("connect-insecure", |s| {
                 s.show_connect = true;

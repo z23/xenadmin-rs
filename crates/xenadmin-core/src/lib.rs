@@ -5,16 +5,26 @@ mod operations;
 mod trust;
 mod xapi;
 
-pub use connection::{Backend, Connection, ConnectionSnapshot, ConnectionState, ObservedVm};
+pub use connection::{
+    Backend, Connection, ConnectionSnapshot, ConnectionState, ObservedSnapshot, ObservedVm,
+};
 pub use console::{Console, ConsoleFrame, ConsoleInput, ConsoleSnapshot, ConsoleState};
-pub use model::{Host, HostId, Inventory, Network, PoolId, PowerState, Storage, Vm, VmId};
+pub use model::{
+    Host, HostId, Inventory, Network, PoolId, PowerState, Snapshot, SnapshotAction, SnapshotId,
+    SnapshotInventory, Storage, Vm, VmId,
+};
 pub use operations::{
-    Operation, OperationControl, OperationId, OperationRecord, OperationState, PowerAction,
+    Operation, OperationAction, OperationControl, OperationId, OperationRecord, OperationState,
+    PowerAction, SnapshotName, SnapshotOperation, VmCommand,
 };
 pub use trust::{CertificateFingerprint, ConnectionOptions, Credentials, Endpoint};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Enter a snapshot name of 1–255 characters without control characters")]
+    InvalidSnapshotName,
+    #[error("Shut down the VM before restoring a snapshot")]
+    SnapshotRequiresHaltedVm,
     #[error("Enter an HTTPS host URL without credentials, a query, or a fragment")]
     InvalidEndpoint,
     #[error("The certificate fingerprint must contain 64 hexadecimal digits")]

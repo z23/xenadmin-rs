@@ -28,7 +28,8 @@ operation = connection.submit(id, RevertSnapshot(snapshot))
 operation = connection.submit(id, CloneSnapshot(snapshot, validated_name))
 ```
 
-These are design sketches until the corresponding APIs land. No caller builds RPC methods,
+Listing, `CreateSnapshot` and `RevertSnapshot` are implemented in 0.2.0. Clone and deletion
+remain design sketches. No caller builds RPC methods,
 resolves opaque references, sequences cleanup or interprets task-result XML.
 
 ## Shape
@@ -47,6 +48,10 @@ Deletion captures a durable ownership manifest before removing a snapshot record
 includes only proven owned disks and checks for foreign attachments again. Successful record
 deletion followed by failed disk cleanup is partial completion. Clone-to-VM includes a
 separately tracked provision step; a returned template is not presented as a runnable VM.
+Deletion also needs an opaque read-only preparation result before submission so the
+operator can review its disk scope. The core revalidates that scope after confirmation;
+changed ownership requires another review. This extends the initial sketch to satisfy
+the existing affected-resource review requirement, without exposing a plan builder.
 
 Preserve old power records and their separate SQLite task column. New fields have explicit
 defaults or a transactional migration. An undecodable journal fails mutation admission
@@ -84,3 +89,20 @@ Tests must observe wire mutation counts, preserved reservations, legacy task rec
 late evidence, stale/reparented selections, partial disk cleanup, returned object identity,
 and failures at each dispatch/persistence boundary. Live writes require a designated
 disposable target and authorized scope; application development does not authorize them.
+
+## First verifiable increment
+
+Version 0.2.0 deliberately stops at single-task create and revert. Power callers migrate
+to the same `submit(id, VmCommand)` route; there is one journal and dispatch permit path.
+The journal compares full intentions and checks both parent and snapshot UUID reservations
+inside its admission transaction. Legacy power JSON and the task column remain readable.
+The bounded journal currently checks pending resource sets directly; the proposed separate
+resource-lock table is deferred until multi-object workflows require it.
+
+Creation persists the returned opaque reference before any dependent identity lookup.
+It then verifies the snapshot UUID, kind and parent. Recovery can use that saved result
+even when the task record is gone. The parent and snapshot are freshly read before revert,
+and the parent must be halted. Neither operation has a later write step, so the durable
+per-step executor is not introduced in this increment. It remains required before clone
+plus provision, deletion plus disk cleanup, or multiple configuration setters can ship.
+This sequencing is a scope boundary, not a claim that the full design is implemented.

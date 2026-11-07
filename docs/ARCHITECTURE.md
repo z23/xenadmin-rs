@@ -9,11 +9,14 @@ Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types.
 - `Backend::connect(ConnectionOptions, Credentials)` returns a `Connection` immediately.
   `watch()` and `latest()` expose immutable snapshots, while `notify_on_change()` wakes Rune.
 - A snapshot mints `ObservedVm` only for current inventory. Its private fields bind the VM
-  to its pool and a process-wide unique connection generation. Both `power_action()` and
-  `open_console()` require that observation and recheck freshness.
-- Each connection actor owns inventory and session authority. Separate workers poll power
+  to its pool and a process-wide unique connection generation. `submit(id, VmCommand)` and
+  `open_console()` require observations and recheck freshness. `ObservedSnapshot` additionally
+  binds a snapshot to its observed parent. Snapshot records have a separate typed inventory
+  and parent index; they are not VM/template rows.
+- Each connection actor owns inventory and session authority. Separate workers poll mutation
   tasks and decode consoles. The SQLite journal admits conflicting mutations transactionally
-  and preserves task references across reconnects. There is currently one connection in the
+  and preserves task references across reconnects. Snapshot task results are durably recorded
+  before UUID/parent verification; verification can resume without the original task record. There is currently one connection in the
   UI; core connections resolving to the same pool are not deduplicated yet.
 - `xapi.rs` contains a bounded, handwritten decoder for the initial five event classes;
   matching-schema generated bindings and the full device graph remain planned.
@@ -24,7 +27,8 @@ Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types.
   of that fault, remembered-member failover, and backoff jitter remain to be implemented.
 
 The [alpha report](reports/2026-11-07-alpha.md) owns the verification record and remaining
-gaps. Interface sketches below describe the broader design, not additional shipped APIs.
+gaps. The [snapshot increment](reports/2026-11-07-snapshots.md) records the newer single-task
+VM commands; multi-step deletion, provisioning and settings remain planned. Interface sketches below describe the broader design, not additional shipped APIs.
 
 ## Deployment and ownership
 

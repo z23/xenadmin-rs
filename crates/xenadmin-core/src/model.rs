@@ -29,6 +29,7 @@ macro_rules! identity {
 identity!(PoolId);
 identity!(HostId);
 identity!(VmId);
+identity!(SnapshotId);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PowerState {
@@ -64,6 +65,8 @@ pub struct Host {
 pub struct Vm {
     #[serde(default)]
     pub allowed_actions: Vec<crate::PowerAction>,
+    #[serde(default)]
+    pub can_snapshot: bool,
     pub id: VmId,
     pub name: String,
     pub description: String,
@@ -72,8 +75,85 @@ pub struct Vm {
     pub vcpus: u64,
     pub memory_bytes: u64,
     pub is_template: bool,
-    pub is_snapshot: bool,
     pub is_control_domain: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SnapshotAction {
+    Revert,
+    Delete,
+    Clone,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub id: SnapshotId,
+    pub vm: Option<VmId>,
+    pub name: String,
+    pub description: String,
+    pub created_at: Option<String>,
+    pub power_state: PowerState,
+    pub allowed_actions: Vec<SnapshotAction>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(
+    from = "BTreeMap<SnapshotId, Snapshot>",
+    into = "BTreeMap<SnapshotId, Snapshot>"
+)]
+pub struct SnapshotInventory {
+    by_id: BTreeMap<SnapshotId, Snapshot>,
+    by_vm: BTreeMap<VmId, Vec<SnapshotId>>,
+}
+impl From<BTreeMap<SnapshotId, Snapshot>> for SnapshotInventory {
+    fn from(records: BTreeMap<SnapshotId, Snapshot>) -> Self {
+        let mut inventory = Self::default();
+        for snapshot in records.into_values() {
+            inventory.insert(snapshot);
+        }
+        inventory
+    }
+}
+impl From<SnapshotInventory> for BTreeMap<SnapshotId, Snapshot> {
+    fn from(inventory: SnapshotInventory) -> Self {
+        inventory.by_id
+    }
+}
+impl SnapshotInventory {
+    pub fn insert(&mut self, snapshot: Snapshot) {
+        if let Some(previous) = self.by_id.remove(&snapshot.id)
+            && let Some(parent) = previous.vm
+            && let Some(siblings) = self.by_vm.get_mut(&parent)
+        {
+            siblings.retain(|id| *id != previous.id);
+            if siblings.is_empty() {
+                self.by_vm.remove(&parent);
+            }
+        }
+        if let Some(parent) = snapshot.vm {
+            self.by_vm.entry(parent).or_default().push(snapshot.id);
+        }
+        self.by_id.insert(snapshot.id, snapshot);
+    }
+    pub fn get(&self, id: &SnapshotId) -> Option<&Snapshot> {
+        self.by_id.get(id)
+    }
+    pub fn for_vm(&self, vm: VmId) -> impl Iterator<Item = &Snapshot> {
+        self.by_vm
+            .get(&vm)
+            .into_iter()
+            .flatten()
+            .map(|id| &self.by_id[id])
+    }
+    pub fn iter(&self) -> impl Iterator<Item = &Snapshot> {
+        self.by_id.values()
+    }
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -100,6 +180,8 @@ pub struct Inventory {
     pub coordinator: Option<HostId>,
     pub hosts: BTreeMap<HostId, Host>,
     pub vms: BTreeMap<VmId, Vm>,
+    #[serde(default)]
+    pub snapshots: SnapshotInventory,
     pub storage: Vec<Storage>,
     pub networks: Vec<Network>,
     pub revision: u64,
@@ -109,6 +191,6 @@ impl Inventory {
     pub fn guests(&self) -> impl Iterator<Item = &Vm> {
         self.vms
             .values()
-            .filter(|vm| !vm.is_control_domain && !vm.is_template && !vm.is_snapshot)
+            .filter(|vm| !vm.is_control_domain && !vm.is_template)
     }
 }

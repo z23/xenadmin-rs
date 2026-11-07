@@ -11,6 +11,85 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[derive(Clone, Debug)]
+pub struct SnapshotName(String);
+impl SnapshotName {
+    pub fn new(value: &str) -> Result<Self, Error> {
+        if value.chars().any(char::is_control) {
+            return Err(Error::InvalidSnapshotName);
+        }
+        let value = value.trim();
+        if value.is_empty() || value.chars().count() > 255 {
+            return Err(Error::InvalidSnapshotName);
+        }
+        Ok(Self(value.into()))
+    }
+}
+
+pub enum VmCommand {
+    Power {
+        vm: crate::ObservedVm,
+        action: PowerAction,
+    },
+    CreateSnapshot {
+        vm: crate::ObservedVm,
+        name: SnapshotName,
+    },
+    RevertSnapshot {
+        snapshot: crate::ObservedSnapshot,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OperationAction {
+    Power(PowerAction),
+    Snapshot(SnapshotOperation),
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum SnapshotOperation {
+    Create { name: String },
+    Revert { snapshot: crate::SnapshotId },
+}
+impl OperationAction {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Power(action) => action.label(),
+            Self::Snapshot(SnapshotOperation::Create { .. }) => "Create snapshot",
+            Self::Snapshot(SnapshotOperation::Revert { .. }) => "Restore snapshot",
+        }
+    }
+    fn resources(&self, vm: VmId) -> Vec<String> {
+        let mut ids = vec![vm.to_string()];
+        if let Self::Snapshot(SnapshotOperation::Revert { snapshot }) = self {
+            ids.push(snapshot.to_string());
+        }
+        ids
+    }
+}
+impl VmCommand {
+    pub(crate) fn normalize(self) -> (crate::ObservedVm, OperationAction) {
+        match self {
+            Self::Power { vm, action } => (vm, OperationAction::Power(action)),
+            Self::CreateSnapshot { vm, name } => (
+                vm,
+                OperationAction::Snapshot(SnapshotOperation::Create { name: name.0 }),
+            ),
+            Self::RevertSnapshot { snapshot } => (
+                crate::ObservedVm {
+                    pool: snapshot.pool,
+                    generation: snapshot.generation,
+                    id: snapshot.vm,
+                },
+                OperationAction::Snapshot(SnapshotOperation::Revert {
+                    snapshot: snapshot.id,
+                }),
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct OperationId(Uuid);
 impl OperationId {
@@ -114,7 +193,7 @@ pub struct OperationRecord {
     pub id: OperationId,
     pub pool: PoolId,
     pub vm: VmId,
-    pub action: PowerAction,
+    pub action: OperationAction,
     pub state: OperationState,
     pub progress: Option<f64>,
     pub detail: String,
@@ -132,6 +211,10 @@ pub struct OperationRecord {
     pub local_error: Option<String>,
     #[serde(default, skip_serializing)]
     pub(crate) task: Option<String>,
+    #[serde(default)]
+    result_reference: Option<String>,
+    #[serde(default)]
+    pub created_snapshot: Option<crate::SnapshotId>,
 }
 impl OperationRecord {
     pub fn revision(&self) -> u64 {
@@ -177,7 +260,7 @@ impl Operation {
     }
 }
 
-pub(crate) struct PowerRequest {
+pub(crate) struct MutationRequest {
     pub generation: u64,
     pub record: OperationRecord,
     sender: watch::Sender<Arc<OperationRecord>>,
@@ -187,7 +270,7 @@ pub(crate) enum OperationUpdate {
     Record(OperationRecord),
     Coordinator(crate::Endpoint),
 }
-struct DispatchPermit(crate::PowerAction);
+struct DispatchPermit(OperationAction);
 impl DispatchPermit {
     async fn send(
         self,
@@ -196,10 +279,19 @@ impl DispatchPermit {
         cancel: &CancellationToken,
     ) -> Result<serde_json::Value, Error> {
         let mut params = vec![json!(reference)];
-        if matches!(self.0, PowerAction::Start | PowerAction::Resume) {
-            params.extend([json!(false), json!(false)]);
-        }
-        let method = format!("Async.VM.{}", self.0.wire());
+        let method = match self.0 {
+            OperationAction::Power(action) => {
+                if matches!(action, PowerAction::Start | PowerAction::Resume) {
+                    params.extend([json!(false), json!(false)]);
+                }
+                format!("Async.VM.{}", action.wire())
+            }
+            OperationAction::Snapshot(SnapshotOperation::Create { name }) => {
+                params.push(json!(name));
+                "Async.VM.snapshot".into()
+            }
+            OperationAction::Snapshot(SnapshotOperation::Revert { .. }) => "Async.VM.revert".into(),
+        };
         tokio::select! { _=cancel.cancelled()=>Err(Error::Closed), result=session.call(&method,params)=>result }
     }
 }
@@ -208,9 +300,9 @@ pub(crate) fn channel(
     pool: PoolId,
     vm: VmId,
     generation: u64,
-    action: PowerAction,
+    action: OperationAction,
     runtime: tokio::runtime::Handle,
-) -> (Operation, PowerRequest) {
+) -> (Operation, MutationRequest) {
     let record = OperationRecord {
         id,
         pool,
@@ -229,11 +321,13 @@ pub(crate) fn channel(
         cancel_dispatched: false,
         can_cancel: false,
         task: None,
+        result_reference: None,
+        created_snapshot: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (
         Operation { receiver, runtime },
-        PowerRequest {
+        MutationRequest {
             generation,
             record,
             sender,
@@ -324,14 +418,28 @@ impl Journal {
                 }
                 return Ok(false);
             }
-            let pending: i64 = self
+            let resources = record.action.resources(record.vm);
+            let mut query = self
                 .0
-                .query_row(
-                    "SELECT COUNT(*) FROM operations WHERE terminal=0 AND pool=?1 AND vm=?2",
-                    rusqlite::params![record.pool.to_string(), record.vm.to_string()],
-                    |row| row.get(0),
-                )
+                .prepare("SELECT payload FROM operations WHERE terminal=0 AND pool=?1")
                 .map_err(|_| Error::Journal)?;
+            let rows = query
+                .query_map([record.pool.to_string()], |row| row.get::<_, String>(0))
+                .map_err(|_| Error::Journal)?;
+            for payload in rows {
+                let existing: OperationRecord =
+                    serde_json::from_str(&payload.map_err(|_| Error::Journal)?)
+                        .map_err(|_| Error::Journal)?;
+                if existing
+                    .action
+                    .resources(existing.vm)
+                    .iter()
+                    .any(|id| resources.contains(id))
+                {
+                    return Err(Error::ConflictingOperation);
+                }
+            }
+            drop(query);
             let total: i64 = self
                 .0
                 .query_row(
@@ -340,9 +448,6 @@ impl Journal {
                     |row| row.get(0),
                 )
                 .map_err(|_| Error::Journal)?;
-            if pending > 0 {
-                return Err(Error::ConflictingOperation);
-            }
             if total >= 1000 {
                 return Err(Error::JournalFull);
             }
@@ -369,6 +474,10 @@ impl Journal {
                 || (previous.task.is_some() && previous.task != record.task)
                 || (previous.cancel_requested && !record.cancel_requested)
                 || (previous.cancel_dispatched && !record.cancel_dispatched)
+                || (previous.result_reference.is_some()
+                    && previous.result_reference != record.result_reference)
+                || (previous.created_snapshot.is_some()
+                    && previous.created_snapshot != record.created_snapshot)
             {
                 return Err(Error::JournalChanged);
             }
@@ -390,7 +499,7 @@ impl Journal {
         record.state = OperationState::Dispatching;
         record.detail = "Submitting to XAPI".into();
         self.save(record)?;
-        Ok(DispatchPermit(record.action))
+        Ok(DispatchPermit(record.action.clone()))
     }
     fn attach_task(&self, evidence: &OperationRecord) -> Result<OperationRecord, Error> {
         let Some(task) = &evidence.task else {
@@ -516,7 +625,7 @@ pub(crate) fn recover(directory: &Path, pool: PoolId) -> Result<Vec<OperationRec
     Ok(recovered)
 }
 
-impl PowerRequest {
+impl MutationRequest {
     pub(crate) fn tracking(record: OperationRecord) -> Self {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
@@ -651,6 +760,13 @@ impl PowerRequest {
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
         }
+        let reference = tokio::select! {
+            _=connection_cancel.cancelled()=>return Err(Error::Closed),
+            result=crate::xapi::prepare_mutation(session, &self.record, reference)=>result?,
+        };
+        if connection_cancel.is_cancelled() {
+            return Err(Error::Closed);
+        }
         let permit = journal.mark_dispatching(&mut self.record)?;
         self.emit().await;
         let task = permit.send(session, reference, connection_cancel).await?;
@@ -687,7 +803,7 @@ impl PowerRequest {
             }
             let task = tokio::select! {
                 _=connection_cancel.cancelled()=>return Err(Error::Closed),
-                result=session.call("task.get_record",vec![json!(&reference)])=>result,
+                result=async { if self.record.result_reference.is_some() {Ok(json!({"status":"success","progress":1.0}))} else {session.call("task.get_record",vec![json!(&reference)]).await} }=>result,
             };
             let task = match task {
                 Ok(task) => {
@@ -727,8 +843,49 @@ impl PowerRequest {
             };
             match task["status"].as_str() {
                 Some("success") => {
+                    if matches!(
+                        self.record.action,
+                        OperationAction::Snapshot(SnapshotOperation::Create { .. })
+                    ) {
+                        if self.record.result_reference.is_none() {
+                            self.record.result_reference =
+                                Some(crate::xapi::snapshot_task_result(&task)?);
+                            self.record.detail =
+                                "Snapshot task completed; verifying its identity".into();
+                            match self.publish(journal).await {
+                                Ok(()) => {}
+                                Err(Error::JournalChanged) => continue,
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        let result = tokio::select! {
+                            _=connection_cancel.cancelled()=>return Err(Error::Closed),
+                            result=crate::xapi::verify_created_snapshot(session, self.record.vm, self.record.result_reference.as_deref().ok_or(Error::Protocol("snapshot result missing"))?)=>result,
+                        };
+                        match result {
+                            Ok(id) => self.record.created_snapshot = Some(id),
+                            Err(error)
+                                if error.retryable() && !matches!(error, Error::Coordinator(_)) =>
+                            {
+                                self.record.detail = format!(
+                                    "Snapshot task completed; identity verification will retry: {error}"
+                                );
+                                match self.publish(journal).await {
+                                    Ok(()) | Err(Error::JournalChanged) => {}
+                                    Err(error) => return Err(error),
+                                }
+                                tokio::select! {_=connection_cancel.cancelled()=>return Err(Error::Closed),_=tokio::time::sleep(Duration::from_secs(1))=>{}}
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        }
+                    }
                     self.record.state = OperationState::Succeeded;
-                    self.record.detail = "Host task completed".into();
+                    self.record.detail = match self.record.action {
+                        OperationAction::Snapshot(SnapshotOperation::Create { .. }) => "Snapshot created and identity verified".into(),
+                        OperationAction::Snapshot(SnapshotOperation::Revert { .. }) => "Snapshot restored. Inspect the VM state before starting or resuming it.".into(),
+                        _=>"Host task completed".into(),
+                    };
                     self.record.progress = Some(1.0);
                 }
                 Some("failure") => {
@@ -796,12 +953,52 @@ impl PowerRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_names_are_validated_before_any_submission() {
+        for value in ["", "   ", "bad\nname", "bad\0name", &"x".repeat(256)] {
+            assert!(SnapshotName::new(value).is_err());
+        }
+        assert_eq!(
+            SnapshotName::new("  Before upgrade  ").unwrap().0,
+            "Before upgrade"
+        );
+        assert!(SnapshotName::new(&"é".repeat(255)).is_ok());
+    }
+    #[test]
+    fn snapshot_reservations_cover_both_parent_and_snapshot_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(directory.path()).unwrap();
+        let mut first = record();
+        first.state = OperationState::Submitting;
+        let snapshot = crate::SnapshotId::parse("33333333-3333-3333-3333-333333333333").unwrap();
+        first.action = OperationAction::Snapshot(SnapshotOperation::Revert { snapshot });
+        journal.admit(&mut first).unwrap();
+        let mut power = record();
+        power.state = OperationState::Submitting;
+        assert!(matches!(
+            journal.admit(&mut power),
+            Err(Error::ConflictingOperation)
+        ));
+        let mut other_parent = record();
+        other_parent.state = OperationState::Submitting;
+        other_parent.vm = VmId::parse("44444444-4444-4444-4444-444444444444").unwrap();
+        other_parent.action = first.action.clone();
+        assert!(matches!(
+            journal.admit(&mut other_parent),
+            Err(Error::ConflictingOperation)
+        ));
+        other_parent.action = OperationAction::Power(PowerAction::Start);
+        assert!(
+            journal.admit(&mut other_parent).unwrap(),
+            "unrelated VMs remain independent"
+        );
+    }
     fn record() -> OperationRecord {
         OperationRecord {
             id: OperationId::new(),
             pool: PoolId::parse("11111111-1111-1111-1111-111111111111").unwrap(),
             vm: VmId::parse("22222222-2222-2222-2222-222222222222").unwrap(),
-            action: PowerAction::Start,
+            action: OperationAction::Power(PowerAction::Start),
             state: OperationState::Dispatching,
             progress: None,
             detail: "test".into(),
@@ -809,6 +1006,8 @@ mod tests {
             revision: 0,
             local_error: None,
             task: None,
+            result_reference: None,
+            created_snapshot: None,
             cancel_requested: false,
             cancel_dispatched: false,
             can_cancel: false,
@@ -828,7 +1027,7 @@ mod tests {
             Err(Error::ConflictingOperation)
         ));
         another.id = record.id;
-        another.action = PowerAction::Reboot;
+        another.action = OperationAction::Power(PowerAction::Reboot);
         assert!(matches!(
             journal.admit(&mut another),
             Err(Error::OperationConflict)

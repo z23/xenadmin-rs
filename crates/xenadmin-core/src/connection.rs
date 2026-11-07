@@ -17,13 +17,13 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     ConnectionOptions, Credentials, Error, Inventory,
     console::{self, ConsoleRequest},
-    operations::{self, OperationRecord, OperationUpdate, PowerRequest},
+    operations::{self, MutationRequest, OperationRecord, OperationUpdate},
     xapi::{Session, Store},
 };
 
 enum Request {
     Console(ConsoleRequest),
-    Power(PowerRequest),
+    Submit(MutationRequest),
     Control(crate::OperationId, crate::OperationControl),
 }
 
@@ -49,9 +49,16 @@ pub struct ConnectionSnapshot {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct ObservedVm {
-    pool: crate::PoolId,
-    generation: u64,
-    id: crate::VmId,
+    pub(crate) pool: crate::PoolId,
+    pub(crate) generation: u64,
+    pub(crate) id: crate::VmId,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct ObservedSnapshot {
+    pub(crate) pool: crate::PoolId,
+    pub(crate) generation: u64,
+    pub(crate) vm: crate::VmId,
+    pub(crate) id: crate::SnapshotId,
 }
 impl std::fmt::Display for ObservedVm {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -59,6 +66,25 @@ impl std::fmt::Display for ObservedVm {
     }
 }
 impl ConnectionSnapshot {
+    pub fn observe_snapshot(
+        &self,
+        vm: crate::VmId,
+        id: crate::SnapshotId,
+    ) -> Result<ObservedSnapshot, Error> {
+        let observed = self.observe_vm(vm)?;
+        let snapshot = self
+            .inventory
+            .as_ref()
+            .and_then(|inventory| inventory.snapshots.get(&id))
+            .filter(|snapshot| snapshot.vm == Some(vm))
+            .ok_or(Error::Stale)?;
+        Ok(ObservedSnapshot {
+            pool: observed.pool,
+            generation: observed.generation,
+            vm,
+            id: snapshot.id,
+        })
+    }
     pub fn observe_vm(&self, id: crate::VmId) -> Result<ObservedVm, Error> {
         let inventory = self
             .inventory
@@ -182,15 +208,15 @@ impl Connection {
     pub fn operation_history(&self) -> Arc<Vec<OperationRecord>> {
         self.history.borrow().clone()
     }
-    pub fn power_action(
+    pub fn submit(
         &self,
         id: crate::OperationId,
-        observed: ObservedVm,
-        action: crate::PowerAction,
+        command: crate::VmCommand,
     ) -> Result<crate::Operation, Error> {
         if self.read_only {
             return Err(Error::ReadOnly);
         }
+        let (observed, action) = command.normalize();
         let snapshot = self.latest();
         if !snapshot.is_current() {
             return Err(Error::Stale);
@@ -212,7 +238,7 @@ impl Connection {
             self.runtime.clone(),
         );
         self.requests
-            .try_send(Request::Power(request))
+            .try_send(Request::Submit(request))
             .map_err(|_| Error::Busy)?;
         Ok(operation)
     }
@@ -363,7 +389,7 @@ async fn run(
                 let mut workers = tokio::task::JoinSet::new();
                 let mut worker_counts = BTreeMap::<crate::OperationId, usize>::new();
                 let start_worker =
-                    |request: PowerRequest,
+                    |request: MutationRequest,
                      reference: Option<String>,
                      workers: &mut tokio::task::JoinSet<crate::OperationId>,
                      counts: &mut BTreeMap<crate::OperationId, usize>| {
@@ -414,7 +440,7 @@ async fn run(
                                             if !record.state.terminal() && record.has_task()
                                                 && record.state!=crate::OperationState::OutcomeUnknown
                                                 && !worker_counts.contains_key(&record.id) {
-                                                start_worker(PowerRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
+                                                start_worker(MutationRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
                                             }
                                             merge_record(&mut records,record);
                                         }
@@ -430,12 +456,12 @@ async fn run(
                         }
                         Some(request)=requests.recv()=>{
                             match request {
-                                Request::Power(request)=>{
+                                Request::Submit(request)=>{
                                     if options.read_only {request.reject(Error::ReadOnly);}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|inventory|inventory.pool_id==request.record.pool) {
                                         request.reject(Error::Stale);
                                     } else if journal_error.is_some() {request.reject(Error::Journal);}
-                                    else if !store.allows(request.record.vm,request.record.action)
+                                    else if !store.allows(request.record.vm,&request.record.action)
                                         && !operations::Journal::open(&directory).is_ok_and(|journal|journal.knows(&request.record)) {
                                         request.reject(Error::UnavailableAction);
                                     } else if let Some(reference)=store.vm_reference(request.record.vm) {
@@ -461,7 +487,7 @@ async fn run(
                                             crate::OperationControl::Recheck=>journal.load(id)?.filter(|record|record.pool==pool && !record.state.terminal() && record.has_task()).ok_or(Error::UnavailableAction)?,
                                         };
                                         if !record.state.terminal() && record.has_task() && !worker_counts.contains_key(&id) {
-                                            start_worker(PowerRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
+                                            start_worker(MutationRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
                                         }
                                         merge_record(&mut records,record);
                                         publish_history(&history,&mut records);
@@ -488,7 +514,7 @@ async fn run(
                                             for record in rows {
                                                 if !record.state.terminal() && record.has_task() {
                                                     start_worker(
-                                                        PowerRequest::tracking(record.clone()),
+                                                        MutationRequest::tracking(record.clone()),
                                                         None,
                                                         &mut workers,
                                                         &mut worker_counts,
