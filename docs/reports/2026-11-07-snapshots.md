@@ -51,3 +51,17 @@ host advertises revert, but actual disk/checkpoint behavior still needs live qua
 These fixtures do not establish XCP-ng 8.3 compatibility or data-integrity acceptance.
 The M0–M4 live gates remain open. Designate a disposable pool and disposable data before
 running snapshot writes or recovery interruption scenarios against a real host.
+
+## Build artifact
+
+Source: `2755a5bc1e83ea6141003a3b7f93f3ddbabb98ec` (Rust 1.99.1, pinned Rune and
+`Cargo.lock`). The local Linux x86-64 archive is
+`artifacts/xenadmin-rs-0.2.0-linux-x86_64.tar.gz`; SHA-256:
+`30cf18269651c2a2d500b361c6b0929fed5be5c3d22c6ae78a5f994cc14ace41`.
+Its checksum, executable equality with the release build, extraction and snapshot-view
+rendering from the extracted executable passed with isolated synthetic state. The archive
+contains the two executables, desktop assets, running guide, license and dependency notices.
+
+[Ubuntu 24.04 CI](https://github.com/z23/xenadmin-rs/actions/runs/42372297031) passed
+formatting, strict Clippy, all 52 tests, workspace builds and the eight headless render
+exports for that source commit. This is CI/fixture evidence, not a live-host acceptance run.
