@@ -14,7 +14,7 @@ host probe. It implements direct XAPI login, event inventory, VM power tasks, du
 operation tracking, and an embedded RFB console. No Xen Orchestra service is used.
 
 Local protocol and TLS fixtures, Rune widget interactions, headless rendering, and a native
-window smoke test pass. **This build has not connected to a real XCP-ng host yet.**
+window smoke test pass. **Successful live-host qualification is pending.**
 The first qualification target is XCP-ng 8.3 LTS on Linux x86-64.
 See the [actual results and remaining gaps](docs/reports/2026-11-07-alpha.md).
 Version 0.1.1 adds a connection-wide certificate-validation opt-out and fixes inventory

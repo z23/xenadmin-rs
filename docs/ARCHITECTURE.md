@@ -247,8 +247,11 @@ tracking, with separate timeout and cancellation policy.
 Use normal CA and hostname validation, with explicit custom CA or endpoint-specific trust
 for self-signed installations. Bind accepted certificate identity to the endpoint and detect
 changes. Apply the same policy to coordinator redirects, consoles, metrics, and transfers.
-Do not forward credentials to an unverified advertised destination. Support a credential
-prompt when Secret Service is unavailable or locked. Session-only login keeps the client
+The user can explicitly disable certificate validation for a connection, including its
+coordinator redirects and consoles. This opt-out retains HTTPS and console destination
+checks, is remembered with the endpoint, and remains visible in connection status. With
+validation enabled, do not forward credentials to an unverified advertised destination.
+Support a credential prompt when Secret Service is unavailable or locked. Session-only login keeps the client
 usable without a functioning keyring. Redact secrets and sensitive URL parameters from logs.
 
 Closing the desktop stops new admission, journals outstanding state, closes consoles, and

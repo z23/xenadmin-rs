@@ -36,6 +36,8 @@ Console destination checks against authenticated pool host addresses remain in f
 
 ## Local evidence
 
+Source commit: `832a76bc3578662355489df7a1d62e00520ab1a5`.
+
 The check script passes formatting, Clippy with warnings denied, all **25 tests**, debug
 workspace builds and four Rune screenshot/accessibility-tree exports. New checks cover:
 
@@ -48,6 +50,14 @@ workspace builds and four Rune screenshot/accessibility-tree exports. New checks
 - Real Rune checkbox interaction, restored access to verified certificate options, and
   unknown-versus-zero storage display.
 
-No infrastructure operation or live-host request was made for this fix. Host compatibility
-still needs the user's connection retry. Remote CI and packaged-artifact results should be
-recorded separately when observed.
+The 0.1.1 release build also passes. The extracted archive's host probe exposes `--insecure`,
+and its desktop renders the compact opt-out form. Archive checksum verification passes:
+`artifacts/xenadmin-rs-0.1.1-linux-x86_64.tar.gz`, SHA-256
+`d800f44d5fbbdbcae66dbd297c159205f955847cf2db428d1a2edc2dca6c2027`.
+
+[Ubuntu 24.04 CI](https://github.com/z23/xenadmin-rs/actions/runs/42365045334)
+also passed formatting, Clippy, all 25 tests, workspace builds and all four UI renders
+for that source commit.
+
+No infrastructure operation or live-host request was made by the agent for this fix.
+Host compatibility still needs the user's connection retry.

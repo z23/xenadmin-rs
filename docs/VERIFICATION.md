@@ -3,8 +3,9 @@
 ## Evidence status
 
 This document specifies acceptance requirements. The [alpha report](reports/2026-11-07-alpha.md)
-records local fixture, rendering, and build results. No live XCP-ng connection or lab
-mutation has run. Fixture success does not establish host compatibility.
+records local fixture, rendering, and build results. No agent-run live XCP-ng test or lab
+mutation has run. The [first user connection failure and its fix](reports/2026-11-07-connection-fixes.md)
+are recorded separately. Fixture success does not establish host compatibility.
 
 Record results under `docs/reports/`. Each report names the
 application commit, dependency lockfile, host/API versions, desktop protocol, distribution,
