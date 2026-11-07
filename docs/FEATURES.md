@@ -1,7 +1,9 @@
 # Feature scope
 
-This table defines planned workflow coverage. Every row is planned. A milestone becomes
-complete only when its acceptance evidence is recorded in [verification](VERIFICATION.md).
+This table defines target workflow coverage. The [alpha report](reports/2026-11-07-alpha.md)
+records the implemented subset and its limitations. No complete milestone has passed its
+live-host acceptance gate. A milestone becomes complete only when its acceptance evidence
+is recorded in [verification](VERIFICATION.md).
 Milestone order and dependencies are defined in the [implementation plan](PLAN.md).
 
 | Workflow | Milestone | Required behavior |

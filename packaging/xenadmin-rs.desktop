@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=XenAdmin RS
+Comment=Connect directly to XCP-ng hosts and pools
+Exec=xenadmin-rs
+Icon=xenadmin-rs
+Terminal=false
+Categories=System;RemoteAccess;
+StartupNotify=true

@@ -6,8 +6,8 @@
 - Connect directly to XAPI. Xen Orchestra must never be required to start, authenticate,
   discover a pool, run a command, or open a console.
 - Keep the UI responsive through slow hosts, reconnects, and console traffic.
-- Treat the current repository as planning-only until the implementation milestones land.
-  Report implemented, verified, and planned behavior separately.
+- This repository contains a development alpha. Report implemented, fixture-verified,
+  live-host-verified, and planned behavior separately; see docs/reports/ for evidence.
 
 ## Implementation boundaries
 
@@ -25,7 +25,7 @@
 
 ## Verification boundaries
 
-- No production host changes are part of the initial planning task.
+- No production host changes are authorized by ordinary application development.
 - Run infrastructure-changing checks only against an explicitly designated disposable lab
   within the scope authorized for that test. Read-only connection checks are distinct from
   power, storage, network, migration, and pool-management operations.

@@ -25,9 +25,14 @@ workflow list. [Architecture](ARCHITECTURE.md) owns the implementation boundarie
 
 ## Current state
 
-Only the planning package exists. No Rune build, host login, VNC session, or platform test
-has run for this project. No lab has been designated. The milestone gates below are future
-acceptance criteria, not reported results.
+A development alpha implements the Rune shell, direct JSON-RPC session and event inventory,
+VM power operations with a durable journal, and an embedded console adapter. Local protocol,
+TLS, RFB, and Rune interaction fixtures exercise these paths. A native window smoke test and
+a local release archive have also run. See the [alpha report](reports/2026-11-07-alpha.md).
+
+No live lab has been designated. M0, M1, and M2 remain open: actual XCP-ng compatibility,
+console extensions, and the outage-recovery acceptance run are not established. Later
+milestones remain planned, apart from preliminary packaging and CI infrastructure.
 
 ## M0: Qualify the dependencies and host protocols
 
@@ -176,8 +181,9 @@ compatibility, host agents, forced pool recovery, and complete legacy XenServer 
 outside the first release. The client recovers access to XCP-ng management while XO is down.
 It cannot operate XAPI when the host toolstack itself is unavailable.
 
-## First implementation task
+## Next acceptance task
 
-Start M0 with the pinned Rune shell and synthetic inventory. Add the direct-host probe and
-console qualification as independent tools in the same workspace. Record the lab endpoint
-and allowed test scope before running the live acceptance work.
+Designate a disposable XCP-ng 8.3 pool, a credential reference, and permitted test scope.
+Run the read-only probe first, qualify the console and API schema against that exact host
+lineage, then perform the M2 outage workflow within the authorized scope. Resolve the
+remaining M0–M2 gaps recorded in the alpha report before claiming a recovery release.

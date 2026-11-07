@@ -1,6 +1,6 @@
 # XenAdmin RS
 
-A planned Linux desktop client for direct management of XCP-ng hosts and pools.
+A Linux desktop client for direct management of XCP-ng hosts and pools.
 The UI uses Rune. The backend uses Rust and XAPI.
 
 The client must work when Xen Orchestra is unavailable. Connections, credentials,
@@ -9,9 +9,36 @@ The client requires a reachable XAPI service and the user's host permissions.
 
 ## Project status
 
-Planning. This repository contains the implementation plan and architecture decisions.
-There is no working application, Cargo workspace, or claim of host compatibility yet.
-The first support target is XCP-ng 8.3 LTS on a Linux x86-64 workstation.
+Development alpha. The Cargo workspace builds a Rune desktop application and a read-only
+host probe. It implements direct XAPI login, event inventory, VM power tasks, durable
+operation tracking, and an embedded RFB console. No Xen Orchestra service is used.
+
+Local protocol and TLS fixtures, Rune widget interactions, headless rendering, and a native
+window smoke test pass. **This build has not connected to a real XCP-ng host yet.**
+The first qualification target is XCP-ng 8.3 LTS on Linux x86-64.
+See the [actual results and remaining gaps](docs/reports/2026-11-07-alpha.md).
+
+## Run it
+
+```sh
+cargo build --locked --workspace
+./target/debug/xenadmin-rs
+```
+
+Explore the interface using synthetic inventory:
+
+```sh
+./target/debug/xenadmin-rs -- --demo
+```
+
+Use **Add connection** to enter a host endpoint and session-only credentials. On narrow
+windows, use **Connect** and **Details** in the compact controls. Self-signed installations
+can use independently verified, endpoint-specific certificate fingerprints.
+The demo cannot issue host actions.
+
+The [running guide](docs/RUNNING.md) covers Linux dependencies, certificate trust,
+the host probe, local state, checks, and packaging. `./scripts/check.sh` runs the local
+checks; `./scripts/package.sh` builds a release archive under `artifacts/`.
 
 ## Start here
 
@@ -22,16 +49,19 @@ The first support target is XCP-ng 8.3 LTS on a Linux x86-64 workstation.
 - [Sources](docs/SOURCES.md) records upstream revisions and unresolved compatibility questions.
 - [Design decision](docs/DECISION.md) compares the architecture alternatives.
 
-The first usable release targets direct connection, live inventory, VM power controls,
-operation progress, and an embedded VM console. Later releases add creation, snapshots,
-migration, storage, networks, and import and export.
+The recovery release acceptance gate is to locate, start, and use the console of an XO VM
+with XO unreachable. This requires a designated disposable lab and authorized test scope.
+Later releases add creation, snapshots, migration, storage and network administration,
+metrics, and import and export.
 
 ## Development
 
-Begin with milestone M0 in the implementation plan. The Rune revision reviewed during
-planning is `f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`. M0 must build and run that revision
-before accepting it as the application's dependency. Commit `Cargo.lock` once the Rust
-workspace exists.
+The workspace pins Rust 1.99.1 and Rune
+`f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`; `Cargo.lock` pins the dependency graph.
+`xenadmin-core` owns protocol and operation behavior without Rune dependencies.
+`xenadmin-desktop` adapts snapshots and console frames to Rune. `host-probe` consumes the
+same core through its public facade.
 
-The project uses the MIT license for original work. Preserve upstream notices if later
-implementation reuses source from another project.
+The project uses the MIT license for original work. Binary archives include supplied
+dependency and embedded-font notices. This is an independent project, not an official
+XCP-ng or Vates application.

@@ -1,7 +1,8 @@
 # Planning sources
 
 Checked on 2026-11-07. Source behavior and design choices are distinguished below.
-No runtime compatibility check has run for this project.
+Local build, rendering, and protocol-fixture results are in the
+[alpha report](reports/2026-11-07-alpha.md). Live-host compatibility remains unverified.
 
 ## Reference application
 
@@ -21,7 +22,7 @@ The local read-only checkout is `~/src/xenadmin` at
 - [RFB implementation](https://github.com/xcp-ng/xenadmin/blob/35dc091c5b62ab3b22449bb7a89cfcf84a6600d4/XenAdmin/VNC/VNCStream.cs#L115)
   contains protocol and encoding behavior to qualify in a replacement library.
 - [Reference license](https://github.com/xcp-ng/xenadmin/blob/35dc091c5b62ab3b22449bb7a89cfcf84a6600d4/LICENSE)
-  governs any later reuse of its source. This planning package contains original prose.
+  governs any reuse of its source. The current Rust implementation is original work.
 
 These paths establish behavior to preserve. They do not establish that old TLS defaults,
 fixed reconnect delays, or UI-thread cache mutation are appropriate for the new client.
@@ -29,7 +30,8 @@ fixed reconnect delays, or UI-thread cache mutation are appropriate for the new 
 ## Rune
 
 Reviewed commit: `f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`.
-It is a candidate dependency until M0 builds and exercises it.
+It is pinned in the workspace and has built, rendered headless scenes, and presented a
+native window. Broader platform qualification remains part of M0 and M3.
 
 - [Core documentation](https://github.com/anomalyco/rune/blob/f3d04f3f2069d177d04c963b0ba9f6b2065e46eb/crates/rune/README.md)
   describes frame updates, background requests, Linux dependencies, native dialogs,
@@ -64,9 +66,10 @@ The documented incoming Wayland file-drag gap requires a working file picker for
 
 ## Decisions requiring runtime evidence
 
-M0 must select the final Rune revision, Rust toolchain, API export/version input, RFB
-library, and any custom CONNECT transport. It must verify JSON-RPC and event bootstrap
-against the designated XCP-ng lab. No existing Rust SDK is assumed complete or compatible.
+The alpha pins Rust 1.99.1 and the Rune revision above, and uses `vnc-rs` 0.6.0 through a
+custom stream-based CONNECT adapter. These are fixture-qualified choices. The RFB library
+still needs actual QEMU console and keyboard-extension qualification. M0 must select an
+API export matching the lab lineage and verify JSON-RPC and event bootstrap on that host.
 
 Later reports must distinguish successful tests from untested requirements. Production
 access, host versions, credentials, and a lab were not supplied during planning.

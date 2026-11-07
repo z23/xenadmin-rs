@@ -2,11 +2,11 @@
 
 ## Evidence status
 
-This document specifies future checks. The planning task has not built the application,
-logged into a host, opened a console, or run a lab mutation. Source inspection informs the
-plan but does not establish runtime compatibility.
+This document specifies acceptance requirements. The [alpha report](reports/2026-11-07-alpha.md)
+records local fixture, rendering, and build results. No live XCP-ng connection or lab
+mutation has run. Fixture success does not establish host compatibility.
 
-Record results under `docs/reports/` when implementation begins. Each report names the
+Record results under `docs/reports/`. Each report names the
 application commit, dependency lockfile, host/API versions, desktop protocol, distribution,
 hardware or software renderer, scenario, actual result, and remaining limitations.
 Keep private host identifiers and raw captures outside Git. Use sanitized fixture names

@@ -13,3 +13,9 @@
 *.pfx
 credentials*.json
 sessions*.json
+/.xenadmin-rs-state/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+__pycache__/
+*.pyc

@@ -1,5 +1,31 @@
 # Architecture
 
+## Implemented alpha
+
+The sections below define the target architecture. The initial implementation lives in
+the three Cargo workspace members listed below; its current public facade is compiled
+Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types.
+
+- `Backend::connect(ConnectionOptions, Credentials)` returns a `Connection` immediately.
+  `watch()` and `latest()` expose immutable snapshots, while `notify_on_change()` wakes Rune.
+- A snapshot mints `ObservedVm` only for current inventory. Its private fields bind the VM
+  to its pool and a process-wide unique connection generation. Both `power_action()` and
+  `open_console()` require that observation and recheck freshness.
+- Each connection actor owns inventory and session authority. Separate workers poll power
+  tasks and decode consoles. The SQLite journal admits conflicting mutations transactionally
+  and preserves task references across reconnects. There is currently one connection in the
+  UI; core connections resolving to the same pool are not deduplicated yet.
+- `xapi.rs` contains a bounded, handwritten decoder for the initial five event classes;
+  matching-schema generated bindings and the full device graph remain planned.
+- `console.rs` owns an authenticated CONNECT stream, `vnc-rs` decoding, latest RGBA frames,
+  and bounded ordered input. `console_view.rs` maps Rune events and presents `Pixels`.
+- The alpha has no metrics worker, bulk transfers, keyring storage, or multi-object workflows.
+  Malformed event batches fail atomically and require reconnect; automatic resynchronization
+  of that fault, remembered-member failover, and backoff jitter remain to be implemented.
+
+The [alpha report](reports/2026-11-07-alpha.md) owns the verification record and remaining
+gaps. Interface sketches below describe the broader design, not additional shipped APIs.
+
 ## Deployment and ownership
 
 Ship one Linux executable. Rune owns the main thread and its windows. A background Tokio
@@ -21,17 +47,17 @@ flowchart LR
     Core --> Journal[Local operation journal]
 ```
 
-Keep these planned workspace boundaries small:
+Keep these workspace boundaries small:
 
 | Location | Owns |
 | --- | --- |
 | `crates/xenadmin-core` | Public application types and facade. Private modules for pool ownership, XAPI, operations, console, metrics, and local persistence |
 | `crates/xenadmin-desktop` | Rune views, UI state, snapshot adaptation, frame presentation, physical input, and desktop integration |
 | `tools/host-probe` | CLI consumer of the core for protocol qualification and lab acceptance |
-| `tests/fixtures` | Sanitized protocol examples, synthetic inventory, and deterministic scenarios |
+| `crates/xenadmin-core/tests` | Local controllable HTTP, TLS, and RFB protocol fixtures |
 
-These paths are planned and do not exist yet. Raw wire records and generated bindings
-stay inside the core's private `xapi` module. A view cannot bypass the application facade.
+Raw wire records and future generated bindings stay inside the core's private `xapi`
+module. A view cannot bypass the application facade.
 Avoid separate controller, repository, and service layers that forward the same calls.
 
 ## Caller's view
