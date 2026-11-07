@@ -919,7 +919,7 @@ fn details(s: &State, k: &Kit) -> El {
             text(value.to_owned())
                 .font(k.ty.text_small)
                 .color(k.c.text_base)
-                .wrap()
+                .wrap_anywhere()
                 .selectable(true),
         )
     };
