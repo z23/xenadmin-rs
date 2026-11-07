@@ -18,3 +18,4 @@ target/debug/xenadmin-rs --snap artifacts/snapshots.png --tree artifacts/snapsho
 target/debug/xenadmin-rs --snap artifacts/snapshot-create.png --tree artifacts/snapshot-create.json --scene snapshot-create --theme dark --size 513x652 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/snapshot-restore.png --tree artifacts/snapshot-restore.json --scene snapshot-restore --theme dark --size 1440x900 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/snapshots-compact.png --tree artifacts/snapshots-compact.json --scene snapshots --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/unavailable-actions.png --tree artifacts/unavailable-actions.json --scene unavailable-actions --theme dark --size 1440x1200 --scale 1 --at 1

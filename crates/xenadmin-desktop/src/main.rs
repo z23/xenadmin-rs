@@ -1085,10 +1085,31 @@ fn details(s: &State, k: &Kit) -> El {
         .vm
         .and_then(|id| s.inventory.as_ref().and_then(|i| i.vms.get(&id)))
     {
+        if !s.demo && vm.allowed_actions.is_empty() {
+            actions = actions.child(
+                caption(
+                    "No power actions are available in the received VM data. A host task or restriction may be preventing them, or the availability data may be incomplete. Reconnect to refresh it.",
+                    k,
+                )
+                .wrap()
+                .role("status")
+                .key("power-actions-unavailable"),
+            );
+        }
+        if !s.demo
+            && !s
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.is_current())
+        {
+            actions = actions.child(
+                caption("The connection is not current. Power actions will stay disabled until it reconnects.", k)
+                    .wrap()
+                    .role("status")
+                    .key("power-actions-stale"),
+            );
+        }
         for action in xenadmin_core::PowerAction::ALL {
-            if !s.demo && !vm.allowed_actions.contains(&action) {
-                continue;
-            }
             let enabled = !s.demo
                 && s.snapshot
                     .as_ref()
@@ -1103,9 +1124,19 @@ fn details(s: &State, k: &Kit) -> El {
                     })
                     .disabled(!enabled)
                     .on_press(move |s: &mut State| s.request_power(action))
-                    .build(k),
+                    .build(k)
+                    .key(format!("power-{action:?}")),
             );
         }
+    } else {
+        actions = actions.child(
+            caption(
+                "This VM is no longer in the inventory. Select it again after reconnecting.",
+                k,
+            )
+            .wrap()
+            .role("status"),
+        );
     }
     let mut recent: Vec<_> = s
         .operation_rows
@@ -1415,6 +1446,13 @@ fn main() {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("unavailable-actions", |s| {
+                demo(s);
+                s.demo = false;
+                s.error = Some("Synthetic unavailable-action preview • no host connection".into());
+                s.table.select("30000000-0000-0000-0000-000000000001");
+                s.show_details = true;
+            }),
             ("snapshots", |s| {
                 demo(s);
                 let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();

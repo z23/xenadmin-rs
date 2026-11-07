@@ -23,6 +23,10 @@ Version 0.1.2 strengthens interrupted-operation recovery and adds resume/unpause
 see the [recovery foundation report](docs/reports/2026-11-07-recovery-foundation.md).
 Version 0.2.0 adds per-VM snapshot views, disk-snapshot creation, and guarded restore;
 see the [snapshot report](docs/reports/2026-11-07-snapshots.md) and [feature comparison](docs/PARITY.md).
+Version 0.2.1 keeps unavailable power actions visible with an explanation; see the
+[UX verification](docs/reports/2026-11-08-operations-ux.md). The
+[full parity checklist](docs/PARITY.md) distinguishes implemented, partial, missing and
+unqualified workflows, with priorities and reference-source evidence.
 
 ## Run it
 
