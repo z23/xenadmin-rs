@@ -33,7 +33,8 @@ explicit place to repair connectivity. No production guest or host was modified.
 ## Local verification
 
 - 795 full-workspace tests passed on the slice: 353 core unit, 223 direct protocol,
-  206 Rune, 5 profile, 4 TLS and 4 probe tests.
+  206 Rune, 5 profile, 4 TLS and 4 probe tests. The combined 0.11 integration then
+  passed 796 tests (one additional existing publication-fence test) and strict Clippy.
 - New fixtures cover empty/occupied CDs, exact eject/insert order, foreign ownership,
   changed prior image, missing/writable ISO, disconnected PBD, template/busy VM,
   wrong SR, insertion refusal, changed media between steps, lost replies and no replay.
