@@ -281,8 +281,8 @@ fn review(s: &mut State) {
             Kind::Acknowledge(id) => {
                 let record=s.resource_rows.iter().find(|r|r.id==id&&r.applies_to_pool(editor.pool)).ok_or("The operation is no longer available for this pool")?;
                 review.lines.push(format!("{} · {}",record.action.label(),record.id));
-                review.lines.push(if record.recovery_pool()!=record.pool {
-                    format!("This releases write reservations for BOTH pools: {} and {}. The host's membership remains unverified. Inspect both pools before continuing.",record.pool,record.recovery_pool())
+                review.lines.push(if let Some(peer)=record.peer_pool() {
+                    format!("This releases write reservations for BOTH pools: {} and {}. The server outcome remains unverified. Inspect both pools before continuing.",record.pool,peer)
                 } else {"This releases the pool's write guard without establishing the server outcome. Inspect the affected resources and any host task before continuing.".into()});
             },
             Kind::Mtu => {}
@@ -549,7 +549,17 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
                     .on_press(move |s: &mut State| control(s, id, OperationControl::Recheck))
                     .build(k),
             );
-            if !can_recheck && record.recovery_pool() != record.pool {
+            if !can_recheck
+                && matches!(record.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
+            {
+                view = view.child(
+                    caption(
+                        "Reconnect both source and destination pools to recheck this transfer.",
+                        k,
+                    )
+                    .wrap(),
+                );
+            } else if !can_recheck && record.recovery_pool() != record.pool {
                 view = view.child(
                     caption(
                         format!(
@@ -589,6 +599,14 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
     view
 }
 fn control(s: &mut State, id: OperationId, control: OperationControl) {
+    if matches!(control, OperationControl::Recheck)
+        && s.resource_rows.iter().any(|r| {
+            r.id == id && matches!(r.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
+        })
+    {
+        s.error = cross_pool_vm::recheck(s, id).err().map(|e| e.to_string());
+        return;
+    }
     s.error = profiles_view::resource_control_connection(s, id, control)
         .ok_or(xenadmin_core::Error::Closed)
         .and_then(|connection| connection.control_resource(id, control))

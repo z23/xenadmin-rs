@@ -1644,6 +1644,12 @@ pub(super) fn resource_control_connection(
     control: xenadmin_core::OperationControl,
 ) -> Option<Connection> {
     let record = s.resource_rows.iter().find(|r| r.id == id)?;
+    if matches!(control, xenadmin_core::OperationControl::Recheck)
+        && matches!(record.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
+        && !cross_pool_vm::can_recheck(s, id)
+    {
+        return None;
+    }
     let applies = |pool| {
         if matches!(control, xenadmin_core::OperationControl::Recheck) {
             pool == record.recovery_pool()
@@ -1661,4 +1667,29 @@ pub(super) fn resource_control_connection(
                 && c.latest().inventory().is_some_and(|i| applies(i.pool_id))
         })
         .cloned()
+}
+
+pub(super) fn select_transfer_destination(
+    s: &mut State,
+    profile: ProfileId,
+    pool: PoolId,
+    vm: VmId,
+) -> bool {
+    let ready = s.workspace.active.get(&profile).is_some_and(|c| {
+        let snapshot = c.latest();
+        !c.is_read_only()
+            && snapshot.inventory().is_some_and(|i| i.pool_id == pool)
+            && snapshot.observe_vm(vm).is_ok()
+    });
+    if !ready {
+        s.error = Some("The destination VM is no longer available through this connection".into());
+        return false;
+    }
+    select(s, profile);
+    s.page = Page::Guests;
+    s.host_filter = None;
+    s.search = TextEdit::new("");
+    s.rebuild();
+    s.table.select(vm.to_string());
+    true
 }

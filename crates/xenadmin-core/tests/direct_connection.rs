@@ -2029,6 +2029,8 @@ fn journal_text(directory: &std::path::Path) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+#[path = "fixtures/cross_pool.rs"]
+mod cross_pool;
 #[path = "fixtures/pool_join.rs"]
 mod pool_join;
 

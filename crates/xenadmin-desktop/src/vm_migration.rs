@@ -334,7 +334,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .key(format!("migration-transfer-{id}")),
                 );
             }
-            body=body.child(caption("Storage-transport moves with snapshot chains, shared disks or CBT are not supported yet. Cross-pool migration is separate pending work.",k).wrap());
+            body=body.child(caption("Storage-transport moves with snapshot chains, shared disks or CBT are not supported yet. Use Move / copy to another pool for cross-pool transfers.",k).wrap());
         }
         _ => {
             body = body.child(heading("3 of 3 · Review migration", k));

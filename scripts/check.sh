@@ -85,3 +85,5 @@ check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import
 "$check_binary" --snap artifacts/secure-boot-compact.png --tree artifacts/secure-boot-compact.json --scene secure-boot --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/batch-power.png --tree artifacts/batch-power.json --scene batch-power --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/batch-power-compact.png --tree artifacts/batch-power-compact.json --scene batch-power --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/cross-pool.png --tree artifacts/cross-pool.json --scene cross-pool --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/cross-pool-compact.png --tree artifacts/cross-pool-compact.json --scene cross-pool --theme dark --size 513x652 --scale 1 --at 1

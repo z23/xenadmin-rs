@@ -567,6 +567,16 @@ impl Connection {
         id: crate::OperationId,
         control: crate::OperationControl,
     ) -> Result<(), Error> {
+        if matches!(control, crate::OperationControl::Recheck)
+            && self
+                .resource_history()
+                .iter()
+                .any(|r| r.id == id && matches!(r.action, crate::ResourceAction::CrossPoolVm(_)))
+        {
+            return Err(Error::Protocol(
+                "Use the cross-pool transfer view to recheck with both connected pools",
+            ));
+        }
         if self.read_only
             && !self
                 .resource_history()
@@ -913,7 +923,7 @@ async fn run(
                                     if let Some(count)=resource_counts.get_mut(&id) {*count-=1;if *count==0 {resource_counts.remove(&id);}}
                                     if !resource_counts.contains_key(&id)&&resource_rechecks.remove(&id) {
                                         match operations::Journal::open(&directory).and_then(|journal|journal.resource_load(id)) {
-                                            Ok(Some(record)) if !record.state.terminal()=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts),
+                                            Ok(Some(record)) if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_))=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts),
                                             Err(error)=>publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update),
                                             _=>{},
                                         }
@@ -972,7 +982,7 @@ async fn run(
                                     if options.read_only && !request.record.action.read_only_export() {request.reject(Error::ReadOnly);}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.record.pool) {request.reject(Error::Stale);}
                                     else if journal_error.is_some() {request.reject(Error::Journal);}
-                                    else if resource_workers.len()>=8 {request.reject(Error::Busy);}
+                                    else if resource_workers.len()>=8 || (matches!(request.record.action,crate::ResourceAction::CrossPoolVm(_)) && request.record.revision()>0 && resource_counts.contains_key(&request.record.id)) {request.reject(Error::Busy);}
                                     else {start_resource(*request,&mut resource_workers,&mut resource_counts);}
                                 }
                                 Request::ResourceControl(id,control)=>{
@@ -982,7 +992,7 @@ async fn run(
                                         let journal=operations::Journal::open(&directory)?;
                                         if options.read_only && !journal.resource_load(id)?.is_some_and(|r|r.pool==pool&&r.action.read_only_export()){return Err(Error::ReadOnly)}
                                         let record=journal.resource_control(pool,id,control)?;
-                                        if !record.state.terminal() {
+                                        if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_)) {
                                             if !resource_counts.contains_key(&id) {start_resource(crate::resources::ResourceRequest::tracking(record.clone()),&mut resource_workers,&mut resource_counts);}
                                             else if record.state==crate::OperationState::OutcomeUnknown {resource_rechecks.insert(id);}
                                         }
@@ -1180,6 +1190,10 @@ async fn run(
                                         Ok(rows) => {
                                             for record in rows {
                                                 if !record.state.terminal()
+                                                    && !matches!(
+                                                        record.action,
+                                                        crate::ResourceAction::CrossPoolVm(_)
+                                                    )
                                                     && resource_workers.len() < 8
                                                 {
                                                     start_resource(
@@ -1513,6 +1527,98 @@ impl Connection {
             },
             observation: selection.destination,
             credentials,
+        });
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
+
+    pub(crate) fn submit_cross_pool(
+        &self,
+        id: crate::OperationId,
+        selection: crate::CrossPoolVmSelection,
+        destination: &Connection,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only || destination.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if self.backend_scope != destination.backend_scope
+            || selection.source.id != selection.operation.vm
+            || selection.destination.target
+                != crate::ResourceTarget::Pool(selection.operation.destination_pool)
+        {
+            return Err(Error::InvalidMigration);
+        }
+        if self.latest().observe_vm(selection.source.id)? != selection.source
+            || destination
+                .latest()
+                .observe_resource(selection.destination.target)?
+                != selection.destination
+        {
+            return Err(Error::Stale);
+        }
+        selection.operation.validate(selection.source.pool)?;
+        let observed = crate::ObservedResource {
+            pool: selection.source.pool,
+            generation: selection.source.generation,
+            target: crate::ResourceTarget::Pool(selection.source.pool),
+        };
+        let (handle, mut request) = crate::resources::channel(
+            id,
+            observed,
+            crate::ResourceAction::CrossPoolVm(selection.operation),
+            self.runtime.clone(),
+        );
+        request.cross_pool = Some(crate::cross_pool::Inputs {
+            destination: JoinPeerHandle {
+                requests: destination.requests.clone(),
+                cancel: destination.cancel.clone(),
+            },
+            observation: selection.destination,
+        });
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
+
+    pub(crate) fn recheck_cross_pool(
+        &self,
+        id: crate::OperationId,
+        destination: &Connection,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only || destination.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if self.backend_scope != destination.backend_scope {
+            return Err(Error::InvalidMigration);
+        }
+        let record = self
+            .resource_history()
+            .iter()
+            .find(|r| r.id == id && !r.state.terminal())
+            .cloned()
+            .ok_or(Error::OperationConflict)?;
+        let crate::ResourceAction::CrossPoolVm(operation) = &record.action else {
+            return Err(Error::InvalidMigration);
+        };
+        let observed = self
+            .latest()
+            .observe_resource(crate::ResourceTarget::Pool(record.pool))?;
+        let peer = destination
+            .latest()
+            .observe_resource(crate::ResourceTarget::Pool(operation.destination_pool))?;
+        let (handle, mut request) =
+            crate::resources::channel(id, observed, record.action.clone(), self.runtime.clone());
+        request.record = record;
+        request.mark_recheck();
+        request.cross_pool = Some(crate::cross_pool::Inputs {
+            destination: JoinPeerHandle {
+                requests: destination.requests.clone(),
+                cancel: destination.cancel.clone(),
+            },
+            observation: peer,
         });
         self.requests
             .try_send(Request::ResourceSubmit(Box::new(request)))

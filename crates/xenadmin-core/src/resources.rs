@@ -174,6 +174,7 @@ pub enum ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
     PowerBatch(crate::VmPowerBatch),
+    CrossPoolVm(crate::CrossPoolVmOperation),
     SnapshotPolicy(crate::SnapshotPolicyOperation),
     Appliance(crate::ApplianceOperation),
     Pool(crate::PoolOperation),
@@ -221,6 +222,7 @@ impl ResourceAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::PowerBatch(_) => "Power actions on selected VMs",
+            Self::CrossPoolVm(operation) => operation.mode.label(),
             Self::SnapshotPolicy(operation) => operation.label(),
             Self::Appliance(operation) => operation.label(),
             Self::Pool(operation) => operation.label(),
@@ -251,6 +253,12 @@ impl ResourceAction {
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
             Self::PowerBatch(selection) => return selection.validate(target),
+            Self::CrossPoolVm(operation) => {
+                let ResourceTarget::Pool(pool) = target else {
+                    return Err(Error::InvalidResourceCommand);
+                };
+                return operation.validate(pool);
+            }
             Self::SnapshotPolicy(operation) => return operation.validate(target),
             Self::Appliance(operation) => return operation.validate(target),
             Self::Pool(operation) => return operation.validate(target),
@@ -486,17 +494,23 @@ pub struct ResourceOperationRecord {
     pub(crate) subject_baseline: Option<Vec<crate::SubjectId>>,
     #[serde(default)]
     pub(crate) join_baseline: Option<Vec<HostId>>,
+    #[serde(skip)]
+    pub(crate) cross_pool_plan: Option<Box<crate::cross_pool_backend::Plan>>,
 }
 impl ResourceOperationRecord {
     pub fn applies_to_pool(&self, pool: PoolId) -> bool {
-        self.pool == pool || crate::pool_join::destination(&self.action) == Some(pool)
+        self.pool == pool || self.peer_pool() == Some(pool)
+    }
+    pub fn peer_pool(&self) -> Option<PoolId> {
+        crate::pool_join::destination(&self.action)
+            .or_else(|| crate::cross_pool::destination(&self.action))
     }
     pub fn recovery_pool(&self) -> PoolId {
         crate::pool_join::destination(&self.action).unwrap_or(self.pool)
     }
     pub(crate) fn pool_scopes(&self) -> Vec<PoolId> {
         let mut pools = vec![self.pool];
-        if let Some(pool) = crate::pool_join::destination(&self.action)
+        if let Some(pool) = self.peer_pool()
             && pool != self.pool
         {
             pools.push(pool);
@@ -580,6 +594,7 @@ pub(crate) fn channel(
         snapshot_policy_evidence: None,
         subject_baseline: None,
         join_baseline: None,
+        cross_pool_plan: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (

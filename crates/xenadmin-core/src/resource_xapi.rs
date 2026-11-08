@@ -141,7 +141,9 @@ pub(super) async fn prepare(
             return super::organization::prepare(session, record).await;
         }
         ResourceAction::Network(_) => return super::network::prepare(session, record).await,
-        ResourceAction::Transfer(_) => return Err(Error::TransferConflict),
+        ResourceAction::Transfer(_) | ResourceAction::CrossPoolVm(_) => {
+            return Err(Error::TransferConflict);
+        }
         ResourceAction::CancelTask => {
             cancellable_task(&fresh)?;
             steps.push(Step {
@@ -430,7 +432,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         ResourceAction::Host(_) | ResourceAction::PowerBatch(_) => Vec::new(),
         ResourceAction::Organization(_) => super::organization::checks(record),
         ResourceAction::Network(_) => vec![Check::Network],
-        ResourceAction::Transfer(_) => vec![],
+        ResourceAction::Transfer(_) | ResourceAction::CrossPoolVm(_) => vec![],
         ResourceAction::CancelTask => vec![Check::TaskCancellation],
         ResourceAction::DismissMessage { .. } => vec![Check::MessageDeleted],
         ResourceAction::Storage(_) => vec![Check::Storage],

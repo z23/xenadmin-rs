@@ -1,3 +1,5 @@
+#[path = "cross_pool_worker.rs"]
+mod cross_pool_worker;
 #[path = "host_worker.rs"]
 mod host;
 #[path = "ovf_export_worker.rs"]
@@ -27,6 +29,7 @@ pub(crate) struct ResourceRequest {
     pub(crate) sensitive: Option<crate::pool_security::SensitiveInputs>,
     pub generation: u64,
     pub join: Option<crate::pool_join::Inputs>,
+    pub cross_pool: Option<crate::cross_pool::Inputs>,
     pub record: ResourceOperationRecord,
     sender: watch::Sender<Arc<ResourceOperationRecord>>,
     updates: Option<mpsc::Sender<OperationUpdate>>,
@@ -42,6 +45,7 @@ impl ResourceRequest {
             sensitive: None,
             generation,
             join: None,
+            cross_pool: None,
             record,
             sender,
             updates: None,
@@ -54,11 +58,15 @@ impl ResourceRequest {
             sensitive: None,
             generation: 0,
             join: None,
+            cross_pool: None,
             record,
             sender,
             updates: None,
             reconcile: true,
         }
+    }
+    pub(crate) fn mark_recheck(&mut self) {
+        self.reconcile = true;
     }
     pub(crate) fn reject(mut self, error: Error) {
         self.record.state = OperationState::Rejected;
@@ -168,6 +176,9 @@ impl ResourceRequest {
     ) -> Result<(), Error> {
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.execute_power_batch(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::CrossPoolVm(_)) {
+            return self.execute_cross_pool(journal, session, cancel).await;
         }
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.execute_join(journal, session, cancel).await;
@@ -290,6 +301,9 @@ impl ResourceRequest {
     ) -> Result<(), Error> {
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.reconcile_power_batch(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::CrossPoolVm(_)) {
+            return self.recheck_cross_pool(journal, session, cancel).await;
         }
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.reconcile_join(journal, session, cancel).await;
@@ -723,6 +737,7 @@ impl ResourceRequest {
     }
     async fn finish_error(&mut self, journal: &mut Journal, error: Error) {
         if let Error::Coordinator(endpoint) = &error
+            && !matches!(self.record.action, super::ResourceAction::CrossPoolVm(_))
             && let Some(updates) = &self.updates
         {
             let _ = updates

@@ -314,6 +314,11 @@ impl Session {
     pub(crate) async fn logout(&self) {
         let _ = self.call("session.logout", vec![]).await;
     }
+    pub(crate) async fn logout_migration_receiver(&self, token: &str) {
+        if token != self.session_cookie() && token.starts_with("OpaqueRef:") {
+            let _ = self.rpc(false, "session.logout", vec![json!(token)]).await;
+        }
+    }
 
     pub(crate) async fn diagnose_power(
         &self,

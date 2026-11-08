@@ -59,6 +59,9 @@ pub use resources::{
     ObservedResource, ResourceAction, ResourceCommand, ResourceOperation, ResourceOperationRecord,
     ResourceTarget,
 };
+mod cross_pool;
+mod cross_pool_backend;
+pub use cross_pool::{CrossPoolMode, CrossPoolVmOperation, CrossPoolVmSelection};
 mod migration;
 mod migration_backend;
 pub use storage::{NfsVersion, StorageLocation, StorageOperation};

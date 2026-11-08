@@ -44,6 +44,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         subject_baseline: None,
         snapshot_policy_evidence: None,
         join_baseline: None,
+        cross_pool_plan: None,
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {
@@ -440,73 +441,97 @@ fn join(source: PoolId, destination: PoolId) -> ResourceOperationRecord {
     });
     record
 }
+fn cross_pool(source: PoolId, destination: PoolId) -> ResourceOperationRecord {
+    let mut record = resource(source);
+    record.steps.clear();
+    record.target = ResourceTarget::Pool(source);
+    record.action = ResourceAction::CrossPoolVm(crate::CrossPoolVmOperation {
+        vm: uuid::Uuid::new_v4().into(),
+        destination_pool: destination,
+        destination_host: uuid::Uuid::new_v4().into(),
+        expected_host: None,
+        expected_affinity: None,
+        transfer_network: uuid::Uuid::new_v4().into(),
+        transfer_address: "192.0.2.20".into(),
+        mode: crate::CrossPoolMode::MoveHalted,
+        disks: vec![],
+        networks: vec![],
+        host_transport_reviewed: true,
+    });
+    record
+}
 #[test]
-fn joins_reserve_both_pools_against_vm_and_resource_writes_in_every_direction() {
-    for destination_first in [false, true] {
-        for resource_first in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
-            let mut journal = Journal::open(dir.path()).unwrap();
-            let a = PoolId::from(uuid::Uuid::new_v4());
-            let b = PoolId::from(uuid::Uuid::new_v4());
-            let selected = if destination_first { b } else { a };
-            if resource_first {
-                journal.resource_admit(&mut resource(selected)).unwrap();
-            } else {
-                journal.admit(&mut vm(selected)).unwrap();
+fn cross_pool_workflows_reserve_both_pools_against_writes_in_every_direction() {
+    for transfer in [
+        join as fn(PoolId, PoolId) -> ResourceOperationRecord,
+        cross_pool,
+    ] {
+        for destination_first in [false, true] {
+            for resource_first in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut journal = Journal::open(dir.path()).unwrap();
+                let a = PoolId::from(uuid::Uuid::new_v4());
+                let b = PoolId::from(uuid::Uuid::new_v4());
+                let selected = if destination_first { b } else { a };
+                if resource_first {
+                    journal.resource_admit(&mut resource(selected)).unwrap();
+                } else {
+                    journal.admit(&mut vm(selected)).unwrap();
+                }
+                assert!(matches!(
+                    journal.resource_admit(&mut transfer(a, b)),
+                    Err(Error::ConflictingPoolOperation)
+                ));
             }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let a = PoolId::from(uuid::Uuid::new_v4());
+        let b = PoolId::from(uuid::Uuid::new_v4());
+        let mut record = transfer(a, b);
+        journal.resource_admit(&mut record).unwrap();
+        for pool in [a, b] {
             assert!(matches!(
-                journal.resource_admit(&mut join(a, b)),
+                journal.admit(&mut vm(pool)),
                 Err(Error::ConflictingPoolOperation)
             ));
+            assert!(matches!(
+                journal.resource_admit(&mut resource(pool)),
+                Err(Error::ConflictingPoolOperation)
+            ));
+            assert_eq!(journal.resource_history(pool).unwrap()[0].id, record.id);
+            assert_eq!(
+                journal
+                    .resource_control(pool, record.id, OperationControl::Recheck)
+                    .unwrap()
+                    .id,
+                record.id
+            );
         }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let mut journal = Journal::open(dir.path()).unwrap();
-    let a = PoolId::from(uuid::Uuid::new_v4());
-    let b = PoolId::from(uuid::Uuid::new_v4());
-    let mut record = join(a, b);
-    journal.resource_admit(&mut record).unwrap();
-    for pool in [a, b] {
+        let c = PoolId::from(uuid::Uuid::new_v4());
+        assert!(journal.admit(&mut vm(c)).unwrap());
         assert!(matches!(
-            journal.admit(&mut vm(pool)),
-            Err(Error::ConflictingPoolOperation)
+            journal.resource_control(c, record.id, OperationControl::RequestCancellation),
+            Err(Error::OperationConflict)
         ));
-        assert!(matches!(
-            journal.resource_admit(&mut resource(pool)),
-            Err(Error::ConflictingPoolOperation)
-        ));
-        assert_eq!(journal.resource_history(pool).unwrap()[0].id, record.id);
-        assert_eq!(
-            journal
-                .resource_control(pool, record.id, OperationControl::Recheck)
-                .unwrap()
-                .id,
-            record.id
-        );
+        record = journal
+            .resource_control(b, record.id, OperationControl::RequestCancellation)
+            .unwrap();
+        assert!(record.cancel_requested);
+        record.state = OperationState::OutcomeUnknown;
+        journal.resource_save(&mut record).unwrap();
+        journal
+            .resource_control(b, record.id, OperationControl::AcknowledgeUnknown)
+            .unwrap();
+        for pool in [a, b] {
+            assert!(journal.admit(&mut vm(pool)).unwrap());
+        }
+        let mut late = record;
+        late.pool_completed = true;
+        let saved = journal.resource_evidence(&late).unwrap();
+        assert_eq!(saved.state, OperationState::AcknowledgedUnknown);
+        assert!(saved.pool_completed);
     }
-    let c = PoolId::from(uuid::Uuid::new_v4());
-    assert!(journal.admit(&mut vm(c)).unwrap());
-    assert!(matches!(
-        journal.resource_control(c, record.id, OperationControl::RequestCancellation),
-        Err(Error::OperationConflict)
-    ));
-    record = journal
-        .resource_control(b, record.id, OperationControl::RequestCancellation)
-        .unwrap();
-    assert!(record.cancel_requested);
-    record.state = OperationState::OutcomeUnknown;
-    journal.resource_save(&mut record).unwrap();
-    journal
-        .resource_control(b, record.id, OperationControl::AcknowledgeUnknown)
-        .unwrap();
-    for pool in [a, b] {
-        assert!(journal.admit(&mut vm(pool)).unwrap());
-    }
-    let mut late = record;
-    late.pool_completed = true;
-    let saved = journal.resource_evidence(&late).unwrap();
-    assert_eq!(saved.state, OperationState::AcknowledgedUnknown);
-    assert!(saved.pool_completed);
 }
 #[test]
 fn active_malformed_or_inconsistent_scopes_fail_closed_even_for_other_pools() {
@@ -601,4 +626,149 @@ fn power_batch_reserves_whole_pool_against_vm_and_resource_writes_in_both_direct
         journal.resource_admit(&mut another),
         Err(Error::ConflictingPoolOperation)
     ));
+}
+
+fn planned_cross_pool(source: PoolId, destination: PoolId) -> ResourceOperationRecord {
+    let mut record = cross_pool(source, destination);
+    let ResourceAction::CrossPoolVm(operation) = &record.action else {
+        unreachable!()
+    };
+    record.cross_pool_plan=Some(Box::new(serde_json::from_value(json!({
+        "source_pool":source,"operation":operation,"graph":{"disks":[],"nics":[]},
+        "shape":{"name":"Synthetic guest","description":"","cpus":[2,2],"memory":[16777216,1073741824,1073741824,1073741824],"firmware":"bios","boot_order":"dc","secureboot":"false"},
+        "baseline":{"VM":[],"VDI":[],"VBD":[],"VIF":[]},"source_tasks":null,"task_uuid":null,"expires_at_ms":10000,
+        "completed":false,"ended":false,"destination_vm":null
+    })).unwrap()));
+    record
+}
+#[test]
+fn cross_pool_private_plan_corruption_cannot_change_reconciliation_identity_or_admission_scope() {
+    for corrupt in [
+        "source_pool",
+        "vm",
+        "destination_pool",
+        "missing_baseline",
+        "extra_baseline",
+        "graph",
+        "completed",
+        "ended",
+        "task_uuid",
+        "created_vm",
+        "missing_plan",
+        "unexpected_plan",
+        "baseline_collision",
+        "premature_success",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let source = PoolId::from(uuid::Uuid::new_v4());
+        let dest = PoolId::from(uuid::Uuid::new_v4());
+        let mut record = planned_cross_pool(source, dest);
+        record.steps.push(OperationStep {
+            label: "Transfer".into(),
+            state: StepState::Pending,
+            detail: String::new(),
+        });
+        journal.resource_admit(&mut record).unwrap();
+        let text: String = journal
+            .0
+            .query_row(
+                "SELECT payload FROM resource_operations WHERE id=?1",
+                [record.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+        match corrupt {
+            "source_pool" => payload["cross_pool_plan"]["source_pool"] = json!(dest),
+            "baseline_collision" => {
+                payload["cross_pool_plan"]["baseline"]["VM"] =
+                    json!([payload["cross_pool_plan"]["operation"]["vm"].clone()])
+            }
+            "premature_success" => payload["state"] = json!(OperationState::Succeeded),
+            "vm" => payload["cross_pool_plan"]["operation"]["vm"] = json!(uuid::Uuid::new_v4()),
+            "destination_pool" => {
+                payload["cross_pool_plan"]["operation"]["destination_pool"] =
+                    json!(uuid::Uuid::new_v4())
+            }
+            "missing_baseline" => {
+                payload["cross_pool_plan"]["baseline"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("VDI");
+            }
+            "extra_baseline" => payload["cross_pool_plan"]["baseline"]["unexpected"] = json!([]),
+            "graph" => {
+                payload["cross_pool_plan"]["graph"]["nics"] = json!([{"id":uuid::Uuid::new_v4(),"network":uuid::Uuid::new_v4(),"device":"0","mac":"02:00:00:00:00:01"}])
+            }
+            "completed" => payload["cross_pool_plan"]["completed"] = json!(true),
+            "ended" => payload["cross_pool_plan"]["ended"] = json!(true),
+            "task_uuid" => payload["cross_pool_plan"]["task_uuid"] = json!(uuid::Uuid::new_v4()),
+            "created_vm" => payload["transfer_created"]["vms"] = json!([uuid::Uuid::new_v4()]),
+            "missing_plan" => {
+                payload.as_object_mut().unwrap().remove("cross_pool_plan");
+            }
+            "unexpected_plan" => payload["action"] = json!(ResourceAction::CancelTask),
+            _ => unreachable!(),
+        }
+        journal
+            .0
+            .execute(
+                "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+                rusqlite::params![payload.to_string(), record.id.to_string()],
+            )
+            .unwrap();
+        assert!(
+            matches!(journal.resource_load(record.id), Err(Error::Journal)),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(
+                journal.resource_control(source, record.id, OperationControl::Recheck),
+                Err(Error::Journal)
+            ),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(journal.admit(&mut vm(source)), Err(Error::Journal)),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(
+                journal.resource_admit(&mut resource(dest)),
+                Err(Error::Journal)
+            ),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(
+                journal.resource_pool_busy(PoolId::from(uuid::Uuid::new_v4())),
+                Err(Error::Journal)
+            ),
+            "{corrupt}"
+        );
+    }
+}
+
+#[test]
+fn cross_pool_save_requires_a_plan_before_dispatch_or_success() {
+    for state in [
+        OperationState::Dispatching,
+        OperationState::Tracking,
+        OperationState::Verifying,
+        OperationState::Succeeded,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let journal = Journal::open(dir.path()).unwrap();
+        let mut record = cross_pool(
+            PoolId::from(uuid::Uuid::new_v4()),
+            PoolId::from(uuid::Uuid::new_v4()),
+        );
+        record.state = state.clone();
+        assert!(
+            matches!(journal.resource_admit(&mut record), Err(Error::Journal)),
+            "{state:?}"
+        );
+        assert!(journal.resource_load(record.id).unwrap().is_none());
+    }
 }

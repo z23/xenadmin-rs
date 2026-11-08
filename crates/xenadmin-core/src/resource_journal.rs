@@ -12,7 +12,7 @@ impl Journal {
     fn active_resources(&self, pool: PoolId) -> Result<Vec<ResourceOperationRecord>, Error> {
         let mut query = self
             .0
-            .prepare("SELECT pool,payload FROM resource_operations WHERE terminal=0 LIMIT 1001")
+            .prepare("SELECT id,pool FROM resource_operations WHERE terminal=0 LIMIT 1001")
             .map_err(|_| Error::Journal)?;
         let records = query
             .query_map([], |row| {
@@ -20,27 +20,11 @@ impl Journal {
             })
             .map_err(|_| Error::Journal)?
             .map(|row| {
-                let (stored_pool, payload) = row.map_err(|_| Error::Journal)?;
-                let value: serde_json::Value =
-                    serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
-                let mut record: ResourceOperationRecord =
-                    serde_json::from_value(value.clone()).map_err(|_| Error::Journal)?;
-                record.power_batch_plan = value
-                    .get("power_batch_plan")
-                    .filter(|v| !v.is_null())
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
+                let (id, stored_pool) = row.map_err(|_| Error::Journal)?;
+                let id = serde_json::from_value(serde_json::Value::String(id))
                     .map_err(|_| Error::Journal)?;
-                crate::power_batch::validate_record(&record)?;
+                let record = self.resource_load(id)?.ok_or(Error::Journal)?;
                 if record.pool.to_string() != stored_pool || record.state.terminal() {
-                    return Err(Error::Journal);
-                }
-                record
-                    .action
-                    .validate(record.target)
-                    .map_err(|_| Error::Journal)?;
-                if matches!(record.target, ResourceTarget::Pool(pool) if pool!=record.pool) {
                     return Err(Error::Journal);
                 }
                 Ok(record)
@@ -88,6 +72,13 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let cross_pool_plan = payload
+                .get("cross_pool_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let mut record: ResourceOperationRecord =
                 serde_json::from_value(payload).map_err(|_| Error::Journal)?;
             if !record.state.terminal() {
@@ -103,6 +94,7 @@ impl Journal {
             record.host_plan = host_plan;
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
+            record.cross_pool_plan = cross_pool_plan;
             record.task = task;
             record.result_reference = result_reference;
             record.revision = revision;
@@ -111,6 +103,10 @@ impl Journal {
                 crate::power_batch::validate_record(&record)?;
             }
 
+            if record.id != id {
+                return Err(Error::Journal);
+            }
+            crate::cross_pool_backend::validate_record(&record)?;
             Ok(record)
         })
         .transpose()
@@ -119,6 +115,7 @@ impl Journal {
         if !record.state.terminal() || record.power_batch_plan.is_some() {
             crate::power_batch::validate_record(record)?;
         }
+        crate::cross_pool_backend::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
@@ -133,6 +130,16 @@ impl Journal {
                 return Err(Error::JournalChanged);
             }
             if !crate::transfer::valid_update(&old, record) {
+                return Err(Error::JournalChanged);
+            }
+            if old.cross_pool_plan.as_ref().is_some_and(|p| {
+                record
+                    .cross_pool_plan
+                    .as_ref()
+                    .is_none_or(|n| !p.accepts(n))
+            }) || (matches!(record.action, ResourceAction::CrossPoolVm(_))
+                && !cross_created_contains(&record.transfer_created, &old.transfer_created))
+            {
                 return Err(Error::JournalChanged);
             }
             if old.snapshot_policy_evidence.as_ref().is_some_and(|e| {
@@ -180,6 +187,12 @@ impl Journal {
         if let Some(plan) = &record.power_batch_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "power_batch_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
+        if let Some(plan) = &record.cross_pool_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "cross_pool_plan".into(),
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
             );
         }
@@ -302,6 +315,31 @@ impl Journal {
                 current.plugin_success |= evidence.plugin_success;
             }
             current.pool_completed |= evidence.pool_completed;
+            if let (Some(current_plan), Some(evidence_plan)) =
+                (&mut current.cross_pool_plan, &evidence.cross_pool_plan)
+            {
+                current_plan.merge(evidence_plan)?;
+                for id in &evidence.transfer_created.vms {
+                    if !current.transfer_created.vms.contains(id) {
+                        current.transfer_created.vms.push(*id);
+                    }
+                }
+                for id in &evidence.transfer_created.disks {
+                    if !current.transfer_created.disks.contains(id) {
+                        current.transfer_created.disks.push(*id);
+                    }
+                }
+                for id in &evidence.transfer_created.vbds {
+                    if !current.transfer_created.vbds.contains(id) {
+                        current.transfer_created.vbds.push(*id);
+                    }
+                }
+                for id in &evidence.transfer_created.vifs {
+                    if !current.transfer_created.vifs.contains(id) {
+                        current.transfer_created.vifs.push(*id);
+                    }
+                }
+            }
             current.appliance_completed |= evidence.appliance_completed;
             if !current.state.terminal() && current.state != OperationState::OutcomeUnknown {
                 current.state = if current.task.is_some() {
@@ -481,4 +519,11 @@ impl Journal {
         }
         Ok(rows)
     }
+}
+
+fn cross_created_contains(new: &crate::TransferCreated, old: &crate::TransferCreated) -> bool {
+    old.vms.iter().all(|id| new.vms.contains(id))
+        && old.disks.iter().all(|id| new.disks.contains(id))
+        && old.vbds.iter().all(|id| new.vbds.contains(id))
+        && old.vifs.iter().all(|id| new.vifs.contains(id))
 }

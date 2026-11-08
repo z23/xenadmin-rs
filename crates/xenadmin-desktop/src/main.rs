@@ -3,6 +3,7 @@ mod activity_export;
 mod appliance_view;
 mod bulk_power;
 mod console_view;
+mod cross_pool_vm;
 mod demo_details;
 mod dev_inspection;
 mod host_admin;
@@ -169,6 +170,7 @@ struct State {
     devices: Option<vm_devices::DeviceView>,
     vm_lifecycle: Option<vm_lifecycle::Panel>,
     vm_migration: Option<Box<vm_migration::Editor>>,
+    cross_pool: cross_pool_vm::Panel,
     transfers: transfers::Panel,
     workspace: profiles_view::Workspace,
     diagnostic_results: Vec<String>,
@@ -277,6 +279,7 @@ fn init() -> State {
         devices: None,
         vm_lifecycle: None,
         vm_migration: None,
+        cross_pool: Default::default(),
         transfers: Default::default(),
         workspace: profiles_view::Workspace::load(preferences.last_profile, instance.is_some()),
         diagnostic_results: Vec::new(),
@@ -1209,6 +1212,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .key("add-connection"),
         );
     }
+    controls = controls.child(
+        Button::new("Cross-pool transfers")
+            .on_press(cross_pool_vm::history)
+            .build(&k)
+            .key("cross-pool-history"),
+    );
     if s.window_width < 800.0 {
         controls = controls.child(
             Button::new("Connections")
@@ -1365,6 +1374,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
     } else if s.transfers.show {
         rune_kit::root(base, [transfers::dialog(s, &k)])
+    } else if s.cross_pool.show {
+        rune_kit::root(base, [cross_pool_vm::dialog(s, &k)])
     } else if s.vm_migration.is_some() {
         rune_kit::root(base, [vm_migration::dialog(s, &k)])
     } else if s.vm_lifecycle.is_some() {
@@ -1539,6 +1550,7 @@ fn details(s: &State, k: &Kit) -> El {
         detail = detail
             .child(vm_lifecycle::controls(s, vm, k))
             .child(vm_migration::button(s, vm, k))
+            .child(cross_pool_vm::button(s, vm, k))
             .child(transfers::button(s, vm, k));
     }
     detail = detail.child(metrics_view::button(s, k));
@@ -1902,6 +1914,7 @@ fn demo(s: &mut State) {
     s.devices = None;
     s.vm_lifecycle = None;
     s.vm_migration = None;
+    s.cross_pool = Default::default();
     s.operation_rows.clear();
     s.operations.clear();
     s.properties = None;
@@ -2061,6 +2074,7 @@ fn main() {
             ("firmware-create", vm_lifecycle::firmware_scene),
             ("secure-boot", vm_properties::firmware_scene),
             ("vm-migration", vm_migration::scene),
+            ("cross-pool", cross_pool_vm::scene),
             ("archive-export", transfers::scene),
             ("ovf-import", |s| transfers::ovf_scene(s, false)),
             ("ovf-export", |s| transfers::ovf_scene(s, true)),

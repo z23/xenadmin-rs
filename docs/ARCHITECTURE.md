@@ -505,3 +505,17 @@ verification evidence; recovery checks sent work only and never submits pending 
 A user stop finishes the current task and skips the rest without calling task.cancel. Late
 receipts preserve recovered unknown or acknowledged state. See the
 [bulk power backend report](reports/2026-11-08-bulk-power-backend.md).
+
+
+## Cross-pool VM transfers
+
+`CrossPoolVmSelection` captures current source and destination observations, exact disk/NIC
+mappings and an explicit host-transport review. The resource journal reserves both pools;
+its private `cross_pool_plan` persists bounded identity baselines, graph/shape and monotonic
+receipts, while receiver session credentials remain transient. Destination identities are
+verified independently before source disposition, retaining partial resources in public
+history. Recovery reads the original evidence with both current connections and never
+replays receiver preparation or transfer. The original worker stops after recovered unknown
+state even if a late positive receipt arrives. Public Activity exports include the destination
+pool so UUIDs are unambiguous. See the [cross-pool report](reports/2026-11-08-cross-pool-transfers.md)
+for the supported subset, host-to-host transport policy and qualification gaps.

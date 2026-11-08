@@ -44,14 +44,14 @@ pub(crate) struct Plan {
     pub baseline: Vec<Uuid>,
     pub completed: bool,
 }
-fn id<T: From<Uuid>>(r: &Value) -> Result<T, Error> {
+pub(crate) fn id<T: From<Uuid>>(r: &Value) -> Result<T, Error> {
     r["uuid"]
         .as_str()
         .and_then(|s| s.parse::<Uuid>().ok())
         .map(T::from)
         .ok_or(Error::MigrationConflict)
 }
-fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
+pub(crate) fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
     let a = r[key]
         .as_array()
         .filter(|a| a.len() <= 256)
@@ -65,20 +65,20 @@ fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
     }
     Ok(values)
 }
-fn text(r: &Value, key: &str) -> Result<String, Error> {
+pub(crate) fn text(r: &Value, key: &str) -> Result<String, Error> {
     r[key]
         .as_str()
         .filter(|s| s.len() <= 256)
         .map(str::to_owned)
         .ok_or(Error::MigrationConflict)
 }
-fn number(r: &Value, key: &str) -> Result<u64, Error> {
+pub(crate) fn number(r: &Value, key: &str) -> Result<u64, Error> {
     r[key]
         .as_u64()
         .or_else(|| r[key].as_str().and_then(|s| s.parse().ok()))
         .ok_or(Error::MigrationConflict)
 }
-fn idle(r: &Value) -> Result<(), Error> {
+pub(crate) fn idle(r: &Value) -> Result<(), Error> {
     if r["current_operations"]
         .as_object()
         .is_some_and(|m| m.is_empty())
@@ -88,18 +88,25 @@ fn idle(r: &Value) -> Result<(), Error> {
         Err(Error::Busy)
     }
 }
-async fn fresh(session: &Session, class: &str, uuid: Uuid) -> Result<(String, Value), Error> {
+pub(crate) async fn fresh(
+    session: &Session,
+    class: &str,
+    uuid: Uuid,
+) -> Result<(String, Value), Error> {
     snapshots::optional_record(session, class, &uuid.to_string())
         .await?
         .ok_or(Error::MigrationConflict)
 }
-async fn read(session: &Session, class: &str, reference: &str) -> Result<Value, Error> {
+pub(crate) async fn read(session: &Session, class: &str, reference: &str) -> Result<Value, Error> {
     snapshots::reference(&json!(reference))?;
     session
         .call(&format!("{class}.get_record"), vec![json!(reference)])
         .await
 }
-async fn nullable_host(session: &Session, value: &Value) -> Result<Option<HostId>, Error> {
+pub(crate) async fn nullable_host(
+    session: &Session,
+    value: &Value,
+) -> Result<Option<HostId>, Error> {
     if value == "OpaqueRef:NULL" {
         Ok(None)
     } else {
@@ -152,7 +159,7 @@ async fn guest(session: &Session, plan: &Plan, original: bool) -> Result<(String
     }
     Ok((reference, r))
 }
-async fn graph(session: &Session, vmref: &str, r: &Value) -> Result<Graph, Error> {
+pub(crate) async fn graph(session: &Session, vmref: &str, r: &Value) -> Result<Graph, Error> {
     let mut disks = vec![];
     for reference in refs(r, "VBDs")? {
         let v = read(session, "VBD", &reference).await?;
@@ -237,7 +244,7 @@ fn matches_review(g: &Graph, o: &VmMigration) -> bool {
                 .map(|n| (n.vif, n.expected_network))
                 .collect()
 }
-async fn host(session: &Session, target: HostId) -> Result<String, Error> {
+pub(crate) async fn host(session: &Session, target: HostId) -> Result<String, Error> {
     let (reference, h) = fresh(session, "host", target.uuid()).await?;
     idle(&h)?;
     if h["enabled"] != true {
@@ -250,7 +257,7 @@ async fn host(session: &Session, target: HostId) -> Result<String, Error> {
     }
     Ok(reference)
 }
-async fn sr_visible(
+pub(crate) async fn sr_visible(
     session: &Session,
     sr: SrId,
     hostref: &str,
@@ -276,7 +283,7 @@ async fn sr_visible(
     }
     Ok(reference)
 }
-async fn network_visible(
+pub(crate) async fn network_visible(
     session: &Session,
     network: NetworkId,
     hostref: &str,

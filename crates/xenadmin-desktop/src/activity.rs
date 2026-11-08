@@ -272,6 +272,7 @@ fn rebuild(s: &mut State) {
             }
             for record in &s.resource_rows {
                 let key = history_key(record.pool, record.id, Family::Resource);
+
                 let is_hidden = hidden(s, key, record.state.terminal());
                 let mut details = format!(
                     "{}\nTarget {}\nPool {}\nOperation {}",
@@ -280,6 +281,12 @@ fn rebuild(s: &mut State) {
                     record.pool,
                     record.id
                 );
+                if let xenadmin_core::ResourceAction::CrossPoolVm(operation) = &record.action {
+                    details.push_str(&format!(
+                        "\nSource VM: {}\nDestination pool: {}",
+                        operation.vm, operation.destination_pool
+                    ));
+                }
                 if let Some(created) = record.created {
                     details.push_str(&format!("\nCreated resource: {}", created.uuid()));
                 }
@@ -475,6 +482,18 @@ fn recheck(s: &mut State) {
         return;
     };
     if !can_recheck(s, &row) {
+        return;
+    }
+    if matches!(key.family, Family::Resource)
+        && s.resource_rows.iter().any(|r| {
+            r.id == key.id && matches!(r.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
+        })
+    {
+        s.activity.notice = Some(
+            cross_pool_vm::recheck(s, key.id)
+                .map(|()| "Checking both pools; no transfer is replayed.".into())
+                .unwrap_or_else(|e| e.to_string()),
+        );
         return;
     }
     let connection = match key.family {
