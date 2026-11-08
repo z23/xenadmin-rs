@@ -484,3 +484,12 @@ streams stable disks into an owned mode-0700 staging directory, validates a gene
 descriptor and integrity manifest, and publishes a new file or directory atomically
 without replacement. See the [OVF/OVA transfer report](reports/2026-11-08-ovf-ova-transfers.md)
 for the supported ordinary-guest subset and remaining interoperability gaps.
+## Cross-pool search
+
+`InventorySearch` is a pure typed projection/filter over immutable inventories. Search
+results carry pool UUID plus typed object identity. The desktop coalesces connected profile
+aliases by pool, preferring current and selected profiles, and labels stale/partial coverage.
+Opening a result rechecks the live pool and exact object/parent before selecting a view.
+Versioned `SearchCatalog` files contain filters only; imports are bounded and reviewed,
+conflicts do not overwrite local definitions, and native callbacks are scoped to a workspace.
+See [verification and remaining work](reports/2026-11-08-cross-pool-search.md).

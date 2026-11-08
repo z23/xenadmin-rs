@@ -14,6 +14,7 @@ mod preferences;
 mod profiles_view;
 mod resource_admin;
 mod resource_details;
+mod search_view;
 mod snapshot_policy_view;
 mod storage_view;
 mod transfers;
@@ -146,6 +147,7 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    searches: Option<search_view::Workspace>,
     metrics: Option<metrics_view::MetricsUi>,
     activity: activity::Activity,
     resource_editor: Option<resource_admin::Editor>,
@@ -251,6 +253,7 @@ fn init() -> State {
         .flatten()
         .or(inspection_error);
     let mut s = State {
+        searches: None,
         metrics: None,
         activity: activity::Activity::default(),
         resource_editor: None,
@@ -740,6 +743,7 @@ fn merge_operation_rows(
 
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
+    changed |= search_view::poll(s);
     changed |= resource_admin::poll(s);
     changed |= storage_view::poll(s);
     changed |= snapshot_policy_view::poll(s);
@@ -1195,6 +1199,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
+        Button::new("Search pools")
+            .on_press(search_view::open)
+            .build(&k)
+            .key("search-pools-open"),
+    );
+    controls = controls.child(
         Button::new("Snapshot schedules")
             .disabled(s.inventory.is_none())
             .on_press(snapshot_policy_view::open)
@@ -1381,6 +1391,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
     let root = if s.workspace.show_manager {
         rune_kit::root(root, [profiles_view::dialog(s, &k)])
+    } else {
+        root
+    };
+    let root = if s.searches.is_some() {
+        rune_kit::root(root, [search_view::dialog(s, &k)])
     } else {
         root
     };
@@ -1965,6 +1980,7 @@ fn main() {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("search-pools", search_view::scene),
             ("performance", metrics_view::scene),
             ("unavailable-actions", |s| {
                 demo(s);

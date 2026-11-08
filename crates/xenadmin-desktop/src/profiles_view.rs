@@ -419,7 +419,7 @@ fn clear_view(s: &mut State) {
     s.demo = false;
 }
 
-fn select(s: &mut State, id: ProfileId) {
+pub(super) fn select(s: &mut State, id: ProfileId) {
     let Some(connection) = s.workspace.active.get(&id).cloned() else {
         return;
     };

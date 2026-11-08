@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub saved_searches: xenadmin_core::SearchCatalog,
     pub hidden_history: Vec<crate::activity::HiddenKey>,
     pub last_profile: Option<xenadmin_core::ProfileId>,
     pub endpoint: String,
@@ -17,6 +18,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            saved_searches: Default::default(),
             hidden_history: Vec::new(),
             last_profile: None,
             endpoint: String::new(),
@@ -50,6 +52,9 @@ impl Preferences {
         }
         prefs.sidebar_width = prefs.sidebar_width.clamp(180.0, 420.0);
         prefs.hidden_history.truncate(5000);
+        if prefs.saved_searches.validate().is_err() {
+            prefs.saved_searches = Default::default();
+        }
         prefs
             .columns
             .retain(|_, width| width.is_finite() && (32.0..=2000.0).contains(width));

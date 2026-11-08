@@ -34,7 +34,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P01-03 | Session renewal and reconnect | Bounded reconnect/resync and jitter implemented; coordinator-outage qualification open |
 | P01-04 | Try remembered verified pool members after endpoint failure | Verified-member candidates persisted and retried; live failover qualification open |
 | P01-05 | Multiple saved connection profiles | Profile editor, persistence and legacy migration implemented; desktop/lab qualification open |
-| P01-06 | Simultaneous pools and unified inventory | Concurrent connections and pool switcher implemented; unified cross-pool views/search remain queued |
+| P01-06 | Simultaneous pools and unified inventory | Concurrent connections, pool switcher and unified cross-pool search implemented; typed identities, alias deduplication and stale coverage fixture verified; live qualification open |
 | P01-07 | Deduplicate aliases/member endpoints for the same pool | Authenticated owner sharing, authority-mismatch rejection and exclusive desktop state-directory lock implemented; lab qualification open |
 | P01-08 | Connect/disconnect all; remove profiles; reconnect as another user | Profile edit/remove, per-connection and bulk controls implemented; bounded saved-credential loads, per-profile failures and pending cancellation fixture-verified; live qualification open |
 | P01-09 | Session-only password | Existing workflow; qualification open |
@@ -60,7 +60,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P02-08 | Physical NIC/link/bond/VLAN inspection | Host/network details display PIF addressing, management/physical flags, VLAN, MTU and bond members/mode/link count; link-speed/path inspection remains partial |
 | P02-09 | SR attachment/path and disk inspection | SR details display host attachments, disk capacity/flags and VM/snapshot consumers; multipath/path inspection remains queued |
 | P02-10 | Live inventory/stale-state handling | Optional-class negotiation, isolated decode failures and bounded resync implemented; live compatibility/scale qualification open |
-| P02-11 | Filtered/grouped/saved/cross-pool searches | Queued |
+| P02-11 | Filtered/grouped/saved/cross-pool searches | Typed cross-pool text/type/power/host/pool/tag/folder/custom-field filters, grouped ordering and saved definitions implemented and fixture verified; [search report](reports/2026-11-08-cross-pool-search.md); live qualification open |
 | P02-12 | Multi-object actions and context menus | Queued |
 
 ## 3. VM power and recovery
@@ -295,7 +295,7 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | P15-04 | vApps: create/edit/delete/membership | Reviewed empty-group creation, metadata edits, per-VM membership and empty-group deletion implemented; fresh identity/graph and lost-reply fixtures verified, lab qualification open |
 | P15-05 | vApp ordered startup/shutdown and delays | Per-member order/delay edits and explicit ordered start, clean or force shutdown implemented; exact captured members, durable completion and partial-child fixtures verified, lab qualification open |
 | P15-06 | Bulk properties/delete/move/export | Queued |
-| P15-07 | Search definition import/export/resource export | Queued |
+| P15-07 | Search definition import/export/resource export | Reviewed bounded JSON search-definition import/export implemented with native pickers; legacy XenCenter XML interoperability and resource-result export remain open |
 
 ## 18. Linux desktop and extensibility
 

@@ -1,5 +1,9 @@
 mod device_properties;
+mod search;
 pub use device_properties::{DeviceProperty, DeviceQos, DiskAccess};
+pub use search::{
+    InventorySearch, SavedSearch, SearchCatalog, SearchGroup, SearchKind, SearchResult,
+};
 mod appliances;
 pub use appliances::{ApplianceMember, ApplianceOperation, ApplianceOrder, AppliancePower};
 mod connection;
