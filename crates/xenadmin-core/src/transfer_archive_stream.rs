@@ -15,38 +15,14 @@ struct Header {
     size: u64,
 }
 
-struct Cancellable<'a> {
-    reader: &'a mut dyn Read,
-    cancel: &'a dyn Fn() -> bool,
-}
-
-impl Read for Cancellable<'_> {
-    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        if (self.cancel)() {
-            // Interrupted is retried by Read::read_exact and would not stop decompression.
-            return Err(std::io::Error::other("archive verification cancelled"));
-        }
-        let length = bytes.len().min(64 * 1024);
-        self.reader.read(&mut bytes[..length])
-    }
-}
-
 fn decode(
     reader: &mut dyn Read,
-    gzip: bool,
+    compression: super::XvaCompression,
     expected_metadata: &[u8; 32],
     cancel: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
-    let mut input = Cancellable { reader, cancel };
-    let result = if gzip {
-        stream(
-            &mut flate2::read::MultiGzDecoder::new(input),
-            expected_metadata,
-            cancel,
-        )
-    } else {
-        stream(&mut input, expected_metadata, cancel)
-    };
+    let result = super::compression::decoder(reader, compression, cancel)
+        .and_then(|mut reader| stream(&mut reader, expected_metadata, cancel));
     if cancel() { Err(Error::Closed) } else { result }
 }
 
@@ -266,10 +242,8 @@ pub(crate) fn verify_with_stop(
     cancel: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     files::rewind(file)?;
-    let mut magic = [0; 2];
-    read_exact(file, &mut magic)?;
-    files::rewind(file)?;
-    let result = decode(file, magic == [0x1f, 0x8b], expected_metadata, cancel);
+    let compression = super::compression::detect(file)?;
+    let result = decode(file, compression, expected_metadata, cancel);
     files::rewind(file)?;
     result
 }

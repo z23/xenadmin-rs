@@ -14,6 +14,10 @@ pub(crate) mod http;
 #[path = "transfer_xapi.rs"]
 pub(crate) mod xapi;
 
+#[path = "transfer_compression.rs"]
+mod compression;
+pub use compression::XvaCompression;
+
 pub const MAX_TRANSFER_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExportSource {
@@ -51,6 +55,8 @@ pub enum TransferAction {
     },
     ExportXva {
         source: ExportSource,
+        #[serde(default)]
+        compression: XvaCompression,
     },
     ImportXva {
         sr: SrId,
@@ -117,6 +123,7 @@ impl TransferAction {
             }
             return Self::ExportXva {
                 source: source.clone(),
+                compression: XvaCompression::Uncompressed,
             }
             .availability(i);
         }
@@ -188,6 +195,7 @@ impl TransferAction {
                         vm,
                         expected_template,
                     },
+                ..
             } => {
                 let Some(v) = i
                     .vms
@@ -227,11 +235,13 @@ impl TransferAction {
                         memory,
                         ..
                     },
+                ..
             } => {
                 return checkpoint::availability(i, *snapshot, *parent, memory);
             }
             Self::ExportXva {
                 source: ExportSource::Snapshot { snapshot, parent },
+                ..
             } => {
                 if i.snapshots.get(snapshot).is_none_or(|s| {
                     s.vm != Some(*parent) || s.power_state != crate::PowerState::Halted
@@ -351,6 +361,8 @@ pub struct ArchiveGuest {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchiveSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<XvaCompression>,
     pub guests: Vec<ArchiveGuest>,
     pub data_disks: usize,
     pub virtual_bytes: u64,

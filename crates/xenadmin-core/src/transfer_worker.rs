@@ -86,7 +86,8 @@ impl ResourceRequest {
             ResourceAction::Transfer(
                 TransferAction::ImportCheckpointXva { .. }
                     | TransferAction::ExportXva {
-                        source: crate::ExportSource::Checkpoint { .. }
+                        source: crate::ExportSource::Checkpoint { .. },
+                        ..
                     }
             )
         )
@@ -728,8 +729,11 @@ impl ResourceRequest {
                             &operation,
                             &validation_cancel,
                         )?,
-                        TransferAction::ExportXva { source } => {
-                            files::validate_export(&plan, &source, &validation_cancel)?
+                        TransferAction::ExportXva {
+                            source,
+                            compression,
+                        } => {
+                            files::validate_export(&plan, &source, compression, &validation_cancel)?
                         }
                         TransferAction::ExportDisk {
                             format,

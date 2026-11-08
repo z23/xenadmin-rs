@@ -85,7 +85,9 @@ pub(crate) fn select_source(
     if !(2..=MAX_TRANSFER_BYTES).contains(&identity.size) {
         return Err(Error::TransferLimit);
     }
-    let summary = super::archive::inspect(&mut file)?;
+    let summary = super::archive::inspect_with_stop(&mut file, &|| {
+        cancel.load(std::sync::atomic::Ordering::Relaxed)
+    })?;
     if summary.memory_images() > 0 {
         super::archive_stream::verify_with_stop(&mut file, &summary.metadata_digest, &|| {
             cancel.load(std::sync::atomic::Ordering::Relaxed)
@@ -387,6 +389,7 @@ pub(crate) fn validate_host_export(
 pub(crate) fn validate_export(
     plan: &Plan,
     source: &ExportSource,
+    compression: super::XvaCompression,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
     let receipt = plan.stream_receipt.as_ref().ok_or(Error::TransferFile)?;
@@ -404,7 +407,10 @@ pub(crate) fn validate_export(
     }) {
         return Err(Error::TransferFileChanged);
     }
-    let summary = super::archive::inspect(&mut file)?;
+    let summary = super::archive::inspect_with_stop(&mut file, &|| cancel.is_cancelled())?;
+    if summary.compression != Some(compression) {
+        return Err(Error::TransferConflict);
+    }
     let expected = match source {
         ExportSource::Vm { vm, .. } => vm.uuid(),
         ExportSource::Snapshot { snapshot, .. } | ExportSource::Checkpoint { snapshot, .. } => {
@@ -510,7 +516,7 @@ pub(crate) fn revalidate_checkpoint_source(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), Error> {
     let mut file = source(selection)?;
-    let summary = super::archive::inspect(&mut file)?;
+    let summary = super::archive::inspect_with_stop(&mut file, &|| cancel.is_cancelled())?;
     if selection.manifest.as_ref() != Some(&summary) || summary.memory_images() == 0 {
         return Err(Error::TransferConflict);
     }

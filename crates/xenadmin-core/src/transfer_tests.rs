@@ -1,5 +1,7 @@
 #[path = "transfer_checkpoint_tests.rs"]
 mod checkpoint_tests;
+#[path = "transfer_compression_tests.rs"]
+mod compression_tests;
 use super::*;
 use crate::{
     ConnectionOptions, Credentials, Endpoint, OperationId, OperationState, ResourceTarget,
@@ -449,7 +451,9 @@ impl Fixture {
                                 status = "302 Found";
                                 extra = "Location: http://127.0.0.1:1/import\r\n".into();
                             } else {
-                                if data.contains_key("fixture:checkpoint") {
+                                if let Some(expected) = data.get("fixture:upload_bytes") {
+                                    assert_eq!(json!(&input), *expected);
+                                } else if data.contains_key("fixture:checkpoint") {
                                     assert_eq!(input, checkpoint_tests::archive(2, 10, true));
                                 } else {
                                     assert_eq!(input, archive(2));
@@ -494,6 +498,17 @@ impl Fixture {
                                 status = "401 Unauthorized";
                                 b"session_id=PRIVATE".to_vec()
                             } else {
+                                let u = url::Url::parse(&format!(
+                                    "http://localhost{}",
+                                    request.split_whitespace().nth(1).unwrap()
+                                ))
+                                .unwrap();
+                                let q = u.query_pairs().collect::<BTreeMap<_, _>>();
+                                let expected_compression = data
+                                    .get("fixture:expected_compression")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("false");
+                                assert_eq!(q["use_compression"], expected_compression);
                                 let mut archive = if data.contains_key("fixture:checkpoint") {
                                     let u = url::Url::parse(&format!(
                                         "http://localhost{}",
@@ -501,7 +516,6 @@ impl Fixture {
                                     ))
                                     .unwrap();
                                     let q = u.query_pairs().collect::<BTreeMap<_, _>>();
-                                    assert_eq!(q["use_compression"], "false");
                                     let preserve = q["preserve_power_state"] == "true";
                                     let memory = if data.get("fixture:checkpoint_fault")
                                         == Some(&json!("wrong_export_memory"))
@@ -541,7 +555,11 @@ impl Fixture {
                                     };
                                     archive[position] ^= 1;
                                 }
-                                archive
+                                let response_compression = data
+                                    .get("fixture:response_compression")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or(expected_compression);
+                                compression_tests::encode(&archive, response_compression)
                             }
                         }
                     } else {
@@ -715,6 +733,7 @@ async fn execute(f: &Fixture, dir: &Path, export: bool) -> crate::ResourceOperat
     };
     let action = if export {
         TransferAction::ExportXva {
+            compression: crate::XvaCompression::Uncompressed,
             source: if f.records.lock().unwrap()["OpaqueRef:VM:source"]["is_a_snapshot"] == true {
                 ExportSource::Snapshot {
                     snapshot: uuid(2).into(),
@@ -1091,6 +1110,7 @@ async fn read_only_client_exports_but_cannot_import_and_recovers_only_exports() 
             pool,
             TransferRequest {
                 action: TransferAction::ExportXva {
+                    compression: crate::XvaCompression::Uncompressed,
                     source: ExportSource::Vm {
                         vm: uuid(2).into(),
                         expected_template: false,
@@ -1144,6 +1164,7 @@ async fn operation_identity_includes_selected_file_and_private_receipts_cannot_r
     let d = tempfile::tempdir().unwrap();
     let request = |path: &str| TransferRequest {
         action: TransferAction::ExportXva {
+            compression: crate::XvaCompression::Uncompressed,
             source: ExportSource::Vm {
                 vm: uuid(2).into(),
                 expected_template: false,

@@ -219,3 +219,7 @@ done
 "$check_binary" --snap artifacts/management-ipv6-bond-compact.png --tree artifacts/management-ipv6-bond-compact.json --scene management-ipv6-bond --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/batch-delete.png --tree artifacts/batch-delete.json --scene batch-delete --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/batch-delete-compact.png --tree artifacts/batch-delete-compact.json --scene batch-delete --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/xva-compression.png --tree artifacts/xva-compression.json --scene xva-compression --theme dark --size 1440x900 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/xva-compression-compact.png --tree artifacts/xva-compression-compact.json --scene xva-compression --theme dark --size 513x652 --scale 1 --at 1

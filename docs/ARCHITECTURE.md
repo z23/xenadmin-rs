@@ -836,3 +836,10 @@ reviewed `LeavePartial` purpose claims a verified predecessor and records a term
 release; it sends no host calls, preserves achieved-stage evidence, and permanently disables
 continuation of that lineage. Closing the UI does not release a staged reservation. See the
 [IPv6 handover report](reports/2026-11-08-management-ipv6-bonds.md).
+
+XVA compression is an immutable export-action choice with a backward-compatible plain default.
+Source format is detected from bytes. A common bounded, cancellation-aware decoder feeds metadata
+inspection and complete archive verification; zstd history is limited to 128 MiB. Exports must
+match the chosen format and complete all decoded identity/checksum/termination checks before
+publication. Original compressed import bytes and existing receipt/provenance rules are preserved.
+See the [compression report](reports/2026-11-08-xva-compression.md) for validation limits.

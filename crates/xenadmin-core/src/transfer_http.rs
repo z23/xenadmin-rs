@@ -294,7 +294,8 @@ pub(crate) async fn run(
             }
         }
         if bytes == 0
-            || (!prepared.kind.is_host() && bytes < 512)
+            || (matches!(prepared.kind, Kind::Disk) && bytes < 512)
+            || (matches!(prepared.kind, Kind::Archive) && bytes < 4)
             || expected.is_some_and(|n| n != bytes)
         {
             return Err(Error::TransferConflict);

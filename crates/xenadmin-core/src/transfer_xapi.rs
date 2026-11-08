@@ -115,7 +115,10 @@ pub(crate) async fn prepare(
     let endpoint = s.options().endpoint.clone();
     let mut query = vec![];
     match action {
-        TransferAction::ExportXva { source } => {
+        TransferAction::ExportXva {
+            source,
+            compression,
+        } => {
             let (reference, r) = match source {
                 ExportSource::Vm {
                     vm,
@@ -168,7 +171,7 @@ pub(crate) async fn prepare(
                 return Err(Error::UnavailableAction);
             }
             query.push(("uuid".into(), id(&r)?.to_string()));
-            query.push(("use_compression".into(), "false".into()));
+            query.push(("use_compression".into(), compression.query().into()));
             query.push((
                 "preserve_power_state".into(),
                 matches!(

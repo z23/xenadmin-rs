@@ -2362,6 +2362,7 @@ fn main() -> std::process::ExitCode {
             ("ha-policy", pool_view::ha_scene),
             ("failure-help", failure_help::scene),
             ("checkpoint-export", transfers::checkpoint_scene),
+            ("xva-compression", transfers::compression_scene),
             ("cloud-init", cloud_init_view::scene),
             ("cloud-init-review", cloud_init_view::review_scene),
             ("ovf-import", |s| transfers::ovf_scene(s, false)),

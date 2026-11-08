@@ -84,6 +84,7 @@ pub(crate) async fn capture(
         s,
         pool,
         &TransferAction::ExportXva {
+            compression: crate::XvaCompression::Uncompressed,
             source: source.clone(),
         },
         None,

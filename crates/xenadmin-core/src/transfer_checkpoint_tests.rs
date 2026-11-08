@@ -1,5 +1,4 @@
 use super::*;
-use std::io::Write;
 
 fn metadata(vm: u128, memory: u128, preserve: bool) -> Value {
     let mut objects = vec![
@@ -73,7 +72,7 @@ pub(super) fn imported(records: &mut BTreeMap<String, Value>) {
         );
     }
 }
-fn setup(f: &Fixture) {
+pub(super) fn setup(f: &Fixture) {
     let mut r = f.records.lock().unwrap();
     r.insert("fixture:checkpoint".into(), json!(true));
     let v = r.get_mut("OpaqueRef:VM:source").unwrap();
@@ -87,8 +86,9 @@ fn setup(f: &Fixture) {
     );
     r.insert("OpaqueRef:VDI:memory".into(),json!({"uuid":uuid(10),"SR":"OpaqueRef:SR:s","virtual_size":"2048","type":"suspend","managed":true,"missing":false,"current_operations":{},"VBDs":[]}));
 }
-fn action(preserve: bool) -> TransferAction {
+pub(super) fn action(preserve: bool) -> TransferAction {
     TransferAction::ExportXva {
+        compression: crate::XvaCompression::Uncompressed,
         source: ExportSource::Checkpoint {
             snapshot: uuid(2).into(),
             parent: uuid(9).into(),
@@ -101,7 +101,7 @@ fn action(preserve: bool) -> TransferAction {
         },
     }
 }
-async fn run(
+pub(super) async fn run(
     f: &Fixture,
     dir: &Path,
     action: TransferAction,
@@ -132,20 +132,15 @@ async fn run(
     (*handle.latest()).clone()
 }
 #[test]
-fn checkpoint_archive_requires_unique_memory_graph_and_complete_plain_or_gzip_stream() {
+fn checkpoint_archive_requires_unique_memory_graph_and_complete_plain_gzip_or_zstd_stream() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("checkpoint.xva");
-    for gzip in [false, true] {
-        let bytes = archive(2, 10, true);
-        if gzip {
-            let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            gz.write_all(&bytes).unwrap();
-            std::fs::write(&path, gz.finish().unwrap()).unwrap();
-        } else {
-            std::fs::write(&path, bytes).unwrap();
-        }
+    for compression in XvaCompression::ALL {
+        let bytes = compression_tests::encode(&archive(2, 10, true), compression.query());
+        std::fs::write(&path, bytes).unwrap();
         let file = TransferFile::source(&path).unwrap();
         let a = file.archive().unwrap();
+        assert_eq!(a.compression, Some(compression));
         assert_eq!(a.memory_images(), 1);
         assert_eq!(a.data_disks, 1);
         assert_eq!(a.virtual_bytes, 6144);

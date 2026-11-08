@@ -177,7 +177,9 @@ fn cancellation_interrupts_scanning_empty_gzip_members_before_a_tar_header() {
         cancel: cancel.clone(),
     };
     assert!(matches!(
-        decode(&mut reader, true, &[0; 32], &|| cancel.is_cancelled()),
+        decode(&mut reader, crate::XvaCompression::Gzip, &[0; 32], &|| {
+            cancel.is_cancelled()
+        }),
         Err(Error::Closed)
     ));
     assert_eq!(reader.count, 8);

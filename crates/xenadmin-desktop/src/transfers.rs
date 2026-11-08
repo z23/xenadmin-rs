@@ -3,6 +3,9 @@ use super::*;
 #[path = "checkpoint_transfer_tests.rs"]
 mod checkpoint_tests;
 #[cfg(test)]
+#[path = "compression_transfer_tests.rs"]
+mod compression_tests;
+#[cfg(test)]
 #[path = "ovf_transfer_tests.rs"]
 mod ovf_tests;
 #[path = "ovf_transfer_ui.rs"]
@@ -24,6 +27,7 @@ pub(super) struct Panel {
     disk_picker: bool,
     ovf_import: bool,
     package_export: Option<OvfPackageFormat>,
+    compression: xenadmin_core::XvaCompression,
     ovf_preview: Option<xenadmin_core::OvfSummary>,
     networks: std::collections::BTreeMap<String, xenadmin_core::NetworkId>,
     inspection_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -97,6 +101,7 @@ pub(super) fn button(s: &State, id: VmId, k: &Kit) -> El {
 }
 pub(super) fn export_button(s: &State, source: ExportSource, k: &Kit) -> El {
     let action = TransferAction::ExportXva {
+        compression: Default::default(),
         source: source.clone(),
     };
     let available = s
@@ -144,7 +149,10 @@ fn action(p: &Panel) -> Option<TransferAction> {
     if let Some(source) = p.source.clone() {
         return Some(match p.package_export {
             Some(format) => TransferAction::ExportOvf { source, format },
-            None => TransferAction::ExportXva { source },
+            None => TransferAction::ExportXva {
+                source,
+                compression: p.compression,
+            },
         });
     }
     if p.ovf_import {
@@ -225,6 +233,7 @@ fn set_format(s: &mut State, format: Option<DiskImageFormat>) {
     cancel_inspection(s);
     s.transfers.ovf_import = false;
     s.transfers.package_export = None;
+    s.transfers.compression = Default::default();
     s.transfers.networks.clear();
     s.transfers.format = format;
     s.transfers.file = None;
@@ -295,7 +304,10 @@ fn choose(s: &mut State, tx: &mut Tx) {
     let extension = if package == Some(OvfPackageFormat::Ova) {
         "ova"
     } else {
-        format.map_or("xva", DiskImageFormat::extension)
+        format.map_or(
+            s.transfers.compression.extension(),
+            DiskImageFormat::extension,
+        )
     };
     let mut options = rune::FileDialogOptions {
         title: if folder {
@@ -320,6 +332,8 @@ fn choose(s: &mut State, tx: &mut Tx) {
             "Disk or archive image",
             &if ovf {
                 vec!["ovf", "ova"]
+            } else if !export && format.is_none() {
+                vec!["xva", "gz", "zst", "zstd"]
             } else {
                 vec![extension]
             },
@@ -624,6 +638,32 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 );
             }
             body = body.child(formats);
+            if p.package_export.is_none() {
+                let mut choices = row().gap(8.0).flex_wrap();
+                for compression in xenadmin_core::XvaCompression::ALL {
+                    choices = choices.child(
+                        Button::new(format!(
+                            "{}{}",
+                            if p.compression == compression {
+                                "✓ "
+                            } else {
+                                ""
+                            },
+                            compression.label()
+                        ))
+                        .disabled(p.review)
+                        .on_press(move |s: &mut State| {
+                            set_format(s, None);
+                            s.transfers.compression = compression;
+                        })
+                        .build(k)
+                        .key(format!("transfer-compression-{}", compression.label())),
+                    );
+                }
+                body = body.child(heading("XVA compression", k)).child(choices)
+                    .child(caption(format!("Output format: {} · .{}", p.compression.label(), p.compression.extension()), k).wrap())
+                    .child(caption("Compressed exports require host support. The downloaded format and complete archive are verified before the new file is published.", k).wrap());
+            }
             if let Some(ExportSource::Checkpoint {
                 memory,
                 preserve_memory,
@@ -738,7 +778,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .key("transfer-disk-name")
                 });
             } else {
-                body=body.child(caption("Import halted guests or memory checkpoints from a plain or gzip XVA archive. New guest identities are created; existing guests are not replaced. Disk-only guests remain halted; memory checkpoints remain suspended and are never resumed automatically. XAPI matches networks by name or creates networks; review NICs before starting a guest.",k).wrap());
+                body=body.child(caption("Import halted guests or memory checkpoints from a plain, gzip or zstd XVA archive. New guest identities are created; existing guests are not replaced. Disk-only guests remain halted; memory checkpoints remain suspended and are never resumed automatically. XAPI matches networks by name or creates networks; review NICs before starting a guest.",k).wrap());
             }
             if let Some(i) = &s.inventory {
                 for sr in &i.storage {
@@ -802,6 +842,16 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 body = body.child(ovf_ui::summary(s, summary, k));
             }
             if let Some(a) = file.archive() {
+                body = body.child(
+                    caption(
+                        format!(
+                            "Archive compression: {}",
+                            a.compression.map_or("Unknown", |c| c.label())
+                        ),
+                        k,
+                    )
+                    .wrap(),
+                );
                 body=body.child(caption(format!("{} guests · {} data disks · {} virtual bytes · {} networks · {} archive bytes",a.guests.len(),a.data_disks,a.virtual_bytes,a.networks,file.size().unwrap_or(0)),k).wrap());
                 if a.memory_images() > 0 {
                     body = body.child(caption(format!("{} guest memory image(s) fully checked. Import will create suspended guests. Memory may contain secrets; review target CPU/hypervisor compatibility and NICs before a separate resume action.", a.memory_images()), k).wrap());
@@ -892,6 +942,10 @@ pub(super) fn scene(s: &mut State) {
             expected_template: false,
         }),
     );
+}
+pub(super) fn compression_scene(s: &mut State) {
+    scene(s);
+    s.transfers.compression = xenadmin_core::XvaCompression::Zstd;
 }
 pub(super) fn checkpoint_scene(s: &mut State) {
     demo(s);

@@ -132,19 +132,21 @@ pub(crate) fn xml_value(xml: &str) -> Result<Value, Error> {
     .map_err(|_| Error::TransferArchive)?;
     value(doc.root_element(), 0)
 }
-pub(crate) fn inspect(file: &mut std::fs::File) -> Result<ArchiveSummary, Error> {
-    let mut magic = [0u8; 2];
-    file.read_exact(&mut magic)
-        .map_err(|_| Error::TransferArchive)?;
+pub(crate) fn inspect_with_stop(
+    file: &mut std::fs::File,
+    cancel: &dyn Fn() -> bool,
+) -> Result<ArchiveSummary, Error> {
+    let compression = super::compression::detect(file)?;
+    let result = header(&mut super::compression::decoder(
+        (&mut *file).take((2 * METADATA_LIMIT) as u64),
+        compression,
+        cancel,
+    )?);
     files::rewind(file)?;
-    let xml = if magic == [0x1f, 0x8b] {
-        header(&mut flate2::read::GzDecoder::new(
-            (&mut *file).take((2 * METADATA_LIMIT) as u64),
-        ))?
-    } else {
-        header(file)?
-    };
-    files::rewind(file)?;
+    if cancel() {
+        return Err(Error::Closed);
+    }
+    let xml = result?;
     let data = xml_value(std::str::from_utf8(&xml).map_err(|_| Error::TransferArchive)?)?;
     let objects = data["objects"]
         .as_array()
@@ -229,6 +231,7 @@ pub(crate) fn inspect(file: &mut std::fs::File) -> Result<ArchiveSummary, Error>
         return Err(Error::TransferArchive);
     }
     Ok(ArchiveSummary {
+        compression: Some(compression),
         guests,
         data_disks: disks,
         virtual_bytes,

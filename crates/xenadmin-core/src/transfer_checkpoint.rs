@@ -181,7 +181,8 @@ pub(crate) fn validate_record(record: &crate::ResourceOperationRecord) -> Result
         action,
         TransferAction::ImportCheckpointXva { .. }
             | TransferAction::ExportXva {
-                source: ExportSource::Checkpoint { .. }
+                source: ExportSource::Checkpoint { .. },
+                ..
             }
     );
     if !checkpoint {
@@ -249,6 +250,7 @@ pub(crate) fn validate_record(record: &crate::ResourceOperationRecord) -> Result
                     memory,
                     ..
                 },
+            ..
         } => {
             if snapshot.uuid().is_nil()
                 || parent.uuid().is_nil()
