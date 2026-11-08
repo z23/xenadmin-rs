@@ -5,6 +5,8 @@ use xenadmin_core::{
 };
 #[path = "search_files.rs"]
 mod files;
+#[path = "inventory_report.rs"]
+mod report;
 
 pub(super) struct Workspace {
     token: uuid::Uuid,
@@ -701,6 +703,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let partial = w.sources.values().filter(|source| !source.complete).count();
     body = body.child(caption(format!("{} results · {} pools · {stale} stale · {partial} with incomplete metadata · {} connections without inventory", w.rows.len(), w.sources.len(), w.unavailable), k).wrap())
         .child(caption("Results cover readable inventory only. Missing tag, folder or custom-field data never satisfies those filters.", k).wrap());
+    body = body.child(Button::new("Export resource results…")
+        .disabled(w.files.busy || w.sources.is_empty() || w.error.is_some())
+        .on_press_tx(files::export_results).build(k).key("search-export-results"))
+        .child(caption("The report captures these results and their freshness, including private names, identifiers and metadata.",k).wrap());
     let mut groups = row().gap(4.0);
     for (label, group) in [
         ("Name", SearchGroup::Name),

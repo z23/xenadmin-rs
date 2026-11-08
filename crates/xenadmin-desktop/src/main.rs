@@ -2079,6 +2079,7 @@ fn main() {
             ("host-console", host_console::scene),
             ("search-pools", search_view::scene),
             ("performance", metrics_view::scene),
+            ("metric-presets", metrics_view::presets::scene),
             ("unavailable-actions", |s| {
                 demo(s);
                 s.demo = false;

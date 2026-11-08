@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
+    pub(super) metric_presets: crate::metrics_view::presets::Catalog,
     pub(super) options: crate::settings::Options,
     pub saved_searches: xenadmin_core::SearchCatalog,
     pub hidden_history: Vec<crate::activity::HiddenKey>,
@@ -19,6 +20,7 @@ pub struct Preferences {
 impl Default for Preferences {
     fn default() -> Self {
         Self {
+            metric_presets: Default::default(),
             options: Default::default(),
             saved_searches: Default::default(),
             hidden_history: Vec::new(),
@@ -54,6 +56,9 @@ impl Preferences {
         }
         prefs.sidebar_width = prefs.sidebar_width.clamp(180.0, 420.0);
         prefs.hidden_history.truncate(5000);
+        if prefs.metric_presets.validate().is_err() {
+            prefs.metric_presets = Default::default();
+        }
         if prefs.saved_searches.validate().is_err() {
             prefs.saved_searches = Default::default();
         }

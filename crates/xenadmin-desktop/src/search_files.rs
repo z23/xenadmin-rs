@@ -8,6 +8,7 @@ pub(super) struct Pending {
 enum Outcome {
     Import(SearchCatalog),
     Export,
+    ExportResults,
 }
 fn begin(s: &mut State) -> Option<uuid::Uuid> {
     let w = edit(s);
@@ -76,6 +77,43 @@ pub(super) fn export(s: &mut State, tx: &mut Tx) {
         },
     );
 }
+pub(super) fn export_results(s: &mut State, tx: &mut Tx) {
+    let Some(workspace) = &s.searches else { return };
+    if workspace.files.busy {
+        return;
+    }
+    let bytes = match report::encode(workspace) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            edit(s).error = Some(error);
+            return;
+        }
+    };
+    let Some(token) = begin(s) else { return };
+    tx.save_file(
+        rune::FileDialogOptions {
+            title: "Export captured resource results".into(),
+            file_name: Some("xenadmin-resource-report.json".into()),
+            ..Default::default()
+        }
+        .filter("JSON", &["json"]),
+        move |s: &mut State, result, _| {
+            if s.searches.as_ref().is_none_or(|w| w.token != token) {
+                return;
+            }
+            match result {
+                Ok(Some(path)) => worker(s, move || {
+                    activity_export::write_private(&path, &bytes).map(|()| Outcome::ExportResults)
+                }),
+                Ok(None) => edit(s).files.busy = false,
+                Err(_) => {
+                    edit(s).files.busy = false;
+                    edit(s).error = Some("Cannot open resource report save picker".into());
+                }
+            }
+        },
+    );
+}
 fn read(path: &Path) -> Result<SearchCatalog, String> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
@@ -128,6 +166,12 @@ pub(super) fn poll(s: &mut State) -> bool {
     w.files = Default::default();
     match result {
         Ok(Outcome::Import(catalog)) => w.importing = Some(catalog),
+        Ok(Outcome::ExportResults) => {
+            w.notice = Some(
+                "Captured resource results exported; later inventory changes are not included"
+                    .into(),
+            );
+        }
         Ok(Outcome::Export) => {
             w.notice =
                 Some("Saved search definitions exported; no result inventory was included".into())

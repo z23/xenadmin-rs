@@ -278,10 +278,10 @@ Implementation and qualification evidence: [host administration report](reports/
 | P14-06 | Multi-step progress/partial outcomes/owned cleanup | Durable ordered VM property steps and partial/unknown outcomes implemented; owned-resource cleanup/provisioning orchestration remains queued |
 | P14-07 | VM/host CPU/memory graphs | Direct RRD subscriptions and VM/host performance charts implemented; synthetic transport/render checks, live qualification open |
 | P14-08 | Disk/network throughput/latency graphs | Host-advertised disk/network sources rendered with units and explicit sample gaps; source availability and live qualification remain host-dependent |
-| P14-09 | Custom graphs/data-source selection/historical ranges | Per-view source selection and bounded 10-minute/2-hour/week/year ranges implemented with actual returned resolution; saved graph presets remain queued |
+| P14-09 | Custom graphs/data-source selection/historical ranges | Per-view source selection, bounded 10-minute/2-hour/week/year ranges with actual resolution, and validated VM/host graph presets implemented; unavailable preset sources are explicitly refused, fixture/native synthetic checks passed; live qualification open ([report](reports/2026-11-08-graph-presets-reports.md)) |
 | P14-10 | Host/pool messages/alerts: list/filter/dismiss/export | Activity list/filter, content-bound reviewed server dismissal and private native-dialog JSON export implemented; fixture-verified, native/lab qualification open ([report](reports/2026-11-08-activity.md)) |
 | P14-11 | Alarm thresholds/intervals/notification-email settings | Queued |
-| P14-12 | Resource reports/support-status export | Activity task/message/public-operation JSON export implemented; broader resource reports and support-status bundles remain queued |
+| P14-12 | Resource reports/support-status export | Activity JSON export and captured filtered cross-pool resource reports with freshness/coverage metadata implemented; private bounded file publication fixture verified. Support-status bundles remain queued ([report](reports/2026-11-08-graph-presets-reports.md)) |
 
 ## 15. Organization and grouped workflows
 
@@ -295,7 +295,7 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | P15-04 | vApps: create/edit/delete/membership | Reviewed empty-group creation, metadata edits, per-VM membership and empty-group deletion implemented; fresh identity/graph and lost-reply fixtures verified, lab qualification open |
 | P15-05 | vApp ordered startup/shutdown and delays | Per-member order/delay edits and explicit ordered start, clean or force shutdown implemented; exact captured members, durable completion and partial-child fixtures verified, lab qualification open |
 | P15-06 | Bulk properties/delete/move/export | Queued |
-| P15-07 | Search definition import/export/resource export | Reviewed bounded JSON search-definition import/export implemented with native pickers; legacy XenCenter XML interoperability and resource-result export remain open |
+| P15-07 | Search definition import/export/resource export | Reviewed bounded JSON search-definition import/export and captured resource-result export implemented with native pickers; legacy XenCenter XML interoperability remains open ([report](reports/2026-11-08-graph-presets-reports.md)) |
 
 ## 18. Linux desktop and extensibility
 

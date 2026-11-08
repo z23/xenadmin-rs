@@ -1,3 +1,5 @@
+#[path = "metric_presets.rs"]
+pub(super) mod presets;
 use super::*;
 use std::collections::BTreeSet;
 use xenadmin_core::{
@@ -15,6 +17,9 @@ pub(super) struct MetricsUi {
     choosing_sources: bool,
     selected_sources: BTreeSet<String>,
     source_filter: TextEdit,
+    preset_name: TextEdit,
+    show_presets: bool,
+    notice: Option<String>,
     error: Option<String>,
 }
 
@@ -80,6 +85,9 @@ pub(super) fn open(s: &mut State) {
         choosing_sources: false,
         selected_sources: BTreeSet::new(),
         source_filter: TextEdit::new(""),
+        preset_name: TextEdit::new(""),
+        show_presets: false,
+        notice: None,
         error: None,
     });
     s.show_details = false;
@@ -156,6 +164,7 @@ fn choose_sources(s: &mut State) {
         return;
     };
     view.choosing_sources = true;
+    view.show_presets = false;
     view.selected_sources = if view.options.sources.is_empty() {
         view.snapshot
             .iter()
@@ -252,7 +261,16 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .on_press(reload)
                 .build(k),
         );
+    controls = controls.child(
+        Button::new("Graph presets…")
+            .on_press(presets::open)
+            .build(k)
+            .key("metric-presets-open"),
+    );
     content = content.child(controls);
+    if let Some(notice) = &view.notice {
+        content = content.child(caption(notice, k).wrap());
+    }
     if let Some(error) = &view.error {
         content = content.child(caption(error, k).wrap().color(k.c.danger.icon));
     }
@@ -263,6 +281,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         });
+    if view.show_presets {
+        return content.child(presets::view(s, k));
+    }
     if view.choosing_sources {
         return content.child(source_picker(s, k));
     }

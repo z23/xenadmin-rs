@@ -74,13 +74,13 @@ impl MetricsWindow {
         Duration::from_secs(self.interval_seconds().clamp(5, 60))
     }
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MetricsOptions {
     pub window: MetricsWindow,
     pub sources: Vec<String>,
 }
 impl MetricsOptions {
-    pub(crate) fn validate(&self) -> Result<(), Error> {
+    pub fn validate(&self) -> Result<(), Error> {
         let unique = self
             .sources
             .iter()
