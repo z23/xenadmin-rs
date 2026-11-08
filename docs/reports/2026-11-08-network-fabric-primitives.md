@@ -104,3 +104,7 @@ images and logs remain local temporary files; no live screenshots are included.
   remain open; this initial SR-IOV workflow deliberately requires reviewed empty interfaces.
 - Earlier management gaps remain retained: automatic/multiple-address IPv6 topology migration,
   standalone management retagging/family switch, clustering and service-dependent transitions.
+
+## Integrated verification
+
+Main at `7d00f88` passed 1,183 workspace tests (522 core unit, 323 direct protocol, 325 Rune and 13 profile/TLS/probe tests), strict Clippy and whitespace checks. The combined build includes same-pool bulk moves and dedicated resource permission reviews. No live network changes were made.
