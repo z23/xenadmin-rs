@@ -70,9 +70,8 @@ isolated resources. No production infrastructure test is implied by application 
 The development client includes direct concurrent pool connections, inventory and consoles,
 reviewed VM/device/snapshot administration, host/pool/storage/network workflows, metrics,
 activity, organization and bounded XVA/raw/VHD/OVF transfers. The
-[0.8 checkpoint](reports/2026-11-08-checkpoint-0.8.md) records its packaged subset; subsequent
-firmware, bulk power and console-recovery increments are tracked in the per-row ledger and
-their reports. Implemented behavior has protocol, journal, Rune and native synthetic-render
+[0.9.1 checkpoint](reports/2026-11-08-checkpoint-0.9.1.md) records its packaged subset.
+Further increments and outstanding workflows are tracked in the per-row ledger and their reports. Implemented behavior has protocol, journal, Rune and native synthetic-render
 checks, with remaining workflows explicitly open.
 
 The user requested a prepared local disposable lab and deferred live tests until virtualization

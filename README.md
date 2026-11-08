@@ -102,3 +102,8 @@ Version 0.8.0 adds reviewed pool joining, snapshot restore orchestration and sch
 VM home-host and device properties, OVF/OVA transfers, guided storage discovery, and
 cross-pool saved searches. Concurrent cancellation/recovery fixes preserve uncertain outcomes.
 See the [checkpoint report](docs/reports/2026-11-08-checkpoint-0.8.md) for verification and remaining scope.
+
+Version 0.9.1 packages certificate inspection/proxy options, authenticated storage, NoCloud drives,
+cross-pool transfers, desktop options/help, saved graph presets and private resource reports.
+It includes an ownership-checked installer and AppImage. See the
+[checkpoint evidence and limitations](docs/reports/2026-11-08-checkpoint-0.9.1.md).
