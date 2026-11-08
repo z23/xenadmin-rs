@@ -390,3 +390,9 @@ mod vm_recovery;
 pub use vm_recovery::{
     ForceRecoveryAction, RecoveryBootConfiguration, RecoveryTask, VmRecoveryOperation,
 };
+
+mod alarm_policies;
+pub use alarm_policies::{
+    AlarmEmailConfiguration, AlarmEmailSettings, AlarmMetric, AlarmOperation, AlarmPolicy,
+    AlarmPolicyChange, AlarmRule,
+};

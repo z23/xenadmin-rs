@@ -1,5 +1,6 @@
 mod activity;
 mod activity_export;
+mod alarms_view;
 mod appliance_view;
 mod bulk_power;
 mod cloud_init_view;
@@ -181,6 +182,7 @@ struct State {
     host_support: Option<host_support_view::Panel>,
     host_power: Option<host_power_view::Editor>,
     snapshot_policy_workspace: Option<snapshot_policy_view::Workspace>,
+    alarms_workspace: Option<alarms_view::Workspace>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
     resource_rows: Vec<xenadmin_core::ResourceOperationRecord>,
     dev_inspection: Option<xenadmin_core::DevInspection>,
@@ -294,6 +296,7 @@ fn init() -> State {
         host_support: None,
         host_power: None,
         snapshot_policy_workspace: None,
+        alarms_workspace: None,
         resource_operations: Vec::new(),
         resource_rows: Vec::new(),
         dev_inspection,
@@ -1306,6 +1309,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .build(&k)
                 .key("help-open"),
         );
+    controls = controls.child(
+        Button::new("Alarms")
+            .disabled(s.inventory.is_none())
+            .on_press(alarms_view::open)
+            .build(&k)
+            .key("alarms-open"),
+    );
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
         Button::new("Search pools")
@@ -1412,6 +1422,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let base = shell.build(&k);
     let root = if s.show_connect {
         rune_kit::root(base, [connection_dialog(s, &k)])
+    } else if s.alarms_workspace.is_some() {
+        rune_kit::root(base, [alarms_view::dialog(s, &k)])
     } else if s.snapshot_policy_workspace.is_some() {
         rune_kit::root(base, [snapshot_policy_view::dialog(s, &k)])
     } else if s.host_power.is_some() {
@@ -2281,6 +2293,9 @@ fn main() {
             ("host-restore", host_support_view::restore_scene),
             ("host-power-settings", host_power_view::scene),
             ("snapshot-schedules", snapshot_policy_view::scene),
+            ("alarms", alarms_view::scene),
+            ("alarms-review", alarms_view::review_scene),
+            ("alarms-email", alarms_view::email_scene),
             ("network-create", |s| resource_admin::scene(s, false)),
             ("activity", activity::scene),
             ("organization", organization_view::scene),

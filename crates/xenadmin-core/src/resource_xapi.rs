@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
 pub(super) enum Check {
+    Alarm,
+    AlarmRefresh(HostId),
     SnapshotPolicy(Box<super::snapshot_policy::Verify>),
     Appliance(super::appliance::Verify),
     Pool,
@@ -142,6 +144,7 @@ pub(super) async fn prepare(
         | ResourceAction::NetworkTopology(_)
         | ResourceAction::ManagementNetwork(_)
         | ResourceAction::PowerBatch(_) => return Err(Error::InvalidResourceCommand),
+        ResourceAction::Alarm(_) => return super::alarms::prepare(session, record).await,
         ResourceAction::Organization(_) => {
             return super::organization::prepare(session, record).await;
         }
@@ -339,6 +342,9 @@ pub(super) async fn arguments(
     }
     let (reference, fresh) = read(session, record.target).await?;
     match &step.check {
+        Check::Alarm | Check::AlarmRefresh(_) => {
+            super::alarms::arguments(session, record, &step.check).await
+        }
         Check::Appliance(_) => unreachable!(),
         Check::Pool => super::pool::arguments(session, record).await,
         Check::Organization(edit) => super::organization::arguments(session, record, edit).await,
@@ -444,6 +450,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         | ResourceAction::NetworkTopology(_)
         | ResourceAction::ManagementNetwork(_)
         | ResourceAction::PowerBatch(_) => Vec::new(),
+        ResourceAction::Alarm(_) => super::alarms::checks(record),
         ResourceAction::Organization(_) => super::organization::checks(record),
         ResourceAction::Network(_) => vec![Check::Network],
         ResourceAction::Transfer(_)
@@ -484,6 +491,9 @@ pub(super) async fn verify(
     record: &ResourceOperationRecord,
     check: &Check,
 ) -> Result<Option<ResourceTarget>, Error> {
+    if matches!(check, Check::Alarm | Check::AlarmRefresh(_)) {
+        return super::alarms::verify(session, record, check).await;
+    }
     if let Check::SnapshotPolicy(check) = check {
         return super::snapshot_policy::verify(session, record, check).await;
     }

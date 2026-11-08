@@ -33,6 +33,8 @@ mod worker;
 #[path = "resource_xapi.rs"]
 mod xapi;
 pub(crate) use worker::ResourceRequest;
+#[path = "alarm_operations.rs"]
+mod alarms;
 #[path = "appliance_operations.rs"]
 mod appliance;
 #[path = "organization_operations.rs"]
@@ -109,6 +111,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    Alarm {
+        target: ObservedResource,
+        operation: crate::AlarmOperation,
+    },
     ManagementNetwork {
         host: ObservedResource,
         operation: Box<crate::ManagementNetworkOperation>,
@@ -207,6 +213,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    Alarm(crate::AlarmOperation),
     RootPassword(crate::PoolRootPasswordChange),
     ManagementNetwork(Box<crate::ManagementNetworkOperation>),
     HostPower(crate::HostPowerOperation),
@@ -266,6 +273,10 @@ impl ResourceAction {
     pub fn permission_requirements(&self, target: ResourceTarget) -> crate::PermissionRequirements {
         use crate::PermissionRequirements as Required;
         match self {
+            Self::Alarm(op) => Required::writes([match op {
+                crate::AlarmOperation::Refresh { .. } => "host.call_plugin".into(),
+                _ => format!("{}.set_other_config", target.class()),
+            }]),
             Self::Storage(op) => op.permission_requirements(),
             Self::AuthenticatedStorage { operation, .. } => operation
                 .permission_requirements()
@@ -318,6 +329,7 @@ impl ResourceAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Alarm(op) => op.label(),
             Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
             Self::PowerBatch(_) => "Power actions on selected VMs",
@@ -356,6 +368,7 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::Alarm(op) => return op.validate(target),
             Self::RootPassword(change) => {
                 matches!(target, ResourceTarget::Pool(_)) && change.valid()
             }
@@ -482,6 +495,7 @@ impl ResourceCommand {
     }
     fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
+            Self::Alarm { target, operation } => (target, ResourceAction::Alarm(operation)),
             Self::HostPower { host, operation } => (host, ResourceAction::HostPower(operation)),
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
             Self::CleanupStorageCredentials {
@@ -587,6 +601,8 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(default)]
+    pub(crate) alarm_refresh_receipts: Vec<HostId>,
     #[serde(default)]
     pub management_network: Option<crate::ManagementNetworkEvidence>,
     #[serde(skip)]
@@ -733,6 +749,7 @@ pub(crate) fn channel(
     runtime: tokio::runtime::Handle,
 ) -> (ResourceOperation, ResourceRequest) {
     let record = ResourceOperationRecord {
+        alarm_refresh_receipts: Vec::new(),
         management_network: None,
         management_network_plan: None,
         topology_changes: Default::default(),

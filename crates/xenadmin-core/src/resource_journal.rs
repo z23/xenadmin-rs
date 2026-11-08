@@ -174,6 +174,7 @@ impl Journal {
                 .map_err(|_| Error::Journal)?;
             let mut record: ResourceOperationRecord =
                 serde_json::from_value(payload).map_err(|_| Error::Journal)?;
+            super::alarms::validate_receipts(&record)?;
             if !record.state.terminal() {
                 record
                     .action
@@ -220,6 +221,7 @@ impl Journal {
         .transpose()
     }
     pub(crate) fn resource_save(&self, record: &mut ResourceOperationRecord) -> Result<(), Error> {
+        super::alarms::validate_receipts(record)?;
         record.interrupted |= record.state == OperationState::OutcomeUnknown;
         if !record.state.terminal() || record.power_batch_plan.is_some() {
             crate::power_batch::validate_record(record)?;
@@ -334,6 +336,10 @@ impl Journal {
                 })
                 || (old.network_baseline.is_some()
                     && old.network_baseline != record.network_baseline)
+                || old
+                    .alarm_refresh_receipts
+                    .iter()
+                    .any(|host| !record.alarm_refresh_receipts.contains(host))
                 || (old.pool_completed && !record.pool_completed)
                 || (old.appliance_completed && !record.appliance_completed)
                 || (old.appliance_baseline.is_some()
@@ -546,6 +552,12 @@ impl Journal {
                 current_plan.configuration_observed |= received.configuration_observed;
                 current_plan.route_verified |= received.route_verified;
                 current.management_network = Some(current_plan.evidence());
+            }
+            super::alarms::validate_receipts(evidence)?;
+            for host in &evidence.alarm_refresh_receipts {
+                if !current.alarm_refresh_receipts.contains(host) {
+                    current.alarm_refresh_receipts.push(*host);
+                }
             }
             current.pool_completed |= evidence.pool_completed;
             if let (Some(current_plan), Some(evidence_plan)) =

@@ -158,3 +158,9 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 
 "$check_binary" --snap artifacts/host-restore.png --tree artifacts/host-restore.json --scene host-restore --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/host-restore-compact.png --tree artifacts/host-restore-compact.json --scene host-restore --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/alarms.png --tree artifacts/alarms.json --scene alarms --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/alarms-compact.png --tree artifacts/alarms-compact.json --scene alarms --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/alarms-review.png --tree artifacts/alarms-review.json --scene alarms-review --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/alarms-review-compact.png --tree artifacts/alarms-review-compact.json --scene alarms-review --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/alarms-email.png --tree artifacts/alarms-email.json --scene alarms-email --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/alarms-email-compact.png --tree artifacts/alarms-email-compact.json --scene alarms-email --theme dark --size 513x652 --scale 1 --at 1

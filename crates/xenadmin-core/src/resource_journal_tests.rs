@@ -5,6 +5,7 @@ use crate::{
 
 fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
+        alarm_refresh_receipts: Vec::new(),
         management_network: None,
         management_network_plan: None,
         topology_changes: Default::default(),
@@ -1499,4 +1500,43 @@ fn management_private_plan_corruption_cannot_change_route_or_scope_or_forge_comp
             "{corrupt}"
         );
     }
+}
+
+#[test]
+fn alarm_refresh_receipts_are_durable_monotonic_and_bound_to_reviewed_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let host = crate::HostId::from(uuid::Uuid::new_v4());
+    let mut row = resource(pool);
+    row.target = ResourceTarget::Pool(pool);
+    row.action = ResourceAction::Alarm(crate::AlarmOperation::Refresh { hosts: vec![host] });
+    assert!(journal.resource_admit(&mut row).unwrap());
+    row.state = OperationState::Dispatching;
+    row.steps[0].state = StepState::Dispatching;
+    journal.resource_save(&mut row).unwrap();
+    row.alarm_refresh_receipts.push(host);
+    row = journal.resource_evidence(&row).unwrap();
+    assert_eq!(
+        journal
+            .resource_load(row.id)
+            .unwrap()
+            .unwrap()
+            .alarm_refresh_receipts,
+        vec![host]
+    );
+    let mut invalid = row.clone();
+    invalid.steps[0].state = StepState::Pending;
+    assert!(journal.resource_save(&mut invalid).is_err());
+    let mut invalid = row.clone();
+    invalid.alarm_refresh_receipts.clear();
+    assert!(journal.resource_save(&mut invalid).is_err());
+    let mut invalid = row.clone();
+    invalid
+        .alarm_refresh_receipts
+        .push(crate::HostId::from(uuid::Uuid::new_v4()));
+    assert!(journal.resource_save(&mut invalid).is_err());
+    let mut invalid = row.clone();
+    invalid.alarm_refresh_receipts.push(host);
+    assert!(journal.resource_save(&mut invalid).is_err());
 }

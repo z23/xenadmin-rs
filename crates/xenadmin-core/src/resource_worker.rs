@@ -338,6 +338,12 @@ impl ResourceRequest {
                 }
                 return self.track(journal, session, cancel).await;
             }
+            if let xapi::Check::AlarmRefresh(host) = step.check {
+                if value.as_str() != Some("True") {
+                    return Err(Error::Protocol("alarm refresh was not accepted"));
+                }
+                self.record.alarm_refresh_receipts.push(host);
+            }
             if matches!(step.check, xapi::Check::CreatedNetwork) {
                 self.record.result_reference = Some(xapi::reply_reference(&value)?);
             }
@@ -374,7 +380,12 @@ impl ResourceRequest {
                 self.record.created = Some(target);
             }
             self.record.steps[index].state = StepState::Verified;
-            self.record.steps[index].detail = "Confirmed by a fresh host read".into();
+            self.record.steps[index].detail = if matches!(step.check, xapi::Check::AlarmRefresh(_))
+            {
+                "Host accepted a refresh notification; alarm evaluation and email delivery are not verified".into()
+            } else {
+                "Confirmed by a fresh host read".into()
+            };
             self.record.state = OperationState::Preparing;
             self.record.detail = format!("Verified {}", step.label);
             self.save(journal).await?;
@@ -382,7 +393,12 @@ impl ResourceRequest {
         self.record.state = OperationState::Succeeded;
         self.record.progress = Some(1.0);
         self.record.can_cancel = false;
-        self.record.detail = "All requested changes were verified".into();
+        self.record.detail = match &self.record.action {
+            super::ResourceAction::Alarm(crate::AlarmOperation::Refresh { .. }) => "Host refresh notifications accepted; evaluation and email delivery are not verified",
+            super::ResourceAction::Alarm(crate::AlarmOperation::SetEmail { .. }) => "Pool email settings verified; SMTP delivery is not verified",
+            super::ResourceAction::Alarm(crate::AlarmOperation::SetPolicy(_)) => "Alarm configuration verified; host evaluation is not verified",
+            _ => "All requested changes were verified",
+        }.into();
         self.save(journal).await
     }
     async fn reconcile(
@@ -522,8 +538,11 @@ impl ResourceRequest {
                 self.record.created = Some(target);
             }
             self.record.steps[index].state = StepState::Verified;
-            self.record.steps[index].detail =
-                "Reconciled by a fresh host read; no write repeated".into();
+            self.record.steps[index].detail = if matches!(check, xapi::Check::AlarmRefresh(_)) {
+                "Recovered saved host acceptance receipt; evaluation and email delivery are not verified".into()
+            } else {
+                "Reconciled by a fresh host read; no write repeated".into()
+            };
             self.save(journal).await?;
         }
         self.record.state = if self

@@ -223,6 +223,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         })
     });
     decode_organization(store, &mut result);
+    decode_alarms(store, &refs, &mut result);
     for class in OPTIONAL_CLASSES {
         result
             .classes
@@ -917,6 +918,57 @@ fn decode_organization(store: &Store, result: &mut InventoryDetails) {
     });
 }
 
+fn decode_alarms(store: &Store, refs: &References, result: &mut InventoryDetails) {
+    use crate::ResourceTarget;
+    result.alarm_email = store
+        .class("pool")
+        .next()
+        .map(|(_, r)| crate::alarm_policies::project_email(r));
+    for (class, records) in [
+        ("host", store.class("host").collect::<Vec<_>>()),
+        ("sr", store.class("sr").collect()),
+        ("vm", store.class("vm").collect()),
+    ] {
+        for (reference, record) in records {
+            let Some(uuid) = record["uuid"]
+                .as_str()
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            else {
+                continue;
+            };
+            let mut dom0 = None;
+            let target = match class {
+                "host" => ResourceTarget::Host(uuid.into()),
+                "sr" => ResourceTarget::Storage(uuid.into()),
+                _ => {
+                    if record["is_a_template"] != false || record["is_a_snapshot"] != false {
+                        continue;
+                    }
+                    match record["is_control_domain"].as_bool() {
+                        Some(false) => {}
+                        Some(true) => {
+                            dom0 = refs.link("host", &record["resident_on"]);
+                            if dom0.is_none()
+                                || !store.class("host").any(|(r, h)| {
+                                    Some(r.as_str()) == record["resident_on"].as_str()
+                                        && h["control_domain"].as_str() == Some(reference.as_str())
+                                })
+                            {
+                                continue;
+                            }
+                        }
+                        None => continue,
+                    }
+                    ResourceTarget::Vm(uuid.into())
+                }
+            };
+            result
+                .alarm_policies
+                .push(crate::alarm_policies::project(target, dom0, record));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +998,40 @@ mod tests {
         ]
     }
 
+    #[test]
+    fn alarm_inventory_separates_host_control_domain_and_storage_scopes() {
+        let mut events = initial();
+        let mut ordinary = vm(2);
+        ordinary["other_config"] = json!({});
+        events[1] = event("VM", "vm", ordinary);
+        let mut dom0 = vm(3);
+        dom0["is_control_domain"] = json!(true);
+        dom0["resident_on"] = json!("OpaqueRef:host");
+        dom0["other_config"] =
+            json!({"perfmon":"<config><variable><name value=\"mem_usage\"/></variable></config>"});
+        events.push(event("VM", "dom0", dom0));
+        events.push(event("host","host",json!({"uuid":uuid(4),"name_label":"Host","control_domain":"OpaqueRef:dom0","other_config":{"perfmon":"<config><variable><name value=\"memory_free_kib\"/><alarm_trigger_level value=\"2048\"/></variable></config>"}})));
+        events.push(event("SR","sr",json!({"uuid":uuid(5),"name_label":"Storage","other_config":{"perfmon":"<config><variable><name value=\"sr_io_throughput_total_per_host\"/><alarm_trigger_level value=\"12\"/></variable></config>"}})));
+        let inventory = Store::default().apply(&batch(events)).unwrap();
+        let policies = &inventory.details.alarm_policies;
+        assert_eq!(policies.len(), 4);
+        let dom0 = policies
+            .iter()
+            .find(|p| p.control_domain_host.is_some())
+            .unwrap();
+        assert_eq!(dom0.control_domain_host, Some(uuid(4).into()));
+        assert_eq!(dom0.rules[0].threshold, "0.95");
+        assert!(policies.iter().any(|p| {
+            p.rules
+                .iter()
+                .any(|r| r.metric == crate::AlarmMetric::FreeHostMemory && r.threshold == "2048")
+        }));
+        assert!(policies.iter().any(|p| {
+            p.rules
+                .iter()
+                .any(|r| r.metric == crate::AlarmMetric::StorageThroughput && r.threshold == "12")
+        }));
+    }
     #[test]
     fn guest_tools_media_keeps_host_flags_and_known_legacy_names_separate() {
         let mut events = initial();

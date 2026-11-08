@@ -692,3 +692,6 @@ reformats the live host's configured backup partition; the API does not expose i
 A complete stream receipt with matching digest and owned-task success establishes staging only.
 Lost/failing/cancelled uploads remain uncertain and are never replayed. Recovery and acknowledgement
 are preserved when late stream evidence arrives; explicit recheck reads the saved task only.
+## Performance alarm configuration
+
+Typed alarm settings project bounded host perfmon XML and pool email keys without exposing raw definitions or unrelated SMTP credentials. Each reviewed setter re-resolves exact identity and settings revision, merges the latest unrelated metadata, and verifies the requested postcondition. Separate fixed-plugin refresh operations retain monotonic host-bound positive receipts; missing responses cannot be replayed or inferred from saved configuration. The [alarm report](reports/2026-11-08-performance-alarms.md) records the whole-map concurrency limit and configuration/service/delivery distinction.

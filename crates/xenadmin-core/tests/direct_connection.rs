@@ -2059,3 +2059,6 @@ mod root_password;
 
 #[path = "fixtures/snapshot_preview.rs"]
 mod snapshot_preview;
+
+#[path = "fixtures/alarms.rs"]
+mod alarms;
