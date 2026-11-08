@@ -492,6 +492,10 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             result.vms.insert(
                 id,
                 VmDetails {
+                    is_default_template: Some(
+                        record["is_default_template"] == true
+                            || record["other_config"]["default_template"] == "true",
+                    ),
                     allowed_operations: strings(&record["allowed_operations"]),
                     current_operations: record["current_operations"]
                         .as_object()

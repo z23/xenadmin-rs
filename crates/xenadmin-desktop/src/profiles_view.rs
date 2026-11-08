@@ -394,7 +394,6 @@ fn clear_view(s: &mut State) {
     s.force_action = None;
     s.unknown_review = None;
     s.operations.clear();
-    s.operation_rows.clear();
     s.snapshot = None;
     s.inventory = None;
     s.host_filter = None;

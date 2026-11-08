@@ -23,6 +23,11 @@ pub use resources::{
 };
 mod settings;
 mod snapshots;
+mod vm_lifecycle;
+mod vm_lifecycle_backend;
+pub use vm_lifecycle::{
+    GuestFirmware, SnapshotDeletionSelection, VmCopyMode, VmLifecycleOperation,
+};
 mod trust;
 mod xapi;
 
@@ -53,6 +58,16 @@ pub enum Error {
     ResourceInUse,
     #[error("Another VM or infrastructure operation in this pool is running or unresolved")]
     ConflictingPoolOperation,
+    #[error("Enter valid VM lifecycle configuration and exact resource selections")]
+    InvalidVmLifecycle,
+    #[error(
+        "No compatible host was found for the new VM configuration; the VM remains retained and halted"
+    )]
+    NoCompatibleVmHost,
+    #[error("The VM, template, or its devices changed; refresh and review again")]
+    VmLifecycleConflict,
+    #[error("This template or configuration is not supported by this creation workflow")]
+    UnsupportedVmLifecycle,
     #[error("Choose a valid device operation and a larger disk size")]
     InvalidDeviceOperation,
     #[error("The device changed since this view opened. Refresh before trying again")]
@@ -152,6 +167,10 @@ pub enum Error {
         "Another operation on this VM is still running or unresolved. Inspect operation history before submitting another action"
     )]
     ConflictingOperation,
+    #[error(
+        "VM creation and copying require no other running or unresolved changes in this pool. Inspect operation history before continuing"
+    )]
+    PoolCreationConflict,
     #[error("The operation journal has reached its unresolved-operation limit")]
     JournalFull,
     #[error("The requested action is unavailable for this VM")]

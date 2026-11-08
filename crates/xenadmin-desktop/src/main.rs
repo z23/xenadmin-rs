@@ -6,6 +6,7 @@ mod profiles_view;
 mod resource_admin;
 mod resource_details;
 mod vm_devices;
+mod vm_lifecycle;
 mod vm_placement;
 mod vm_properties;
 mod vm_snapshots;
@@ -138,6 +139,7 @@ struct State {
     dev_inspection: Option<xenadmin_core::DevInspection>,
     placement: Option<vm_placement::Placement>,
     devices: Option<vm_devices::DeviceView>,
+    vm_lifecycle: Option<vm_lifecycle::Panel>,
     workspace: profiles_view::Workspace,
     diagnostic_results: Vec<String>,
     diagnostics: Option<ActionDiagnostics>,
@@ -229,6 +231,7 @@ fn init() -> State {
         dev_inspection,
         placement: None,
         devices: None,
+        vm_lifecycle: None,
         workspace: profiles_view::Workspace::load(preferences.last_profile, instance.is_some()),
         diagnostic_results: Vec::new(),
         diagnostics: None,
@@ -667,6 +670,34 @@ fn setup(s: &mut State, waker: Waker) {
     s.waker = Some(waker);
     profiles_view::restore_sessions(s);
 }
+fn merge_operation_rows(
+    previous: &[xenadmin_core::OperationRecord],
+    incoming: impl IntoIterator<Item = xenadmin_core::OperationRecord>,
+) -> Vec<xenadmin_core::OperationRecord> {
+    let mut rows: BTreeMap<_, _> = previous
+        .iter()
+        .map(|record| ((record.pool, record.id), record.clone()))
+        .collect();
+    for record in incoming {
+        let key = (record.pool, record.id);
+        if rows.get(&key).is_none_or(|old| record.supersedes(old)) {
+            rows.insert(key, record);
+        }
+    }
+    let mut rows: Vec<_> = rows.into_values().collect();
+    rows.sort_by_key(|record| std::cmp::Reverse((record.created_at_ms, record.id)));
+    let mut terminal = 0;
+    rows.retain(|record| {
+        if !record.state.terminal() {
+            return true;
+        }
+        terminal += 1;
+        terminal <= 100
+    });
+    rows.reverse();
+    rows
+}
+
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= resource_admin::poll(s);
@@ -686,28 +717,21 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         s.diagnostic_results = diagnostic_results;
         changed = true;
     }
-    let mut rows: BTreeMap<_, _> = s
+    let mut incoming = s
         .connection
         .as_ref()
         .map(|connection| {
             connection
                 .operation_history()
                 .iter()
-                .map(|record| (record.id, record.clone()))
-                .collect()
+                .cloned()
+                .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     for operation in &s.operations {
-        let record = operation.latest();
-        if rows
-            .get(&record.id)
-            .is_none_or(|existing: &xenadmin_core::OperationRecord| record.supersedes(existing))
-        {
-            rows.insert(record.id, record.as_ref().clone());
-        }
+        incoming.push(operation.latest().as_ref().clone());
     }
-    let mut rows: Vec<_> = rows.into_values().collect();
-    rows.sort_by_key(|record| record.created_at_ms);
+    let rows = merge_operation_rows(&s.operation_rows, incoming);
     if rows != s.operation_rows {
         s.operation_rows = rows;
         changed = true;
@@ -1112,6 +1136,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .key("show-details"),
         );
     }
+    controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
         Button::new("Disconnect")
             .variant(ButtonVariant::Ghost)
@@ -1150,6 +1175,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(content.grow(1.0).min_h(0.0));
     }
     let toolbar = if s.window_width < 800.0 {
+        controls = controls.flex_wrap();
         content = col()
             .w_full()
             .h_full()
@@ -1185,6 +1211,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [connection_dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
+    } else if s.vm_lifecycle.is_some() {
+        rune_kit::root(base, [vm_lifecycle::dialog(s, &k)])
     } else if s.placement.is_some() {
         rune_kit::root(base, [vm_placement::dialog(s, &k)])
     } else if s.properties.is_some() {
@@ -1332,6 +1360,9 @@ fn details(s: &State, k: &Kit) -> El {
             .child(field("Static memory maximum", &selected.memory))
             .child(field("Virtual CPUs", &selected.cpu));
     }
+    if let Some(vm) = selected.vm {
+        detail = detail.child(vm_lifecycle::controls(s, vm, k));
+    }
     if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
         return resource_details::append(
             s,
@@ -1460,7 +1491,8 @@ fn details(s: &State, k: &Kit) -> El {
         .operation_rows
         .iter()
         .filter(|record| {
-            Some(record.vm) == selected.vm
+            (Some(record.vm) == selected.vm
+                || record.created_vm.is_some() && record.created_vm == selected.vm)
                 && s.inventory
                     .as_ref()
                     .is_some_and(|inventory| inventory.pool_id == record.pool)
@@ -1502,15 +1534,18 @@ fn details(s: &State, k: &Kit) -> El {
         if record.can_cancel && !record.cancel_requested && !record.state.terminal() {
             let id = record.id;
             actions = actions.child(
-                Button::new("Request cancellation")
-                    .variant(ButtonVariant::Ghost)
-                    .on_press(move |s: &mut State| {
-                        s.control_operation(
-                            id,
-                            xenadmin_core::OperationControl::RequestCancellation,
-                        );
-                    })
-                    .build(k),
+                Button::new(
+                    if matches!(record.action, xenadmin_core::OperationAction::Lifecycle(_)) {
+                        "Stop remaining steps"
+                    } else {
+                        "Request cancellation"
+                    },
+                )
+                .variant(ButtonVariant::Ghost)
+                .on_press(move |s: &mut State| {
+                    s.control_operation(id, xenadmin_core::OperationControl::RequestCancellation);
+                })
+                .build(k),
             );
         }
         if record.state == xenadmin_core::OperationState::OutcomeUnknown {
@@ -1669,6 +1704,9 @@ fn demo(s: &mut State) {
     s.resource_operations.clear();
     s.resource_rows.clear();
     s.devices = None;
+    s.vm_lifecycle = None;
+    s.operation_rows.clear();
+    s.operations.clear();
     s.properties = None;
     s.placement = None;
     s.diagnostics = None;
@@ -1808,6 +1846,7 @@ fn main() {
                 s.table.select("30000000-0000-0000-0000-000000000000");
                 vm_properties::open(s);
             }),
+            ("vm-create", vm_lifecycle::scene),
             ("snapshots", |s| {
                 demo(s);
                 let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();

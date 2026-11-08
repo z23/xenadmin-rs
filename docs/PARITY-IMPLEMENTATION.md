@@ -151,17 +151,19 @@ partial/unknown outcomes and does not establish live-host compatibility.
 
 ## 8. Creation, templates, clones and deletion
 
+Implementation and verification details are in the [VM lifecycle report](reports/2026-11-08-vm-lifecycle.md).
+
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P08-01 | Browse templates | Existing subset; remaining work queued |
-| P08-02 | Create VM from template | Queued |
-| P08-03 | Installation source, copied BIOS and cloud-config options | Queued |
-| P08-04 | Instant/fast template creation | Queued |
-| P08-05 | Clone versus full-copy VM | Queued |
-| P08-06 | Convert VM to template | Queued |
-| P08-07 | Copy/edit/delete custom templates | Queued |
-| P08-08 | Delete VM record versus VM plus selected disks/snapshots | Queued |
-| P08-09 | Recover/cancel partial creation/deletion and clean owned resources | Queued |
+| P08-01 | Browse templates | Template inventory and lifecycle action entry points implemented; lab qualification open |
+| P08-02 | Create VM from template | Reviewed halted-VM wizard implemented with name/description, CPUs/memory, destination SR, network, optional disk/ISO and ordinary firmware choices; fixture verified, lab qualification open |
+| P08-03 | Installation source, copied BIOS and cloud-config options | ISO selection and inherited/BIOS/UEFI firmware implemented for supported templates; copied host BIOS identity and ordinary cloud-init configuration-drive/transfer workflow remain pending; legacy CoreOS plugin integration excluded |
+| P08-04 | Instant/fast template creation | Fast clone to custom template implemented when the source/storage advertises support; fixture verified, lab qualification open |
+| P08-05 | Clone versus full-copy VM | Reviewed halted source clone versus full copy to selected SR implemented, with VM/template result choice; fixture verified, lab qualification open |
+| P08-06 | Convert VM to template | Reviewed halted ordinary-VM conversion implemented with fresh capability checks; fixture verified, lab qualification open |
+| P08-07 | Copy/edit/delete custom templates | Copy, name/description editing and reviewed deletion implemented; built-in templates protected; other template property editing remains pending, lab qualification open |
+| P08-08 | Delete VM record versus VM plus selected disks/snapshots | Record-only or exact selected owned-disk/halted-snapshot deletion implemented with current ownership checks; checkpoint deletion uses its existing separate flow; fixture verified, lab qualification open |
+| P08-09 | Recover/cancel partial creation/deletion and clean owned resources | Durable steps, read-only recheck, cancellation, unknown acknowledgment and created resource UUIDs implemented; retained created VMs can use reviewed deletion, standalone detached-orphan cleanup remains pending; lab qualification open |
 
 ## 9. Storage repositories
 

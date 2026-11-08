@@ -15,6 +15,8 @@ use uuid::Uuid;
 mod device_lifecycle_operations;
 #[path = "snapshot_operations.rs"]
 mod snapshot_operations;
+#[path = "vm_lifecycle_operations.rs"]
+mod vm_lifecycle_operations;
 
 #[derive(Clone, Debug)]
 pub struct SnapshotName(String);
@@ -32,6 +34,10 @@ impl SnapshotName {
 }
 
 pub enum VmCommand {
+    Lifecycle {
+        source: crate::ObservedVm,
+        operation: crate::VmLifecycleOperation,
+    },
     Device(crate::DeviceCommand),
     PowerOnHost {
         vm: crate::ObservedVm,
@@ -76,6 +82,7 @@ pub enum OperationAction {
     Settings(crate::VmSettingsPatch),
     Placement(PlacementOperation),
     Device(crate::DeviceOperation),
+    Lifecycle(crate::VmLifecycleOperation),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementOperation {
@@ -108,6 +115,7 @@ impl OperationAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Power(action) => action.label(),
+            Self::Lifecycle(operation) => operation.label(),
             Self::Settings(_) => "Edit VM properties",
             Self::Device(operation) => operation.label(),
             Self::Placement(p) => {
@@ -148,12 +156,18 @@ impl OperationAction {
         if let Self::Device(operation) = self {
             ids.extend(operation.resources());
         }
+        if let Self::Lifecycle(operation) = self {
+            ids.extend(operation.resources());
+        }
         ids
     }
 }
 impl VmCommand {
     pub(crate) fn normalize(self) -> (crate::ObservedVm, OperationAction) {
         match self {
+            Self::Lifecycle { source, operation } => {
+                (source, OperationAction::Lifecycle(operation))
+            }
             Self::Device(command) => (command.vm, OperationAction::Device(command.operation)),
             Self::Power { vm, action } => (vm, OperationAction::Power(action)),
             Self::PowerOnHost { vm, action, host } => (
@@ -358,16 +372,43 @@ pub struct OperationRecord {
     #[serde(default)]
     device_plan: Option<crate::device_lifecycle::Plan>,
     #[serde(default)]
+    lifecycle_plan: Option<Box<crate::vm_lifecycle_backend::Plan>>,
+    #[serde(default)]
     pub created_devices: Vec<crate::CreatedDevice>,
     #[serde(default)]
     pub steps: Vec<crate::OperationStep>,
 }
 impl OperationRecord {
+    pub(crate) fn reserves_pool_creation(&self) -> bool {
+        matches!(
+            &self.action,
+            OperationAction::Lifecycle(
+                crate::VmLifecycleOperation::Create { .. }
+                    | crate::VmLifecycleOperation::Clone { .. }
+            )
+        )
+    }
+
+    pub(crate) fn resources(&self) -> Vec<String> {
+        let mut resources = self.action.resources(self.vm);
+        resources.extend(self.created_vm.iter().map(ToString::to_string));
+        resources.extend(self.created_snapshot.iter().map(ToString::to_string));
+        resources.extend(self.created_devices.iter().map(|device| match device {
+            crate::CreatedDevice::Disk(id) => format!("vdi:{id}"),
+            crate::CreatedDevice::Attachment(id) => format!("vbd:{id}"),
+            crate::CreatedDevice::Nic(id) => format!("vif:{id}"),
+        }));
+        resources.sort();
+        resources.dedup();
+        resources
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
     pub fn can_recheck(&self) -> bool {
         self.has_task()
+            || matches!(&self.action, OperationAction::Lifecycle(_))
             || matches!(&self.action,OperationAction::Device(operation) if operation.is_lifecycle())
             || matches!(
                 self.action,
@@ -439,6 +480,7 @@ impl DispatchPermit {
         let mut params = vec![json!(reference)];
         let method = match self.0 {
             OperationAction::Settings(_) => return Err(Error::InvalidSettings),
+            OperationAction::Lifecycle(_) => return Err(Error::InvalidVmLifecycle),
             OperationAction::Device(_) => {
                 return device
                     .ok_or(Error::InvalidDeviceOperation)?
@@ -515,6 +557,7 @@ pub(crate) fn channel(
         snapshot_deletion: None,
         snapshot_clone_baseline: None,
         device_plan: None,
+        lifecycle_plan: None,
         created_devices: Vec::new(),
         steps: Vec::new(),
     };
@@ -656,7 +699,7 @@ impl Journal {
             if busy {
                 return Err(Error::ConflictingPoolOperation);
             }
-            let resources = record.action.resources(record.vm);
+            let resources = record.resources();
             let mut query = self
                 .0
                 .prepare("SELECT payload FROM operations WHERE terminal=0 AND pool=?1")
@@ -668,12 +711,10 @@ impl Journal {
                 let existing: OperationRecord =
                     serde_json::from_str(&payload.map_err(|_| Error::Journal)?)
                         .map_err(|_| Error::Journal)?;
-                if existing
-                    .action
-                    .resources(existing.vm)
-                    .iter()
-                    .any(|id| resources.contains(id))
-                {
+                if record.reserves_pool_creation() || existing.reserves_pool_creation() {
+                    return Err(Error::PoolCreationConflict);
+                }
+                if existing.resources().iter().any(|id| resources.contains(id)) {
                     return Err(Error::ConflictingOperation);
                 }
             }
@@ -937,6 +978,9 @@ impl MutationRequest {
                 Ok(mut journal) if matches!(&self.record.action,OperationAction::Device(operation) if operation.is_lifecycle()) => {
                     self.recheck_device_lifecycle(&session, &mut journal).await
                 }
+                Ok(mut journal) if matches!(&self.record.action, OperationAction::Lifecycle(_)) => {
+                    self.recheck_vm_lifecycle(&session, &mut journal).await
+                }
                 Ok(mut journal) => {
                     self.track(&session, &mut journal, &connection_cancel, false)
                         .await
@@ -1051,6 +1095,11 @@ impl MutationRequest {
         }
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
+        }
+        if matches!(&self.record.action, OperationAction::Lifecycle(_)) {
+            return self
+                .execute_vm_lifecycle(session, &mut journal, connection_cancel)
+                .await;
         }
         if matches!(
             self.record.action,
@@ -1543,6 +1592,7 @@ mod tests {
             snapshot_deletion: None,
             snapshot_clone_baseline: None,
             device_plan: None,
+            lifecycle_plan: None,
             created_devices: Vec::new(),
             steps: Vec::new(),
             cancel_requested: false,

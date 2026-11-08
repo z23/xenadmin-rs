@@ -81,6 +81,8 @@ impl ActionAvailability {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct VmDetails {
+    #[serde(default)]
+    pub is_default_template: Option<bool>,
     pub allowed_operations: Option<Vec<String>>,
     pub current_operations: Vec<RunningOperation>,
     pub blocked_operations: BTreeMap<String, String>,

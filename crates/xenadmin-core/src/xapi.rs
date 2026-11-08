@@ -435,13 +435,14 @@ impl Store {
             .find(|(_, value)| value["uuid"].as_str() == Some(vm.to_string().as_str()))
             .is_some_and(|(_, value)| {
                 value["is_control_domain"] != true
-                    && value["is_a_template"] != true
+                    && (value["is_a_template"] != true
+                        || matches!(action, crate::OperationAction::Lifecycle(_)))
                     && value["is_a_snapshot"] != true
                     && match action {
                         crate::OperationAction::Power(action) => advertises(value, action.wire()),
-                        crate::OperationAction::Settings(_) | crate::OperationAction::Device(_) => {
-                            true
-                        }
+                        crate::OperationAction::Lifecycle(_)
+                        | crate::OperationAction::Settings(_)
+                        | crate::OperationAction::Device(_) => true,
                         crate::OperationAction::Snapshot(
                             crate::SnapshotOperation::Checkpoint { .. },
                         ) => advertises(value, "checkpoint"),
@@ -717,7 +718,7 @@ impl Store {
     }
 }
 
-fn advertises(record: &Value, action: &str) -> bool {
+pub(crate) fn advertises(record: &Value, action: &str) -> bool {
     record["allowed_operations"]
         .as_array()
         .is_some_and(|operations| operations.iter().any(|value| value == action))
@@ -794,7 +795,9 @@ pub(crate) async fn prepare_mutation(
             }
             Ok(reference)
         }
-        OperationAction::Placement(_) | OperationAction::Device(_) => Err(Error::UnavailableAction),
+        OperationAction::Lifecycle(_)
+        | OperationAction::Placement(_)
+        | OperationAction::Device(_) => Err(Error::UnavailableAction),
         OperationAction::Snapshot(SnapshotOperation::Clone { snapshot, name, .. }) => {
             crate::SnapshotName::new(name)?;
             let (reference, candidate) =

@@ -99,7 +99,7 @@ pub(crate) async fn snapshot_record(
         .await?
         .ok_or(Error::Stale)?;
     if parent_record["is_a_snapshot"] != false
-        || parent_record["is_a_template"] != false
+        || !parent_record["is_a_template"].is_boolean()
         || parent_record["is_control_domain"] != false
     {
         return Err(Error::Stale);
