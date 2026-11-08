@@ -361,7 +361,7 @@ pub struct OperationRecord {
     pub created_at_ms: u64,
     #[serde(default)]
     pub cancel_requested: bool,
-    #[serde(default)]
+    #[serde(skip)]
     cancel_dispatched: bool,
     #[serde(default)]
     pub can_cancel: bool,
@@ -371,21 +371,21 @@ pub struct OperationRecord {
     pub local_error: Option<String>,
     #[serde(default, skip_serializing)]
     pub(crate) task: Option<String>,
-    #[serde(default)]
+    #[serde(skip)]
     result_reference: Option<String>,
     #[serde(default)]
     pub created_snapshot: Option<crate::SnapshotId>,
     #[serde(default)]
     pub created_vm: Option<crate::VmId>,
-    #[serde(default)]
+    #[serde(skip)]
     snapshot_deletion: Option<crate::snapshots::DeletionPlan>,
-    #[serde(default)]
+    #[serde(skip)]
     snapshot_clone_baseline: Option<Vec<VmId>>,
-    #[serde(default)]
+    #[serde(skip)]
     device_plan: Option<crate::device_lifecycle::Plan>,
-    #[serde(default)]
+    #[serde(skip)]
     lifecycle_plan: Option<Box<crate::vm_lifecycle_backend::Plan>>,
-    #[serde(default)]
+    #[serde(skip)]
     migration_plan: Option<Box<crate::migration_backend::Plan>>,
     #[serde(default)]
     pub created_devices: Vec<crate::CreatedDevice>,
@@ -704,6 +704,55 @@ impl Journal {
         }
         Ok(Self(connection))
     }
+    fn encode_record(record: &OperationRecord) -> Result<String, Error> {
+        let mut value = serde_json::to_value(record).map_err(|_| Error::Journal)?;
+        let object = value.as_object_mut().ok_or(Error::Journal)?;
+        macro_rules! evidence { ($($field:ident),+ $(,)?) => {$(object.insert(stringify!($field).into(),serde_json::to_value(&record.$field).map_err(|_|Error::Journal)?);)+}; }
+        evidence!(
+            cancel_dispatched,
+            result_reference,
+            snapshot_deletion,
+            snapshot_clone_baseline,
+            device_plan,
+            lifecycle_plan,
+            migration_plan
+        );
+        serde_json::to_string(&value).map_err(|_| Error::Journal)
+    }
+    fn decode_record(payload: &str) -> Result<OperationRecord, Error> {
+        fn take<T: serde::de::DeserializeOwned + Default>(
+            payload: &mut serde_json::Value,
+            key: &str,
+        ) -> Result<T, Error> {
+            payload
+                .as_object_mut()
+                .ok_or(Error::Journal)?
+                .remove(key)
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)
+                .map(Option::unwrap_or_default)
+        }
+        let mut value: serde_json::Value =
+            serde_json::from_str(payload).map_err(|_| Error::Journal)?;
+        let cancel_dispatched = take(&mut value, "cancel_dispatched")?;
+        let result_reference = take(&mut value, "result_reference")?;
+        let snapshot_deletion = take(&mut value, "snapshot_deletion")?;
+        let snapshot_clone_baseline = take(&mut value, "snapshot_clone_baseline")?;
+        let device_plan = take(&mut value, "device_plan")?;
+        let lifecycle_plan = take(&mut value, "lifecycle_plan")?;
+        let migration_plan = take(&mut value, "migration_plan")?;
+        let mut record: OperationRecord =
+            serde_json::from_value(value).map_err(|_| Error::Journal)?;
+        record.cancel_dispatched = cancel_dispatched;
+        record.result_reference = result_reference;
+        record.snapshot_deletion = snapshot_deletion;
+        record.snapshot_clone_baseline = snapshot_clone_baseline;
+        record.device_plan = device_plan;
+        record.lifecycle_plan = lifecycle_plan;
+        record.migration_plan = migration_plan;
+        Ok(record)
+    }
     pub(crate) fn load(&self, id: OperationId) -> Result<Option<OperationRecord>, Error> {
         let value: Option<(String, Option<String>, u64)> = self
             .0
@@ -716,8 +765,7 @@ impl Journal {
             .map_err(|_| Error::Journal)?;
         value
             .map(|(payload, task, revision)| {
-                let mut record: OperationRecord =
-                    serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+                let mut record = Self::decode_record(&payload)?;
                 record.task = task;
                 record.revision = revision;
                 Ok(record)
@@ -754,9 +802,7 @@ impl Journal {
                 .query_map([record.pool.to_string()], |row| row.get::<_, String>(0))
                 .map_err(|_| Error::Journal)?;
             for payload in rows {
-                let existing: OperationRecord =
-                    serde_json::from_str(&payload.map_err(|_| Error::Journal)?)
-                        .map_err(|_| Error::Journal)?;
+                let existing = Self::decode_record(&payload.map_err(|_| Error::Journal)?)?;
                 if record.reserves_pool_creation() || existing.reserves_pool_creation() {
                     return Err(Error::PoolCreationConflict);
                 }
@@ -815,7 +861,7 @@ impl Journal {
                 return Err(Error::JournalChanged);
             }
         }
-        let changed = self.0.execute("INSERT INTO operations(id,pool,vm,payload,task,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,terminal=excluded.terminal,revision=excluded.revision WHERE operations.revision=?7 AND (operations.terminal=0 OR excluded.terminal=1)", rusqlite::params![record.id.to_string(), record.pool.to_string(), record.vm.to_string(), serde_json::to_string(record).map_err(|_| Error::Journal)?, record.task, record.state.terminal(), record.revision]).map_err(|_| Error::Journal)?;
+        let changed = self.0.execute("INSERT INTO operations(id,pool,vm,payload,task,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,terminal=excluded.terminal,revision=excluded.revision WHERE operations.revision=?7 AND (operations.terminal=0 OR excluded.terminal=1)", rusqlite::params![record.id.to_string(), record.pool.to_string(), record.vm.to_string(), Self::encode_record(record)?, record.task, record.state.terminal(), record.revision]).map_err(|_| Error::Journal)?;
         if changed != 1 {
             return Err(Error::JournalChanged);
         }
@@ -917,8 +963,7 @@ impl Journal {
             .map_err(|_| Error::Journal)?;
         rows.map(|row| {
             let (payload, task, revision) = row.map_err(|_| Error::Journal)?;
-            let mut record: OperationRecord =
-                serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+            let mut record = Self::decode_record(&payload)?;
             record.task = task;
             record.revision = revision;
             Ok(record)
@@ -1929,3 +1974,7 @@ mod tests {
 #[cfg(test)]
 #[path = "resource_journal_tests.rs"]
 mod resource_journal_tests;
+
+#[cfg(test)]
+#[path = "vm_journal_privacy_tests.rs"]
+mod journal_privacy_tests;

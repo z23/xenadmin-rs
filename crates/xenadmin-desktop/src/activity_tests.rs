@@ -179,11 +179,9 @@ fn public_export_projection_excludes_task_refs_private_plans_and_resource_baseli
     let pool = PoolId::from(uuid::Uuid::new_v4());
     let vm = vm_record(pool, OperationState::OutcomeUnknown);
     let resource = resource_record(pool);
-    assert!(
-        serde_json::to_string(&vm)
-            .unwrap()
-            .contains("OpaqueRef:private-result")
-    );
+    let public_vm = serde_json::to_string(&vm).unwrap();
+    assert!(!public_vm.contains("OpaqueRef:"));
+    assert!(!public_vm.contains("result_reference"));
     assert!(
         serde_json::to_string(&resource)
             .unwrap()

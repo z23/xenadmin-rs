@@ -403,3 +403,10 @@ prevents later steps after in-flight work resolves. Private receipt merging pres
 cancellation and never resurrects an acknowledged operation. See the
 [host administration report](reports/2026-11-08-host-administration.md).
 Archive transfer is a typed resource-journal workflow, with paths and local inode identity in a private plan. Authentication is transient HTTP Cookie data; public history, export and inspection projections contain only action/progress/result UUIDs. Fixed GET/PUT endpoints stream bounded buffers under the established trust policy. Uploads are never replayed, and manual download redirects are confined to fresh pool hosts and fixed operation parameters. Local stream completion and host-task completion are separate persisted proofs. Export publishes an owned private file atomically without replacement. Failed imports retain the pool reservation because server creation can precede provenance tagging; known UUIDs are evidence for explicit inspection, never permission for automatic deletion. See the [XVA transfer report](reports/2026-11-08-xva-transfers.md).
+
+Public VM operation serialization excludes reconciliation references, private workflow plans,
+clone baselines and cancellation-dispatch evidence. The journal alone encodes and decodes
+these fields under their existing flat payload keys; its separate task column remains
+authoritative. Loading, history, recovery and admission share this decoder, and malformed
+private evidence fails closed rather than being silently discarded. Public created-object
+UUIDs and operation outcomes remain available to consumers.
