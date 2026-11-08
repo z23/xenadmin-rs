@@ -347,6 +347,33 @@ pub(crate) fn rewind(file: &mut File) -> Result<(), Error> {
     file.rewind().map_err(|_| Error::TransferFile)
 }
 
+pub(crate) fn validate_host_export(
+    plan: &Plan,
+    host: crate::HostId,
+    version: &str,
+    operation: &crate::HostArchiveOperation,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(), Error> {
+    let receipt = plan.stream_receipt.as_ref().ok_or(Error::TransferFile)?;
+    let path = if plan.file.path.symlink_metadata().is_ok()
+        && matches_receipt(&plan.file.path, receipt)?
+    {
+        &plan.file.path
+    } else {
+        plan.temporary.as_ref().ok_or(Error::TransferFile)?
+    };
+    let mut file = open_in(&parent_handle(&plan.file)?, path, false, false)?;
+    let before = Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?);
+    if before.size > crate::MAX_HOST_ARCHIVE_BYTES || !receipt.identity.same_inode(&before) {
+        return Err(Error::TransferFileChanged);
+    }
+    crate::host_support::archive::inspect(&mut file, host, version, operation, cancel)?;
+    if Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?) != before {
+        return Err(Error::TransferFileChanged);
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_export(plan: &Plan, source: &ExportSource) -> Result<(), Error> {
     let receipt = plan.stream_receipt.as_ref().ok_or(Error::TransferFile)?;
     let path = if plan.file.path.symlink_metadata().is_ok()

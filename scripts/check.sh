@@ -143,3 +143,5 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/guest-tools-review-compact.png --tree artifacts/guest-tools-review-compact.json --scene guest-tools-review --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-network.png --tree artifacts/management-network.json --scene management-network --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-network-compact.png --tree artifacts/management-network-compact.json --scene management-network --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-support.png --tree artifacts/host-support.json --scene host-support --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-support-compact.png --tree artifacts/host-support-compact.json --scene host-support --theme dark --size 513x652 --scale 1 --at 1

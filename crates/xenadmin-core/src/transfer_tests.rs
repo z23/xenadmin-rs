@@ -193,7 +193,64 @@ impl Fixture {
                     let mut extra = String::new();
                     let mut declared = None;
                     let mut delay_create = false;
-                    let body = if request.starts_with("GET /export_raw_vdi?")
+                    let body = if request.starts_with("GET /host_backup?")
+                        || request.starts_with("GET /system-status?")
+                    {
+                        assert_eq!(cookie, "session_id=OpaqueRef:synthetic-secret");
+                        assert!(!request.contains("synthetic-secret"));
+                        let backup = request.starts_with("GET /host_backup?");
+                        c.lock().unwrap().push(
+                            if backup {
+                                "GET /host_backup"
+                            } else {
+                                "GET /system-status"
+                            }
+                            .into(),
+                        );
+                        let u = url::Url::parse(&format!(
+                            "http://localhost{}",
+                            request.split_whitespace().nth(1).unwrap()
+                        ))
+                        .unwrap();
+                        let q = u.query_pairs().collect::<BTreeMap<_, _>>();
+                        assert_eq!(q["task_id"], "OpaqueRef:task:t");
+                        if !backup {
+                            assert_eq!(q["entries"], "host-crashdump-logs");
+                            assert_eq!(q["output"], "tar");
+                        }
+                        let mut data = r.lock().unwrap();
+                        let fault = data
+                            .get("fixture:hostfault")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_owned();
+                        data.get_mut("OpaqueRef:task:t").unwrap()["status"] =
+                            json!(if fault == "task-failure" {
+                                "failure"
+                            } else if fault == "pending" {
+                                "pending"
+                            } else {
+                                "success"
+                            });
+                        if fault == "lost" {
+                            return;
+                        }
+                        if fault == "redirect" {
+                            status = "302 Found";
+                            extra = "Location: http://127.0.0.1:1/host_backup\r\n".into();
+                        }
+                        if fault == "expired" {
+                            status = "401 Unauthorized";
+                        }
+                        let bytes = host_support_tests::body(
+                            backup,
+                            if fault == "wrong-host" { 9 } else { 3 },
+                        );
+                        if fault == "truncated" {
+                            declared = Some(bytes.len() + 100);
+                        }
+                        bytes
+                    } else if request.starts_with("GET /export_raw_vdi?")
                         || request.starts_with("PUT /import_raw_vdi?")
                     {
                         assert_eq!(cookie, "session_id=OpaqueRef:synthetic-secret");
@@ -396,6 +453,8 @@ impl Fixture {
                                 return;
                             }
                             json!({"result":"OpaqueRef:VDI:new"})
+                        } else if method == "host.get_system_status_capabilities" {
+                            json!({"result":host_support_tests::CAPS})
                         } else if method == "task.create" {
                             data.insert("OpaqueRef:task:t".into(),json!({"uuid":uuid(100),"name_label":p[1],"status":"pending","progress":0.0,"allowed_operations":["cancel"]}));
                             json!({"result":"OpaqueRef:task:t"})
@@ -976,3 +1035,6 @@ mod ovf_import_tests;
 
 #[path = "cloud_init_protocol_tests.rs"]
 mod cloud_init_protocol_tests;
+
+#[path = "host_support_tests.rs"]
+mod host_support_tests;

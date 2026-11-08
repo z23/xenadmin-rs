@@ -106,6 +106,10 @@ pub(super) fn export_button(s: &State, source: ExportSource, k: &Kit) -> El {
         .build(k)
         .key("export-xva")
 }
+pub(super) fn history(s: &mut State) {
+    begin(s, None);
+    s.transfers.history = true;
+}
 pub(super) fn open(s: &mut State) {
     begin(s, None);
 }
@@ -395,7 +399,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .flex_wrap()
                 .child(heading(
                     if p.history {
-                        "Image transfers"
+                        "Transfers"
                     } else if p.disk_export.is_some() {
                         "Export disk image"
                     } else if exporting(p) {

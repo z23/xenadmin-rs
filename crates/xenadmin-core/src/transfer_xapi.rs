@@ -64,6 +64,14 @@ pub(crate) async fn prepare(
     action: &TransferAction,
     plan: Option<&Plan>,
 ) -> Result<http::Prepared, Error> {
+    if let TransferAction::Host {
+        host,
+        expected_version,
+        operation,
+    } = action
+    {
+        return crate::host_support::prepare(s, pool, *host, expected_version, operation).await;
+    }
     if matches!(
         action,
         TransferAction::ImportDisk { .. } | TransferAction::ExportDisk { .. }
@@ -135,7 +143,8 @@ pub(crate) async fn prepare(
         TransferAction::ImportDisk { .. } | TransferAction::ExportDisk { .. } => {
             return Err(Error::TransferConflict);
         }
-        TransferAction::ImportXva { .. }
+        TransferAction::Host { .. }
+        | TransferAction::ImportXva { .. }
         | TransferAction::ImportOvf { .. }
         | TransferAction::ExportOvf { .. } => {
             return Err(Error::TransferConflict);

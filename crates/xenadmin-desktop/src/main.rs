@@ -11,6 +11,7 @@ mod guest_tools_view;
 mod host_admin;
 mod host_console;
 mod host_power_view;
+mod host_support_view;
 mod inventory_information;
 mod inventory_menu;
 mod metrics_view;
@@ -176,6 +177,7 @@ struct State {
     network_workspace: Option<network_admin::Workspace>,
     storage_editor: Option<storage_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
+    host_support: Option<host_support_view::Panel>,
     host_power: Option<host_power_view::Editor>,
     snapshot_policy_workspace: Option<snapshot_policy_view::Workspace>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
@@ -287,6 +289,7 @@ fn init() -> State {
         network_workspace: None,
         storage_editor: None,
         host_workspace: None,
+        host_support: None,
         host_power: None,
         snapshot_policy_workspace: None,
         resource_operations: Vec::new(),
@@ -805,6 +808,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= storage_view::poll(s);
     changed |= snapshot_policy_view::poll(s);
     changed |= transfers::poll(s);
+    changed |= host_support_view::poll(s);
     changed |= cloud_init_view::poll(s);
     changed |= pool_security_view::poll(s);
     changed |= console_view::poll_export(s);
@@ -1403,6 +1407,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [snapshot_policy_view::dialog(s, &k)])
     } else if s.host_power.is_some() {
         rune_kit::root(base, [host_power_view::dialog(s, &k)])
+    } else if s.host_support.is_some() {
+        rune_kit::root(base, [host_support_view::dialog(s, &k)])
     } else if s.host_workspace.is_some() {
         rune_kit::root(base, [host_admin::dialog(s, &k)])
     } else if s.network_workspace.is_some() {
@@ -1654,6 +1660,7 @@ fn details(s: &State, k: &Kit) -> El {
                 .child(network_admin::button(s, k))
                 .child(storage_view::button(s, k))
                 .child(host_admin::button(s, k))
+                .child(host_support_view::button(s, k))
                 .child(host_console::button(s, k)),
             k,
         );
@@ -2251,6 +2258,7 @@ fn main() {
             ("network-topology", network_admin::topology_scene),
             ("management-network", network_admin::management_scene),
             ("host-administration", host_admin::scene),
+            ("host-support", host_support_view::scene),
             ("host-power-settings", host_power_view::scene),
             ("snapshot-schedules", snapshot_policy_view::scene),
             ("network-create", |s| resource_admin::scene(s, false)),

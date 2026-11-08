@@ -243,9 +243,9 @@ Implementation and qualification evidence: [host administration report](reports/
 | P12-09 | Host autostart | Explicit pool-wide VM autostart review implemented; preserves per-VM flags and does not start VMs immediately; fixture-verified, lab open |
 | P12-10 | Change host/root password | Fixture implementation: reviewed pool-wide local-root change, verified coordinator login, actor reconnect-credential rotation/old-alias invalidation, optional exact-profile SecretService update; other member propagation explicitly unverified. [Evidence](reports/2026-11-08-root-password.md) |
 | P12-11 | Forget/remove dead host | Reviewed offline/disabled/empty non-coordinator removal with independent power-off acknowledgement and HA disabled; retains SR records/data; fixture-verified, lab open |
-| P12-12 | Host configuration backup/restore | Retained dependency: authenticated bounded host backup/restore transfers and exact-host recovery review queued |
+| P12-12 | Host configuration backup/restore | Partial: reviewed exact-host private filesystem backup download; bounded archive/owned-task verification. Staged restore remains open. [Evidence](reports/2026-11-08-host-backup-support.md) |
 | P12-13 | Logging destination/monitoring settings | Reviewed remote syslog destination and separately journaled reconfigure implemented; further monitoring settings remain queued; fixture-verified, lab open |
-| P12-14 | Crash dumps and support bundles | Retained dependency: crash-dump inventory and private support-bundle download workflow queued |
+| P12-14 | Crash dumps and support bundles | Partial: advertised support categories, selected-host crashdump metadata and private support/log bundle download. Raw dump transfer/deletion remains open; logs explicitly exclude raw cores. [Evidence](reports/2026-11-08-host-backup-support.md) |
 
 ## 13. Pools, HA, identity and server security
 

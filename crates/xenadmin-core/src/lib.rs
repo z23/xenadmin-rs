@@ -106,6 +106,11 @@ pub use storage_discovery::{
 mod host_types;
 mod settings;
 pub use host_types::{HostOperation, HostPowerOnMode};
+mod host_support;
+pub use host_support::{
+    HostArchiveOperation, HostCrashdump, HostSupportCapability, HostSupportOverview,
+    HostSupportQuery, MAX_HOST_ARCHIVE_BYTES,
+};
 mod guest_boot;
 mod snapshot_policy;
 mod snapshot_policy_support;

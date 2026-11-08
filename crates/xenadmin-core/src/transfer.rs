@@ -18,6 +18,11 @@ pub enum ExportSource {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferAction {
+    Host {
+        host: crate::HostId,
+        expected_version: String,
+        operation: crate::HostArchiveOperation,
+    },
     ExportOvf {
         source: ExportSource,
         format: crate::OvfPackageFormat,
@@ -48,11 +53,18 @@ impl TransferAction {
     pub fn is_export(&self) -> bool {
         matches!(
             self,
-            Self::ExportXva { .. } | Self::ExportDisk { .. } | Self::ExportOvf { .. }
+            Self::ExportXva { .. }
+                | Self::ExportDisk { .. }
+                | Self::ExportOvf { .. }
+                | Self::Host { .. }
         )
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Host { operation, .. } => match operation {
+                crate::HostArchiveOperation::Backup => "Back up host filesystem",
+                crate::HostArchiveOperation::Support { .. } => "Download host support bundle",
+            },
             Self::ExportXva { .. } => "Export XVA",
             Self::ExportOvf { .. } => "Export OVF/OVA",
             Self::ImportXva { .. } => "Import XVA",
@@ -77,6 +89,23 @@ impl TransferAction {
             return no("Enter a new disk name of 1–255 printable characters");
         };
         match self {
+            Self::Host {
+                host,
+                expected_version,
+                operation,
+            } => {
+                if crate::host_support::validate_operation(operation).is_err() {
+                    return no("Choose one or more distinct advertised support categories");
+                }
+                if expected_version.is_empty()
+                    || expected_version.len() > 64
+                    || i.hosts
+                        .get(host)
+                        .is_none_or(|h| h.version != *expected_version)
+                {
+                    return ActionAvailability::Stale;
+                }
+            }
             Self::ExportOvf { .. } => unreachable!(),
             Self::ExportDisk {
                 vdi,

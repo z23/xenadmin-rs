@@ -18,10 +18,24 @@ use tokio_util::sync::CancellationToken;
 pub(crate) enum Kind {
     Archive,
     Disk,
+    HostBackup,
+    HostSupport,
 }
 impl Kind {
+    fn is_host(self) -> bool {
+        matches!(self, Self::HostBackup | Self::HostSupport)
+    }
+    fn maximum_bytes(self) -> u64 {
+        if self.is_host() {
+            crate::MAX_HOST_ARCHIVE_BYTES
+        } else {
+            MAX_TRANSFER_BYTES
+        }
+    }
     fn path(self, upload: bool) -> &'static str {
         match (self, upload) {
+            (Self::HostBackup, _) => "/host_backup",
+            (Self::HostSupport, _) => "/system-status",
             (Self::Archive, true) => "/import",
             (Self::Archive, false) => "/export",
             (Self::Disk, true) => "/import_raw_vdi",
@@ -94,6 +108,9 @@ fn redirected(
     prepared: &Prepared,
     options: &ConnectionOptions,
 ) -> Result<Endpoint, Error> {
+    if prepared.kind.is_host() {
+        return Err(Error::TransferEndpoint);
+    }
     let target = current
         .join(location)
         .map_err(|_| Error::TransferEndpoint)?;
@@ -221,7 +238,7 @@ pub(crate) async fn run(
         let mut output = tokio::fs::File::from_std(output);
         let mut response = export_response(session, &prepared, &meter).await?;
         let expected = response.content_length();
-        if expected.is_some_and(|n| n == 0 || n > MAX_TRANSFER_BYTES) {
+        if expected.is_some_and(|n| n == 0 || n > prepared.kind.maximum_bytes()) {
             return Err(Error::TransferLimit);
         }
         meter.total.store(expected.unwrap_or(0), Ordering::Relaxed);
@@ -232,7 +249,7 @@ pub(crate) async fn run(
             let Some(chunk) = next else { break };
             bytes = bytes
                 .checked_add(chunk.len() as u64)
-                .filter(|n| *n <= MAX_TRANSFER_BYTES)
+                .filter(|n| *n <= prepared.kind.maximum_bytes())
                 .ok_or(Error::TransferLimit)?;
             for piece in chunk.chunks(65536) {
                 output
@@ -243,7 +260,10 @@ pub(crate) async fn run(
                 meter.bytes.fetch_add(piece.len() as u64, Ordering::Relaxed);
             }
         }
-        if bytes < 512 || expected.is_some_and(|n| n != bytes) {
+        if bytes == 0
+            || (!prepared.kind.is_host() && bytes < 512)
+            || expected.is_some_and(|n| n != bytes)
+        {
             return Err(Error::TransferConflict);
         }
         output.flush().await.map_err(|_| Error::TransferFile)?;

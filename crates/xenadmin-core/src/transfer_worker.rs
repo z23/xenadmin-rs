@@ -466,8 +466,20 @@ impl ResourceRequest {
                         return Err(Error::TransferConflict);
                     }
                 }
+                let validation_cancel = cancel.clone();
                 let publication = tokio::task::spawn_blocking(move || {
                     match action {
+                        TransferAction::Host {
+                            host,
+                            expected_version,
+                            operation,
+                        } => files::validate_host_export(
+                            &plan,
+                            host,
+                            &expected_version,
+                            &operation,
+                            &validation_cancel,
+                        )?,
                         TransferAction::ExportXva { source } => {
                             files::validate_export(&plan, &source)?
                         }
@@ -486,7 +498,13 @@ impl ResourceRequest {
                     publication.publish()
                 })?;
                 self.record.state = OperationState::Succeeded;
-                self.record.detail = "Export verified and saved as a private image".into();
+                self.record.detail =
+                    if matches!(self.transfer_action()?, TransferAction::Host { .. }) {
+                        "Host task and archive verified; private archive saved locally"
+                    } else {
+                        "Export verified and saved as a private image"
+                    }
+                    .into();
             }
         } else if success && matches!(self.record.action, ResourceAction::CloudInit(_)) {
             return self.complete_cloud_upload(journal, session, cancel).await;
