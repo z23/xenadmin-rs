@@ -13,6 +13,12 @@ pub(super) struct Export {
     result: Option<mpsc::Receiver<Result<String, String>>>,
 }
 
+pub(super) fn moving_window(s: &mut State) {
+    // An already-authorized writer can finish; an old window's pending file dialog cannot.
+    if s.console_ui.export.pending && s.console_ui.export.result.is_none() {
+        s.console_ui.export = Default::default();
+    }
+}
 pub(super) fn choose(s: &mut State, tx: &mut Tx) {
     if s.console_ui.export.pending {
         return;

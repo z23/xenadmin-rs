@@ -53,6 +53,12 @@ Environment or explicit HTTP CONNECT routes. Proxy authentication stays in the a
 session. Certificate review changes an unsaved profile draft and never automatically logs in.
 HTTPS/SOCKS/PAC proxy configurations are explicitly unsupported in this increment.
 
+Console sessions can move into up to eight independent native windows while the main window
+browses other guests or pools. Each retains its original pool/VM and connection, with separate
+input, clipboard, screenshot and reconnect state. The Console windows manager shows or closes
+any session; closing the main application closes them all. See the
+[independent console windows report](reports/2026-11-08-independent-console-windows.md).
+
 The application does not promise a generic console for guests that expose no RFB console.
 Guest RDP and SSH integrations can be added later without becoming management dependencies.
 

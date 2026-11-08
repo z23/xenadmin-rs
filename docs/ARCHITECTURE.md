@@ -250,6 +250,14 @@ Use a console-specific generation so replacing a console cannot display delayed 
 Reconnect after location/reference changes and release held input on focus loss and closure.
 The initial path uses bounded RGBA uploads. Zero-copy GPU integration needs later evidence.
 
+`console_windows.rs` registers eight lazy secondary Rune windows on the existing event loop.
+Detaching moves the console handle/frame state and clones the original `Connection`; secondary
+initialization never opens another backend, profile store or keyring session. Each window owns
+its input/recovery state and polls only the local connection snapshot, while frame notifications
+wake it directly. Main selection changes never replace its connection. Window slots use unique
+leases and a close-acknowledgement barrier before reuse, so old manager/dialog callbacks cannot
+affect a new console. Closing releases input and drops the stream; main closure closes all slots.
+
 RRD polling has independent scheduling and bounds. Stop unnecessary high-resolution polling
 for hidden views. Show unavailable samples as gaps. Management controls remain available
 when metrics fail. Bulk imports and exports later use streamed HTTP bodies and operation

@@ -187,3 +187,7 @@ for storage_scene in storage-repair storage-cache storage-maintenance; do
     "$check_binary" --snap "artifacts/${storage_scene}-${storage_size}.png" --tree "artifacts/${storage_scene}-${storage_size}.json" --scene "$storage_scene" --theme dark --size "$storage_size" --scale 1 --at 1
   done
 done
+
+"$check_binary" --window console-1 --snap artifacts/console-window.png --tree artifacts/console-window.json --scene console-window --theme dark --size 1100x800 --scale 1 --at 1
+"$check_binary" --window console-1 --snap artifacts/console-window-compact.png --tree artifacts/console-window-compact.json --scene console-window --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/console-window-manager.png --tree artifacts/console-window-manager.json --scene multiple-consoles --theme dark --size 513x652 --scale 1 --at 1

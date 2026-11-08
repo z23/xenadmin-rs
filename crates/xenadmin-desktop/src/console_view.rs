@@ -99,6 +99,11 @@ fn next_serial() -> u64 {
     static SERIAL: AtomicU64 = AtomicU64::new(1);
     SERIAL.fetch_add(1, Ordering::Relaxed)
 }
+pub(super) fn moving_window(s: &mut State) {
+    release(s);
+    s.console_ui.serial = next_serial();
+    export::moving_window(s);
+}
 pub(super) fn reconnecting(s: &mut State) {
     release(s);
     s.console_ui.serial = next_serial();
@@ -307,16 +312,24 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .center_y()
                 .child(heading(title, k))
                 .child(
-                    Button::new("Back to inventory")
-                        .variant(ButtonVariant::Outline)
-                        .on_press(|s: &mut State| {
+                    Button::new(if s.console_seat.is_some() {
+                        "Close console"
+                    } else {
+                        "Back to inventory"
+                    })
+                    .variant(ButtonVariant::Outline)
+                    .on_press_tx(|s: &mut State, tx| {
+                        if s.console_seat.is_some() {
+                            tx.close_window();
+                        } else {
                             release(s);
                             s.console = None;
                             s.console_snapshot = None;
                             s.console_ui = Default::default();
-                        })
-                        .build(k)
-                        .key("close-console"),
+                        }
+                    })
+                    .build(k)
+                    .key("close-console"),
                 ),
         )
         .child(caption(status, k).wrap())
@@ -367,6 +380,17 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                         })
                         .build(k),
                 )
+                .children(if s.console_seat.is_none() {
+                    vec![
+                        Button::new("Open in separate window")
+                            .disabled(!crate::console_windows::can_detach(s))
+                            .on_press(crate::console_windows::detach)
+                            .build(k)
+                            .key("detach-console"),
+                    ]
+                } else {
+                    vec![]
+                })
                 .child(Button::new("Release input").on_press(release).build(k))
                 .child(
                     Button::new("Save screenshot…")

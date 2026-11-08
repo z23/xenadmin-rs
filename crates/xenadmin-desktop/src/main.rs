@@ -5,6 +5,7 @@ mod appliance_view;
 mod bulk_power;
 mod cloud_init_view;
 mod console_view;
+mod console_windows;
 mod cross_pool_vm;
 mod demo_details;
 mod dev_inspection;
@@ -163,6 +164,8 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    console_windows: console_windows::Registry,
+    console_seat: Option<console_windows::Seat>,
     information: Option<inventory_information::Panel>,
     guest_tools: Option<guest_tools_view::Panel>,
     snapshot_inspection: Option<snapshot_inspection::Panel>,
@@ -262,7 +265,9 @@ fn secure_field() -> TextEdit {
     edit
 }
 fn init() -> State {
-    let live_state = !cfg!(test);
+    init_mode(!cfg!(test))
+}
+fn init_mode(live_state: bool) -> State {
     let preferences = if live_state {
         Preferences::load()
     } else {
@@ -286,6 +291,8 @@ fn init() -> State {
         .flatten()
         .or(inspection_error);
     let mut s = State {
+        console_windows: Default::default(),
+        console_seat: None,
         bulk_power: None,
         row_menu: None,
         searches: None,
@@ -376,7 +383,7 @@ fn init() -> State {
         preferences,
     };
     profiles_view::apply_initial(&mut s);
-    if rune::extra_args().iter().any(|a| a == "--demo") {
+    if live_state && rune::extra_args().iter().any(|a| a == "--demo") {
         demo(&mut s);
     }
     s
@@ -820,6 +827,7 @@ fn merge_operation_rows(
 
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
+    changed |= console_windows::poll_registry(s);
     changed |= snapshot_inspection::poll(s);
     changed |= snapshot_capture::poll(s, tx);
     changed |= search_view::poll(s);
@@ -988,6 +996,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .grow(1.0)
             .min_h(0.0),
         )
+        .child(console_windows::button(s, &k))
         .child(
             Button::new("Add connection")
                 .variant(ButtonVariant::Outline)
@@ -1303,6 +1312,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .key("show-details"),
         );
     }
+    if s.window_width < 800.0 {
+        controls = controls.child(console_windows::button(s, &k));
+    }
     controls = controls
         .child(
             Button::new("Options")
@@ -1559,6 +1571,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
     let root = if s.application_panel.is_some() {
         rune_kit::root(root, [settings::dialog(s, &k)])
+    } else {
+        root
+    };
+    let root = if s.console_windows.show {
+        rune_kit::root(root, [console_windows::dialog(s, &k)])
     } else {
         root
     };
@@ -2228,6 +2245,7 @@ fn main() {
             }),
             ("batch-power", bulk_power::scene),
             ("console-recovery", console_view::recovery_scene),
+            ("multiple-consoles", console_windows::multiple_scene),
             ("host-console", host_console::scene),
             ("search-pools", search_view::scene),
             ("performance", metrics_view::scene),
@@ -2347,7 +2365,7 @@ fn main() {
         min_size: Some((480.0, 640.0)),
         ..AppSpec::new("XenAdmin RS", (1440.0, 900.0), init, view)
     };
-    rune::App::new(spec)
+    let mut app = rune::App::new(spec)
         .tab_visits_controls(true)
         .modifier_keys()
         .on_focus(|s, focused, _| {
@@ -2357,9 +2375,11 @@ fn main() {
         })
         .on_close(|s, _| {
             s.save_preferences();
+            console_windows::close_all(s);
             profiles_view::disconnect_all(s);
-        })
-        .run();
+        });
+    console_windows::register(&mut app);
+    app.run();
 }
 #[cfg(test)]
 mod tests {
