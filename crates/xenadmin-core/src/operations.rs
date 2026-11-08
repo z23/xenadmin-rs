@@ -879,6 +879,12 @@ impl Journal {
                 || (previous.created_snapshot.is_some()
                     && previous.created_snapshot != record.created_snapshot)
                 || (previous.created_vm.is_some() && previous.created_vm != record.created_vm)
+                || previous.lifecycle_plan.as_ref().is_some_and(|old| {
+                    !record
+                        .lifecycle_plan
+                        .as_ref()
+                        .is_some_and(|new| new.extends(old))
+                })
                 || previous.snapshot_workflow.as_ref().is_some_and(|old| {
                     !record
                         .snapshot_workflow
@@ -1337,7 +1343,7 @@ impl MutationRequest {
                 Ok(()) => return Ok(()),
                 Err(Error::JournalChanged) => {
                     let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
-                    if current.state.terminal() {
+                    if current.state.terminal() || current.state == OperationState::OutcomeUnknown {
                         self.record = current;
                         return Err(Error::JournalChanged);
                     }
@@ -1380,7 +1386,10 @@ impl MutationRequest {
             if before["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
                 return Err(Error::Stale);
             }
-            if let Err(error) = step.preflight(&before) {
+            if let Err(error) = patch
+                .target_guard(&before)
+                .and_then(|_| step.preflight(&before))
+            {
                 self.record.steps[index].state = crate::StepState::Failed;
                 self.record.steps[index].detail = error.to_string();
                 self.record.state = if index == 0 {
@@ -1430,6 +1439,7 @@ impl MutationRequest {
                 .await?;
             let after = patch.resolve_record(session, after).await?;
             if after["uuid"].as_str() != Some(self.record.vm.to_string().as_str())
+                || patch.target_guard(&after).is_err()
                 || !step.verified(&after)
             {
                 return Err(Error::SettingsConflict);
@@ -1463,6 +1473,7 @@ impl MutationRequest {
         if current["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
             return Err(Error::Stale);
         };
+        patch.target_guard(&current)?;
         let complete = steps.iter().all(|step| step.verified(&current));
         if complete {
             self.record.steps = steps

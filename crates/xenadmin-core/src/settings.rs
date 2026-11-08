@@ -22,6 +22,14 @@ impl MemoryLimits {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "field")]
 pub enum VmSettingEdit {
+    SecureBoot {
+        previous: bool,
+        value: bool,
+    },
+    Firmware {
+        previous: String,
+        value: String,
+    },
     HomeHost {
         previous: Option<HostId>,
         value: Option<HostId>,
@@ -76,15 +84,57 @@ pub enum VmSettingEdit {
         value: bool,
     },
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettingsTarget {
+    #[default]
+    Vm,
+    CustomTemplate,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VmSettingsPatch {
+    #[serde(default)]
+    target: SettingsTarget,
     edits: Vec<VmSettingEdit>,
 }
 impl VmSettingsPatch {
     pub fn new(edits: Vec<VmSettingEdit>) -> Result<Self, Error> {
-        let patch = Self { edits };
+        let patch = Self {
+            edits,
+            target: SettingsTarget::Vm,
+        };
         patch.validate()?;
         Ok(patch)
+    }
+    pub fn custom_template(edits: Vec<VmSettingEdit>) -> Result<Self, Error> {
+        let patch = Self {
+            edits,
+            target: SettingsTarget::CustomTemplate,
+        };
+        patch.validate()?;
+        Ok(patch)
+    }
+    pub fn is_template(&self) -> bool {
+        self.target == SettingsTarget::CustomTemplate
+    }
+    pub(crate) fn target_guard(&self, r: &Value) -> Result<(), Error> {
+        if r["is_a_template"] != self.is_template()
+            || r["is_a_snapshot"] != false
+            || r["is_control_domain"] != false
+        {
+            return Err(Error::Stale);
+        }
+        if r["current_operations"]
+            .as_object()
+            .is_none_or(|v| !v.is_empty())
+        {
+            return Err(Error::SettingsConflict);
+        }
+        if self.is_template()
+            && (r["power_state"] != "Halted" || !crate::guest_boot::custom_template(r))
+        {
+            return Err(Error::UnavailableAction);
+        }
+        Ok(())
     }
     pub fn edits(&self) -> &[VmSettingEdit] {
         &self.edits
@@ -95,7 +145,25 @@ impl VmSettingsPatch {
         }
         let mut seen = std::collections::BTreeSet::new();
         for edit in &self.edits {
+            if self.is_template()
+                && matches!(
+                    edit,
+                    VmSettingEdit::LiveCpus { .. }
+                        | VmSettingEdit::DynamicMemory { .. }
+                        | VmSettingEdit::ShadowMultiplier { live: true, .. }
+                )
+            {
+                return Err(Error::InvalidSettings);
+            }
             let (field, valid) = match edit {
+                VmSettingEdit::SecureBoot { previous, value } => (10, previous != value),
+                VmSettingEdit::Firmware { previous, value } => (
+                    11,
+                    self.is_template()
+                        && previous != value
+                        && ["bios", "uefi"].contains(&previous.as_str())
+                        && ["bios", "uefi"].contains(&value.as_str()),
+                ),
                 VmSettingEdit::HomeHost { previous, value } => (9, previous != value),
                 VmSettingEdit::LiveCpus {
                     previous,
@@ -184,6 +252,20 @@ impl VmSettingsPatch {
         }
         Ok(())
     }
+    pub(crate) async fn preflight_remote(
+        &self,
+        session: &Session,
+        reference: &str,
+    ) -> Result<(), Error> {
+        if self
+            .edits
+            .iter()
+            .any(|e| matches!(e, VmSettingEdit::SecureBoot { value: true, .. }))
+        {
+            crate::guest_boot::require_policy_support(session, reference).await?;
+        }
+        Ok(())
+    }
     pub(crate) async fn resolve_record(
         &self,
         session: &Session,
@@ -212,6 +294,32 @@ impl VmSettingsPatch {
         let mut steps = Vec::new();
         for edit in &self.edits {
             match edit {
+                VmSettingEdit::SecureBoot { previous, value } => {
+                    let mut step = SettingsStep::scalar(
+                        "Secure Boot policy",
+                        "platform",
+                        "VM.set_platform",
+                        json!(previous.to_string()),
+                        json!(value.to_string()),
+                    );
+                    step.map_key = Some("secureboot".into());
+                    step.requires_halted = true;
+                    step.guard = Some(SettingsGuard::SecureBoot);
+                    steps.push(step);
+                }
+                VmSettingEdit::Firmware { previous, value } => {
+                    let mut step = SettingsStep::scalar(
+                        "Empty template firmware",
+                        "HVM_boot_params",
+                        "VM.set_HVM_boot_params",
+                        json!(previous),
+                        json!(value),
+                    );
+                    step.map_key = Some("firmware".into());
+                    step.requires_halted = true;
+                    step.guard = Some(SettingsGuard::EmptyTemplateFirmware);
+                    steps.push(step);
+                }
                 VmSettingEdit::HomeHost { previous, value } => {
                     let mut step = SettingsStep::scalar(
                         "Home host",
@@ -400,6 +508,8 @@ fn integer(value: &Value) -> Option<u64> {
 }
 #[derive(Clone, Debug)]
 enum SettingsGuard {
+    SecureBoot,
+    EmptyTemplateFirmware,
     LiveCpus(u64),
     DynamicMemory(u64, u64),
     Topology(u64),
@@ -414,6 +524,15 @@ impl SettingsGuard {
             return Err(Error::UnavailableAction);
         }
         let valid = match self {
+            Self::SecureBoot => halted && crate::guest_boot::firmware(record) == Some("uefi"),
+            Self::EmptyTemplateFirmware => {
+                halted
+                    && record["is_a_template"] == true
+                    && crate::guest_boot::custom_template(record)
+                    && crate::guest_boot::is_hvm(record)
+                    && record["VBDs"].as_array().is_some_and(Vec::is_empty)
+                    && crate::guest_boot::policy(record) == Some(false)
+            }
             Self::LiveCpus(max) => {
                 running
                     && integer(&record["VCPUs_max"]) == Some(*max)
@@ -516,7 +635,8 @@ impl SettingsStep {
                         .get(key)
                         .cloned()
                         .unwrap_or_else(|| match key.as_str() {
-                            "auto_poweron" => json!("false"),
+                            "auto_poweron" | "secureboot" => json!("false"),
+                            "firmware" => json!("bios"),
                             "order" => json!(""),
                             _ => Value::Null,
                         })
@@ -551,7 +671,14 @@ impl SettingsStep {
         Ok(())
     }
     pub(crate) fn verified(&self, record: &Value) -> bool {
-        self.values(record) == self.value
+        (!matches!(
+            self.guard,
+            Some(SettingsGuard::SecureBoot | SettingsGuard::EmptyTemplateFirmware)
+        ) || self
+            .guard
+            .as_ref()
+            .is_none_or(|g| g.preflight(record).is_ok()))
+            && self.values(record) == self.value
     }
     pub(crate) async fn send(
         &self,
@@ -559,6 +686,9 @@ impl SettingsStep {
         reference: &str,
         before: &Value,
     ) -> Result<(), Error> {
+        if matches!(self.guard, Some(SettingsGuard::SecureBoot)) && self.value[0] == "true" {
+            crate::guest_boot::require_policy_support(session, reference).await?;
+        }
         let mut params = vec![json!(reference)];
         if self.method == "VM.set_affinity" {
             let value = if self.value[0].is_null() {
@@ -685,5 +815,79 @@ mod advanced_tests {
         after["VCPUs_max"] = json!("8");
         after["VCPUs_at_startup"] = json!("4");
         assert!(patch.steps()[2].preflight(&after).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod firmware_tests {
+    use super::*;
+    fn template() -> Value {
+        json!({"is_a_template":true,"is_default_template":false,"is_control_domain":false,"is_a_snapshot":false,"current_operations":{},"power_state":"Halted","VBDs":[],"HVM_boot_policy":"BIOS order","HVM_boot_params":{"firmware":"bios","order":"dc"},"platform":{"secureboot":"false","keep":"yes"}})
+    }
+    #[test]
+    fn legacy_settings_journal_remains_ordinary_vm_only() {
+        let patch: VmSettingsPatch =
+            serde_json::from_value(json!({"edits":[{"field":"Name","previous":"a","value":"b"}]}))
+                .unwrap();
+        assert!(!patch.is_template());
+        assert!(patch.target_guard(&template()).is_err());
+        let mut vm = template();
+        vm["is_a_template"] = json!(false);
+        assert!(patch.target_guard(&vm).is_ok());
+        let custom = VmSettingsPatch::custom_template(patch.edits().to_vec()).unwrap();
+        assert!(custom.target_guard(&vm).is_err());
+        assert!(custom.target_guard(&template()).is_ok());
+        vm = template();
+        vm["other_config"] = json!({"default_template":"true"});
+        assert!(custom.target_guard(&vm).is_err());
+        vm = template();
+        vm["is_default_template"] = Value::Null;
+        assert!(custom.target_guard(&vm).is_err());
+    }
+    #[test]
+    fn empty_template_firmware_then_secure_policy_are_guarded_and_projected() {
+        let patch = VmSettingsPatch::custom_template(vec![
+            VmSettingEdit::Firmware {
+                previous: "bios".into(),
+                value: "uefi".into(),
+            },
+            VmSettingEdit::SecureBoot {
+                previous: false,
+                value: true,
+            },
+        ])
+        .unwrap();
+        let before = template();
+        assert!(patch.preflight(&before).is_ok());
+        let mut attached = before.clone();
+        attached["VBDs"] = json!(["OpaqueRef:disk"]);
+        assert!(patch.preflight(&attached).is_err());
+        let mut ordinary = before.clone();
+        ordinary["is_a_template"] = json!(false);
+        assert!(patch.preflight(&ordinary).is_err());
+        let mut after = before;
+        after["HVM_boot_params"]["firmware"] = json!("uefi");
+        after["platform"]["secureboot"] = json!("true");
+        assert!(patch.steps()[1].verified(&after));
+        after["HVM_boot_params"]["firmware"] = json!("bios");
+        assert!(!patch.steps()[1].verified(&after));
+    }
+    #[test]
+    fn live_only_edits_and_ordinary_firmware_edits_cannot_target_templates() {
+        assert!(
+            VmSettingsPatch::custom_template(vec![VmSettingEdit::LiveCpus {
+                previous: 1,
+                max: 4,
+                value: 2
+            }])
+            .is_err()
+        );
+        assert!(
+            VmSettingsPatch::new(vec![VmSettingEdit::Firmware {
+                previous: "bios".into(),
+                value: "uefi".into()
+            }])
+            .is_err()
+        );
     }
 }

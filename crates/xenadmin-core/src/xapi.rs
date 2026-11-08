@@ -491,7 +491,8 @@ impl Store {
             .is_some_and(|(_, value)| {
                 value["is_control_domain"] != true
                     && (value["is_a_template"] != true
-                        || matches!(action, crate::OperationAction::Lifecycle(_)))
+                        || matches!(action, crate::OperationAction::Lifecycle(_))
+                        || matches!(action, crate::OperationAction::Settings(p) if p.is_template()))
                     && value["is_a_snapshot"] != true
                     && match action {
                         crate::OperationAction::Power(action) => advertises(value, action.wire()),
@@ -513,8 +514,8 @@ impl Store {
                         }
                         crate::OperationAction::Migration(_)
                         | crate::OperationAction::Lifecycle(_)
-                        | crate::OperationAction::Settings(_)
                         | crate::OperationAction::Device(_) => true,
+                        crate::OperationAction::Settings(p) => p.target_guard(value).is_ok(),
                         crate::OperationAction::Snapshot(
                             crate::SnapshotOperation::Checkpoint { .. },
                         ) => advertises(value, "checkpoint"),
@@ -817,7 +818,8 @@ pub(crate) async fn prepare_mutation(
     let record = session.call("VM.get_record", vec![json!(&parent)]).await?;
     if record["uuid"].as_str() != Some(operation.vm.to_string().as_str())
         || record["is_a_snapshot"] != false
-        || record["is_a_template"] != false
+        || (record["is_a_template"] != false
+            && !matches!(&operation.action, OperationAction::Settings(p) if p.is_template()))
         || record["is_control_domain"] != false
     {
         return Err(Error::Stale);
@@ -825,6 +827,8 @@ pub(crate) async fn prepare_mutation(
     match &operation.action {
         OperationAction::Settings(patch) => {
             patch.validate()?;
+            patch.target_guard(&record)?;
+            patch.preflight_remote(session, &parent).await?;
             let record = patch.resolve_record(session, record).await?;
             patch.preflight(&record)?;
             Ok(parent)

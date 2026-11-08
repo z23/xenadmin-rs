@@ -67,8 +67,10 @@ pub use storage_discovery::{
 mod host_types;
 mod settings;
 pub use host_types::{HostOperation, HostPowerOnMode};
+mod guest_boot;
 mod snapshot_policy;
 mod snapshot_policy_support;
+pub use guest_boot::{BootReadiness, GuestBootStatus, GuestBootStatusQuery};
 mod snapshot_workflow;
 mod snapshots;
 pub use migration::{DiskPlacement, NicPlacement, VmMigration};

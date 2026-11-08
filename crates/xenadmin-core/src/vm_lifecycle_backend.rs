@@ -17,10 +17,15 @@ pub(crate) enum Change {
     VcpuMax(u64),
     VcpuStartup(u64),
     Firmware(GuestFirmware),
+    SecureBoot(bool),
     RemoveProvisionDisks,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Step {
+    CopyBios {
+        vm: VmId,
+        host: crate::HostId,
+    },
     Copy {
         mode: VmCopyMode,
         name: String,
@@ -84,8 +89,10 @@ impl Step {
                 Change::VcpuMax(_) => "Set vCPU maximum",
                 Change::VcpuStartup(_) => "Set startup vCPUs",
                 Change::Firmware(_) => "Set guest firmware",
+                Change::SecureBoot(_) => "Set Secure Boot policy",
                 Change::RemoveProvisionDisks => "Use explicitly reviewed disks",
             },
+            Self::CopyBios { .. } => "Copy host BIOS identity and set home host",
             Self::Provision { .. } => "Provision VM",
             Self::ConfigureDevices { .. } => "Prepare VM devices",
             Self::CheckHosts { .. } => "Check compatible hosts",
@@ -122,6 +129,8 @@ pub(crate) struct Graph {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
+    #[serde(default)]
+    pub bios_identity: Option<serde_json::Map<String, Value>>,
     pub source_graph: Graph,
     pub metadata: Option<(String, String)>,
     pub source: VmId,
@@ -136,6 +145,23 @@ pub(crate) struct Plan {
     pub workflow_planned: bool,
 }
 impl Plan {
+    pub(crate) fn extends(&self, old: &Self) -> bool {
+        self.source == old.source
+            && self.operation == old.operation
+            && (old.bios_identity.is_none() || self.bios_identity == old.bios_identity)
+            && (old.baseline.is_empty()
+                || self.baseline == old.baseline && self.source_graph == old.source_graph)
+            && self.steps.starts_with(&old.steps)
+            && self.evidence.len() == self.steps.len()
+            && self.evidence.iter().zip(&old.evidence).all(|(new, old)| {
+                (old.task.is_none() || old.task == new.task)
+                    && (old.result.is_none() || old.result == new.result)
+                    && (!old.completed || new.completed)
+            })
+            && (old.created.is_none() || self.created == old.created)
+            && self.created_devices.starts_with(&old.created_devices)
+            && (!old.workflow_planned || self.workflow_planned)
+    }
     fn push(&mut self, step: Step) {
         self.steps.push(step);
         self.evidence.push(Evidence::default());
@@ -203,7 +229,9 @@ async fn source(session: &Session, plan: &Plan) -> Result<(String, Value), Error
     if matches!(
         plan.operation,
         VmLifecycleOperation::EditTemplate { .. } | VmLifecycleOperation::Delete { .. }
-    ) && (r["other_config"]["default_template"] == "true" || r["is_default_template"] == true)
+    ) && (r["is_a_template"] == true && !crate::guest_boot::custom_template(&r)
+        || r["other_config"]["default_template"] == "true"
+        || r["is_default_template"] == true)
     {
         return Err(Error::UnavailableAction);
     }
@@ -273,6 +301,7 @@ pub(crate) async fn plan(
 ) -> Result<Plan, Error> {
     operation.validate()?;
     let mut plan = Plan {
+        bios_identity: None,
         source_graph: Graph::default(),
         metadata: None,
         source: source_id,
@@ -289,7 +318,7 @@ pub(crate) async fn plan(
             VmLifecycleOperation::Create { .. } | VmLifecycleOperation::Clone { .. }
         ),
     };
-    let (_, record) = source(session, &plan).await?;
+    let (source_reference, record) = source(session, &plan).await?;
     if matches!(
         operation,
         VmLifecycleOperation::Create { .. } | VmLifecycleOperation::Clone { .. }
@@ -309,14 +338,31 @@ pub(crate) async fn plan(
         ));
     }
     match operation {
-        VmLifecycleOperation::Create { name, firmware, .. } => {
+        VmLifecycleOperation::Create {
+            name,
+            firmware,
+            bios_host,
+            ..
+        } => {
             validate_create_choices(session, operation).await?;
-            if !matches!(firmware, GuestFirmware::Inherited)
-                && record["HVM_boot_policy"] != "BIOS order"
+            if !matches!(firmware, GuestFirmware::Inherited) && !crate::guest_boot::is_hvm(&record)
             {
                 return Err(Error::UnsupportedVmLifecycle);
             }
             firmware_safe(&record, *firmware)?;
+            validate_firmware_change(session, &record, *firmware).await?;
+            if *firmware == GuestFirmware::SecureUefi {
+                crate::guest_boot::require_policy_support(session, &source_reference).await?;
+            }
+            if let Some(host) = bios_host {
+                bios_eligible(&record, *firmware)?;
+                let (_, h) = fresh(session, "host", host.uuid()).await?;
+                let map = string_map(&h["bios_strings"])?;
+                if map.is_empty() {
+                    return Err(Error::UnsupportedVmLifecycle);
+                }
+                plan.bios_identity = Some(map);
+            }
             if let VmLifecycleOperation::Create { memory, .. } = operation
                 && number(&record["memory_static_min"]).is_none_or(|minimum| minimum > *memory)
             {
@@ -528,11 +574,38 @@ pub(crate) async fn prepare(
             permits(&current, cap)?;
             validate_source_devices(session, &current).await?;
             plan.source_graph = graph(session, &current).await?;
+            if let VmLifecycleOperation::Create {
+                firmware,
+                bios_host,
+                ..
+            } = &plan.operation
+            {
+                validate_firmware_change(session, &current, *firmware).await?;
+                if *firmware == GuestFirmware::SecureUefi {
+                    crate::guest_boot::require_policy_support(session, &source_ref).await?;
+                }
+                if let Some(host) = bios_host {
+                    bios_eligible(&current, *firmware)?;
+                    let (_, h) = fresh(session, "host", host.uuid()).await?;
+                    if plan.bios_identity.as_ref() != Some(&string_map(&h["bios_strings"])?) {
+                        return Err(Error::VmLifecycleConflict);
+                    }
+                }
+            }
             let mut parameters = vec![json!(source_ref), json!(name)];
             if let VmCopyMode::Full { sr: id } = mode {
                 parameters.push(json!(sr(session, id).await?));
             }
             Ok(call(&format!("Async.VM.{cap}"), parameters))
+        }
+        Step::CopyBios { vm, host } => {
+            let (vr, r) = target(session, plan, vm).await?;
+            bios_eligible(&r, GuestFirmware::Inherited)?;
+            let (hr, h) = fresh(session, "host", host.uuid()).await?;
+            if plan.bios_identity.as_ref() != Some(&string_map(&h["bios_strings"])?) {
+                return Err(Error::VmLifecycleConflict);
+            }
+            Ok(call("VM.copy_bios_strings", vec![json!(vr), json!(hr)]))
         }
         Step::Set { vm, change } => {
             let (vm_ref, r) = target(session, plan, vm).await?;
@@ -584,8 +657,23 @@ pub(crate) async fn prepare(
                         vec![json!(vm_ref), json!(value.to_string())],
                     ))
                 }
+                Change::SecureBoot(value) => {
+                    if value {
+                        crate::guest_boot::require_policy_support(session, &vm_ref).await?;
+                    }
+                    if crate::guest_boot::firmware(&r) != Some("uefi") {
+                        return Err(Error::UnsupportedVmLifecycle);
+                    }
+                    let mut params = string_map(&r["platform"])?;
+                    params.insert("secureboot".into(), json!(value.to_string()));
+                    Ok(call(
+                        "VM.set_platform",
+                        vec![json!(vm_ref), Value::Object(params)],
+                    ))
+                }
                 Change::Firmware(value) => {
-                    if r["HVM_boot_policy"] != "BIOS order" {
+                    validate_firmware_change(session, &r, value).await?;
+                    if !crate::guest_boot::is_hvm(&r) {
                         return Err(Error::UnsupportedVmLifecycle);
                     }
                     firmware_safe(&r, value)?;
@@ -594,7 +682,7 @@ pub(crate) async fn prepare(
                         "firmware".into(),
                         json!(match value {
                             GuestFirmware::Bios => "bios",
-                            GuestFirmware::Uefi => "uefi",
+                            GuestFirmware::Uefi | GuestFirmware::SecureUefi => "uefi",
                             GuestFirmware::Inherited => return Err(Error::InvalidVmLifecycle),
                         }),
                     );
@@ -998,6 +1086,7 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
             vcpus,
             memory,
             firmware,
+            bios_host,
             ..
         } => {
             if record["other_config"].get("disks").is_some() {
@@ -1005,6 +1094,21 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
                     vm,
                     change: Change::RemoveProvisionDisks,
                 });
+            }
+            if !matches!(firmware, GuestFirmware::Inherited) {
+                plan.push(Step::Set {
+                    vm,
+                    change: Change::Firmware(firmware),
+                });
+                if matches!(firmware, GuestFirmware::Uefi | GuestFirmware::SecureUefi) {
+                    plan.push(Step::Set {
+                        vm,
+                        change: Change::SecureBoot(firmware == GuestFirmware::SecureUefi),
+                    });
+                }
+            }
+            if let Some(host) = bios_host {
+                plan.push(Step::CopyBios { vm, host });
             }
             plan.push(Step::Provision { vm });
             plan.push(Step::Set {
@@ -1033,12 +1137,6 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
                 plan.push(Step::Set {
                     vm,
                     change: Change::VcpuStartup(vcpus),
-                });
-            }
-            if !matches!(firmware, GuestFirmware::Inherited) {
-                plan.push(Step::Set {
-                    vm,
-                    change: Change::Firmware(firmware),
                 });
             }
             plan.push(Step::ConfigureDevices { vm });
@@ -1152,6 +1250,14 @@ pub(crate) async fn verify(
             }
             Ok(true)
         }
+        Step::CopyBios { vm, host } => {
+            let (_, r) = fresh(session, "VM", vm.uuid()).await?;
+            let (hr, _) = fresh(session, "host", host.uuid()).await?;
+            Ok(ordinary(&r)
+                && r["power_state"] == "Halted"
+                && r["affinity"] == hr
+                && plan.bios_identity.as_ref() == Some(&string_map(&r["bios_strings"])?))
+        }
         Step::Set { vm, change } => {
             let Some((_, r)) = snapshots::optional_record(session, "VM", &vm.to_string()).await?
             else {
@@ -1185,11 +1291,15 @@ pub(crate) async fn verify(
                 .all(|k| number(&r[*k]) == Some(value)),
                 Change::VcpuMax(value) => number(&r["VCPUs_max"]) == Some(value),
                 Change::VcpuStartup(value) => number(&r["VCPUs_at_startup"]) == Some(value),
+                Change::SecureBoot(value) => {
+                    crate::guest_boot::firmware(&r) == Some("uefi")
+                        && crate::guest_boot::policy(&r) == Some(value)
+                }
                 Change::Firmware(value) => {
                     r["HVM_boot_params"]["firmware"]
                         == match value {
                             GuestFirmware::Bios => "bios",
-                            GuestFirmware::Uefi => "uefi",
+                            GuestFirmware::Uefi | GuestFirmware::SecureUefi => "uefi",
                             GuestFirmware::Inherited => return Err(Error::InvalidVmLifecycle),
                         }
                 }
@@ -1337,11 +1447,44 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
     }
     Ok(graph)
 }
+fn bios_eligible(r: &Value, firmware: GuestFirmware) -> Result<(), Error> {
+    let bios = firmware == GuestFirmware::Bios
+        || firmware == GuestFirmware::Inherited && crate::guest_boot::firmware(r) == Some("bios");
+    if !bios
+        || !crate::guest_boot::is_hvm(r)
+        || !r["bios_strings"].as_object().is_some_and(|v| v.is_empty())
+    {
+        return Err(Error::UnsupportedVmLifecycle);
+    }
+    Ok(())
+}
+async fn validate_firmware_change(
+    session: &Session,
+    r: &Value,
+    mode: GuestFirmware,
+) -> Result<(), Error> {
+    firmware_safe(r, mode)?;
+    let requested = match mode {
+        GuestFirmware::Inherited => return Ok(()),
+        GuestFirmware::Bios => "bios",
+        _ => "uefi",
+    };
+    if crate::guest_boot::firmware(r) == Some(requested) {
+        return Ok(());
+    }
+    for vr in refs(r, "VBDs")? {
+        let v = session.call("VBD.get_record", vec![json!(vr)]).await?;
+        if v["type"] != "CD" {
+            return Err(Error::UnsupportedVmLifecycle);
+        }
+    }
+    Ok(())
+}
 fn firmware_safe(record: &Value, firmware: GuestFirmware) -> Result<(), Error> {
     if firmware == GuestFirmware::Bios && record["platform"]["secureboot"] == "true" {
         return Err(Error::UnsupportedVmLifecycle);
     }
-    if firmware != GuestFirmware::Inherited && record["HVM_boot_policy"] != "BIOS order" {
+    if firmware != GuestFirmware::Inherited && !crate::guest_boot::is_hvm(record) {
         return Err(Error::UnsupportedVmLifecycle);
     }
     Ok(())

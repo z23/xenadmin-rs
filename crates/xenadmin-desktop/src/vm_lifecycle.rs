@@ -41,6 +41,7 @@ pub(super) struct Editor {
     network: Option<NetworkId>,
     iso: Option<VdiId>,
     firmware: GuestFirmware,
+    bios_host: Option<xenadmin_core::HostId>,
     full_copy: bool,
     as_template: bool,
     disks: BTreeSet<VdiId>,
@@ -123,6 +124,7 @@ fn open(s: &mut State, id: VmId, kind: Kind) {
         network: None,
         iso: None,
         firmware: GuestFirmware::Inherited,
+        bios_host: None,
         full_copy: false,
         as_template: source.is_template,
         disks: BTreeSet::new(),
@@ -821,3 +823,14 @@ pub(super) fn scene(s: &mut State) {
 #[cfg(test)]
 #[path = "vm_lifecycle_tests.rs"]
 mod tests;
+
+pub(super) fn firmware_scene(s: &mut State) {
+    scene(s);
+    if let Some(form) = editor_mut(s) {
+        form.step = 1;
+        let inventory = Arc::make_mut(&mut form.initial);
+        let details = inventory.details.vms.get_mut(&form.source.id).unwrap();
+        details.firmware = Some("bios".into());
+        details.bios_identity_empty = Some(true);
+    }
+}

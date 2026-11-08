@@ -108,6 +108,10 @@ pub struct VmDetails {
     pub boot_order: Option<String>,
     pub boot_policy: Option<String>,
     pub firmware: Option<String>,
+    #[serde(default)]
+    pub secure_boot: Option<bool>,
+    #[serde(default)]
+    pub bios_identity_empty: Option<bool>,
     pub affinity: Option<HostId>,
     #[serde(default)]
     pub affinity_known: bool,

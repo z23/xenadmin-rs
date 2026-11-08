@@ -49,3 +49,9 @@ and VM availability remain properties of the XCP-ng installation.
 
 The application does not promise a generic console for guests that expose no RFB console.
 Guest RDP and SSH integrations can be added later without becoming management dependencies.
+
+The [firmware/template increment](reports/2026-11-08-firmware-templates.md) adds reviewed
+BIOS/UEFI/Secure Boot provisioning, eligible chosen-host BIOS identity with explicit
+affinity, halted UEFI policy editing and read-only certificate readiness. Installed guest
+firmware switches remain refused. Custom-template properties have explicit kind and
+built-in-template guards. Ordinary cloud-init/config-drive work remains retained.

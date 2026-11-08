@@ -557,10 +557,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                         .or_else(|| record["HVM_shadow_multiplier"].as_str()?.parse().ok())
                         .filter(|v| v.is_finite())
                         .map(|v| v.to_string()),
-                    is_default_template: Some(
-                        record["is_default_template"] == true
-                            || record["other_config"]["default_template"] == "true",
-                    ),
+                    is_default_template: crate::guest_boot::default_template(record),
                     allowed_operations: strings(&record["allowed_operations"]),
                     current_operations: record["current_operations"]
                         .as_object()
@@ -595,7 +592,10 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                         .flatten(),
                     boot_order: text_option(&record["HVM_boot_params"], "order"),
                     boot_policy: text_option(record, "HVM_boot_policy"),
-                    firmware: text_option(&record["HVM_boot_params"], "firmware"),
+                    firmware: text_option(&record["HVM_boot_params"], "firmware")
+                        .or_else(|| crate::guest_boot::firmware(record).map(str::to_owned)),
+                    secure_boot: crate::guest_boot::policy(record),
+                    bios_identity_empty: record["bios_strings"].as_object().map(|v| v.is_empty()),
                     affinity: refs.link("host", &record["affinity"]),
                     affinity_known: record["affinity"] == "OpaqueRef:NULL"
                         || refs.link::<HostId>("host", &record["affinity"]).is_some(),

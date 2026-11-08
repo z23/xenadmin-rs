@@ -8,6 +8,11 @@ impl MutationRequest {
         index: usize,
     ) -> Result<bool, Error> {
         let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
+        if current.state.terminal() || current.state == OperationState::OutcomeUnknown {
+            self.record = current;
+            self.emit().await;
+            return Ok(false);
+        }
         self.record.revision = current.revision;
         self.record.cancel_requested |= current.cancel_requested;
         if self.record.cancel_requested {
@@ -36,8 +41,15 @@ impl MutationRequest {
             index + 1,
             self.record.steps.len()
         );
-        self.persist_steps(journal).await?;
-        Ok(true)
+        match self.publish(journal).await {
+            Ok(()) => Ok(true),
+            Err(Error::JournalChanged) => {
+                self.record = journal.load(self.record.id)?.ok_or(Error::Journal)?;
+                self.emit().await;
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
     }
     pub(super) async fn execute_device_lifecycle(
         &mut self,

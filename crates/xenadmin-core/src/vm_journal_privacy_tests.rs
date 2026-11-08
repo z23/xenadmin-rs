@@ -32,6 +32,7 @@ fn fixture() -> OperationRecord {
     };
     r.device_plan = Some(device.clone());
     r.lifecycle_plan = Some(Box::new(crate::vm_lifecycle_backend::Plan {
+        bios_identity: None,
         source_graph: Default::default(),
         metadata: Some(("Synthetic source".into(), "Synthetic description".into())),
         source: r.vm,

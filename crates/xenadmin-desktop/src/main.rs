@@ -1448,6 +1448,15 @@ fn details(s: &State, k: &Kit) -> El {
             )
             .child(heading(&selected.name, k)),
     );
+    if (s.page == Page::Templates) && selected.vm.is_some() {
+        detail = detail.child(
+            Button::new("Template properties")
+                .variant(ButtonVariant::Outline)
+                .on_press(vm_properties::open)
+                .build(k)
+                .key("open-template-properties"),
+        );
+    }
     if (s.page == Page::Guests || s.console.is_some()) && selected.vm.is_some() {
         detail = detail.child(
             Button::new("Disks and network interfaces")
@@ -1458,7 +1467,6 @@ fn details(s: &State, k: &Kit) -> El {
         detail = detail.child(
             Button::new("Properties")
                 .variant(ButtonVariant::Outline)
-                .disabled(!s.demo && !s.can_mutate())
                 .on_press(vm_properties::open)
                 .build(k)
                 .key("open-properties"),
@@ -2007,6 +2015,8 @@ fn main() {
             ("vm-create", vm_lifecycle::scene),
             ("device-properties", vm_devices::properties_scene),
             ("home-host", vm_properties::home_host_scene),
+            ("firmware-create", vm_lifecycle::firmware_scene),
+            ("secure-boot", vm_properties::firmware_scene),
             ("vm-migration", vm_migration::scene),
             ("archive-export", transfers::scene),
             ("ovf-import", |s| transfers::ovf_scene(s, false)),

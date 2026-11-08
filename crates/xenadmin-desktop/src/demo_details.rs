@@ -76,6 +76,8 @@ pub(super) fn populate(inventory: &mut Inventory) {
                 boot_order: Some("cdn".into()),
                 boot_policy: Some("BIOS order".into()),
                 firmware: Some("uefi".into()),
+                secure_boot: Some(false),
+                bios_identity_empty: Some(true),
                 affinity: vm.host.or(inventory.coordinator),
                 affinity_known: true,
                 tags: vec!["demo".into()],

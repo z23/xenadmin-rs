@@ -28,14 +28,23 @@ enum Fault {
     ExistingClone,
     MissingCopiedDisk,
     NoPossibleHost,
+    LostBios,
+    WrongBiosAffinity,
+    NoSecureBootApi,
 }
 fn guest(n: u128, template: bool) -> Value {
-    json!({"uuid":uuid(n),"name_label":"Source template","name_description":"original","is_a_template":template,"is_default_template":false,"is_a_snapshot":false,"is_control_domain":false,"snapshot_of":"OpaqueRef:NULL","power_state":"Halted","current_operations":{},"blocked_operations":{},"allowed_operations":["clone","copy","provision","make_into_template","destroy","changing_memory_limits","changing_VCPUs"],"VBDs":[],"VIFs":[],"VCPUs_max":"2","VCPUs_at_startup":"2","memory_static_min":"16777216","memory_static_max":"1073741824","memory_dynamic_min":"1073741824","memory_dynamic_max":"1073741824","HVM_boot_policy":"BIOS order","HVM_boot_params":{"order":"dc","firmware":"bios","extra":"preserve"},"platform":{"secureboot":"false"},"other_config":{"disks":"<invalid unsafe xml>must not be interpreted","keep":"unchanged"}})
+    json!({"uuid":uuid(n),"name_label":"Source template","name_description":"original","is_a_template":template,"is_default_template":false,"is_a_snapshot":false,"is_control_domain":false,"snapshot_of":"OpaqueRef:NULL","power_state":"Halted","current_operations":{},"blocked_operations":{},"allowed_operations":["clone","copy","provision","make_into_template","destroy","changing_memory_limits","changing_VCPUs"],"VBDs":[],"VIFs":[],"VCPUs_max":"2","VCPUs_at_startup":"2","memory_static_min":"16777216","memory_static_max":"1073741824","memory_dynamic_min":"1073741824","memory_dynamic_max":"1073741824","HVM_boot_policy":"BIOS order","HVM_boot_params":{"order":"dc","firmware":"uefi","extra":"preserve"},"platform":{"secureboot":"false"},"other_config":{"disks":"<invalid unsafe xml>must not be interpreted","keep":"unchanged"}})
 }
 fn disk(n: u128) -> Value {
     json!({"uuid":uuid(n),"name_label":"Disk","SR":"OpaqueRef:SR:source","virtual_size":"1073741824","VBDs":[],"type":"user","managed":true,"missing":false,"sharable":false,"read_only":false,"is_a_snapshot":false,"current_operations":{},"allowed_operations":["destroy"],"other_config":{}})
 }
 async fn fixture(fault: Fault) -> (Fixture, Records, Calls) {
+    fixture_with_recovery(fault, None).await
+}
+async fn fixture_with_recovery(
+    fault: Fault,
+    recovery: Option<(std::path::PathBuf, bool)>,
+) -> (Fixture, Records, Calls) {
     let mut source = guest(2, true);
     source["VBDs"] = json!(["OpaqueRef:VBD:source"]);
     source["VIFs"] = json!(["OpaqueRef:VIF:source"]);
@@ -207,6 +216,39 @@ async fn fixture(fault: Fault) -> (Fixture, Records, Calls) {
                     json!({"_fixture_close_without_reply":true})
                 } else {
                     json!({"result":"OpaqueRef:task:provision"})
+                };
+            }
+            if method == "VM.get_secureboot_readiness" {
+                return if fault == Fault::NoSecureBootApi {
+                    json!({"error":{"message":"MESSAGE_METHOD_UNKNOWN"}})
+                } else {
+                    json!({"result":"disabled"})
+                };
+            }
+            if method == "VM.copy_bios_strings" {
+                let h = r[p[2].as_str().unwrap()].clone();
+                let v = r.get_mut(p[1].as_str().unwrap()).unwrap();
+                v["bios_strings"] = h["bios_strings"].clone();
+                v["affinity"] = if fault == Fault::WrongBiosAffinity {
+                    json!("OpaqueRef:NULL")
+                } else {
+                    p[2].clone()
+                };
+                if let Some((directory, acknowledge)) = &recovery {
+                    let pool = uuid(1).into();
+                    let recovered = recover(directory, pool).unwrap();
+                    assert_eq!(recovered.len(), 1);
+                    if *acknowledge {
+                        Journal::open(directory)
+                            .unwrap()
+                            .control(pool, recovered[0].id, true)
+                            .unwrap();
+                    }
+                }
+                return if fault == Fault::LostBios {
+                    json!({"_fixture_close_without_reply":true})
+                } else {
+                    json!({"result":null})
                 };
             }
             if method == "VM.get_possible_hosts" {
@@ -418,6 +460,7 @@ fn creating() -> VmLifecycleOperation {
         memory: 2 * 1024 * 1024 * 1024,
         disk_size: Some(1024 * 1024 * 1024),
         firmware: GuestFirmware::Uefi,
+        bios_host: None,
     }
 }
 fn deleting(disks: Vec<VdiId>) -> VmLifecycleOperation {
@@ -969,4 +1012,169 @@ async fn unresolved_creation_without_result_blocks_other_vms_and_reverse_admissi
         journal.admit(&mut creation),
         Err(Error::PoolCreationConflict)
     ));
+}
+
+#[tokio::test]
+async fn installed_template_firmware_cannot_change_but_secure_policy_can() {
+    let (f, r, c) = fixture(Fault::None).await;
+    let mut operation = creating();
+    let VmLifecycleOperation::Create { firmware, .. } = &mut operation else {
+        unreachable!()
+    };
+    *firmware = GuestFirmware::Bios;
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        execute(&f, dir.path(), operation).await.state,
+        OperationState::Rejected
+    );
+    assert_eq!(count(&c, "Async.VM.copy"), 0);
+    let mut operation = creating();
+    let VmLifecycleOperation::Create { firmware, .. } = &mut operation else {
+        unreachable!()
+    };
+    *firmware = GuestFirmware::SecureUefi;
+    let result = execute(&f, dir.path(), operation).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    let records = r.lock().unwrap();
+    assert_eq!(
+        records["OpaqueRef:VM:new"]["platform"]["secureboot"],
+        "true"
+    );
+    assert_eq!(
+        records["OpaqueRef:VM:new"]["HVM_boot_params"]["extra"],
+        "preserve"
+    );
+}
+fn bios_creation(r: &Records) -> VmLifecycleOperation {
+    let mut records = r.lock().unwrap();
+    let source = records.get_mut("OpaqueRef:VM:source").unwrap();
+    source["HVM_boot_params"]["firmware"] = json!("bios");
+    source["bios_strings"] = json!({});
+    source["affinity"] = json!("OpaqueRef:NULL");
+    records.insert("OpaqueRef:host:bios".into(),json!({"uuid":uuid(71),"bios_strings":{"bios-vendor":"Fixture vendor","system-serial-number":"synthetic-serial"}}));
+    let mut operation = creating();
+    let VmLifecycleOperation::Create {
+        firmware,
+        bios_host,
+        ..
+    } = &mut operation
+    else {
+        unreachable!()
+    };
+    *firmware = GuestFirmware::Bios;
+    *bios_host = Some(uuid(71).into());
+    operation
+}
+#[tokio::test]
+async fn copied_bios_identity_and_affinity_are_verified_before_provisioning() {
+    let (f, r, c) = fixture(Fault::None).await;
+    let operation = bios_creation(&r);
+    let dir = tempfile::tempdir().unwrap();
+    let result = execute(&f, dir.path(), operation).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert_eq!(
+        r.lock().unwrap()["OpaqueRef:VM:new"]["affinity"],
+        "OpaqueRef:host:bios"
+    );
+    let calls = c.lock().unwrap();
+    let at = |m: &str| calls.iter().position(|r| r["method"] == m).unwrap();
+    assert!(at("VM.copy_bios_strings") < at("Async.VM.provision"));
+    assert!(
+        !serde_json::to_string(&result)
+            .unwrap()
+            .contains("synthetic-serial")
+    );
+}
+#[tokio::test]
+async fn bios_copy_loss_or_wrong_affinity_does_not_provision_or_replay() {
+    for fault in [Fault::LostBios, Fault::WrongBiosAffinity] {
+        let (f, r, c) = fixture(fault).await;
+        let operation = bios_creation(&r);
+        let dir = tempfile::tempdir().unwrap();
+        let result = execute(&f, dir.path(), operation).await;
+        assert_eq!(
+            result.state,
+            OperationState::OutcomeUnknown,
+            "{}",
+            result.detail
+        );
+        assert!(result.created_vm.is_some());
+        assert_eq!(count(&c, "VM.copy_bios_strings"), 1);
+        assert_eq!(count(&c, "Async.VM.provision"), 0);
+    }
+}
+#[tokio::test]
+async fn existing_bios_identity_is_rejected_before_clone() {
+    let (f, r, c) = fixture(Fault::None).await;
+    let operation = bios_creation(&r);
+    r.lock().unwrap().get_mut("OpaqueRef:VM:source").unwrap()["bios_strings"] =
+        json!({"bios-vendor":"already set"});
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        execute(&f, dir.path(), operation).await.state,
+        OperationState::Rejected
+    );
+    assert_eq!(count(&c, "Async.VM.copy"), 0);
+}
+#[test]
+fn legacy_creation_intent_has_no_implicit_bios_copy() {
+    let mut value = serde_json::to_value(creating()).unwrap();
+    value.as_object_mut().unwrap().remove("bios_host");
+    assert!(matches!(
+        serde_json::from_value::<VmLifecycleOperation>(value).unwrap(),
+        VmLifecycleOperation::Create {
+            bios_host: None,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn late_bios_reply_preserves_recovery_and_acknowledgement_without_provisioning() {
+    for acknowledge in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let (f, r, c) =
+            fixture_with_recovery(Fault::None, Some((dir.path().into(), acknowledge))).await;
+        let operation = bios_creation(&r);
+        let result = execute(&f, dir.path(), operation).await;
+        assert_eq!(
+            result.state,
+            if acknowledge {
+                OperationState::AcknowledgedUnknown
+            } else {
+                OperationState::OutcomeUnknown
+            },
+            "{}",
+            result.detail
+        );
+        assert!(result.created_vm.is_some());
+        let plan = result.lifecycle_plan.as_ref().unwrap();
+        let index = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, crate::vm_lifecycle_backend::Step::CopyBios { .. }))
+            .unwrap();
+        assert!(plan.evidence[index].completed);
+        assert_eq!(count(&c, "VM.copy_bios_strings"), 1);
+        assert_eq!(count(&c, "Async.VM.provision"), 0);
+        let mut changed = result.clone();
+        changed.lifecycle_plan.as_mut().unwrap().bios_identity = Some(serde_json::Map::new());
+        assert!(matches!(
+            Journal::open(dir.path()).unwrap().save(&mut changed),
+            Err(Error::JournalChanged)
+        ));
+    }
+}
+#[tokio::test]
+async fn secure_boot_without_a_supported_readiness_api_is_refused_before_clone() {
+    let (f, _, c) = fixture(Fault::NoSecureBootApi).await;
+    let mut operation = creating();
+    let VmLifecycleOperation::Create { firmware, .. } = &mut operation else {
+        unreachable!()
+    };
+    *firmware = GuestFirmware::SecureUefi;
+    let dir = tempfile::tempdir().unwrap();
+    let result = execute(&f, dir.path(), operation).await;
+    assert_eq!(result.state, OperationState::Rejected);
+    assert_eq!(count(&c, "Async.VM.copy"), 0);
 }

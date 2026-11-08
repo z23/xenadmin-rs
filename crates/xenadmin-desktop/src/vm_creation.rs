@@ -72,6 +72,7 @@ pub(super) fn operation(form: &Editor) -> Result<VmLifecycleOperation, String> {
             Some(parse_bytes(&form.disk_size.text, 512)?)
         },
         firmware: form.firmware,
+        bios_host: form.bios_host,
     })
 }
 fn inherited_disks(form: &Editor) -> Vec<VdiId> {
@@ -84,6 +85,31 @@ fn inherited_disks(form: &Editor) -> Vec<VdiId> {
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+fn firmware_allowed(form: &Editor, mode: GuestFirmware) -> bool {
+    let requested = if mode == GuestFirmware::Bios {
+        "bios"
+    } else {
+        "uefi"
+    };
+    inherited_disks(form).is_empty()
+        || form
+            .initial
+            .details
+            .vms
+            .get(&form.source.id)
+            .and_then(|d| d.firmware.as_deref())
+            == Some(requested)
+}
+fn bios_eligible(form: &Editor) -> bool {
+    let Some(d) = form.initial.details.vms.get(&form.source.id) else {
+        return false;
+    };
+    d.bios_identity_empty == Some(true)
+        && (d.domain_type.as_deref() == Some("hvm")
+            || d.boot_policy.as_deref() == Some("BIOS order"))
+        && (form.firmware == GuestFirmware::Bios
+            || form.firmware == GuestFirmware::Inherited && d.firmware.as_deref() == Some("bios"))
 }
 pub(super) fn editor(form: &Editor, k: &Kit) -> El {
     let mut body = col().w_full().gap(12.0).child(heading(
@@ -100,13 +126,20 @@ pub(super) fn editor(form: &Editor, k: &Kit) -> El {
             body=body.child(TextInput::new(&form.vcpus).label("Virtual CPUs").on_edit(|s:&mut State|&mut editor_mut(s).expect("creation editor open").vcpus).build(k).key("vm-lifecycle-vcpus"))
                 .child(TextInput::new(&form.memory).label("Memory (bytes, KiB, MiB or GiB)").on_edit(|s:&mut State|&mut editor_mut(s).expect("creation editor open").memory).build(k).key("vm-lifecycle-memory"))
                 .child(caption("CPU startup and maximum counts match. Memory uses a fixed allocation; the host validates template constraints.",k).wrap()).child(heading("Firmware",k));
-            let configurable=form.initial.details.vms.get(&form.source.id).and_then(|details|details.boot_policy.as_deref())==Some("BIOS order");
-            for (value,label,key) in [(GuestFirmware::Inherited,"Inherit template firmware","inherit"),(GuestFirmware::Bios,"BIOS","bios"),(GuestFirmware::Uefi,"UEFI","uefi")] {
-                body=body.child(Button::new(if form.firmware==value {format!("✓ {label}")}else{label.into()}).variant(ButtonVariant::Outline).disabled(value!=GuestFirmware::Inherited&&!configurable)
-                    .on_press(move|s:&mut State|if let Some(form)=editor_mut(s){form.firmware=value;}).build(k).key(format!("vm-lifecycle-firmware-{key}")));
+            let configurable=form.initial.details.vms.get(&form.source.id).is_some_and(|d| d.domain_type.as_deref()==Some("hvm") || d.boot_policy.as_deref()==Some("BIOS order"));
+            for (value,label,key) in [(GuestFirmware::Inherited,"Inherit template firmware","inherit"),(GuestFirmware::Bios,"BIOS","bios"),(GuestFirmware::Uefi,"UEFI · Secure Boot off","uefi"),(GuestFirmware::SecureUefi,"UEFI · Secure Boot on","secure-uefi")] {
+                body=body.child(Button::new(if form.firmware==value {format!("✓ {label}")}else{label.into()}).variant(ButtonVariant::Outline).disabled(value!=GuestFirmware::Inherited&&(!configurable || !firmware_allowed(form,value)))
+                    .on_press(move|s:&mut State|if let Some(form)=editor_mut(s){form.firmware=value; form.bios_host=None;}).build(k).key(format!("vm-lifecycle-firmware-{key}")));
             }
             if !configurable {body=body.child(caption("This template does not advertise a configurable HVM boot policy. Its firmware is inherited.",k).wrap());}
-            body=body.child(caption("This changes firmware mode only. Copying a host's BIOS identity and preparing a cloud-init configuration drive are not available in this wizard yet.",k).wrap());
+            body=body.child(caption("Installed template disks keep their BIOS/UEFI mode. Secure Boot selects a policy; certificate readiness and guest enforcement must be checked after creation. Pool certificates are not changed.",k).wrap());
+            if bios_eligible(form) {
+                body=body.child(heading("BIOS identity and home host",k)).child(Button::new(if form.bios_host.is_none(){"✓ Use generic BIOS identity"}else{"Use generic BIOS identity"}).variant(ButtonVariant::Outline).on_press(|s:&mut State|if let Some(f)=editor_mut(s){f.bios_host=None;}).build(k).key("vm-lifecycle-bios-generic"));
+                let hosts=form.initial.hosts.values().map(|host|(host.id,format!("Copy from {}",host.name),form.bios_host==Some(host.id))).collect();
+                body=body.child(choices("Copy host BIOS identity","vm-lifecycle-bios-host",hosts,|f,id|f.bios_host=Some(id),k));
+                body=body.child(caption("Copying BIOS identity also sets the new VM's home-host preference to that exact host. The API only accepts an empty BIOS identity; this cannot be overwritten later.",k).wrap());
+            }
+            body=body.child(caption("A cloud-init configuration drive is not prepared by this wizard yet.",k).wrap());
         }
         _=>{
             body=body.child(storage_choices(form,k));
@@ -154,6 +187,12 @@ pub(super) fn review(form: &Editor) -> Vec<String> {
             network_label(&form.initial, network)
         ),
     ];
+    if let Some(host) = form.bios_host {
+        lines.push(format!("Copy BIOS identity from {} ({host}) and set its home-host preference to that host before provisioning. This does not guarantee placement.",form.initial.hosts.get(&host).map_or("Unknown host",|h|h.name.as_str())));
+    }
+    if form.firmware == GuestFirmware::SecureUefi {
+        lines.push("Request Secure Boot policy. This is not proof of guest enforcement; inspect guest/pool certificate readiness after creation.".into());
+    }
     let disks = inherited_disks(form);
     if disks.is_empty() {
         lines.push("Clone the diskless template and provision it without inherited disk-layout instructions.".into());

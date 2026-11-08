@@ -72,6 +72,7 @@ pub(super) fn summary(s: &State, summary: &xenadmin_core::OvfSummary, k: &Kit) -
                     match guest.firmware {
                         xenadmin_core::GuestFirmware::Bios => "BIOS",
                         xenadmin_core::GuestFirmware::Uefi => "UEFI",
+                        xenadmin_core::GuestFirmware::SecureUefi => "UEFI with Secure Boot",
                         xenadmin_core::GuestFirmware::Inherited => "Inherited",
                     },
                     guest.disks.len(),

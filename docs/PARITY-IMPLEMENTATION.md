@@ -116,14 +116,14 @@ partial/unknown outcomes and does not establish live-host compatibility.
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P06-01 | Rename VM/template and description | Normal VM name/description editing implemented; template editing remains queued |
+| P06-01 | Rename VM/template and description | VM and custom-template metadata/property editing implemented with explicit kind/default-template guards; fixture verified, live qualification open |
 | P06-02 | Startup/max/live vCPU counts | Halted startup/max vCPU editing and reviewed live vCPU increases within the existing maximum implemented; exact host capability and current limit checks fixture verified, live qualification open |
 | P06-03 | CPU topology and scheduling weight | Halted cores-per-socket topology and CPU scheduling weight editors implemented; unrelated platform/CPU keys preserved, live qualification open |
 | P06-04 | Static/dynamic memory limits, ballooning/live changes | Halted static/dynamic limits and reviewed running-VM dynamic ranges implemented with fresh static-bound checks; fixture verified, live ballooning qualification open |
 | P06-05 | Boot order, bootable devices, autostart | Boot-order/autostart editors and reviewed halted-VM bootable disk-attachment flags implemented; fixture verified, live qualification open |
 | P06-06 | Home server/host affinity | Reviewed pool-host preference/set-clear editor implemented with fresh UUID resolution and lost-reply reconciliation; fixture verified, live placement qualification open ([evidence](reports/2026-11-08-home-host.md)) |
 | P06-07 | VM HA restart priority/protection | Queued |
-| P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Queued |
+| P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Reviewed creation modes, halted UEFI Secure Boot policy and read-only guest/pool readiness implemented; installed-image BIOS/UEFI switches refused, fixture verified, live enforcement qualification open ([evidence](reports/2026-11-08-firmware-templates.md)) |
 | P06-09 | HVM shadow-memory settings | Reviewed halted/live shadow-memory multiplier editing implemented with modern HVM identity and advertised capability checks; fixture verified, live qualification open |
 | P06-10 | Cloud-config parameters/config drive | Queued |
 | P06-11 | Guest tools status/installation media | Guest-reported tools/OS/address display implemented; tools-install media workflow remains queued |
@@ -159,11 +159,11 @@ Implementation and verification details are in the [VM lifecycle report](reports
 | --- | --- | --- |
 | P08-01 | Browse templates | Template inventory and lifecycle action entry points implemented; lab qualification open |
 | P08-02 | Create VM from template | Reviewed halted-VM wizard implemented with name/description, CPUs/memory, destination SR, network, optional disk/ISO and ordinary firmware choices; fixture verified, lab qualification open |
-| P08-03 | Installation source, copied BIOS and cloud-config options | ISO selection and inherited/BIOS/UEFI firmware implemented for supported templates; copied host BIOS identity and ordinary cloud-init configuration-drive/transfer workflow remain pending; legacy CoreOS plugin integration excluded |
+| P08-03 | Installation source, copied BIOS and cloud-config options | ISO selection, inherited/BIOS/UEFI/Secure Boot modes and chosen-host BIOS identity copy with reviewed affinity side effect implemented for eligible templates; ordinary cloud-init configuration-drive/transfer workflow remains pending; legacy CoreOS plugin integration excluded |
 | P08-04 | Instant/fast template creation | Fast clone to custom template implemented when the source/storage advertises support; fixture verified, lab qualification open |
 | P08-05 | Clone versus full-copy VM | Reviewed halted source clone versus full copy to selected SR implemented, with VM/template result choice; fixture verified, lab qualification open |
 | P08-06 | Convert VM to template | Reviewed halted ordinary-VM conversion implemented with fresh capability checks; fixture verified, lab qualification open |
-| P08-07 | Copy/edit/delete custom templates | Copy, name/description editing and reviewed deletion implemented; built-in templates protected; other template property editing remains pending, lab qualification open |
+| P08-07 | Copy/edit/delete custom templates | Copy, reviewed deletion and custom-template metadata/CPU/memory/topology/weight/shadow/boot/autostart/home-host/Secure Boot properties implemented; empty-template firmware changes require explicit review and built-in templates remain protected; fixture verified, lab qualification open |
 | P08-08 | Delete VM record versus VM plus selected disks/snapshots | Record-only or exact selected owned-disk/halted-snapshot deletion implemented with current ownership checks; checkpoint deletion uses its existing separate flow; fixture verified, lab qualification open |
 | P08-09 | Recover/cancel partial creation/deletion and clean owned resources | Durable steps, read-only recheck, cancellation, unknown acknowledgment and created resource UUIDs implemented; retained created VMs can use reviewed deletion, standalone detached-orphan cleanup remains pending; lab qualification open |
 

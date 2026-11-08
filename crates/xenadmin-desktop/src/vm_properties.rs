@@ -34,6 +34,11 @@ pub(super) struct Editor {
     cpu_weight: TextEdit,
     shadow: TextEdit,
     autostart: bool,
+    secure_boot: bool,
+    firmware: Option<String>,
+    empty_template: bool,
+    boot_query: Option<xenadmin_core::GuestBootStatusQuery>,
+    boot_error: Option<String>,
     home_host: Option<xenadmin_core::HostId>,
     hosts: Vec<(xenadmin_core::HostId, String)>,
     review: Option<VmSettingsPatch>,
@@ -217,10 +222,31 @@ impl Editor {
                 value: self.autostart,
             });
         }
+        if let (Some(previous), Some(value)) = (&self.details.firmware, &self.firmware)
+            && previous != value
+        {
+            edits.push(VmSettingEdit::Firmware {
+                previous: previous.clone(),
+                value: value.clone(),
+            });
+        }
+        if let Some(previous) = self.details.secure_boot
+            && previous != self.secure_boot
+        {
+            edits.push(VmSettingEdit::SecureBoot {
+                previous,
+                value: self.secure_boot,
+            });
+        }
         if edits.is_empty() {
             return Err("No properties have changed".into());
         }
-        VmSettingsPatch::new(edits).map_err(|e| e.to_string())
+        if self.original.is_template {
+            VmSettingsPatch::custom_template(edits)
+        } else {
+            VmSettingsPatch::new(edits)
+        }
+        .map_err(|e| e.to_string())
     }
 }
 fn memory_text(value: Option<u64>) -> String {
@@ -254,10 +280,6 @@ fn parse_memory(text: &str) -> Result<u64, String> {
         })
 }
 pub(super) fn open(s: &mut State) {
-    if !s.demo && !s.can_mutate() {
-        s.error = Some("Open properties after reconnecting with a writable connection.".into());
-        return;
-    }
     let Some(id) = s.selected().and_then(|r| r.vm) else {
         return;
     };
@@ -268,6 +290,14 @@ pub(super) fn open(s: &mut State) {
         return;
     };
     let details = inventory.details.vms.get(&id).cloned().unwrap_or_default();
+    let target = s
+        .snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.observe_vm(id).ok());
+    let boot_query = target.and_then(|o| s.connection.as_ref()?.guest_boot_status(o).ok());
+    if let (Some(query), Some(waker)) = (&boot_query, &s.waker) {
+        query.notify_on_change(waker.clone());
+    }
     s.properties = Some(Editor {
         target: s
             .snapshot
@@ -292,6 +322,15 @@ pub(super) fn open(s: &mut State) {
         cpu_weight: TextEdit::new(details.cpu_weight.clone().unwrap_or_else(|| "256".into())),
         shadow: TextEdit::new(details.shadow_multiplier.clone().unwrap_or_default()),
         autostart: details.auto_power_on.unwrap_or(false),
+        secure_boot: details.secure_boot.unwrap_or(false),
+        firmware: details.firmware.clone(),
+        empty_template: original.is_template
+            && details.is_default_template == Some(false)
+            && inventory.details.classes.get("vbd")
+                == Some(&xenadmin_core::ClassAvailability::Available)
+            && !inventory.details.vbds.values().any(|v| v.vm == Some(id)),
+        boot_query,
+        boot_error: None,
         home_host: details.affinity,
         hosts: {
             let mut hosts: Vec<_> = inventory
@@ -331,6 +370,32 @@ pub(super) fn home_host_scene(s: &mut State) {
         editor.review = editor.patch().ok();
     }
 }
+fn refresh_boot(s: &mut State) {
+    let Some(editor) = &mut s.properties else {
+        return;
+    };
+    let Some(target) = editor.target else {
+        return;
+    };
+    match s
+        .connection
+        .as_ref()
+        .ok_or(xenadmin_core::Error::Closed)
+        .and_then(|c| c.guest_boot_status(target))
+    {
+        Ok(query) => {
+            if let Some(waker) = &s.waker {
+                query.notify_on_change(waker.clone());
+            }
+            editor.boot_query = Some(query);
+            editor.boot_error = None;
+        }
+        Err(error) => {
+            editor.boot_query = None;
+            editor.boot_error = Some(error.to_string());
+        }
+    }
+}
 fn submit(s: &mut State) {
     let Some(editor) = &s.properties else { return };
     let (Some(vm), Some(patch)) = (editor.target, editor.review.clone()) else {
@@ -358,7 +423,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .fill(k.c.bg_base)
         .child(heading(
             if editor.review.is_some() {
-                "Review VM property changes"
+                if editor.original.is_template {
+                    "Review template property changes"
+                } else {
+                    "Review VM property changes"
+                }
+            } else if editor.original.is_template {
+                "Template properties"
             } else {
                 "VM properties"
             },
@@ -367,9 +438,92 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .child(
             caption(format!("{}\nUUID: {}", editor.original.name, editor.id), k).wrap_anywhere(),
         );
+    let current = s.demo
+        || editor.target.is_some()
+            && editor.target
+                == s.snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.observe_vm(editor.id).ok());
+    if !current {
+        body = body.child(
+            caption(
+                "Connection or target changed; reopen properties to refresh.",
+                k,
+            )
+            .wrap(),
+        );
+    }
+    if editor.original.is_template {
+        body=body.child(caption("Custom template properties affect future VMs created from this template. Built-in templates are read-only; copy one first.",k).wrap());
+    }
+    body = body.child(heading("Firmware and Secure Boot", k));
+    body = body.child(
+        caption(
+            format!(
+                "Firmware: {} · Secure Boot policy: {}",
+                editor.details.firmware.as_deref().unwrap_or("unavailable"),
+                editor
+                    .details
+                    .secure_boot
+                    .map_or("unavailable", |v| if v { "on" } else { "off" })
+            ),
+            k,
+        )
+        .wrap(),
+    );
+    if current {
+        if let Some(result) = editor.boot_query.as_ref().and_then(|q| q.latest()) {
+            match result {
+                Ok(status) => {
+                    body = body.child(
+                        caption(
+                            format!(
+                                "Guest readiness: {}\nPool defaults: {}",
+                                status.guest.explanation(),
+                                status.pool.explanation()
+                            ),
+                            k,
+                        )
+                        .wrap(),
+                    );
+                }
+                Err(error) => body = body.child(caption(error, k).wrap()),
+            }
+        } else {
+            body = body.child(
+                caption(
+                    if editor.boot_query.is_some() {
+                        "Reading certificate readiness…"
+                    } else {
+                        "Certificate readiness has not been queried."
+                    },
+                    k,
+                )
+                .wrap(),
+            );
+        }
+    }
+    if let Some(error) = &editor.boot_error {
+        body = body.child(caption(error, k).wrap());
+    }
+    body=body.child(caption("Readiness is sampled at the last check and checks certificate presence. Verify Secure Boot enforcement inside the guest. This editor does not replace certificates or reset guest NVRAM. Shut down the guest before changing its Secure Boot policy.",k).wrap());
+    body = body.child(
+        Button::new("Refresh boot readiness")
+            .disabled(!current || s.demo)
+            .variant(ButtonVariant::Outline)
+            .on_press(refresh_boot)
+            .build(k)
+            .key("refresh-boot-readiness"),
+    );
     if let Some(patch) = &editor.review {
         for edit in patch.edits() {
             let summary = match edit {
+                VmSettingEdit::Firmware { previous, value } => format!(
+                    "Empty custom template firmware: {previous} → {value}. No disks may be attached. Installed guest images cannot change firmware mode."
+                ),
+                VmSettingEdit::SecureBoot { previous, value } => format!(
+                    "Secure Boot policy: {previous} → {value}. Certificate state is preserved; this does not establish actual guest enforcement."
+                ),
                 VmSettingEdit::LiveCpus {
                     previous,
                     max,
@@ -454,6 +608,53 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         }
         body=body.child(caption("Changes apply in steps. A failure stops remaining steps; already saved values remain applied. Changed values are checked on the host before and after each step.",k).wrap());
     } else {
+        if editor.empty_template
+            && (editor.details.domain_type.as_deref() == Some("hvm")
+                || editor.details.boot_policy.as_deref() == Some("BIOS order"))
+            && editor.details.secure_boot == Some(false)
+        {
+            for value in ["bios", "uefi"] {
+                body = body.child(
+                    Button::new(format!(
+                        "{}{} firmware",
+                        if editor.firmware.as_deref() == Some(value) {
+                            "✓ "
+                        } else {
+                            ""
+                        },
+                        value.to_uppercase()
+                    ))
+                    .variant(ButtonVariant::Outline)
+                    .on_press(move |s: &mut State| {
+                        if let Some(e) = &mut s.properties {
+                            e.firmware = Some(value.into());
+                            if value == "bios" {
+                                e.secure_boot = false;
+                            }
+                        }
+                    })
+                    .build(k)
+                    .key(format!("property-firmware-{value}")),
+                );
+            }
+            body=body.child(caption("Only empty custom templates can change BIOS/UEFI firmware. Attach no installation disks until the choice is saved.",k).wrap());
+        }
+        if editor.original.power_state == PowerState::Halted
+            && editor.firmware.as_deref() == Some("uefi")
+            && editor.details.secure_boot.is_some()
+        {
+            body = body.child(
+                Checkbox::new(editor.secure_boot)
+                    .label("Request Secure Boot policy")
+                    .on_toggle(|s: &mut State| {
+                        if let Some(e) = &mut s.properties {
+                            e.secure_boot = !e.secure_boot;
+                        }
+                    })
+                    .build(k)
+                    .key("property-secure-boot"),
+            );
+        }
         body = body
             .child(input(editor, Field::Name, "Name", k).key("property-name"))
             .child(input(editor, Field::Description, "Description", k));
@@ -644,6 +845,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     } else {
         controls = controls.child(
             Button::new("Review changes")
+                .disabled(
+                    !current
+                        || !s.demo && !s.can_mutate()
+                        || editor.original.is_template
+                            && editor.details.is_default_template != Some(false),
+                )
                 .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| {
                     if let Some(editor) = &mut s.properties {
@@ -850,5 +1057,135 @@ mod tests {
         );
         editor.startup_cpus = TextEdit::new("1");
         assert!(editor.patch().is_err());
+    }
+}
+
+pub(super) fn firmware_scene(s: &mut State) {
+    demo(s);
+    let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
+    let inventory = Arc::make_mut(s.inventory.as_mut().unwrap());
+    inventory.vms.get_mut(&id).unwrap().power_state = PowerState::Halted;
+    s.table.select(id.to_string());
+    open(s);
+}
+#[cfg(test)]
+mod firmware_ui_tests {
+    use super::*;
+    fn setup(template: bool, attached: bool, size: (f32, f32)) -> rune::Runtime<State> {
+        let mut s = init();
+        firmware_scene(&mut s);
+        s.properties = None;
+        let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
+        let inventory = Arc::make_mut(s.inventory.as_mut().unwrap());
+        inventory.vms.get_mut(&id).unwrap().is_template = template;
+        let d = inventory.details.vms.get_mut(&id).unwrap();
+        d.is_default_template = Some(false);
+        d.firmware = Some(if template { "bios" } else { "uefi" }.into());
+        if !attached {
+            inventory.details.vbds.retain(|_, v| v.vm != Some(id));
+        }
+        s.page = if template {
+            Page::Templates
+        } else {
+            Page::Guests
+        };
+        s.filter_rows();
+        s.table.select(id.to_string());
+        open(&mut s);
+        s.window_width = size.0;
+        s.window_height = size.1;
+        rune::Runtime::new(
+            s,
+            super::super::view,
+            size,
+            rune::Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        )
+    }
+    fn click(rt: &mut rune::Runtime<State>, key: &str) {
+        rt.update(|_, tx| tx.scroll_into_view(key));
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (x, y) = rt.find(key).unwrap_or_else(|| panic!("missing {key}"));
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+    }
+    #[test]
+    fn secure_boot_review_preserves_vm_identity_and_does_not_claim_enforcement() {
+        for size in [(1440.0, 900.0), (513.0, 652.0)] {
+            let mut rt = setup(false, true, size);
+            let id = rt.state.properties.as_ref().unwrap().id;
+            click(&mut rt, "property-secure-boot");
+            click(&mut rt, "review-properties");
+            let p = rt
+                .state
+                .properties
+                .as_ref()
+                .unwrap()
+                .review
+                .as_ref()
+                .unwrap();
+            assert!(!p.is_template());
+            assert!(matches!(
+                p.edits(),
+                [VmSettingEdit::SecureBoot {
+                    previous: false,
+                    value: true
+                }]
+            ));
+            rt.update(|s, _| s.table.select("30000000-0000-0000-0000-000000000001"));
+            assert_eq!(rt.state.properties.as_ref().unwrap().id, id);
+            assert!(
+                rt.accessibility_json()
+                    .to_string()
+                    .contains("does not establish actual guest enforcement")
+            );
+            click(&mut rt, "apply-properties");
+            assert!(rt.state.operations.is_empty());
+        }
+    }
+    #[test]
+    fn empty_custom_template_has_explicit_firmware_review_and_builtin_is_read_only() {
+        for size in [(1440.0, 900.0), (513.0, 652.0)] {
+            let mut rt = setup(true, false, size);
+            click(&mut rt, "property-firmware-uefi");
+            click(&mut rt, "property-secure-boot");
+            click(&mut rt, "review-properties");
+            let p = rt
+                .state
+                .properties
+                .as_ref()
+                .unwrap()
+                .review
+                .as_ref()
+                .unwrap();
+            assert!(p.is_template());
+            assert!(matches!(
+                p.edits(),
+                [
+                    VmSettingEdit::Firmware { .. },
+                    VmSettingEdit::SecureBoot { .. }
+                ]
+            ));
+            let mut locked = setup(true, true, size);
+            for _ in 0..30 {
+                locked.frame(1.0 / 60.0);
+            }
+            assert!(locked.find("property-firmware-uefi").is_none());
+            locked.update(|s, _| {
+                let e = s.properties.as_mut().unwrap();
+                e.details.is_default_template = Some(true);
+                e.name = TextEdit::new("Changed");
+            });
+            click(&mut locked, "review-properties");
+            assert!(locked.state.properties.as_ref().unwrap().review.is_none());
+        }
     }
 }

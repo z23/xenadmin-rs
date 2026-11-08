@@ -10,6 +10,7 @@ pub enum GuestFirmware {
     Inherited,
     Bios,
     Uefi,
+    SecureUefi,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VmCopyMode {
@@ -34,6 +35,8 @@ pub enum VmLifecycleOperation {
         memory: u64,
         disk_size: Option<u64>,
         firmware: GuestFirmware,
+        #[serde(default)]
+        bios_host: Option<crate::HostId>,
     },
     Clone {
         name: String,
@@ -274,10 +277,15 @@ impl VmLifecycleOperation {
     pub(crate) fn resources(&self) -> Vec<String> {
         match self {
             Self::Create {
-                sr, network, iso, ..
+                sr,
+                network,
+                iso,
+                bios_host,
+                ..
             } => {
                 let mut r = vec![format!("sr:{sr}"), format!("network:{network}")];
                 r.extend(iso.iter().map(|id| format!("vdi:{id}")));
+                r.extend(bios_host.iter().map(|id| format!("host:{id}")));
                 r
             }
             Self::Clone {

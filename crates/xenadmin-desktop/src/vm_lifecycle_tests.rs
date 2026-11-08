@@ -84,6 +84,7 @@ fn click(rt: &mut rune::Runtime<State>, key: &str) {
         "vm-lifecycle-sr",
         "vm-lifecycle-network",
         "vm-lifecycle-iso",
+        "vm-lifecycle-bios-host",
     ] {
         if key.starts_with(&format!("{prefix}-")) {
             rt.update(|_, tx| tx.scroll_into_view(format!("{prefix}-choices")));
@@ -419,4 +420,38 @@ fn installation_iso_is_selected_by_uuid_and_built_in_templates_cannot_be_edited_
             .to_string()
             .contains("Replace the first CD drive")
     );
+}
+
+#[test]
+fn copied_bios_choice_captures_host_and_affinity_in_the_creation_review() {
+    for size in [(1440.0, 900.0), (513.0, 652.0)] {
+        let mut s = init();
+        firmware_scene(&mut s);
+        let host = editor(&s)
+            .unwrap()
+            .initial
+            .hosts
+            .keys()
+            .next()
+            .copied()
+            .unwrap();
+        let mut rt = runtime(s, size);
+        click(&mut rt, &format!("vm-lifecycle-bios-host-{host}"));
+        assert_eq!(editor(&rt.state).unwrap().bios_host, Some(host));
+        let lines = creation::review(editor(&rt.state).unwrap());
+        assert!(
+            lines
+                .iter()
+                .any(|s| s.contains("home-host preference") && s.contains(&host.to_string()))
+        );
+        assert!(
+            matches!(creation::operation(editor(&rt.state).unwrap()).unwrap(),VmLifecycleOperation::Create{bios_host:Some(h),..}if h==host)
+        );
+        click(&mut rt, "vm-lifecycle-firmware-uefi");
+        assert_eq!(
+            editor(&rt.state).unwrap().firmware,
+            GuestFirmware::Inherited
+        ); // installed BIOS disk blocks the flip
+        assert_eq!(editor(&rt.state).unwrap().bios_host, Some(host));
+    }
 }

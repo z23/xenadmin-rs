@@ -3,6 +3,61 @@ use crate::{OperationStep, StepState, vm_lifecycle_backend as lifecycle};
 use serde_json::Value;
 
 impl MutationRequest {
+    async fn save_lifecycle_evidence(
+        &mut self,
+        journal: &mut Journal,
+        rechecking: bool,
+    ) -> Result<bool, Error> {
+        let received = self.record.clone();
+        for _ in 0..16 {
+            let mut current = journal.load(received.id)?.ok_or(Error::Journal)?;
+            if current.action != received.action
+                || current.vm != received.vm
+                || current.pool != received.pool
+            {
+                return Err(Error::OperationConflict);
+            }
+            let plan = received.lifecycle_plan.as_ref().ok_or(Error::Journal)?;
+            if current
+                .lifecycle_plan
+                .as_ref()
+                .is_some_and(|old| !plan.extends(old))
+            {
+                self.record = current;
+                self.emit().await;
+                return Ok(true);
+            }
+            let stop = current.state.terminal()
+                || !rechecking && current.state == OperationState::OutcomeUnknown;
+            if !stop {
+                current.state = received.state.clone();
+                current.steps = received.steps.clone();
+                current.detail = received.detail.clone();
+                current.progress = received.progress;
+                current.can_cancel = received.can_cancel;
+            } else {
+                while current.steps.len() < received.steps.len() {
+                    current
+                        .steps
+                        .push(received.steps[current.steps.len()].clone());
+                }
+            }
+            current.lifecycle_plan = received.lifecycle_plan.clone();
+            current.created_vm = received.created_vm;
+            current.created_devices = received.created_devices.clone();
+            match journal.save(&mut current) {
+                Ok(()) => {
+                    self.record = current;
+                    self.emit().await;
+                    return Ok(stop);
+                }
+                Err(Error::JournalChanged) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
+
     fn sync_lifecycle(&mut self, plan: &lifecycle::Plan) {
         while self.record.steps.len() < plan.steps.len() {
             let step = &plan.steps[self.record.steps.len()];
@@ -33,7 +88,9 @@ impl MutationRequest {
         self.record.state = OperationState::Preparing;
         self.record.can_cancel = true;
         self.sync_lifecycle(&plan);
-        self.persist_steps(journal).await?;
+        if self.save_lifecycle_evidence(journal, false).await? {
+            return Ok(());
+        }
         let mut index = 0;
         while index < plan.steps.len() {
             if cancel.is_cancelled() {
@@ -41,6 +98,9 @@ impl MutationRequest {
             }
             let prepared = lifecycle::prepare(session, self.record.id, &mut plan, index).await?;
             self.sync_lifecycle(&plan);
+            if self.save_lifecycle_evidence(journal, false).await? {
+                return Ok(());
+            }
             if !self.begin_step(journal, index).await? {
                 return Ok(());
             }
@@ -53,7 +113,9 @@ impl MutationRequest {
                 plan.evidence[index].task = Some(crate::snapshots::reference(&response)?);
                 self.sync_lifecycle(&plan);
                 self.record.state = OperationState::Tracking;
-                self.persist_steps(journal).await?;
+                if self.save_lifecycle_evidence(journal, false).await? {
+                    return Ok(());
+                }
                 loop {
                     let task = plan.evidence[index].task.as_ref().ok_or(Error::Journal)?;
                     let result = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("task.get_record",vec![json!(task)])=>result};
@@ -92,7 +154,9 @@ impl MutationRequest {
                             self.record.state = OperationState::Tracking;
                             self.record.detail="Waiting for the host task; stopping here only prevents later steps".into();
                             self.record.can_cancel = true;
-                            self.persist_steps(journal).await?;
+                            if self.save_lifecycle_evidence(journal, false).await? {
+                                return Ok(());
+                            }
                             tokio::select! {_=cancel.cancelled()=>return self.lifecycle_error(journal,&plan,index,Error::Closed).await,_=tokio::time::sleep(Duration::from_millis(250))=>{}}
                         }
                         _ => {
@@ -113,7 +177,9 @@ impl MutationRequest {
             }
             self.record.state = OperationState::Verifying;
             self.sync_lifecycle(&plan);
-            self.persist_steps(journal).await?;
+            if self.save_lifecycle_evidence(journal, false).await? {
+                return Ok(());
+            }
             let verified = lifecycle::verify(session, self.record.id, &mut plan, index, true).await;
             self.sync_lifecycle(&plan);
             match verified {
@@ -136,13 +202,17 @@ impl MutationRequest {
             }
             self.record.state = OperationState::Preparing;
             self.record.progress = Some((index + 1) as f64 / plan.steps.len() as f64);
-            self.persist_steps(journal).await?;
+            if self.save_lifecycle_evidence(journal, false).await? {
+                return Ok(());
+            }
             index += 1;
         }
         self.record.state = OperationState::Succeeded;
         self.record.detail = "Requested changes verified; no VM power actions submitted".into();
         self.record.can_cancel = false;
-        self.persist_steps(journal).await
+        self.save_lifecycle_evidence(journal, false)
+            .await
+            .map(|_| ())
     }
     async fn lifecycle_error(
         &mut self,
@@ -187,7 +257,9 @@ impl MutationRequest {
             "{error}; later steps were not submitted. Known created resources remain listed for review."
         );
         self.record.can_cancel = false;
-        self.persist_steps(journal).await
+        self.save_lifecycle_evidence(journal, false)
+            .await
+            .map(|_| ())
     }
     pub(super) async fn recheck_vm_lifecycle(
         &mut self,
@@ -276,7 +348,9 @@ impl MutationRequest {
         }
         .into();
         self.record.can_cancel = false;
-        self.persist_steps(journal).await
+        self.save_lifecycle_evidence(journal, true)
+            .await
+            .map(|_| ())
     }
 }
 #[cfg(test)]

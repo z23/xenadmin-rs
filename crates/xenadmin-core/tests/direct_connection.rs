@@ -1511,6 +1511,7 @@ async fn settings_mock(
     initial["is_a_template"] = json!(false);
     initial["is_control_domain"] = json!(false);
     initial["name_description"] = json!("Original description");
+    initial["current_operations"] = json!({});
     initial["other_config"] = json!({"auto_poweron":"false","preserve_this":"value"});
     let record = Arc::new(Mutex::new(initial));
     let captured = record.clone();
@@ -1535,6 +1536,7 @@ async fn settings_mock(
                 "VM.get_by_uuid"=>json!("OpaqueRef:vm"),
                 "VM.set_name_label"=>{
                     current["name_label"]=request["params"][2].clone();
+                    if current["fixture_flip_kind"]==true {current["is_a_template"]=json!(false);}
                     if lose_name_reply{return Some(RpcReply::Drop)}
                     Value::Null
                 },
@@ -1554,7 +1556,12 @@ async fn settings_mock(
                 "VM.set_affinity"=>{current["affinity"]=request["params"][2].clone();if lose_name_reply{return Some(RpcReply::Drop)}Value::Null},
                 "VM.set_VCPUs_number_live"=>{current["VCPUs_at_startup"]=request["params"][2].clone();if lose_name_reply{return Some(RpcReply::Drop)}Value::Null},
                 "VM.set_memory_dynamic_range"=>{current["memory_dynamic_min"]=request["params"][2].clone();current["memory_dynamic_max"]=request["params"][3].clone();Value::Null},
-                "VM.set_platform"=>{current["platform"]=request["params"][2].clone();Value::Null},
+                "VM.set_platform"=>{current["platform"]=request["params"][2].clone();if current["fixture_lose_platform"]==true{return Some(RpcReply::Drop)}Value::Null},
+                "VM.set_HVM_boot_params"=>{current["HVM_boot_params"]=request["params"][2].clone();Value::Null},
+                "pool.get_by_uuid"=>json!("OpaqueRef:pool"),
+                "pool.get_record"=>batch("initial","Halted")["events"][0]["snapshot"].clone(),
+                "VM.get_secureboot_readiness"=>json!("setup_mode"),
+                "pool.get_guest_secureboot_readiness"=>json!("ready"),
                 "VM.set_VCPUs_params"=>{current["VCPUs_params"]=request["params"][2].clone();Value::Null},
                 "VM.set_HVM_shadow_multiplier"|"VM.set_shadow_multiplier_live"=>{assert!(request["params"][2].is_number());current["HVM_shadow_multiplier"]=request["params"][2].clone();Value::Null},
                 _=>return None,
@@ -1999,3 +2006,6 @@ fn journal_text(directory: &std::path::Path) -> String {
 }
 #[path = "fixtures/pool_join.rs"]
 mod pool_join;
+
+#[path = "fixtures/firmware_properties.rs"]
+mod firmware_properties;
