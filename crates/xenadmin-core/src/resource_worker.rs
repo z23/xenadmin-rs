@@ -18,6 +18,8 @@ mod network_topology_worker;
 mod ovf_export_worker;
 #[path = "ovf_worker.rs"]
 mod ovf_worker;
+#[path = "pool_dissolve_worker.rs"]
+mod pool_dissolve_worker;
 #[path = "pool_join_worker.rs"]
 mod pool_join_worker;
 #[path = "power_batch_worker.rs"]
@@ -311,6 +313,9 @@ impl ResourceRequest {
         if matches!(self.record.action, super::ResourceAction::StorageGraph(_)) {
             return self.execute_storage_graph(journal, session, cancel).await;
         }
+        if matches!(self.record.action, super::ResourceAction::DissolvePool(_)) {
+            return self.execute_pool_dissolve(journal, session, cancel).await;
+        }
         if matches!(
             self.record.action,
             super::ResourceAction::StorageMaintenance(_)
@@ -546,6 +551,9 @@ impl ResourceRequest {
         }
         if matches!(self.record.action, super::ResourceAction::StorageGraph(_)) {
             return self.reconcile_storage_graph(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::DissolvePool(_)) {
+            return self.reconcile_pool_dissolve(journal, session, cancel).await;
         }
         if matches!(
             self.record.action,
@@ -1102,7 +1110,8 @@ impl ResourceRequest {
         );
         let explicit_rejection = !matches!(
             self.record.action,
-            super::ResourceAction::PowerBatch(_)
+            super::ResourceAction::DissolvePool(_)
+                | super::ResourceAction::PowerBatch(_)
                 | super::ResourceAction::PropertiesBatch(_)
                 | super::ResourceAction::VmWorkflowBatch(_)
                 | super::ResourceAction::DeleteHostCrashdump(_)

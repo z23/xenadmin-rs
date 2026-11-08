@@ -465,3 +465,8 @@ pub use local_conversion::{
     ConversionFormat, ConversionRequest, ConversionReview, ConversionState, ConversionSummary,
     ConversionTools, LocalConversions,
 };
+
+mod pool_dissolve;
+pub use pool_dissolve::{PoolDissolve, PoolDissolveMember, PoolDissolveResult};
+#[cfg(test)]
+mod pool_dissolve_tests;

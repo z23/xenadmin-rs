@@ -29,6 +29,7 @@ mod local_conversion_view;
 mod metrics_view;
 mod network_admin;
 mod organization_view;
+mod pool_dissolve_view;
 mod pool_security_view;
 mod pool_view;
 mod preferences;
@@ -196,6 +197,7 @@ struct State {
     activity: activity::Activity,
     resource_editor: Option<resource_admin::Editor>,
     pool_editor: Option<pool_view::Editor>,
+    pool_dissolve_editor: Option<pool_dissolve_view::Editor>,
     pool_security: Option<pool_security_view::Editor>,
     network_workspace: Option<network_admin::Workspace>,
     disk_workspace: Option<Box<disk_workspace::Panel>>,
@@ -326,6 +328,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         activity: activity::Activity::default(),
         resource_editor: None,
         pool_editor: None,
+        pool_dissolve_editor: None,
         pool_security: None,
         network_workspace: None,
         disk_workspace: None,
@@ -1515,6 +1518,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [storage_view::dialog(s, &k)])
     } else if s.pool_security.is_some() {
         rune_kit::root(base, [pool_security_view::dialog(s, &k)])
+    } else if s.pool_dissolve_editor.is_some() {
+        rune_kit::root(base, [pool_dissolve_view::dialog(s, &k)])
     } else if s.pool_editor.is_some() {
         rune_kit::root(base, [pool_view::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
@@ -2194,6 +2199,7 @@ fn demo(s: &mut State) {
     s.network_workspace = None;
     s.storage_editor = None;
     s.pool_editor = None;
+    s.pool_dissolve_editor = None;
     s.pool_security = None;
     s.resource_operations.clear();
     s.resource_rows.clear();
@@ -2496,6 +2502,7 @@ fn main() -> std::process::ExitCode {
             #[cfg(debug_assertions)]
             ("pool-join", profiles_view::join_scene),
             ("root-password", profiles_view::root_password_scene),
+            ("pool-dissolve", pool_dissolve_view::scene),
             ("guest-tools", guest_tools_view::scene),
             ("guest-tools-review", guest_tools_view::review_scene),
             ("pool-security-review", |s| {

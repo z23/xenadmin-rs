@@ -498,6 +498,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 "pool-eject",
             ));
         }
+        body = body.child(
+            Button::new("Dissolve pool…")
+                .variant(ButtonVariant::Danger)
+                .disabled(admin.ha_enabled != Some(false) || (!s.demo && !current(s, editor)))
+                .on_press(pool_dissolve_view::open)
+                .build(k)
+                .key("pool-dissolve-open"),
+        );
         body = body.child(heading("VM restart priorities", k)).child(
             TextInput::new(&editor.search)
                 .label("Filter virtual machines")

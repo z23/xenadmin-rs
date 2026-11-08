@@ -2,6 +2,8 @@
 pub(crate) mod disk;
 #[path = "disk_journal.rs"]
 mod disk_journal;
+#[path = "pool_dissolve_backend.rs"]
+pub(crate) mod dissolution;
 #[path = "host_power_backend.rs"]
 mod host_power_backend;
 #[path = "host_power_journal.rs"]
@@ -12,6 +14,8 @@ pub(crate) mod management;
 pub(crate) mod management_ipv6;
 #[path = "management_ipv6_journal.rs"]
 mod management_ipv6_journal;
+#[path = "pool_dissolve_journal.rs"]
+mod pool_dissolve_journal;
 #[path = "root_password_journal.rs"]
 mod root_password_journal;
 #[path = "snapshot_capture_journal.rs"]
@@ -144,6 +148,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    DissolvePool {
+        pool: ObservedResource,
+        operation: crate::PoolDissolve,
+    },
     StorageGraph {
         target: ObservedResource,
         operation: crate::StorageGraph,
@@ -274,6 +282,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    DissolvePool(crate::PoolDissolve),
     SnapshotPreviewUpload(crate::SnapshotPreviewUpload),
     StorageGraph(crate::StorageGraph),
     StorageMaintenance(crate::StorageMaintenance),
@@ -342,6 +351,7 @@ impl ResourceAction {
     pub fn permission_requirements(&self, target: ResourceTarget) -> crate::PermissionRequirements {
         use crate::PermissionRequirements as Required;
         match self {
+            Self::DissolvePool(op) => op.permission_requirements(),
             Self::VmWorkflowBatch(selection) => selection.permission_requirements(),
             Self::Appliance(op) => op.permission_requirements(),
             Self::SnapshotPolicy(op) => op.permission_requirements(),
@@ -441,6 +451,7 @@ impl ResourceAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::DissolvePool(_) => "Dissolve pool",
             Self::Alarm(op) => op.label(),
             Self::DeleteHostCrashdump(_) => "Delete retained host crashdump",
             Self::StorageGraph(op) => op.label(),
@@ -494,6 +505,7 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::DissolvePool(op) => return op.validate(target),
             Self::SnapshotPreviewUpload(upload) => upload.valid(target),
             Self::Alarm(op) => return op.validate(target),
             Self::DeleteHostCrashdump(dump) => return crashdump::validate_command(target, dump),
@@ -629,6 +641,9 @@ impl ResourceCommand {
     }
     fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
+            Self::DissolvePool { pool, operation } => {
+                (pool, ResourceAction::DissolvePool(operation))
+            }
             Self::Alarm { target, operation } => (target, ResourceAction::Alarm(operation)),
             Self::DeleteHostCrashdump { host, dump } => {
                 (host, ResourceAction::DeleteHostCrashdump(dump))
@@ -754,6 +769,10 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(skip)]
+    pub(crate) pool_dissolve_plan: Option<Box<crate::pool_dissolve::Plan>>,
+    #[serde(default)]
+    pub pool_dissolve: Option<crate::PoolDissolveResult>,
     #[serde(default)]
     pub batch_parent: Option<OperationId>,
     #[serde(default)]
@@ -933,6 +952,8 @@ pub(crate) fn channel(
 ) -> (ResourceOperation, ResourceRequest) {
     let mut record = ResourceOperationRecord {
         batch_parent: None,
+        pool_dissolve_plan: None,
+        pool_dissolve: None,
         workflow_batch_plan: None,
         workflow_batch: Vec::new(),
         snapshot_preview_plan: None,
