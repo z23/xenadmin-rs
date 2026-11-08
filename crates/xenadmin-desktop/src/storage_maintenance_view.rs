@@ -61,7 +61,7 @@ pub(super) fn controls(s: &State, k: &Kit) -> El {
     let Some(i) = s.inventory.as_ref().filter(|i| i.pool_id == e.pool) else {
         return el();
     };
-    let mut out=col().gap(10.).child(heading("Repair across hosts",k)).child(caption("Select existing detached attachments. The coordinator runs first when selected. Missing attachments are created separately with an explicit location and credentials.",k).wrap());
+    let mut out=col().gap(10.).child(heading("Repair across hosts",k)).child(caption("Select existing detached attachments. The coordinator runs first when selected. Use Repair missing or detached host connections above to reconstruct supported missing shared-storage connections.",k).wrap());
     let candidates = i
         .details
         .pbds

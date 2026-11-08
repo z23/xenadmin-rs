@@ -1,3 +1,5 @@
+mod storage_graph;
+pub use storage_graph::{ReviewedPbd, StorageGraph, StorageGraphResult, StorageRepairHost};
 mod storage_maintenance;
 pub use storage_maintenance::{ReviewedStorageAttachment, StorageMaintenance};
 mod desktop_instance;

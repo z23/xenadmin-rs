@@ -361,6 +361,7 @@ fn resource_operation_value(record: &crate::ResourceOperationRecord) -> Value {
         "power_batch":match &record.action {crate::ResourceAction::PowerBatch(selection)=>Some(json!({"action":selection.action,"vms":selection.vms.iter().take(32).map(|item|json!({"vm":item.vm,"expected_state":bounded(&item.expected_state.to_string())})).collect::<Vec<_>>()})),_=>None},
         "properties_batch":match &record.action {crate::ResourceAction::PropertiesBatch(selection)=>Some(json!({"vms":selection.vms.iter().take(32).map(|item|json!({"vm":item.vm,"expected_state":bounded(&item.expected_state.to_string()),"template":item.patch.is_template(),"setters":item.patch.steps().len()})).collect::<Vec<_>>()})),_=>None},
         "storage_secrets":record.storage_secrets,
+        "storage_graph":record.storage_graph,
         "host_power_secret":record.host_power_secret,
         "root_password":record.root_password,
         "detail":bounded(&record.detail),"local_error":record.local_error.as_deref().map(bounded),

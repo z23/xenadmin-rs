@@ -35,6 +35,7 @@ mod settings;
 mod snapshot_capture;
 mod snapshot_inspection;
 mod snapshot_policy_view;
+mod storage_graph_view;
 mod storage_view;
 mod transfers;
 mod vm_devices;
@@ -189,6 +190,7 @@ struct State {
     network_workspace: Option<network_admin::Workspace>,
     disk_workspace: Option<Box<disk_workspace::Panel>>,
     storage_editor: Option<storage_view::Editor>,
+    storage_graph: Option<storage_graph_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
     host_support: Option<host_support_view::Panel>,
     host_power: Option<host_power_view::Editor>,
@@ -313,6 +315,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         network_workspace: None,
         disk_workspace: None,
         storage_editor: None,
+        storage_graph: None,
         host_workspace: None,
         host_support: None,
         host_power: None,
@@ -1460,6 +1463,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [host_power_view::dialog(s, &k)])
     } else if s.host_support.is_some() {
         rune_kit::root(base, [host_support_view::dialog(s, &k)])
+    } else if s.storage_graph.is_some() {
+        rune_kit::root(base, [storage_graph_view::dialog(s, &k)])
     } else if s.host_workspace.is_some() {
         rune_kit::root(base, [host_admin::dialog(s, &k)])
     } else if s.network_workspace.is_some() {
@@ -2388,6 +2393,8 @@ fn main() -> std::process::ExitCode {
             ("storage-hba", storage_view::hba_scene),
             ("storage-hba-review", storage_view::hba_review_scene),
             ("storage-repair", storage_view::repair_scene),
+            ("storage-graph", |s| storage_graph_view::scene(s, false)),
+            ("storage-multipath", |s| storage_graph_view::scene(s, true)),
             ("storage-maintenance", storage_view::maintenance_scene),
             ("storage-cache", storage_view::cache_scene),
             ("storage-discovery", storage_view::discovery_scene),

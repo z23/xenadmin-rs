@@ -195,6 +195,9 @@ pub struct HostDetails {
     pub syslog_known: bool,
     #[serde(default)]
     pub multipathing: Option<bool>,
+    /// Some(false): absent; Some(true): standard dmp; None: unknown or custom.
+    #[serde(default)]
+    pub standard_multipath_handler: Option<bool>,
     pub description: String,
     pub hostname: String,
     pub metrics: Option<HostMetricsId>,

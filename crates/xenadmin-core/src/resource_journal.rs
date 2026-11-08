@@ -99,6 +99,13 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let storage_graph_plan = payload
+                .get("storage_graph_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let storage_maintenance_plan = payload
                 .get("storage_maintenance_plan")
                 .filter(|v| !v.is_null())
@@ -216,6 +223,7 @@ impl Journal {
                 }
             }
             record.management_network_plan = management_network_plan;
+            record.storage_graph_plan = storage_graph_plan;
             record.storage_maintenance_plan = storage_maintenance_plan;
             record.disk_plan = disk_plan;
             record.network_topology_plan = network_topology_plan;
@@ -252,6 +260,7 @@ impl Journal {
             crate::snapshot_capture::validate_record(&record)?;
             super::management::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
+            crate::storage_graph::validate_record(&record)?;
             crate::storage_maintenance::validate_record(&record)?;
             crate::disk_administration::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
@@ -281,6 +290,7 @@ impl Journal {
         crate::root_password::validate_record(record)?;
         crate::snapshot_capture::validate_record(record)?;
         crate::storage_auth::validate_record(record)?;
+        crate::storage_graph::validate_record(record)?;
         crate::storage_maintenance::validate_record(record)?;
         crate::disk_administration::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
@@ -288,6 +298,14 @@ impl Journal {
         super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
+            if old.storage_graph_plan.as_ref().is_some_and(|p| {
+                record
+                    .storage_graph_plan
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
+            }
             if old.storage_maintenance_plan.as_ref().is_some_and(|p| {
                 record
                     .storage_maintenance_plan
@@ -501,6 +519,12 @@ impl Journal {
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
             );
         }
+        if let Some(plan) = &record.storage_graph_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "storage_graph_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         if let Some(plan) = &record.storage_maintenance_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "storage_maintenance_plan".into(),
@@ -555,6 +579,7 @@ impl Journal {
         &self,
         record: &mut ResourceOperationRecord,
     ) -> Result<bool, Error> {
+        crate::storage_graph::validate_record(record)?;
         crate::storage_maintenance::validate_record(record)?;
         crate::disk_administration::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;

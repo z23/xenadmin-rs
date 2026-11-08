@@ -89,3 +89,5 @@ EXT/LVM creation from an operator-declared persistent device path, with a dual r
 probe and explicit data-loss confirmation. It does not claim automatic physical device
 discovery or fully verified capacity, signatures and ownership; additional backend wizards
 remain retained.
+
+The [shared storage graph increment](reports/2026-11-08-storage-graph-repair.md) adds reviewed missing-PBD reconstruction for supported shared locations, server-side credential cloning without reading values, and complete-host multipath detach/settings/replug orchestration. Known partial results offer separately reviewed reconnection; custom host-dependent reconstruction and live path qualification remain open.

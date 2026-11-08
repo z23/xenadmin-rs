@@ -28,6 +28,8 @@ mod root_password_worker;
 mod snapshot_capture_worker;
 #[path = "storage_auth_worker.rs"]
 mod storage_auth_worker;
+#[path = "storage_graph_worker.rs"]
+mod storage_graph_worker;
 #[path = "storage_maintenance_worker.rs"]
 mod storage_maintenance_worker;
 #[path = "transfer_disk_worker.rs"]
@@ -253,6 +255,9 @@ impl ResourceRequest {
         ) {
             return self.execute_management(journal, session, cancel).await;
         }
+        if matches!(self.record.action, super::ResourceAction::StorageGraph(_)) {
+            return self.execute_storage_graph(journal, session, cancel).await;
+        }
         if matches!(
             self.record.action,
             super::ResourceAction::StorageMaintenance(_)
@@ -473,6 +478,9 @@ impl ResourceRequest {
             super::ResourceAction::ManagementNetwork(_)
         ) {
             return self.reconcile_management(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::StorageGraph(_)) {
+            return self.reconcile_storage_graph(journal, session, cancel).await;
         }
         if matches!(
             self.record.action,

@@ -354,6 +354,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         }
         let target = w.target;
         body = body.child(
+            Button::new("Multipathing with storage reconnection…")
+                .on_press(move |s: &mut State| storage_graph_view::open(s, target))
+                .build(k)
+                .key("host-multipath-workflow"),
+        );
+        body = body.child(
             Button::new("BMC / power-on settings…")
                 .on_press(move |s: &mut State| host_power_view::open(s, target))
                 .build(k)

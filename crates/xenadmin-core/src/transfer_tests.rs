@@ -558,6 +558,7 @@ impl Fixture {
                         } else if let Some(reply) =
                             disk_administration_tests::rpc(method, p, &mut data)
                                 .or_else(|| storage_maintenance_tests::rpc(method, p, &mut data))
+                                .or_else(|| storage_graph_tests::rpc(method, p, &mut data))
                         {
                             if reply.lost {
                                 return;
@@ -1224,3 +1225,6 @@ mod disk_administration_tests;
 
 #[path = "storage_maintenance_tests.rs"]
 mod storage_maintenance_tests;
+
+#[path = "storage_graph_tests.rs"]
+mod storage_graph_tests;

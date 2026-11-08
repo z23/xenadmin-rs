@@ -1012,7 +1012,7 @@ pub(super) fn button(s: &State, k: &Kit) -> El {
         .build(k)
         .key("storage-manage")
 }
-fn location_lines(location: &StorageLocation) -> Vec<String> {
+pub(super) fn location_lines(location: &StorageLocation) -> Vec<String> {
     match location {
         StorageLocation::Local { kind, device } => vec![
             format!("Backend: {}", kind.label()),
@@ -1225,6 +1225,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         let ResourceTarget::Storage(sr) = editor.target else {
             return el();
         };
+        body = body.child(
+            Button::new("Repair missing or detached host connections…")
+                .on_press(move |s: &mut State| {
+                    storage_graph_view::open(s, ResourceTarget::Storage(sr))
+                })
+                .build(k)
+                .key("storage-graph-open"),
+        );
         body = body.child(maintenance::controls(s, k));
         body=body.child(heading(&editor.name.text,k)).child(caption("Host attachments · repair a detached connection with Attach / repair. Attachment status does not establish storage health.",k).wrap());
         if let Some(inventory) = &s.inventory {
@@ -1262,7 +1270,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     );
                 }
                 if attachment.requires_credentials {
-                    body=body.child(caption("This attachment uses credentials. A new host attachment requires fresh credentials; existing secrets are never copied into this form.",k).wrap());
+                    body=body.child(caption("This attachment uses credentials. Repair missing connections can ask the host to clone supported credential references; manual attachment creation requires fresh credentials.",k).wrap());
                 }
                 body = body.child(
                     Button::new(if attachment.currently_attached == Some(true) {
@@ -2060,6 +2068,31 @@ pub(super) fn hba_review_scene(s: &mut State) {
 #[cfg(test)]
 #[path = "storage_provisioning_view_tests.rs"]
 mod provisioning_tests;
+pub(super) fn review_restore(s: &mut State, sr: SrId, pbd: PbdId, host: HostId) {
+    if !s
+        .inventory
+        .as_ref()
+        .and_then(|i| i.details.pbds.get(&pbd))
+        .is_some_and(|p| {
+            p.sr == Some(sr) && p.host == Some(host) && p.currently_attached == Some(false)
+        })
+    {
+        s.error = Some("The detached attachment changed; reopen its storage view".into());
+        return;
+    }
+    open(s, Some(sr));
+    stage(
+        s,
+        ResourceTarget::Pbd(pbd),
+        StorageOperation::SetAttached {
+            sr,
+            host,
+            expected_attached: false,
+            attached: true,
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

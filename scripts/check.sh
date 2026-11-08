@@ -182,7 +182,7 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/snapshot-capture.png --tree artifacts/snapshot-capture.json --scene snapshot-capture --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/snapshot-capture-compact.png --tree artifacts/snapshot-capture-compact.json --scene snapshot-capture --theme dark --size 513x652 --scale 1 --at 1
 
-for storage_scene in storage-repair storage-cache storage-maintenance storage-hba storage-hba-review storage-local storage-local-review; do
+for storage_scene in storage-repair storage-cache storage-maintenance storage-hba storage-hba-review storage-local storage-local-review storage-graph storage-multipath; do
   for storage_size in 1440x900 513x652; do
     "$check_binary" --snap "artifacts/${storage_scene}-${storage_size}.png" --tree "artifacts/${storage_scene}-${storage_size}.json" --scene "$storage_scene" --theme dark --size "$storage_size" --scale 1 --at 1
   done

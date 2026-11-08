@@ -154,6 +154,16 @@ impl Entry {
                     uuid: target.uuid(),
                 })
                 .into_iter()
+                .chain(
+                    record
+                        .storage_graph
+                        .iter()
+                        .filter(|r| r.created)
+                        .map(|r| Created {
+                            kind: "Storage attachment".into(),
+                            uuid: r.pbd.uuid(),
+                        }),
+                )
                 .chain(record.transfer_created.vms.iter().map(|id| Created {
                     kind: "VM".into(),
                     uuid: id.uuid(),
