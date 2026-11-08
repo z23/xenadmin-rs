@@ -403,28 +403,6 @@ pub(super) async fn arguments(
     }
     Ok(args)
 }
-fn method(op: &NetworkOperation) -> &'static str {
-    match op {
-        NetworkOperation::ConfigureIpv6 { .. } => "Async.PIF.reconfigure_ipv6",
-        NetworkOperation::SetInterfacePurpose { .. } => "Async.PIF.set_other_config",
-        NetworkOperation::SetUnplugProtection { .. } => "Async.PIF.set_disallow_unplug",
-        NetworkOperation::ScanInterfaces => "Async.PIF.scan",
-        NetworkOperation::SetAttached { attached: true, .. } => "Async.PIF.plug",
-        NetworkOperation::SetAttached {
-            attached: false, ..
-        } => "Async.PIF.unplug",
-        NetworkOperation::CreateVlan { .. } => "Async.VLAN.create",
-        NetworkOperation::DeleteVlan { .. } => "Async.VLAN.destroy",
-        NetworkOperation::CreateBond { .. } => "Async.Bond.create",
-        NetworkOperation::DeleteBond { .. } => "Async.Bond.destroy",
-        NetworkOperation::SetBondMode { .. } => "Async.Bond.set_mode",
-        NetworkOperation::SetBondHash { .. } => "Async.Bond.set_property",
-        NetworkOperation::SetAutomaticAttachment { .. } => "Async.network.set_other_config",
-        NetworkOperation::SetMtu { .. } => "Async.network.set_MTU",
-        NetworkOperation::SetIgmpSnooping { .. } => "Async.pool.set_igmp_snooping_enabled",
-        NetworkOperation::ConfigureIpv4 { .. } => "Async.PIF.reconfigure_ip",
-    }
-}
 pub(super) async fn all(
     session: &Session,
     class: &str,
@@ -465,7 +443,7 @@ pub(super) async fn prepare(
     let op = operation(record)?;
     Ok(vec![Step {
         label: op.label().into(),
-        method: method(op).into(),
+        method: op.method().into(),
         argument: None,
         expected: Value::Null,
         check: Check::Network,

@@ -559,6 +559,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .on_press(|s: &mut State| s.pool_editor = None)
             .build(k),
     );
+    let permission = editor
+        .review
+        .as_ref()
+        .map(|op| crate::session_permissions_view::assess(s, &op.permission_requirements()));
+
     if let Some(op) = &editor.review {
         footer = footer
             .child(
@@ -575,6 +580,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     })
                     .disabled(
                         s.demo
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied())
                             || !s.can_mutate()
                             || !current(s, editor)
                             || confirmation(op, editor.pool)
@@ -604,7 +612,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(footer),
+                .child(crate::session_permissions_view::footer(
+                    footer,
+                    permission.as_ref(),
+                    (s.window_width - 32.0).clamp(280.0, 680.0) - 40.0,
+                    k,
+                )),
         )
 }
 pub(super) fn scene(s: &mut State, review: bool) {

@@ -293,6 +293,9 @@ fn apply(s: &mut State) {
         vm: form.target,
         operation,
     };
+    if !crate::session_permissions_view::check(s, &command.operation.permission_requirements()) {
+        return;
+    }
     s.submit_command(xenadmin_core::VmCommand::Device(command));
     if s.error.is_none() {
         close(s);
@@ -436,6 +439,19 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
             .wrap(),
         );
     }
+    let permission = form
+        .review
+        .then(|| {
+            form.operation.as_ref().map(|operation| {
+                crate::session_permissions_view::assess(s, &operation.permission_requirements())
+            })
+        })
+        .flatten();
+    if let Some(permission) = &permission {
+        body = body.child(crate::session_permissions_view::review_notice(
+            permission, k,
+        ));
+    }
     let mut controls = row().gap(8.0).justify_end().child(
         Button::new("Cancel")
             .variant(ButtonVariant::Ghost)
@@ -448,6 +464,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
                 .variant(ButtonVariant::Outline)
                 .disabled(
                     !ready(s)
+                        || permission
+                            .as_ref()
+                            .is_some_and(|p| p.decision().is_denied())
                         || !target_current
                         || !eligible
                             .as_ref()

@@ -401,6 +401,9 @@ fn submit(s: &mut State) {
     let (Some(vm), Some(patch)) = (editor.target, editor.review.clone()) else {
         return;
     };
+    if !crate::session_permissions_view::check(s, &patch.permission_requirements()) {
+        return;
+    }
     s.submit_command(xenadmin_core::VmCommand::Configure { vm, patch });
     if s.error.is_none() {
         s.properties = None;
@@ -815,6 +818,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .on_press(|s: &mut State| s.properties = None)
             .build(k),
     );
+    let permission = editor
+        .review
+        .as_ref()
+        .map(|patch| crate::session_permissions_view::assess(s, &patch.permission_requirements()));
+
     if editor.review.is_some() {
         controls = controls
             .child(
@@ -832,6 +840,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .variant(ButtonVariant::Outline)
                     .disabled(
                         !s.can_mutate()
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied())
                             || editor.target.is_none()
                             || editor.target
                                 != s.snapshot
@@ -883,7 +894,16 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .radius(10.0)
                 .fill(k.c.bg_base)
                 .child(body)
-                .child(controls.w_full().padding(16.0)),
+                .child(
+                    crate::session_permissions_view::footer(
+                        controls,
+                        permission.as_ref(),
+                        (s.window_width - 40.0).clamp(280.0, 580.0) - 32.0,
+                        k,
+                    )
+                    .w_full()
+                    .padding(16.0),
+                ),
         )
 }
 #[cfg(test)]

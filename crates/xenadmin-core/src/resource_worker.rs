@@ -227,6 +227,10 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        self.record
+            .action
+            .permission_requirements(self.record.target)
+            .guard(session.permissions())?;
         if matches!(
             self.record.action,
             super::ResourceAction::NetworkTopology(_)
@@ -267,6 +271,8 @@ impl ResourceRequest {
         self.record.detail = "Checking fresh resource state".into();
         self.save(journal).await?;
         let steps = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=xapi::prepare(session,&mut self.record)=>result?};
+        crate::PermissionRequirements::writes(steps.iter().map(|step| step.method.as_str()))
+            .guard(session.permissions())?;
         self.record.steps = steps
             .iter()
             .map(|step| OperationStep {

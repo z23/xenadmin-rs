@@ -290,6 +290,10 @@ impl VmSettingsPatch {
         }
         Ok(record)
     }
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        crate::PermissionRequirements::writes(self.steps().iter().map(|step| step.method.as_str()))
+    }
+
     pub(crate) fn steps(&self) -> Vec<SettingsStep> {
         let mut steps = Vec::new();
         for edit in &self.edits {

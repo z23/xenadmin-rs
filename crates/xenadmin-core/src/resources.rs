@@ -256,6 +256,47 @@ pub enum ResourceAction {
     },
 }
 impl ResourceAction {
+    pub fn permission_requirements(&self, target: ResourceTarget) -> crate::PermissionRequirements {
+        use crate::PermissionRequirements as Required;
+        match self {
+            Self::Storage(op) => op.permission_requirements(),
+            Self::AuthenticatedStorage { operation, .. } => operation
+                .permission_requirements()
+                .with_host_dependent_steps(),
+            Self::Network(op) => op.permission_requirements(),
+            Self::Host(op) => op.permission_requirements(),
+            Self::Pool(op) => op.permission_requirements(),
+            Self::CancelTask => Required::writes(["task.cancel"]),
+            Self::DismissMessage { .. } => Required::writes(["message.destroy"]),
+            Self::RenameMetadata {
+                expected_name,
+                expected_description,
+                name,
+                description,
+            } => {
+                let mut methods = Vec::new();
+                if expected_name != name {
+                    methods.push(format!("{}.set_name_label", target.class()));
+                }
+                if expected_description != description {
+                    methods.push(format!("{}.set_name_description", target.class()));
+                }
+                Required::writes(methods)
+            }
+            Self::CreateInternalNetwork { .. } => Required::writes(["network.create"]),
+            Self::ConfigureInternalNetwork { .. } => Required::writes(["network.set_MTU"]),
+            Self::DeleteInternalNetwork { .. } => Required::writes(["network.destroy"]),
+            Self::ScanStorage => Required::writes(["SR.scan"]),
+            Self::SetHostEnabled { enabled, .. } => Required::writes([if *enabled {
+                "host.enable"
+            } else {
+                "host.disable"
+            }]),
+            Self::SetDefaultStorage { .. } => Required::writes(["pool.set_default_SR"]),
+            _ => Required::writes(Vec::<String>::new()).with_host_dependent_steps(),
+        }
+    }
+
     pub(crate) fn read_only_export(&self) -> bool {
         matches!(self, Self::Transfer(action) if action.is_export())
     }

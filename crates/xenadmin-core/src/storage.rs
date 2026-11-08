@@ -207,6 +207,25 @@ pub enum StorageOperation {
     },
 }
 impl StorageOperation {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        crate::PermissionRequirements::writes([self.method()])
+    }
+    pub(crate) fn method(&self) -> &'static str {
+        match self {
+            StorageOperation::Trim { .. } => "Async.host.call_plugin",
+            StorageOperation::Create { .. } => "Async.SR.create",
+            StorageOperation::Introduce { .. } => "Async.SR.introduce",
+            StorageOperation::CreateAttachment { .. } => "Async.PBD.create",
+            StorageOperation::SetAttached { attached: true, .. } => "Async.PBD.plug",
+            StorageOperation::SetAttached {
+                attached: false, ..
+            } => "Async.PBD.unplug",
+            StorageOperation::RemoveAttachment { .. } => "Async.PBD.destroy",
+            StorageOperation::Forget { .. } => "Async.SR.forget",
+            StorageOperation::Destroy { .. } => "Async.SR.destroy",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Trim { .. } => "Reclaim unused storage blocks",

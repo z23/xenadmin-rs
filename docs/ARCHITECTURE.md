@@ -618,3 +618,16 @@ results, stale profiles, closed views and keyring failures never assume or repla
 ## Snapshot inspection
 
 Snapshot ancestry is a typed UUID graph separate from the owning VM relationship. A bounded, generation-fenced read query resolves the exact pool/VM/snapshot and retrieves only the known saved-preview association through the current trust/proxy policy. Image bytes stay out of serialized inventory, journals and inspector output; the desktop decodes them off-thread with image dimension/allocation limits. See the [snapshot inspection evidence](reports/2026-11-08-snapshot-inspection.md).
+
+## Permission review requirements
+
+`PermissionRequirements` represents write methods provable from an immutable captured
+change. VM settings and device properties derive them from the same step plans used for
+dispatch; host administration shares step selection and method mapping. Storage, network
+and pool administration reuse typed dispatch methods. A known denial blocks confirmation
+and the worker before its first write; the generic resource worker also checks its complete
+freshly prepared method set. Unknown protected-key, conditional and HTTP requirements do
+not establish authority. Every individual RPC still uses its current session guard, and
+fresh identity/capability/state checks remain independent prerequisites. See the
+[implementation report](reports/2026-11-08-permission-reviews.md) for covered dialogs and
+retained dedicated workflow maps.

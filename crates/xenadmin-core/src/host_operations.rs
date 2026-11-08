@@ -27,6 +27,26 @@ pub(crate) enum Kind {
     Forget,
 }
 impl Kind {
+    fn method(&self) -> &'static str {
+        match self {
+            Self::Disable => "Async.host.disable",
+            Self::Evacuate => "Async.host.evacuate",
+            Self::MarkMaintenance(_) | Self::MultipathHandle => "host.set_other_config",
+            Self::Enable => "Async.host.enable",
+            Self::Reboot => "Async.host.reboot",
+            Self::Shutdown => "Async.host.shutdown",
+            Self::Restart => "Async.host.restart_agent",
+            Self::PowerOn => "Async.host.power_on",
+            Self::PowerMode => "host.set_power_on_mode",
+            Self::Memory => "VM.set_memory",
+            Self::Logging => "host.set_logging",
+            Self::ReconfigureLogging => "host.syslog_reconfigure",
+            Self::Multipath => "host.set_multipathing",
+            Self::PoolAutostart => "pool.set_other_config",
+            Self::Forget => "Async.host.destroy",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Disable => "Disable scheduling",
@@ -365,13 +385,11 @@ fn map_argument(
     Ok(Value::Object(map))
 }
 
-pub(crate) async fn prepare(
-    session: &Session,
-    record: &ResourceOperationRecord,
-) -> Result<Plan, Error> {
-    let op = operation(record)?;
-    op.validate(record.target)?;
-    let kinds = match op {
+pub(crate) fn requirements(op: &HostOperation) -> crate::PermissionRequirements {
+    crate::PermissionRequirements::writes(kinds(op).iter().map(Kind::method))
+}
+fn kinds(op: &HostOperation) -> Vec<Kind> {
+    match op {
         HostOperation::EnterMaintenance {
             expected_enabled,
             resident_vms,
@@ -398,7 +416,15 @@ pub(crate) async fn prepare(
         HostOperation::SetMultipath { .. } => vec![Kind::Multipath, Kind::MultipathHandle],
         HostOperation::SetPoolAutostart { .. } => vec![Kind::PoolAutostart],
         HostOperation::ForgetDeadHost { .. } => vec![Kind::Forget],
-    };
+    }
+}
+pub(crate) async fn prepare(
+    session: &Session,
+    record: &ResourceOperationRecord,
+) -> Result<Plan, Error> {
+    let op = operation(record)?;
+    op.validate(record.target)?;
+    let kinds = kinds(op);
     // Check migration feasibility before disabling scheduling; every dispatch checks again.
     if let HostOperation::EnterMaintenance { resident_vms, .. } = op {
         let (reference, host, _) = host(session, record).await?;
@@ -434,7 +460,7 @@ pub(crate) async fn arguments(
             "Pool VM autostart changed since review",
         )?;
         return Ok((
-            "pool.set_other_config",
+            kind.method(),
             vec![
                 json!(reference),
                 map_argument(
@@ -465,7 +491,7 @@ pub(crate) async fn arguments(
             )?;
             live(session, &host, true).await?;
             evacuation(session, &reference, &host, resident_vms).await?;
-            ("Async.host.disable", vec![json!(&reference)])
+            (kind.method(), vec![json!(&reference)])
         }
         Kind::Evacuate => {
             let expected = match op {
@@ -480,7 +506,7 @@ pub(crate) async fn arguments(
             live(session, &host, true).await?;
             allowed(&host, "evacuate")?;
             evacuation(session, &reference, &host, expected).await?;
-            ("Async.host.evacuate", vec![json!(&reference)])
+            (kind.method(), vec![json!(&reference)])
         }
         Kind::MarkMaintenance(value) => {
             live(session, &host, true).await?;
@@ -497,7 +523,7 @@ pub(crate) async fn arguments(
                 )?;
             }
             (
-                "host.set_other_config",
+                kind.method(),
                 vec![
                     json!(&reference),
                     map_argument(
@@ -518,7 +544,7 @@ pub(crate) async fn arguments(
             )?;
             live(session, &host, true).await?;
             allowed(&host, "enable")?;
-            ("Async.host.enable", vec![json!(&reference)])
+            (kind.method(), vec![json!(&reference)])
         }
         Kind::Reboot | Kind::Shutdown => {
             let expected = match op {
@@ -538,14 +564,7 @@ pub(crate) async fn arguments(
                     "shutdown"
                 },
             )?;
-            (
-                if *kind == Kind::Reboot {
-                    "Async.host.reboot"
-                } else {
-                    "Async.host.shutdown"
-                },
-                vec![json!(&reference)],
-            )
+            (kind.method(), vec![json!(&reference)])
         }
         Kind::Restart => {
             require(
@@ -573,7 +592,7 @@ pub(crate) async fn arguments(
                 }),
                 "Finish pending pool tasks before restarting the toolstack",
             )?;
-            ("Async.host.restart_agent", vec![json!(&reference)])
+            (kind.method(), vec![json!(&reference)])
         }
         Kind::PowerOn => {
             live(session, &host, false).await?;
@@ -584,7 +603,7 @@ pub(crate) async fn arguments(
                     .is_some_and(|v| !v.is_empty()),
                 "Configure host power-on first",
             )?;
-            ("Async.host.power_on", vec![json!(&reference)])
+            (kind.method(), vec![json!(&reference)])
         }
         Kind::PowerMode => {
             let HostOperation::ConfigurePowerOn {
@@ -603,7 +622,7 @@ pub(crate) async fn arguments(
                 "Power-on mode changed or contains BMC configuration that this editor does not replace",
             )?;
             (
-                "host.set_power_on_mode",
+                kind.method(),
                 vec![json!(&reference), json!(mode.as_str()), json!({})],
             )
         }
@@ -636,7 +655,7 @@ pub(crate) async fn arguments(
                 "Control-domain memory exceeds host physical memory",
             )?;
             (
-                "VM.set_memory",
+                kind.method(),
                 vec![json!(vm_ref), json!(desired.to_string())],
             )
         }
@@ -660,7 +679,7 @@ pub(crate) async fn arguments(
             )?;
             if *kind == Kind::Logging {
                 (
-                    "host.set_logging",
+                    kind.method(),
                     vec![
                         json!(&reference),
                         map_argument(
@@ -672,7 +691,7 @@ pub(crate) async fn arguments(
                     ],
                 )
             } else {
-                ("host.syslog_reconfigure", vec![json!(&reference)])
+                (kind.method(), vec![json!(&reference)])
             }
         }
         Kind::Multipath | Kind::MultipathHandle => {
@@ -703,13 +722,10 @@ pub(crate) async fn arguments(
                 "Custom multipath handlers require separate configuration",
             )?;
             if *kind == Kind::Multipath {
-                (
-                    "host.set_multipathing",
-                    vec![json!(&reference), json!(enabled)],
-                )
+                (kind.method(), vec![json!(&reference), json!(enabled)])
             } else {
                 (
-                    "host.set_other_config",
+                    kind.method(),
                     vec![
                         json!(&reference),
                         map_argument(
@@ -738,7 +754,7 @@ pub(crate) async fn arguments(
                 pool["master"] != reference && pool["ha_enabled"] == false,
                 "The coordinator cannot be forgotten and HA must be disabled",
             )?;
-            ("Async.host.destroy", vec![json!(&reference)])
+            (kind.method(), vec![json!(&reference)])
         }
         Kind::PoolAutostart => return Err(Error::InvalidResourceCommand),
     };

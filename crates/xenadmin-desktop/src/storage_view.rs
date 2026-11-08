@@ -1494,6 +1494,15 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             k,
         ));
     }
+    let permission = editor.review.as_ref().map(|(_, _, operation)| {
+        let requirements = operation.permission_requirements();
+        let requirements = if editor.review_auth_label.is_some() {
+            requirements.with_host_dependent_steps()
+        } else {
+            requirements
+        };
+        crate::session_permissions_view::assess(s, &requirements)
+    });
     let mut footer = row().gap(8.0).justify_end().child(
         Button::new("Close")
             .variant(ButtonVariant::Ghost)
@@ -1544,6 +1553,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         s.demo
                             || !s.can_mutate()
                             || !current(s.snapshot.as_deref(), editor)
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied())
                             || too_many
                             || (destructive
                                 && editor.confirmation.text != editor.target.uuid().to_string()),
@@ -1579,7 +1591,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(footer),
+                .child(crate::session_permissions_view::footer(
+                    footer,
+                    permission.as_ref(),
+                    (s.window_width - 32.0).clamp(280.0, 680.0) - 40.0,
+                    k,
+                )),
         )
 }
 

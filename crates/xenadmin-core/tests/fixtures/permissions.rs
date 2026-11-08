@@ -164,3 +164,120 @@ async fn expired_session_during_discovery_renews_instead_of_becoming_unknown() {
     assert_eq!(server.logins.load(Ordering::SeqCst), 2);
     connection.close().await;
 }
+
+#[tokio::test]
+async fn denied_later_settings_or_device_step_prevents_every_write() {
+    use xenadmin_core::{DeviceCommand, DeviceOperation, SrId, VmSettingEdit, VmSettingsPatch};
+    for device in [false, true] {
+        let server = mock_overridden(override_rpc(move |request| async move {
+            if request["method"] == "event.from" {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let mut inventory = batch("permissions", "Halted");
+                let vm = &mut inventory["events"][2]["snapshot"];
+                vm["is_a_snapshot"] = json!(false);
+                vm["is_a_template"] = json!(false);
+                vm["is_control_domain"] = json!(false);
+                vm["current_operations"] = json!({});
+                return Some(RpcReply::Json(json!({"result":inventory})));
+            }
+            (request["method"] == "session.get_record").then(|| {
+                RpcReply::Json(json!({"result": {
+                    "is_local_superuser":false,
+                    "rbac_permissions":["session.logout", "vm.set_name_label", "vdi.create"]
+                }}))
+            })
+        }))
+        .await;
+        let (_directory, _backend, connection) = ready(&server).await;
+        let snapshot = connection.latest();
+        let vm = snapshot.inventory().unwrap().guests().next().unwrap().id;
+        let vm = snapshot.observe_vm(vm).unwrap();
+        let command = if device {
+            VmCommand::Device(DeviceCommand {
+                vm,
+                operation: DeviceOperation::CreateDisk {
+                    sr: SrId::parse("00000000-0000-0000-0000-000000000010").unwrap(),
+                    name: "Fixture disk".into(),
+                    size: 1048576,
+                    device: "1".into(),
+                },
+            })
+        } else {
+            VmCommand::Configure {
+                vm,
+                patch: VmSettingsPatch::new(vec![
+                    VmSettingEdit::Name {
+                        previous: "XO recovery guest".into(),
+                        value: "Renamed fixture".into(),
+                    },
+                    VmSettingEdit::Description {
+                        previous: "".into(),
+                        value: "Fixture description".into(),
+                    },
+                ])
+                .unwrap(),
+            }
+        };
+        let operation = connection.submit(OperationId::new(), command).unwrap();
+        assert_eq!(finish(&operation).await, OperationState::Rejected);
+        assert!(operation.latest().detail.contains("RBAC_PERMISSION_DENIED"));
+        let calls = server.methods.lock().unwrap().clone();
+        assert!(
+            !calls.iter().any(|m| matches!(
+                m.as_str(),
+                "VDI.create" | "VBD.create" | "VM.set_name_label" | "VM.set_name_description"
+            )),
+            "{calls:?}"
+        );
+        connection.close().await;
+    }
+}
+#[tokio::test]
+async fn missing_logging_apply_permission_prevents_changing_the_destination() {
+    use xenadmin_core::{HostId, HostOperation, ResourceCommand, ResourceTarget};
+    let server =
+        mock_overridden(override_rpc(|request| async move {
+            (request["method"] == "session.get_record").then(|| RpcReply::Json(json!({"result": {
+            "is_local_superuser":false,"rbac_permissions":["session.logout","host.set_logging"]
+        }})))
+        }))
+        .await;
+    let (_directory, _backend, connection) = ready(&server).await;
+    let snapshot = connection.latest();
+    let host = snapshot
+        .observe_resource(ResourceTarget::Host(
+            HostId::parse("22222222-2222-2222-2222-222222222222").unwrap(),
+        ))
+        .unwrap();
+    let operation = connection
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::Host {
+                target: host,
+                operation: HostOperation::SetSyslog {
+                    expected_destination: None,
+                    destination: Some("logs.example.test".into()),
+                },
+            },
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if operation.latest().state.terminal() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(operation.latest().state, OperationState::Rejected);
+    assert!(operation.latest().detail.contains("RBAC_PERMISSION_DENIED"));
+    let calls = server.methods.lock().unwrap().clone();
+    assert!(
+        !calls
+            .iter()
+            .any(|m| m == "host.set_logging" || m == "host.syslog_reconfigure")
+    );
+    connection.close().await;
+}

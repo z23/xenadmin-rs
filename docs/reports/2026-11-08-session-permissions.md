@@ -32,7 +32,10 @@ Direct HTTP transfer/console permissions also remain server-enforced; they are n
 from an unrelated RPC permission. No raw session reference, subject SID or server error
 context is exposed by the new projection.
 
-## Current UI boundary
+## UI boundary at this checkpoint
+
+The later [review-requirements increment](2026-11-08-permission-reviews.md) adds upfront
+checks to the ordinary administration reviews described below.
 
 Single and bulk VM power have upfront known-denial controls. Other ordinary RPC workflows
 receive the central backend guard and retain their existing step failure/partial/unknown

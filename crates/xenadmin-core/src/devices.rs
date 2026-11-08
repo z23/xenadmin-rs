@@ -82,6 +82,42 @@ pub enum DeviceOperation {
 }
 
 impl DeviceOperation {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        use DeviceOperation::*;
+        let methods: &[&str] = match self {
+            Property { change } => return crate::device_lifecycle::property_requirements(change),
+            CreateDisk { .. } => &["VDI.create", "VBD.create"],
+            AttachDisk { .. } | AddCdDrive { .. } => &["VBD.create"],
+            DetachDisk { .. } => &["VBD.destroy"],
+            DeleteDisk { .. } => &["VBD.destroy", "VDI.destroy"],
+            AddNic { .. } => &["VIF.create"],
+            DeleteNic { .. } => &["VIF.destroy"],
+            EditNic {
+                expected_mac,
+                mac,
+                expected_network,
+                network,
+                ..
+            } => {
+                if !expected_mac.eq_ignore_ascii_case(mac) {
+                    &["VIF.destroy", "VIF.create"]
+                } else if expected_network != network {
+                    &["VIF.move"]
+                } else {
+                    &[]
+                }
+            }
+            InsertCd { .. } => &["VBD.insert"],
+            EjectCd { .. } => &["VBD.eject"],
+            PlugDisk { .. } => &["VBD.plug"],
+            UnplugDisk { .. } => &["VBD.unplug"],
+            PlugNic { .. } => &["VIF.plug"],
+            UnplugNic { .. } => &["VIF.unplug"],
+            GrowDisk { .. } => &["VDI.resize"],
+        };
+        crate::PermissionRequirements::writes(methods)
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Property { change } => change.label(),

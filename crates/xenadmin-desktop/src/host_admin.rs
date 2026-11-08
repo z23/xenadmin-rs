@@ -419,6 +419,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     if w.review.is_some() && !s.demo && !current(s, w) {
         body=body.child(caption("The connection, host or prerequisites changed. Close and reopen this review before applying it.",k).wrap());
     }
+    let permission = w
+        .review
+        .as_ref()
+        .map(|op| crate::session_permissions_view::assess(s, &op.permission_requirements()));
+
     let mut controls = row().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Close")
             .variant(ButtonVariant::Ghost)
@@ -445,7 +450,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             controls.child(
                 Button::new("Confirm host change")
                     .variant(ButtonVariant::Danger)
-                    .disabled(!current(s, w))
+                    .disabled(
+                        !current(s, w)
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied()),
+                    )
                     .on_press(submit)
                     .build(k)
                     .key("host-confirm"),
@@ -478,7 +488,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(controls),
+                .child(crate::session_permissions_view::footer(
+                    controls,
+                    permission.as_ref(),
+                    (s.window_width - 32.0).clamp(280.0, 680.0) - 40.0,
+                    k,
+                )),
         )
 }
 

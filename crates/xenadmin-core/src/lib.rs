@@ -2,7 +2,10 @@ mod permissions;
 mod root_password;
 pub use root_password::{PoolRootPasswordChange, RootPassword, RootPasswordEvidence};
 mod power_batch;
-pub use permissions::{PermissionDecision, PermissionUnknown, SessionPermissions};
+pub use permissions::{
+    PermissionAssessment, PermissionDecision, PermissionRequirements, PermissionUnknown,
+    SessionPermissions,
+};
 pub use power_batch::{BatchVmPower, VmPowerBatch};
 mod host_power;
 pub use host_power::{

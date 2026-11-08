@@ -326,6 +326,44 @@ fn current(s: &State, editor: &Editor) -> bool {
                 .as_ref()
                 .and_then(|snapshot| snapshot.observe_resource(editor.target).ok())
 }
+fn permission_review(s: &State, editor: &Editor) -> Option<xenadmin_core::PermissionAssessment> {
+    use xenadmin_core::ResourceAction as Action;
+    let review = editor.review.as_ref()?;
+    let action = match editor.kind {
+        Kind::Rename => Action::RenameMetadata {
+            expected_name: editor.expected_name.clone(),
+            expected_description: editor.expected_description.clone(),
+            name: review.name.clone(),
+            description: review.description.clone(),
+        },
+        Kind::CreateNetwork => Action::CreateInternalNetwork {
+            name: review.name.clone(),
+            description: review.description.clone(),
+            mtu: review.mtu,
+        },
+        Kind::Mtu => Action::ConfigureInternalNetwork {
+            expected_mtu: editor.expected_mtu?,
+            mtu: review.mtu,
+        },
+        Kind::DeleteNetwork => Action::DeleteInternalNetwork {
+            expected_name: editor.expected_name.clone(),
+        },
+        Kind::ScanStorage => Action::ScanStorage,
+        Kind::HostEnabled(enabled) => Action::SetHostEnabled {
+            expected_enabled: editor.expected_enabled?,
+            enabled,
+        },
+        Kind::DefaultStorage => Action::SetDefaultStorage {
+            sr: review.sr?,
+            expected_default: editor.expected_default,
+        },
+        Kind::History | Kind::Acknowledge(_) => return None,
+    };
+    Some(crate::session_permissions_view::assess(
+        s,
+        &action.permission_requirements(editor.target),
+    ))
+}
 fn submit(s: &mut State) {
     let result = (|| {
         let editor = s
@@ -334,6 +372,9 @@ fn submit(s: &mut State) {
             .ok_or(xenadmin_core::Error::Stale)?;
         if !current(s, editor) {
             return Err(xenadmin_core::Error::Stale);
+        }
+        if permission_review(s, editor).is_some_and(|p| p.decision().is_denied()) {
+            return Err(xenadmin_core::Error::Api("RBAC_PERMISSION_DENIED".into()));
         }
         let target = editor.observed.ok_or(xenadmin_core::Error::Stale)?;
         let review = editor.review.as_ref().ok_or(xenadmin_core::Error::Stale)?;
@@ -817,6 +858,8 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .on_press(|s: &mut State| s.resource_editor = None)
         .build(k),
     );
+    let permission = permission_review(s, editor);
+
     if editor.review.is_some() {
         controls = controls
             .child(
@@ -836,7 +879,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     } else {
                         ButtonVariant::Outline
                     })
-                    .disabled(!current(s, editor))
+                    .disabled(
+                        !current(s, editor)
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied()),
+                    )
                     .on_press(submit)
                     .build(k)
                     .key("resource-confirm"),
@@ -871,7 +919,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(controls),
+                .child(crate::session_permissions_view::footer(
+                    controls,
+                    permission.as_ref(),
+                    width - 40.0,
+                    k,
+                )),
         )
 }
 

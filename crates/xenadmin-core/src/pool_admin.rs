@@ -75,6 +75,15 @@ pub enum PoolOperation {
     RotateSecret,
 }
 impl PoolOperation {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        let required = crate::PermissionRequirements::writes([self.method()]);
+        if matches!(self, Self::Join { .. }) {
+            required.with_host_dependent_steps()
+        } else {
+            required
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Join { .. } => "Join destination pool",

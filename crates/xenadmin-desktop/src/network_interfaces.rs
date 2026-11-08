@@ -318,10 +318,15 @@ mod tests {
                 runtime.frame(1.0 / 60.0);
             }
             let (x, y) = runtime.find("network-review").unwrap();
-            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            assert!(
+                x > 0.0 && x < size.0 && y > 0.0 && y < size.1,
+                "confirm outside {size:?}: ({x}, {y})"
+            );
             runtime.pointer_down(x, y);
             runtime.pointer_up(x, y);
-            runtime.frame(0.0);
+            for _ in 0..30 {
+                runtime.frame(1.0 / 60.0);
+            }
             let review = runtime
                 .state
                 .network_workspace
@@ -336,7 +341,10 @@ mod tests {
             );
             assert!(review.lines.iter().any(|s| s.contains("DNS is shared")));
             let (x, y) = runtime.find("network-confirm").unwrap();
-            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            assert!(
+                x > 0.0 && x < size.0 && y > 0.0 && y < size.1,
+                "confirm outside {size:?}: ({x}, {y})"
+            );
             runtime.pointer_down(x, y);
             runtime.pointer_up(x, y);
             runtime.frame(0.0);

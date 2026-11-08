@@ -25,6 +25,49 @@ pub(super) fn notice(permission: PermissionDecision, k: &Kit) -> El {
         .key("session-permission-explanation")
 }
 
+pub(super) fn assess(
+    s: &State,
+    requirements: &xenadmin_core::PermissionRequirements,
+) -> xenadmin_core::PermissionAssessment {
+    requirements.assess(
+        &s.snapshot
+            .as_ref()
+            .map(|s| s.session_permissions())
+            .unwrap_or_default(),
+    )
+}
+pub(super) fn review_notice(assessment: &xenadmin_core::PermissionAssessment, k: &Kit) -> El {
+    caption(assessment.explanation(), k)
+        .wrap()
+        .role("status")
+        .key("review-permission-explanation")
+}
+pub(super) fn footer(
+    controls: El,
+    permission: Option<&xenadmin_core::PermissionAssessment>,
+    width: f32,
+    k: &Kit,
+) -> El {
+    if let Some(permission) = permission {
+        col()
+            .w(width)
+            .gap(8.0)
+            .child(review_notice(permission, k).w(width))
+            .child(controls.w(width).flex_wrap())
+    } else {
+        controls
+    }
+}
+pub(super) fn check(s: &mut State, requirements: &xenadmin_core::PermissionRequirements) -> bool {
+    let assessment = assess(s, requirements);
+    if assessment.decision().is_denied() {
+        s.error = Some(assessment.explanation());
+        false
+    } else {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +145,75 @@ mod tests {
         r.pointer_up(x, y);
         r.frame(0.0);
         assert!(r.state.error.is_none());
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    fn storage(s: &mut State) {
+        crate::storage_view::scene(s, true);
+    }
+    fn pool(s: &mut State) {
+        crate::pool_view::scene(s, true);
+    }
+    fn resource(s: &mut State) {
+        crate::resource_admin::scene(s, false);
+    }
+    #[test]
+    fn review_permission_notice_is_reachable_without_bypassing_synthetic_target_guard() {
+        for scene in [
+            storage as fn(&mut State),
+            pool,
+            resource,
+            crate::host_admin::scene,
+        ] {
+            for size in [(1440.0, 900.0), (513.0, 652.0)] {
+                let mut s = init();
+                scene(&mut s);
+                s.window_width = size.0;
+                s.window_height = size.1;
+                let mut runtime = rune::Runtime::new(
+                    s,
+                    crate::view,
+                    size,
+                    rune::Env {
+                        system_dark: true,
+                        scale: 1.0,
+                    },
+                );
+                runtime.frame(0.0);
+                runtime.update(|_, tx| tx.scroll_into_view("review-permission-explanation"));
+                for _ in 0..30 {
+                    runtime.frame(1.0 / 60.0);
+                }
+                let (x, y) = runtime
+                    .find("review-permission-explanation")
+                    .expect("captured review must explain permission discovery");
+                assert!(
+                    (0.0..=size.0).contains(&x) && (0.0..=size.1).contains(&y),
+                    "notice is outside {size:?}: {x},{y}"
+                );
+                let key = [
+                    "storage-confirm",
+                    "pool-confirm",
+                    "resource-confirm",
+                    "host-confirm",
+                ]
+                .into_iter()
+                .find(|key| runtime.find(key).is_some())
+                .unwrap();
+                runtime.update(|_, tx| tx.scroll_into_view(key));
+                for _ in 0..30 {
+                    runtime.frame(1.0 / 60.0);
+                }
+                let (x, y) = runtime.find(key).unwrap();
+                runtime.pointer_down(x, y);
+                runtime.pointer_up(x, y);
+                runtime.frame(0.0);
+                assert!(runtime.state.resource_operations.is_empty());
+                assert!(runtime.state.error.is_none());
+            }
+        }
     }
 }

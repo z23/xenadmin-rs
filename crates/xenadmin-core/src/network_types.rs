@@ -231,6 +231,32 @@ pub enum NetworkOperation {
     },
 }
 impl NetworkOperation {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        crate::PermissionRequirements::writes([self.method()])
+    }
+    pub(crate) fn method(&self) -> &'static str {
+        match self {
+            NetworkOperation::ConfigureIpv6 { .. } => "Async.PIF.reconfigure_ipv6",
+            NetworkOperation::SetInterfacePurpose { .. } => "Async.PIF.set_other_config",
+            NetworkOperation::SetUnplugProtection { .. } => "Async.PIF.set_disallow_unplug",
+            NetworkOperation::ScanInterfaces => "Async.PIF.scan",
+            NetworkOperation::SetAttached { attached: true, .. } => "Async.PIF.plug",
+            NetworkOperation::SetAttached {
+                attached: false, ..
+            } => "Async.PIF.unplug",
+            NetworkOperation::CreateVlan { .. } => "Async.VLAN.create",
+            NetworkOperation::DeleteVlan { .. } => "Async.VLAN.destroy",
+            NetworkOperation::CreateBond { .. } => "Async.Bond.create",
+            NetworkOperation::DeleteBond { .. } => "Async.Bond.destroy",
+            NetworkOperation::SetBondMode { .. } => "Async.Bond.set_mode",
+            NetworkOperation::SetBondHash { .. } => "Async.Bond.set_property",
+            NetworkOperation::SetAutomaticAttachment { .. } => "Async.network.set_other_config",
+            NetworkOperation::SetMtu { .. } => "Async.network.set_MTU",
+            NetworkOperation::SetIgmpSnooping { .. } => "Async.pool.set_igmp_snooping_enabled",
+            NetworkOperation::ConfigureIpv4 { .. } => "Async.PIF.reconfigure_ip",
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::ConfigureIpv6 { .. } => "Configure host IPv6 interface",

@@ -1051,3 +1051,9 @@ pub(crate) async fn verify_step(
         _ => Err(Error::InvalidDeviceOperation),
     }
 }
+
+pub(crate) fn property_requirements(
+    change: &crate::DeviceProperty,
+) -> crate::PermissionRequirements {
+    properties::requirements(change)
+}

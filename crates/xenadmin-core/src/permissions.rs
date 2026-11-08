@@ -11,6 +11,7 @@ pub enum PermissionUnknown {
     InvalidResponse,
     Unavailable,
     KeyDependent,
+    WorkflowDependent,
 }
 impl PermissionUnknown {
     pub fn explanation(self) -> &'static str {
@@ -29,6 +30,9 @@ impl PermissionUnknown {
             }
             Self::Unavailable => {
                 "Session permission discovery was unavailable; the host will check authorization"
+            }
+            Self::WorkflowDependent => {
+                "Some required permissions depend on fresh host data; the host will check them before each request"
             }
             Self::KeyDependent => {
                 "Authorization for this map change depends on protected keys and will be checked by the host"
@@ -56,6 +60,87 @@ impl PermissionDecision {
                 "The current session does not grant permission for this action. Reconnect as an authorized user to change session permissions"
             }
             Self::Unknown(reason) => reason.explanation(),
+        }
+    }
+}
+
+/// Write permissions provable from an immutable reviewed change. Read prerequisites,
+/// host state and server-side authorization remain independent checks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionRequirements {
+    methods: BTreeSet<String>,
+    conditional: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PermissionAssessment {
+    decision: PermissionDecision,
+    denied_methods: Vec<String>,
+}
+impl PermissionAssessment {
+    pub fn decision(&self) -> PermissionDecision {
+        self.decision
+    }
+    pub fn denied_methods(&self) -> &[String] {
+        &self.denied_methods
+    }
+    pub fn explanation(&self) -> String {
+        if self.decision.is_denied() {
+            format!(
+                "The current session lacks required write permissions: {}. No steps will be submitted. Reconnect as an authorized user to change session permissions.",
+                self.denied_methods.join(", ")
+            )
+        } else if self.decision == PermissionDecision::Granted {
+            "The session grants the required write permissions. Fresh object checks, read permissions and host restrictions still apply.".into()
+        } else {
+            self.decision.explanation().into()
+        }
+    }
+}
+impl PermissionRequirements {
+    pub(crate) fn writes<I, S>(methods: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            methods: methods.into_iter().map(|m| m.as_ref().to_owned()).collect(),
+            conditional: false,
+        }
+    }
+    pub fn with_host_dependent_steps(mut self) -> Self {
+        self.conditional = true;
+        self
+    }
+    pub fn methods(&self) -> impl Iterator<Item = &str> {
+        self.methods.iter().map(String::as_str)
+    }
+    pub fn assess(&self, permissions: &SessionPermissions) -> PermissionAssessment {
+        let mut unknown = (self.conditional || self.methods.is_empty())
+            .then_some(PermissionUnknown::WorkflowDependent);
+        let mut denied_methods = Vec::new();
+        for method in &self.methods {
+            match permissions.method(method) {
+                PermissionDecision::Denied => denied_methods.push(method.clone()),
+                PermissionDecision::Unknown(reason) => unknown = Some(reason),
+                PermissionDecision::Granted => (),
+            }
+        }
+        PermissionAssessment {
+            decision: if !denied_methods.is_empty() {
+                PermissionDecision::Denied
+            } else if let Some(reason) = unknown {
+                PermissionDecision::Unknown(reason)
+            } else {
+                PermissionDecision::Granted
+            },
+            denied_methods,
+        }
+    }
+    pub(crate) fn guard(&self, permissions: &SessionPermissions) -> Result<(), Error> {
+        if self.assess(permissions).decision.is_denied() {
+            Err(Error::Api("RBAC_PERMISSION_DENIED".into()))
+        } else {
+            Ok(())
         }
     }
 }
@@ -238,5 +323,141 @@ mod tests {
         assert_eq!(denied.power(PowerAction::Start), PermissionDecision::Denied);
         let root = SessionPermissions::decode(&json!({"is_local_superuser":true}));
         assert_eq!(root.power(PowerAction::Start), PermissionDecision::Granted);
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::{DeviceOperation, DeviceProperty, DeviceQos, HostOperation};
+    use serde_json::json;
+    fn authority(methods: &[&str]) -> SessionPermissions {
+        SessionPermissions::decode(&json!({"is_local_superuser":false,"rbac_permissions":methods}))
+    }
+    #[test]
+    fn known_denial_wins_over_unresolved_key_or_workflow_checks() {
+        let requirements =
+            PermissionRequirements::writes(["VM.add_to_other_config", "VDI.destroy"])
+                .with_host_dependent_steps();
+        let assessment = requirements.assess(&authority(&[]));
+        assert_eq!(assessment.decision(), PermissionDecision::Denied);
+        assert_eq!(assessment.denied_methods(), &["VDI.destroy"]);
+        assert!(
+            assessment
+                .explanation()
+                .contains("No steps will be submitted")
+        );
+        assert!(matches!(
+            requirements.assess(&authority(&["vdi.destroy"])).decision(),
+            PermissionDecision::Unknown(_)
+        ));
+        assert!(matches!(
+            requirements
+                .assess(&SessionPermissions::default())
+                .decision(),
+            PermissionDecision::Unknown(_)
+        ));
+    }
+    #[test]
+    fn nic_move_does_not_require_replacement_and_replacement_checks_create_before_destroy() {
+        let id = uuid::Uuid::from_u128(1);
+        let mut operation = DeviceOperation::EditNic {
+            vif: id.into(),
+            expected_network: id.into(),
+            expected_mac: "02:00:00:00:00:aa".into(),
+            network: uuid::Uuid::from_u128(2).into(),
+            mac: "02:00:00:00:00:AA".into(),
+        };
+        assert_eq!(
+            operation
+                .permission_requirements()
+                .assess(&authority(&["vif.move"]))
+                .decision(),
+            PermissionDecision::Granted
+        );
+        if let DeviceOperation::EditNic { mac, .. } = &mut operation {
+            *mac = "02:00:00:00:00:bb".into();
+        }
+        let denied = operation
+            .permission_requirements()
+            .assess(&authority(&["vif.destroy"]));
+        assert_eq!(denied.denied_methods(), &["VIF.create"]);
+    }
+    #[test]
+    fn unchanged_metadata_and_qos_fields_never_require_their_setter() {
+        let id = uuid::Uuid::from_u128(1);
+        let op = DeviceOperation::Property {
+            change: DeviceProperty::DiskMetadata {
+                vbd: id.into(),
+                vdi: id.into(),
+                previous_name: "old".into(),
+                name: "new".into(),
+                previous_description: "retained".into(),
+                description: "retained".into(),
+            },
+        };
+        assert_eq!(
+            op.permission_requirements()
+                .assess(&authority(&["vdi.set_name_label"]))
+                .decision(),
+            PermissionDecision::Granted
+        );
+        let op = DeviceOperation::Property {
+            change: DeviceProperty::NicRate {
+                vif: id.into(),
+                previous: DeviceQos {
+                    algorithm: "ratelimit".into(),
+                    parameters: std::collections::BTreeMap::from([("kbps".into(), "1024".into())]),
+                },
+                kilobytes_per_second: None,
+            },
+        };
+        assert_eq!(
+            op.permission_requirements()
+                .assess(&authority(&["vif.set_qos_algorithm_type"]))
+                .decision(),
+            PermissionDecision::Granted
+        );
+    }
+    #[test]
+    fn maintenance_checks_only_steps_captured_in_review_and_settings_share_dispatch_plan() {
+        let op = HostOperation::EnterMaintenance {
+            expected_enabled: false,
+            resident_vms: vec![],
+        };
+        assert_eq!(
+            op.permission_requirements()
+                .assess(&authority(&["host.set_other_config"]))
+                .decision(),
+            PermissionDecision::Granted
+        );
+        let op = HostOperation::EnterMaintenance {
+            expected_enabled: true,
+            resident_vms: vec![uuid::Uuid::from_u128(1).into()],
+        };
+        assert_eq!(
+            op.permission_requirements()
+                .assess(&authority(&["host.set_other_config"]))
+                .denied_methods(),
+            &["Async.host.disable", "Async.host.evacuate"]
+        );
+        let patch = crate::VmSettingsPatch::new(vec![
+            crate::VmSettingEdit::Name {
+                previous: "old".into(),
+                value: "new".into(),
+            },
+            crate::VmSettingEdit::Description {
+                previous: "old".into(),
+                value: "new".into(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            patch
+                .permission_requirements()
+                .assess(&authority(&["vm.set_name_label"]))
+                .denied_methods(),
+            &["VM.set_name_description"]
+        );
     }
 }

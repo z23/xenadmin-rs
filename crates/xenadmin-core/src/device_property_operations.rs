@@ -34,6 +34,22 @@ pub(crate) struct PropertyStep {
     value: Value,
     guard: Option<Value>,
 }
+impl PropertyStep {
+    fn method(&self) -> &'static str {
+        match (self.field, matches!(self.change, Change::NicRate { .. })) {
+            (Field::Name, _) => "VDI.set_name_label",
+            (Field::Description, _) => "VDI.set_name_description",
+            (Field::Access, _) => "VBD.set_mode",
+            (Field::Position, _) => "VBD.set_userdevice",
+            (Field::Bootable, _) => "VBD.set_bootable",
+            (Field::QosParameters, true) => "VIF.set_qos_algorithm_params",
+            (Field::QosAlgorithm, true) => "VIF.set_qos_algorithm_type",
+            (Field::QosParameters, false) => "VBD.set_qos_algorithm_params",
+            (Field::QosAlgorithm, false) => "VBD.set_qos_algorithm_type",
+            (Field::Cbt, _) => "VDI.disable_cbt",
+        }
+    }
+}
 pub(super) fn availability(change: &Change, inventory: &Inventory, vm: VmId) -> ActionAvailability {
     let Some(guest) = inventory.vms.get(&vm) else {
         return ActionAvailability::Stale;
@@ -178,10 +194,7 @@ fn supported(record: &Value, algorithm: &str) -> Result<(), Error> {
     }
     Ok(())
 }
-pub(super) async fn plan(session: &Session, vm: VmId, change: &Change) -> Result<Plan, Error> {
-    change.validate()?;
-    let current = current(session, vm, change, false).await?;
-    let (_, record) = subject(&current, change);
+fn reviewed_steps(change: &Change) -> Vec<Step> {
     let mut steps = Vec::new();
     let mut add = |field, previous: Value, value: Value, guard| {
         if previous != value {
@@ -225,17 +238,12 @@ pub(super) async fn plan(session: &Session, vm: VmId, change: &Change) -> Result
             previous, value, ..
         } => add(Field::Bootable, json!(previous), json!(value), None),
         Change::DisableCbt { .. } => {
-            permits(record, "disable_cbt")?;
             add(Field::Cbt, json!(true), json!(false), None);
         }
         Change::DiskPriority {
             previous, priority, ..
         } => {
-            if qos(record)? != *previous {
-                return Err(Error::DeviceConflict);
-            }
             let algorithm = if priority.is_some() { "ionice" } else { "" };
-            supported(record, algorithm)?;
             let mut params = previous.parameters.clone();
             if let Some(priority) = priority {
                 params.insert("class".into(), priority.to_string());
@@ -259,15 +267,11 @@ pub(super) async fn plan(session: &Session, vm: VmId, change: &Change) -> Result
             kilobytes_per_second,
             ..
         } => {
-            if qos(record)? != *previous {
-                return Err(Error::DeviceConflict);
-            }
             let algorithm = if kilobytes_per_second.is_some() {
                 "ratelimit"
             } else {
                 ""
             };
-            supported(record, algorithm)?;
             let mut params = previous.parameters.clone();
             if let Some(value) = kilobytes_per_second {
                 params.insert("kbps".into(), value.to_string());
@@ -286,6 +290,52 @@ pub(super) async fn plan(session: &Session, vm: VmId, change: &Change) -> Result
             );
         }
     }
+    steps
+}
+
+pub(super) fn requirements(change: &Change) -> crate::PermissionRequirements {
+    crate::PermissionRequirements::writes(reviewed_steps(change).iter().map(|step| {
+        let Step::Property(step) = step else {
+            unreachable!()
+        };
+        step.method()
+    }))
+}
+
+pub(super) async fn plan(session: &Session, vm: VmId, change: &Change) -> Result<Plan, Error> {
+    change.validate()?;
+    let current = current(session, vm, change, false).await?;
+    let (_, record) = subject(&current, change);
+    match change {
+        Change::DisableCbt { .. } => permits(record, "disable_cbt")?,
+        Change::DiskPriority {
+            previous, priority, ..
+        } => {
+            if qos(record)? != *previous {
+                return Err(Error::DeviceConflict);
+            }
+            supported(record, if priority.is_some() { "ionice" } else { "" })?;
+        }
+        Change::NicRate {
+            previous,
+            kilobytes_per_second,
+            ..
+        } => {
+            if qos(record)? != *previous {
+                return Err(Error::DeviceConflict);
+            }
+            supported(
+                record,
+                if kilobytes_per_second.is_some() {
+                    "ratelimit"
+                } else {
+                    ""
+                },
+            )?;
+        }
+        _ => (),
+    }
+    let steps = reviewed_steps(change);
     if steps.is_empty() {
         return Err(Error::InvalidDeviceConfiguration);
     }
@@ -342,18 +392,7 @@ pub(super) async fn prepare(
     if step.field == Field::QosAlgorithm {
         supported(record, step.value.as_str().ok_or(Error::DeviceConflict)?)?;
     }
-    let method = match (step.field, matches!(step.change, Change::NicRate { .. })) {
-        (Field::Name, _) => "VDI.set_name_label",
-        (Field::Description, _) => "VDI.set_name_description",
-        (Field::Access, _) => "VBD.set_mode",
-        (Field::Position, _) => "VBD.set_userdevice",
-        (Field::Bootable, _) => "VBD.set_bootable",
-        (Field::QosParameters, true) => "VIF.set_qos_algorithm_params",
-        (Field::QosAlgorithm, true) => "VIF.set_qos_algorithm_type",
-        (Field::QosParameters, false) => "VBD.set_qos_algorithm_params",
-        (Field::QosAlgorithm, false) => "VBD.set_qos_algorithm_type",
-        (Field::Cbt, _) => "VDI.disable_cbt",
-    };
+    let method = step.method();
     let mut parameters = vec![json!(reference)];
     if step.field != Field::Cbt {
         parameters.push(step.value.clone());

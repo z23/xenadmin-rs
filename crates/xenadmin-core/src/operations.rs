@@ -1245,6 +1245,15 @@ impl MutationRequest {
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
         }
+        match &self.record.action {
+            OperationAction::Settings(patch) => patch
+                .permission_requirements()
+                .guard(session.permissions())?,
+            OperationAction::Device(operation) => operation
+                .permission_requirements()
+                .guard(session.permissions())?,
+            _ => (),
+        }
         if matches!(
             &self.record.action,
             OperationAction::Snapshot(SnapshotOperation::Workflow { .. })

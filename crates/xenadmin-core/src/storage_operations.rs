@@ -223,19 +223,7 @@ pub(super) async fn prepare(
     if op.creates_reference() {
         record.storage_baseline = Some(baseline(session).await?);
     }
-    let method = match &op {
-        StorageOperation::Trim { .. } => "Async.host.call_plugin",
-        StorageOperation::Create { .. } => "Async.SR.create",
-        StorageOperation::Introduce { .. } => "Async.SR.introduce",
-        StorageOperation::CreateAttachment { .. } => "Async.PBD.create",
-        StorageOperation::SetAttached { attached: true, .. } => "Async.PBD.plug",
-        StorageOperation::SetAttached {
-            attached: false, ..
-        } => "Async.PBD.unplug",
-        StorageOperation::RemoveAttachment { .. } => "Async.PBD.destroy",
-        StorageOperation::Forget { .. } => "Async.SR.forget",
-        StorageOperation::Destroy { .. } => "Async.SR.destroy",
-    };
+    let method = op.method();
     // Run the same fresh admission checks again immediately before dispatch.
     arguments(session, record).await?;
     Ok(vec![Step {

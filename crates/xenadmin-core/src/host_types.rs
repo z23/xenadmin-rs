@@ -63,6 +63,10 @@ pub enum HostOperation {
     },
 }
 impl HostOperation {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        crate::resources::host::requirements(self)
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::EnterMaintenance { .. } => "Enter host maintenance",

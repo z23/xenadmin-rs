@@ -963,6 +963,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .build(k),
         );
     }
+    let permission = w.review.as_ref().map(|review| {
+        crate::session_permissions_view::assess(
+            s,
+            &review.operation.permission_requirements(review.target),
+        )
+    });
+
     if w.review.is_some() {
         footer = footer
             .child(
@@ -975,6 +982,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .disabled(
                         !s.can_mutate()
                             || topology::review_unavailable(s, w).is_some()
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied())
                             || w.review
                                 .as_ref()
                                 .and_then(|r| r.observed)
@@ -1021,7 +1031,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(footer),
+                .child(crate::session_permissions_view::footer(
+                    footer,
+                    permission.as_ref(),
+                    (s.window_width - 32.0).clamp(280.0, 760.0) - 40.0,
+                    k,
+                )),
         )
 }
 pub(super) fn scene(s: &mut State) {
@@ -1124,17 +1139,27 @@ mod tests {
                 runtime.frame(1.0 / 60.0);
             }
             let (x, y) = runtime.find("network-review").unwrap();
-            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            assert!(
+                x > 0.0 && x < size.0 && y > 0.0 && y < size.1,
+                "confirm outside {size:?}: ({x}, {y}); state width {}",
+                runtime.state.window_width
+            );
             runtime.pointer_down(x, y);
             runtime.pointer_up(x, y);
-            runtime.frame(0.0);
+            for _ in 0..30 {
+                runtime.frame(1.0 / 60.0);
+            }
             let w = runtime.state.network_workspace.as_ref().unwrap();
             assert!(matches!(
                 w.review.as_ref().unwrap().operation,
                 xenadmin_core::ResourceAction::Network(NetworkOperation::SetMtu { mtu: 9000, .. })
             ));
             let (x, y) = runtime.find("network-confirm").unwrap();
-            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            assert!(
+                x > 0.0 && x < size.0 && y > 0.0 && y < size.1,
+                "confirm outside {size:?}: ({x}, {y}); state width {}",
+                runtime.state.window_width
+            );
             runtime.pointer_down(x, y);
             runtime.pointer_up(x, y);
             runtime.frame(0.0);

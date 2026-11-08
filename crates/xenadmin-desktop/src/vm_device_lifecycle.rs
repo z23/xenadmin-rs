@@ -487,6 +487,9 @@ fn apply(s: &mut State) {
         vm: target,
         operation: review.operation.clone(),
     };
+    if !crate::session_permissions_view::check(s, &command.operation.permission_requirements()) {
+        return;
+    }
     s.submit_command(xenadmin_core::VmCommand::Device(command));
     if s.error.is_none() {
         close(s);
@@ -772,6 +775,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
             .build(k)
             .key("cancel-device-lifecycle"),
     );
+    let permission = form.review.as_ref().map(|review| {
+        crate::session_permissions_view::assess(s, &review.operation.permission_requirements())
+    });
+    if let Some(permission) = &permission {
+        body = body.child(crate::session_permissions_view::review_notice(
+            permission, k,
+        ));
+    }
     if let Some(review) = &form.review {
         if !matches!(form.kind, Kind::Fixed(_)) {
             controls = controls.child(
@@ -799,6 +810,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
             })
             .disabled(
                 s.demo
+                    || permission
+                        .as_ref()
+                        .is_some_and(|p| p.decision().is_denied())
                     || !s.can_mutate()
                     || !target_current
                     || !eligible.is_some_and(|status| status.is_available()),

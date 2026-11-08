@@ -389,6 +389,9 @@ fn apply(s: &mut State) {
         vm: target,
         operation: operation(change),
     };
+    if !crate::session_permissions_view::check(s, &command.operation.permission_requirements()) {
+        return;
+    }
     s.submit_command(xenadmin_core::VmCommand::Device(command));
     if s.error.is_none() {
         close(s);
@@ -587,6 +590,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
                 .key("property-back"),
         );
         if let Some(change) = &f.review {
+            let permission = crate::session_permissions_view::assess(
+                s,
+                &operation(change).permission_requirements(),
+            );
+            body = body.child(crate::session_permissions_view::review_notice(
+                &permission,
+                k,
+            ));
             let allowed = s
                 .inventory
                 .as_ref()
@@ -598,7 +609,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
                     } else {
                         ButtonVariant::Outline
                     })
-                    .disabled(s.demo || !s.can_mutate() || !valid || !allowed)
+                    .disabled(
+                        s.demo
+                            || !s.can_mutate()
+                            || !valid
+                            || !allowed
+                            || permission.decision().is_denied(),
+                    )
                     .on_press(apply)
                     .build(k)
                     .key("property-apply"),
