@@ -170,7 +170,10 @@ impl ResourceRequest {
             self.record.detail = format!("Submitting {}", step.label);
             self.save(journal).await?;
             let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call(&step.method,arguments)=>result?};
-            if matches!(step.check, xapi::Check::Scan | xapi::Check::Network) {
+            if matches!(
+                step.check,
+                xapi::Check::Scan | xapi::Check::Network | xapi::Check::Storage
+            ) {
                 self.record.task = Some(xapi::reply_reference(&value)?);
                 self.record = journal.resource_evidence(&self.record)?;
                 self.announce().await;
@@ -230,7 +233,7 @@ impl ResourceRequest {
             }
             return self.track_cancellation(journal, session, cancel).await;
         }
-        if self.record.task.is_some() {
+        if self.record.task.is_some() && !self.record.storage_trim_succeeded {
             return self.track(journal, session, cancel).await;
         }
         if matches!(
@@ -398,6 +401,45 @@ impl ResourceRequest {
                             return Ok(());
                         }
                         self.record.created = created;
+                    }
+                    if let super::ResourceAction::Storage(operation) = &self.record.action {
+                        if matches!(operation, crate::StorageOperation::Trim { .. }) {
+                            if !super::storage::trim_succeeded(&task)? {
+                                self.record.state = OperationState::Failed;
+                                self.record.detail = "The storage trim plugin reported failure; no backend error payload was retained".into();
+                                self.record.can_cancel = false;
+                                for step in &mut self.record.steps {
+                                    step.state = StepState::Failed;
+                                    step.detail = self.record.detail.clone();
+                                }
+                                self.save(journal).await?;
+                                let _ = tokio::time::timeout(
+                                    Duration::from_secs(5),
+                                    session.call("task.destroy", vec![json!(&reference)]),
+                                )
+                                .await;
+                                return Ok(());
+                            }
+                            self.record.storage_trim_succeeded = true;
+                        }
+                        if operation.creates_reference() && self.record.result_reference.is_none() {
+                            self.record.result_reference =
+                                Some(crate::xapi::snapshot_task_result(&task)?);
+                            self.record = journal.resource_evidence(&self.record)?;
+                            if self.record.state.terminal() {
+                                return Ok(());
+                            }
+                        }
+                        self.record.state = OperationState::Verifying;
+                        self.save(journal).await?;
+                        let created = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=xapi::verify(session,&self.record,&xapi::Check::Storage)=>result? };
+                        self.reload(journal)?;
+                        if self.record.state.terminal() {
+                            return Ok(());
+                        }
+                        if let Some(created) = created {
+                            self.record.created = Some(created);
+                        }
                     }
                     self.record.state = OperationState::Succeeded;
                     self.record.progress = Some(1.0);

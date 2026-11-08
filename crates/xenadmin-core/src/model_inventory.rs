@@ -248,8 +248,23 @@ pub struct PhysicalInterface {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StoragePathCount {
+    pub device: String,
+    pub active: u32,
+    pub maximum: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageAttachment {
     pub id: PbdId,
+    #[serde(default)]
+    pub location: Option<crate::StorageLocation>,
+    #[serde(default)]
+    pub requires_credentials: bool,
+    #[serde(default)]
+    pub multipathed: Option<bool>,
+    #[serde(default)]
+    pub paths: Vec<StoragePathCount>,
     pub host: Option<HostId>,
     pub sr: Option<SrId>,
     pub currently_attached: Option<bool>,

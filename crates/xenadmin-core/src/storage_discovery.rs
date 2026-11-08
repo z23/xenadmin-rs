@@ -1,0 +1,300 @@
+use crate::{Error, HostId, ObservedResource, SrId, StorageLocation, xapi::Session};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, sync::Arc};
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageBackend {
+    pub kind: String,
+    pub name: String,
+    pub features: Vec<String>,
+    pub configuration: BTreeMap<String, String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredRepository {
+    pub uuid: SrId,
+    pub name: String,
+    pub size_bytes: Option<u64>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StorageDiscoveryResult {
+    Backends(Vec<StorageBackend>),
+    Repositories(Vec<DiscoveredRepository>),
+}
+#[derive(Clone, Debug)]
+pub enum StorageQuery {
+    Backends,
+    Probe {
+        host: HostId,
+        location: StorageLocation,
+    },
+}
+impl StorageQuery {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if matches!(self, Self::Probe { location, .. } if !location.validate()) {
+            Err(Error::InvalidResourceCommand)
+        } else {
+            Ok(())
+        }
+    }
+}
+pub struct StorageDiscovery {
+    receiver: watch::Receiver<Option<Result<StorageDiscoveryResult, String>>>,
+    runtime: tokio::runtime::Handle,
+    cancel: CancellationToken,
+}
+impl StorageDiscovery {
+    pub fn latest(&self) -> Option<Result<StorageDiscoveryResult, String>> {
+        self.receiver.borrow().clone().or_else(|| {
+            self.receiver
+                .has_changed()
+                .is_err()
+                .then(|| Err(Error::Closed.to_string()))
+        })
+    }
+    pub fn notify_on_change(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        let mut receiver = self.receiver.clone();
+        self.runtime.spawn(async move {
+            if receiver.changed().await.is_ok() {
+                callback();
+            }
+        });
+    }
+}
+impl Drop for StorageDiscovery {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+pub(crate) struct DiscoveryRequest {
+    pub observed: ObservedResource,
+    query: StorageQuery,
+    sender: watch::Sender<Option<Result<StorageDiscoveryResult, String>>>,
+    cancel: CancellationToken,
+}
+pub(crate) fn channel(
+    observed: ObservedResource,
+    query: StorageQuery,
+    runtime: tokio::runtime::Handle,
+) -> (StorageDiscovery, DiscoveryRequest) {
+    let (sender, receiver) = watch::channel(None);
+    let cancel = CancellationToken::new();
+    (
+        StorageDiscovery {
+            receiver,
+            runtime,
+            cancel: cancel.clone(),
+        },
+        DiscoveryRequest {
+            observed,
+            query,
+            sender,
+            cancel,
+        },
+    )
+}
+impl DiscoveryRequest {
+    pub(crate) fn fail(self, error: Error) {
+        self.sender.send_replace(Some(Err(error.to_string())));
+    }
+    pub(crate) async fn run(
+        self,
+        session: Arc<Session>,
+        receiver: watch::Receiver<Arc<crate::ConnectionSnapshot>>,
+        generation: CancellationToken,
+    ) {
+        let result = tokio::select! {
+            _=self.cancel.cancelled()=>Err(Error::Closed),
+            _=generation.cancelled()=>Err(Error::Stale),
+            result=tokio::time::timeout(std::time::Duration::from_secs(45), self.query(&session))=>result.unwrap_or(Err(Error::Timeout)),
+        };
+        let current = receiver
+            .borrow()
+            .observe_resource(self.observed.target)
+            .is_ok_and(|observed| observed == self.observed);
+        self.sender.send_replace(Some(if current {
+            result.map_err(|e| e.to_string())
+        } else {
+            Err(Error::Stale.to_string())
+        }));
+    }
+    async fn query(&self, session: &Session) -> Result<StorageDiscoveryResult, Error> {
+        match &self.query {
+            StorageQuery::Backends => {
+                decode_backends(&session.call("SM.get_all_records", vec![]).await?)
+                    .map(StorageDiscoveryResult::Backends)
+            }
+            StorageQuery::Probe { host, location } => {
+                let backends = decode_backends(&session.call("SM.get_all_records", vec![]).await?)?;
+                if !backends.iter().any(|backend| {
+                    backend.kind == location.kind()
+                        && backend.features.iter().any(|f| f == "SR_PROBE")
+                }) {
+                    return Err(Error::UnavailableAction);
+                }
+                let host_ref = session
+                    .call("host.get_by_uuid", vec![json!(host.to_string())])
+                    .await?;
+                let host_ref = crate::xapi::opaque_reference(&host_ref)?;
+                let fresh = session
+                    .call("host.get_record", vec![json!(&host_ref)])
+                    .await?;
+                if fresh["uuid"] != host.to_string() {
+                    return Err(Error::Stale);
+                }
+                let result = session
+                    .call(
+                        "SR.probe",
+                        vec![
+                            json!(host_ref),
+                            location.device_config(),
+                            json!(location.kind()),
+                            json!({}),
+                        ],
+                    )
+                    .await?;
+                decode_repositories(
+                    result
+                        .as_str()
+                        .ok_or(Error::Protocol("invalid storage probe response"))?,
+                )
+                .map(StorageDiscoveryResult::Repositories)
+            }
+        }
+    }
+}
+fn clean(value: &str, limit: usize) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(limit)
+        .collect()
+}
+fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
+    let records = value
+        .as_object()
+        .filter(|r| r.len() <= 256)
+        .ok_or(Error::Protocol("invalid storage backend list"))?;
+    records
+        .values()
+        .map(|r| {
+            let kind = r["type"]
+                .as_str()
+                .filter(|s| {
+                    s.len() <= 128
+                        && s.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                })
+                .ok_or(Error::Protocol("invalid storage backend type"))?;
+            let mut features = r["capabilities"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(256)
+                .filter_map(Value::as_str)
+                .map(|s| clean(s, 128))
+                .collect::<Vec<_>>();
+            features.extend(
+                r["features"]
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|r| r.keys())
+                    .take(256)
+                    .map(|s| clean(s, 128)),
+            );
+            features.sort();
+            features.dedup();
+            let configuration = r["configuration"]
+                .as_object()
+                .into_iter()
+                .flat_map(|r| r.iter())
+                .take(128)
+                .filter_map(|(k, v)| Some((clean(k, 128), clean(v.as_str()?, 512))))
+                .collect();
+            Ok(StorageBackend {
+                kind: kind.into(),
+                name: clean(r["name_label"].as_str().unwrap_or(kind), 256),
+                features,
+                configuration,
+            })
+        })
+        .collect()
+}
+fn decode_repositories(xml: &str) -> Result<Vec<DiscoveredRepository>, Error> {
+    if xml.len() > 512 * 1024 {
+        return Err(Error::Protocol("storage probe exceeds size limit"));
+    }
+    let doc = roxmltree::Document::parse_with_options(
+        xml,
+        roxmltree::ParsingOptions {
+            allow_dtd: false,
+            nodes_limit: 16000,
+        },
+    )
+    .map_err(|_| Error::Protocol("invalid storage probe XML"))?;
+    if !matches!(doc.root_element().tag_name().name(), "SRlist" | "SRList") {
+        return Err(Error::Protocol("unsupported storage probe schema"));
+    }
+    let mut results = Vec::new();
+    for node in doc
+        .root_element()
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "SR")
+    {
+        if results.len() >= 1000 {
+            return Err(Error::Protocol("too many storage probe results"));
+        }
+        let text = |field: &str| {
+            node.children()
+                .find(|n| n.is_element() && n.tag_name().name().eq_ignore_ascii_case(field))
+                .and_then(|n| n.text())
+                .map(str::trim)
+        };
+        let uuid = text("uuid")
+            .and_then(|s| SrId::parse(s).ok())
+            .ok_or(Error::Protocol("storage probe UUID unavailable"))?;
+        if results
+            .iter()
+            .any(|r: &DiscoveredRepository| r.uuid == uuid)
+        {
+            return Err(Error::Protocol("duplicate storage probe UUID"));
+        }
+        let size_bytes = text("size")
+            .map(|s| {
+                s.parse()
+                    .map_err(|_| Error::Protocol("invalid storage probe size"))
+            })
+            .transpose()?;
+        results.push(DiscoveredRepository {
+            uuid,
+            name: clean(text("name_label").unwrap_or(""), 255),
+            size_bytes,
+        });
+    }
+    Ok(results)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn probe_decoder_is_bounded_and_projects_only_public_fields() {
+        let result=decode_repositories("<SRlist><SR><UUID>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa</UUID><name_label>disk</name_label><password>private</password><size>1024</size></SR></SRlist>").unwrap();
+        assert_eq!(result[0].size_bytes, Some(1024));
+        assert!(!serde_json::to_string(&result).unwrap().contains("private"));
+        for xml in [
+            "<!DOCTYPE a [<!ENTITY x 'private'>]><SRlist/>",
+            "<SRlist><SR><UUID>bad</UUID></SR></SRlist>",
+            "<unknown/>",
+        ] {
+            assert!(decode_repositories(xml).is_err());
+        }
+    }
+    #[test]
+    fn feature_union_is_bounded_and_does_not_project_device_secrets() {
+        let result=decode_backends(&json!({"OpaqueRef:sm":{"type":"nfs","features":{"SR_PROBE":"1"},"capabilities":["SR_PROBE","THIN_PROVISIONING"],"configuration":{"server":"Server name"},"device_config":{"password":"private"}}})).unwrap();
+        assert_eq!(result[0].features, vec!["SR_PROBE", "THIN_PROVISIONING"]);
+        assert!(!serde_json::to_string(&result).unwrap().contains("private"));
+    }
+}

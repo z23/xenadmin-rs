@@ -1,0 +1,592 @@
+use super::{
+    ResourceAction, ResourceOperationRecord, ResourceTarget,
+    xapi::{self, Check, Step},
+};
+use crate::{Error, PbdId, SrId, StorageOperation, VdiId, storage::StorageBaseline, xapi::Session};
+use serde_json::{Value, json};
+
+fn operation(record: &ResourceOperationRecord) -> Result<&StorageOperation, Error> {
+    match &record.action {
+        ResourceAction::Storage(op) => Ok(op),
+        _ => Err(Error::InvalidResourceCommand),
+    }
+}
+fn array<'a>(value: &'a Value, field: &str) -> Result<&'a Vec<Value>, Error> {
+    value[field]
+        .as_array()
+        .filter(|values| values.len() <= 10000)
+        .ok_or(Error::Protocol("storage relationship data unavailable"))
+}
+fn empty_current(value: &Value) -> Result<(), Error> {
+    match value["current_operations"].as_object() {
+        Some(ops) if ops.is_empty() => Ok(()),
+        _ => Err(Error::UnavailableAction),
+    }
+}
+fn allowed(value: &Value, action: &str) -> Result<(), Error> {
+    if array(value, "allowed_operations")?
+        .iter()
+        .any(|value| value == action)
+    {
+        Ok(())
+    } else {
+        Err(Error::UnavailableAction)
+    }
+}
+async fn by_ref(session: &Session, class: &str, reference: &Value) -> Result<Value, Error> {
+    let reference = xapi::reply_reference(reference)?;
+    session
+        .call(&format!("{class}.get_record"), vec![json!(reference)])
+        .await
+}
+pub(super) async fn capability(session: &Session, kind: &str, feature: &str) -> Result<(), Error> {
+    let records = session.call("SM.get_all_records", vec![]).await?;
+    let records = records
+        .as_object()
+        .filter(|r| r.len() <= 256)
+        .ok_or(Error::Protocol("storage capability data unavailable"))?;
+    let supported = records.values().filter(|r| r["type"] == kind).any(|r| {
+        feature.is_empty()
+            || r["features"]
+                .as_object()
+                .is_some_and(|f| f.contains_key(feature))
+            || r["capabilities"]
+                .as_array()
+                .is_some_and(|v| v.iter().any(|v| v == feature))
+    });
+    if supported {
+        Ok(())
+    } else {
+        Err(Error::UnavailableAction)
+    }
+}
+async fn baseline(session: &Session) -> Result<StorageBaseline, Error> {
+    let srs = session.call("SR.get_all_records", vec![]).await?;
+    let pbds = session.call("PBD.get_all_records", vec![]).await?;
+    fn parse(records: &Value) -> Result<Vec<&Value>, Error> {
+        Ok(records
+            .as_object()
+            .filter(|r| r.len() <= 10000)
+            .ok_or(Error::Protocol("storage creation baseline unavailable"))?
+            .values()
+            .collect())
+    }
+    Ok(StorageBaseline {
+        srs: parse(&srs)?
+            .into_iter()
+            .map(|r| {
+                r["uuid"]
+                    .as_str()
+                    .and_then(|s| SrId::parse(s).ok())
+                    .ok_or(Error::Protocol("invalid storage baseline UUID"))
+            })
+            .collect::<Result<_, _>>()?,
+        pbds: parse(&pbds)?
+            .into_iter()
+            .map(|r| {
+                r["uuid"]
+                    .as_str()
+                    .and_then(|s| PbdId::parse(s).ok())
+                    .ok_or(Error::Protocol("invalid attachment baseline UUID"))
+            })
+            .collect::<Result<_, _>>()?,
+    })
+}
+async fn attachment_identity(
+    session: &Session,
+    fresh: &Value,
+    sr: SrId,
+    host: crate::HostId,
+) -> Result<(String, Value), Error> {
+    let (sr_ref, sr_record) = xapi::read(session, ResourceTarget::Storage(sr)).await?;
+    let (host_ref, _) = xapi::read(session, ResourceTarget::Host(host)).await?;
+    if fresh["SR"] != sr_ref || fresh["host"] != host_ref {
+        return Err(Error::ResourceConflict);
+    }
+    Ok((sr_ref, sr_record))
+}
+async fn no_consumers(
+    session: &Session,
+    sr: &Value,
+    require_unused: bool,
+) -> Result<Vec<VdiId>, Error> {
+    let mut ids = Vec::new();
+    let mut reads = 0usize;
+    for reference in array(sr, "VDIs")? {
+        reads += 1;
+        if reads > 10000 {
+            return Err(Error::Protocol(
+                "storage consumer graph exceeds the read limit",
+            ));
+        }
+        let vdi = by_ref(session, "VDI", reference).await?;
+        empty_current(&vdi)?;
+        if require_unused && vdi["type"] != "user" {
+            return Err(Error::StorageInUse);
+        }
+        ids.push(
+            vdi["uuid"]
+                .as_str()
+                .and_then(|id| VdiId::parse(id).ok())
+                .ok_or(Error::Protocol("storage disk identity unavailable"))?,
+        );
+        for reference in array(&vdi, "VBDs")? {
+            if require_unused {
+                return Err(Error::StorageInUse);
+            }
+            reads += 1;
+            if reads > 10000 {
+                return Err(Error::Protocol(
+                    "storage consumer graph exceeds the read limit",
+                ));
+            }
+            let vbd = by_ref(session, "VBD", reference).await?;
+            if vbd["currently_attached"] != false {
+                return Err(Error::StorageInUse);
+            }
+        }
+    }
+    ids.sort();
+    if ids.windows(2).any(|w| w[0] == w[1]) {
+        return Err(Error::Protocol("duplicate storage disk identity"));
+    }
+    Ok(ids)
+}
+async fn removable(
+    session: &Session,
+    record: &ResourceOperationRecord,
+    sr_ref: &str,
+    sr: &Value,
+    name: &str,
+    disks: &[VdiId],
+) -> Result<(), Error> {
+    if sr["name_label"] != name {
+        return Err(Error::ResourceConflict);
+    }
+    empty_current(sr)?;
+    if sr["is_tools_sr"] != false || sr["local_cache_enabled"] != false {
+        return Err(Error::StorageInUse);
+    }
+    let (_, pool) = xapi::read(session, ResourceTarget::Pool(record.pool)).await?;
+    for field in ["default_SR", "suspend_image_SR", "crash_dump_SR"] {
+        if pool[field].as_str().is_none() {
+            return Err(Error::Protocol("pool storage dependencies unavailable"));
+        }
+        if pool[field] == sr_ref {
+            return Err(Error::StorageInUse);
+        }
+    }
+    // HA statefiles and host-local cache/suspend/crash dependencies can survive unplugged guests.
+    let actual_disks = no_consumers(session, sr, true).await?;
+    for statefile in array(&pool, "ha_statefiles")? {
+        let statefile_id = statefile.as_str().and_then(|s| VdiId::parse(s).ok());
+        if statefile_id.is_some_and(|id| actual_disks.contains(&id))
+            || array(sr, "VDIs")?.contains(statefile)
+        {
+            return Err(Error::StorageInUse);
+        }
+    }
+    let hosts = session.call("host.get_all_records", vec![]).await?;
+    for host in hosts
+        .as_object()
+        .filter(|h| h.len() <= 1024)
+        .ok_or(Error::Protocol("host storage dependencies unavailable"))?
+        .values()
+    {
+        for field in ["local_cache_sr", "suspend_image_sr", "crash_dump_sr"] {
+            if host[field].as_str().is_none() {
+                return Err(Error::Protocol("host storage dependencies unavailable"));
+            }
+            if host[field] == sr_ref {
+                return Err(Error::StorageInUse);
+            }
+        }
+    }
+    for pbd in array(sr, "PBDs")? {
+        if by_ref(session, "PBD", pbd).await?["currently_attached"] != false {
+            return Err(Error::StorageInUse);
+        }
+    }
+    let mut expected = disks.to_vec();
+    expected.sort();
+    if actual_disks != expected {
+        return Err(Error::ResourceConflict);
+    }
+    Ok(())
+}
+pub(super) async fn prepare(
+    session: &Session,
+    record: &mut ResourceOperationRecord,
+) -> Result<Vec<Step>, Error> {
+    let op = operation(record)?.clone();
+    if op.creates_reference() {
+        record.storage_baseline = Some(baseline(session).await?);
+    }
+    let method = match &op {
+        StorageOperation::Trim { .. } => "Async.host.call_plugin",
+        StorageOperation::Create { .. } => "Async.SR.create",
+        StorageOperation::Introduce { .. } => "Async.SR.introduce",
+        StorageOperation::CreateAttachment { .. } => "Async.PBD.create",
+        StorageOperation::SetAttached { attached: true, .. } => "Async.PBD.plug",
+        StorageOperation::SetAttached {
+            attached: false, ..
+        } => "Async.PBD.unplug",
+        StorageOperation::RemoveAttachment { .. } => "Async.PBD.destroy",
+        StorageOperation::Forget { .. } => "Async.SR.forget",
+        StorageOperation::Destroy { .. } => "Async.SR.destroy",
+    };
+    // Run the same fresh admission checks again immediately before dispatch.
+    arguments(session, record).await?;
+    Ok(vec![Step {
+        label: op.label().into(),
+        method: method.into(),
+        argument: None,
+        expected: Value::Null,
+        check: Check::Storage,
+    }])
+}
+pub(super) async fn arguments(
+    session: &Session,
+    record: &ResourceOperationRecord,
+) -> Result<Vec<Value>, Error> {
+    let (reference, fresh) = xapi::read(session, record.target).await?;
+    match operation(record)? {
+        StorageOperation::Trim {
+            host,
+            expected_name,
+        } => {
+            if fresh["name_label"] != *expected_name {
+                return Err(Error::ResourceConflict);
+            }
+            empty_current(&fresh)?;
+            capability(
+                session,
+                fresh["type"]
+                    .as_str()
+                    .ok_or(Error::Protocol("storage type unavailable"))?,
+                "SR_TRIM",
+            )
+            .await?;
+            let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
+            let mut attached = false;
+            for pbd in array(&fresh, "PBDs")? {
+                let pbd = by_ref(session, "PBD", pbd).await?;
+                if pbd["host"] == host_ref
+                    && pbd["SR"] == reference
+                    && pbd["currently_attached"] == true
+                {
+                    attached = true;
+                }
+            }
+            if !attached {
+                return Err(Error::UnavailableAction);
+            }
+            Ok(vec![
+                json!(host_ref),
+                json!("trim"),
+                json!("do_trim"),
+                json!({"sr_uuid":record.target.uuid().to_string()}),
+            ])
+        }
+        StorageOperation::Create {
+            host,
+            name,
+            description,
+            location,
+        } => {
+            capability(session, location.kind(), "").await?;
+            let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
+            Ok(vec![
+                json!(host_ref),
+                location.device_config(),
+                json!("0"),
+                json!(name),
+                json!(description),
+                json!(location.kind()),
+                json!(location.content_type()),
+                json!(true),
+                json!({}),
+            ])
+        }
+        StorageOperation::Introduce {
+            uuid,
+            name,
+            description,
+            location,
+        } => {
+            capability(session, location.kind(), "").await?;
+            match xapi::read(session, ResourceTarget::Storage(*uuid)).await {
+                Err(Error::Api(code)) if code == "UUID_INVALID" => {}
+                Ok(_) => return Err(Error::ResourceConflict),
+                Err(error) => return Err(error),
+            }
+            Ok(vec![
+                json!(uuid.to_string()),
+                json!(name),
+                json!(description),
+                json!(location.kind()),
+                json!(location.content_type()),
+                json!(true),
+                json!({}),
+            ])
+        }
+        StorageOperation::CreateAttachment { host, location } => {
+            if fresh["type"] != location.kind() || fresh["content_type"] != location.content_type()
+            {
+                return Err(Error::ResourceConflict);
+            }
+            allowed(&fresh, "pbd_create")?;
+            empty_current(&fresh)?;
+            let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
+            for pbd in array(&fresh, "PBDs")? {
+                let attachment = by_ref(session, "PBD", pbd).await?;
+                if attachment["host"] == host_ref {
+                    return Err(Error::ResourceConflict);
+                }
+                if crate::storage::requires_credentials(&attachment["device_config"]) {
+                    return Err(Error::Protocol(
+                        "creating authenticated storage attachments is not implemented",
+                    ));
+                }
+                if crate::storage::location_from_config(&attachment["device_config"]).as_ref()
+                    != Some(location)
+                {
+                    return Err(Error::ResourceConflict);
+                }
+            }
+            Ok(vec![
+                json!({"host":host_ref,"SR":reference,"device_config":location.device_config(),"other_config":{xapi::OPERATION_TAG:record.id.to_string()}}),
+            ])
+        }
+        StorageOperation::SetAttached {
+            sr,
+            host,
+            expected_attached,
+            attached,
+        } => {
+            let (_, sr_record) = attachment_identity(session, &fresh, *sr, *host).await?;
+            if fresh["currently_attached"] != *expected_attached {
+                return Err(Error::ResourceConflict);
+            }
+            allowed(&sr_record, if *attached { "plug" } else { "unplug" })?;
+            empty_current(&sr_record)?;
+            if !attached {
+                no_consumers(session, &sr_record, false).await?;
+            }
+            Ok(vec![json!(reference)])
+        }
+        StorageOperation::RemoveAttachment { sr, host } => {
+            let (_, sr_record) = attachment_identity(session, &fresh, *sr, *host).await?;
+            if fresh["currently_attached"] != false {
+                return Err(Error::StorageInUse);
+            }
+            allowed(&sr_record, "pbd_destroy")?;
+            empty_current(&sr_record)?;
+            Ok(vec![json!(reference)])
+        }
+        StorageOperation::Forget {
+            expected_name,
+            expected_disks,
+        }
+        | StorageOperation::Destroy {
+            expected_name,
+            expected_disks,
+        } => {
+            let action = if matches!(operation(record)?, StorageOperation::Destroy { .. }) {
+                "destroy"
+            } else {
+                "forget"
+            };
+            allowed(&fresh, action)?;
+
+            removable(
+                session,
+                record,
+                &reference,
+                &fresh,
+                expected_name,
+                expected_disks,
+            )
+            .await?;
+            Ok(vec![json!(reference)])
+        }
+    }
+}
+pub(super) async fn verify(
+    session: &Session,
+    record: &ResourceOperationRecord,
+) -> Result<Option<ResourceTarget>, Error> {
+    let op = operation(record)?;
+    match op {
+        StorageOperation::Trim { expected_name, .. } => {
+            if !record.storage_trim_succeeded {
+                return Err(Error::Protocol(
+                    "trim result is unavailable; no plugin call was repeated",
+                ));
+            }
+            let (_, fresh) = xapi::read(session, record.target).await?;
+            if fresh["name_label"] != *expected_name {
+                return Err(Error::ResourceConflict);
+            }
+            Ok(None)
+        }
+        StorageOperation::Create {
+            name,
+            description,
+            location,
+            ..
+        }
+        | StorageOperation::Introduce {
+            name,
+            description,
+            location,
+            ..
+        } => {
+            let baseline = record
+                .storage_baseline
+                .as_ref()
+                .ok_or(Error::Protocol("storage creation baseline unavailable"))?;
+            let reference = record.result_reference.as_ref().ok_or(Error::Protocol(
+                "storage creation result identity unavailable; no write was repeated",
+            ))?;
+            let fresh = by_ref(session, "SR", &json!(reference)).await?;
+            let id = fresh["uuid"]
+                .as_str()
+                .and_then(|id| SrId::parse(id).ok())
+                .ok_or(Error::Protocol("created storage UUID unavailable"))?;
+            if baseline.srs.contains(&id)
+                || fresh["name_label"] != *name
+                || fresh["name_description"] != *description
+                || fresh["type"] != location.kind()
+                || fresh["content_type"] != location.content_type()
+                || fresh["shared"] != true
+            {
+                return Err(Error::ResourceConflict);
+            }
+            if let StorageOperation::Introduce { uuid, .. } = op
+                && uuid != &id
+            {
+                return Err(Error::ResourceConflict);
+            }
+            if let StorageOperation::Create { host, .. } = op {
+                let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
+                let mut found = false;
+                for pbd in array(&fresh, "PBDs")? {
+                    let pbd = by_ref(session, "PBD", pbd).await?;
+                    if pbd["host"] == host_ref
+                        && pbd["SR"] == *reference
+                        && config_matches(&pbd["device_config"], &location.device_config())
+                    {
+                        found = true;
+                    }
+                }
+                if !found {
+                    return Err(Error::Protocol(
+                        "created storage attachment could not be verified",
+                    ));
+                }
+            }
+            Ok(Some(ResourceTarget::Storage(id)))
+        }
+        StorageOperation::CreateAttachment { host, location } => {
+            let baseline = record
+                .storage_baseline
+                .as_ref()
+                .ok_or(Error::Protocol("attachment creation baseline unavailable"))?;
+            let reference = record.result_reference.as_ref().ok_or(Error::Protocol(
+                "attachment creation result identity unavailable; no write was repeated",
+            ))?;
+            let fresh = by_ref(session, "PBD", &json!(reference)).await?;
+            let id = fresh["uuid"]
+                .as_str()
+                .and_then(|id| PbdId::parse(id).ok())
+                .ok_or(Error::Protocol("created attachment UUID unavailable"))?;
+            let ResourceTarget::Storage(sr) = record.target else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            attachment_identity(session, &fresh, sr, *host).await?;
+            if fresh["currently_attached"] != false
+                || baseline.pbds.contains(&id)
+                || fresh["other_config"][xapi::OPERATION_TAG] != record.id.to_string()
+                || !config_matches(&fresh["device_config"], &location.device_config())
+            {
+                return Err(Error::ResourceConflict);
+            }
+            Ok(Some(ResourceTarget::Pbd(id)))
+        }
+        StorageOperation::SetAttached {
+            sr, host, attached, ..
+        } => {
+            let (_, fresh) = xapi::read(session, record.target).await?;
+            attachment_identity(session, &fresh, *sr, *host).await?;
+            if fresh["currently_attached"] != *attached {
+                return Err(Error::ResourceConflict);
+            }
+            Ok(None)
+        }
+        StorageOperation::RemoveAttachment { .. }
+        | StorageOperation::Forget { .. }
+        | StorageOperation::Destroy { .. } => match xapi::read(session, record.target).await {
+            Err(Error::Api(code)) if code == "UUID_INVALID" => Ok(None),
+            Ok(_) => Err(Error::ResourceConflict),
+            Err(error) => Err(error),
+        },
+    }
+}
+fn config_matches(actual: &Value, expected: &Value) -> bool {
+    expected
+        .as_object()
+        .is_some_and(|expected| expected.iter().all(|(key, value)| actual[key] == *value))
+}
+
+// Only this successful plugin result is evidence of completion; arbitrary backend error XML
+// and secrets are never copied into operation history.
+pub(super) fn trim_succeeded(task: &Value) -> Result<bool, Error> {
+    let xml = task["result"]
+        .as_str()
+        .filter(|s| s.len() <= 65536)
+        .ok_or(Error::Protocol("trim task result unavailable"))?;
+    let doc = roxmltree::Document::parse_with_options(
+        xml,
+        roxmltree::ParsingOptions {
+            allow_dtd: false,
+            nodes_limit: 32,
+        },
+    )
+    .map_err(|_| Error::Protocol("invalid trim task result"))?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "value" {
+        return Err(Error::Protocol("invalid trim task result"));
+    }
+    let children = root
+        .children()
+        .filter(|n| n.is_element())
+        .collect::<Vec<_>>();
+    let text = match children.as_slice() {
+        [] => root.text(),
+        [child]
+            if child.tag_name().name() == "string" && !child.children().any(|n| n.is_element()) =>
+        {
+            child.text()
+        }
+        _ => None,
+    };
+    Ok(text == Some("true"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn trim_proof_requires_positive_boolean_and_never_exposes_plugin_errors() {
+        assert!(trim_succeeded(&json!({"result":"<value><string>true</string></value>"})).unwrap());
+        assert!(!trim_succeeded(&json!({"result":"<value><string>&lt;private-error&gt;secret&lt;/private-error&gt;</string></value>"})).unwrap());
+        for xml in [
+            "<!DOCTYPE a><value>true</value>",
+            "<value><int>1</int></value>",
+            "<value><string>true</string><string>true</string></value>",
+        ] {
+            assert!(!trim_succeeded(&json!({"result":xml})).unwrap_or(false));
+        }
+    }
+}

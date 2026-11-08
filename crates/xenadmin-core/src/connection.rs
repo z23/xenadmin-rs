@@ -24,6 +24,7 @@ use crate::{
 enum Request {
     Console(ConsoleRequest),
     Metrics(crate::metrics::MetricsRequest),
+    StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
     Diagnose(crate::diagnostics::DiagnosticRequest),
     Submit(Box<MutationRequest>),
     ResourceSubmit(Box<crate::resources::ResourceRequest>),
@@ -116,6 +117,7 @@ impl ConnectionSnapshot {
             crate::ResourceTarget::Host(id) => inventory.hosts.contains_key(&id),
             crate::ResourceTarget::Task(id) => inventory.details.tasks.contains_key(&id),
             crate::ResourceTarget::Message(id) => inventory.details.messages.contains_key(&id),
+            crate::ResourceTarget::Pbd(id) => inventory.details.pbds.contains_key(&id),
             crate::ResourceTarget::Storage(id) => {
                 inventory.storage.iter().any(|sr| sr.uuid == id.uuid())
             }
@@ -376,6 +378,24 @@ pub struct Connection {
     resource_history: watch::Receiver<Arc<Vec<crate::ResourceOperationRecord>>>,
 }
 impl Connection {
+    pub fn discover_storage(
+        &self,
+        observed: crate::ObservedResource,
+        query: crate::StorageQuery,
+    ) -> Result<crate::StorageDiscovery, Error> {
+        query.validate()?;
+        if !matches!(observed.target, crate::ResourceTarget::Pool(_))
+            || self.latest().observe_resource(observed.target)? != observed
+        {
+            return Err(Error::Stale);
+        }
+        let (handle, request) =
+            crate::storage_discovery::channel(observed, query, self.runtime.clone());
+        self.requests
+            .try_send(Request::StorageDiscovery(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn subscribe_metrics(
         &self,
         observed: crate::ObservedMetrics,
@@ -658,6 +678,7 @@ async fn run(
                 let mut journal_error = None;
                 let mut workers = tokio::task::JoinSet::new();
                 let mut diagnostics = tokio::task::JoinSet::new();
+                let mut discoveries = tokio::task::JoinSet::new();
                 let mut metrics = tokio::task::JoinSet::new();
                 let mut resource_workers = tokio::task::JoinSet::new();
                 let mut resource_counts = BTreeMap::<crate::OperationId, usize>::new();
@@ -703,6 +724,7 @@ async fn run(
                     let batch = tokio::select! {
                         _=cancel.cancelled()=>break None,
                         _=diagnostics.join_next(), if !diagnostics.is_empty()=>{continue;}
+                        _=discoveries.join_next(), if !discoveries.is_empty()=>{continue;}
                         _=metrics.join_next(), if !metrics.is_empty()=>{continue;}
                         done=resource_workers.join_next(), if !resource_workers.is_empty()=>{
                             match done {
@@ -798,6 +820,11 @@ async fn run(
                                     } else if let Some(reference)=store.vm_reference(request.record.vm) {
                                         start_worker(*request,Some(reference),&mut workers,&mut worker_counts);
                                     } else {request.reject(Error::Stale);}
+                                }
+                                Request::StorageDiscovery(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if discoveries.len()>=4 {request.fail(Error::Busy);}
+                                    else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
                                 }
                                 Request::Metrics(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|inventory|inventory.pool_id==request.observed.pool) {request.fail(Error::Stale);}
@@ -1104,6 +1131,7 @@ async fn forward_alias(
                         Request::ResourceSubmit(request) => request.reject(Error::Busy),
                         Request::Console(request) => request.fail(Error::Busy),
                         Request::Metrics(request) => request.fail(Error::Busy),
+                        Request::StorageDiscovery(request) => request.fail(Error::Busy),
                         Request::Diagnose(request) => request.fail(Error::Busy),
                         Request::RememberMembers(_) => {},
                         Request::Control(_, _) | Request::ResourceControl(_,_) => {

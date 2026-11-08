@@ -9,6 +9,7 @@ mod preferences;
 mod profiles_view;
 mod resource_admin;
 mod resource_details;
+mod storage_view;
 mod vm_devices;
 mod vm_lifecycle;
 mod vm_migration;
@@ -142,6 +143,7 @@ struct State {
     activity: activity::Activity,
     resource_editor: Option<resource_admin::Editor>,
     network_workspace: Option<network_admin::Workspace>,
+    storage_editor: Option<storage_view::Editor>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
     resource_rows: Vec<xenadmin_core::ResourceOperationRecord>,
     dev_inspection: Option<xenadmin_core::DevInspection>,
@@ -238,6 +240,7 @@ fn init() -> State {
         activity: activity::Activity::default(),
         resource_editor: None,
         network_workspace: None,
+        storage_editor: None,
         resource_operations: Vec::new(),
         resource_rows: Vec::new(),
         dev_inspection,
@@ -715,6 +718,7 @@ fn merge_operation_rows(
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= resource_admin::poll(s);
+    changed |= storage_view::poll(s);
     changed |= console_view::poll_export(s);
     changed |= metrics_view::poll(s);
     dev_inspection::refresh(s);
@@ -1187,6 +1191,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .build(&k)
                 .key("manage-pool"),
         );
+        if s.page == Page::Storage && s.console.is_none() {
+            controls = controls.child(
+                Button::new("New storage")
+                    .on_press(storage_view::open_new)
+                    .build(&k)
+                    .key("create-storage"),
+            );
+        }
         if s.page == Page::Networks && s.console.is_none() {
             controls = controls.child(
                 Button::new("New network")
@@ -1246,6 +1258,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [network_admin::dialog(s, &k)])
     } else if s.activity.show {
         rune_kit::root(base, [activity::dialog(s, &k)])
+    } else if s.storage_editor.is_some() {
+        rune_kit::root(base, [storage_view::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
     } else if s.vm_migration.is_some() {
@@ -1411,7 +1425,8 @@ fn details(s: &State, k: &Kit) -> El {
             &selected,
             detail
                 .child(resource_admin::buttons(s, k))
-                .child(network_admin::button(s, k)),
+                .child(network_admin::button(s, k))
+                .child(storage_view::button(s, k)),
             k,
         );
     }
@@ -1747,6 +1762,7 @@ fn demo(s: &mut State) {
     console_view::release(s);
     s.resource_editor = None;
     s.network_workspace = None;
+    s.storage_editor = None;
     s.resource_operations.clear();
     s.resource_rows.clear();
     s.activity = activity::Activity::default();
@@ -1922,6 +1938,8 @@ fn main() {
             ("network-interfaces", network_admin::scene),
             ("network-create", |s| resource_admin::scene(s, false)),
             ("activity", activity::scene),
+            ("storage-create", |s| storage_view::scene(s, false)),
+            ("storage-review", |s| storage_view::scene(s, true)),
             ("pool-administration", |s| resource_admin::scene(s, true)),
             ("connection-settings", |s| profiles_view::scene(s, true)),
             ("connect", |s| s.show_connect = true),

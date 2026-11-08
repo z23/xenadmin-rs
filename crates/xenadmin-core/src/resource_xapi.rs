@@ -13,6 +13,7 @@ pub(super) enum Check {
     Scan,
     TaskCancellation,
     MessageDeleted,
+    Storage,
 }
 pub(super) struct Step {
     pub label: String,
@@ -111,6 +112,9 @@ pub(super) async fn prepare(
     if matches!(record.action, ResourceAction::Network(_)) {
         return super::network::prepare(session, record).await;
     }
+    if matches!(record.action, ResourceAction::Storage(_)) {
+        return super::storage::prepare(session, record).await;
+    }
     let (_, fresh) = read(session, record.target).await?;
     let mut steps = Vec::new();
     match &record.action {
@@ -137,6 +141,7 @@ pub(super) async fn prepare(
                 check: Check::MessageDeleted,
             });
         }
+        ResourceAction::Storage(_) => unreachable!(),
         ResourceAction::RenameMetadata {
             expected_name,
             expected_description,
@@ -285,6 +290,9 @@ pub(super) async fn arguments(
     record: &ResourceOperationRecord,
     step: &Step,
 ) -> Result<Vec<Value>, Error> {
+    if matches!(step.check, Check::Storage) {
+        return super::storage::arguments(session, record).await;
+    }
     if matches!(step.check, Check::Network) {
         return super::network::arguments(session, record).await;
     }
@@ -304,6 +312,7 @@ pub(super) async fn arguments(
             }
             Ok(vec![json!(reference)])
         }
+        Check::Storage => super::storage::arguments(session, record).await,
         Check::CreatedNetwork => {
             let ResourceAction::CreateInternalNetwork {
                 name,
@@ -382,6 +391,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         ResourceAction::Network(_) => vec![Check::Network],
         ResourceAction::CancelTask => vec![Check::TaskCancellation],
         ResourceAction::DismissMessage { .. } => vec![Check::MessageDeleted],
+        ResourceAction::Storage(_) => vec![Check::Storage],
         ResourceAction::RenameMetadata {
             expected_name,
             expected_description,
@@ -416,6 +426,9 @@ pub(super) async fn verify(
 ) -> Result<Option<ResourceTarget>, Error> {
     if matches!(check, Check::Network) {
         return super::network::verify(session, record).await;
+    }
+    if matches!(check, Check::Storage) {
+        return super::storage::verify(session, record).await;
     }
     if matches!(check, Check::CreatedNetwork) {
         return verify_created(session, record).await.map(Some);

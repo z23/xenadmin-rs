@@ -1,6 +1,6 @@
 use crate::{
     BondId, Error, HostId, MessageId, NetworkId, NetworkOperation, OperationId, OperationState,
-    OperationStep, PifId, PoolId, SrId, TaskId, VlanId,
+    OperationStep, PbdId, PifId, PoolId, SrId, StorageOperation, TaskId, VlanId,
 };
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::SystemTime};
@@ -15,6 +15,8 @@ mod worker;
 #[path = "resource_xapi.rs"]
 mod xapi;
 pub(crate) use worker::ResourceRequest;
+#[path = "storage_operations.rs"]
+mod storage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceTarget {
@@ -27,6 +29,7 @@ pub enum ResourceTarget {
     Bond(BondId),
     Task(TaskId),
     Message(MessageId),
+    Pbd(PbdId),
 }
 impl ResourceTarget {
     pub(crate) fn class(self) -> &'static str {
@@ -40,6 +43,7 @@ impl ResourceTarget {
             Self::Bond(_) => "Bond",
             Self::Task(_) => "task",
             Self::Message(_) => "message",
+            Self::Pbd(_) => "PBD",
         }
     }
     pub fn uuid(self) -> uuid::Uuid {
@@ -53,6 +57,7 @@ impl ResourceTarget {
             Self::Bond(id) => id.uuid(),
             Self::Task(id) => id.uuid(),
             Self::Message(id) => id.uuid(),
+            Self::Pbd(id) => id.uuid(),
         }
     }
 }
@@ -79,6 +84,10 @@ pub enum ResourceCommand {
     DismissMessage {
         message: ObservedResource,
         expected_digest: [u8; 32],
+    },
+    Storage {
+        target: ObservedResource,
+        operation: StorageOperation,
     },
     RenameMetadata {
         target: ObservedResource,
@@ -123,6 +132,7 @@ pub enum ResourceAction {
     DismissMessage {
         expected_digest: [u8; 32],
     },
+    Storage(StorageOperation),
     RenameMetadata {
         expected_name: String,
         expected_description: String,
@@ -157,6 +167,7 @@ impl ResourceAction {
             Self::Network(operation) => operation.label(),
             Self::CancelTask => "Request task cancellation",
             Self::DismissMessage { .. } => "Dismiss server message",
+            Self::Storage(operation) => operation.label(),
             Self::RenameMetadata { .. } => "Edit name and description",
             Self::CreateInternalNetwork { .. } => "Create internal network",
             Self::ConfigureInternalNetwork { .. } => "Set internal network MTU",
@@ -179,6 +190,7 @@ impl ResourceAction {
             Self::Network(operation) => return operation.validate(target),
             Self::CancelTask => matches!(target, ResourceTarget::Task(_)),
             Self::DismissMessage { .. } => matches!(target, ResourceTarget::Message(_)),
+            Self::Storage(operation) => return operation.validate(target),
             Self::RenameMetadata {
                 expected_name,
                 expected_description,
@@ -245,6 +257,7 @@ impl ResourceCommand {
                 message,
                 expected_digest,
             } => (message, ResourceAction::DismissMessage { expected_digest }),
+            Self::Storage { target, operation } => (target, ResourceAction::Storage(operation)),
             Self::RenameMetadata {
                 target,
                 expected_name,
@@ -343,6 +356,10 @@ pub struct ResourceOperationRecord {
     pub(crate) baseline_networks: Option<Vec<NetworkId>>,
     #[serde(default)]
     pub(crate) network_baseline: Option<crate::network_types::NetworkCreationBaseline>,
+    #[serde(default)]
+    pub(crate) storage_baseline: Option<crate::storage::StorageBaseline>,
+    #[serde(default)]
+    pub(crate) storage_trim_succeeded: bool,
 }
 impl ResourceOperationRecord {
     pub fn revision(&self) -> u64 {
@@ -409,6 +426,8 @@ pub(crate) fn channel(
         cancel_dispatched: false,
         baseline_networks: None,
         network_baseline: None,
+        storage_baseline: None,
+        storage_trim_succeeded: false,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (

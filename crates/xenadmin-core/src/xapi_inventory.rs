@@ -369,6 +369,14 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             id,
             StorageAttachment {
                 id,
+                location: crate::storage::location_from_config(&record["device_config"]),
+                requires_credentials: crate::storage::requires_credentials(
+                    &record["device_config"],
+                ),
+                multipathed: record["other_config"]["multipathed"]
+                    .as_str()
+                    .and_then(|s| s.parse().ok()),
+                paths: crate::storage::path_counts(&record["other_config"]),
                 host: refs.link("host", &record["host"]),
                 sr: refs.link("sr", &record["SR"]),
                 currently_attached: boolean(record, "currently_attached")?,

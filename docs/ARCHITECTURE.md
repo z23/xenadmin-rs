@@ -356,3 +356,15 @@ VM/VBD/VIF continuity plus replacement disk UUIDs. A halted move journals home-h
 as a separate step. Read-only recovery consumes persisted task completion without replaying
 migration or assignment. Console follow consumes verified local migration outcomes only after
 matching destination inventory arrives, scoped to the console's original pool/VM identity.
+
+Storage lifecycle uses the resource journal and pool admission guard with typed SR/PBD targets.
+Each command dispatches one asynchronous XAPI mutation, including fixed trim plugin calls;
+creating a PBD and plugging it are separate reviewed commands. Creation saves a bounded UUID
+baseline, private task/result references and verified public created UUID. Missing task/result
+identity stays unknown; the client never replays provisioning. A saved creation result can be
+verified after the server task disappears. Forget and destroy have different reviews and require
+fresh disk, attachment and pool/host dependency checks. Authentication values are not accepted
+by the storage command model; authenticated provisioning awaits a journalled Secret lifecycle.
+Read-only storage discovery reuses the authenticated connection, is cancelled on generation
+change or handle drop, and projects bounded capability metadata and SR UUID/name/size records.
+The desktop never receives raw probe XML, RPC references or PBD device-config credentials.

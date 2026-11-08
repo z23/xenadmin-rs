@@ -167,23 +167,25 @@ Implementation and verification details are in the [VM lifecycle report](reports
 
 ## 9. Storage repositories
 
+Implementation boundaries and evidence: [storage lifecycle report](reports/2026-11-08-storage-lifecycle.md).
+
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P09-01 | SR name/type/capacity/usage | Existing workflow; qualification open |
-| P09-02 | Probe/discover targets | Queued |
-| P09-03 | Create SR | Queued |
-| P09-04 | Add ISO library | Queued |
-| P09-05 | Introduce/attach existing SR | Queued |
-| P09-06 | Detach/reattach SR | Queued |
-| P09-07 | Repair SR connectivity | Queued |
+| P09-02 | Probe/discover targets | Read-only backend capabilities and bounded SR discovery at an explicitly entered location implemented; NFS export and iSCSI IQN/LUN enumeration remain pending; fixture verified, lab qualification open |
+| P09-03 | Create SR | Reviewed shared NFS and unauthenticated LVM-iSCSI creation implemented with typed inputs, tracked task and new SR identity verification; CHAP and other backends pending; fixture verified, lab qualification open |
+| P09-04 | Add ISO library | ISO over NFS creation implemented; authenticated SMB/other ISO libraries pending; lab qualification open |
+| P09-05 | Introduce/attach existing SR | Reviewed introduce by exact UUID, separate selected-host PBD creation and attach implemented; existing UUIDs are never implicitly forgotten; authenticated new attachments pending; fixture verified, lab qualification open |
+| P09-06 | Detach/reattach SR | Reviewed selected-host PBD unplug/plug implemented with fresh SR/host identity and consumer checks; attached status explicitly does not imply healthy storage; fixture verified, lab qualification open |
+| P09-07 | Repair SR connectivity | Per-host attach retry and explicit missing-PBD creation implemented; automatic multi-host repair and authenticated missing-PBD reconstruction remain pending; lab qualification open |
 | P09-08 | Rescan/refresh SR | Reviewed asynchronous rescan with durable task tracking, cancellation and reconnect recovery implemented; synthetic fixtures verified, lab qualification open |
-| P09-09 | Forget versus destroy SR | Queued |
+| P09-09 | Forget versus destroy SR | Separate exact-UUID reviews implemented with captured disk set, fresh detach/consumer/default/HA dependency checks and tracked tasks; UI removal limited to 100 reviewed disks; fixture verified, destructive lab qualification open |
 | P09-10 | Choose default SR | Reviewed pool default SR selection with fresh prior-value and user-storage checks implemented; lab qualification open |
 | P09-11 | SR name/description edits | Reviewed metadata editing with fresh conflict checks and explicit partial outcomes implemented; lab qualification open |
-| P09-12 | Multipath settings/path inspection | Queued |
-| P09-13 | Trim/reclaim | Queued |
+| P09-12 | Multipath settings/path inspection | Bounded per-PBD multipathing and active/maximum path inspection implemented without raw device config; host multipath setting changes pending; live path qualification open |
+| P09-13 | Trim/reclaim | Explicit SR_TRIM-capable attached-host reclaim via fixed trim plugin implemented with tracked task and positive-result evidence; unavailable plugin is a reported host error; fixture verified, lab qualification open |
 | P09-14 | Read caching/provisioning options | Capability review and implementation queued |
-| P09-15 | Backend-specific wizards | Capability review and implementation queued |
+| P09-15 | Backend-specific wizards | Typed NFS, ISO-NFS and unauthenticated LVM-iSCSI forms implemented; other backends, port selection, target enumeration and authentication remain pending |
 
 ## 10. Networks and host interfaces
 

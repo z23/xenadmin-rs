@@ -1956,3 +1956,5 @@ mod resource_administration;
 
 #[path = "fixtures/network_administration.rs"]
 mod network_administration;
+#[path = "fixtures/storage_lifecycle.rs"]
+mod storage_lifecycle;

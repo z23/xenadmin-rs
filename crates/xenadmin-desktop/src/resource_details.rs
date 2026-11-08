@@ -452,6 +452,10 @@ mod tests {
             inventory.details.pbds.insert(
                 attachment,
                 xenadmin_core::StorageAttachment {
+                    location: None,
+                    requires_credentials: false,
+                    multipathed: None,
+                    paths: Vec::new(),
                     id: attachment,
                     host: inventory.hosts.keys().next().copied(),
                     sr: Some(SrId::from(inventory.storage[0].uuid)),

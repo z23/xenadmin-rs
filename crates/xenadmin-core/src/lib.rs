@@ -26,12 +26,18 @@ pub use network_types::{
     BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity,
 };
 mod resources;
+mod storage;
+mod storage_discovery;
 pub use resources::{
     ObservedResource, ResourceAction, ResourceCommand, ResourceOperation, ResourceOperationRecord,
     ResourceTarget,
 };
 mod migration;
 mod migration_backend;
+pub use storage::{NfsVersion, StorageLocation, StorageOperation};
+pub use storage_discovery::{
+    DiscoveredRepository, StorageBackend, StorageDiscovery, StorageDiscoveryResult, StorageQuery,
+};
 mod settings;
 mod snapshots;
 pub use migration::{DiskPlacement, NicPlacement, VmMigration};
@@ -80,6 +86,10 @@ pub enum Error {
     ResourceInUse,
     #[error("Another VM or infrastructure operation in this pool is running or unresolved")]
     ConflictingPoolOperation,
+    #[error(
+        "Storage is attached, in use, or required by pool or host configuration; resolve these dependencies first"
+    )]
+    StorageInUse,
     #[error("Enter valid VM lifecycle configuration and exact resource selections")]
     InvalidVmLifecycle,
     #[error(

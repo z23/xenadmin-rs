@@ -31,6 +31,8 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         cancel_dispatched: false,
         baseline_networks: None,
         network_baseline: None,
+        storage_baseline: None,
+        storage_trim_succeeded: false,
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {
@@ -251,5 +253,32 @@ fn task_cancellation_reserves_only_its_task_and_preserves_original_unknown_reser
     assert!(matches!(
         journal.admit(&mut overlap),
         Err(Error::ConflictingOperation)
+    ));
+}
+#[test]
+fn storage_baselines_and_positive_trim_proof_are_durable_and_cannot_be_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let mut record = resource(PoolId::from(uuid::Uuid::new_v4()));
+    record.storage_baseline = Some(crate::storage::StorageBaseline {
+        srs: vec![crate::SrId::from(uuid::Uuid::new_v4())],
+        pbds: vec![],
+    });
+    assert!(journal.resource_admit(&mut record).unwrap());
+    record.storage_trim_succeeded = true;
+    journal.resource_save(&mut record).unwrap();
+    let saved = journal.resource_load(record.id).unwrap().unwrap();
+    assert!(saved.storage_trim_succeeded);
+    assert_eq!(saved.storage_baseline, record.storage_baseline);
+    record.storage_trim_succeeded = false;
+    assert!(matches!(
+        journal.resource_save(&mut record),
+        Err(Error::JournalChanged)
+    ));
+    record.storage_trim_succeeded = true;
+    record.storage_baseline = None;
+    assert!(matches!(
+        journal.resource_save(&mut record),
+        Err(Error::JournalChanged)
     ));
 }

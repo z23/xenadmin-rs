@@ -817,7 +817,7 @@ pub(crate) async fn prepare_mutation(
     }
 }
 
-fn opaque_reference(value: &Value) -> Result<String, Error> {
+pub(crate) fn opaque_reference(value: &Value) -> Result<String, Error> {
     value
         .as_str()
         .filter(|value| {
