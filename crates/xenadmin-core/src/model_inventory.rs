@@ -83,6 +83,8 @@ impl ActionAvailability {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct VmDetails {
     #[serde(default)]
+    pub snapshot_parent: crate::SnapshotParent,
+    #[serde(default)]
     pub domain_type: Option<String>,
     #[serde(default)]
     pub cores_per_socket: Option<String>,
@@ -534,6 +536,8 @@ pub struct PoolDetails {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct InventoryDetails {
+    #[serde(default)]
+    pub snapshots: BTreeMap<SnapshotId, crate::SnapshotDetails>,
     #[serde(default)]
     pub pif_metrics: BTreeMap<PifMetricsId, PifMetrics>,
     #[serde(default)]

@@ -109,7 +109,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P05-09 | New VM from snapshot | Reviewed clone and separately journaled template conversion implemented; new halted VM identity verified against pre-existing UUID baseline; fixture verified, lab qualification open |
 | P05-10 | New template from snapshot | Reviewed clone with new template identity/provenance checks implemented; fixture verified, lab qualification open |
 | P05-11 | Export snapshot as template/backup | Reviewed halted disk-snapshot XVA export implemented; source/parent identity and private atomic output fixture verified. Memory-checkpoint export, snapshot-chain coverage and live qualification remain open; see P11-07 |
-| P05-12 | Ancestry tree, preview image, storage/size detail | Queued |
+| P05-12 | Ancestry tree, preview image, storage/size detail | Typed ancestry tree/current base, captured disk/SR/checkpoint allocation detail and bounded authenticated saved JPEG/PNG preview loading implemented; protocol/Rune/native synthetic checks passed. New preview capture/upload and live qualification remain open ([report](reports/2026-11-08-snapshot-inspection.md)) |
 | P05-13 | Scheduled-snapshot policies | Implemented/fixture-verified: reviewed host VMSS create/edit/assignment/enable/run/delete; XCP-ng 8.3 plugin contract and local clock checked. Live cron/DST/retention qualification open. [Evidence](reports/2026-11-08-snapshot-schedules.md) |
 
 ## 6. VM properties/resources

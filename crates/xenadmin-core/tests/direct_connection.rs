@@ -2054,3 +2054,6 @@ mod network_topology;
 
 #[path = "fixtures/root_password.rs"]
 mod root_password;
+
+#[path = "fixtures/snapshot_preview.rs"]
+mod snapshot_preview;

@@ -126,7 +126,7 @@ impl SnapshotReview {
         .wrap_anywhere()
     }
 }
-fn selected_snapshot(s: &State) -> Option<&xenadmin_core::Snapshot> {
+pub(super) fn selected_snapshot(s: &State) -> Option<&xenadmin_core::Snapshot> {
     s.snapshot_table.selected().next().and_then(|id| {
         s.snapshot_rows
             .iter()
@@ -217,6 +217,20 @@ pub(super) fn refresh(s: &mut State) {
         .unwrap_or_default();
     s.snapshot_rows
         .sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+    s.snapshot_ancestry = s
+        .snapshot_view
+        .and_then(|vm| s.inventory.as_ref().map(|i| i.snapshot_ancestry(vm)))
+        .unwrap_or_default();
+    if s.snapshot_tree {
+        let positions: std::collections::BTreeMap<_, _> = s
+            .snapshot_ancestry
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.id, index))
+            .collect();
+        s.snapshot_rows
+            .sort_by_key(|row| positions.get(&row.id).copied().unwrap_or(usize::MAX));
+    }
 }
 pub(super) fn open(s: &mut State) {
     s.metrics = None;
@@ -472,6 +486,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .child(Button::new("Edit properties").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !current(s))).on_press(begin_edit).build(k).key("edit-snapshot"))
             .child(Button::new("Create VM").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, false)).build(k).key("clone-snapshot-vm"))
             .child(Button::new("Create template").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, true)).build(k).key("clone-snapshot-template"))
+            .child(Button::new("Inspect snapshot").variant(ButtonVariant::Outline).disabled(selected.is_none()).on_press(snapshot_inspection::open).build(k).key("inspect-snapshot"))
+            .child(Button::new(if s.snapshot_tree {"Show list"}else{"Show ancestry"}).variant(ButtonVariant::Ghost).on_press(|s:&mut State|{s.snapshot_tree = !s.snapshot_tree;refresh(s);}).build(k).key("snapshot-tree-toggle"))
             .child(Button::new("Activity").variant(ButtonVariant::Ghost).on_press(activity::open).build(k).key("snapshot-activity"))
             .child(Button::new("Delete snapshot").variant(ButtonVariant::Danger).disabled(selected.is_none() || (!s.demo && !can_delete)).on_press(begin_delete).build(k).key("delete-snapshot")));
     if let Some(snapshot) = selected
@@ -563,7 +579,31 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .cell(|s: &State, i, column| {
                 let snapshot = &s.snapshot_rows[i];
                 if column == "name" {
-                    Cell::text(&snapshot.name)
+                    if s.snapshot_tree {
+                        let ancestry = s
+                            .snapshot_ancestry
+                            .get(i)
+                            .filter(|row| row.id == snapshot.id);
+                        Cell::text(format!(
+                            "{}{}{}{}",
+                            "  ".repeat(ancestry.map_or(0, |row| row.depth.min(12))),
+                            if ancestry.is_some_and(|row| row.depth > 0) {
+                                "└ "
+                            } else {
+                                ""
+                            },
+                            snapshot.name,
+                            if ancestry.is_some_and(|row| row.current_parent) {
+                                " · current base"
+                            } else if ancestry.is_some_and(|row| row.issue.is_some()) {
+                                " · ancestry incomplete"
+                            } else {
+                                ""
+                            }
+                        ))
+                    } else {
+                        Cell::text(&snapshot.name)
+                    }
                 } else {
                     Cell::text(snapshot.created_at.as_deref().unwrap_or("Unknown")).muted()
                 }

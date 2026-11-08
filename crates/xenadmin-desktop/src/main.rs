@@ -24,6 +24,7 @@ mod resource_details;
 mod search_view;
 mod session_permissions_view;
 mod settings;
+mod snapshot_inspection;
 mod snapshot_policy_view;
 mod storage_view;
 mod transfers;
@@ -157,6 +158,10 @@ impl ActionDiagnostics {
 }
 struct State {
     information: Option<inventory_information::Panel>,
+    snapshot_inspection: Option<snapshot_inspection::Panel>,
+    snapshot_decoder: snapshot_inspection::Decoder,
+    snapshot_tree: bool,
+    snapshot_ancestry: Vec<xenadmin_core::SnapshotAncestryRow>,
     application_panel: Option<settings::Panel>,
     bulk_power: Option<bulk_power::Editor>,
     row_menu: Option<inventory_menu::Context>,
@@ -313,6 +318,10 @@ fn init() -> State {
         unknown_review: None,
         force_action: None,
         information: None,
+        snapshot_inspection: None,
+        snapshot_decoder: Default::default(),
+        snapshot_tree: true,
+        snapshot_ancestry: Vec::new(),
         application_panel: None,
         console_ui: Default::default(),
         console: None,
@@ -787,6 +796,7 @@ fn merge_operation_rows(
 
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
+    changed |= snapshot_inspection::poll(s);
     changed |= search_view::poll(s);
     changed |= resource_admin::poll(s);
     changed |= storage_view::poll(s);
@@ -1491,6 +1501,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         root
     };
     let root = inventory_menu::overlay(s, &k, root);
+    let root = if s.snapshot_inspection.is_some() {
+        rune_kit::root(root, [snapshot_inspection::dialog(s, &k)])
+    } else {
+        root
+    };
     let root = if s.information.is_some() {
         rune_kit::root(root, [inventory_information::dialog(s, &k)])
     } else {
@@ -2207,6 +2222,8 @@ fn main() {
                 vm_snapshots::open(s);
                 vm_snapshots::begin_create(s);
             }),
+            ("snapshot-ancestry", snapshot_inspection::ancestry_scene),
+            ("snapshot-information", snapshot_inspection::scene),
             ("snapshot-restore", vm_snapshots::restore_scene),
             ("snapshot-edit", vm_snapshots::edit_scene),
             ("connections", |s| profiles_view::scene(s, false)),

@@ -28,6 +28,7 @@ enum Request {
     SecurityDiscovery(crate::security_discovery::Request),
     SnapshotPolicySupport(crate::snapshot_policy_support::Request),
     GuestBoot(crate::guest_boot::Request),
+    SnapshotPreview(crate::snapshot_preview::Request),
     JoinPeer(
         crate::ObservedResource,
         tokio::sync::oneshot::Sender<Result<JoinPeer, Error>>,
@@ -507,6 +508,19 @@ pub struct Connection {
     resource_history: watch::Receiver<Arc<Vec<crate::ResourceOperationRecord>>>,
 }
 impl Connection {
+    pub fn snapshot_preview(
+        &self,
+        observed: ObservedSnapshot,
+    ) -> Result<crate::SnapshotPreviewQuery, Error> {
+        if self.latest().observe_snapshot(observed.vm, observed.id)? != observed {
+            return Err(Error::Stale);
+        }
+        let (handle, request) = crate::snapshot_preview::channel(observed, self.runtime.clone());
+        self.requests
+            .try_send(Request::SnapshotPreview(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn guest_boot_status(
         &self,
         observed: ObservedVm,
@@ -1318,6 +1332,11 @@ async fn run(
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
                                     else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
                                 }
+                                Request::SnapshotPreview(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if discoveries.len()>=4 {request.fail(Error::Busy);}
+                                    else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
+                                }
                                 Request::SnapshotPolicySupport(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
@@ -1677,6 +1696,7 @@ async fn forward_alias(
                         Request::SecurityDiscovery(request) => request.fail(Error::Busy),
                         Request::SnapshotPolicySupport(request) => request.fail(Error::Busy),
                         Request::GuestBoot(request) => request.fail(Error::Busy),
+                        Request::SnapshotPreview(request) => request.fail(Error::Busy),
                         Request::JoinPeer(_,reply)=>{let _=reply.send(Err(Error::Busy));},
                         Request::Diagnose(request) => request.fail(Error::Busy),
                         Request::RememberMembers(_) => {},

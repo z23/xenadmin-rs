@@ -365,3 +365,8 @@ impl Error {
 
 mod pool_join;
 pub use pool_join::PoolJoinSelection;
+
+mod snapshot_inspection;
+mod snapshot_preview;
+pub use snapshot_inspection::{SnapshotAncestryRow, SnapshotDetails, SnapshotParent};
+pub use snapshot_preview::{SnapshotPreview, SnapshotPreviewQuery};

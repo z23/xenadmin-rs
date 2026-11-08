@@ -614,3 +614,7 @@ acknowledgement cannot enter between the durable proof check and local replaceme
 The desktop can update an existing saved root password only after positive, uninterrupted
 completion, with an unchanged captured profile and explicit opt-in. Unknown/acknowledged
 results, stale profiles, closed views and keyring failures never assume or replay a save.
+
+## Snapshot inspection
+
+Snapshot ancestry is a typed UUID graph separate from the owning VM relationship. A bounded, generation-fenced read query resolves the exact pool/VM/snapshot and retrieves only the known saved-preview association through the current trust/proxy policy. Image bytes stay out of serialized inventory, journals and inspector output; the desktop decodes them off-thread with image dimension/allocation limits. See the [snapshot inspection evidence](reports/2026-11-08-snapshot-inspection.md).

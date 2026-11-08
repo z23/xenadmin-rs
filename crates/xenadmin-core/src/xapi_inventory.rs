@@ -44,6 +44,17 @@ impl References {
         }
         self.link("vm", reference)
     }
+    fn snapshot_parent(&self, value: &Value) -> crate::SnapshotParent {
+        if value == "OpaqueRef:NULL" {
+            crate::SnapshotParent::Root
+        } else if let Some(id) = self.snapshot(value) {
+            crate::SnapshotParent::Snapshot(id)
+        } else if let Some(id) = self.vm(value) {
+            crate::SnapshotParent::Vm(id)
+        } else {
+            crate::SnapshotParent::Unresolved
+        }
+    }
     fn links<T: From<Uuid>>(&self, class: &str, references: &Value) -> Vec<T> {
         references
             .as_array()
@@ -580,12 +591,35 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     });
     for (_, record) in store
         .class("vm")
+        .filter(|(_, r)| r["is_a_snapshot"] == true)
+    {
+        if let Ok(id) = id(record) {
+            result.snapshots.insert(
+                id,
+                crate::SnapshotDetails {
+                    parent: refs.snapshot_parent(&record["parent"]),
+                    memory_vdi: refs.link("vdi", &record["suspend_VDI"]),
+                    memory_vdi_known: record["suspend_VDI"] == "OpaqueRef:NULL"
+                        || refs.link::<VdiId>("vdi", &record["suspend_VDI"]).is_some(),
+                    preview_available: record["blobs"][crate::snapshot_preview::KEY]
+                        .as_str()
+                        .is_some_and(|s| s != "OpaqueRef:NULL")
+                        || record["other_config"][crate::snapshot_preview::KEY]
+                            .as_str()
+                            .is_some_and(|s| !s.is_empty()),
+                },
+            );
+        }
+    }
+    for (_, record) in store
+        .class("vm")
         .filter(|(_, r)| r["is_a_snapshot"] != true)
     {
         if let Ok(id) = id(record) {
             result.vms.insert(
                 id,
                 VmDetails {
+                    snapshot_parent: refs.snapshot_parent(&record["parent"]),
                     domain_type: text_option(record, "domain_type"),
                     cores_per_socket: text_option(&record["platform"], "cores-per-socket"),
                     topology_known: record["platform"]
@@ -903,6 +937,60 @@ mod tests {
             ),
             event("VM", "vm", vm(2)),
         ]
+    }
+
+    #[test]
+    fn snapshot_ancestry_keeps_branches_missing_parents_cycles_and_checkpoint_storage() {
+        use crate::{SnapshotDetails, SnapshotParent};
+        let mut events = initial();
+        let mut current = vm(2);
+        current["parent"] = json!("OpaqueRef:b");
+        events.push(event("VM", "vm", current));
+        events.push(event(
+            "VDI",
+            "memory",
+            json!({"uuid":uuid(20),"virtual_size":"1024"}),
+        ));
+        for (name, n, parent) in [
+            ("a", 3, "OpaqueRef:NULL"),
+            ("b", 4, "OpaqueRef:a"),
+            ("c", 5, "OpaqueRef:a"),
+            ("lost", 6, "OpaqueRef:missing"),
+            ("cycle-a", 7, "OpaqueRef:cycle-b"),
+            ("cycle-b", 8, "OpaqueRef:cycle-a"),
+            ("foreign", 9, "OpaqueRef:vm"),
+        ] {
+            let mut record = vm(n);
+            record["is_a_snapshot"] = json!(true);
+            record["snapshot_of"] = json!("OpaqueRef:vm");
+            record["name_label"] = json!(name);
+            record["parent"] = json!(parent);
+            record["suspend_VDI"] = json!("OpaqueRef:memory");
+            record["blobs"] = json!({"XenCenter.VNCSnapshot":"OpaqueRef:preview"});
+            events.push(event("VM", name, record));
+        }
+        let i = Store::default().apply(&batch(events)).unwrap();
+        let rows = i.snapshot_ancestry(uuid(2).into());
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows.iter().map(|r| r.id).collect::<BTreeSet<_>>().len(), 7);
+        let row = |n| rows.iter().find(|r| r.id == uuid(n).into()).unwrap();
+        assert_eq!(row(3).depth, 0);
+        assert_eq!(row(4).depth, 1);
+        assert_eq!(row(5).depth, 1);
+        assert!(row(4).current_parent);
+        assert!(row(6).issue.is_some());
+        assert!(row(7).issue.is_some());
+        assert!(row(8).issue.is_some());
+        assert!(row(9).issue.is_some());
+        let details = &i.details.snapshots[&uuid(3).into()];
+        assert_eq!(details.parent, SnapshotParent::Root);
+        assert_eq!(details.memory_vdi, Some(uuid(20).into()));
+        assert!(details.preview_available);
+        let missing: SnapshotDetails = Default::default();
+        assert_eq!(missing.parent, SnapshotParent::Unresolved);
+        let public = serde_json::to_string(&i.details).unwrap();
+        assert!(!public.contains("OpaqueRef:"));
+        assert!(!public.contains("XenCenter.VNCSnapshot"));
     }
 
     #[test]
