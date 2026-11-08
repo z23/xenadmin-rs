@@ -1,3 +1,5 @@
+#[path = "network_fabric_ui.rs"]
+mod fabric;
 #[path = "network_interfaces.rs"]
 mod interfaces;
 #[path = "management_ipv6_bond_ui.rs"]
@@ -23,6 +25,7 @@ struct Review {
     lines: Vec<String>,
 }
 enum Form {
+    Fabric(Box<fabric::Editor>),
     Ipv6Bond(Box<ipv6_bond::Editor>),
     ManagementBond(Box<management_bond::Editor>),
     Management(Box<management::Editor>),
@@ -383,6 +386,7 @@ fn form_review(s: &mut State) {
                     lines,
                 )
             }
+            Form::Fabric(editor) => fabric::review(editor, i)?,
             Form::Interface(editor) => interfaces::review(editor, i)?,
             Form::Ipv6Bond(_)
             | Form::ManagementBond(_)
@@ -405,7 +409,7 @@ fn submit(s: &mut State) {
         }
         if s.network_workspace
             .as_ref()
-            .and_then(|w| service::unavailable(s, w))
+            .and_then(|w| service::unavailable(s, w).or_else(|| fabric::unavailable(s, w)))
             .is_some()
         {
             return Err(xenadmin_core::Error::ResourceConflict);
@@ -578,7 +582,9 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
                     k,
                 ));
         }
-        body = body.child(service::view(i, id, enabled, k));
+        body = body
+            .child(service::view(i, id, enabled, k))
+            .child(fabric::view(i, id, enabled, k));
     } else {
         body=body.child(caption("Choose a network to add VLAN interfaces, create bonds or edit attachment settings.",k).wrap());
         for n in &i.networks {
@@ -779,6 +785,7 @@ fn form(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
         Form::Ipv6Bond(editor) => body = body.child(ipv6_bond::form(editor, i, k)),
         Form::ManagementBond(editor) => body = body.child(management_bond::form(editor, i, k)),
         Form::Management(editor) => body = body.child(management::form(editor, i, k)),
+        Form::Fabric(editor) => body = body.child(fabric::form(editor, i, k)),
         Form::Interface(editor) => body = body.child(interfaces::form(editor, i, k)),
         Form::Topology(editor) => body = body.child(topology::form(editor, i, k)),
         Form::Browse => return browse(s, w, i, k),
@@ -1013,6 +1020,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     if let Some(reason) = topology::review_unavailable(s, w)
         .or_else(|| service::unavailable(s, w))
+        .or_else(|| fabric::unavailable(s, w))
         .or_else(|| management::review_unavailable(s, w))
         .or_else(|| ipv6_bond::unavailable(s, w))
     {
@@ -1076,6 +1084,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .disabled(
                         !s.can_mutate()
                             || service::unavailable(s, w).is_some()
+                            || fabric::unavailable(s, w).is_some()
                             || topology::review_unavailable(s, w).is_some()
                             || permission
                                 .as_ref()
@@ -1243,6 +1252,13 @@ pub(super) fn management_ipv6_bond_scene(s: &mut State) {
 }
 pub(super) fn service_scene(s: &mut State) {
     service::scene(s);
+}
+
+pub(super) fn sriov_scene(s: &mut State) {
+    fabric::sriov_scene(s);
+}
+pub(super) fn fabric_scene(s: &mut State) {
+    fabric::scene(s);
 }
 
 #[cfg(test)]

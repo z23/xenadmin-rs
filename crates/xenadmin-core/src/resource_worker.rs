@@ -783,7 +783,7 @@ impl ResourceRequest {
             if self.stopped_after_recovery() {
                 return Ok(());
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.network_fabric_plan.as_ref().is_some_and(|p|p.completed) || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
             let task = match task {
                 Ok(task) => {
                     backoff = 1;
@@ -796,6 +796,22 @@ impl ResourceRequest {
                 }
                 Err(error) => return Err(error),
             };
+            if super::network_fabric::operation(&self.record).is_some() {
+                super::network_fabric::task_receipt(&mut self.record, &task)?;
+                self.record = journal.resource_evidence(&self.record)?;
+                if self
+                    .record
+                    .network_fabric_plan
+                    .as_ref()
+                    .is_some_and(|p| p.completed)
+                {
+                    tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=super::network_fabric::identity(session,&mut self.record)=>result?};
+                    self.record = journal.resource_evidence(&self.record)?;
+                }
+                if self.stopped_after_recovery() {
+                    return Ok(());
+                }
+            }
             self.record.progress = task["progress"]
                 .as_f64()
                 .or_else(|| task["progress"].as_str()?.parse().ok())
@@ -805,7 +821,7 @@ impl ResourceRequest {
                 .as_array()
                 .is_some_and(|ops| ops.iter().any(|op| op == "cancel"));
             if (matches!(&self.record.action, super::ResourceAction::Storage(operation) if operation.creates_reference())
-                || matches!(&self.record.action,super::ResourceAction::Network(operation) if operation.creates())
+                || matches!(&self.record.action,super::ResourceAction::Network(operation) if operation.creates() || matches!(operation,crate::NetworkOperation::Fabric(_)))
                 || matches!(&self.record.action, super::ResourceAction::Pool(_))
                 || matches!(&self.record.action, super::ResourceAction::Appliance(_))
                 || matches!(
@@ -908,6 +924,13 @@ impl ResourceRequest {
                                 return Ok(());
                             }
                         }
+                        if super::network_fabric::operation(&self.record).is_some() {
+                            tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=super::network_fabric::identity(session,&mut self.record)=>result?};
+                            self.record = journal.resource_evidence(&self.record)?;
+                            if self.stopped_after_recovery() {
+                                return Ok(());
+                            }
+                        }
                         let created = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=super::network::verify(session,&self.record)=>result? };
                         self.reload(journal)?;
                         if self.stopped_after_recovery() {
@@ -956,8 +979,12 @@ impl ResourceRequest {
                     }
                     self.record.state = OperationState::Succeeded;
                     self.record.progress = Some(1.0);
-                    self.record.detail =
-                        "Host confirmed task completion and requested state".into();
+                    self.record.detail = if super::network_fabric::operation(&self.record).is_some()
+                    {
+                        "Host interface configuration verified. Pool coverage, controller traffic and any required reboot are separate checks".into()
+                    } else {
+                        "Host confirmed task completion and requested state".into()
+                    };
                     for step in &mut self.record.steps {
                         step.state = StepState::Verified;
                         step.detail = "Host task completed".into();

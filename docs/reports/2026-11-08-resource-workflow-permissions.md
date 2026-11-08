@@ -24,3 +24,7 @@ The workspace passed 1,156 tests (512 core unit, 312 direct protocol, 319 Rune, 
 ## Remaining scope
 
 HTTP transfer authorization, cross-pool workflows with separate authorities, protected map keys and source-dependent steps still need their own accurate capability evidence. Stage-specific management IPv6 requirements remain under the network workstream. Live RBAC behavior and desktop accessibility require the deferred disposable-lab/platform qualification; this increment does not claim them complete.
+
+## Integrated verification
+
+Main at `09981b8` passed 1,166 workspace tests (519 core unit, 312 direct protocol, 322 Rune and 13 profile/TLS/probe tests), strict Clippy and whitespace checks. This includes the previously integrated same-pool bulk moves and their shared migration permission mapping.

@@ -89,7 +89,14 @@ pub use metrics::{
     MetricCategory, MetricSample, MetricSeries, MetricSource, MetricTarget, Metrics,
     MetricsOptions, MetricsSnapshot, MetricsState, MetricsWindow, ObservedMetrics,
 };
+mod network_fabric;
 mod network_service;
+pub use network_fabric::{
+    NetworkFabricChange, NetworkFabricEvidence, NetworkFabricInventory, NetworkFabricKind,
+    NetworkFabricMember, NetworkFabricObject, NetworkFabricOperation, NetworkFabricReview,
+    NetworkPciDevice, NetworkSriov, NetworkTunnel, SdnController, SdnControllerConfiguration,
+    SriovConfigurationMode, TunnelProtocol,
+};
 mod network_topology;
 mod network_types;
 pub use network_service::{NetworkServiceInterface, NetworkServicePurpose, NetworkServiceReview};

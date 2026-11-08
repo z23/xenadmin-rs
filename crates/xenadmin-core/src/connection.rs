@@ -201,6 +201,12 @@ impl ConnectionSnapshot {
             crate::ResourceTarget::Vm(id) => inventory.vms.contains_key(&id),
             crate::ResourceTarget::Pif(id) => inventory.details.pifs.contains_key(&id),
             crate::ResourceTarget::Vlan(id) => inventory.details.vlans.contains_key(&id),
+            crate::ResourceTarget::Tunnel(id) => {
+                inventory.details.network_fabric.tunnels.contains_key(&id)
+            }
+            crate::ResourceTarget::Sriov(id) => {
+                inventory.details.network_fabric.sriovs.contains_key(&id)
+            }
             crate::ResourceTarget::Bond(id) => inventory.details.bonds.contains_key(&id),
             crate::ResourceTarget::SnapshotPolicy(id) => {
                 inventory.details.snapshot_policies.contains_key(&id)

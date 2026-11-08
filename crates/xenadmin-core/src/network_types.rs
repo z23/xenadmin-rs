@@ -161,6 +161,7 @@ fn purpose_valid(value: &Option<String>) -> bool {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkOperation {
+    Fabric(Box<crate::NetworkFabricOperation>),
     SetServicePurpose {
         review: crate::NetworkServiceReview,
         purpose: crate::NetworkServicePurpose,
@@ -241,6 +242,7 @@ impl NetworkOperation {
     }
     pub(crate) fn method(&self) -> &'static str {
         match self {
+            Self::Fabric(op) => op.method(),
             Self::SetServicePurpose { enabled: true, .. } => "Async.network.add_purpose",
             Self::SetServicePurpose { enabled: false, .. } => "Async.network.remove_purpose",
             NetworkOperation::ConfigureIpv6 { .. } => "Async.PIF.reconfigure_ipv6",
@@ -266,6 +268,7 @@ impl NetworkOperation {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Fabric(op) => op.label(),
             Self::SetServicePurpose { enabled: true, .. } => "Enable network service purpose",
             Self::SetServicePurpose { enabled: false, .. } => "Remove network service purpose",
             Self::ConfigureIpv6 { .. } => "Configure host IPv6 interface",
@@ -290,12 +293,14 @@ impl NetworkOperation {
     }
     pub(crate) fn creates(&self) -> bool {
         matches!(self, Self::CreateVlan { .. } | Self::CreateBond { .. })
+            || matches!(self,Self::Fabric(op) if op.creates())
     }
     pub(crate) fn validate(&self, target: ResourceTarget) -> Result<(), Error> {
         let pif = matches!(target, ResourceTarget::Pif(_));
         let network = matches!(target, ResourceTarget::Network(_));
         let bond = matches!(target, ResourceTarget::Bond(_));
         let valid = match self {
+            Self::Fabric(op) => return op.validate(target),
             Self::SetServicePurpose {
                 review,
                 purpose,

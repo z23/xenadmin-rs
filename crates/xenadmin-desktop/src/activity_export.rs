@@ -152,11 +152,29 @@ impl Entry {
             steps: steps(&record.steps),
             created: record
                 .created
+                .filter(|target| {
+                    record
+                        .network_fabric_created
+                        .as_ref()
+                        .is_none_or(|e| e.object.target() != *target)
+                })
                 .map(|target| Created {
                     kind: "Resource".into(),
                     uuid: target.uuid(),
                 })
                 .into_iter()
+                .chain(record.network_fabric_created.iter().flat_map(|e| {
+                    [
+                        Created {
+                            kind: "Network object".into(),
+                            uuid: e.object.uuid(),
+                        },
+                        Created {
+                            kind: "Host interface".into(),
+                            uuid: e.interface.uuid(),
+                        },
+                    ]
+                }))
                 .chain(
                     record
                         .storage_graph

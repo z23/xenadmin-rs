@@ -2064,3 +2064,6 @@ mod snapshot_preview;
 
 #[path = "fixtures/alarms.rs"]
 mod alarms;
+
+#[path = "fixtures/network_fabric.rs"]
+mod network_fabric;

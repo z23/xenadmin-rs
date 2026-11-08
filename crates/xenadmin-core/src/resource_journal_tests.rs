@@ -51,6 +51,8 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         result_reference: None,
         cancel_dispatched: false,
         baseline_networks: None,
+        network_fabric_plan: None,
+        network_fabric_created: None,
         network_baseline: None,
         storage_baseline: None,
         storage_trim_succeeded: false,

@@ -99,6 +99,8 @@ fn target_label(target: ResourceTarget) -> String {
         ResourceTarget::Pif(id) => format!("Interface {id}"),
         ResourceTarget::Vlan(id) => format!("VLAN {id}"),
         ResourceTarget::Bond(id) => format!("Bond {id}"),
+        ResourceTarget::Tunnel(id) => format!("Tunnel {id}"),
+        ResourceTarget::Sriov(id) => format!("SR-IOV network {id}"),
         ResourceTarget::Pool(id) => format!("Pool {id}"),
         ResourceTarget::Host(id) => format!("Host {id}"),
         ResourceTarget::Storage(id) => format!("Storage {id}"),
@@ -670,6 +672,21 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
                     caption(format!("Reviewed recovery endpoint: {endpoint}"), k).wrap_anywhere(),
                 );
             }
+        }
+        if let Some(e) = &record.network_fabric_created {
+            view = view.child(
+                caption(
+                    format!(
+                        "Created network object {} · interface {} · host {} · network {}",
+                        e.object.uuid(),
+                        e.interface,
+                        e.host,
+                        e.network
+                    ),
+                    k,
+                )
+                .wrap_anywhere(),
+            );
         }
         if let Some(created) = record.created {
             view = view

@@ -37,6 +37,10 @@ const OPTIONAL_CLASSES: &[&str] = &[
     "PBD",
     "Bond",
     "VLAN",
+    "Tunnel",
+    "Network_sriov",
+    "SDN_controller",
+    "PCI",
     "VM_guest_metrics",
     "VM_metrics",
     "host_metrics",
@@ -563,6 +567,21 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    pub(crate) fn network_fabric_inventory(
+        records: BTreeMap<String, BTreeMap<String, Value>>,
+    ) -> Result<Inventory, Error> {
+        let classes = records
+            .keys()
+            .map(|c| (c.clone(), crate::ClassAvailability::Available))
+            .collect();
+        Self {
+            records,
+            classes,
+            revision: 0,
+        }
+        .inventory()
+    }
+
     pub(crate) fn allows(&self, vm: VmId, action: &crate::OperationAction) -> bool {
         self.class("vm")
             .find(|(_, value)| value["uuid"].as_str() == Some(vm.to_string().as_str()))

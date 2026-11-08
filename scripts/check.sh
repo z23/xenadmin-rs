@@ -236,3 +236,8 @@ done
 
 "$check_binary" --snap artifacts/snapshot-schedule-review.png --scene snapshot-schedule-review --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/organization-review.png --scene organization-review --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/network-fabric.png --tree artifacts/network-fabric.json --scene network-fabric --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/network-fabric-compact.png --tree artifacts/network-fabric-compact.json --scene network-fabric --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/network-sriov.png --tree artifacts/network-sriov.json --scene network-sriov --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/network-sriov-compact.png --tree artifacts/network-sriov-compact.json --scene network-sriov --theme dark --size 513x652 --scale 1 --at 1

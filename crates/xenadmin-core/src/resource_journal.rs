@@ -144,6 +144,13 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let network_fabric_plan = payload
+                .get("network_fabric_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let network_topology_plan = payload
                 .get("network_topology_plan")
                 .filter(|v| !v.is_null())
@@ -258,6 +265,7 @@ impl Journal {
             record.storage_graph_plan = storage_graph_plan;
             record.storage_maintenance_plan = storage_maintenance_plan;
             record.disk_plan = disk_plan;
+            record.network_fabric_plan = network_fabric_plan;
             record.network_topology_plan = network_topology_plan;
             record.workflow_batch_plan = workflow_batch_plan;
             record.power_batch_plan = power_batch_plan;
@@ -288,6 +296,7 @@ impl Journal {
             }
             crate::cross_pool_backend::validate_record(&record)?;
             crate::host_power::validate_record(&record)?;
+            super::network_fabric::validate_record(&record)?;
             super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::root_password::validate_record(&record)?;
             crate::snapshot_capture::validate_record(&record)?;
@@ -308,6 +317,7 @@ impl Journal {
         .transpose()
     }
     pub(crate) fn resource_save(&self, record: &mut ResourceOperationRecord) -> Result<(), Error> {
+        super::network_fabric::validate_record(record)?;
         if let Some(p) = &record.management_ipv6_bond_plan {
             record.management_ipv6_bond = Some(p.evidence(&record.state));
         }
@@ -422,6 +432,14 @@ impl Journal {
                 .as_ref()
                 .is_some_and(|p| record.disk_plan.as_ref().is_none_or(|n| !n.extends(p)))
             {
+                return Err(Error::JournalChanged);
+            }
+            if old.network_fabric_plan.as_ref().is_some_and(|p| {
+                record
+                    .network_fabric_plan
+                    .as_ref()
+                    .is_none_or(|n| !n.follows(p))
+            }) {
                 return Err(Error::JournalChanged);
             }
             if old.network_topology_plan.as_ref().is_some_and(|p| {
@@ -609,6 +627,12 @@ impl Journal {
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
             );
         }
+        if let Some(plan) = &record.network_fabric_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "network_fabric_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         if let Some(plan) = &record.network_topology_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "network_topology_plan".into(),
@@ -785,6 +809,18 @@ impl Journal {
                 current_plan.configuration_observed |= received.configuration_observed;
                 current_plan.route_verified |= received.route_verified;
                 current.management_network = Some(current_plan.evidence());
+            }
+            super::network_fabric::validate_record(evidence)?;
+            match (
+                &mut current.network_fabric_plan,
+                &evidence.network_fabric_plan,
+            ) {
+                (Some(current), Some(new)) => current.merge(new)?,
+                (None, None) => {}
+                _ => return Err(Error::JournalChanged),
+            }
+            if current.network_fabric_created.is_none() {
+                current.network_fabric_created = evidence.network_fabric_created.clone();
             }
             super::alarms::validate_receipts(evidence)?;
             for host in &evidence.alarm_refresh_receipts {

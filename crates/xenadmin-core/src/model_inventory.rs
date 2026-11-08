@@ -9,6 +9,10 @@ identity!(PifId);
 identity!(PbdId);
 identity!(BondId);
 identity!(VlanId);
+identity!(TunnelId);
+identity!(NetworkSriovId);
+identity!(SdnControllerId);
+identity!(PciId);
 identity!(GuestMetricsId);
 identity!(VmMetricsId);
 identity!(HostMetricsId);
@@ -545,6 +549,8 @@ pub struct PoolDetails {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct InventoryDetails {
+    #[serde(default)]
+    pub network_fabric: crate::NetworkFabricInventory,
     #[serde(default)]
     pub alarm_policies: Vec<crate::AlarmPolicy>,
     #[serde(default)]

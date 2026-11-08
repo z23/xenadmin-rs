@@ -2,6 +2,8 @@ use super::*;
 use crate::model::*;
 use std::collections::BTreeSet;
 use uuid::Uuid;
+#[path = "xapi_network_fabric.rs"]
+mod network_fabric;
 
 struct References {
     classes: BTreeMap<String, BTreeMap<String, Uuid>>,
@@ -230,6 +232,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             .entry(class.to_ascii_lowercase())
             .or_insert(ClassAvailability::Unknown);
     }
+    result.network_fabric = network_fabric::decode(store, &refs, &mut result.classes);
     result.storage = records(store, "sr", &mut result.classes, |record| {
         let id = id(record)?;
         Ok((

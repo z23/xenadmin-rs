@@ -155,9 +155,13 @@ pub(super) async fn arguments(
     record: &ResourceOperationRecord,
 ) -> Result<Vec<Value>, Error> {
     let op = operation(record)?;
+    if matches!(op, NetworkOperation::Fabric(_)) {
+        return super::network_fabric::arguments(session, record).await;
+    }
     let (target, fresh) = xapi::read(session, record.target).await?;
     let mut args = vec![json!(target)];
     match op {
+        NetworkOperation::Fabric(_) => unreachable!(),
         NetworkOperation::SetServicePurpose { purpose, .. } => {
             super::network_service::check(session, record, &target, false).await?;
             args.push(json!(purpose.as_str()));
@@ -425,7 +429,9 @@ pub(super) async fn prepare(
     record: &mut ResourceOperationRecord,
 ) -> Result<Vec<Step>, Error> {
     arguments(session, record).await?;
-    if operation(record)?.creates() {
+    if matches!(operation(record)?, NetworkOperation::Fabric(_)) {
+        super::network_fabric::prepare(session, record).await?;
+    } else if operation(record)?.creates() {
         record.network_baseline = Some(NetworkCreationBaseline {
             vlans: all(session, "VLAN")
                 .await?
@@ -458,6 +464,9 @@ pub(super) async fn verify(
     record: &ResourceOperationRecord,
 ) -> Result<Option<ResourceTarget>, Error> {
     let op = operation(record)?;
+    if matches!(op, NetworkOperation::Fabric(_)) {
+        return super::network_fabric::verify(session, record).await;
+    }
     if op.creates() {
         return verify_created(session, record).await.map(Some);
     }
@@ -473,6 +482,7 @@ pub(super) async fn verify(
     }
     let (target, fresh) = xapi::read(session, record.target).await?;
     let matches = match op {
+        NetworkOperation::Fabric(_) => unreachable!(),
         NetworkOperation::SetServicePurpose { .. } => {
             super::network_service::check(session, record, &target, true).await?;
             true

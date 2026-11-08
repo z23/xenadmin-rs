@@ -44,6 +44,8 @@ pub(crate) mod host;
 pub(crate) mod journal;
 #[path = "network_operations.rs"]
 mod network;
+#[path = "network_fabric_backend.rs"]
+pub(crate) mod network_fabric;
 #[path = "network_service_backend.rs"]
 mod network_service;
 #[path = "snapshot_policy_operations.rs"]
@@ -80,6 +82,8 @@ pub enum ResourceTarget {
     Pif(PifId),
     Vlan(VlanId),
     Bond(BondId),
+    Tunnel(crate::TunnelId),
+    Sriov(crate::NetworkSriovId),
     Task(TaskId),
     Message(MessageId),
     Pbd(PbdId),
@@ -98,6 +102,8 @@ impl ResourceTarget {
             Self::Pif(_) => "PIF",
             Self::Vlan(_) => "VLAN",
             Self::Bond(_) => "Bond",
+            Self::Tunnel(_) => "Tunnel",
+            Self::Sriov(_) => "Network_sriov",
             Self::Task(_) => "task",
             Self::Message(_) => "message",
             Self::Pbd(_) => "PBD",
@@ -116,6 +122,8 @@ impl ResourceTarget {
             Self::Pif(id) => id.uuid(),
             Self::Vlan(id) => id.uuid(),
             Self::Bond(id) => id.uuid(),
+            Self::Tunnel(id) => id.uuid(),
+            Self::Sriov(id) => id.uuid(),
             Self::Task(id) => id.uuid(),
             Self::Message(id) => id.uuid(),
             Self::Pbd(id) => id.uuid(),
@@ -809,6 +817,10 @@ pub struct ResourceOperationRecord {
     pub(crate) cancel_dispatched: bool,
     #[serde(default)]
     pub(crate) baseline_networks: Option<Vec<NetworkId>>,
+    #[serde(skip)]
+    pub(crate) network_fabric_plan: Option<network_fabric::Plan>,
+    #[serde(default)]
+    pub network_fabric_created: Option<crate::NetworkFabricEvidence>,
     #[serde(default)]
     pub(crate) network_baseline: Option<crate::network_types::NetworkCreationBaseline>,
     #[serde(default)]
@@ -957,6 +969,8 @@ pub(crate) fn channel(
         result_reference: None,
         cancel_dispatched: false,
         baseline_networks: None,
+        network_fabric_plan: None,
+        network_fabric_created: None,
         network_baseline: None,
         storage_baseline: None,
         storage_trim_succeeded: false,
