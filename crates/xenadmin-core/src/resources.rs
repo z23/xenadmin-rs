@@ -16,6 +16,10 @@ mod snapshot_capture_journal;
 mod storage_auth_backend;
 #[path = "storage_auth_journal.rs"]
 mod storage_auth_journal;
+#[path = "storage_maintenance_backend.rs"]
+pub(crate) mod storage_maintenance;
+#[path = "storage_maintenance_journal.rs"]
+mod storage_maintenance_journal;
 use crate::{
     BondId, Error, HostId, MessageId, NetworkId, NetworkOperation, OperationId, OperationState,
     OperationStep, PbdId, PifId, PoolId, SrId, StorageOperation, TaskId, VlanId,
@@ -122,6 +126,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    StorageMaintenance {
+        target: ObservedResource,
+        operation: crate::StorageMaintenance,
+    },
     Alarm {
         target: ObservedResource,
         operation: crate::AlarmOperation,
@@ -233,6 +241,7 @@ pub enum ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
     SnapshotPreviewUpload(crate::SnapshotPreviewUpload),
+    StorageMaintenance(crate::StorageMaintenance),
     Alarm(crate::AlarmOperation),
     DeleteHostCrashdump(crate::HostCrashdump),
     Disk(crate::DiskOperation),
@@ -300,6 +309,7 @@ impl ResourceAction {
                 _ => format!("{}.set_other_config", target.class()),
             }]),
             Self::DeleteHostCrashdump(_) => Required::writes(["host_crashdump.destroy"]),
+            Self::StorageMaintenance(op) => op.permission_requirements(),
             Self::Disk(op) => op.permission_requirements(),
             Self::SnapshotPreviewUpload(_) => {
                 Required::writes(["VM.create_new_blob"]).with_host_dependent_steps()
@@ -365,6 +375,7 @@ impl ResourceAction {
         match self {
             Self::Alarm(op) => op.label(),
             Self::DeleteHostCrashdump(_) => "Delete retained host crashdump",
+            Self::StorageMaintenance(op) => op.label(),
             Self::Disk(op) => op.label(),
             Self::SnapshotPreviewUpload(_) => "Attach snapshot preview",
             Self::RootPassword(_) => "Change pool root password",
@@ -408,6 +419,7 @@ impl ResourceAction {
             Self::SnapshotPreviewUpload(upload) => upload.valid(target),
             Self::Alarm(op) => return op.validate(target),
             Self::DeleteHostCrashdump(dump) => return crashdump::validate_command(target, dump),
+            Self::StorageMaintenance(op) => return op.validate(target),
             Self::Disk(op) => return op.validate(target),
             Self::RootPassword(change) => {
                 matches!(target, ResourceTarget::Pool(_)) && change.valid()
@@ -539,6 +551,9 @@ impl ResourceCommand {
             Self::DeleteHostCrashdump { host, dump } => {
                 (host, ResourceAction::DeleteHostCrashdump(dump))
             }
+            Self::StorageMaintenance { target, operation } => {
+                (target, ResourceAction::StorageMaintenance(operation))
+            }
             Self::Disk { target, operation } => (target, ResourceAction::Disk(operation)),
             Self::HostPower { host, operation } => (host, ResourceAction::HostPower(operation)),
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
@@ -645,6 +660,8 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(skip)]
+    pub(crate) storage_maintenance_plan: Option<crate::storage_maintenance::Plan>,
     #[serde(skip)]
     pub(crate) crashdump_deletion: Option<crashdump::Plan>,
     #[serde(skip)]
@@ -804,6 +821,7 @@ pub(crate) fn channel(
         snapshot_preview_plan: None,
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
+        storage_maintenance_plan: None,
         disk_plan: None,
         disk_size: None,
         management_network: None,

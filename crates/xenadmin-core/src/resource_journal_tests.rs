@@ -8,6 +8,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         snapshot_preview_plan: None,
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
+        storage_maintenance_plan: None,
         disk_plan: None,
         disk_size: None,
         management_network: None,

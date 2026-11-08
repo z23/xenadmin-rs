@@ -34,7 +34,7 @@ Milestone order and dependencies are defined in the [implementation plan](PLAN.m
 | VM deletion | M4 | Distinguish removing a VM record from deleting its disks and shared resources |
 | Same-pool migration | M5 | Eligible targets, storage/network checks, progress, endpoint and console relocation |
 | Host operations | M5 | Maintenance, evacuation, shutdown, reboot, logs and relevant host properties |
-| Storage administration | M5 | Attach, detach, rescan, inspect capacity and connectivity |
+| Storage administration | M5 | Attach, detach, rescan, reviewed multi-host attachment repair, read-cache policy and provisioning-capability inspection |
 | Network administration | M5 | Create networks and supported bonds/VLANs, inspect physical and virtual interfaces |
 | Bulk transfers | M6 | Streamed XVA, raw/VHD disk and ordinary OVF/OVA transfers with cancellation |
 | Cross-pool migration | M6 | Qualified version/storage/network combinations, progress and partial-failure handling |

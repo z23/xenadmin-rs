@@ -499,6 +499,7 @@ impl Fixture {
                             json!({"result":"OpaqueRef:synthetic-secret"})
                         } else if let Some(reply) =
                             disk_administration_tests::rpc(method, p, &mut data)
+                                .or_else(|| storage_maintenance_tests::rpc(method, p, &mut data))
                         {
                             if reply.lost {
                                 return;
@@ -1149,3 +1150,6 @@ mod host_support_tests;
 
 #[path = "disk_administration_tests.rs"]
 mod disk_administration_tests;
+
+#[path = "storage_maintenance_tests.rs"]
+mod storage_maintenance_tests;

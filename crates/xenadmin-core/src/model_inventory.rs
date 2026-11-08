@@ -207,6 +207,10 @@ pub struct HostDetails {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageDetails {
+    #[serde(default)]
+    pub read_cache_override: Option<String>,
+    #[serde(default)]
+    pub read_cache_policy_known: bool,
     pub id: SrId,
     pub description: String,
     pub content_type: String,

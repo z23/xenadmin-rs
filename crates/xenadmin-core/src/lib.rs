@@ -1,3 +1,5 @@
+mod storage_maintenance;
+pub use storage_maintenance::{ReviewedStorageAttachment, StorageMaintenance};
 mod disk_administration;
 pub use disk_administration::{DiskConsumer, DiskOperation, OwnedDiskSource, ReviewedDisk};
 mod management_bond;

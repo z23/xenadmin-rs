@@ -1,3 +1,15 @@
+#[path = "storage_maintenance_view.rs"]
+mod maintenance;
+pub(super) fn maintenance_scene(s: &mut State) {
+    maintenance::scene(s, false);
+    s.storage_editor.as_mut().unwrap().maintenance_review = None;
+}
+pub(super) fn repair_scene(s: &mut State) {
+    maintenance::scene(s, false);
+}
+pub(super) fn cache_scene(s: &mut State) {
+    maintenance::scene(s, true);
+}
 use super::*;
 use xenadmin_core::{
     NfsVersion, ObservedResource, OperationId, PbdId, ResourceCommand, ResourceTarget, SrId,
@@ -13,6 +25,8 @@ enum Mode {
     Attachment,
 }
 pub(super) struct Editor {
+    maintenance_review: Option<xenadmin_core::StorageMaintenance>,
+    repair_selection: std::collections::BTreeSet<PbdId>,
     pool: PoolId,
     target: ResourceTarget,
     observed: Option<ObservedResource>,
@@ -78,6 +92,8 @@ fn open(s: &mut State, sr: Option<SrId>) {
         .map(|sr| sr.description.as_str())
         .unwrap_or("");
     s.storage_editor = Some(Editor {
+        maintenance_review: None,
+        repair_selection: Default::default(),
         pool: inventory.pool_id,
         target,
         observed,
@@ -926,7 +942,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     };
     let mut body = col()
         .gap(12.0)
-        .child(heading("Storage administration", k))
+        .child(heading("Storage administration", k).key("storage-heading"))
         .child(
             caption(
                 format!("Pool {}\nTarget {}", editor.pool, editor.target.uuid()),
@@ -934,7 +950,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .wrap_anywhere(),
         );
-    if let Some((_, source, secrets)) = &editor.cleanup_review {
+    if editor.maintenance_review.is_some() {
+        body = body.child(maintenance::review_body(s, k));
+    } else if let Some((_, source, secrets)) = &editor.cleanup_review {
         body = body
             .child(heading("Review temporary Secret cleanup", k))
             .child(caption(format!("Source operation: {source}"), k).wrap_anywhere());
@@ -983,6 +1001,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         let ResourceTarget::Storage(sr) = editor.target else {
             return el();
         };
+        body = body.child(maintenance::controls(s, k));
         body=body.child(heading(&editor.name.text,k)).child(caption("Host attachments · repair a detached connection with Attach / repair. Attachment status does not establish storage health.",k).wrap());
         if let Some(inventory) = &s.inventory {
             for attachment in inventory
@@ -1438,7 +1457,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
     }
-    if editor.review.is_none() && editor.cleanup_review.is_none() {
+    if editor.review.is_none()
+        && editor.cleanup_review.is_none()
+        && editor.maintenance_review.is_none()
+    {
         for record in s
             .resource_rows
             .iter()
@@ -1494,22 +1516,31 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             k,
         ));
     }
-    let permission = editor.review.as_ref().map(|(_, _, operation)| {
-        let requirements = operation.permission_requirements();
-        let requirements = if editor.review_auth_label.is_some() {
-            requirements.with_host_dependent_steps()
-        } else {
-            requirements
-        };
-        crate::session_permissions_view::assess(s, &requirements)
-    });
-    let mut footer = row().gap(8.0).justify_end().child(
+    let permission = editor
+        .maintenance_review
+        .as_ref()
+        .map(|op| crate::session_permissions_view::assess(s, &op.permission_requirements()))
+        .or_else(|| {
+            editor.review.as_ref().map(|(_, _, operation)| {
+                let requirements = operation.permission_requirements();
+                let requirements = if editor.review_auth_label.is_some() {
+                    requirements.with_host_dependent_steps()
+                } else {
+                    requirements
+                };
+                crate::session_permissions_view::assess(s, &requirements)
+            })
+        });
+    let mut footer = row().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Close")
             .variant(ButtonVariant::Ghost)
             .on_press(|s: &mut State| s.storage_editor = None)
-            .build(k),
+            .build(k)
+            .key("storage-close"),
     );
-    if editor.cleanup_review.is_some() {
+    if editor.maintenance_review.is_some() {
+        footer = footer.child(maintenance::footer(s, k));
+    } else if editor.cleanup_review.is_some() {
         footer = footer
             .child(
                 Button::new("Back")

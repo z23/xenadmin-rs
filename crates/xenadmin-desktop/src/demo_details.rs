@@ -91,6 +91,8 @@ pub(super) fn populate(inventory: &mut Inventory) {
         inventory.details.storage.insert(
             id,
             StorageDetails {
+                read_cache_override: None,
+                read_cache_policy_known: true,
                 id,
                 description: "Synthetic shared storage for UI previews.".into(),
                 content_type: "user".into(),

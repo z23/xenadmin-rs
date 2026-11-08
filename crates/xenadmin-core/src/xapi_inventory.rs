@@ -235,6 +235,14 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             StorageDetails {
+                read_cache_override: record["other_config"]["o_direct"]
+                    .as_str()
+                    .filter(|v| matches!(*v, "true" | "false"))
+                    .map(str::to_owned),
+                read_cache_policy_known: record["other_config"].as_object().is_some_and(|m| {
+                    !m.contains_key("o_direct")
+                        || matches!(m["o_direct"].as_str(), Some("true" | "false"))
+                }),
                 id,
                 description: string(record, "name_description"),
                 content_type: string(record, "content_type"),
