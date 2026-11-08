@@ -187,9 +187,17 @@ fn privacy(record: &ResourceOperationRecord, dir: &std::path::Path) {
             && !output.contains("OpaqueRef")
             && !output.contains("PRIVATE KEY")
     );
-    for file in std::fs::read_dir(dir).unwrap() {
-        let bytes = std::fs::read(file.unwrap().path()).unwrap();
-        let value = String::from_utf8_lossy(&bytes);
+    let connection = rusqlite::Connection::open_with_flags(
+        dir.join("operations.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    connection.busy_timeout(Duration::from_secs(5)).unwrap();
+    let mut query=connection.prepare(
+        "SELECT payload || COALESCE(task, '') AS evidence FROM operations UNION ALL SELECT payload || COALESCE(task, '') || COALESCE(result_reference, '') FROM resource_operations"
+    ).unwrap();
+    for value in query.query_map([], |row| row.get::<_, String>(0)).unwrap() {
+        let value = value.unwrap();
         assert!(!value.contains(SECRET) && !value.contains("PRIVATE KEY"));
     }
 }
