@@ -1,5 +1,4 @@
 use super::*;
-use xenadmin_core::{OperationAction, OperationRecord, OperationState};
 fn state() -> State {
     let mut s = init();
     demo(&mut s);
@@ -118,73 +117,4 @@ fn halted_storage_move_requires_transfer_network_and_fresh_home_host() {
     assert!(o.availability(i, id).is_available());
     i.details.vms.get_mut(&id).unwrap().affinity = Some(o.destination);
     assert!(!o.availability(i, id).is_available());
-}
-fn record(s: &State, index: u128, state: OperationState, destination: HostId) -> OperationRecord {
-    let f = s.vm_migration.as_ref().unwrap();
-    let mut o = f.review.clone().unwrap();
-    o.destination = destination;
-    serde_json::from_value(serde_json::json!({"id":uuid::Uuid::from_u128(8000+index),"pool":f.pool,"vm":f.source.id,"action":OperationAction::Migration(o),"state":state,"progress":null,"detail":"Synthetic migration outcome","created_at_ms":index})).unwrap()
-}
-#[test]
-fn console_follows_verified_destination_once_using_original_target_not_selection() {
-    let mut s = state();
-    let f = s.vm_migration.as_ref().unwrap();
-    let (pool, id, destination) = (f.pool, f.source.id, f.destination.unwrap());
-    console_view::opened(&mut s, pool, id, "Guest".into());
-    let r = record(&s, 1, OperationState::Succeeded, destination);
-    s.operation_rows.push(r);
-    assert!(!console_view::take_relocation(&mut s));
-    let old = s.inventory.as_ref().unwrap().vms[&id].host;
-    Arc::make_mut(s.inventory.as_mut().unwrap())
-        .vms
-        .get_mut(&id)
-        .unwrap()
-        .host = Some(destination);
-    s.table.select("another-vm");
-    assert!(console_view::take_relocation(&mut s));
-    assert!(!console_view::take_relocation(&mut s));
-    Arc::make_mut(s.inventory.as_mut().unwrap())
-        .vms
-        .get_mut(&id)
-        .unwrap()
-        .host = old;
-    assert!(!console_view::take_relocation(&mut s));
-    assert_eq!(s.console_ui.target().unwrap().vm, id);
-}
-#[test]
-fn console_ignores_old_success_unknown_outcomes_pool_switches_and_late_earlier_moves() {
-    let mut s = state();
-    let f = s.vm_migration.as_ref().unwrap();
-    let (pool, id, b) = (f.pool, f.source.id, f.destination.unwrap());
-    let c = *f.initial.hosts.keys().last().unwrap();
-    console_view::opened(&mut s, pool, id, "Guest".into());
-    s.operation_rows = vec![
-        record(&s, 1, OperationState::Succeeded, b),
-        record(&s, 2, OperationState::OutcomeUnknown, c),
-    ];
-    Arc::make_mut(s.inventory.as_mut().unwrap())
-        .vms
-        .get_mut(&id)
-        .unwrap()
-        .host = Some(b);
-    assert!(!console_view::take_relocation(&mut s));
-    s.operation_rows[1].state = OperationState::Succeeded;
-    Arc::make_mut(s.inventory.as_mut().unwrap())
-        .vms
-        .get_mut(&id)
-        .unwrap()
-        .host = Some(c);
-    assert!(console_view::take_relocation(&mut s));
-    Arc::make_mut(s.inventory.as_mut().unwrap())
-        .vms
-        .get_mut(&id)
-        .unwrap()
-        .host = Some(b);
-    assert!(!console_view::take_relocation(&mut s));
-    console_view::opened(&mut s, pool, id, "Guest".into());
-    assert!(!console_view::take_relocation(&mut s));
-    s.operation_rows
-        .push(record(&s, 3, OperationState::Succeeded, b));
-    Arc::make_mut(s.inventory.as_mut().unwrap()).pool_id = PoolId::from(uuid::Uuid::from_u128(88));
-    assert!(!console_view::take_relocation(&mut s));
 }

@@ -87,7 +87,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P04-04 | Mouse wheel/middle button | Wheel and middle-button mapping implemented; real guest qualification open |
 | P04-05 | Extended QEMU keys, layouts and shortcut capture | QEMU physical-key extension implemented with fallback; non-US/shortcut-capture qualification remains open |
 | P04-06 | Controlled clipboard send/receive | Explicit guest clipboard send/receive with limits and protocol negotiation implemented; platform/guest qualification open |
-| P04-07 | Reopen after reboot/migration/session replacement | Explicit reconnect and one-shot follow of verified local same-pool migrations implemented; external migration, reboot/session replacement and live qualification remain open |
+| P04-07 | Reopen after reboot/migration/session replacement | Bounded automatic reconnect follows the pinned VM's current same-pool host, boot marker and session generation; stale/missing/offline targets release input, failures stop after five attempts, and manual/opt-out controls remain available. Model/Rune fixtures verified; cross-pool routing and live qualification remain open ([report](reports/2026-11-08-console-recovery.md)) |
 | P04-08 | Keep console target aligned with Details/actions | Console target pinned to pool/VM identity; selection changes no longer silently retarget input; lab qualification open |
 | P04-09 | Scaling, framebuffer resize and cursor behavior | Fit/actual-size/panning and cursor handling extended; live resize/display matrix remains open |
 | P04-10 | Full-screen, detached and multiple console windows | Fullscreen implemented; detached/multiple windows require further Rune integration |

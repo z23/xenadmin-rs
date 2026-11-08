@@ -3,13 +3,16 @@ use rune::{
     El, Key, KeyEvent, Modifier, Phase, PhysicalInput, PhysicalKeyCode, PointerButton, SurfaceFit,
     Tx, col, el, row,
 };
-use rune_kit::{Button, ButtonVariant, Kit};
+use rune_kit::{Button, ButtonVariant, Checkbox, Kit};
 use std::sync::atomic::{AtomicU64, Ordering};
 use xenadmin_core::{ConsoleInput, ConsoleState, PoolId, VmId};
 
 #[path = "console_export.rs"]
 mod export;
 pub(super) use export::poll as poll_export;
+#[path = "console_recovery.rs"]
+mod recovery;
+pub(super) use recovery::poll as poll_recovery;
 
 #[derive(Clone)]
 pub(super) struct ConsoleTarget {
@@ -20,7 +23,7 @@ pub(super) struct ConsoleTarget {
 #[derive(Default)]
 pub(super) struct ConsoleUi {
     target: Option<ConsoleTarget>,
-    followed_migrations: std::collections::BTreeSet<xenadmin_core::OperationId>,
+    recovery: recovery::Recovery,
     serial: u64,
     actual_size: bool,
     pointer: [f32; 2],
@@ -37,78 +40,31 @@ pub(super) fn opened(s: &mut State, pool: PoolId, vm: VmId, name: String) {
     release(s);
     s.console_ui = ConsoleUi {
         target: Some(ConsoleTarget { pool, vm, name }),
-        followed_migrations: s
-            .operation_rows
-            .iter()
-            .filter(|r| r.pool == pool && r.vm == vm && r.state.terminal())
-            .map(|r| r.id)
-            .collect(),
         serial: next_serial(),
         ..Default::default()
     };
     s.console_pixels = rune::Pixels::new();
+    recovery::opened(s);
 }
 
-/// Consume each verified local migration once, after inventory observes its destination.
-/// Selection changes and late source-host events cannot redirect or reopen this console.
-pub(super) fn take_relocation(s: &mut State) -> bool {
-    let Some(target) = s.console_ui.target.as_ref() else {
-        return false;
-    };
-    let Some(inventory) = s.inventory.as_ref().filter(|i| i.pool_id == target.pool) else {
-        return false;
-    };
-    let Some(vm) = inventory
+pub(super) fn recovery_scene(s: &mut State) {
+    crate::demo(s);
+    let inventory = s.inventory.as_ref().unwrap();
+    let vm = inventory
         .vms
-        .get(&target.vm)
-        .filter(|v| v.power_state == xenadmin_core::PowerState::Running)
-    else {
-        return false;
-    };
-    if s.console_ui.followed_migrations.len() >= 512 {
-        return false;
-    }
-    let candidate = s.operation_rows.iter().rev().find(|record| {
-        record.pool == target.pool
-            && record.vm == target.vm
-            && !s.console_ui.followed_migrations.contains(&record.id)
-            && matches!(&record.action, xenadmin_core::OperationAction::Migration(_))
-    });
-    if let Some(record) = candidate
-        && record.state == xenadmin_core::OperationState::Succeeded
-        && matches!(&record.action,xenadmin_core::OperationAction::Migration(m) if m.live&&vm.host==Some(m.destination))
-    {
-        let cutoff = (record.created_at_ms, record.id);
-        for record in &s.operation_rows {
-            if record.pool == target.pool
-                && record.vm == target.vm
-                && (record.created_at_ms, record.id) <= cutoff
-                && matches!(&record.action, xenadmin_core::OperationAction::Migration(_))
-            {
-                s.console_ui.followed_migrations.insert(record.id);
-            }
-        }
-        true
-    } else {
-        false
-    }
-}
-pub(super) fn follow_migration(s: &mut State) -> bool {
-    let ready = s.connection.is_some()
-        && s.snapshot.as_ref().is_some_and(|snapshot| {
-            s.console_ui.target.as_ref().is_some_and(|target| {
-                snapshot
-                    .inventory()
-                    .is_some_and(|i| i.pool_id == target.pool)
-                    && snapshot.observe_vm(target.vm).is_ok()
-            })
-        });
-    if ready && take_relocation(s) {
-        s.reconnect_console();
-        true
-    } else {
-        false
-    }
+        .values()
+        .find(|vm| vm.power_state == xenadmin_core::PowerState::Running)
+        .unwrap();
+    let (pool, id, name) = (inventory.pool_id, vm.id, vm.name.clone());
+    opened(s, pool, id, name);
+    s.console_snapshot = Some(std::sync::Arc::new(xenadmin_core::ConsoleSnapshot {
+        state: ConsoleState::Closed,
+        frame: None,
+        cursor: None,
+        guest_clipboard: None,
+        clipboard_utf8: false,
+        extended_keys: false,
+    }));
 }
 
 fn next_serial() -> u64 {
@@ -121,6 +77,7 @@ pub(super) fn reconnecting(s: &mut State) {
     s.console_ui.message = None;
     s.console_ui.export = Default::default();
     s.console_pixels = rune::Pixels::new();
+    recovery::opened(s);
 }
 pub(super) fn release(s: &mut State) {
     if let Some(console) = &s.console {
@@ -131,6 +88,9 @@ pub(super) fn release(s: &mut State) {
     s.console_ui.wheel = [0.0; 2];
 }
 fn send(s: &mut State, input: ConsoleInput) {
+    if !recovery::input_ready(s) {
+        return;
+    }
     if let Some(console) = &s.console
         && let Err(error) = console.input(input)
     {
@@ -139,10 +99,7 @@ fn send(s: &mut State, input: ConsoleInput) {
 }
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
-    let connected = matches!(
-        s.console_snapshot.as_ref().map(|x| &x.state),
-        Some(ConsoleState::Connected)
-    );
+    let connected = recovery::input_ready(s);
     let status = match s.console_snapshot.as_ref().map(|x| &x.state) {
         Some(ConsoleState::Connected) => "Connected directly to the host console".into(),
         Some(ConsoleState::Failed(error)) => {
@@ -324,6 +281,22 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 ),
         )
         .child(caption(status, k).wrap())
+        .children(
+            s.console_ui
+                .recovery
+                .status()
+                .map(|status| caption(status, k).wrap()),
+        )
+        .child(
+            Checkbox::new(s.console_ui.recovery.enabled)
+                .label("Reconnect automatically")
+                .on_toggle(|s: &mut State| {
+                    s.console_ui.recovery.enabled = !s.console_ui.recovery.enabled;
+                    release(s);
+                })
+                .build(k)
+                .key("console-auto-reconnect"),
+        )
         .child(
             row()
                 .gap(8.0)
@@ -331,7 +304,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .child(
                     Button::new("Reconnect")
                         .disabled(connected)
-                        .on_press(|s: &mut State| s.reconnect_console())
+                        .on_press(recovery::manual)
                         .build(k)
                         .key("reconnect-console"),
                 )

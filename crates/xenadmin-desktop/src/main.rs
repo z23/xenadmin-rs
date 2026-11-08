@@ -688,7 +688,7 @@ impl State {
         });
     }
     fn selected(&self) -> Option<Cow<'_, DisplayRow>> {
-        let target = if self.console.is_some() {
+        let target = if self.console.is_some() || self.demo && self.console_ui.target().is_some() {
             self.console_ui.target().map(|t| (t.pool, t.vm))
         } else {
             self.devices.as_ref().map(|t| (t.pool, t.vm))
@@ -747,7 +747,7 @@ fn merge_operation_rows(
     rows
 }
 
-fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
+fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= search_view::poll(s);
     changed |= resource_admin::poll(s);
@@ -816,7 +816,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         }
     }
     let Some(connection) = &s.connection else {
-        return activity::poll(s) || changed;
+        return console_view::poll_recovery(s, clock, tx) | activity::poll(s) | changed;
     };
     let snapshot = connection.latest();
     if s.snapshot
@@ -824,7 +824,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         .is_some_and(|last| Arc::ptr_eq(last, &snapshot))
     {
         changed |= activity::poll(s);
-        changed |= console_view::follow_migration(s);
+        changed |= console_view::poll_recovery(s, clock, tx);
         return changed;
     }
     s.inventory = snapshot.inventory().cloned();
@@ -838,7 +838,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     }
     s.rebuild();
     activity::poll(s);
-    console_view::follow_migration(s);
+    console_view::poll_recovery(s, clock, tx);
     true
 }
 fn bytes(value: u64) -> String {
@@ -1160,7 +1160,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.devices.is_some() {
         content = vm_devices::view(s, &k);
     }
-    if s.console.is_some() {
+    if s.console.is_some() || s.demo && s.console_ui.target().is_some() {
         content = console_view::view(s, &k);
     }
     if s.metrics.is_some() {
@@ -2014,6 +2014,7 @@ fn main() {
         scenes: &[
             ("demo", demo),
             ("batch-power", bulk_power::scene),
+            ("console-recovery", console_view::recovery_scene),
             ("search-pools", search_view::scene),
             ("performance", metrics_view::scene),
             ("unavailable-actions", |s| {
