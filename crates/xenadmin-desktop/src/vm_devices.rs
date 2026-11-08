@@ -136,6 +136,13 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     content = content
         .child(interfaces)
         .child(lifecycle::operation_history(s, inventory, target.vm, k))
+        .child(
+            Button::new("Mount guest tools media")
+                .variant(ButtonVariant::Outline)
+                .on_press(crate::guest_tools_view::open)
+                .build(k)
+                .key("open-guest-tools"),
+        )
         .child(guest_tools(inventory, target.vm, k));
     page = page.child(content);
     if let Some(dialog) = properties::dialog(s, k)

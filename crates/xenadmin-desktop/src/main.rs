@@ -7,6 +7,7 @@ mod console_view;
 mod cross_pool_vm;
 mod demo_details;
 mod dev_inspection;
+mod guest_tools_view;
 mod host_admin;
 mod host_console;
 mod host_power_view;
@@ -158,6 +159,7 @@ impl ActionDiagnostics {
 }
 struct State {
     information: Option<inventory_information::Panel>,
+    guest_tools: Option<guest_tools_view::Panel>,
     snapshot_inspection: Option<snapshot_inspection::Panel>,
     snapshot_decoder: snapshot_inspection::Decoder,
     snapshot_tree: bool,
@@ -318,6 +320,7 @@ fn init() -> State {
         unknown_review: None,
         force_action: None,
         information: None,
+        guest_tools: None,
         snapshot_inspection: None,
         snapshot_decoder: Default::default(),
         snapshot_tree: true,
@@ -1506,6 +1509,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
+    let root = if s.guest_tools.is_some() {
+        rune_kit::root(root, [guest_tools_view::dialog(s, &k)])
+    } else {
+        root
+    };
     let root = if s.information.is_some() {
         rune_kit::root(root, [inventory_information::dialog(s, &k)])
     } else {
@@ -1594,6 +1602,13 @@ fn details(s: &State, k: &Kit) -> El {
                 .on_press(vm_snapshots::open)
                 .build(k)
                 .key("open-snapshots"),
+        );
+        detail = detail.child(
+            Button::new("Guest tools media")
+                .variant(ButtonVariant::Outline)
+                .on_press(guest_tools_view::open)
+                .build(k)
+                .key("open-guest-tools"),
         );
     }
     detail = detail
@@ -2250,6 +2265,8 @@ fn main() {
             #[cfg(debug_assertions)]
             ("pool-join", profiles_view::join_scene),
             ("root-password", profiles_view::root_password_scene),
+            ("guest-tools", guest_tools_view::scene),
+            ("guest-tools-review", guest_tools_view::review_scene),
             ("pool-security-review", |s| {
                 pool_security_view::scene(s, true)
             }),

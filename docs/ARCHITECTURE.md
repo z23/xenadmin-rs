@@ -631,3 +631,14 @@ not establish authority. Every individual RPC still uses its current session gua
 fresh identity/capability/state checks remain independent prerequisites. See the
 [implementation report](reports/2026-11-08-permission-reviews.md) for covered dialogs and
 retained dedicated workflow maps.
+
+
+## Guest tools media
+
+`DeviceOperation::MountGuestTools` captures the VM observation, exact CD drive, tools VDI,
+ISO SR and optional prior VDI. The durable device lifecycle executes separate eject/insert
+steps; both steps re-resolve the VM/CD/media identities and storage reachability. A failed
+insert can leave the reviewed drive empty. Reconciliation reads postconditions and never
+replays either write or automatically remounts old media. The UI holds its captured pool/VM
+review across selection changes and reports the tracked operation. Guest installation is
+performed inside the guest; mounting media does not establish that tools were installed.

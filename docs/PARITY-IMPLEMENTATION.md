@@ -126,7 +126,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Reviewed creation modes, halted UEFI Secure Boot policy and read-only guest/pool readiness implemented; installed-image BIOS/UEFI switches refused, fixture verified, live enforcement qualification open ([evidence](reports/2026-11-08-firmware-templates.md)) |
 | P06-09 | HVM shadow-memory settings | Reviewed halted/live shadow-memory multiplier editing implemented with modern HVM identity and advertised capability checks; fixture verified, live qualification open |
 | P06-10 | Cloud-config parameters/config drive | Reviewed halted-VM NoCloud FAT drive with private user-data/metadata/network-config, chosen SR/slot, direct upload and read-only attachment implemented; no automatic boot or guest execution claim. Local protocol/Rune fixtures verified; live guest qualification open. See [NoCloud report](reports/2026-11-08-cloud-init.md) |
-| P06-11 | Guest tools status/installation media | Guest-reported tools/OS/address display implemented; tools-install media workflow remains queued |
+| P06-11 | Guest tools status/installation media | Guest-reported tools/OS/address display and reviewed host-advertised/legacy tools ISO mounting into a running or halted VM implemented; exact CD/media/storage checks, partial failure and no-replay recovery fixture verified. Installer execution remains inside the guest; live qualification open ([report](reports/2026-11-08-guest-tools-media.md)) |
 
 ## 7. VM disks, removable media and NICs
 

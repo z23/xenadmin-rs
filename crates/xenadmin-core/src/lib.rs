@@ -373,3 +373,6 @@ mod snapshot_inspection;
 mod snapshot_preview;
 pub use snapshot_inspection::{SnapshotAncestryRow, SnapshotDetails, SnapshotParent};
 pub use snapshot_preview::{SnapshotPreview, SnapshotPreviewQuery};
+
+mod guest_tools;
+pub use guest_tools::GuestToolsMediaSource;

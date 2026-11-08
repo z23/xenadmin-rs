@@ -537,6 +537,8 @@ pub struct PoolDetails {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct InventoryDetails {
     #[serde(default)]
+    pub tools_media: BTreeMap<VdiId, crate::GuestToolsMediaSource>,
+    #[serde(default)]
     pub snapshots: BTreeMap<SnapshotId, crate::SnapshotDetails>,
     #[serde(default)]
     pub pif_metrics: BTreeMap<PifMetricsId, PifMetrics>,

@@ -321,6 +321,13 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             },
         ))
     });
+    for (_, record) in store.class("vdi") {
+        if let (Ok(id), Some(source)) = (id::<VdiId>(record), crate::guest_tools::source(record))
+            && result.vdis.contains_key(&id)
+        {
+            result.tools_media.insert(id, source);
+        }
+    }
     result.vbds = records(store, "vbd", &mut result.classes, |record| {
         let id = id(record)?;
         Ok((
@@ -937,6 +944,38 @@ mod tests {
             ),
             event("VM", "vm", vm(2)),
         ]
+    }
+
+    #[test]
+    fn guest_tools_media_keeps_host_flags_and_known_legacy_names_separate() {
+        let mut events = initial();
+        for (n, name, flag) in [
+            (20, "vendor-tools.iso", json!(true)),
+            (21, "xs-tools.iso", json!(false)),
+            (22, "guest-tools.iso", Value::Null),
+            (23, "installer.iso", json!(false)),
+            (24, "unrecognized.iso", json!("true")),
+        ] {
+            events.push(event(
+                "VDI",
+                &format!("disk-{n}"),
+                json!({"uuid":uuid(n),"name_label":name,"is_tools_iso":flag}),
+            ));
+        }
+        let inventory = Store::default().apply(&batch(events)).unwrap();
+        assert_eq!(
+            inventory.details.tools_media,
+            BTreeMap::from([
+                (uuid(20).into(), crate::GuestToolsMediaSource::HostFlag),
+                (uuid(21).into(), crate::GuestToolsMediaSource::LegacyName),
+                (uuid(22).into(), crate::GuestToolsMediaSource::LegacyName),
+            ])
+        );
+        assert!(
+            !serde_json::to_string(&inventory.details.tools_media)
+                .unwrap()
+                .contains("OpaqueRef:")
+        );
     }
 
     #[test]

@@ -15,6 +15,12 @@ pub struct DeviceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "device_action", rename_all = "snake_case")]
 pub enum DeviceOperation {
+    MountGuestTools {
+        vbd: VbdId,
+        image: VdiId,
+        sr: SrId,
+        previous: Option<VdiId>,
+    },
     Property {
         change: crate::DeviceProperty,
     },
@@ -85,6 +91,10 @@ impl DeviceOperation {
     pub fn permission_requirements(&self) -> crate::PermissionRequirements {
         use DeviceOperation::*;
         let methods: &[&str] = match self {
+            MountGuestTools {
+                previous: Some(_), ..
+            } => &["VBD.eject", "VBD.insert"],
+            MountGuestTools { previous: None, .. } => &["VBD.insert"],
             Property { change } => return crate::device_lifecycle::property_requirements(change),
             CreateDisk { .. } => &["VDI.create", "VBD.create"],
             AttachDisk { .. } | AddCdDrive { .. } => &["VBD.create"],
@@ -120,6 +130,7 @@ impl DeviceOperation {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::MountGuestTools { .. } => "Mount guest tools media",
             Self::Property { change } => change.label(),
             Self::CreateDisk { .. } => "Create and attach disk",
             Self::AttachDisk { .. } => "Attach existing disk",
@@ -141,6 +152,20 @@ impl DeviceOperation {
 
     pub(crate) fn resources(&self) -> Vec<String> {
         match self {
+            Self::MountGuestTools {
+                vbd,
+                image,
+                sr,
+                previous,
+            } => {
+                let mut resources = vec![
+                    format!("vbd:{vbd}"),
+                    format!("vdi:{image}"),
+                    format!("sr:{sr}"),
+                ];
+                resources.extend(previous.iter().map(|id| format!("vdi:{id}")));
+                resources
+            }
             Self::Property { change } => change.resources(),
             Self::CreateDisk { sr, .. } => vec![format!("sr:{sr}")],
             Self::AttachDisk { vdi, .. } => vec![format!("vdi:{vdi}")],
@@ -328,7 +353,8 @@ impl DeviceOperation {
     pub(crate) fn is_lifecycle(&self) -> bool {
         matches!(
             self,
-            Self::Property { .. }
+            Self::MountGuestTools { .. }
+                | Self::Property { .. }
                 | Self::CreateDisk { .. }
                 | Self::AttachDisk { .. }
                 | Self::DetachDisk { .. }

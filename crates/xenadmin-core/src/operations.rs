@@ -2058,3 +2058,7 @@ mod resource_journal_tests;
 #[cfg(test)]
 #[path = "vm_journal_privacy_tests.rs"]
 mod journal_privacy_tests;
+
+#[cfg(test)]
+#[path = "guest_tools_tests.rs"]
+mod guest_tools_tests;

@@ -92,6 +92,9 @@ pub(crate) fn availability(
     let Some(guest) = inventory.vms.get(&vm) else {
         return ActionAvailability::Stale;
     };
+    if let MountGuestTools { .. } = operation {
+        return crate::guest_tools::availability(operation, inventory, vm);
+    }
     if let Property { change } = operation {
         return properties::availability(change, inventory, vm);
     }
@@ -301,6 +304,7 @@ impl NicSettings {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Step {
+    GuestTools(crate::guest_tools::Step),
     Property(properties::PropertyStep),
     CreateDisk {
         sr: SrId,
@@ -344,6 +348,7 @@ pub(crate) enum Step {
 impl Step {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::GuestTools(step) => step.label(),
             Self::Property(step) => step.change.label(),
             Self::CreateDisk { .. } => "Create disk",
             Self::Attach { cd: true, .. } => "Create CD drive",
@@ -502,6 +507,9 @@ pub(crate) async fn plan(
 ) -> Result<Plan, Error> {
     use DeviceOperation::*;
     validate(operation)?;
+    if let MountGuestTools { .. } = operation {
+        return crate::guest_tools::plan(session, vm, operation).await;
+    }
     if let Property { change } = operation {
         return properties::plan(session, vm, change).await;
     }
@@ -712,8 +720,8 @@ fn other_config(id: OperationId, owned: bool) -> Value {
 }
 
 pub(crate) struct Prepared {
-    method: &'static str,
-    parameters: Vec<Value>,
+    pub(crate) method: &'static str,
+    pub(crate) parameters: Vec<Value>,
 }
 impl Prepared {
     pub async fn send(self, session: &Session) -> Result<Value, Error> {
@@ -728,12 +736,15 @@ pub(crate) async fn prepare_step(
     plan: &Plan,
     index: usize,
 ) -> Result<Prepared, Error> {
+    if let Step::GuestTools(step) = &plan.steps[index] {
+        return crate::guest_tools::prepare(session, vm, step).await;
+    }
     if let Step::Property(step) = &plan.steps[index] {
         return properties::prepare(session, vm, step).await;
     }
     let vm_ref = guest(session, vm, true).await?;
     let prepared = match &plan.steps[index] {
-        Step::Property(_) => unreachable!(),
+        Step::GuestTools(_) | Step::Property(_) => unreachable!(),
         Step::CreateDisk { sr, name, size } => {
             let (sr_ref, record) = fresh(session, "SR", sr.uuid()).await?;
             if record["content_type"] == "iso" {
@@ -954,6 +965,9 @@ pub(crate) async fn verify_step(
     plan: &mut Plan,
     index: usize,
 ) -> Result<bool, Error> {
+    if let Step::GuestTools(step) = &plan.steps[index] {
+        return crate::guest_tools::verify(session, vm, step).await;
+    }
     if let Step::Property(step) = &plan.steps[index] {
         return properties::verify(session, vm, step).await;
     }
