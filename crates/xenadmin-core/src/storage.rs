@@ -33,9 +33,37 @@ pub enum StorageLocation {
     },
     Iscsi {
         portal: String,
+        #[serde(default = "default_iscsi_port")]
+        port: u16,
         target_iqn: String,
         scsi_id: String,
     },
+}
+fn default_iscsi_port() -> u16 {
+    3260
+}
+pub(crate) fn storage_server(value: &str) -> bool {
+    let ip = value
+        .strip_prefix('[')
+        .and_then(|v| v.strip_suffix(']'))
+        .unwrap_or(value);
+    ip.parse::<std::net::IpAddr>().is_ok()
+        || (!value.is_empty()
+            && value.len() <= 253
+            && value.split('.').all(|part| {
+                !part.is_empty()
+                    && part.len() <= 63
+                    && !part.starts_with('-')
+                    && !part.ends_with('-')
+                    && part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            }))
+}
+pub(crate) fn storage_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-_.:".contains(&c))
 }
 impl StorageLocation {
     pub fn kind(&self) -> &'static str {
@@ -53,20 +81,10 @@ impl StorageLocation {
         }
     }
     pub(crate) fn validate(&self) -> bool {
-        let host = |s: &str| {
-            !s.is_empty()
-                && s.len() <= 253
-                && s.bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b".-:[]".contains(&c))
-        };
+        let host = storage_server;
         let path =
             |s: &str| s.starts_with('/') && s.len() <= 4096 && !s.chars().any(char::is_control);
-        let token = |s: &str| {
-            !s.is_empty()
-                && s.len() <= 256
-                && s.bytes()
-                    .all(|c| c.is_ascii_alphanumeric() || b"-_.:".contains(&c))
-        };
+        let token = storage_token;
         match self {
             Self::Nfs {
                 server, path: p, ..
@@ -76,10 +94,12 @@ impl StorageLocation {
             } => host(server) && path(p),
             Self::Iscsi {
                 portal,
+                port,
                 target_iqn,
                 scsi_id,
             } => {
                 host(portal)
+                    && *port > 0
                     && token(target_iqn)
                     && target_iqn.starts_with("iqn.")
                     && token(scsi_id)
@@ -95,9 +115,12 @@ impl StorageLocation {
             }
             Self::Iscsi {
                 portal,
+                port,
                 target_iqn,
                 scsi_id,
-            } => json!({"target":portal,"targetIQN":target_iqn,"SCSIid":scsi_id}),
+            } => {
+                json!({"target":portal,"port":port.to_string(),"targetIQN":target_iqn,"SCSIid":scsi_id})
+            }
         };
         if let Self::Nfs { version, .. } | Self::IsoNfs { version, .. } = self
             && let Some(version) = version.value()
@@ -275,6 +298,10 @@ pub(crate) fn location_from_config(config: &serde_json::Value) -> Option<Storage
     } else {
         StorageLocation::Iscsi {
             portal: text("target")?,
+            port: match config.get("port") {
+                None => 3260,
+                Some(value) => value.as_str()?.parse().ok()?,
+            },
             target_iqn: text("targetIQN")?,
             scsi_id: text("SCSIid")?,
         }
@@ -325,6 +352,22 @@ mod tests {
         assert_eq!(paths[0].active, 2);
     }
     #[test]
+    fn iscsi_port_survives_projection_and_old_journal_defaults() {
+        let old = json!({"Iscsi":{"portal":"192.0.2.2","target_iqn":"iqn.2026-01.example:test","scsi_id":"3600abc"}});
+        let location: StorageLocation = serde_json::from_value(old).unwrap();
+        assert_eq!(location.device_config()["port"], "3260");
+        let config = json!({"target":"192.0.2.2","targetIQN":"iqn.2026-01.example:test","SCSIid":"3600abc","port":"3261"});
+        assert_eq!(
+            location_from_config(&config).unwrap().device_config()["port"],
+            "3261"
+        );
+        for invalid in ["0", "65536", "bad"] {
+            let mut config = config.clone();
+            config["port"] = json!(invalid);
+            assert!(location_from_config(&config).is_none());
+        }
+    }
+    #[test]
     fn typed_locations_reject_embedded_credentials_and_invalid_targets() {
         let location = StorageLocation::Nfs {
             server: "user:password@example.test".into(),
@@ -334,6 +377,7 @@ mod tests {
         assert!(!location.validate());
         let location = StorageLocation::Iscsi {
             portal: "192.0.2.12".into(),
+            port: 3260,
             target_iqn: "iqn.2026-01.example:test".into(),
             scsi_id: "3600abcdef".into(),
         };

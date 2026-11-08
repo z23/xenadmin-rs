@@ -2038,6 +2038,7 @@ fn main() {
             ("appliance-review", appliance_view::review_scene),
             ("storage-create", |s| storage_view::scene(s, false)),
             ("storage-review", |s| storage_view::scene(s, true)),
+            ("storage-discovery", storage_view::discovery_scene),
             ("pool-security", |s| pool_security_view::scene(s, false)),
             ("pool-join", profiles_view::join_scene),
             ("pool-security-review", |s| {

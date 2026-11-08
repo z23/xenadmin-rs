@@ -77,3 +77,5 @@ check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import
 
 "$check_binary" --snap artifacts/search-pools.png --tree artifacts/search-pools.json --scene search-pools --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/search-pools-compact.png --tree artifacts/search-pools-compact.json --scene search-pools --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/storage-discovery.png --tree artifacts/storage-discovery.json --scene storage-discovery --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/storage-discovery-compact.png --tree artifacts/storage-discovery-compact.json --scene storage-discovery --theme dark --size 513x652 --scale 1 --at 1

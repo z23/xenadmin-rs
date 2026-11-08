@@ -1,9 +1,12 @@
 use crate::{Error, HostId, ObservedResource, SrId, StorageLocation, xapi::Session};
 use serde::{Deserialize, Serialize};
+#[path = "storage_discovery_xml.rs"]
+mod xml;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+pub use xml::{DiscoveredIscsiLun, DiscoveredIscsiTarget, DiscoveredNfsExport};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBackend {
@@ -22,10 +25,29 @@ pub struct DiscoveredRepository {
 pub enum StorageDiscoveryResult {
     Backends(Vec<StorageBackend>),
     Repositories(Vec<DiscoveredRepository>),
+    NfsExports(Vec<DiscoveredNfsExport>),
+    IscsiTargets(Vec<DiscoveredIscsiTarget>),
+    IscsiLuns(Vec<DiscoveredIscsiLun>),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StorageQuery {
     Backends,
+    NfsExports {
+        host: HostId,
+        server: String,
+        version: crate::NfsVersion,
+    },
+    IscsiTargets {
+        host: HostId,
+        portal: String,
+        port: u16,
+    },
+    IscsiLuns {
+        host: HostId,
+        portal: String,
+        port: u16,
+        target_iqn: String,
+    },
     Probe {
         host: HostId,
         location: StorageLocation,
@@ -33,10 +55,29 @@ pub enum StorageQuery {
 }
 impl StorageQuery {
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        if matches!(self, Self::Probe { location, .. } if !location.validate()) {
-            Err(Error::InvalidResourceCommand)
-        } else {
+        let valid = match self {
+            Self::Backends => true,
+            Self::Probe { location, .. } => location.validate(),
+            Self::NfsExports { server, .. } => crate::storage::storage_server(server),
+            Self::IscsiTargets { portal, port, .. } => {
+                crate::storage::storage_server(portal) && *port > 0
+            }
+            Self::IscsiLuns {
+                portal,
+                port,
+                target_iqn,
+                ..
+            } => {
+                crate::storage::storage_server(portal)
+                    && *port > 0
+                    && crate::storage::storage_token(target_iqn)
+                    && target_iqn.starts_with("iqn.")
+            }
+        };
+        if valid {
             Ok(())
+        } else {
+            Err(Error::InvalidResourceCommand)
         }
     }
 }
@@ -126,12 +167,46 @@ impl DiscoveryRequest {
                 decode_backends(&session.call("SM.get_all_records", vec![]).await?)
                     .map(StorageDiscoveryResult::Backends)
             }
-            StorageQuery::Probe { host, location } => {
+            query => {
+                let (host, kind, config, expected) = match query {
+                    StorageQuery::NfsExports {
+                        host,
+                        server,
+                        version,
+                    } => {
+                        let mut config = json!({"server":server});
+                        if let Some(version) = version.value() {
+                            config["nfsversion"] = json!(version);
+                        }
+                        (*host, "nfs", config, Some("SR_BACKEND_FAILURE_101"))
+                    }
+                    StorageQuery::IscsiTargets { host, portal, port } => (
+                        *host,
+                        "lvmoiscsi",
+                        json!({"target":portal,"port":port.to_string()}),
+                        Some("SR_BACKEND_FAILURE_96"),
+                    ),
+                    StorageQuery::IscsiLuns {
+                        host,
+                        portal,
+                        port,
+                        target_iqn,
+                    } => (
+                        *host,
+                        "lvmoiscsi",
+                        json!({"target":portal,"port":port.to_string(),"targetIQN":target_iqn}),
+                        Some("SR_BACKEND_FAILURE_107"),
+                    ),
+                    StorageQuery::Probe { host, location } => {
+                        (*host, location.kind(), location.device_config(), None)
+                    }
+                    StorageQuery::Backends => unreachable!(),
+                };
                 let backends = decode_backends(&session.call("SM.get_all_records", vec![]).await?)?;
-                if !backends.iter().any(|backend| {
-                    backend.kind == location.kind()
-                        && backend.features.iter().any(|f| f == "SR_PROBE")
-                }) {
+                if !backends
+                    .iter()
+                    .any(|b| b.kind == kind && b.features.iter().any(|f| f == "SR_PROBE"))
+                {
                     return Err(Error::UnavailableAction);
                 }
                 let host_ref = session
@@ -145,22 +220,23 @@ impl DiscoveryRequest {
                     return Err(Error::Stale);
                 }
                 let result = session
-                    .call(
-                        "SR.probe",
-                        vec![
-                            json!(host_ref),
-                            location.device_config(),
-                            json!(location.kind()),
-                            json!({}),
-                        ],
+                    .storage_probe_xml(
+                        vec![json!(host_ref), config, json!(kind), json!({})],
+                        expected,
                     )
                     .await?;
-                decode_repositories(
-                    result
-                        .as_str()
-                        .ok_or(Error::Protocol("invalid storage probe response"))?,
-                )
-                .map(StorageDiscoveryResult::Repositories)
+                match query {
+                    StorageQuery::NfsExports { .. } => {
+                        xml::exports(&result).map(StorageDiscoveryResult::NfsExports)
+                    }
+                    StorageQuery::IscsiTargets { .. } => {
+                        xml::targets(&result).map(StorageDiscoveryResult::IscsiTargets)
+                    }
+                    StorageQuery::IscsiLuns { .. } => {
+                        xml::luns(&result).map(StorageDiscoveryResult::IscsiLuns)
+                    }
+                    _ => decode_repositories(&result).map(StorageDiscoveryResult::Repositories),
+                }
             }
         }
     }

@@ -22,6 +22,10 @@ enum Fault {
     ProbeError,
     TaskFailure,
     TaskCancelled,
+    Exports,
+    Targets,
+    Luns,
+    MalformedDiscovery,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn nfs() -> StorageLocation {
@@ -85,6 +89,16 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             return Some(RpcReply::Json(json!({"result":records.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
         }
         if method=="SR.probe" {
+            if matches!(fault,Fault::Exports|Fault::Targets|Fault::Luns|Fault::MalformedDiscovery) {
+                let (code,xml)=match fault {
+                    Fault::Exports=>{assert_eq!(params[2],json!({"server":"nfs.example.test","nfsversion":"4.1"}));("SR_BACKEND_FAILURE_101","<nfs-exports><Export><Path>/images</Path><Accesslist>*</Accesslist></Export></nfs-exports>")},
+                    Fault::Targets=>{assert_eq!(params[2],json!({"target":"192.0.2.50","port":"3261"}));("SR_BACKEND_FAILURE_96","<iscsi-target-iqns><TGT><IPAddress>192.0.2.51</IPAddress><Port>3262</Port><TargetIQN>iqn.2026-01.example:fixture</TargetIQN></TGT></iscsi-target-iqns>")},
+                    Fault::Luns=>{assert_eq!(params[2],json!({"target":"192.0.2.51","port":"3262","targetIQN":"iqn.2026-01.example:fixture"}));("SR_BACKEND_FAILURE_107","<iscsi-target><LUN><SCSIid>3600fixture</SCSIid><LUNid>0</LUNid><size>4096</size></LUN></iscsi-target>")},
+                    _=>("SR_BACKEND_FAILURE_96","<secret>private-probe-password</secret>"),
+                };
+                return Some(RpcReply::Json(json!({"error":{"message":code,"data":["private-probe-password","",xml]}})));
+            }
+
             if fault==Fault::SlowProbe {tokio::time::sleep(Duration::from_secs(1)).await;}
             if fault==Fault::ProbeError {return Some(RpcReply::Json(json!({"error":{"message":"SR_BACKEND_FAILURE_68","data":["private-probe-password"]}})));}
             return Some(RpcReply::Json(json!({"result":format!("<SRlist><SR><UUID>{CREATED}</UUID><name_label>Existing</name_label><size>4096</size></SR></SRlist>")})));}
@@ -518,6 +532,7 @@ async fn typed_iso_and_iscsi_creation_and_existing_sr_introduction_use_exact_bac
         },
         StorageLocation::Iscsi {
             portal: "192.0.2.50".into(),
+            port: 3260,
             target_iqn: "iqn.2026-01.example:fixture".into(),
             scsi_id: "3600fixture".into(),
         },
@@ -751,6 +766,89 @@ async fn failed_or_cancelled_creation_preserves_task_and_reservation_for_partial
                 .iter()
                 .any(|m| m == "task.destroy")
         );
+        c.close().await;
+    }
+}
+
+#[tokio::test]
+async fn guided_discovery_accepts_only_known_error_xml_without_creating_storage() {
+    for fault in [
+        Fault::Exports,
+        Fault::Targets,
+        Fault::Luns,
+        Fault::MalformedDiscovery,
+        Fault::ProbeError,
+    ] {
+        let (mock, records) = fixture(fault).await;
+        records.lock().unwrap().insert(
+            "SM-iscsi".into(),
+            json!({"type":"lvmoiscsi","capabilities":["SR_PROBE"],"configuration":{}}),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, true).await;
+        let host = HostId::parse(HOST).unwrap();
+        let request = match fault {
+            Fault::Exports => StorageQuery::NfsExports {
+                host,
+                server: "nfs.example.test".into(),
+                version: NfsVersion::V41,
+            },
+            Fault::Luns => StorageQuery::IscsiLuns {
+                host,
+                portal: "192.0.2.51".into(),
+                port: 3262,
+                target_iqn: "iqn.2026-01.example:fixture".into(),
+            },
+            _ => StorageQuery::IscsiTargets {
+                host,
+                portal: "192.0.2.50".into(),
+                port: 3261,
+            },
+        };
+        let query = c
+            .discover_storage(c.latest().observe_resource(pool()).unwrap(), request)
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(r) = query.latest() {
+                    break r;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        match fault {
+            Fault::Exports => assert!(
+                matches!(result.unwrap(),StorageDiscoveryResult::NfsExports(rows) if rows[0].path=="/images")
+            ),
+            Fault::Targets => assert!(
+                matches!(result.unwrap(),StorageDiscoveryResult::IscsiTargets(rows) if rows[0].port==3262&&rows[0].portal=="192.0.2.51")
+            ),
+            Fault::Luns => assert!(
+                matches!(result.unwrap(),StorageDiscoveryResult::IscsiLuns(rows) if rows[0].scsi_id=="3600fixture"&&rows[0].lun==Some(0))
+            ),
+            _ => {
+                let e = result.unwrap_err();
+                assert!(!e.contains("private-probe-password"));
+                assert!(!e.contains("<secret>"));
+            }
+        }
+        assert!(!dir.path().join("operations.sqlite3").exists());
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.starts_with("Async.") || m == "SR.create" || m == "PBD.create")
+        );
+        {
+            let map = records.lock().unwrap();
+            assert!(!map.contains_key("SR-created"));
+            assert!(!map.contains_key("PBD-created"));
+        }
         c.close().await;
     }
 }

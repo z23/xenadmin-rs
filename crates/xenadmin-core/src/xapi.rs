@@ -125,7 +125,12 @@ impl Session {
         Err(Error::Protocol("too many coordinator redirects"))
     }
 
-    async fn rpc(&self, event: bool, method: &str, params: Vec<Value>) -> Result<Value, Error> {
+    async fn rpc_envelope(
+        &self,
+        event: bool,
+        method: &str,
+        params: Vec<Value>,
+    ) -> Result<Value, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let client = if event { &self.events } else { &self.commands };
         let mut response = client
@@ -157,6 +162,14 @@ impl Session {
         {
             return Err(Error::Protocol("RPC response identity does not match"));
         }
+        Ok(value)
+    }
+
+    async fn rpc(&self, event: bool, method: &str, params: Vec<Value>) -> Result<Value, Error> {
+        let value = self.rpc_envelope(event, method, params).await?;
+        Self::rpc_result(value)
+    }
+    fn rpc_result(value: Value) -> Result<Value, Error> {
         if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
             let code = error
                 .get("message")
@@ -185,6 +198,34 @@ impl Session {
         let mut params = vec![json!(&*self.token)];
         params.extend(parameters);
         self.rpc(false, method, params).await
+    }
+
+    pub(crate) async fn storage_probe_xml(
+        &self,
+        parameters: Vec<Value>,
+        expected_error: Option<&str>,
+    ) -> Result<String, Error> {
+        let mut params = vec![json!(&*self.token)];
+        params.extend(parameters);
+        let value = self.rpc_envelope(false, "SR.probe", params).await?;
+        if let Some(expected) = expected_error
+            && value["error"]["message"].as_str() == Some(expected)
+        {
+            // These drivers return discovery XML in the missing-parameter error's stderr.
+            // Raw backend errors remain private and are never added to Error or logs.
+            let xml = value["error"]["data"]
+                .as_array()
+                .filter(|v| v.len() == 3)
+                .and_then(|v| v[2].as_str())
+                .filter(|v| v.len() <= 512 * 1024)
+                .ok_or(Error::Protocol("storage discovery payload unavailable"))?;
+            return Ok(xml.into());
+        }
+        Self::rpc_result(value)?
+            .as_str()
+            .filter(|v| v.len() <= 512 * 1024)
+            .map(str::to_owned)
+            .ok_or(Error::Protocol("invalid storage probe response"))
     }
 
     pub(crate) async fn events(&self, token: &str) -> Result<EventBatch, Error> {

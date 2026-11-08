@@ -534,9 +534,11 @@ pub(super) async fn verify(
     }
 }
 fn config_matches(actual: &Value, expected: &Value) -> bool {
-    expected
-        .as_object()
-        .is_some_and(|expected| expected.iter().all(|(key, value)| actual[key] == *value))
+    expected.as_object().is_some_and(|expected| {
+        expected.iter().all(|(key, value)| {
+            actual[key] == *value || (key == "port" && value == "3260" && actual.get(key).is_none())
+        })
+    })
 }
 
 // Only this successful plugin result is evidence of completion; arbitrary backend error XML
@@ -588,5 +590,26 @@ mod tests {
         ] {
             assert!(!trim_succeeded(&json!({"result":xml})).unwrap_or(false));
         }
+    }
+}
+
+#[cfg(test)]
+mod port_compatibility_tests {
+    use super::*;
+    #[test]
+    fn missing_legacy_port_is_only_equivalent_to_the_default() {
+        let actual = json!({"target":"192.0.2.1"});
+        assert!(config_matches(
+            &actual,
+            &json!({"target":"192.0.2.1","port":"3260"})
+        ));
+        assert!(!config_matches(
+            &actual,
+            &json!({"target":"192.0.2.1","port":"3261"})
+        ));
+        assert!(!config_matches(
+            &json!({"target":"192.0.2.1","port":"3261"}),
+            &json!({"target":"192.0.2.1","port":"3260"})
+        ));
     }
 }

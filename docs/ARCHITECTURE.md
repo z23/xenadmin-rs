@@ -368,6 +368,10 @@ by the storage command model; authenticated provisioning awaits a journalled Sec
 Read-only storage discovery reuses the authenticated connection, is cancelled on generation
 change or handle drop, and projects bounded capability metadata and SR UUID/name/size records.
 The desktop never receives raw probe XML, RPC references or PBD device-config credentials.
+Guided discovery recognizes only stage-specific missing-parameter XML errors inside the XAPI
+adapter. Typed results remain bound to captured host, pool generation and form inputs;
+selecting a discovered alternate portal is explicit and never provisions storage. Custom
+iSCSI ports are preserved, with old intents defaulting to 3260. See the [discovery report](reports/2026-11-08-storage-discovery.md).
 
 
 ## Pool administration increment

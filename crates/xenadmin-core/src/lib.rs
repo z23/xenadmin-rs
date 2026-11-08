@@ -61,7 +61,8 @@ mod migration;
 mod migration_backend;
 pub use storage::{NfsVersion, StorageLocation, StorageOperation};
 pub use storage_discovery::{
-    DiscoveredRepository, StorageBackend, StorageDiscovery, StorageDiscoveryResult, StorageQuery,
+    DiscoveredIscsiLun, DiscoveredIscsiTarget, DiscoveredNfsExport, DiscoveredRepository,
+    StorageBackend, StorageDiscovery, StorageDiscoveryResult, StorageQuery,
 };
 mod host_types;
 mod settings;

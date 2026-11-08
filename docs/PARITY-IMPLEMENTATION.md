@@ -174,7 +174,7 @@ Implementation boundaries and evidence: [storage lifecycle report](reports/2026-
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P09-01 | SR name/type/capacity/usage | Existing workflow; qualification open |
-| P09-02 | Probe/discover targets | Read-only backend capabilities and bounded SR discovery at an explicitly entered location implemented; NFS export and iSCSI IQN/LUN enumeration remain pending; fixture verified, lab qualification open |
+| P09-02 | Probe/discover targets | Read-only backend capabilities, NFS export and iSCSI IQN/LUN enumeration plus bounded SR discovery implemented with explicit selection and captured inputs; fixture verified, lab qualification open |
 | P09-03 | Create SR | Reviewed shared NFS and unauthenticated LVM-iSCSI creation implemented with typed inputs, tracked task and new SR identity verification; CHAP and other backends pending; fixture verified, lab qualification open |
 | P09-04 | Add ISO library | ISO over NFS creation implemented; authenticated SMB/other ISO libraries pending; lab qualification open |
 | P09-05 | Introduce/attach existing SR | Reviewed introduce by exact UUID, separate selected-host PBD creation and attach implemented; existing UUIDs are never implicitly forgotten; authenticated new attachments pending; fixture verified, lab qualification open |
@@ -187,7 +187,7 @@ Implementation boundaries and evidence: [storage lifecycle report](reports/2026-
 | P09-12 | Multipath settings/path inspection | Bounded per-PBD path inspection and reviewed standard multipathing changes on empty maintenance hosts with all PBDs detached implemented; automatic detach/replug orchestration remains pending; fixture verified, live path qualification open |
 | P09-13 | Trim/reclaim | Explicit SR_TRIM-capable attached-host reclaim via fixed trim plugin implemented with tracked task and positive-result evidence; unavailable plugin is a reported host error; fixture verified, lab qualification open |
 | P09-14 | Read caching/provisioning options | Capability review and implementation queued |
-| P09-15 | Backend-specific wizards | Typed NFS, ISO-NFS and unauthenticated LVM-iSCSI forms implemented; other backends, port selection, target enumeration and authentication remain pending |
+| P09-15 | Backend-specific wizards | Typed NFS, ISO-NFS and unauthenticated LVM-iSCSI forms, custom iSCSI port and guided target enumeration implemented; other backends and authentication remain pending |
 
 ## 10. Networks and host interfaces
 

@@ -20,6 +20,7 @@ pub(super) struct Editor {
     name: TextEdit,
     description: TextEdit,
     server: TextEdit,
+    port: TextEdit,
     path: TextEdit,
     iqn: TextEdit,
     scsi: TextEdit,
@@ -30,10 +31,11 @@ pub(super) struct Editor {
     host: Option<HostId>,
     review: Option<(Option<ObservedResource>, ResourceTarget, StorageOperation)>,
     discovery: Option<StorageDiscovery>,
-    query_location: Option<(HostId, StorageLocation)>,
+    query_inputs: Option<DiscoveryInputs>,
+    query_observed: Option<ObservedResource>,
     backends: Vec<StorageBackend>,
-    discovered: Vec<xenadmin_core::DiscoveredRepository>,
-    probe_completed: bool,
+    discovered: Option<StorageDiscoveryResult>,
+    result_page: usize,
     error: Option<String>,
 }
 pub(super) fn open_new(s: &mut State) {
@@ -76,6 +78,7 @@ fn open(s: &mut State, sr: Option<SrId>) {
         name: TextEdit::new(name),
         description: TextEdit::new(description),
         server: TextEdit::new(""),
+        port: TextEdit::new("3260"),
         path: TextEdit::new("/"),
         iqn: TextEdit::new(""),
         scsi: TextEdit::new(""),
@@ -86,13 +89,14 @@ fn open(s: &mut State, sr: Option<SrId>) {
         host: inventory.hosts.keys().next().copied(),
         review: None,
         discovery: None,
-        query_location: None,
+        query_inputs: None,
+        query_observed: None,
         backends: Vec::new(),
-        discovered: Vec::new(),
-        probe_completed: false,
+        discovered: None,
+        result_page: 0,
         error: None,
     });
-    query(s, false);
+    query(s, 0);
 }
 fn location(editor: &Editor) -> StorageLocation {
     match editor.kind {
@@ -103,6 +107,7 @@ fn location(editor: &Editor) -> StorageLocation {
         },
         2 => StorageLocation::Iscsi {
             portal: editor.server.text.trim().into(),
+            port: editor.port.text.trim().parse().unwrap_or(0),
             target_iqn: editor.iqn.text.trim().into(),
             scsi_id: editor.scsi.text.trim().into(),
         },
@@ -113,31 +118,75 @@ fn location(editor: &Editor) -> StorageLocation {
         },
     }
 }
-fn query(s: &mut State, probe: bool) {
+#[derive(Clone, PartialEq, Eq)]
+struct DiscoveryInputs {
+    host: Option<HostId>,
+    kind: u8,
+    version: NfsVersion,
+    server: String,
+    port: String,
+    path: String,
+    iqn: String,
+    scsi: String,
+}
+fn inputs(e: &Editor) -> DiscoveryInputs {
+    DiscoveryInputs {
+        host: e.host,
+        kind: e.kind,
+        version: e.version,
+        server: e.server.text.clone(),
+        port: e.port.text.clone(),
+        path: e.path.text.clone(),
+        iqn: e.iqn.text.clone(),
+        scsi: e.scsi.text.clone(),
+    }
+}
+fn results_current(s: &State, e: &Editor) -> bool {
+    e.query_inputs.as_ref() == Some(&inputs(e))
+        && (s.demo
+            || e.query_observed.is_some_and(|o| {
+                s.snapshot
+                    .as_ref()
+                    .and_then(|s| s.observe_resource(o.target()).ok())
+                    == Some(o)
+            }))
+}
+fn query(s: &mut State, step: u8) {
     let result = (|| {
-        let editor = s.storage_editor.as_ref().ok_or("Storage view is closed")?;
-        let snapshot = s
-            .snapshot
-            .as_ref()
-            .ok_or("Connect to discover storage backends")?;
-        if snapshot
-            .inventory()
-            .is_none_or(|i| i.pool_id != editor.pool)
-        {
-            return Err("The connection changed; reopen storage".into());
+        let e = s.storage_editor.as_ref().ok_or("Storage view is closed")?;
+        let snapshot = s.snapshot.as_ref().ok_or("Connect to discover storage")?;
+        if snapshot.inventory().is_none_or(|i| i.pool_id != e.pool) {
+            return Err("Connection changed; reopen storage".into());
         }
         let observed = snapshot
-            .observe_resource(ResourceTarget::Pool(editor.pool))
+            .observe_resource(ResourceTarget::Pool(e.pool))
             .map_err(|e| e.to_string())?;
-        let pair = if probe {
-            Some((editor.host.ok_or("Choose a host")?, location(editor)))
-        } else {
-            None
+        let host = e.host.ok_or("Choose a host")?;
+        let server = e.server.text.trim().to_string();
+        let port = e.port.text.trim().parse().unwrap_or(0);
+        let query = match step {
+            0 => StorageQuery::Backends,
+            1 => StorageQuery::Probe {
+                host,
+                location: location(e),
+            },
+            2 => StorageQuery::NfsExports {
+                host,
+                server,
+                version: e.version,
+            },
+            3 => StorageQuery::IscsiTargets {
+                host,
+                portal: server,
+                port,
+            },
+            _ => StorageQuery::IscsiLuns {
+                host,
+                portal: server,
+                port,
+                target_iqn: e.iqn.text.trim().into(),
+            },
         };
-        let query = pair
-            .clone()
-            .map(|(host, location)| StorageQuery::Probe { host, location })
-            .unwrap_or(StorageQuery::Backends);
         let handle = s
             .connection
             .as_ref()
@@ -147,57 +196,204 @@ fn query(s: &mut State, probe: bool) {
         if let Some(waker) = &s.waker {
             handle.notify_on_change(waker.clone());
         }
-        Ok::<_, String>((handle, pair))
+        Ok::<_, String>((handle, inputs(e), observed))
     })();
-    if let Some(editor) = &mut s.storage_editor {
+    if let Some(e) = &mut s.storage_editor {
         match result {
-            Ok((handle, pair)) => {
-                editor.discovery = Some(handle);
-                editor.query_location = pair;
-                editor.error = None;
-                editor.discovered.clear();
-                editor.probe_completed = false;
+            Ok((handle, inputs, observed)) => {
+                e.discovery = Some(handle);
+                e.query_inputs = Some(inputs);
+                e.query_observed = Some(observed);
+                e.error = None;
+                e.discovered = None;
+                e.result_page = 0;
             }
             Err(error) => {
                 if !s.demo {
-                    editor.error = Some(error);
+                    e.error = Some(error);
                 }
             }
         }
     }
 }
 pub(super) fn poll(s: &mut State) -> bool {
-    let Some(editor) = s.storage_editor.as_mut() else {
+    let Some(e) = s.storage_editor.as_ref() else {
         return false;
     };
-    let Some(result) = editor.discovery.as_ref().and_then(StorageDiscovery::latest) else {
+    let Some(result) = e.discovery.as_ref().and_then(StorageDiscovery::latest) else {
         return false;
     };
-    editor.discovery = None;
-    if editor
-        .query_location
-        .as_ref()
-        .is_some_and(|(host, config)| Some(*host) != editor.host || *config != location(editor))
-    {
-        editor.error = Some(
-            "Storage inputs changed during discovery. Probe again with the reviewed inputs.".into(),
-        );
+    let current = results_current(s, e);
+    let e = s.storage_editor.as_mut().unwrap();
+    e.discovery = None;
+    if !current {
+        e.discovered = None;
+        e.error =
+            Some("Storage inputs or connection changed during discovery. Discover again.".into());
         return true;
     }
     match result {
-        Ok(StorageDiscoveryResult::Backends(backends)) => editor.backends = backends,
-        Ok(StorageDiscoveryResult::Repositories(found)) => {
-            editor.discovered = found;
-            editor.probe_completed = true;
-            editor.error = None;
+        Ok(StorageDiscoveryResult::Backends(backends)) => e.backends = backends,
+        Ok(result) => {
+            e.discovered = Some(result);
+            e.error = None;
         }
-        Err(error) => editor.error = Some(error),
+        Err(error) => e.error = Some(error),
     }
     true
+}
+fn select_result(s: &mut State, index: usize) {
+    let Some(e) = s.storage_editor.as_ref() else {
+        return;
+    };
+    if !results_current(s, e) {
+        return;
+    }
+    let e = s.storage_editor.as_mut().unwrap();
+    match &e.discovered {
+        Some(StorageDiscoveryResult::NfsExports(rows)) => {
+            if let Some(row) = rows.get(index) {
+                e.path = TextEdit::new(&row.path);
+                e.uuid = TextEdit::new("");
+            }
+        }
+        Some(StorageDiscoveryResult::IscsiTargets(rows)) => {
+            if let Some(row) = rows.get(index) {
+                e.server = TextEdit::new(&row.portal);
+                e.port = TextEdit::new(row.port.to_string());
+                e.iqn = TextEdit::new(&row.iqn);
+                e.scsi = TextEdit::new("");
+                e.uuid = TextEdit::new("");
+            }
+        }
+        Some(StorageDiscoveryResult::IscsiLuns(rows)) => {
+            if let Some(row) = rows.get(index) {
+                e.scsi = TextEdit::new(&row.scsi_id);
+                e.uuid = TextEdit::new("");
+            }
+        }
+        Some(StorageDiscoveryResult::Repositories(rows)) => {
+            if let Some(row) = rows.get(index) {
+                e.uuid = TextEdit::new(row.uuid.to_string());
+                e.mode = Mode::Introduce;
+            }
+        }
+        _ => return,
+    }
+    e.discovered = None;
+    e.error = None;
+    e.result_page = 0;
+}
+fn discovery_results(s: &State, e: &Editor, k: &Kit) -> El {
+    let Some(result) = &e.discovered else {
+        return el();
+    };
+    if !results_current(s, e) {
+        return caption(
+            "Inputs changed; discover again before selecting a result.",
+            k,
+        )
+        .wrap();
+    }
+    let (title, rows) = match result {
+        StorageDiscoveryResult::NfsExports(rows) => (
+            "NFS exports",
+            rows.iter()
+                .map(|r| format!("{}\nAccess reported by server: {}", r.path, r.access))
+                .collect::<Vec<_>>(),
+        ),
+        StorageDiscoveryResult::IscsiTargets(rows) => (
+            "iSCSI targets",
+            rows.iter()
+                .map(|r| format!("{}\nPortal {} · port {}", r.iqn, r.portal, r.port))
+                .collect(),
+        ),
+        StorageDiscoveryResult::IscsiLuns(rows) => (
+            "iSCSI LUNs",
+            rows.iter()
+                .map(|r| {
+                    format!(
+                        "{}\nLUN {} · {} · {} {}",
+                        r.scsi_id,
+                        r.lun.map(|n| n.to_string()).unwrap_or("unknown".into()),
+                        r.size_bytes.map(bytes).unwrap_or("unknown capacity".into()),
+                        r.vendor,
+                        r.serial
+                    )
+                })
+                .collect(),
+        ),
+        StorageDiscoveryResult::Repositories(rows) => (
+            "Existing repositories",
+            rows.iter()
+                .map(|r| format!("{} · {}", r.name, r.uuid))
+                .collect(),
+        ),
+        StorageDiscoveryResult::Backends(_) => return el(),
+    };
+    let mut body = col().gap(8.0).child(heading(title, k)).child(
+        caption(
+            format!(
+                "{} results. Selecting a row only fills the form; review remains required.",
+                rows.len()
+            ),
+            k,
+        )
+        .wrap(),
+    );
+    if rows.is_empty() {
+        body=body.child(caption("The backend reported no matching results. You can enter a known location manually.",k).wrap());
+    }
+    for (index, text) in rows.iter().enumerate().skip(e.result_page * 20).take(20) {
+        body = body.child(caption(text, k).wrap_anywhere()).child(
+            Button::new("Use this result")
+                .variant(ButtonVariant::Outline)
+                .on_press(move |s: &mut State| select_result(s, index))
+                .build(k)
+                .key(format!("storage-result-{index}")),
+        );
+    }
+    if rows.len() > 20 {
+        let page = e.result_page;
+        body = body.child(
+            row()
+                .gap(8.0)
+                .child(
+                    Button::new("Previous")
+                        .disabled(page == 0)
+                        .on_press(|s: &mut State| {
+                            let e = s.storage_editor.as_mut().unwrap();
+                            e.result_page = e.result_page.saturating_sub(1);
+                        })
+                        .build(k),
+                )
+                .child(
+                    Button::new("Next")
+                        .disabled((page + 1) * 20 >= rows.len())
+                        .on_press(|s: &mut State| {
+                            s.storage_editor.as_mut().unwrap().result_page += 1
+                        })
+                        .build(k),
+                ),
+        );
+    }
+    body
 }
 fn review(s: &mut State) {
     let result = (|| {
         let editor = s.storage_editor.as_ref().ok_or("Storage view is closed")?;
+        if editor.kind == 2
+            && editor
+                .port
+                .text
+                .trim()
+                .parse::<u16>()
+                .ok()
+                .filter(|p| *p > 0)
+                .is_none()
+        {
+            return Err("Enter an iSCSI port from 1 to 65535".into());
+        }
         let operation = match editor.mode {
             Mode::Create => StorageOperation::Create {
                 host: editor.host.ok_or("Choose a host")?,
@@ -421,11 +617,13 @@ fn new_attachment(s: &mut State) {
             }
             StorageLocation::Iscsi {
                 portal,
+                port,
                 target_iqn,
                 scsi_id,
             } => {
                 editor.kind = 2;
                 editor.server = TextEdit::new(&portal);
+                editor.port = TextEdit::new(port.to_string());
                 editor.iqn = TextEdit::new(&target_iqn);
                 editor.scsi = TextEdit::new(&scsi_id);
             }
@@ -469,11 +667,12 @@ fn location_lines(location: &StorageLocation) -> Vec<String> {
         ],
         StorageLocation::Iscsi {
             portal,
+            port,
             target_iqn,
             scsi_id,
         } => vec![
             "Backend: LVM over iSCSI".into(),
-            format!("Portal: {portal} · port 3260"),
+            format!("Portal: {portal} · port {port}"),
             format!("Target IQN: {target_iqn}"),
             format!("LUN SCSI ID: {scsi_id}"),
         ],
@@ -680,6 +879,29 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .on_press(|s: &mut State| removal(s, true))
                     .build(k),
             );
+    } else if editor.discovered.is_some() {
+        body = body
+            .child(
+                caption(
+                    format!(
+                        "Discovered through {} · host {}",
+                        editor.server.text,
+                        editor
+                            .host
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "unknown".into())
+                    ),
+                    k,
+                )
+                .wrap_anywhere(),
+            )
+            .child(discovery_results(s, editor, k))
+            .child(
+                Button::new("Back to storage form")
+                    .variant(ButtonVariant::Outline)
+                    .on_press(|s: &mut State| s.storage_editor.as_mut().unwrap().discovered = None)
+                    .build(k),
+            );
     } else {
         if editor.mode != Mode::Attachment {
             body = body.child(
@@ -738,7 +960,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
         body = body
-            .child(caption("Server hostname or IP address · iSCSI uses port 3260", k).wrap())
+            .child(caption("Server hostname or IP address", k).wrap())
             .child(
                 TextInput::new(&editor.server)
                     .label("Server / iSCSI portal")
@@ -748,6 +970,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         if editor.kind == 2 {
             body = body
+                .child(caption("iSCSI port", k))
+                .child(
+                    TextInput::new(&editor.port)
+                        .label("iSCSI port")
+                        .on_edit(|s: &mut State| &mut s.storage_editor.as_mut().unwrap().port)
+                        .build(k)
+                        .key("storage-port"),
+                )
                 .child(caption("Target IQN", k).wrap())
                 .child(
                     TextInput::new(&editor.iqn)
@@ -828,39 +1058,26 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         body = body.child(
             Button::new("Probe selected location for existing repositories")
                 .disabled(editor.discovery.is_some() || s.demo)
-                .on_press(|s: &mut State| query(s, true))
+                .on_press(|s: &mut State| query(s, 1))
                 .build(k),
         );
-        let probe_current = editor
-            .query_location
-            .as_ref()
-            .is_some_and(|(host, config)| {
-                Some(*host) == editor.host && *config == location(editor)
-            });
-        if editor.probe_completed && probe_current && editor.discovered.is_empty() {
-            body = body.child(
-                caption(
-                    "No existing repositories were reported at this location.",
-                    k,
-                )
-                .wrap(),
-            );
-        }
-        if editor.probe_completed && !probe_current {
-            body=body.child(caption("Inputs changed since the last probe. Probe again before using discovered repositories.",k).wrap());
-        }
-        for found in editor.discovered.iter().filter(|_| probe_current) {
-            let id = found.uuid;
-            body = body.child(
-                Button::new(format!("{} · {}", found.name, id))
-                    .on_press(move |s: &mut State| {
-                        let editor = s.storage_editor.as_mut().unwrap();
-                        editor.uuid = TextEdit::new(id.to_string());
-                        editor.mode = Mode::Introduce;
-                    })
+        let mut scan=col().gap(8.0).child(caption("Discovery asks the selected host to contact storage. The backend can temporarily mount an export or open an iSCSI session; no repository is created.",k).wrap());
+        for (step, label) in if editor.kind == 2 {
+            vec![
+                (3, "Discover iSCSI targets"),
+                (4, "Discover LUNs for selected IQN"),
+            ]
+        } else {
+            vec![(2, "Discover NFS exports")]
+        } {
+            scan = scan.child(
+                Button::new(label)
+                    .disabled(editor.discovery.is_some() || s.demo)
+                    .on_press(move |s: &mut State| query(s, step))
                     .build(k),
             );
         }
+        body = body.child(scan);
         if editor.mode == Mode::Introduce {
             body = body
                 .child(caption("Existing repository UUID", k).wrap())
@@ -950,7 +1167,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .build(k)
                     .key("storage-confirm"),
             );
-    } else if editor.mode != Mode::Manage {
+    } else if editor.mode != Mode::Manage && editor.discovered.is_none() {
         footer = footer.child(
             Button::new("Review")
                 .on_press(review)
@@ -997,9 +1214,117 @@ pub(super) fn scene(s: &mut State, review_page: bool) {
     }
 }
 
+pub(super) fn discovery_scene(s: &mut State) {
+    scene(s, false);
+    let e = s.storage_editor.as_mut().unwrap();
+    e.kind = 2;
+    e.name = TextEdit::new("Lab iSCSI storage");
+    e.server = TextEdit::new("storage.example.test");
+    e.port = TextEdit::new("3261");
+    e.query_inputs = Some(inputs(e));
+    e.discovered = Some(StorageDiscoveryResult::IscsiTargets(vec![
+        xenadmin_core::DiscoveredIscsiTarget {
+            portal: "192.0.2.50".into(),
+            port: 3261,
+            iqn: "iqn.2026-11.example:lab-storage".into(),
+        },
+    ]));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_selection_is_reachable_bound_to_inputs_and_keeps_review_separate() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut s = crate::init();
+            discovery_scene(&mut s);
+            let mut rt = rune::Runtime::new(
+                s,
+                crate::view,
+                size,
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            for _ in 0..30 {
+                rt.frame(1.0 / 60.0);
+            }
+            rt.update(|_, tx| tx.scroll_into_view("storage-result-0"));
+            for _ in 0..30 {
+                rt.frame(1.0 / 60.0);
+            }
+            let (x, y) = rt.find("storage-result-0").unwrap();
+            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+            rt.frame(0.0);
+            let e = rt.state.storage_editor.as_ref().unwrap();
+            assert_eq!(e.server.text, "192.0.2.50");
+            assert_eq!(e.port.text, "3261");
+            assert!(e.review.is_none());
+            assert!(e.discovered.is_none());
+            assert!(rt.state.resource_operations.is_empty());
+            let (x, y) = rt.find("storage-review").unwrap();
+            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+        }
+        let mut s = crate::init();
+        discovery_scene(&mut s);
+        s.storage_editor.as_mut().unwrap().server = TextEdit::new("changed.example.test");
+        select_result(&mut s, 0);
+        assert_eq!(
+            s.storage_editor.as_ref().unwrap().server.text,
+            "changed.example.test"
+        );
+        discovery_scene(&mut s);
+        s.storage_editor.as_mut().unwrap().port = TextEdit::new("0");
+        review(&mut s);
+        assert!(s.storage_editor.as_ref().unwrap().review.is_none());
+        assert!(
+            s.storage_editor
+                .as_ref()
+                .unwrap()
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("65535")
+        );
+    }
+    #[test]
+    fn chosen_lun_requires_separate_destructive_review() {
+        let mut s = crate::init();
+        discovery_scene(&mut s);
+        let e = s.storage_editor.as_mut().unwrap();
+        e.iqn = TextEdit::new("iqn.2026-11.example:test");
+        e.query_inputs = Some(inputs(e));
+        e.discovered = Some(StorageDiscoveryResult::IscsiLuns(
+            (0..25)
+                .map(|i| xenadmin_core::DiscoveredIscsiLun {
+                    scsi_id: format!("3600fixture{i}"),
+                    lun: Some(i),
+                    size_bytes: Some(4096),
+                    vendor: "Fixture".into(),
+                    serial: String::new(),
+                })
+                .collect(),
+        ));
+        select_result(&mut s, 24);
+        let e = s.storage_editor.as_ref().unwrap();
+        assert_eq!(e.scsi.text, "3600fixture24");
+        assert!(e.review.is_none());
+        assert!(s.resource_operations.is_empty());
+        review(&mut s);
+        let e = s.storage_editor.as_ref().unwrap();
+        assert!(
+            matches!(&e.review.as_ref().unwrap().2,StorageOperation::Create{location:StorageLocation::Iscsi{port:3261,scsi_id,..},..} if scsi_id=="3600fixture24")
+        );
+        assert!(
+            describe(&e.review.as_ref().unwrap().2)
+                .iter()
+                .any(|l| l.contains("erase existing data"))
+        );
+    }
     #[test]
     fn storage_review_preserves_inputs_and_compact_footer_never_submits_preview() {
         for size in [(513.0, 652.0), (1440.0, 900.0)] {
