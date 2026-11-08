@@ -243,6 +243,17 @@ async fn fixture_delayed(
         let delay = delay.clone();
         async move {
             let method = request["method"].as_str().unwrap().to_owned();
+            if method == "host.set_multipathing"
+                && let Some((delayed, entered, release)) = &delay
+                && &method == delayed
+            {
+                // A sync setter can be reconciled from its changed field alone.
+                // Keep that field unchanged until release so this fixture really
+                // exercises acknowledgement while the setter outcome is unknown.
+                entered.notify_one();
+                release.notified().await;
+                return callback(request).await;
+            }
             let response = callback(request).await;
             if let Some((delayed, entered, release)) = delay
                 && method == delayed
@@ -352,20 +363,29 @@ async fn delayed_host_receipt_after_recovery_never_runs_the_next_change() {
             .unwrap();
         let recovering = Backend::with_state_directory(directory.path().into()).unwrap();
         let connection = connect(&mock, &recovering, false).await;
+        // Startup's initial Unknown precedes its read-only observer. Wait for that
+        // observer's missing-receipt result before acknowledging the operation.
         tokio::time::timeout(Duration::from_secs(4), async {
             loop {
-                if connection
-                    .resource_history()
-                    .iter()
-                    .any(|r| r.id == id && r.state == OperationState::OutcomeUnknown)
-                {
+                if connection.resource_history().iter().any(|r| {
+                    r.id == id
+                        && r.state == OperationState::OutcomeUnknown
+                        && r.steps.first().is_some_and(|step| {
+                            step.state == xenadmin_core::StepState::OutcomeUnknown
+                        })
+                }) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| {
+            panic!(
+                "host recovery async={asynchronous} ack={acknowledge}: {:?}",
+                connection.resource_history()
+            )
+        });
         if acknowledge {
             connection
                 .control_resource(id, OperationControl::AcknowledgeUnknown)
