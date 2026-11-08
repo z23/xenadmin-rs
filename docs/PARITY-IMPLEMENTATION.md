@@ -266,9 +266,9 @@ Implementation and verification details are in the [VM lifecycle report](reports
 | P14-04 | Pool-wide tasks from other clients | Server task inventory and current-operation links parsed; pool-wide task workspace remains queued |
 | P14-05 | Search/filter/dismiss history and inspect full task details | Queued |
 | P14-06 | Multi-step progress/partial outcomes/owned cleanup | Durable ordered VM property steps and partial/unknown outcomes implemented; owned-resource cleanup/provisioning orchestration remains queued |
-| P14-07 | VM/host CPU/memory graphs | Queued |
-| P14-08 | Disk/network throughput/latency graphs | Queued |
-| P14-09 | Custom graphs/data-source selection/historical ranges | Queued |
+| P14-07 | VM/host CPU/memory graphs | Direct RRD subscriptions and VM/host performance charts implemented; synthetic transport/render checks, live qualification open |
+| P14-08 | Disk/network throughput/latency graphs | Host-advertised disk/network sources rendered with units and explicit sample gaps; source availability and live qualification remain host-dependent |
+| P14-09 | Custom graphs/data-source selection/historical ranges | Per-view source selection and bounded 10-minute/2-hour/week/year ranges implemented with actual returned resolution; saved graph presets remain queued |
 | P14-10 | Host/pool messages/alerts: list/filter/dismiss/export | Typed server messages parsed; list/filter/dismiss/export workspace remains queued |
 | P14-11 | Alarm thresholds/intervals/notification-email settings | Queued |
 | P14-12 | Resource reports/support-status export | Queued |

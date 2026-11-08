@@ -18,6 +18,7 @@ pub(super) struct DeviceView {
 }
 
 pub(super) fn open(s: &mut State) {
+    s.metrics = None;
     let Some(vm) = s.selected().and_then(|row| row.vm) else {
         return;
     };

@@ -379,6 +379,7 @@ fn start_connection(
 }
 
 fn clear_view(s: &mut State) {
+    s.metrics = None;
     s.diagnostics = None;
     s.diagnostic_results.clear();
     console_view::release(s);

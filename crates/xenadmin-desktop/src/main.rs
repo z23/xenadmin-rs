@@ -1,6 +1,7 @@
 mod console_view;
 mod demo_details;
 mod dev_inspection;
+mod metrics_view;
 mod preferences;
 mod profiles_view;
 mod resource_admin;
@@ -133,6 +134,7 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    metrics: Option<metrics_view::MetricsUi>,
     resource_editor: Option<resource_admin::Editor>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
     resource_rows: Vec<xenadmin_core::ResourceOperationRecord>,
@@ -225,6 +227,7 @@ fn init() -> State {
         .flatten()
         .or(inspection_error);
     let mut s = State {
+        metrics: None,
         resource_editor: None,
         resource_operations: Vec::new(),
         resource_rows: Vec::new(),
@@ -389,6 +392,7 @@ impl State {
         self.error = result.err().map(|error| error.to_string());
     }
     fn open_console(&mut self) {
+        self.metrics = None;
         self.snapshot_view = None;
         let result = (|| {
             let vm = self
@@ -702,6 +706,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= resource_admin::poll(s);
     changed |= console_view::poll_export(s);
+    changed |= metrics_view::poll(s);
     dev_inspection::refresh(s);
     let diagnostic_results = s
         .diagnostics
@@ -833,6 +838,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 TreeItem::new(&node.label).icon(if node.vm.is_some() { &GUEST } else { &SERVER })
             })
             .on_select(|s: &mut State, id, _| {
+                s.metrics = None;
                 let Some(node) = s.tree.get(id) else {
                     return;
                 };
@@ -964,6 +970,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                     })
                     .on_press(move |s: &mut State| {
                         s.snapshot_view = None;
+                        s.metrics = None;
                         s.page = page;
                         s.host_filter = None;
                         s.filter_rows();
@@ -1089,6 +1096,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.console.is_some() {
         content = console_view::view(s, &k);
     }
+    if s.metrics.is_some() {
+        content = metrics_view::view(s, &k);
+    }
     if s.show_details && s.window_width < 1200.0 && s.console.is_none() {
         content = col()
             .w_full()
@@ -1131,7 +1141,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             Button::new("Details")
                 .variant(ButtonVariant::Ghost)
                 .disabled(s.selected().is_none())
-                .on_press(|s: &mut State| s.show_details = !s.show_details)
+                .on_press(|s: &mut State| {
+                    s.metrics = None;
+                    s.show_details = !s.show_details;
+                })
                 .build(&k)
                 .key("show-details"),
         );
@@ -1363,6 +1376,7 @@ fn details(s: &State, k: &Kit) -> El {
     if let Some(vm) = selected.vm {
         detail = detail.child(vm_lifecycle::controls(s, vm, k));
     }
+    detail = detail.child(metrics_view::button(s, k));
     if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
         return resource_details::append(
             s,
@@ -1699,6 +1713,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .child(dialog)
 }
 fn demo(s: &mut State) {
+    s.metrics = None;
     console_view::release(s);
     s.resource_editor = None;
     s.resource_operations.clear();
@@ -1829,6 +1844,7 @@ fn main() {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("performance", metrics_view::scene),
             ("unavailable-actions", |s| {
                 demo(s);
                 s.demo = false;
