@@ -93,6 +93,7 @@ fn metadata(inventory: &Inventory, target: ResourceTarget) -> Option<(String, St
 }
 fn target_label(target: ResourceTarget) -> String {
     match target {
+        ResourceTarget::Disk(id) => format!("Disk {id}"),
         ResourceTarget::Vm(id) => format!("VM {id}"),
         ResourceTarget::SnapshotPolicy(id) => format!("Snapshot schedule {id}"),
         ResourceTarget::Pif(id) => format!("Interface {id}"),
@@ -691,7 +692,11 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
         } else if record.can_cancel && !record.state.terminal() {
             view = view.child(
                 Button::new(
-                    if matches!(record.action, xenadmin_core::ResourceAction::Host(_)) {
+                    if matches!(
+                        record.action,
+                        xenadmin_core::ResourceAction::Host(_)
+                            | xenadmin_core::ResourceAction::Disk(_)
+                    ) {
                         "Stop remaining steps"
                     } else {
                         "Request cancellation"

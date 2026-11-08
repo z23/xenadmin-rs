@@ -1,6 +1,6 @@
 use super::*;
 use crate::DiskImageFormat;
-async fn execute_disk(
+pub(super) async fn execute_disk(
     f: &Fixture,
     dir: &Path,
     format: DiskImageFormat,

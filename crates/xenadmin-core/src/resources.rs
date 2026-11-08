@@ -1,3 +1,7 @@
+#[path = "disk_backend.rs"]
+pub(crate) mod disk;
+#[path = "disk_journal.rs"]
+mod disk_journal;
 #[path = "host_power_backend.rs"]
 mod host_power_backend;
 #[path = "host_power_journal.rs"]
@@ -50,6 +54,7 @@ mod storage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceTarget {
+    Disk(crate::VdiId),
     Vm(crate::VmId),
     SnapshotPolicy(crate::SnapshotPolicyId),
     Pool(PoolId),
@@ -67,6 +72,7 @@ pub enum ResourceTarget {
 impl ResourceTarget {
     pub(crate) fn class(self) -> &'static str {
         match self {
+            Self::Disk(_) => "VDI",
             Self::Vm(_) => "VM",
             Self::SnapshotPolicy(_) => "VMSS",
             Self::Pool(_) => "pool",
@@ -84,6 +90,7 @@ impl ResourceTarget {
     }
     pub fn uuid(self) -> uuid::Uuid {
         match self {
+            Self::Disk(id) => id.uuid(),
             Self::Vm(id) => id.uuid(),
             Self::SnapshotPolicy(id) => id.uuid(),
             Self::Pool(id) => id.uuid(),
@@ -120,6 +127,10 @@ pub enum ResourceCommand {
     DeleteHostCrashdump {
         host: ObservedResource,
         dump: crate::HostCrashdump,
+    },
+    Disk {
+        target: ObservedResource,
+        operation: crate::DiskOperation,
     },
     ManagementNetwork {
         host: ObservedResource,
@@ -221,6 +232,7 @@ pub enum ResourceCommand {
 pub enum ResourceAction {
     Alarm(crate::AlarmOperation),
     DeleteHostCrashdump(crate::HostCrashdump),
+    Disk(crate::DiskOperation),
     RootPassword(crate::PoolRootPasswordChange),
     ManagementNetwork(Box<crate::ManagementNetworkOperation>),
     HostPower(crate::HostPowerOperation),
@@ -285,6 +297,7 @@ impl ResourceAction {
                 _ => format!("{}.set_other_config", target.class()),
             }]),
             Self::DeleteHostCrashdump(_) => Required::writes(["host_crashdump.destroy"]),
+            Self::Disk(op) => op.permission_requirements(),
             Self::Storage(op) => op.permission_requirements(),
             Self::AuthenticatedStorage { operation, .. } => operation
                 .permission_requirements()
@@ -339,6 +352,7 @@ impl ResourceAction {
         match self {
             Self::Alarm(op) => op.label(),
             Self::DeleteHostCrashdump(_) => "Delete retained host crashdump",
+            Self::Disk(op) => op.label(),
             Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
             Self::PowerBatch(_) => "Power actions on selected VMs",
@@ -379,6 +393,7 @@ impl ResourceAction {
         let valid = match self {
             Self::Alarm(op) => return op.validate(target),
             Self::DeleteHostCrashdump(dump) => return crashdump::validate_command(target, dump),
+            Self::Disk(op) => return op.validate(target),
             Self::RootPassword(change) => {
                 matches!(target, ResourceTarget::Pool(_)) && change.valid()
             }
@@ -509,6 +524,7 @@ impl ResourceCommand {
             Self::DeleteHostCrashdump { host, dump } => {
                 (host, ResourceAction::DeleteHostCrashdump(dump))
             }
+            Self::Disk { target, operation } => (target, ResourceAction::Disk(operation)),
             Self::HostPower { host, operation } => (host, ResourceAction::HostPower(operation)),
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
             Self::CleanupStorageCredentials {
@@ -618,6 +634,10 @@ pub struct ResourceOperationRecord {
     pub(crate) crashdump_deletion: Option<crashdump::Plan>,
     #[serde(default)]
     pub(crate) alarm_refresh_receipts: Vec<HostId>,
+    #[serde(skip)]
+    pub(crate) disk_plan: Option<crate::disk_administration::Plan>,
+    #[serde(default)]
+    pub disk_size: Option<u64>,
     #[serde(default)]
     pub management_network: Option<crate::ManagementNetworkEvidence>,
     #[serde(skip)]
@@ -766,6 +786,8 @@ pub(crate) fn channel(
     let record = ResourceOperationRecord {
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
+        disk_plan: None,
+        disk_size: None,
         management_network: None,
         management_network_plan: None,
         topology_changes: Default::default(),

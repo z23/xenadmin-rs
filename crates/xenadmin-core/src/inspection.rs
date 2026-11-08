@@ -357,7 +357,7 @@ fn operation_value(record: &crate::OperationRecord) -> Value {
 fn resource_operation_value(record: &crate::ResourceOperationRecord) -> Value {
     json!({"id":record.id,"pool":record.pool,"recovery_pool":record.recovery_pool(),"target":record.target,"action":record.action.label(),"state":record.state,
         "progress":record.progress,"created_at_ms":record.created_at_ms,"created":record.created,
-        "transfer":record.transfer,"transfer_created":record.transfer_created,
+        "transfer":record.transfer,"transfer_created":record.transfer_created,"disk_size":record.disk_size,
         "power_batch":match &record.action {crate::ResourceAction::PowerBatch(selection)=>Some(json!({"action":selection.action,"vms":selection.vms.iter().take(32).map(|item|json!({"vm":item.vm,"expected_state":bounded(&item.expected_state.to_string())})).collect::<Vec<_>>()})),_=>None},
         "storage_secrets":record.storage_secrets,
         "host_power_secret":record.host_power_secret,

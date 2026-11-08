@@ -2,6 +2,8 @@
 mod cloud_init_worker;
 #[path = "cross_pool_worker.rs"]
 mod cross_pool_worker;
+#[path = "disk_worker.rs"]
+mod disk_worker;
 #[path = "host_worker.rs"]
 mod host;
 #[path = "host_power_worker.rs"]
@@ -242,6 +244,9 @@ impl ResourceRequest {
         ) {
             return self.execute_management(journal, session, cancel).await;
         }
+        if matches!(self.record.action, super::ResourceAction::Disk(_)) {
+            return self.execute_disk(journal, session, cancel).await;
+        }
         if matches!(
             self.record.action,
             super::ResourceAction::NetworkTopology(_)
@@ -427,6 +432,9 @@ impl ResourceRequest {
             super::ResourceAction::ManagementNetwork(_)
         ) {
             return self.reconcile_management(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::Disk(_)) {
+            return self.reconcile_disk(journal, session, cancel).await;
         }
         if matches!(
             self.record.action,

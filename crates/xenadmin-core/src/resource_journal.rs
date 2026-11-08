@@ -99,6 +99,13 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let disk_plan = payload
+                .get("disk_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let network_topology_plan = payload
                 .get("network_topology_plan")
                 .filter(|v| !v.is_null())
@@ -190,6 +197,7 @@ impl Journal {
                 }
             }
             record.management_network_plan = management_network_plan;
+            record.disk_plan = disk_plan;
             record.network_topology_plan = network_topology_plan;
             record.power_batch_plan = power_batch_plan;
             record.storage_auth_plan = storage_auth_plan;
@@ -220,6 +228,7 @@ impl Journal {
             crate::root_password::validate_record(&record)?;
             super::management::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
+            crate::disk_administration::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
             super::crashdump::validate_record(&record)?;
             crate::host_support::restore::validate_record(&record)?;
@@ -244,6 +253,7 @@ impl Journal {
         crate::host_power::validate_record(record)?;
         crate::root_password::validate_record(record)?;
         crate::storage_auth::validate_record(record)?;
+        crate::disk_administration::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
         super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;
@@ -289,6 +299,13 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|next| !p.accepts(next))
             }) {
+                return Err(Error::JournalChanged);
+            }
+            if old
+                .disk_plan
+                .as_ref()
+                .is_some_and(|p| record.disk_plan.as_ref().is_none_or(|n| !n.extends(p)))
+            {
                 return Err(Error::JournalChanged);
             }
             if old.network_topology_plan.as_ref().is_some_and(|p| {
@@ -420,6 +437,12 @@ impl Journal {
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
             );
         }
+        if let Some(plan) = &record.disk_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "disk_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         if let Some(plan) = &record.network_topology_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "network_topology_plan".into(),
@@ -462,6 +485,7 @@ impl Journal {
         &self,
         record: &mut ResourceOperationRecord,
     ) -> Result<bool, Error> {
+        crate::disk_administration::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
         super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;

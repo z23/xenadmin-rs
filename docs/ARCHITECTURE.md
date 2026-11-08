@@ -707,3 +707,10 @@ receipt before accepting record absence. The host implementation destroys its da
 in a finally block, so API failure or disappearance alone cannot prove successful deletion.
 The host's internal filename is not a public API field and is never exposed or fabricated by
 the client. See the [source/verification report](reports/2026-11-08-host-crashdump-deletion.md).
+
+
+## Virtual disk administration
+
+`ResourceTarget::Disk` and typed `DiskOperation` reviews bind a VDI's UUID, SR, size and ordinary VM attachment identities to the existing pool/generation observation. The private disk plan captures task/disk UUID baselines and monotonic completion evidence. It is excluded from public serde and explicitly encoded in the private journal; load/save/admission validate the public action and step shape against the plan. Recovery reads only dispatched steps and never replays writes.
+
+Disk cleanup derives ownership from terminal durable creation evidence, checking an original marker where that workflow uses one. A separate fresh graph check refuses every attachment, suspend-image, snapshot-parent and HA dependency. A new detached copy's returned UUID is published only after the task receipt, new-identity baseline and complete disk graph verify. Local stop prevents remaining steps without claiming server I/O was cancelled. See the [disk increment report](reports/2026-11-08-disk-administration.md) for supported boundaries and verification.

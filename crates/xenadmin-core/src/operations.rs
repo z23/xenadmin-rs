@@ -2140,3 +2140,55 @@ mod journal_privacy_tests;
 #[cfg(test)]
 #[path = "guest_tools_tests.rs"]
 mod guest_tools_tests;
+
+impl OperationRecord {
+    pub fn owned_disk_candidates(&self) -> Vec<crate::VdiId> {
+        self.created_devices
+            .iter()
+            .filter_map(|d| match d {
+                crate::CreatedDevice::Disk(id) if self.owned_disk_marker(*id).is_some() => {
+                    Some(*id)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    pub(crate) fn owned_disk_marker(
+        &self,
+        disk: crate::VdiId,
+    ) -> Option<Option<(&'static str, String)>> {
+        if !self.state.terminal()
+            || !self
+                .created_devices
+                .contains(&crate::CreatedDevice::Disk(disk))
+        {
+            return None;
+        }
+        if self.device_plan.as_ref().is_some_and(|p| {
+            p.steps.iter().zip(&p.evidence).any(|(step, e)| {
+                matches!(step, crate::device_lifecycle::Step::CreateDisk { .. })
+                    && e.as_ref().is_some_and(|e| {
+                        e.created == Some(crate::CreatedDevice::Disk(disk))
+                            && e.result_reference.is_some()
+                            && !e.baseline.contains(&disk.uuid())
+                    })
+            })
+        }) {
+            return Some(Some(("xenadmin-rs-operation", self.id.to_string())));
+        }
+        if self.lifecycle_plan.as_ref().is_some_and(|p| {
+            p.created.is_some()
+                && p.created_devices
+                    .contains(&crate::CreatedDevice::Disk(disk))
+                && p.baseline
+                    .get("VDI")
+                    .is_some_and(|ids| !ids.contains(&disk.uuid()))
+                && p.evidence
+                    .first()
+                    .is_some_and(|e| e.completed && e.result.is_some())
+        }) {
+            return Some(None);
+        }
+        None
+    }
+}

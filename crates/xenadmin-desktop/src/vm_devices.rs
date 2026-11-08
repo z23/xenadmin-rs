@@ -1,5 +1,5 @@
 #[path = "vm_device_actions.rs"]
-mod actions;
+pub(super) mod actions;
 #[path = "vm_device_lifecycle.rs"]
 mod lifecycle;
 #[path = "vm_device_properties.rs"]
@@ -314,7 +314,9 @@ fn disk_card(
             .child(field("Attachment count", sharing.to_string(), k))
             .child(field("Disk UUID", disk.id.to_string(), k));
         if !cd {
-            view = view.child(crate::transfers::disk_button(s, disk, k));
+            view = view
+                .child(crate::disk_workspace::disk_button(disk.id, k))
+                .child(crate::transfers::disk_button(s, disk, k));
         }
         if !disk.description.is_empty() {
             view = view.child(field("Description", &disk.description, k));

@@ -146,6 +146,7 @@ pub(super) async fn prepare(
         | ResourceAction::RootPassword(_)
         | ResourceAction::HostPower(_)
         | ResourceAction::Host(_)
+        | ResourceAction::Disk(_)
         | ResourceAction::NetworkTopology(_)
         | ResourceAction::ManagementNetwork(_)
         | ResourceAction::PowerBatch(_) => return Err(Error::InvalidResourceCommand),
@@ -457,6 +458,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         | ResourceAction::RootPassword(_)
         | ResourceAction::HostPower(_)
         | ResourceAction::Host(_)
+        | ResourceAction::Disk(_)
         | ResourceAction::NetworkTopology(_)
         | ResourceAction::ManagementNetwork(_)
         | ResourceAction::PowerBatch(_) => Vec::new(),

@@ -1,3 +1,5 @@
+mod disk_administration;
+pub use disk_administration::{DiskConsumer, DiskOperation, OwnedDiskSource, ReviewedDisk};
 mod management_network;
 mod management_topology;
 pub use management_network::{

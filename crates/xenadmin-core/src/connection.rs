@@ -194,6 +194,7 @@ impl ConnectionSnapshot {
             .filter(|_| self.is_current())
             .ok_or(Error::Stale)?;
         let present = match target {
+            crate::ResourceTarget::Disk(id) => inventory.details.vdis.contains_key(&id),
             crate::ResourceTarget::Vm(id) => inventory.vms.contains_key(&id),
             crate::ResourceTarget::Pif(id) => inventory.details.pifs.contains_key(&id),
             crate::ResourceTarget::Vlan(id) => inventory.details.vlans.contains_key(&id),

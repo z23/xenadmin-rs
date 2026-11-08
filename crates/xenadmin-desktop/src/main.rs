@@ -8,6 +8,7 @@ mod console_view;
 mod cross_pool_vm;
 mod demo_details;
 mod dev_inspection;
+mod disk_workspace;
 mod guest_tools_view;
 mod host_admin;
 mod host_console;
@@ -177,6 +178,7 @@ struct State {
     pool_editor: Option<pool_view::Editor>,
     pool_security: Option<pool_security_view::Editor>,
     network_workspace: Option<network_admin::Workspace>,
+    disk_workspace: Option<Box<disk_workspace::Panel>>,
     storage_editor: Option<storage_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
     host_support: Option<host_support_view::Panel>,
@@ -291,6 +293,7 @@ fn init() -> State {
         pool_editor: None,
         pool_security: None,
         network_workspace: None,
+        disk_workspace: None,
         storage_editor: None,
         host_workspace: None,
         host_support: None,
@@ -1440,6 +1443,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [organization_view::dialog(s, &k)])
     } else if s.activity.show {
         rune_kit::root(base, [activity::dialog(s, &k)])
+    } else if s.disk_workspace.is_some() {
+        rune_kit::root(base, [disk_workspace::dialog(s, &k)])
     } else if s.storage_editor.is_some() {
         rune_kit::root(base, [storage_view::dialog(s, &k)])
     } else if s.pool_security.is_some() {
@@ -1682,6 +1687,7 @@ fn details(s: &State, k: &Kit) -> El {
             detail
                 .child(resource_admin::buttons(s, k))
                 .child(network_admin::button(s, k))
+                .child(disk_workspace::storage_button(s, k))
                 .child(storage_view::button(s, k))
                 .child(host_admin::button(s, k))
                 .child(host_support_view::button(s, k))
@@ -2303,6 +2309,9 @@ fn main() {
             ("organization", organization_view::scene),
             ("appliances", appliance_view::scene),
             ("appliance-review", appliance_view::review_scene),
+            ("disk-cleanup", disk_workspace::cleanup_scene),
+            ("disk-grow", |s| disk_workspace::scene(s, false)),
+            ("disk-copy", |s| disk_workspace::scene(s, true)),
             ("storage-create", |s| storage_view::scene(s, false)),
             ("storage-review", |s| storage_view::scene(s, true)),
             ("storage-discovery", storage_view::discovery_scene),

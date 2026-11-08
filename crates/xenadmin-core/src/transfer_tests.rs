@@ -497,6 +497,14 @@ impl Fixture {
                         let mut data = r.lock().unwrap();
                         let mut response = if method == "session.login_with_password" {
                             json!({"result":"OpaqueRef:synthetic-secret"})
+                        } else if let Some(reply) =
+                            disk_administration_tests::rpc(method, p, &mut data)
+                        {
+                            if reply.lost {
+                                return;
+                            }
+                            pause_response = reply.paused;
+                            reply.value
                         } else if method == "session.logout" {
                             json!({"result":null})
                         } else if method == "event.from" {
@@ -1138,3 +1146,6 @@ mod cloud_init_protocol_tests;
 
 #[path = "host_support_tests.rs"]
 mod host_support_tests;
+
+#[path = "disk_administration_tests.rs"]
+mod disk_administration_tests;

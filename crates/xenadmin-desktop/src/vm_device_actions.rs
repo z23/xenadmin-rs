@@ -1,6 +1,6 @@
 use super::{State, caption, field, heading};
-use rune::{El, ScrollSpec, TextEdit, col, el, row};
-use rune_kit::{Button, ButtonVariant, Kit, TextInput};
+use rune::{El, ScrollSpec, col, el, row};
+use rune_kit::{Button, ButtonVariant, Kit};
 use xenadmin_core::{
     DeviceCommand, DeviceOperation, Inventory, ObservedVm, VbdId, VdiId, VirtualBlockDevice,
     VirtualInterface, VmId,
@@ -11,8 +11,6 @@ pub(super) struct Form {
     vm_name: String,
     operation: Option<DeviceOperation>,
     media_drive: Option<VbdId>,
-    growth: Option<(VdiId, u64)>,
-    size: TextEdit,
     review: bool,
     error: Option<String>,
 }
@@ -24,12 +22,7 @@ fn permitted(allowed: &Option<Vec<String>>, operation: &str) -> bool {
 fn ready(s: &State) -> bool {
     s.can_mutate()
 }
-fn open(
-    s: &mut State,
-    operation: Option<DeviceOperation>,
-    media_drive: Option<VbdId>,
-    growth: Option<(VdiId, u64)>,
-) {
+fn open(s: &mut State, operation: Option<DeviceOperation>, media_drive: Option<VbdId>) {
     let Some(view) = s.devices.as_ref() else {
         return;
     };
@@ -55,9 +48,7 @@ fn open(
         vm_name: vm.name.clone(),
         operation,
         media_drive,
-        growth,
-        size: TextEdit::new(""),
-        review: media_drive.is_none() && growth.is_none(),
+        review: media_drive.is_none(),
         error: None,
     };
     if let Some(view) = &mut s.devices {
@@ -70,7 +61,7 @@ fn button(label: &'static str, operation: DeviceOperation, enabled: bool, k: &Ki
     Button::new(label)
         .variant(ButtonVariant::Outline)
         .disabled(!enabled)
-        .on_press(move |s: &mut State| open(s, Some(operation.clone()), None, None))
+        .on_press(move |s: &mut State| open(s, Some(operation.clone()), None))
         .build(k)
 }
 fn operation_control(
@@ -114,7 +105,7 @@ pub(super) fn disk_buttons(
                 Button::new("Insert ISO…")
                     .variant(ButtonVariant::Outline)
                     .disabled(!ready(s) || !permitted(&attachment.allowed_operations, "insert"))
-                    .on_press(move |s: &mut State| open(s, None, Some(vbd), None))
+                    .on_press(move |s: &mut State| open(s, None, Some(vbd)))
                     .build(k),
             );
             if !permitted(&attachment.allowed_operations, "insert") {
@@ -143,43 +134,6 @@ pub(super) fn disk_buttons(
             )
         };
         controls = controls.child(operation_control(s, inventory, vm, label, operation, k));
-        if let Some(disk) = attachment
-            .vdi
-            .and_then(|id| inventory.details.vdis.get(&id))
-        {
-            let growth = disk.virtual_size.map(|size| (disk.id, size));
-            let availability = disk.virtual_size.and_then(|size| {
-                (size / 512)
-                    .checked_add(1)
-                    .and_then(|blocks| blocks.checked_mul(512))
-                    .map(|new_size| {
-                        DeviceOperation::GrowDisk {
-                            vdi: disk.id,
-                            expected_size: size,
-                            new_size,
-                        }
-                        .availability(inventory, vm)
-                    })
-            });
-            controls = controls.child(
-                Button::new("Grow disk…")
-                    .variant(ButtonVariant::Outline)
-                    .disabled(
-                        !ready(s)
-                            || !availability
-                                .as_ref()
-                                .is_some_and(|status| status.is_available()),
-                    )
-                    .on_press(move |s: &mut State| open(s, None, None, growth))
-                    .build(k),
-            );
-            controls = controls.child(caption("Disk growth requires a halted VM, disconnected attachments, and an exclusive writable disk.", k).wrap());
-            if let Some(availability) = availability.filter(|status| !status.is_available()) {
-                controls = controls.child(
-                    caption(format!("Disk growth: {}", availability.explanation()), k).wrap(),
-                );
-            }
-        }
     }
     controls
 }
@@ -235,7 +189,7 @@ fn media_choices(inventory: &Inventory, vm: VmId, vbd: VbdId) -> Vec<(VdiId, Str
     choices.sort_by_cached_key(|choice| choice.1.to_lowercase());
     choices
 }
-pub(super) fn parse_size(text: &str) -> Result<u64, String> {
+pub(crate) fn parse_size(text: &str) -> Result<u64, String> {
     let compact = text.split_whitespace().collect::<String>();
     let (number, factor) = if let Some(value) = compact.strip_suffix("GiB") {
         (value, 1u64 << 30)
@@ -255,26 +209,6 @@ pub(super) fn parse_size(text: &str) -> Result<u64, String> {
 }
 fn review(s: &mut State) {
     let Some(form) = form_mut(s) else { return };
-    if let Some((vdi, expected_size)) = form.growth {
-        match parse_size(&form.size.text) {
-            Ok(new_size) if new_size > expected_size => {
-                form.operation = Some(DeviceOperation::GrowDisk {
-                    vdi,
-                    expected_size,
-                    new_size,
-                })
-            }
-            Ok(_) => {
-                form.error =
-                    Some("The new capacity must be greater than the current disk size.".into());
-                return;
-            }
-            Err(error) => {
-                form.error = Some(error);
-                return;
-            }
-        }
-    }
     if form.operation.is_none() {
         form.error = Some("Select an ISO image before continuing.".into());
         return;
@@ -397,16 +331,6 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
                 .build(k),
             );
         }
-    } else if let Some((vdi, size)) = form.growth {
-        body = body
-            .child(field("Disk UUID", vdi.to_string(), k))
-            .child(field("Current capacity", format!("{size} bytes"), k))
-            .child(
-                TextInput::new(&form.size)
-                    .label("New capacity (bytes, KiB, MiB or GiB)")
-                    .on_edit(|s: &mut State| &mut form_mut(s).expect("device editor open").size)
-                    .build(k),
-            );
     }
     if let Some(error) = form.error.as_ref().or(s.error.as_ref()) {
         body = body.child(
