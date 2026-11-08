@@ -1433,7 +1433,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "host-probe"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "clap",
  "rpassword",
@@ -5036,7 +5036,7 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
 name = "xenadmin-core"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "fatfs",
@@ -5071,7 +5071,7 @@ dependencies = [
 
 [[package]]
 name = "xenadmin-desktop"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "image",
  "libc",
