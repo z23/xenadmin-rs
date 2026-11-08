@@ -23,6 +23,7 @@ use crate::{
 
 enum Request {
     Console(ConsoleRequest),
+    Metrics(crate::metrics::MetricsRequest),
     Diagnose(crate::diagnostics::DiagnosticRequest),
     Submit(Box<MutationRequest>),
     ResourceSubmit(Box<crate::resources::ResourceRequest>),
@@ -72,6 +73,32 @@ impl std::fmt::Display for ObservedVm {
     }
 }
 impl ConnectionSnapshot {
+    pub fn observe_metrics(
+        &self,
+        target: crate::MetricTarget,
+    ) -> Result<crate::ObservedMetrics, Error> {
+        let inventory = self
+            .inventory
+            .as_ref()
+            .filter(|_| self.is_current())
+            .ok_or(Error::Stale)?;
+        let present = match target {
+            crate::MetricTarget::Vm(id) => inventory
+                .vms
+                .get(&id)
+                .is_some_and(|vm| !vm.is_template && !vm.is_control_domain),
+            crate::MetricTarget::Host(id) => inventory.hosts.contains_key(&id),
+        };
+        if !present {
+            return Err(Error::Stale);
+        }
+        Ok(crate::ObservedMetrics {
+            pool: inventory.pool_id,
+            generation: self.generation,
+            target,
+        })
+    }
+
     pub fn observe_resource(
         &self,
         target: crate::ResourceTarget,
@@ -344,6 +371,22 @@ pub struct Connection {
     resource_history: watch::Receiver<Arc<Vec<crate::ResourceOperationRecord>>>,
 }
 impl Connection {
+    pub fn subscribe_metrics(
+        &self,
+        observed: crate::ObservedMetrics,
+        options: crate::MetricsOptions,
+    ) -> Result<crate::Metrics, Error> {
+        options.validate()?;
+        if self.latest().observe_metrics(observed.target)? != observed {
+            return Err(Error::Stale);
+        }
+        let (handle, request) = crate::metrics::channel(observed, options, self.runtime.clone());
+        self.requests
+            .try_send(Request::Metrics(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
+
     pub fn resource_history(&self) -> Arc<Vec<crate::ResourceOperationRecord>> {
         self.resource_history.borrow().clone()
     }
@@ -610,6 +653,7 @@ async fn run(
                 let mut journal_error = None;
                 let mut workers = tokio::task::JoinSet::new();
                 let mut diagnostics = tokio::task::JoinSet::new();
+                let mut metrics = tokio::task::JoinSet::new();
                 let mut resource_workers = tokio::task::JoinSet::new();
                 let mut resource_counts = BTreeMap::<crate::OperationId, usize>::new();
                 let mut resource_rechecks = BTreeSet::new();
@@ -654,6 +698,7 @@ async fn run(
                     let batch = tokio::select! {
                         _=cancel.cancelled()=>break None,
                         _=diagnostics.join_next(), if !diagnostics.is_empty()=>{continue;}
+                        _=metrics.join_next(), if !metrics.is_empty()=>{continue;}
                         done=resource_workers.join_next(), if !resource_workers.is_empty()=>{
                             match done {
                                 Some(Ok(id))=>{
@@ -748,6 +793,11 @@ async fn run(
                                     } else if let Some(reference)=store.vm_reference(request.record.vm) {
                                         start_worker(*request,Some(reference),&mut workers,&mut worker_counts);
                                     } else {request.reject(Error::Stale);}
+                                }
+                                Request::Metrics(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|inventory|inventory.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if metrics.len()>=4 {request.fail(Error::Busy);}
+                                    else {metrics.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone(),updates.clone()));}
                                 }
                                 Request::Diagnose(request)=>{
                                     if request.target.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.target.pool) {request.fail(Error::Stale);}
@@ -932,19 +982,29 @@ async fn run(
                     token = batch.token;
                     events.set(next_events(session.clone(), token.clone()));
                 };
+                // Revoke observations before workers finish retiring this generation.
+                publish(
+                    &sender,
+                    generation,
+                    ConnectionState::Reconnecting,
+                    &last_inventory,
+                    error.as_ref().map(ToString::to_string),
+                    last_update,
+                );
                 active.cancel();
                 let cleanup = tokio::time::sleep(Duration::from_secs(3));
                 tokio::pin!(cleanup);
-                while !workers.is_empty() || !resource_workers.is_empty() {
+                while !workers.is_empty() || !resource_workers.is_empty() || !metrics.is_empty() {
                     tokio::select! {
                         _=workers.join_next(), if !workers.is_empty()=>{},
                         _=resource_workers.join_next(), if !resource_workers.is_empty()=>{},
+                        _=metrics.join_next(), if !metrics.is_empty()=>{},
                         Some(update)=operation_updates.recv()=>{match update {
                             OperationUpdate::Record(record)=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
                             OperationUpdate::Resource(record)=>{merge_resource_record(&mut resource_records,*record);publish_resource_history(&resource_history,&mut resource_records);},
                             OperationUpdate::Coordinator(_)=>{},
                         }},
-                        _=&mut cleanup=>{workers.abort_all();resource_workers.abort_all();break;},
+                        _=&mut cleanup=>{workers.abort_all();resource_workers.abort_all();metrics.abort_all();break;},
                     }
                 }
                 let _ = tokio::time::timeout(Duration::from_secs(3), session.logout()).await;
@@ -1038,6 +1098,7 @@ async fn forward_alias(
                         Request::Submit(request) => request.reject(Error::Busy),
                         Request::ResourceSubmit(request) => request.reject(Error::Busy),
                         Request::Console(request) => request.fail(Error::Busy),
+                        Request::Metrics(request) => request.fail(Error::Busy),
                         Request::Diagnose(request) => request.fail(Error::Busy),
                         Request::RememberMembers(_) => {},
                         Request::Control(_, _) | Request::ResourceControl(_,_) => {

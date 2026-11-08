@@ -388,7 +388,7 @@ pub(crate) fn safe_error_code(code: &str) -> &str {
     }
 }
 
-fn transport_error(error: reqwest::Error) -> Error {
+pub(crate) fn transport_error(error: reqwest::Error) -> Error {
     if error.is_timeout() {
         Error::Timeout
     } else if std::error::Error::source(&error).is_some_and(|_| {

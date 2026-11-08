@@ -13,7 +13,12 @@ pub use diagnostics::ActionDiagnostic;
 mod inspection;
 pub use inspection::{DevInspection, InspectionClass, InspectionRequest, inspect_live};
 mod console;
+mod metrics;
 mod model;
+pub use metrics::{
+    MetricCategory, MetricSample, MetricSeries, MetricSource, MetricTarget, Metrics,
+    MetricsOptions, MetricsSnapshot, MetricsState, MetricsWindow, ObservedMetrics,
+};
 mod operations;
 mod profiles;
 mod resources;
@@ -48,6 +53,10 @@ pub use trust::{CertificateFingerprint, ConnectionOptions, Credentials, Endpoint
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Choose up to 32 distinct metric source names")]
+    InvalidMetricsOptions,
+    #[error("The metrics endpoint or redirect is outside the verified pool")]
+    MetricsEndpoint,
     #[error("Choose valid resource settings and a change to apply")]
     InvalidResourceCommand,
     #[error("The resource changed since review. Refresh it before retrying")]
