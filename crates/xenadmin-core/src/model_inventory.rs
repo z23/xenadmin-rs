@@ -177,6 +177,8 @@ pub struct HostDetails {
     #[serde(default)]
     pub power_on_config_empty: Option<bool>,
     #[serde(default)]
+    pub power_configuration: Option<crate::HostPowerConfiguration>,
+    #[serde(default)]
     pub syslog_destination: Option<String>,
     #[serde(default)]
     pub syslog_known: bool,

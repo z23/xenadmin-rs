@@ -557,6 +557,36 @@ impl Connection {
             .map_err(|_| Error::Busy)?;
         Ok(operation)
     }
+    pub fn configure_host_power(
+        &self,
+        id: crate::OperationId,
+        host: crate::ObservedResource,
+        expected: crate::HostPowerConfiguration,
+        settings: crate::HostPowerSettings,
+        password: Option<crate::HostPowerPassword>,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if self.latest().observe_resource(host.target)? != host {
+            return Err(Error::Stale);
+        }
+        if settings.needs_password() != password.is_some() {
+            return Err(Error::InvalidResourceCommand);
+        }
+        let action = crate::ResourceAction::HostPower(crate::HostPowerOperation::Configure {
+            expected,
+            settings,
+        });
+        action.validate(host.target)?;
+        let (handle, mut request) =
+            crate::resources::channel(id, host, action, self.runtime.clone());
+        request.host_power_password = password;
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     /// Provision authenticated storage without persisting clear credentials.
     pub fn submit_authenticated_storage(
         &self,
@@ -1343,6 +1373,7 @@ async fn run(
                                                     && !matches!(
                                                         record.action,
                                                         crate::ResourceAction::CrossPoolVm(_)
+                                                            | crate::ResourceAction::HostPower(_)
                                                     )
                                                     && resource_workers.len() < 8
                                                 {

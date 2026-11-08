@@ -1,5 +1,10 @@
 mod power_batch;
 pub use power_batch::{BatchVmPower, VmPowerBatch};
+mod host_power;
+pub use host_power::{
+    HostPowerConfiguration, HostPowerOperation, HostPowerPassword, HostPowerSecretEvidence,
+    HostPowerSettings,
+};
 mod storage_auth;
 pub use storage_auth::{StorageAuthentication, StorageCredentials, StorageSecretEvidence};
 mod device_properties;

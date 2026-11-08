@@ -1,3 +1,7 @@
+#[path = "host_power_backend.rs"]
+mod host_power_backend;
+#[path = "host_power_journal.rs"]
+mod host_power_journal;
 #[path = "storage_auth_backend.rs"]
 mod storage_auth_backend;
 #[path = "storage_auth_journal.rs"]
@@ -99,6 +103,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    HostPower {
+        host: ObservedResource,
+        operation: crate::HostPowerOperation,
+    },
     PowerBatch {
         pool: ObservedResource,
         selection: crate::VmPowerBatch,
@@ -185,6 +193,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    HostPower(crate::HostPowerOperation),
     PowerBatch(crate::VmPowerBatch),
     CrossPoolVm(crate::CrossPoolVmOperation),
     AuthenticatedStorage {
@@ -242,6 +251,7 @@ impl ResourceAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::HostPower(operation) => operation.label(),
             Self::PowerBatch(_) => "Power actions on selected VMs",
             Self::CrossPoolVm(operation) => operation.mode.label(),
             Self::AuthenticatedStorage { operation, .. } => operation.label(),
@@ -276,6 +286,9 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::HostPower(operation) => {
+                matches!(target, ResourceTarget::Host(_)) && operation.valid()
+            }
             Self::PowerBatch(selection) => return selection.validate(target),
             Self::CrossPoolVm(operation) => {
                 let ResourceTarget::Pool(pool) = target else {
@@ -394,6 +407,7 @@ impl ResourceCommand {
     }
     fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
+            Self::HostPower { host, operation } => (host, ResourceAction::HostPower(operation)),
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
             Self::CleanupStorageCredentials {
                 pool,
@@ -541,6 +555,10 @@ pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) host_plan: Option<host::Plan>,
     #[serde(skip)]
+    pub(crate) host_power_plan: Option<crate::host_power::Plan>,
+    #[serde(default)]
+    pub host_power_secret: Option<crate::HostPowerSecretEvidence>,
+    #[serde(skip)]
     pub(crate) power_batch_plan: Option<crate::power_batch::Plan>,
     #[serde(skip)]
     pub(crate) storage_auth_plan: Option<crate::storage_auth::Plan>,
@@ -652,6 +670,8 @@ pub(crate) fn channel(
         appliance_completed: false,
         appliance_baseline: None,
         host_plan: None,
+        host_power_plan: None,
+        host_power_secret: None,
         power_batch_plan: None,
         storage_auth_plan: None,
         storage_secret_cleanup: None,

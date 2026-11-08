@@ -2043,3 +2043,6 @@ mod cloud_init;
 mod host_console;
 #[path = "fixtures/storage_authentication.rs"]
 mod storage_authentication;
+
+#[path = "fixtures/host_power.rs"]
+mod host_power;

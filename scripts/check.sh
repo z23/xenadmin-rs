@@ -48,6 +48,8 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/vm-migration-compact.png --tree artifacts/vm-migration-compact.json --scene vm-migration --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/host-administration.png --tree artifacts/host-administration.json --scene host-administration --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/host-administration-compact.png --tree artifacts/host-administration-compact.json --scene host-administration --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-power-settings.png --tree artifacts/host-power-settings.json --scene host-power-settings --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-power-settings-compact.png --tree artifacts/host-power-settings-compact.json --scene host-power-settings --theme dark --size 513x652 --scale 1 --at 1
 
 "$check_binary" --snap artifacts/organization.png --tree artifacts/organization.json --scene organization --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/organization-compact.png --tree artifacts/organization-compact.json --scene organization --theme dark --size 513x652 --scale 1 --at 1

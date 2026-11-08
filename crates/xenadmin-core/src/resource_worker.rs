@@ -4,6 +4,8 @@ mod cloud_init_worker;
 mod cross_pool_worker;
 #[path = "host_worker.rs"]
 mod host;
+#[path = "host_power_worker.rs"]
+mod host_power_worker;
 #[path = "ovf_export_worker.rs"]
 mod ovf_export_worker;
 #[path = "ovf_worker.rs"]
@@ -31,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
     pub(crate) storage_credentials: Option<crate::StorageCredentials>,
+    pub(crate) host_power_password: Option<crate::HostPowerPassword>,
     pub(crate) sensitive: Option<crate::pool_security::SensitiveInputs>,
     pub(crate) cloud_media: Option<crate::CloudInitMedia>,
     pub generation: u64,
@@ -51,6 +54,7 @@ impl ResourceRequest {
             sensitive: None,
             cloud_media: None,
             storage_credentials: None,
+            host_power_password: None,
             generation,
             join: None,
             cross_pool: None,
@@ -66,6 +70,7 @@ impl ResourceRequest {
             sensitive: None,
             cloud_media: None,
             storage_credentials: None,
+            host_power_password: None,
             generation: 0,
             join: None,
             cross_pool: None,
@@ -231,6 +236,9 @@ impl ResourceRequest {
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.execute_join(journal, session, cancel).await;
         }
+        if matches!(self.record.action, super::ResourceAction::HostPower(_)) {
+            return self.execute_host_power(journal, session, cancel).await;
+        }
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
             return self.execute_host(journal, session, cancel).await;
         }
@@ -369,6 +377,9 @@ impl ResourceRequest {
         self.reload(journal)?;
         if self.stopped_after_recovery() {
             return Ok(());
+        }
+        if matches!(self.record.action, super::ResourceAction::HostPower(_)) {
+            return self.reconcile_host_power(journal, session, cancel).await;
         }
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
             return self.reconcile_host(journal, session, cancel).await;
@@ -824,6 +835,7 @@ impl ResourceRequest {
         let explicit_rejection = !matches!(
             self.record.action,
             super::ResourceAction::PowerBatch(_)
+                | super::ResourceAction::HostPower(_)
                 | super::ResourceAction::AuthenticatedStorage { .. }
                 | super::ResourceAction::CleanupStorageCredentials { .. }
                 | super::ResourceAction::Pool(_)

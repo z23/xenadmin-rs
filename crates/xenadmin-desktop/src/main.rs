@@ -9,6 +9,7 @@ mod demo_details;
 mod dev_inspection;
 mod host_admin;
 mod host_console;
+mod host_power_view;
 mod inventory_menu;
 mod metrics_view;
 mod network_admin;
@@ -165,6 +166,7 @@ struct State {
     network_workspace: Option<network_admin::Workspace>,
     storage_editor: Option<storage_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
+    host_power: Option<host_power_view::Editor>,
     snapshot_policy_workspace: Option<snapshot_policy_view::Workspace>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
     resource_rows: Vec<xenadmin_core::ResourceOperationRecord>,
@@ -275,6 +277,7 @@ fn init() -> State {
         network_workspace: None,
         storage_editor: None,
         host_workspace: None,
+        host_power: None,
         snapshot_policy_workspace: None,
         resource_operations: Vec::new(),
         resource_rows: Vec::new(),
@@ -1369,6 +1372,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [connection_dialog(s, &k)])
     } else if s.snapshot_policy_workspace.is_some() {
         rune_kit::root(base, [snapshot_policy_view::dialog(s, &k)])
+    } else if s.host_power.is_some() {
+        rune_kit::root(base, [host_power_view::dialog(s, &k)])
     } else if s.host_workspace.is_some() {
         rune_kit::root(base, [host_admin::dialog(s, &k)])
     } else if s.network_workspace.is_some() {
@@ -2170,6 +2175,7 @@ fn main() {
             ("network-interfaces", network_admin::scene),
             ("network-ipv6", network_admin::ipv6_scene),
             ("host-administration", host_admin::scene),
+            ("host-power-settings", host_power_view::scene),
             ("snapshot-schedules", snapshot_policy_view::scene),
             ("network-create", |s| resource_admin::scene(s, false)),
             ("activity", activity::scene),

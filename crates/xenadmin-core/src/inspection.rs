@@ -360,6 +360,7 @@ fn resource_operation_value(record: &crate::ResourceOperationRecord) -> Value {
         "transfer":record.transfer,"transfer_created":record.transfer_created,
         "power_batch":match &record.action {crate::ResourceAction::PowerBatch(selection)=>Some(json!({"action":selection.action,"vms":selection.vms.iter().take(32).map(|item|json!({"vm":item.vm,"expected_state":bounded(&item.expected_state.to_string())})).collect::<Vec<_>>()})),_=>None},
         "storage_secrets":record.storage_secrets,
+        "host_power_secret":record.host_power_secret,
         "detail":bounded(&record.detail),"local_error":record.local_error.as_deref().map(bounded),
         "can_cancel":record.can_cancel,"cancel_requested":record.cancel_requested,
         "steps":record.steps.iter().take(64).map(|step|json!({"label":bounded(&step.label),"state":step.state,"detail":bounded(&step.detail)})).collect::<Vec<_>>()})

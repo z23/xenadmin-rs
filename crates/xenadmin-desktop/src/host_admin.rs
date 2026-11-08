@@ -352,7 +352,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .key(format!("host-choice-{}", kind.title())),
             );
         }
-        body=body.child(caption("BMC credentials, host passwords, backup/restore and support-bundle transfers require their dedicated workflows and are not edited here.",k).wrap());
+        let target = w.target;
+        body = body.child(
+            Button::new("BMC / power-on settings…")
+                .on_press(move |s: &mut State| host_power_view::open(s, target))
+                .build(k)
+                .key("host-bmc-settings"),
+        );
+        body=body.child(caption("Host passwords, backup/restore and support-bundle transfers require their dedicated workflows.",k).wrap());
     } else if let Some(op) = &w.review {
         for line in lines(w, op) {
             body = body.child(caption(line, k).wrap_anywhere());

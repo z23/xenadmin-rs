@@ -42,6 +42,8 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         appliance_completed: false,
         appliance_baseline: None,
         host_plan: None,
+        host_power_plan: None,
+        host_power_secret: None,
         power_batch_plan: None,
         storage_auth_plan: None,
         storage_secret_cleanup: None,
@@ -889,4 +891,97 @@ fn storage_auth_journal_merge_preserves_acknowledgement_and_monotonic_secret_evi
     let public = serde_json::to_string(&merged).unwrap();
     assert!(!public.contains("username_digest"));
     assert!(!public.contains("storage_auth_plan"));
+}
+#[test]
+fn host_power_private_plan_is_immutable_bounded_and_cannot_claim_unreceipted_success() {
+    use crate::{HostId, HostPowerConfiguration, HostPowerOperation, HostPowerSettings, SecretId};
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let mut row = resource(pool);
+    row.target = ResourceTarget::Host(HostId::from(uuid::Uuid::new_v4()));
+    let operation = HostPowerOperation::Configure {
+        expected: HostPowerConfiguration {
+            settings: HostPowerSettings::Disabled,
+            secret: None,
+        },
+        settings: HostPowerSettings::Ipmi {
+            address: "192.0.2.60".parse().unwrap(),
+            username: "fixture".into(),
+        },
+    };
+    row.action = ResourceAction::HostPower(operation.clone());
+    row.steps = vec![];
+    journal.resource_admit(&mut row).unwrap();
+    row.steps = vec![
+        OperationStep {
+            label: "Secret".into(),
+            state: StepState::Pending,
+            detail: String::new(),
+        },
+        OperationStep {
+            label: "Settings".into(),
+            state: StepState::Pending,
+            detail: String::new(),
+        },
+    ];
+    row.host_power_plan = Some(crate::host_power::Plan::new(operation, vec![]));
+    journal.resource_save(&mut row).unwrap();
+    let mut invalid = row.clone();
+    invalid.state = OperationState::Succeeded;
+    assert!(matches!(
+        journal.resource_save(&mut invalid),
+        Err(Error::Journal)
+    ));
+    let mut invalid = row.clone();
+    invalid
+        .host_power_plan
+        .as_mut()
+        .unwrap()
+        .configure_completed = true;
+    assert!(matches!(
+        journal.resource_save(&mut invalid),
+        Err(Error::Journal)
+    ));
+    let mut invalid = row.clone();
+    invalid.steps.clear();
+    assert!(matches!(
+        journal.resource_save(&mut invalid),
+        Err(Error::Journal)
+    ));
+    row.host_power_plan.as_mut().unwrap().secret_sent = true;
+    row.state = OperationState::Dispatching;
+    journal.resource_save(&mut row).unwrap();
+    let mut invalid = row.clone();
+    invalid.host_power_plan.as_mut().unwrap().secret_sent = false;
+    assert!(matches!(
+        journal.resource_save(&mut invalid),
+        Err(Error::JournalChanged)
+    ));
+    row.host_power_plan.as_mut().unwrap().secret_completed = true;
+    row.host_power_plan.as_mut().unwrap().secret = Some(SecretId::from(uuid::Uuid::new_v4()));
+    crate::host_power::project(&mut row);
+    journal.resource_save(&mut row).unwrap();
+    let public = serde_json::to_string(&row).unwrap();
+    assert!(!public.contains("host_power_plan"));
+    let mut invalid = row.clone();
+    invalid
+        .host_power_plan
+        .as_mut()
+        .unwrap()
+        .baseline
+        .push(row.host_power_secret.as_ref().unwrap().secret);
+    assert!(matches!(
+        journal.resource_save(&mut invalid),
+        Err(Error::Journal)
+    ));
+    let mut recovered = row.clone();
+    recovered.state = OperationState::OutcomeUnknown;
+    journal.resource_save(&mut recovered).unwrap();
+    recovered.state = OperationState::Verifying;
+    journal.resource_save(&mut recovered).unwrap();
+    let merged = journal.host_power_evidence(&row).unwrap();
+    assert_eq!(merged.state, OperationState::Verifying);
+    assert!(merged.interrupted);
+    assert_eq!(merged.host_power_secret, row.host_power_secret);
 }

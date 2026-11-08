@@ -573,3 +573,14 @@ key into the current map; protection remains a separate intention. These command
 existing asynchronous task journal and never replay a lost submission. Management interface
 handover and topology migration remain separate pending workflows. See the
 [verification report](reports/2026-11-08-network-interfaces.md).
+
+## Host power-on credentials
+
+`HostPowerConfiguration` projects only recognized disabled, Wake-on-LAN and IPMI settings.
+`configure_host_power` accepts a non-serializable password separately from captured settings.
+Its private plan stores immutable baseline UUIDs and monotonic Secret/setter receipts; public
+history exposes only Secret identity. Unknown setting responses never become successful from
+matching fields alone, and an interrupted original worker cannot continue after a recheck.
+Explicit cleanup requires original-operation provenance, no unresolved setter and fresh host/
+storage consumer checks. See the [host power credential report](reports/2026-11-08-host-power-credentials.md)
+for the XCP-ng package evidence, source semantics and validation limits.

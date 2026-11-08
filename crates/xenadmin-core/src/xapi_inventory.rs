@@ -665,6 +665,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                         .filter(|s| crate::host_types::valid_epoch(s))
                         .map(str::to_owned),
                     control_domain: refs.vm(&record["control_domain"]),
+                    power_configuration: crate::host_power::configuration(record),
                     power_on_mode: record["power_on_mode"].as_str().map(str::to_owned),
                     power_on_config_empty: record["power_on_config"]
                         .as_object()

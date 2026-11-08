@@ -136,6 +136,7 @@ pub(super) async fn prepare(
         ResourceAction::Pool(_) => unreachable!(),
         ResourceAction::AuthenticatedStorage { .. }
         | ResourceAction::CleanupStorageCredentials { .. }
+        | ResourceAction::HostPower(_)
         | ResourceAction::Host(_)
         | ResourceAction::PowerBatch(_) => return Err(Error::InvalidResourceCommand),
         ResourceAction::Organization(_) => {
@@ -434,6 +435,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         ResourceAction::Pool(_) => vec![Check::Pool],
         ResourceAction::AuthenticatedStorage { .. }
         | ResourceAction::CleanupStorageCredentials { .. }
+        | ResourceAction::HostPower(_)
         | ResourceAction::Host(_)
         | ResourceAction::PowerBatch(_) => Vec::new(),
         ResourceAction::Organization(_) => super::organization::checks(record),
