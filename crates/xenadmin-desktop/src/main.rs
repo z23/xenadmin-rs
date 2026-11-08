@@ -2249,6 +2249,7 @@ fn main() {
             ("network-interfaces", network_admin::scene),
             ("network-ipv6", network_admin::ipv6_scene),
             ("network-topology", network_admin::topology_scene),
+            ("management-network", network_admin::management_scene),
             ("host-administration", host_admin::scene),
             ("host-power-settings", host_power_view::scene),
             ("snapshot-schedules", snapshot_policy_view::scene),

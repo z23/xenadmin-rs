@@ -2,6 +2,8 @@
 mod host_power_backend;
 #[path = "host_power_journal.rs"]
 mod host_power_journal;
+#[path = "management_network_backend.rs"]
+pub(crate) mod management;
 #[path = "root_password_journal.rs"]
 mod root_password_journal;
 #[path = "storage_auth_backend.rs"]
@@ -107,6 +109,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    ManagementNetwork {
+        host: ObservedResource,
+        operation: Box<crate::ManagementNetworkOperation>,
+    },
     HostPower {
         host: ObservedResource,
         operation: crate::HostPowerOperation,
@@ -202,6 +208,7 @@ pub enum ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
     RootPassword(crate::PoolRootPasswordChange),
+    ManagementNetwork(Box<crate::ManagementNetworkOperation>),
     HostPower(crate::HostPowerOperation),
     NetworkTopology(crate::NetworkTopologyOperation),
     PowerBatch(crate::VmPowerBatch),
@@ -264,6 +271,11 @@ impl ResourceAction {
                 .permission_requirements()
                 .with_host_dependent_steps(),
             Self::Network(op) => op.permission_requirements(),
+            Self::ManagementNetwork(op) => Required::writes([match op.as_ref() {
+                crate::ManagementNetworkOperation::Move { .. } => "host.management_reconfigure",
+                crate::ManagementNetworkOperation::ConfigureIpv4 { .. } => "PIF.reconfigure_ip",
+                crate::ManagementNetworkOperation::ConfigureIpv6 { .. } => "PIF.reconfigure_ipv6",
+            }]),
             Self::Host(op) => op.permission_requirements(),
             Self::Pool(op) => op.permission_requirements(),
             Self::CancelTask => Required::writes(["task.cancel"]),
@@ -313,6 +325,7 @@ impl ResourceAction {
             Self::Pool(operation) => operation.label(),
             Self::Host(operation) => operation.label(),
             Self::Organization(_) => "Edit organization metadata",
+            Self::ManagementNetwork(operation) => operation.label(),
             Self::NetworkTopology(operation) => operation.label(),
             Self::Network(operation) => operation.label(),
             Self::Transfer(action) => action.label(),
@@ -379,6 +392,7 @@ impl ResourceAction {
                 }
                 return patch.validate();
             }
+            Self::ManagementNetwork(operation) => return operation.validate(target),
             Self::NetworkTopology(operation) => return operation.validate(target),
             Self::Network(operation) => return operation.validate(target),
             Self::Transfer(_) => matches!(target, ResourceTarget::Pool(_)),
@@ -484,6 +498,9 @@ impl ResourceCommand {
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
             Self::Host { target, operation } => (target, ResourceAction::Host(operation)),
             Self::Organization { pool, patch } => (pool, ResourceAction::Organization(patch)),
+            Self::ManagementNetwork { host, operation } => {
+                (host, ResourceAction::ManagementNetwork(operation))
+            }
             Self::NetworkTopology { target, operation } => {
                 (target, ResourceAction::NetworkTopology(operation))
             }
@@ -566,6 +583,10 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(default)]
+    pub management_network: Option<crate::ManagementNetworkEvidence>,
+    #[serde(skip)]
+    pub(crate) management_network_plan: Option<crate::management_network::Plan>,
     #[serde(default)]
     pub topology_changes: crate::NetworkTopologyChanges,
     #[serde(skip)]
@@ -708,6 +729,8 @@ pub(crate) fn channel(
     runtime: tokio::runtime::Handle,
 ) -> (ResourceOperation, ResourceRequest) {
     let record = ResourceOperationRecord {
+        management_network: None,
+        management_network_plan: None,
         topology_changes: Default::default(),
         network_topology_plan: None,
         interrupted: false,

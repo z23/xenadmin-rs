@@ -642,3 +642,15 @@ insert can leave the reviewed drive empty. Reconciliation reads postconditions a
 replays either write or automatically remounts old media. The UI holds its captured pool/VM
 review across selection changes and reports the tracked operation. Guest installation is
 performed inside the guest; mounting media does not establish that tools were installed.
+## Management networking recovery
+
+Management changes capture exact interface configuration in a typed intent and privately
+persist the reviewed recovery endpoint, unique host certificate and task evidence. Candidate
+registration is pool/generation scoped and adds no certificate trust. An isolated recovery
+login composes the connection's TLS verifier with a first-hop host-leaf identity constraint;
+coordinator redirects continue under the ordinary trust/proxy policy. Configuration readback
+and authenticated host-route verification remain separate public evidence. The owner can
+try the registered candidate after normal transport failure, without deliberately restarting
+other workspaces. Unknown outcomes retain the pool guard and reconciliation never replays
+the management call. The [management report](reports/2026-11-08-management-network.md) records
+the qualified subset, evidence and remaining handover workflows.

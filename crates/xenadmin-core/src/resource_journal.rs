@@ -92,6 +92,13 @@ impl Journal {
         data.map(|(payload, task, result_reference, revision)| {
             let payload: serde_json::Value =
                 serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+            let management_network_plan = payload
+                .get("management_network_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let network_topology_plan = payload
                 .get("network_topology_plan")
                 .filter(|v| !v.is_null())
@@ -176,6 +183,7 @@ impl Journal {
                     return Err(Error::Journal);
                 }
             }
+            record.management_network_plan = management_network_plan;
             record.network_topology_plan = network_topology_plan;
             record.power_batch_plan = power_batch_plan;
             record.storage_auth_plan = storage_auth_plan;
@@ -203,6 +211,7 @@ impl Journal {
             crate::host_power::validate_record(&record)?;
             super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::root_password::validate_record(&record)?;
+            super::management::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
             Ok(record)
@@ -216,6 +225,7 @@ impl Journal {
         }
         crate::cross_pool_backend::validate_record(record)?;
         super::topology::validate_record(record).map_err(|_| Error::Journal)?;
+        super::management::validate_record(record).map_err(|_| Error::Journal)?;
         if record.state == OperationState::OutcomeUnknown
             && let Some(plan) = &mut record.cloud_init_plan
         {
@@ -252,6 +262,14 @@ impl Journal {
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
                 return Err(Error::OperationConflict);
+            }
+            if old.management_network_plan.as_ref().is_some_and(|p| {
+                record
+                    .management_network_plan
+                    .as_ref()
+                    .is_none_or(|next| !p.accepts(next))
+            }) {
+                return Err(Error::JournalChanged);
             }
             if old.network_topology_plan.as_ref().is_some_and(|p| {
                 record
@@ -367,6 +385,12 @@ impl Journal {
                 .as_object_mut()
                 .ok_or(Error::Journal)?
                 .insert(key.into(), value.map_err(|_| Error::Journal)?);
+        }
+        if let Some(plan) = &record.management_network_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "management_network_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
         }
         if let Some(plan) = &record.network_topology_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
@@ -500,6 +524,25 @@ impl Journal {
             ) {
                 current.completed |= evidence.completed;
                 current.plugin_success |= evidence.plugin_success;
+            }
+            if let (Some(current_plan), Some(received)) = (
+                &mut current.management_network_plan,
+                &evidence.management_network_plan,
+            ) {
+                if current_plan.task_uuid.is_some()
+                    && received.task_uuid.is_some()
+                    && current_plan.task_uuid != received.task_uuid
+                {
+                    return Err(Error::JournalChanged);
+                }
+                if current_plan.task_uuid.is_none() {
+                    current_plan.task_uuid = received.task_uuid;
+                }
+                current_plan.completed |= received.completed;
+                current_plan.ended |= received.ended;
+                current_plan.configuration_observed |= received.configuration_observed;
+                current_plan.route_verified |= received.route_verified;
+                current.management_network = Some(current_plan.evidence());
             }
             current.pool_completed |= evidence.pool_completed;
             if let (Some(current_plan), Some(evidence_plan)) =

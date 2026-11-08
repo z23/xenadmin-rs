@@ -68,27 +68,40 @@ impl Session {
         options: &ConnectionOptions,
         credentials: &Credentials,
     ) -> Result<Self, Error> {
-        Self::login_inner(options, credentials, true).await
+        Self::login_inner(options, credentials, true, None).await
     }
     pub(crate) async fn login_exact(
         options: &ConnectionOptions,
         credentials: &Credentials,
     ) -> Result<Self, Error> {
-        Self::login_inner(options, credentials, false).await
+        Self::login_inner(options, credentials, false, None).await
+    }
+    pub(crate) async fn login_bound(
+        options: &ConnectionOptions,
+        credentials: &Credentials,
+        first_hop: &crate::CertificateFingerprint,
+    ) -> Result<Self, Error> {
+        if !options.endpoint.as_str().starts_with("https://") {
+            return Err(Error::InvalidEndpoint);
+        }
+        Self::login_inner(options, credentials, true, Some(first_hop)).await
     }
     async fn login_inner(
         options: &ConnectionOptions,
         credentials: &Credentials,
         follow_coordinator: bool,
+        first_hop: Option<&crate::CertificateFingerprint>,
     ) -> Result<Self, Error> {
         let mut target = options.clone();
         let mut visited = std::collections::BTreeSet::new();
-        for _ in 0..5 {
+        for hop in 0..5 {
             if !visited.insert(target.endpoint.to_string()) {
                 return Err(Error::Protocol("coordinator redirect loop"));
             }
-            let commands = target.client()?;
-            let events = target.client()?;
+            let commands =
+                target.client_with_peer_identity(if hop == 0 { first_hop } else { None })?;
+            let events =
+                target.client_with_peer_identity(if hop == 0 { first_hop } else { None })?;
             let mut session = Self {
                 permissions: crate::SessionPermissions::default(),
                 options: target.clone(),

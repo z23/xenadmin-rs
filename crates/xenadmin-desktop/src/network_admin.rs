@@ -1,5 +1,7 @@
 #[path = "network_interfaces.rs"]
 mod interfaces;
+#[path = "management_network_ui.rs"]
+mod management;
 #[path = "network_topology_ui.rs"]
 mod topology;
 use super::*;
@@ -15,6 +17,7 @@ struct Review {
     lines: Vec<String>,
 }
 enum Form {
+    Management(Box<management::Editor>),
     Topology(Box<topology::Editor>),
     Interface(Box<interfaces::Editor>),
     Browse,
@@ -207,6 +210,13 @@ fn open_ipv4(s: &mut State, id: PifId) {
 fn form_review(s: &mut State) {
     if s.network_workspace
         .as_ref()
+        .is_some_and(|w| matches!(w.form, Form::Management(_)))
+    {
+        management::prepare(s);
+        return;
+    }
+    if s.network_workspace
+        .as_ref()
         .is_some_and(|w| matches!(w.form, Form::Topology(_)))
     {
         topology::prepare(s);
@@ -346,7 +356,9 @@ fn form_review(s: &mut State) {
                 )
             }
             Form::Interface(editor) => interfaces::review(editor, i)?,
-            Form::Topology(_) | Form::Browse => return Err("Choose a change to review".into()),
+            Form::Management(_) | Form::Topology(_) | Form::Browse => {
+                return Err("Choose a change to review".into());
+            }
         })
     })();
     match result {
@@ -375,6 +387,20 @@ fn submit(s: &mut State) {
                         target,
                         operation: operation.clone(),
                     },
+                    xenadmin_core::ResourceAction::ManagementNetwork(operation) => {
+                        if !s.inventory.as_ref().is_some_and(|i| {
+                            s.network_workspace
+                                .as_ref()
+                                .is_some_and(|w| w.pool == i.pool_id)
+                                && operation.availability(i).is_available()
+                        }) {
+                            return Err(xenadmin_core::Error::Stale);
+                        }
+                        ResourceCommand::ManagementNetwork {
+                            host: target,
+                            operation: operation.clone(),
+                        }
+                    }
                     xenadmin_core::ResourceAction::NetworkTopology(operation) => {
                         let ResourceTarget::Network(network) = review.target else {
                             return Err(xenadmin_core::Error::Stale);
@@ -588,7 +614,7 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
                 .wrap_anywhere(),
             );
         if p.management == Some(true) {
-            card=card.child(caption("Host management interface. XCP-ng requires the standard 1500-byte MTU. Address and bond changes require a recovery workflow that is still in development.",k).wrap());
+            card=card.child(caption("Host management interface. XCP-ng requires the standard 1500-byte MTU. Review recovery addressing before changing management access.",k).wrap()).child(management::buttons(p.id,enabled,k));
         }
         if let (Some(expected), Some(attached)) =
             (PifIdentity::from_inventory(p), p.currently_attached)
@@ -697,6 +723,7 @@ fn form(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
         );
     }
     match &w.form {
+        Form::Management(editor) => body = body.child(management::form(editor, i, k)),
         Form::Interface(editor) => body = body.child(interfaces::form(editor, i, k)),
         Form::Topology(editor) => body = body.child(topology::form(editor, i, k)),
         Form::Browse => return browse(s, w, i, k),
@@ -922,7 +949,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         body =
             body.child(caption("The connection changed. Close and reopen networking.", k).wrap());
     }
-    if let Some(reason) = topology::review_unavailable(s, w) {
+    if let Some(reason) =
+        topology::review_unavailable(s, w).or_else(|| management::review_unavailable(s, w))
+    {
         body = body.child(caption(reason, k).wrap().role("alert"));
     }
     if let Some(error) = &w.error {
@@ -985,6 +1014,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                             || permission
                                 .as_ref()
                                 .is_some_and(|p| p.decision().is_denied())
+                            || management::review_unavailable(s, w).is_some()
                             || w.review
                                 .as_ref()
                                 .and_then(|r| r.observed)
@@ -1112,6 +1142,10 @@ pub(super) fn ipv6_scene(s: &mut State) {
     scene(s);
     interfaces::scene(s);
 }
+pub(super) fn management_scene(s: &mut State) {
+    management::scene(s);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

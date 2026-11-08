@@ -567,6 +567,32 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
         if let Some(error) = &record.local_error {
             view = view.child(caption(error, k).wrap().color(k.c.danger.icon));
         }
+        if let Some(evidence) = &record.management_network {
+            view = view.child(
+                caption(
+                    format!(
+                        "Management configuration observed: {} · recovery endpoint verified: {}",
+                        if evidence.configuration_observed {
+                            "yes"
+                        } else {
+                            "not yet"
+                        },
+                        if evidence.recovery_endpoint_verified {
+                            "yes"
+                        } else {
+                            "not yet"
+                        }
+                    ),
+                    k,
+                )
+                .wrap(),
+            );
+            if let Some(endpoint) = &evidence.recovery_endpoint {
+                view = view.child(
+                    caption(format!("Reviewed recovery endpoint: {endpoint}"), k).wrap_anywhere(),
+                );
+            }
+        }
         if let Some(created) = record.created {
             view = view
                 .child(caption(format!("Created {}", target_label(created)), k).wrap_anywhere());

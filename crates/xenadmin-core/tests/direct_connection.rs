@@ -1,3 +1,5 @@
+#[path = "fixtures/management_network.rs"]
+mod management_network;
 use serde_json::{Value, json};
 #[path = "fixtures/permissions.rs"]
 mod permissions;

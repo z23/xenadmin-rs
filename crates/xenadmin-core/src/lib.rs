@@ -1,3 +1,8 @@
+mod management_network;
+pub use management_network::{
+    ManagementAddressFamily, ManagementInterface, ManagementNetworkEvidence,
+    ManagementNetworkOperation,
+};
 mod permissions;
 mod root_password;
 pub use root_password::{PoolRootPasswordChange, RootPassword, RootPasswordEvidence};

@@ -22,6 +22,7 @@ use crate::{
 };
 
 enum Request {
+    ManagementCandidate(Box<ManagementCandidate>),
     Console(ConsoleRequest),
     Metrics(crate::metrics::MetricsRequest),
     StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
@@ -39,6 +40,36 @@ enum Request {
     ResourceControl(crate::OperationId, crate::OperationControl),
     Control(crate::OperationId, crate::OperationControl),
     RememberMembers(Vec<crate::Endpoint>),
+}
+
+pub(crate) struct ManagementRoute {
+    sender: mpsc::Sender<Request>,
+    generation: u64,
+}
+struct ManagementCandidate {
+    id: crate::OperationId,
+    pool: crate::PoolId,
+    generation: u64,
+    reply: tokio::sync::oneshot::Sender<Result<(), Error>>,
+}
+impl ManagementRoute {
+    pub async fn register(&self, id: crate::OperationId, pool: crate::PoolId) -> Result<(), Error> {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        self.sender
+            .try_send(Request::ManagementCandidate(Box::new(
+                ManagementCandidate {
+                    id,
+                    pool,
+                    generation: self.generation,
+                    reply,
+                },
+            )))
+            .map_err(|_| Error::Busy)?;
+        tokio::time::timeout(Duration::from_secs(10), receive)
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::Closed)?
+    }
 }
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -1106,6 +1137,25 @@ async fn run(
 ) {
     let (history, resource_history) = histories;
     let directory = context.directory.clone();
+    let mut management_candidates =
+        BTreeMap::<String, (crate::HostId, crate::CertificateFingerprint)>::new();
+    if let Some(pool) = options.expected_pool
+        && directory.join("operations.sqlite3").exists()
+        && let Ok(rows) =
+            operations::Journal::open(&directory).and_then(|j| j.resource_history(pool))
+    {
+        for row in rows.into_iter().filter(|row| !row.state.terminal()) {
+            if let Some(plan) = row.management_network_plan.filter(|plan| plan.registered) {
+                if !options.fallback_endpoints.contains(&plan.recovery)
+                    && options.fallback_endpoints.len() < 128
+                {
+                    options.fallback_endpoints.push(plan.recovery.clone());
+                }
+                management_candidates
+                    .insert(plan.recovery.to_string(), (plan.host, plan.certificate));
+            }
+        }
+    }
     let mut expected_pool = options.expected_pool;
     let mut protocol_failures = 0u8;
     let (updates, mut operation_updates) = mpsc::channel::<OperationUpdate>(128);
@@ -1132,7 +1182,10 @@ async fn run(
         let mut failure_stage = ConnectionStage::Login;
         let result = tokio::select! {
             _=cancel.cancelled()=>break,
-            result=Session::login(&options,&credentials)=>result,
+            result=async {
+                if let Some((_,certificate))=management_candidates.get(options.endpoint.as_str()) {Session::login_bound(&options,&credentials,certificate).await}
+                else {Session::login(&options,&credentials).await}
+            }=>result,
         };
         let error = match result {
             Ok(session) => {
@@ -1163,10 +1216,29 @@ async fn run(
                 let mut resource_rechecks = BTreeSet::new();
                 let mut cross_pool_rechecks =
                     BTreeMap::<crate::OperationId, crate::resources::ResourceRequest>::new();
+                let worker_options = options.clone();
+                let management_route = context.route.requests.clone();
                 let start_resource =
-                    |request: crate::resources::ResourceRequest,
+                    |mut request: crate::resources::ResourceRequest,
                      workers: &mut tokio::task::JoinSet<crate::OperationId>,
-                     counts: &mut BTreeMap<crate::OperationId, usize>| {
+                     counts: &mut BTreeMap<crate::OperationId, usize>,
+                     credentials: &Credentials| {
+                        if matches!(
+                            request.record.action,
+                            crate::ResourceAction::ManagementNetwork(_)
+                        ) {
+                            request.management = Some(crate::management_network::Inputs {
+                                options: worker_options.clone(),
+                                credentials: Credentials::new(
+                                    credentials.username.clone(),
+                                    credentials.password.to_string(),
+                                ),
+                                route: ManagementRoute {
+                                    sender: management_route.clone(),
+                                    generation,
+                                },
+                            });
+                        }
                         *counts.entry(request.record.id).or_default() += 1;
                         workers.spawn(request.run(
                             session.clone(),
@@ -1212,11 +1284,11 @@ async fn run(
                                     if let Some(count)=resource_counts.get_mut(&id) {*count-=1;if *count==0 {resource_counts.remove(&id);}}
                                     if !resource_counts.contains_key(&id)
                                         && let Some(request) = cross_pool_rechecks.remove(&id) {
-                                        start_resource(request,&mut resource_workers,&mut resource_counts);
+                                        start_resource(request,&mut resource_workers,&mut resource_counts,&credentials);
                                     }
                                     if !resource_counts.contains_key(&id)&&resource_rechecks.remove(&id) {
                                         match operations::Journal::open(&directory).and_then(|journal|journal.resource_load(id)) {
-                                            Ok(Some(record)) if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_))=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts),
+                                            Ok(Some(record)) if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_))=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts,&credentials),
                                             Err(error)=>publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update),
                                             _=>{},
                                         }
@@ -1287,7 +1359,7 @@ async fn run(
                                         }
                                     }
                                     else if resource_workers.len()>=8 {request.reject(Error::Busy);}
-                                    else {start_resource(*request,&mut resource_workers,&mut resource_counts);}
+                                    else {start_resource(*request,&mut resource_workers,&mut resource_counts,&credentials);}
                                 }
                                 Request::ResourceControl(id,control)=>{
                                     let result=(|| {
@@ -1297,7 +1369,7 @@ async fn run(
                                         if options.read_only && !journal.resource_load(id)?.is_some_and(|r|r.pool==pool&&r.action.read_only_export()){return Err(Error::ReadOnly)}
                                         let record=journal.resource_control(pool,id,control)?;
                                         if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_)) {
-                                            if !resource_counts.contains_key(&id) {start_resource(crate::resources::ResourceRequest::tracking(record.clone()),&mut resource_workers,&mut resource_counts);}
+                                            if !resource_counts.contains_key(&id) {start_resource(crate::resources::ResourceRequest::tracking(record.clone()),&mut resource_workers,&mut resource_counts,&credentials);}
                                             else if record.state==crate::OperationState::OutcomeUnknown {resource_rechecks.insert(id);}
                                         }
                                         merge_resource_record(&mut resource_records,record);publish_resource_history(&resource_history,&mut resource_records);Ok::<_,Error>(())
@@ -1365,6 +1437,21 @@ async fn run(
                                         } else {request.fail(Error::Stale);}
                                     } else {request.fail(Error::Stale);}
                                 }
+                                Request::ManagementCandidate(request)=>{
+                                    let result=(|| {
+                                        if request.generation!=generation || token.is_empty() || last_inventory.as_ref().is_none_or(|i|i.pool_id!=request.pool) {return Err(Error::Stale);}
+                                        let record=operations::Journal::open(&directory)?.resource_load(request.id)?.ok_or(Error::Journal)?;
+                                        if record.pool!=request.pool || record.state.terminal() || record.interrupted {return Err(Error::Stale);}
+                                        let plan=record.management_network_plan.ok_or(Error::Journal)?;
+                                        if !options.fallback_endpoints.contains(&plan.recovery) {
+                                            if options.fallback_endpoints.len()>=128 {return Err(Error::Busy);}
+                                            options.fallback_endpoints.push(plan.recovery.clone());
+                                        }
+                                        management_candidates.insert(plan.recovery.to_string(),(plan.host,plan.certificate));
+                                        Ok(())
+                                    })();
+                                    let _=request.reply.send(result);
+                                }
                                 Request::RememberMembers(endpoints)=>{
                                     let mut snapshot = (*sender.borrow().clone()).clone();
                                     for endpoint in endpoints.into_iter().take(128) {
@@ -1411,6 +1498,22 @@ async fn run(
                             Ok(inventory) => {
                                 if expected_pool.is_some_and(|pool| pool != inventory.pool_id) {
                                     break Some(Error::Connection("The endpoint now belongs to a different pool. Create a separate profile; this connection will not change its target pool.".into()));
+                                }
+                                if let Some((host, _)) =
+                                    management_candidates.get(options.endpoint.as_str())
+                                {
+                                    let candidate = url::Url::parse(options.endpoint.as_str())
+                                        .ok()
+                                        .and_then(|v| v.host_str().map(str::to_owned));
+                                    if inventory.hosts.get(host).is_none_or(|h| {
+                                        Some(h.address.trim_matches(['[', ']']).to_owned())
+                                            != candidate
+                                                .map(|c| c.trim_matches(['[', ']']).to_owned())
+                                    }) {
+                                        break Some(Error::Protocol(
+                                            "Recovery endpoint host address identity differs from the reviewed host",
+                                        ));
+                                    }
                                 }
                                 expected_pool = Some(inventory.pool_id);
                                 {
@@ -1519,6 +1622,7 @@ async fn run(
                                                         ),
                                                         &mut resource_workers,
                                                         &mut resource_counts,
+                                                        &credentials,
                                                     );
                                                 }
                                                 merge_resource_record(
@@ -1699,6 +1803,7 @@ async fn forward_alias(
                         Request::SnapshotPreview(request) => request.fail(Error::Busy),
                         Request::JoinPeer(_,reply)=>{let _=reply.send(Err(Error::Busy));},
                         Request::Diagnose(request) => request.fail(Error::Busy),
+                        Request::ManagementCandidate(request)=>{let _=request.reply.send(Err(Error::Busy));},
                         Request::RememberMembers(_) => {},
                         Request::Control(_, _) | Request::ResourceControl(_,_) => {
                             let mut snapshot = (*sender.borrow().clone()).clone();

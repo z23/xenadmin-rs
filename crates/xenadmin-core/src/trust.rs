@@ -250,6 +250,12 @@ impl ConnectionOptions {
         options
     }
     pub(crate) fn client(&self) -> Result<reqwest::Client, Error> {
+        self.client_with_peer_identity(None)
+    }
+    pub(crate) fn client_with_peer_identity(
+        &self,
+        identity: Option<&CertificateFingerprint>,
+    ) -> Result<reqwest::Client, Error> {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut builder = reqwest::Client::builder()
             .retry(reqwest::retry::never())
@@ -257,30 +263,37 @@ impl ConnectionOptions {
             .connect_timeout(Duration::from_secs(10))
             .timeout(self.request_timeout)
             .user_agent(concat!("xenadmin-rs/", env!("CARGO_PKG_VERSION")));
-        builder = builder.use_preconfigured_tls(self.tls_config()?);
+        builder = builder.use_preconfigured_tls(self.tls_config_with_peer_identity(identity)?);
         self.apply_proxy(builder)?
             .build()
             .map_err(|_| Error::Transport)
     }
 
     pub(crate) fn tls_config(&self) -> Result<rustls::ClientConfig, Error> {
+        self.tls_config_with_peer_identity(None)
+    }
+    fn tls_config_with_peer_identity(
+        &self,
+        identity: Option<&CertificateFingerprint>,
+    ) -> Result<rustls::ClientConfig, Error> {
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let verifier = if self.accept_invalid_certificates {
-            Some(CertificateVerifier::Unverified)
+        let verifier: Arc<dyn ServerCertVerifier> = if self.accept_invalid_certificates {
+            Arc::new(CertificateVerifier::Unverified)
+        } else if let Some(fingerprint) = &self.certificate_fingerprint {
+            Arc::new(CertificateVerifier::Pinned(fingerprint.clone()))
         } else {
-            self.certificate_fingerprint
-                .clone()
-                .map(CertificateVerifier::Pinned)
+            crate::certificate_inspection::ca_verifier(self)?
         };
-        if let Some(verifier) = verifier {
-            return Ok(rustls::ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(verifier))
-                .with_no_client_auth());
-        }
+        let verifier = match identity {
+            Some(expected) => Arc::new(HostIdentityVerifier {
+                base: verifier,
+                expected: expected.clone(),
+            }) as Arc<dyn ServerCertVerifier>,
+            None => verifier,
+        };
         Ok(rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(crate::certificate_inspection::ca_verifier(self)?)
+            .with_custom_certificate_verifier(verifier)
             .with_no_client_auth())
     }
 }
@@ -340,6 +353,51 @@ impl ServerCertVerifier for CertificateVerifier {
         rustls::crypto::ring::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
+    }
+}
+
+#[derive(Debug)]
+struct HostIdentityVerifier {
+    base: Arc<dyn ServerCertVerifier>,
+    expected: CertificateFingerprint,
+}
+impl ServerCertVerifier for HostIdentityVerifier {
+    fn verify_server_cert(
+        &self,
+        cert: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
+        let verified = self
+            .base
+            .verify_server_cert(cert, intermediates, server_name, ocsp, now)?;
+        if Sha256::digest(cert.as_ref()).as_slice() != self.expected.0 {
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure,
+            ));
+        }
+        Ok(verified)
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.base.verify_tls12_signature(message, cert, dss)
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        self.base.verify_tls13_signature(message, cert, dss)
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.base.supported_verify_schemes()
     }
 }
 

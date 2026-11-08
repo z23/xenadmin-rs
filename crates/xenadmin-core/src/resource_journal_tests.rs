@@ -5,6 +5,8 @@ use crate::{
 
 fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
+        management_network: None,
+        management_network_plan: None,
         topology_changes: Default::default(),
         network_topology_plan: None,
         interrupted: false,
@@ -1372,6 +1374,128 @@ fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
         );
         assert!(
             matches!(journal.admit(&mut vm(pool)), Err(Error::Journal)),
+            "{corrupt}"
+        );
+    }
+}
+fn management_record(pool: PoolId) -> ResourceOperationRecord {
+    let host = crate::HostId::from(uuid::Uuid::new_v4());
+    let interface = crate::ManagementInterface {
+        pif: uuid::Uuid::new_v4().into(),
+        identity: crate::PifIdentity {
+            host,
+            network: uuid::Uuid::new_v4().into(),
+            device: "eth0".into(),
+            mac: "02:00:00:00:00:01".into(),
+            management: true,
+        },
+        primary: crate::ManagementAddressFamily::Ipv4,
+        ipv4: crate::Ipv4Configuration {
+            mode: crate::Ipv4Mode::Static,
+            address: "192.0.2.10".into(),
+            netmask: "255.255.255.0".into(),
+            gateway: String::new(),
+            dns: String::new(),
+        },
+        ipv6: crate::Ipv6Configuration {
+            mode: crate::Ipv6Mode::None,
+            addresses: vec![],
+            gateway: String::new(),
+            dns: String::new(),
+        },
+        attached: true,
+        protected: false,
+    };
+    let mut configuration = interface.ipv4.clone();
+    configuration.address = "192.0.2.20".into();
+    let op = crate::ManagementNetworkOperation::ConfigureIpv4 {
+        interface,
+        configuration,
+    };
+    let mut r = resource(pool);
+    r.target = ResourceTarget::Host(host);
+    r.action = ResourceAction::ManagementNetwork(Box::new(op.clone()));
+    r.steps[0].label = op.label().into();
+    let endpoint = crate::Endpoint::parse("https://192.0.2.10").unwrap();
+    let p = crate::management_network::Plan {
+        pool,
+        host,
+        recovery: op.endpoint(&endpoint).unwrap(),
+        operation: op,
+        original_endpoint: endpoint,
+        certificate: "aa".repeat(32).parse().unwrap(),
+        configuration_observed: false,
+        route_verified: false,
+        tasks_before: Default::default(),
+        task_uuid: None,
+        completed: false,
+        ended: false,
+        registered: false,
+        expires_at_ms: 60_000,
+    };
+    r.management_network = Some(p.evidence());
+    r.management_network_plan = Some(p);
+    r
+}
+#[test]
+fn management_private_plan_corruption_cannot_change_route_or_scope_or_forge_completion() {
+    for corrupt in [
+        "host",
+        "pool",
+        "endpoint",
+        "operation",
+        "completion",
+        "task",
+        "public",
+        "expiry",
+        "missing",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        let pool = PoolId::from(uuid::Uuid::new_v4());
+        let mut r = management_record(pool);
+        j.resource_admit(&mut r).unwrap();
+        let encoded: String =
+            j.0.query_row(
+                "SELECT payload FROM resource_operations WHERE id=?1",
+                [r.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        match corrupt {
+            "host" => value["management_network_plan"]["host"] = json!(uuid::Uuid::new_v4()),
+            "pool" => value["management_network_plan"]["pool"] = json!(uuid::Uuid::new_v4()),
+            "endpoint" => {
+                value["management_network_plan"]["recovery"] = json!("https://unreviewed.invalid/")
+            }
+            "operation" => {
+                value["management_network_plan"]["operation"]["ConfigureIpv4"]["configuration"]["address"] =
+                    json!("192.0.2.99")
+            }
+            "completion" => value["management_network_plan"]["completed"] = json!(true),
+            "task" => value["management_network_plan"]["task_uuid"] = json!(uuid::Uuid::new_v4()),
+            "public" => value["management_network"]["recovery_endpoint_verified"] = json!(true),
+            "expiry" => value["management_network_plan"]["expires_at_ms"] = json!(u64::MAX),
+            "missing" => {
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("management_network_plan");
+            }
+            _ => unreachable!(),
+        }
+        j.0.execute(
+            "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+            rusqlite::params![value.to_string(), r.id.to_string()],
+        )
+        .unwrap();
+        assert!(
+            matches!(j.resource_load(r.id), Err(Error::Journal)),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(j.resource_admit(&mut resource(pool)), Err(Error::Journal)),
             "{corrupt}"
         );
     }

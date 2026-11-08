@@ -36,6 +36,8 @@ pub(super) enum Entry {
         uuid: xenadmin_core::OperationId,
         family: &'static str,
         #[serde(skip_serializing_if = "Option::is_none")]
+        management_network: Option<xenadmin_core::ManagementNetworkEvidence>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         destination_pool: Option<PoolId>,
         target: uuid::Uuid,
         action: String,
@@ -115,6 +117,7 @@ impl Entry {
             pool: record.pool,
             uuid: record.id,
             family: "vm",
+            management_network: None,
             destination_pool: None,
             target: record.vm.uuid(),
             action: record.action.label().into(),
@@ -132,6 +135,7 @@ impl Entry {
             pool: record.pool,
             uuid: record.id,
             family: "resource",
+            management_network: record.management_network.clone(),
             destination_pool: record.peer_pool(),
             target: match &record.action {
                 xenadmin_core::ResourceAction::CrossPoolVm(operation) => operation.vm.uuid(),

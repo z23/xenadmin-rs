@@ -6,6 +6,8 @@ mod cross_pool_worker;
 mod host;
 #[path = "host_power_worker.rs"]
 mod host_power_worker;
+#[path = "management_network_worker.rs"]
+mod management_network_worker;
 #[path = "network_topology_worker.rs"]
 mod network_topology_worker;
 #[path = "ovf_export_worker.rs"]
@@ -36,6 +38,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
+    pub(crate) management: Option<crate::management_network::Inputs>,
     pub(crate) storage_credentials: Option<crate::StorageCredentials>,
     pub(crate) root_password: Option<crate::RootPassword>,
     pub(crate) host_power_password: Option<crate::HostPowerPassword>,
@@ -56,6 +59,7 @@ impl ResourceRequest {
         sender: watch::Sender<Arc<ResourceOperationRecord>>,
     ) -> Self {
         Self {
+            management: None,
             sensitive: None,
             cloud_media: None,
             storage_credentials: None,
@@ -73,6 +77,7 @@ impl ResourceRequest {
     pub(crate) fn tracking(record: ResourceOperationRecord) -> Self {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
+            management: None,
             sensitive: None,
             cloud_media: None,
             storage_credentials: None,
@@ -233,6 +238,12 @@ impl ResourceRequest {
             .guard(session.permissions())?;
         if matches!(
             self.record.action,
+            super::ResourceAction::ManagementNetwork(_)
+        ) {
+            return self.execute_management(journal, session, cancel).await;
+        }
+        if matches!(
+            self.record.action,
             super::ResourceAction::NetworkTopology(_)
         ) {
             return self.execute_topology(journal, session, cancel).await;
@@ -380,6 +391,12 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(
+            self.record.action,
+            super::ResourceAction::ManagementNetwork(_)
+        ) {
+            return self.reconcile_management(journal, session, cancel).await;
+        }
         if matches!(
             self.record.action,
             super::ResourceAction::NetworkTopology(_)
@@ -844,7 +861,10 @@ impl ResourceRequest {
     }
     async fn finish_error(&mut self, journal: &mut Journal, error: Error) {
         if let Error::Coordinator(endpoint) = &error
-            && !matches!(self.record.action, super::ResourceAction::CrossPoolVm(_))
+            && !matches!(
+                self.record.action,
+                super::ResourceAction::CrossPoolVm(_) | super::ResourceAction::ManagementNetwork(_)
+            )
             && let Some(updates) = &self.updates
         {
             let _ = updates
@@ -867,6 +887,7 @@ impl ResourceRequest {
             self.record.action,
             super::ResourceAction::PowerBatch(_)
                 | super::ResourceAction::RootPassword(_)
+                | super::ResourceAction::ManagementNetwork(_)
                 | super::ResourceAction::HostPower(_)
                 | super::ResourceAction::AuthenticatedStorage { .. }
                 | super::ResourceAction::CleanupStorageCredentials { .. }
