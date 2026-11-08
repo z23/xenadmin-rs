@@ -557,7 +557,14 @@ async fn delayed_secret_receipt_preserves_recovery_and_ack_but_still_retains_ide
             .unwrap();
         let recovering = Backend::with_state_directory(dir.path().into()).unwrap();
         let other = connect(&mock, &recovering, false).await;
-        history_state(&other, id, |r| r.state == OperationState::OutcomeUnknown).await;
+        // Startup first publishes the recovered row, then reconciles it asynchronously.
+        // Wait for that read-only attempt to finish before releasing the positive reply.
+        // Otherwise it may legitimately observe the receipt and report a known partial result.
+        history_state(&other, id, |r| {
+            r.state == OperationState::OutcomeUnknown
+                && r.detail.contains("Secret creation reply was lost")
+        })
+        .await;
         if ack {
             other
                 .control_resource(id, xenadmin_core::OperationControl::AcknowledgeUnknown)
@@ -588,6 +595,20 @@ async fn delayed_secret_receipt_preserves_recovery_and_ack_but_still_retains_ide
             }
         );
         assert_eq!(r.storage_secrets.len(), 1);
+        if !ack {
+            // The opposite ordering is also valid: a later read-only reconciliation
+            // sees the positive receipt and can classify the retained Secret as partial.
+            other
+                .control_resource(id, xenadmin_core::OperationControl::Recheck)
+                .unwrap();
+            let reconciled = history_state(&other, id, |record| {
+                record.state == OperationState::PartiallyCompleted
+            })
+            .await;
+            assert_eq!(reconciled.storage_secrets, r.storage_secrets);
+            assert!(reconciled.detail.contains("Storage was not submitted"));
+        }
+
         let methods = mock.methods.lock().unwrap();
         assert_eq!(methods.iter().filter(|m| *m == "secret.create").count(), 1);
         assert!(
