@@ -33,6 +33,7 @@ struct Control {
     fault: Fault,
     sent: bool,
     hold_poll: bool,
+    hold_destination_read: bool,
     copy: bool,
 }
 struct Fixture {
@@ -137,6 +138,7 @@ async fn fixture(fault: Fault, live: bool) -> Fixture {
         fault,
         sent: false,
         hold_poll: false,
+        hold_destination_read: false,
         copy: false,
     }));
     let entered = Arc::new(tokio::sync::Notify::new());
@@ -151,6 +153,8 @@ async fn fixture(fault: Fault, live: bool) -> Fixture {
             if method=="event.from" {tokio::time::sleep(Duration::from_millis(20)).await;}
             let hold_poll = source && method=="task.get_record" && { let mut control=c.lock().unwrap();std::mem::take(&mut control.hold_poll) };
             if hold_poll { entered.notify_one(); release.notified().await; }
+            let hold_destination_read = !source && method=="VM.get_record" && { let mut control=c.lock().unwrap();std::mem::take(&mut control.hold_destination_read) };
+            if hold_destination_read { entered.notify_one(); release.notified().await; }
             if method=="Async.VM.migrate_send" && c.lock().unwrap().fault==Fault::DelaySubmit { entered.notify_one();release.notified().await; }
             let mut c=c.lock().unwrap();let fault=c.fault;let sent=c.sent;
             let rows=if source{&mut c.source}else{&mut c.destination};
@@ -442,7 +446,20 @@ async fn recorded_completion_survives_removed_task_and_reconnect_without_a_secon
     let backend = Backend::with_state_directory(dir.path().into()).unwrap();
     let source = connect(&f.source, &backend, false).await;
     let dest = connect(&f.destination, &backend, false).await;
+    f.control.lock().unwrap().hold_destination_read = true;
     let recheck = source.recheck_cross_pool_vm(result.id, &dest).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), f.entered.notified())
+        .await
+        .unwrap();
+    let progress = recheck.latest();
+    assert_eq!(
+        progress.state,
+        OperationState::Verifying,
+        "{}",
+        progress.detail
+    );
+    assert!(progress.revision() > result.revision());
+    f.release.notify_one();
     let result = done(&recheck).await;
     assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
     assert_eq!(count(&f.source, "Async.VM.migrate_send"), 1);

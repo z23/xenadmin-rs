@@ -181,6 +181,11 @@ impl ResourceRequest {
         if self.record.state.terminal() {
             return Ok(());
         }
+        self.record.state = OperationState::Verifying;
+        self.record.can_cancel = false;
+        self.record.detail =
+            "Rechecking the recorded cross-pool transfer; no transfer will be replayed".into();
+        self.save(journal).await?;
         let inputs = self.cross_pool.take().ok_or(Error::Protocol("Reconnect both pools and use Recheck cross-pool transfer; no transfer will be replayed"))?;
         let peer = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), peer=inputs.destination.get(inputs.observation)=>peer? };
         peer_current(&inputs, &peer)?;
