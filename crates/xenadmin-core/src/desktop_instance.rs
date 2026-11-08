@@ -216,6 +216,11 @@ impl DesktopInstance {
 impl Drop for DesktopInstance {
     fn drop(&mut self) {
         self.service.take();
+        if !self.process_lock_retained {
+            // A concurrent fork may retain this open file description until exec. Release
+            // the unpinned owner's lock now rather than waiting for every inherited fd.
+            let _ = self.file.unlock();
+        }
     }
 }
 async fn line(reader: impl AsyncRead + Unpin) -> io::Result<Vec<u8>> {

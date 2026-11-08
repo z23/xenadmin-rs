@@ -70,6 +70,25 @@ fn desktop_activation_reclaims_only_stale_owned_socket_and_preserves_replacement
     assert_eq!(fs::read(&target).unwrap(), b"retained file");
 }
 #[test]
+fn desktop_owner_drop_unlocks_even_while_an_inherited_description_remains_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let owner = DesktopInstance::acquire(dir.path().into())
+        .unwrap()
+        .unwrap();
+    // A duplicate shares the same open file description, as an inherited fd does between
+    // fork and CLOEXEC. No sleeps or actual subprocess scheduling are needed for this race.
+    let inherited = owner.file.try_clone().unwrap();
+    drop(owner);
+    let next = DesktopInstance::acquire(dir.path().into()).unwrap();
+    assert!(next.is_some());
+    drop(inherited);
+    assert!(
+        DesktopInstance::acquire(dir.path().into())
+            .unwrap()
+            .is_none()
+    );
+}
+#[test]
 fn desktop_ownership_refuses_symlink_directory_or_lock_and_hardlinked_lock() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
