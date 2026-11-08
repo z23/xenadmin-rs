@@ -804,3 +804,9 @@ unknown configuration separately from an absent override. See the
 ### Storage attachment graph workflows
 
 `StorageGraph` captures source/selected host attachments or the complete maintenance-host PBD set. A private plan binds UUID baselines, configuration hashes, ordered steps and monotonic task/completion evidence to the public pool/target/action. Public per-host results distinguish newly identified resources from fully verified connections. Creation identity is journaled before later configuration checks; new Secret identities require independent cloned-reference and consumer proof. No Secret value is fetched. Multipath preflight validates both directions of storage consumer references before detaching anything. Recovery reads submitted steps only and preserves interruption fences; restoration is a separately reviewed command. [Evidence and supported boundaries](reports/2026-11-08-storage-graph-repair.md).
+
+Failure guidance is a static, bounded XAPI-code projection. It cannot grant eligibility or
+change operation state. Task rows use typed error codes; historical operation rows accept
+only exact application-owned error envelopes, with failed-step fallback. Arbitrary messages
+and administrative block text are never searched for code substrings. Informational Rune
+modals capture public operation/task identity and retain outcome uncertainty before advice.

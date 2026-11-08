@@ -47,6 +47,7 @@ pub(super) struct Row {
     pub terminal: bool,
     pub hidden: bool,
     pub export: activity_export::Entry,
+    pub help: Option<failure_help::FailureHelp>,
 }
 pub(super) struct Review {
     pool: PoolId,
@@ -205,6 +206,7 @@ fn rebuild(s: &mut State) {
                         ),
                         hidden: false,
                         export: activity_export::Entry::task(pool, task),
+                        help: failure_help::FailureHelp::task(pool, task),
                     });
                 }
             }
@@ -236,6 +238,7 @@ fn rebuild(s: &mut State) {
                         terminal: false,
                         hidden: false,
                         export: activity_export::Entry::message(pool, message),
+                        help: None,
                     });
                 }
             }
@@ -268,6 +271,7 @@ fn rebuild(s: &mut State) {
                     terminal: record.state.terminal(),
                     hidden: is_hidden,
                     export: activity_export::Entry::vm(record),
+                    help: failure_help::FailureHelp::vm(record),
                 });
             }
             for record in &s.resource_rows {
@@ -301,6 +305,7 @@ fn rebuild(s: &mut State) {
                     terminal: record.state.terminal(),
                     hidden: is_hidden,
                     export: activity_export::Entry::resource(record),
+                    help: failure_help::FailureHelp::resource(record),
                 });
             }
         }
@@ -746,6 +751,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .wrap(),
                 )
                 .child(caption(&selected.details, k).wrap_anywhere());
+            body = body.child(failure_help::button(
+                selected.help.clone(),
+                "activity-failure-help",
+                k,
+            ));
             match selected.target {
                 Target::Resource(target) => {
                     let task = matches!(target, ResourceTarget::Task(_));

@@ -210,3 +210,6 @@ done
 "$check_binary" --snap artifacts/batch-properties-compact.png --tree artifacts/batch-properties-compact.json --scene batch-properties --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/ha-policy.png --tree artifacts/ha-policy.json --scene ha-policy --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/ha-policy-compact.png --tree artifacts/ha-policy-compact.json --scene ha-policy --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/failure-help.png --tree artifacts/failure-help.json --scene failure-help --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/failure-help-compact.png --tree artifacts/failure-help-compact.json --scene failure-help --theme dark --size 513x652 --scale 1 --at 1

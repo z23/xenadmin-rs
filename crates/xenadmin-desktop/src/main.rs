@@ -12,6 +12,7 @@ mod demo_details;
 mod dev_inspection;
 mod disk_workspace;
 mod external_tools;
+mod failure_help;
 mod guest_tools_view;
 mod host_admin;
 mod host_console;
@@ -178,6 +179,7 @@ struct State {
     snapshot_tree: bool,
     snapshot_ancestry: Vec<xenadmin_core::SnapshotAncestryRow>,
     application_panel: Option<settings::Panel>,
+    failure_help: Option<failure_help::FailureHelp>,
     bulk_power: Option<bulk_power::Editor>,
     bulk_properties: Option<bulk_properties::Editor>,
     row_menu: Option<inventory_menu::Context>,
@@ -360,6 +362,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         snapshot_tree: true,
         snapshot_ancestry: Vec::new(),
         application_panel: None,
+        failure_help: None,
         console_ui: Default::default(),
         console: None,
         console_snapshot: None,
@@ -1605,6 +1608,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
+    let root = if s.failure_help.is_some() {
+        rune_kit::root(root, [failure_help::dialog(s, &k)])
+    } else {
+        root
+    };
     root.key("application")
         .on_layout_tx(|s: &mut State, rect, _| {
             if rect[2].is_finite() && rect[2] > 0.0 && (s.window_width - rect[2]).abs() > 0.5 {
@@ -1897,6 +1905,11 @@ fn details(s: &State, k: &Kit) -> El {
                 ))
                 .child(caption(&record.detail, k).wrap()),
         );
+        actions = actions.child(failure_help::button(
+            failure_help::FailureHelp::vm(record),
+            format!("vm-failure-help-{}", record.id),
+            k,
+        ));
         for step in &record.steps {
             actions = actions.child(
                 caption(
@@ -2325,6 +2338,7 @@ fn main() -> std::process::ExitCode {
             ("cross-pool", cross_pool_vm::scene),
             ("archive-export", transfers::scene),
             ("ha-policy", pool_view::ha_scene),
+            ("failure-help", failure_help::scene),
             ("checkpoint-export", transfers::checkpoint_scene),
             ("cloud-init", cloud_init_view::scene),
             ("cloud-init-review", cloud_init_view::review_scene),

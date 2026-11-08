@@ -425,3 +425,6 @@ pub use alarm_policies::{
 
 mod snapshot_capture;
 pub use snapshot_capture::{SnapshotPreviewImage, SnapshotPreviewUpload};
+
+mod failure_guidance;
+pub use failure_guidance::FailureGuidance;

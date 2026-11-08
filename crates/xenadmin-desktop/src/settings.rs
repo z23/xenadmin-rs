@@ -99,6 +99,7 @@ impl Topic {
             ],
             Self::Diagnostics => &[
                 "Check action availability in VM Details reads host explanations for disabled power actions without executing them. Activity exports contain object names and identifiers; keep them private when investigating a real pool.",
+                "Explain outcome in Activity and operation history describes common host error codes and inspection steps. Its captured explanation keeps partial and unknown outcomes explicit; opening it does not reconnect, retry, change permissions or release an operation guard.",
                 "Development builds can expose a same-user local inspection socket. Start with XENADMIN_DEV_INSPECT=1 and use the repository's scripts/inspect.sh helper. The inspector reads bounded client status and operation evidence; it does not submit host mutations or return passwords, sessions or console keystrokes.",
                 "The read-only host-probe utility can inspect a connection or diagnose one VM. Prefer terminal password entry or a secret manager feeding standard input. Never put host passwords in command-line arguments or public reports.",
                 "This development application separates fixture-tested behavior from live-host qualification. Destructive tests require a designated disposable lab. The repository's parity ledger and reports record current implementation and verification limits.",

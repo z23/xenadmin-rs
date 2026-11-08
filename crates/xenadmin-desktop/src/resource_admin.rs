@@ -565,6 +565,11 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             ))
             .child(caption(target_label(record.target), k).wrap_anywhere())
             .child(caption(&record.detail, k).wrap());
+        view = view.child(failure_help::button(
+            failure_help::FailureHelp::resource(record),
+            format!("resource-failure-help-{}", record.id),
+            k,
+        ));
         if let Some(error) = &record.local_error {
             view = view.child(caption(error, k).wrap().color(k.c.danger.icon));
         }

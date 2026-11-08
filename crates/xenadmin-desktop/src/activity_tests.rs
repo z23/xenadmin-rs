@@ -265,3 +265,86 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
     assert_eq!(std::fs::read(&path).unwrap(), before);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn outcome_help_opens_from_tasks_and_both_history_families_without_mutating_or_retargeting() {
+    for size in [(1440.0, 900.0), (513.0, 652.0)] {
+        for family in [0, 1, 2] {
+            let mut s = state();
+            let pool = s.inventory.as_ref().unwrap().pool_id;
+            let key = match family {
+                0 => {
+                    let task = Arc::make_mut(s.activity.pools.get_mut(&pool).unwrap())
+                        .details
+                        .tasks
+                        .values_mut()
+                        .next()
+                        .unwrap();
+                    task.status = "failure".into();
+                    task.error_code = Some("HA_OPERATION_WOULD_BREAK_FAILOVER_PLAN".into());
+                    row_key(pool, "task", task.id)
+                }
+                1 => {
+                    s.activity.tab = Tab::History;
+                    let mut record = vm_record(pool, OperationState::OutcomeUnknown);
+                    record.detail = "XAPI refused the request: SR_FULL".into();
+                    let key = row_key(pool, "vm", record.id);
+                    s.operation_rows.push(record);
+                    key
+                }
+                _ => {
+                    s.activity.tab = Tab::History;
+                    let mut record = resource_record(pool);
+                    record.state = OperationState::PartiallyCompleted;
+                    record.detail = "Host task failed: SR_BACKEND_FAILURE_44".into();
+                    let key = row_key(pool, "resource", record.id);
+                    s.resource_rows.push(record);
+                    key
+                }
+            };
+            rebuild(&mut s);
+            s.activity.table.select(key);
+            let mut rt = runtime(s, size);
+            click(&mut rt, "activity-failure-help");
+            assert!(rt.state.failure_help.is_some());
+            let text = rt.accessibility_json().to_string();
+            assert!(text.contains("Outcome explanation"));
+            let expected = match family {
+                0 => "HA restart protection",
+                1 => "Do not submit the whole operation again",
+                _ => "Some work completed",
+            };
+            assert!(text.contains(expected), "missing {expected}");
+            assert!(!text.contains("OpaqueRef:private"));
+            rt.update(|s, _| s.activity.table.select("different row"));
+            settle(&mut rt);
+            assert!(rt.accessibility_json().to_string().contains(expected));
+            click(&mut rt, "failure-help-close");
+            assert!(rt.state.failure_help.is_none());
+            assert!(rt.state.operations.is_empty());
+            assert!(rt.state.resource_operations.is_empty());
+        }
+    }
+}
+
+#[test]
+fn successful_history_and_message_text_never_offer_error_code_guidance() {
+    let mut s = state();
+    let pool = s.inventory.as_ref().unwrap().pool_id;
+    let mut record = vm_record(pool, OperationState::Succeeded);
+    record.detail = "Host task failed: SR_FULL".into();
+    s.operation_rows.push(record);
+    s.activity.tab = Tab::History;
+    rebuild(&mut s);
+    assert!(s.activity.rows.iter().all(|r| r.help.is_none()));
+    s.activity.tab = Tab::Messages;
+    for message in Arc::make_mut(s.activity.pools.get_mut(&pool).unwrap())
+        .details
+        .messages
+        .values_mut()
+    {
+        message.body = "XAPI refused the request: SR_FULL".into();
+    }
+    rebuild(&mut s);
+    assert!(s.activity.rows.iter().all(|r| r.help.is_none()));
+}
