@@ -100,6 +100,8 @@ fn target_label(target: ResourceTarget) -> String {
         ResourceTarget::Host(id) => format!("Host {id}"),
         ResourceTarget::Storage(id) => format!("Storage {id}"),
         ResourceTarget::Network(id) => format!("Network {id}"),
+        ResourceTarget::Task(id) => format!("Task {id}"),
+        ResourceTarget::Message(id) => format!("Message {id}"),
     }
 }
 fn display_name(inventory: &Inventory, target: ResourceTarget) -> Option<String> {

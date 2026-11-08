@@ -316,6 +316,14 @@ pub struct ServerTask {
     pub finished: Option<String>,
     pub error_code: Option<String>,
     pub allowed_operations: Option<Vec<String>>,
+    #[serde(default)]
+    pub resident_host: Option<HostId>,
+    #[serde(default)]
+    pub parent: Option<TaskId>,
+    #[serde(default)]
+    pub subtasks: Vec<TaskId>,
+    #[serde(default)]
+    pub result_type: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -327,6 +335,22 @@ pub struct ServerMessage {
     pub object_uuid: Option<Uuid>,
     pub timestamp: Option<String>,
     pub body: String,
+}
+impl ServerMessage {
+    /// Binds a dismissal review to the displayed content without journaling its body.
+    pub fn review_digest(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let fields = (
+            &self.id,
+            &self.name,
+            &self.priority,
+            &self.object_class,
+            &self.object_uuid,
+            &self.timestamp,
+            &self.body,
+        );
+        Sha256::digest(serde_json::to_vec(&fields).expect("message fields serialize")).into()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

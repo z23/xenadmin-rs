@@ -1,3 +1,5 @@
+mod activity;
+mod activity_export;
 mod console_view;
 mod demo_details;
 mod dev_inspection;
@@ -136,6 +138,7 @@ impl ActionDiagnostics {
 }
 struct State {
     metrics: Option<metrics_view::MetricsUi>,
+    activity: activity::Activity,
     resource_editor: Option<resource_admin::Editor>,
     network_workspace: Option<network_admin::Workspace>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
@@ -230,6 +233,7 @@ fn init() -> State {
         .or(inspection_error);
     let mut s = State {
         metrics: None,
+        activity: activity::Activity::default(),
         resource_editor: None,
         network_workspace: None,
         resource_operations: Vec::new(),
@@ -769,14 +773,14 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         }
     }
     let Some(connection) = &s.connection else {
-        return changed;
+        return activity::poll(s) || changed;
     };
     let snapshot = connection.latest();
     if s.snapshot
         .as_ref()
         .is_some_and(|last| Arc::ptr_eq(last, &snapshot))
     {
-        return changed;
+        return activity::poll(s) || changed;
     }
     s.inventory = snapshot.inventory().cloned();
     s.snapshot = Some(snapshot);
@@ -788,6 +792,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         s.diagnostic_results.clear();
     }
     s.rebuild();
+    activity::poll(s);
     true
 }
 fn bytes(value: u64) -> String {
@@ -1154,6 +1159,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
+        Button::new("Activity")
+            .on_press(activity::open)
+            .build(&k)
+            .key("activity-open"),
+    );
+    controls = controls.child(
         Button::new("Disconnect")
             .variant(ButtonVariant::Ghost)
             .disabled(s.connection.is_none())
@@ -1227,6 +1238,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [connection_dialog(s, &k)])
     } else if s.network_workspace.is_some() {
         rune_kit::root(base, [network_admin::dialog(s, &k)])
+    } else if s.activity.show {
+        rune_kit::root(base, [activity::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
     } else if s.vm_lifecycle.is_some() {
@@ -1726,6 +1739,7 @@ fn demo(s: &mut State) {
     s.network_workspace = None;
     s.resource_operations.clear();
     s.resource_rows.clear();
+    s.activity = activity::Activity::default();
     s.devices = None;
     s.vm_lifecycle = None;
     s.operation_rows.clear();
@@ -1895,6 +1909,7 @@ fn main() {
             ("connections", |s| profiles_view::scene(s, false)),
             ("network-interfaces", network_admin::scene),
             ("network-create", |s| resource_admin::scene(s, false)),
+            ("activity", activity::scene),
             ("pool-administration", |s| resource_admin::scene(s, true)),
             ("connection-settings", |s| profiles_view::scene(s, true)),
             ("connect", |s| s.show_connect = true),

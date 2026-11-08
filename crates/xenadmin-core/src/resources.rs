@@ -1,6 +1,6 @@
 use crate::{
-    BondId, Error, HostId, NetworkId, NetworkOperation, OperationId, OperationState, OperationStep,
-    PifId, PoolId, SrId, VlanId,
+    BondId, Error, HostId, MessageId, NetworkId, NetworkOperation, OperationId, OperationState,
+    OperationStep, PifId, PoolId, SrId, TaskId, VlanId,
 };
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::SystemTime};
@@ -25,6 +25,8 @@ pub enum ResourceTarget {
     Pif(PifId),
     Vlan(VlanId),
     Bond(BondId),
+    Task(TaskId),
+    Message(MessageId),
 }
 impl ResourceTarget {
     pub(crate) fn class(self) -> &'static str {
@@ -36,6 +38,8 @@ impl ResourceTarget {
             Self::Pif(_) => "PIF",
             Self::Vlan(_) => "VLAN",
             Self::Bond(_) => "Bond",
+            Self::Task(_) => "task",
+            Self::Message(_) => "message",
         }
     }
     pub fn uuid(self) -> uuid::Uuid {
@@ -47,6 +51,8 @@ impl ResourceTarget {
             Self::Pif(id) => id.uuid(),
             Self::Vlan(id) => id.uuid(),
             Self::Bond(id) => id.uuid(),
+            Self::Task(id) => id.uuid(),
+            Self::Message(id) => id.uuid(),
         }
     }
 }
@@ -66,6 +72,13 @@ pub enum ResourceCommand {
     Network {
         target: ObservedResource,
         operation: NetworkOperation,
+    },
+    CancelTask {
+        task: ObservedResource,
+    },
+    DismissMessage {
+        message: ObservedResource,
+        expected_digest: [u8; 32],
     },
     RenameMetadata {
         target: ObservedResource,
@@ -106,6 +119,10 @@ pub enum ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
     Network(NetworkOperation),
+    CancelTask,
+    DismissMessage {
+        expected_digest: [u8; 32],
+    },
     RenameMetadata {
         expected_name: String,
         expected_description: String,
@@ -138,6 +155,8 @@ impl ResourceAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Network(operation) => operation.label(),
+            Self::CancelTask => "Request task cancellation",
+            Self::DismissMessage { .. } => "Dismiss server message",
             Self::RenameMetadata { .. } => "Edit name and description",
             Self::CreateInternalNetwork { .. } => "Create internal network",
             Self::ConfigureInternalNetwork { .. } => "Set internal network MTU",
@@ -158,6 +177,8 @@ impl ResourceAction {
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
             Self::Network(operation) => return operation.validate(target),
+            Self::CancelTask => matches!(target, ResourceTarget::Task(_)),
+            Self::DismissMessage { .. } => matches!(target, ResourceTarget::Message(_)),
             Self::RenameMetadata {
                 expected_name,
                 expected_description,
@@ -219,6 +240,11 @@ impl ResourceCommand {
     pub(crate) fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
             Self::Network { target, operation } => (target, ResourceAction::Network(operation)),
+            Self::CancelTask { task } => (task, ResourceAction::CancelTask),
+            Self::DismissMessage {
+                message,
+                expected_digest,
+            } => (message, ResourceAction::DismissMessage { expected_digest }),
             Self::RenameMetadata {
                 target,
                 expected_name,

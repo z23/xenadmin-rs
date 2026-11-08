@@ -114,6 +114,8 @@ impl ConnectionSnapshot {
             crate::ResourceTarget::Bond(id) => inventory.details.bonds.contains_key(&id),
             crate::ResourceTarget::Pool(id) => id == inventory.pool_id,
             crate::ResourceTarget::Host(id) => inventory.hosts.contains_key(&id),
+            crate::ResourceTarget::Task(id) => inventory.details.tasks.contains_key(&id),
+            crate::ResourceTarget::Message(id) => inventory.details.messages.contains_key(&id),
             crate::ResourceTarget::Storage(id) => {
                 inventory.storage.iter().any(|sr| sr.uuid == id.uuid())
             }

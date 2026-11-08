@@ -184,6 +184,14 @@ impl ResourceRequest {
                 return Ok(());
             }
             self.announce().await;
+            if matches!(step.check, xapi::Check::TaskCancellation) {
+                self.record.steps[index].state = StepState::Verified;
+                self.record.steps[index].detail =
+                    "Host accepted the cancellation request; task outcome is not yet confirmed"
+                        .into();
+                self.save(journal).await?;
+                return self.track_cancellation(journal, session, cancel).await;
+            }
             let created = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=xapi::verify(session,&self.record,&step.check)=>result?};
             self.reload(journal)?;
             if self.record.state.terminal() {
@@ -213,6 +221,14 @@ impl ResourceRequest {
         self.reload(journal)?;
         if self.record.state.terminal() {
             return Ok(());
+        }
+        if self.record.action == super::ResourceAction::CancelTask {
+            if self.record.steps.len() != 1 || self.record.steps[0].state == StepState::Pending {
+                return Err(Error::Protocol(
+                    "task cancellation was not dispatched; no request will be replayed",
+                ));
+            }
+            return self.track_cancellation(journal, session, cancel).await;
         }
         if self.record.task.is_some() {
             return self.track(journal, session, cancel).await;
@@ -262,6 +278,70 @@ impl ResourceRequest {
         self.record.detail =
             "Dispatched changes reconciled; unsubmitted steps were not replayed".into();
         self.save(journal).await
+    }
+    async fn track_cancellation(
+        &mut self,
+        journal: &mut Journal,
+        session: &Session,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        loop {
+            self.reload(journal)?;
+            if self.record.state.terminal() {
+                return Ok(());
+            }
+            let (_, task) = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=xapi::read(session,self.record.target)=>result? };
+            // Only status establishes completion. The original task remains owned
+            // by its creator and is never destroyed by this cancellation observer.
+            let (state, detail) = match task["status"].as_str() {
+                Some("pending") if self.record.steps[0].state != StepState::Verified => (
+                    OperationState::OutcomeUnknown,
+                    "Cancellation request delivery is unknown; task is still pending. No request was replayed",
+                ),
+                Some("pending") => (
+                    OperationState::CancellationRequested,
+                    "Cancellation requested; host task is still pending",
+                ),
+                Some("cancelling") => (
+                    OperationState::CancellationRequested,
+                    "Host task is cancelling; completion is not confirmed",
+                ),
+                Some("cancelled") => (
+                    OperationState::Succeeded,
+                    "Host confirmed that the task was cancelled",
+                ),
+                Some("success") => (
+                    OperationState::PartiallyCompleted,
+                    "Task completed successfully instead of being cancelled",
+                ),
+                Some("failure") => (
+                    OperationState::PartiallyCompleted,
+                    "Task failed instead of reporting cancellation",
+                ),
+                _ => {
+                    return Err(Error::Protocol(
+                        "unknown task status while checking cancellation",
+                    ));
+                }
+            };
+            self.record.state = state.clone();
+            self.record.detail = detail.into();
+            self.record.can_cancel = false;
+            self.record.progress = task["progress"]
+                .as_f64()
+                .or_else(|| task["progress"].as_str()?.parse().ok())
+                .filter(|v| v.is_finite())
+                .map(|v| v.clamp(0.0, 1.0));
+            if state.terminal() {
+                self.record.steps[0].state = StepState::Verified;
+                self.record.steps[0].detail = detail.into();
+            }
+            self.save(journal).await?;
+            if state.terminal() || state == OperationState::OutcomeUnknown {
+                return Ok(());
+            }
+            tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=tokio::time::sleep(Duration::from_secs(1))=>{} }
+        }
     }
     async fn track(
         &mut self,

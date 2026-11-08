@@ -336,3 +336,15 @@ bounded messages, concurrency limits and deadlines protect this private developm
 The application instance lock owns startup, and socket cleanup verifies inode identity.
 Normal launches do not enable inspection; `scripts/dev.sh` does. See
 [development diagnostics](DEVELOPMENT.md) for protocol consumers.
+
+The Activity workspace observes typed task/message UUIDs through the same pool/generation
+boundary as other resource commands. Reviewed message dismissal carries a digest of the
+public content and never journals the body. Task cancellation has a narrow journal-admission
+exception: it reserves its task identity while leaving the original mutation and its
+reservations untouched. The observer never destroys another operation's task and distinguishes
+request acceptance from the task's eventual outcome. Recovery only reads existing evidence.
+Activity exports explicitly project public fields rather than serializing operation records,
+whose private workflow plans can contain reconciliation references. Native Save captures an
+immutable selection; bounded serialization and private atomic writes run off the UI thread.
+Local hiding applies only to terminal history entries and never removes journal evidence.
+See the [activity verification report](reports/2026-11-08-activity.md).

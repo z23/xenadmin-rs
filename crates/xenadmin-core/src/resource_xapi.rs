@@ -11,6 +11,8 @@ pub(super) enum Check {
     CreatedNetwork,
     Deleted,
     Scan,
+    TaskCancellation,
+    MessageDeleted,
 }
 pub(super) struct Step {
     pub label: String,
@@ -113,6 +115,28 @@ pub(super) async fn prepare(
     let mut steps = Vec::new();
     match &record.action {
         ResourceAction::Network(_) => return super::network::prepare(session, record).await,
+        ResourceAction::CancelTask => {
+            cancellable_task(&fresh)?;
+            steps.push(Step {
+                label: "Request task cancellation".into(),
+                method: "task.cancel".into(),
+                argument: None,
+                expected: Value::Null,
+                check: Check::TaskCancellation,
+            });
+        }
+        ResourceAction::DismissMessage { expected_digest } => {
+            if crate::xapi::decode_server_message(&fresh)?.review_digest() != *expected_digest {
+                return Err(Error::ResourceConflict);
+            }
+            steps.push(Step {
+                label: "Dismiss server message".into(),
+                method: "message.destroy".into(),
+                argument: None,
+                expected: Value::Null,
+                check: Check::MessageDeleted,
+            });
+        }
         ResourceAction::RenameMetadata {
             expected_name,
             expected_description,
@@ -267,6 +291,19 @@ pub(super) async fn arguments(
     let (reference, fresh) = read(session, record.target).await?;
     match &step.check {
         Check::Network => super::network::arguments(session, record).await,
+        Check::TaskCancellation => {
+            cancellable_task(&fresh)?;
+            Ok(vec![json!(reference)])
+        }
+        Check::MessageDeleted => {
+            let ResourceAction::DismissMessage { expected_digest } = &record.action else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            if crate::xapi::decode_server_message(&fresh)?.review_digest() != *expected_digest {
+                return Err(Error::ResourceConflict);
+            }
+            Ok(vec![json!(reference)])
+        }
         Check::CreatedNetwork => {
             let ResourceAction::CreateInternalNetwork {
                 name,
@@ -330,9 +367,21 @@ pub(super) async fn arguments(
 pub(super) fn reply_reference(value: &Value) -> Result<String, Error> {
     reference(value)
 }
+fn cancellable_task(record: &Value) -> Result<(), Error> {
+    if record["status"] != "pending"
+        || !record["allowed_operations"]
+            .as_array()
+            .is_some_and(|ops| ops.iter().any(|op| op == "cancel"))
+    {
+        return Err(Error::UnavailableAction);
+    }
+    Ok(())
+}
 pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Check> {
     match &record.action {
         ResourceAction::Network(_) => vec![Check::Network],
+        ResourceAction::CancelTask => vec![Check::TaskCancellation],
+        ResourceAction::DismissMessage { .. } => vec![Check::MessageDeleted],
         ResourceAction::RenameMetadata {
             expected_name,
             expected_description,
@@ -371,7 +420,7 @@ pub(super) async fn verify(
     if matches!(check, Check::CreatedNetwork) {
         return verify_created(session, record).await.map(Some);
     }
-    if matches!(check, Check::Deleted) {
+    if matches!(check, Check::Deleted | Check::MessageDeleted) {
         return match read(session, record.target).await {
             Err(Error::Api(code)) if code == "UUID_INVALID" => Ok(None),
             Ok(_) => Err(Error::ResourceConflict),

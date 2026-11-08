@@ -3,6 +3,25 @@ use crate::{OperationControl, StepState, operations::Journal};
 use rusqlite::{OptionalExtension, params};
 
 impl Journal {
+    pub(crate) fn resource_pool_busy(&self, pool: PoolId) -> Result<bool, Error> {
+        Ok(self
+            .active_resources(pool)?
+            .iter()
+            .any(|record| record.action != ResourceAction::CancelTask))
+    }
+    fn active_resources(&self, pool: PoolId) -> Result<Vec<ResourceOperationRecord>, Error> {
+        let mut query = self
+            .0
+            .prepare("SELECT payload FROM resource_operations WHERE pool=?1 AND terminal=0")
+            .map_err(|_| Error::Journal)?;
+        query
+            .query_map([pool.to_string()], |row| row.get::<_, String>(0))
+            .map_err(|_| Error::Journal)?
+            .map(|row| {
+                serde_json::from_str(&row.map_err(|_| Error::Journal)?).map_err(|_| Error::Journal)
+            })
+            .collect()
+    }
     pub(crate) fn resource_load(
         &self,
         id: OperationId,
@@ -69,7 +88,23 @@ impl Journal {
                 *record = old;
                 return Ok(false);
             }
-            let busy:bool=self.0.query_row("SELECT EXISTS(SELECT 1 FROM operations WHERE pool=?1 AND terminal=0 UNION ALL SELECT 1 FROM resource_operations WHERE pool=?1 AND terminal=0)",[record.pool.to_string()],|row|row.get(0)).map_err(|_|Error::Journal)?;
+            // Cancelling a server task is a recovery action. Reserve only that task;
+            // never release or mutate the original operation's reservation.
+            let busy = if record.action == ResourceAction::CancelTask {
+                self.active_resources(record.pool)?.iter().any(|old| {
+                    old.target == record.target && old.action == ResourceAction::CancelTask
+                })
+            } else {
+                let vm_busy: bool = self
+                    .0
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM operations WHERE pool=?1 AND terminal=0)",
+                        [record.pool.to_string()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|_| Error::Journal)?;
+                vm_busy || self.resource_pool_busy(record.pool)?
+            };
             if busy {
                 return Err(Error::ConflictingPoolOperation);
             }

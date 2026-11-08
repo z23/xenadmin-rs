@@ -17,6 +17,7 @@ use crate::{
 
 #[path = "xapi_inventory.rs"]
 mod inventory;
+pub(crate) use inventory::decode_server_message;
 #[cfg(test)]
 #[path = "xapi_inventory_tests.rs"]
 pub(crate) mod inventory_tests;

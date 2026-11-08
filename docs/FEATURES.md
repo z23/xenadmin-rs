@@ -24,6 +24,7 @@ Milestone order and dependencies are defined in the [implementation plan](PLAN.m
 | VM console | M2 | Direct authenticated RFB tunnel, resize, keyboard, pointer, reconnect, controlled clipboard |
 | Outage recovery | M2 | Locate and start the XO VM and use its console while XO is unreachable |
 | Metrics | M3 | Bounded CPU, memory, disk, and network chart history from RRD endpoints |
+| Activity | M3 | Pool tasks and reviewed cancellation, messages and reviewed dismissal, searchable local history, terminal-only hide/restore and private JSON export; [fixture evidence](reports/2026-11-08-activity.md) |
 | Desktop integration | M3 | Wayland, X11, HiDPI, keyboard access, Orca, file picker, installed desktop entry |
 | Release artifacts | M3 | Clean-system installation and offline startup with documented runtime dependencies |
 | VM creation | M4 | Template, CPU, memory, disks, NICs, ISO, destination, preview, partial cleanup |

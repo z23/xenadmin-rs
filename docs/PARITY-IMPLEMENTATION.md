@@ -263,15 +263,15 @@ Implementation and verification details are in the [VM lifecycle report](reports
 | P14-01 | Track local power/snapshot progress/completion | Durable task tracking extended to placement, checkpoints and device actions; lab qualification open |
 | P14-02 | Unknown outcomes, recheck/acknowledge and cancellation | Existing workflow; qualification open |
 | P14-03 | Contextual error explanations/remediation | Administrative messages, fresh action diagnostics and private live-client inspector added; broader remediation catalogue remains queued |
-| P14-04 | Pool-wide tasks from other clients | Server task inventory and current-operation links parsed; pool-wide task workspace remains queued |
-| P14-05 | Search/filter/dismiss history and inspect full task details | Queued |
+| P14-04 | Pool-wide tasks from other clients | Activity task workspace with filtering, typed details and reviewed cancellation; fixture-verified, live qualification open ([report](reports/2026-11-08-activity.md)) |
+| P14-05 | Search/filter/dismiss history and inspect full task details | Searchable VM/resource history, terminal-only local hide/restore, typed task details and private JSON export implemented; raw task/debug payloads excluded, native/lab qualification open ([report](reports/2026-11-08-activity.md)) |
 | P14-06 | Multi-step progress/partial outcomes/owned cleanup | Durable ordered VM property steps and partial/unknown outcomes implemented; owned-resource cleanup/provisioning orchestration remains queued |
 | P14-07 | VM/host CPU/memory graphs | Direct RRD subscriptions and VM/host performance charts implemented; synthetic transport/render checks, live qualification open |
 | P14-08 | Disk/network throughput/latency graphs | Host-advertised disk/network sources rendered with units and explicit sample gaps; source availability and live qualification remain host-dependent |
 | P14-09 | Custom graphs/data-source selection/historical ranges | Per-view source selection and bounded 10-minute/2-hour/week/year ranges implemented with actual returned resolution; saved graph presets remain queued |
-| P14-10 | Host/pool messages/alerts: list/filter/dismiss/export | Typed server messages parsed; list/filter/dismiss/export workspace remains queued |
+| P14-10 | Host/pool messages/alerts: list/filter/dismiss/export | Activity list/filter, content-bound reviewed server dismissal and private native-dialog JSON export implemented; fixture-verified, native/lab qualification open ([report](reports/2026-11-08-activity.md)) |
 | P14-11 | Alarm thresholds/intervals/notification-email settings | Queued |
-| P14-12 | Resource reports/support-status export | Queued |
+| P14-12 | Resource reports/support-status export | Activity task/message/public-operation JSON export implemented; broader resource reports and support-status bundles remain queued |
 
 ## 15. Organization and grouped workflows
 

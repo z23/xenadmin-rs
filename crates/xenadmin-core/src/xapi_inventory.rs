@@ -66,6 +66,17 @@ fn text_option(record: &Value, key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
+pub(crate) fn decode_server_message(record: &Value) -> Result<ServerMessage, Error> {
+    Ok(ServerMessage {
+        id: id(record)?,
+        name: string(record, "name"),
+        priority: integer(record, "priority", "message.priority")?,
+        object_class: string(record, "cls"),
+        object_uuid: record["obj_uuid"].as_str().and_then(|s| s.parse().ok()),
+        timestamp: text_option(record, "timestamp"),
+        body: string(record, "body"),
+    })
+}
 fn strings(value: &Value) -> Option<Vec<String>> {
     value
         .as_array()?
@@ -251,6 +262,10 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .and_then(Value::as_str)
                     .map(|code| safe_error_code(code).to_owned()),
                 allowed_operations: strings(&record["allowed_operations"]),
+                resident_host: refs.link("host", &record["resident_on"]),
+                parent: refs.link("task", &record["subtask_of"]),
+                subtasks: refs.links("task", &record["subtasks"]),
+                result_type: text_option(record, "type"),
             },
         ))
     });
@@ -432,19 +447,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         ))
     });
     result.messages = records(store, "message", &mut result.classes, |record| {
-        let id = id(record)?;
-        Ok((
-            id,
-            ServerMessage {
-                id,
-                name: string(record, "name"),
-                priority: integer(record, "priority", "message.priority")?,
-                object_class: string(record, "cls"),
-                object_uuid: record["obj_uuid"].as_str().and_then(|s| s.parse().ok()),
-                timestamp: text_option(record, "timestamp"),
-                body: string(record, "body"),
-            },
-        ))
+        let message = decode_server_message(record)?;
+        Ok((message.id, message))
     });
     result.appliances = records(store, "vm_appliance", &mut result.classes, |record| {
         let id = id(record)?;

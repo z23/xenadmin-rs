@@ -207,3 +207,49 @@ fn resource_intents_are_closed_typed_and_reject_invalid_or_no_op_values() {
         assert!(action.validate(target).is_err());
     }
 }
+
+#[test]
+fn task_cancellation_reserves_only_its_task_and_preserves_original_unknown_reservations() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let mut original = vm(pool);
+    journal.admit(&mut original).unwrap();
+    original.state = OperationState::OutcomeUnknown;
+    journal.save(&mut original).unwrap();
+    let mut cancellation = resource(pool);
+    cancellation.action = ResourceAction::CancelTask;
+    cancellation.target = ResourceTarget::Task(crate::TaskId::from(uuid::Uuid::new_v4()));
+    assert!(journal.resource_admit(&mut cancellation).unwrap());
+    let mut duplicate = cancellation.clone();
+    duplicate.id = OperationId::new();
+    duplicate.revision = 0;
+    assert!(matches!(
+        journal.resource_admit(&mut duplicate),
+        Err(Error::ConflictingPoolOperation)
+    ));
+    assert_eq!(
+        journal.load(original.id).unwrap().unwrap().state,
+        OperationState::OutcomeUnknown
+    );
+    let mut overlap = vm(pool);
+    overlap.vm = original.vm;
+    assert!(matches!(
+        journal.admit(&mut overlap),
+        Err(Error::ConflictingOperation)
+    ));
+    assert!(journal.admit(&mut vm(pool)).unwrap());
+    cancellation.state = OperationState::OutcomeUnknown;
+    journal.resource_save(&mut cancellation).unwrap();
+    journal
+        .resource_control(pool, cancellation.id, OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    assert_eq!(
+        journal.load(original.id).unwrap().unwrap().state,
+        OperationState::OutcomeUnknown
+    );
+    assert!(matches!(
+        journal.admit(&mut overlap),
+        Err(Error::ConflictingOperation)
+    ));
+}

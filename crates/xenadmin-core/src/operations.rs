@@ -688,14 +688,7 @@ impl Journal {
                 }
                 return Ok(false);
             }
-            let busy: bool = self
-                .0
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM resource_operations WHERE pool=?1 AND terminal=0)",
-                    [record.pool.to_string()],
-                    |row| row.get(0),
-                )
-                .map_err(|_| Error::Journal)?;
+            let busy = self.resource_pool_busy(record.pool)?;
             if busy {
                 return Err(Error::ConflictingPoolOperation);
             }
