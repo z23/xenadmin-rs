@@ -264,31 +264,75 @@ pub(crate) fn matches_receipt(path: &Path, r: &Receipt) -> Result<bool, Error> {
     }
     Ok(<[u8; 32]>::from(hash.finalize()) == r.sha256)
 }
-pub(crate) fn finalize(plan: &Plan) -> Result<(), Error> {
+pub(crate) struct Publication {
+    file: TransferFile,
+    source: File,
+    source_path: PathBuf,
+    identity: Identity,
+    existing: bool,
+}
+impl Publication {
+    /// Only short identity checks and the atomic rename happen at the journal fence.
+    pub(crate) fn publish(self) -> Result<(), Error> {
+        let dir = parent_handle(&self.file)?;
+        let current = Identity::from(&self.source.metadata().map_err(|_| Error::TransferFile)?);
+        let named = open_in(&dir, &self.source_path, false, false)?;
+        if current != self.identity
+            || Identity::from(&named.metadata().map_err(|_| Error::TransferFile)?) != self.identity
+        {
+            return Err(Error::TransferFileChanged);
+        }
+        if !self.existing {
+            rustix::fs::renameat_with(
+                &dir,
+                self.source_path.file_name().ok_or(Error::TransferFile)?,
+                &dir,
+                self.file.path.file_name().ok_or(Error::TransferFile)?,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .map_err(|_| Error::TransferDestinationExists)?;
+        }
+        dir.sync_all().map_err(|_| Error::TransferFile)
+    }
+}
+pub(crate) fn prepare_publication(plan: &Plan) -> Result<Publication, Error> {
     let dir = parent_handle(&plan.file)?;
     let receipt = plan.stream_receipt.as_ref().ok_or(Error::TransferFile)?;
-    if plan.file.path.symlink_metadata().is_ok() {
-        if matches_receipt(&plan.file.path, receipt)? {
-            return Ok(());
-        }
-        return Err(Error::TransferDestinationExists);
-    }
-    let temp = plan.temporary.as_ref().ok_or(Error::TransferFile)?;
-    if !matches_receipt(temp, receipt)? {
+    let existing = plan.file.path.symlink_metadata().is_ok();
+    let path = if existing {
+        &plan.file.path
+    } else {
+        plan.temporary.as_ref().ok_or(Error::TransferFile)?
+    };
+    let mut file = open_in(&dir, path, false, false)?;
+    let identity = Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?);
+    if !receipt.identity.same_inode(&identity) || identity.size != receipt.bytes {
         return Err(Error::TransferFileChanged);
     }
-    rustix::fs::renameat_with(
-        &dir,
-        temp.file_name().ok_or(Error::TransferFile)?,
-        &dir,
-        plan.file.path.file_name().ok_or(Error::TransferFile)?,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(|_| Error::TransferDestinationExists)?;
-    File::open(plan.file.path.parent().ok_or(Error::TransferFile)?)
-        .and_then(|d| d.sync_all())
-        .map_err(|_| Error::TransferFile)?;
-    Ok(())
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buffer).map_err(|_| Error::TransferFile)?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+    }
+    if <[u8; 32]>::from(hash.finalize()) != receipt.sha256
+        || Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?) != identity
+    {
+        return Err(Error::TransferFileChanged);
+    }
+    Ok(Publication {
+        file: plan.file.clone(),
+        source: file,
+        source_path: path.clone(),
+        identity,
+        existing,
+    })
+}
+pub(crate) fn finalize(plan: &Plan) -> Result<(), Error> {
+    prepare_publication(plan)?.publish()
 }
 pub(crate) fn cleanup(plan: &Plan) {
     if let (Some(path), Some(expected)) = (&plan.temporary, &plan.temporary_identity)

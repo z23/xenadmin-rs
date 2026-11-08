@@ -60,6 +60,122 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
 }
 
 #[test]
+fn export_publication_after_validation_is_fenced_by_recovery_ack_cancel_and_file_identity() {
+    use crate::transfer::{Plan, files};
+    use sha2::{Digest, Sha256};
+    use std::{io::Write, os::unix::fs::PermissionsExt};
+    for mode in [
+        "complete",
+        "recover",
+        "ack",
+        "cancel",
+        "closed",
+        "replace-source",
+        "existing-destination",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("output");
+        std::fs::create_dir(&output).unwrap();
+        let journal = Journal::open(dir.path()).unwrap();
+        let pool = PoolId::from(uuid::Uuid::new_v4());
+        let mut row = resource(pool);
+        row.target = ResourceTarget::Pool(pool);
+        row.action = ResourceAction::Transfer(crate::TransferAction::ExportDisk {
+            vdi: uuid::Uuid::new_v4().into(),
+            expected_sr: uuid::Uuid::new_v4().into(),
+            format: crate::DiskImageFormat::Raw,
+            expected_size: 512,
+        });
+        let destination = output.join("image.raw");
+        let mut plan = Plan::new(crate::TransferFile::destination(&destination).unwrap());
+        files::create_output(&mut plan, row.id).unwrap();
+        let mut file = files::output(&plan).unwrap();
+        let bytes = vec![9u8; 512];
+        file.write_all(&bytes).unwrap();
+        file.sync_all().unwrap();
+        plan.stream_receipt =
+            Some(files::receipt(&file, 512, Sha256::digest(&bytes).into()).unwrap());
+        plan.dispatched = true;
+        plan.task_success = true;
+        plan.task_uuid = Some(uuid::Uuid::new_v4());
+        row.transfer_plan = Some(Box::new(plan.clone()));
+        row.task = Some("OpaqueRef:fixture-export-task".into());
+        journal.resource_admit(&mut row).unwrap();
+        row.state = OperationState::Verifying;
+        journal.resource_save(&mut row).unwrap();
+        let expected = row.clone();
+        let directory = dir.path().to_owned();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let (ready_send, ready_receive) = std::sync::mpsc::channel();
+        let (release_send, release_receive) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let publication = files::prepare_publication(&plan).unwrap();
+            ready_send.send(()).unwrap();
+            release_receive.recv().unwrap();
+            Journal::open(&directory)
+                .unwrap()
+                .transfer_publication_guard(&expected, false, &worker_cancel, || {
+                    publication.publish()
+                })
+        });
+        ready_receive.recv().unwrap();
+        match mode {
+            "recover" | "ack" => {
+                row.state = OperationState::OutcomeUnknown;
+                journal.resource_save(&mut row).unwrap();
+                if mode == "ack" {
+                    journal
+                        .resource_control(pool, row.id, crate::OperationControl::AcknowledgeUnknown)
+                        .unwrap();
+                }
+            }
+            "cancel" => {
+                row.cancel_requested = true;
+                journal.resource_save(&mut row).unwrap();
+            }
+            "closed" => cancel.cancel(),
+            "replace-source" => {
+                std::fs::write(
+                    row.transfer_plan
+                        .as_ref()
+                        .unwrap()
+                        .temporary
+                        .as_ref()
+                        .unwrap(),
+                    vec![8u8; 512],
+                )
+                .unwrap();
+            }
+            "existing-destination" => {
+                std::fs::write(&destination, b"operator-owned existing data").unwrap();
+            }
+            _ => {}
+        }
+        release_send.send(()).unwrap();
+        let result = worker.join().unwrap();
+        if mode == "complete" {
+            assert!(result.is_ok(), "{result:?}");
+            assert_eq!(std::fs::read(&destination).unwrap(), bytes);
+            assert_eq!(
+                destination.metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        } else {
+            assert!(result.is_err(), "{mode} must prevent publication");
+            if mode == "existing-destination" {
+                assert_eq!(
+                    std::fs::read(&destination).unwrap(),
+                    b"operator-owned existing data"
+                );
+            } else {
+                assert!(!destination.exists(), "{mode}");
+            }
+        }
+    }
+}
+
+#[test]
 fn root_password_journal_rejects_changed_scope_and_retains_late_completion_after_ack() {
     let dir = tempfile::tempdir().unwrap();
     let journal = Journal::open(dir.path()).unwrap();

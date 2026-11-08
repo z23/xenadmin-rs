@@ -3,6 +3,52 @@ use crate::{OperationControl, StepState, operations::Journal};
 use rusqlite::{OptionalExtension, params};
 
 impl Journal {
+    pub(crate) fn transfer_publication_guard<T>(
+        &self,
+        expected: &ResourceOperationRecord,
+        reconcile: bool,
+        cancel: &tokio_util::sync::CancellationToken,
+        publish: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.0
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|_| Error::Journal)?;
+        let result = (|| {
+            let current = self.resource_load(expected.id)?.ok_or(Error::Journal)?;
+            if current.revision() != expected.revision()
+                || current.pool != expected.pool
+                || current.action != expected.action
+                || current.target != expected.target
+                || current.transfer_plan != expected.transfer_plan
+                || current.state != OperationState::Verifying
+                || current.cancel_requested
+                || current.interrupted && !reconcile
+                || !matches!(&current.action,crate::ResourceAction::Transfer(action) if action.is_export())
+                || current.transfer_plan.as_ref().is_none_or(|p| {
+                    !p.task_success || p.stream_invalid || p.stream_receipt.is_none()
+                })
+            {
+                return Err(Error::JournalChanged);
+            }
+            if cancel.is_cancelled() {
+                return Err(Error::Closed);
+            }
+            publish()
+        })();
+        match result {
+            Ok(value) => {
+                if self.0.execute_batch("COMMIT").is_err() {
+                    let _ = self.0.execute_batch("ROLLBACK");
+                    return Err(Error::Journal);
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = self.0.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
     pub(crate) fn resource_pool_busy(&self, pool: PoolId) -> Result<bool, Error> {
         Ok(self
             .active_resources(pool)?

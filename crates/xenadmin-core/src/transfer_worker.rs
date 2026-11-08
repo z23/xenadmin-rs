@@ -466,7 +466,7 @@ impl ResourceRequest {
                         return Err(Error::TransferConflict);
                     }
                 }
-                tokio::task::spawn_blocking(move || {
+                let publication = tokio::task::spawn_blocking(move || {
                     match action {
                         TransferAction::ExportXva { source } => {
                             files::validate_export(&plan, &source)?
@@ -478,10 +478,13 @@ impl ResourceRequest {
                         } => files::validate_disk_export(&plan, format, expected_size)?,
                         _ => return Err(Error::TransferConflict),
                     }
-                    files::finalize(&plan)
+                    files::prepare_publication(&plan)
                 })
                 .await
                 .map_err(|_| Error::TransferFile)??;
+                journal.transfer_publication_guard(&self.record, self.reconcile, cancel, || {
+                    publication.publish()
+                })?;
                 self.record.state = OperationState::Succeeded;
                 self.record.detail = "Export verified and saved as a private image".into();
             }
