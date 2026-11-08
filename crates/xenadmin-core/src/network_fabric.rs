@@ -91,7 +91,7 @@ pub enum NetworkFabricKind {
     Tunnel(TunnelProtocol),
     Sriov,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum NetworkFabricObject {
     Tunnel(TunnelId),
     Sriov(NetworkSriovId),

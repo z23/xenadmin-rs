@@ -1,5 +1,7 @@
 #[path = "network_fabric_ui.rs"]
 mod fabric;
+#[path = "network_fabric_pool_ui.rs"]
+mod fabric_pool;
 #[path = "network_interfaces.rs"]
 mod interfaces;
 #[path = "management_ipv6_bond_ui.rs"]
@@ -30,6 +32,7 @@ enum Form {
     ManagementBond(Box<management_bond::Editor>),
     Management(Box<management::Editor>),
     Topology(Box<topology::Editor>),
+    FabricPool(Box<fabric_pool::Editor>),
     Interface(Box<interfaces::Editor>),
     Browse,
     Vlan {
@@ -253,6 +256,13 @@ fn form_review(s: &mut State) {
         topology::prepare(s);
         return;
     }
+    if s.network_workspace
+        .as_ref()
+        .is_some_and(|w| matches!(w.form, Form::FabricPool(_)))
+    {
+        fabric_pool::prepare(s);
+        return;
+    }
     let result = (|| -> Result<_, String> {
         let w = s
             .network_workspace
@@ -391,6 +401,7 @@ fn form_review(s: &mut State) {
             Form::Ipv6Bond(_)
             | Form::ManagementBond(_)
             | Form::Management(_)
+            | Form::FabricPool(_)
             | Form::Topology(_)
             | Form::Browse => {
                 return Err("Choose a change to review".into());
@@ -788,6 +799,7 @@ fn form(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
         Form::Fabric(editor) => body = body.child(fabric::form(editor, i, k)),
         Form::Interface(editor) => body = body.child(interfaces::form(editor, i, k)),
         Form::Topology(editor) => body = body.child(topology::form(editor, i, k)),
+        Form::FabricPool(editor) => body = body.child(fabric_pool::form(editor, i, k)),
         Form::Browse => return browse(s, w, i, k),
         Form::Vlan { parent, tag } => {
             body = body
@@ -1259,6 +1271,14 @@ pub(super) fn sriov_scene(s: &mut State) {
 }
 pub(super) fn fabric_scene(s: &mut State) {
     fabric::scene(s);
+}
+
+pub(super) fn fabric_pool_selection_scene(s: &mut State) {
+    fabric_pool::selection_scene(s);
+}
+
+pub(super) fn fabric_pool_scene(s: &mut State) {
+    fabric_pool::scene(s);
 }
 
 #[cfg(test)]

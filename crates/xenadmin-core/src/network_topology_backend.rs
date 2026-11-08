@@ -33,6 +33,7 @@ pub(super) fn operation(
 }
 fn kinds(operation: &NetworkTopologyOperation) -> Vec<Kind> {
     match operation {
+        NetworkTopologyOperation::Fabric(op) => super::network_fabric::pool::kinds(op),
         NetworkTopologyOperation::CreateVlans { uplinks, tag } => uplinks
             .iter()
             .map(|uplink| Kind::Create {
@@ -84,6 +85,17 @@ pub(crate) fn validate_record(record: &ResourceOperationRecord) -> Result<(), Er
         }
         return Ok(());
     };
+    if matches!(plan.operation, NetworkTopologyOperation::Fabric(_)) {
+        return super::network_fabric::pool::validate_record(record, plan);
+    }
+    require(
+        plan.fabric_before.is_none()
+            && plan
+                .steps
+                .iter()
+                .all(|s| s.fabric_created.is_none() && s.fabric_member.is_none()),
+        "Unexpected fabric topology evidence",
+    )?;
     let operation = operation(record)?;
     operation.validate(record.target)?;
     require(
@@ -314,6 +326,11 @@ async fn retaggable(
 
 fn expected_members(plan: &Plan, finishing: Option<usize>) -> BTreeSet<PifId> {
     let mut ids = match &plan.operation {
+        NetworkTopologyOperation::Fabric(op) => op
+            .operations
+            .first()
+            .map(|op| op.review.members.keys().copied().collect())
+            .unwrap_or_default(),
         NetworkTopologyOperation::CreateVlans { .. } => BTreeSet::new(),
         NetworkTopologyOperation::RetagVlans { interfaces, .. } => {
             interfaces.iter().map(|v| v.child).collect()
@@ -358,6 +375,9 @@ pub(super) async fn prepare(
     record: &ResourceOperationRecord,
 ) -> Result<Plan, Error> {
     let operation = operation(record)?.clone();
+    if let NetworkTopologyOperation::Fabric(op) = &operation {
+        return super::network_fabric::pool::prepare(session, record, op).await;
+    }
     operation.validate(record.target)?;
     let ResourceTarget::Network(network) = record.target else {
         return Err(Error::InvalidResourceCommand);
@@ -382,10 +402,13 @@ pub(super) async fn prepare(
                 ended: false,
                 cancel_sent: false,
                 created: None,
+                fabric_created: None,
+                fabric_member: None,
                 verified: false,
             })
             .collect(),
         expires_at_ms: now().saturating_add(2 * 60 * 60 * 1000),
+        fabric_before: None,
     };
     let (_, target) = checked_network(session, &plan, None).await?;
     for parent in operation.uplinks() {
@@ -428,10 +451,14 @@ pub(super) async fn arguments(
         .as_ref()
         .ok_or(Error::Journal)?;
     let step = plan.steps.get(index).ok_or(Error::Journal)?;
+    if matches!(step.kind, Kind::Fabric(_)) {
+        return super::network_fabric::pool::arguments(session, plan, index).await;
+    }
     xapi::read(session, ResourceTarget::Pool(plan.pool)).await?;
     host_coverage(session, &plan.operation).await?;
     let (network, target) = checked_network(session, plan, None).await?;
     match &step.kind {
+        Kind::Fabric(_) => Err(Error::Journal),
         Kind::Create {
             uplink: parent,
             tag,
@@ -535,18 +562,22 @@ pub(super) async fn verify(
     session: &Session,
     record: &ResourceOperationRecord,
     index: usize,
-) -> Result<(), Error> {
+) -> Result<Option<crate::NetworkFabricMember>, Error> {
     let plan = record
         .network_topology_plan
         .as_ref()
         .ok_or(Error::Journal)?;
     let step = plan.steps.get(index).ok_or(Error::Journal)?;
+    if matches!(step.kind, Kind::Fabric(_)) {
+        return super::network_fabric::pool::verify(session, plan, index).await;
+    }
     xapi::read(session, ResourceTarget::Pool(plan.pool)).await?;
     require(
         step.completed,
         "Host task completion is unavailable; no write will be repeated",
     )?;
     match &step.kind {
+        Kind::Fabric(_) => return Err(Error::Journal),
         Kind::Create { .. } => {
             let ids = creation_identity(session, plan, index).await?;
             require(step.created == Some(ids), "Created VLAN evidence changed")?;
@@ -570,5 +601,58 @@ pub(super) async fn verify(
         }
     }
     checked_network(session, plan, Some(index)).await?;
+    Ok(None)
+}
+
+pub(super) async fn finish(
+    session: &Session,
+    record: &ResourceOperationRecord,
+) -> Result<(), Error> {
+    let plan = record
+        .network_topology_plan
+        .as_ref()
+        .ok_or(Error::Journal)?;
+    if matches!(plan.operation, NetworkTopologyOperation::Fabric(_)) {
+        return super::network_fabric::pool::finish(session, plan).await;
+    }
+    xapi::read(session, ResourceTarget::Pool(plan.pool)).await?;
+    host_coverage(session, &plan.operation).await?;
+    checked_network(session, plan, None).await?;
+    for (index, step) in plan.steps.iter().enumerate() {
+        if !step.verified {
+            require(
+                step.task.is_none() && !step.completed,
+                "Submitted topology step remains uncertain",
+            )?;
+            if let Kind::Destroy(vlan) = &step.kind {
+                retaggable(session, plan.network, vlan).await?;
+            }
+            continue;
+        }
+        match &step.kind {
+            Kind::Create { uplink, tag } => {
+                let (vlan, child) = creation_identity(session, plan, index).await?;
+                let detached=plan.steps.iter().any(|later|later.verified && matches!(later.kind,Kind::DetachCreated{create_step,..} if create_step==index));
+                retaggable(
+                    session,
+                    plan.network,
+                    &ReviewedVlan {
+                        vlan,
+                        child,
+                        uplink: uplink.clone(),
+                        tag: *tag,
+                        attached: !detached,
+                    },
+                )
+                .await?;
+            }
+            Kind::Destroy(vlan) => {
+                absent(session, ResourceTarget::Vlan(vlan.vlan)).await?;
+                absent(session, ResourceTarget::Pif(vlan.child)).await?;
+            }
+            Kind::DetachCreated { .. } => {}
+            Kind::Fabric(_) => return Err(Error::Journal),
+        }
+    }
     Ok(())
 }

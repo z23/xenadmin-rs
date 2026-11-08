@@ -93,6 +93,8 @@ pub use metrics::{
     MetricsOptions, MetricsSnapshot, MetricsState, MetricsWindow, ObservedMetrics,
 };
 mod network_fabric;
+mod network_fabric_pool;
+pub use network_fabric_pool::NetworkFabricPool;
 mod network_service;
 pub use network_fabric::{
     NetworkFabricChange, NetworkFabricEvidence, NetworkFabricInventory, NetworkFabricKind,

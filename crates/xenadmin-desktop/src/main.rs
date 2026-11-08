@@ -2434,6 +2434,11 @@ fn main() -> std::process::ExitCode {
             ("network-interfaces", network_admin::scene),
             ("network-services", network_admin::service_scene),
             ("network-fabric", network_admin::fabric_scene),
+            ("network-fabric-pool", network_admin::fabric_pool_scene),
+            (
+                "network-fabric-pool-select",
+                network_admin::fabric_pool_selection_scene,
+            ),
             ("network-sriov", network_admin::sriov_scene),
             ("network-ipv6", network_admin::ipv6_scene),
             ("network-topology", network_admin::topology_scene),

@@ -1,3 +1,5 @@
+#[path = "network_fabric_pool.rs"]
+mod pool;
 use super::*;
 use std::collections::BTreeMap;
 use xenadmin_core::{
@@ -94,6 +96,10 @@ async fn fixture(kind: Kind, fault: Fault) -> (Mock, Records, Arc<AtomicUsize>) 
         let writes = written.clone();
         async move {
             let method = request["method"].as_str().unwrap();
+            let pool_fixture = records.lock().unwrap().contains_key("_pool");
+            if pool_fixture && let Some(reply) = pool::request(&records, &writes, &request).await {
+                return Some(reply);
+            }
             if method == "event.from" && request["params"][2] == "" {
                 let events=records.lock().unwrap().iter().filter(|(k,_)|!k.starts_with('_')).map(|(k,v)|json!({"class":k.split('-').next().unwrap(),"operation":"add","ref":format!("OpaqueRef:{k}"),"snapshot":v})).collect::<Vec<_>>();
                 return Some(RpcReply::Json(

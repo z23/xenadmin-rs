@@ -225,6 +225,18 @@ impl Entry {
                             uuid: id.uuid(),
                         }),
                 )
+                .chain(record.topology_changes.created_fabric.iter().flat_map(|e| {
+                    [
+                        Created {
+                            kind: "Network object".into(),
+                            uuid: e.object.uuid(),
+                        },
+                        Created {
+                            kind: "Physical interface".into(),
+                            uuid: e.interface.uuid(),
+                        },
+                    ]
+                }))
                 .collect(),
             removed: record
                 .topology_changes
@@ -244,6 +256,18 @@ impl Entry {
                             uuid: id.uuid(),
                         }),
                 )
+                .chain(record.topology_changes.removed_fabric.iter().flat_map(|e| {
+                    [
+                        Created {
+                            kind: "Network object".into(),
+                            uuid: e.object.uuid(),
+                        },
+                        Created {
+                            kind: "Physical interface".into(),
+                            uuid: e.interface.uuid(),
+                        },
+                    ]
+                }))
                 .collect(),
         }
     }

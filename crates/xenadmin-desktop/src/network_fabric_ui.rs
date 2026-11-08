@@ -8,7 +8,7 @@ pub(super) struct Editor {
     kind: Kind,
     input: Option<PifId>,
 }
-fn lines(i: &Inventory, op: &Operation) -> Vec<String> {
+pub(super) fn lines(i: &Inventory, op: &Operation) -> Vec<String> {
     let r = &op.review;
     let mut result = vec![
         format!("Network: {} ({})", name(i, r.network), r.network),
@@ -181,6 +181,7 @@ pub(super) fn view(i: &Inventory, network: NetworkId, enabled: bool, k: &Kit) ->
             }
         }
     }
+    body = body.child(super::fabric_pool::buttons(i, network, enabled, k));
     for (label, kind) in [
         (
             "Add GRE tunnel interface…",

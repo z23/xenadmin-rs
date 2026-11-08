@@ -252,3 +252,9 @@ done
 for dissolve_size in 1440x900 513x652; do
   "$check_binary" --snap "artifacts/pool-dissolve-${dissolve_size}.png" --tree "artifacts/pool-dissolve-${dissolve_size}.json" --scene pool-dissolve --theme dark --size "$dissolve_size" --scale 1 --at 1
 done
+
+"$check_binary" --snap artifacts/network-fabric-pool.png --tree artifacts/network-fabric-pool.json --scene network-fabric-pool --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/network-fabric-pool-compact.png --tree artifacts/network-fabric-pool-compact.json --scene network-fabric-pool --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/network-fabric-pool-select.png --tree artifacts/network-fabric-pool-select.json --scene network-fabric-pool-select --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/network-fabric-pool-select-compact.png --tree artifacts/network-fabric-pool-select-compact.json --scene network-fabric-pool-select --theme dark --size 513x652 --scale 1 --at 1

@@ -701,6 +701,25 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             view = view
                 .child(caption(format!("Created {}", target_label(created)), k).wrap_anywhere());
         }
+        for (label, evidence) in [
+            ("Created", &record.topology_changes.created_fabric),
+            ("Removed", &record.topology_changes.removed_fabric),
+        ] {
+            for e in evidence {
+                view = view.child(
+                    caption(
+                        format!(
+                            "{label} network object {} · interface {} · host {}",
+                            e.object.uuid(),
+                            e.interface,
+                            e.host
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
+        }
         for (label, ids) in [
             (
                 "Created VLAN",

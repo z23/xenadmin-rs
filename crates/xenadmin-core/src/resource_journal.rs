@@ -1161,6 +1161,13 @@ impl Journal {
             {
                 record.state = OperationState::OutcomeUnknown;
                 record.detail = "Interrupted pool dissolution; read-only verification of current membership and submitted receipts is required.".into();
+            } else if record.network_topology_plan.as_ref().is_some_and(|plan| {
+                plan.steps
+                    .iter()
+                    .any(|step| step.task.is_some() || step.completed || step.verified)
+            }) {
+                record.state = OperationState::OutcomeUnknown;
+                record.detail = "Interrupted topology requires a fresh read-only graph check; verified receipts never authorize another dispatch".into();
             } else if record.state == OperationState::Preparing {
                 record.state = if !record.steps.is_empty()
                     && record
@@ -1243,6 +1250,8 @@ impl Journal {
             receipt!(task_uuid);
             receipt!(result);
             receipt!(created);
+            receipt!(fabric_created);
+            receipt!(fabric_member);
             step.completed |= incoming.completed;
             step.ended |= incoming.ended;
             step.cancel_sent |= incoming.cancel_sent;

@@ -20,6 +20,7 @@ pub struct ReviewedVlan {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkTopologyOperation {
+    Fabric(Box<crate::NetworkFabricPool>),
     CreateVlans {
         uplinks: Vec<VlanUplink>,
         tag: u16,
@@ -31,6 +32,9 @@ pub enum NetworkTopologyOperation {
 }
 impl NetworkTopologyOperation {
     pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        if let Self::Fabric(op) = self {
+            return op.permission_requirements();
+        }
         let mut methods = vec!["VLAN.create"];
         if let Self::RetagVlans { interfaces, .. } = self {
             methods.push("VLAN.destroy");
@@ -43,22 +47,28 @@ impl NetworkTopologyOperation {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Fabric(op) => op.label(),
             Self::CreateVlans { .. } => "Create pool-wide VLAN interfaces",
             Self::RetagVlans { .. } => "Retag pool-wide VLAN interfaces",
         }
     }
     pub(crate) fn uplinks(&self) -> Vec<&VlanUplink> {
         match self {
+            Self::Fabric(_) => vec![],
             Self::CreateVlans { uplinks, .. } => uplinks.iter().collect(),
             Self::RetagVlans { interfaces, .. } => interfaces.iter().map(|v| &v.uplink).collect(),
         }
     }
     pub(crate) fn tag(&self) -> u16 {
         match self {
+            Self::Fabric(_) => 0,
             Self::CreateVlans { tag, .. } | Self::RetagVlans { tag, .. } => *tag,
         }
     }
     pub(crate) fn validate(&self, target: ResourceTarget) -> Result<(), Error> {
+        if let Self::Fabric(op) = self {
+            return op.validate(target);
+        }
         let ResourceTarget::Network(network) = target else {
             return Err(Error::InvalidResourceCommand);
         };
@@ -105,6 +115,17 @@ impl NetworkTopologyOperation {
         Ok(())
     }
     pub fn availability(&self, inventory: &Inventory, network: NetworkId) -> ActionAvailability {
+        if let Self::Fabric(op) = self {
+            return match op
+                .validate(ResourceTarget::Network(network))
+                .and_then(|_| op.availability(inventory))
+            {
+                Ok(()) => ActionAvailability::Available,
+                Err(e) => ActionAvailability::Prerequisite {
+                    reason: e.to_string(),
+                },
+            };
+        }
         if self.validate(ResourceTarget::Network(network)).is_err() {
             return ActionAvailability::Prerequisite {
                 reason:
@@ -201,6 +222,10 @@ impl NetworkTopologyOperation {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkTopologyChanges {
+    #[serde(default)]
+    pub created_fabric: Vec<crate::NetworkFabricEvidence>,
+    #[serde(default)]
+    pub removed_fabric: Vec<crate::NetworkFabricEvidence>,
     pub created_vlans: Vec<VlanId>,
     pub created_pifs: Vec<PifId>,
     pub removed_vlans: Vec<VlanId>,
@@ -209,6 +234,7 @@ pub struct NetworkTopologyChanges {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
+    Fabric(Box<crate::NetworkFabricOperation>),
     Create {
         uplink: VlanUplink,
         tag: u16,
@@ -220,8 +246,17 @@ pub(crate) enum Kind {
     },
 }
 impl Kind {
+    pub(crate) fn creates(&self) -> bool {
+        matches!(self, Self::Create { .. }) || matches!(self, Self::Fabric(op) if op.creates())
+    }
     pub(crate) fn label(&self) -> String {
         match self {
+            Self::Fabric(op) => format!(
+                "{} on {} ({})",
+                op.label(),
+                op.review.input.device,
+                op.review.host
+            ),
             Self::Create { uplink, tag } => format!(
                 "Create VLAN {tag} on {} ({})",
                 uplink.expected.device, uplink.expected.host
@@ -247,6 +282,10 @@ pub(crate) struct Receipt {
     pub ended: bool,
     pub cancel_sent: bool,
     pub created: Option<(VlanId, PifId)>,
+    #[serde(default)]
+    pub fabric_created: Option<crate::NetworkFabricEvidence>,
+    #[serde(default)]
+    pub fabric_member: Option<crate::NetworkFabricMember>,
     pub verified: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +298,8 @@ pub(crate) struct Plan {
     pub tasks_before: BTreeSet<crate::TaskId>,
     pub steps: Vec<Receipt>,
     pub expires_at_ms: u64,
+    #[serde(default)]
+    pub fabric_before: Option<BTreeSet<crate::NetworkFabricObject>>,
 }
 impl Plan {
     pub(crate) fn accepts(&self, next: &Self) -> bool {
@@ -269,6 +310,7 @@ impl Plan {
             && self.pifs_before == next.pifs_before
             && self.tasks_before == next.tasks_before
             && self.expires_at_ms == next.expires_at_ms
+            && self.fabric_before == next.fabric_before
             && self.steps.len() == next.steps.len()
             && self.steps.iter().zip(&next.steps).all(|(old, new)| {
                 old.kind == new.kind
@@ -282,6 +324,14 @@ impl Plan {
                         .as_ref()
                         .is_none_or(|v| Some(v) == new.result.as_ref())
                     && old.created.is_none_or(|v| Some(v) == new.created)
+                    && old
+                        .fabric_created
+                        .as_ref()
+                        .is_none_or(|v| Some(v) == new.fabric_created.as_ref())
+                    && old
+                        .fabric_member
+                        .as_ref()
+                        .is_none_or(|v| Some(v) == new.fabric_member.as_ref())
                     && (!old.completed || new.completed)
                     && (!old.ended || new.ended)
                     && (!old.cancel_sent || new.cancel_sent)
@@ -291,6 +341,21 @@ impl Plan {
     pub(crate) fn changes(&self) -> NetworkTopologyChanges {
         let mut result = NetworkTopologyChanges::default();
         for step in &self.steps {
+            if let Some(e) = &step.fabric_created {
+                result.created_fabric.push(e.clone());
+            }
+            if step.verified
+                && let Kind::Fabric(op) = &step.kind
+                && let crate::NetworkFabricChange::Delete(object) = op.change
+                && let Some(m) = op.review.members.values().find(|m| m.object == object)
+            {
+                result.removed_fabric.push(crate::NetworkFabricEvidence {
+                    object,
+                    interface: m.interface.id,
+                    host: op.review.host,
+                    network: op.review.network,
+                });
+            }
             if let Some((vlan, pif)) = step.created {
                 result.created_vlans.push(vlan);
                 result.created_pifs.push(pif);

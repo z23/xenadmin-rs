@@ -25,7 +25,7 @@ impl ResourceRequest {
         s: &Session,
         c: &CancellationToken,
     ) -> Result<(), Error> {
-        self.record.detail = "Checking every pool host and the reviewed VLAN graph".into();
+        self.record.detail = "Checking every pool host and the reviewed network graph".into();
         self.save(j).await?;
         let plan = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=topology::prepare(s,&self.record)=>value?};
         self.record.steps = plan
@@ -83,8 +83,8 @@ impl ResourceRequest {
             self.record.can_cancel = false;
             self.record.steps[index].state = StepState::Dispatching;
             self.record.detail = format!("Submitting {}", self.record.steps[index].label);
-            self.save(j).await?;
-            let value = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=s.call(method,args)=>value?};
+            self.save_dispatch(j)?;
+            let value = tokio::select! {biased; _=c.cancelled()=>return Err(Error::Closed),value=s.call(method,args)=>value?};
             self.topology_step_mut(index)?.task = Some(xapi::reply_reference(&value)?);
             self.record = j.topology_evidence(&self.record, index)?;
             self.announce().await;
@@ -116,7 +116,7 @@ impl ResourceRequest {
         self.record.state = OperationState::Verifying;
         self.record.can_cancel = false;
         self.record.detail =
-            "Inspecting dispatched VLAN changes; unsubmitted steps will not run".into();
+            "Inspecting dispatched network changes; unsubmitted steps will not run".into();
         self.save(j).await?;
         for index in 0..self.record.steps.len() {
             self.reload(j)?;
@@ -153,7 +153,7 @@ impl ResourceRequest {
             }
             if receipt.ended {
                 return Err(Error::Protocol(
-                    "The VLAN task failed or was cancelled; partial host changes may remain",
+                    "The network task failed or was cancelled; partial host changes may remain",
                 ));
             }
             let task = receipt.task.ok_or(Error::Protocol(
@@ -185,7 +185,7 @@ impl ResourceRequest {
                 Some("success") => {
                     step.completed = true;
                     step.ended = true;
-                    if matches!(step.kind, Kind::Create { .. }) {
+                    if step.kind.creates() {
                         step.result = Some(crate::xapi::snapshot_task_result(&value)?);
                     }
                 }
@@ -194,6 +194,18 @@ impl ResourceRequest {
                 _ => return Err(Error::Protocol("Topology task status unavailable")),
             }
             self.record = j.topology_evidence(&self.record, index)?;
+            if self.topology_step(index)?.completed
+                && matches!(self.topology_step(index)?.kind, Kind::Fabric(ref op) if op.creates())
+            {
+                let plan = self
+                    .record
+                    .network_topology_plan
+                    .as_ref()
+                    .ok_or(Error::Journal)?;
+                let ids = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=crate::resources::network_fabric::pool::identity(s,plan,index)=>value?};
+                self.topology_step_mut(index)?.fabric_created = Some(ids);
+                self.record = j.topology_evidence(&self.record, index)?;
+            }
             self.announce().await;
             if self.stopped_after_recovery() {
                 return Ok(false);
@@ -223,8 +235,8 @@ impl ResourceRequest {
                 }
                 self.topology_step_mut(index)?.cancel_sent = true;
                 self.record.state = OperationState::CancellationRequested;
-                self.save(j).await?;
-                tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=s.call("task.cancel",vec![json!(&task)])=>{value?;}}
+                self.save_dispatch(j)?;
+                tokio::select! {biased; _=c.cancelled()=>return Err(Error::Closed),value=s.call("task.cancel",vec![json!(&task)])=>{value?;}}
             }
             if self.reconcile
                 || topology::now()
@@ -237,7 +249,7 @@ impl ResourceRequest {
             {
                 self.record.state = OperationState::OutcomeUnknown;
                 self.record.can_cancel = false;
-                self.record.detail="The VLAN task is still pending; the pool remains reserved and no steps were replayed".into();
+                self.record.detail="The network task is still pending; the pool remains reserved and no steps were replayed".into();
                 self.save(j).await?;
                 return Ok(false);
             }
@@ -267,12 +279,27 @@ impl ResourceRequest {
                 return Ok(());
             }
         }
-        tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=topology::verify(s,&self.record,index)=>{value?;}}
+        if matches!(self.topology_step(index)?.kind, Kind::Fabric(ref op) if op.creates()) {
+            let plan = self
+                .record
+                .network_topology_plan
+                .as_ref()
+                .ok_or(Error::Journal)?;
+            let ids = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=crate::resources::network_fabric::pool::identity(s,plan,index)=>value?};
+            self.topology_step_mut(index)?.fabric_created = Some(ids);
+            self.record = j.topology_evidence(&self.record, index)?;
+            self.announce().await;
+            if self.stopped_after_recovery() {
+                return Ok(());
+            }
+        }
+        let member = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=topology::verify(s,&self.record,index)=>value?};
         for _ in 0..16 {
             self.reload(j)?;
             if self.stopped_after_recovery() {
                 return Ok(());
             }
+            self.topology_step_mut(index)?.fabric_member = member.clone();
             self.topology_step_mut(index)?.verified = true;
             self.record.topology_changes = self
                 .record
@@ -307,6 +334,11 @@ impl ResourceRequest {
         if self.stopped_after_recovery() {
             return Ok(());
         }
+        tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=topology::finish(s,&self.record)=>value?};
+        self.reload(j)?;
+        if self.stopped_after_recovery() {
+            return Ok(());
+        }
         self.record.state = if self
             .record
             .steps
@@ -326,7 +358,7 @@ impl ResourceRequest {
                 / self.record.steps.len() as f64,
         );
         self.record.can_cancel = false;
-        self.record.detail=if self.record.state==OperationState::Succeeded {"All reviewed pool VLAN changes were verified"}else{"Dispatched VLAN changes verified; unsubmitted steps remain. Review current topology before a new operation"}.into();
+        self.record.detail=if self.record.state==OperationState::Succeeded {"All reviewed pool network changes were verified"}else{"Dispatched network changes verified; unsubmitted steps remain. Review current topology before a new operation"}.into();
         self.save(j).await?;
         let steps = self
             .record
@@ -361,5 +393,63 @@ impl ResourceRequest {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    #[tokio::test]
+    async fn final_dispatch_does_not_wait_for_publication_and_recovery_invalidates_its_cas() {
+        for recovered in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let j = Journal::open(dir.path()).unwrap();
+            let pool = uuid::Uuid::new_v4().into();
+            let (operation, mut request) = crate::resources::channel(
+                OperationId::new(),
+                crate::ObservedResource {
+                    pool,
+                    generation: 1,
+                    target: crate::ResourceTarget::Network(uuid::Uuid::new_v4().into()),
+                },
+                crate::ResourceAction::ConfigureInternalNetwork {
+                    expected_mtu: 1500,
+                    mtu: 9000,
+                },
+                tokio::runtime::Handle::current(),
+            );
+            j.resource_admit(&mut request.record).unwrap();
+            request.record.state = OperationState::Dispatching;
+            j.resource_save(&mut request.record).unwrap();
+            let (updates, mut queued) = tokio::sync::mpsc::channel(1);
+            updates
+                .try_send(OperationUpdate::Resource(Box::new(request.record.clone())))
+                .unwrap();
+            request.updates = Some(updates);
+            if recovered {
+                j.resource_recover(pool).unwrap();
+            }
+            request.record.detail = "Final authorized submission".into();
+            let result = request.save_dispatch(&j);
+            if recovered {
+                assert!(matches!(result, Err(Error::JournalChanged)));
+                assert_eq!(
+                    j.resource_load(request.record.id).unwrap().unwrap().state,
+                    OperationState::OutcomeUnknown
+                );
+            } else {
+                result.unwrap();
+                assert_eq!(operation.latest().detail, "Final authorized submission");
+                assert_eq!(
+                    j.resource_load(request.record.id)
+                        .unwrap()
+                        .unwrap()
+                        .revision(),
+                    request.record.revision()
+                );
+                assert!(queued.try_recv().is_ok());
+                assert!(queued.try_recv().is_err());
+            }
+        }
     }
 }

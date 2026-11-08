@@ -1360,6 +1360,7 @@ fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
             vlans_before: Default::default(),
             pifs_before: [uplink.pif].into(),
             tasks_before: Default::default(),
+            fabric_before: None,
             steps: vec![crate::network_topology::Receipt {
                 kind,
                 task: None,
@@ -1369,6 +1370,8 @@ fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
                 ended: false,
                 cancel_sent: false,
                 created: None,
+                fabric_created: None,
+                fabric_member: None,
                 verified: false,
             }],
             expires_at_ms: 1000,

@@ -1,3 +1,5 @@
+#[path = "network_fabric_pool_backend.rs"]
+pub(super) mod pool;
 use super::{network, xapi};
 use crate::{
     Error, NetworkFabricChange as Change, NetworkFabricEvidence as Evidence,
@@ -392,6 +394,9 @@ impl Fresh {
 pub(super) async fn arguments(s: &Session, r: &Record) -> Result<Vec<Value>, Error> {
     let op = operation(r).ok_or(Error::InvalidResourceCommand)?;
     let f = Fresh::read(s, op.review.kind, op.creates()).await?;
+    arguments_fresh(&f, op)
+}
+fn arguments_fresh(f: &Fresh, op: &Operation) -> Result<Vec<Value>, Error> {
     op.availability(&f.inventory)?;
     f.graph(op)?;
     match op.change {
@@ -469,10 +474,27 @@ pub(super) async fn identity(s: &Session, r: &mut Record) -> Result<(), Error> {
     if !p.completed {
         return Err(Error::ResourceConflict);
     }
-    let reference = r
-        .result_reference
-        .as_deref()
-        .ok_or(Error::ResourceConflict)?;
+    let evidence = identity_for(
+        s,
+        &op,
+        &p.baseline,
+        r.result_reference
+            .as_deref()
+            .ok_or(Error::ResourceConflict)?,
+        p.created.as_ref(),
+    )
+    .await?;
+    r.network_fabric_plan.as_mut().unwrap().created = Some(evidence.clone());
+    r.network_fabric_created = Some(evidence);
+    Ok(())
+}
+async fn identity_for(
+    s: &Session,
+    op: &Operation,
+    baseline: &BTreeMap<String, BTreeSet<Uuid>>,
+    reference: &str,
+    saved: Option<&Evidence>,
+) -> Result<Evidence, Error> {
     let value = s
         .call(
             &format!("{}.get_record", class(op.review.kind)),
@@ -487,8 +509,8 @@ pub(super) async fn identity(s: &Session, r: &mut Record) -> Result<(), Error> {
     let (resolved_ref, resolved) = xapi::read(s, ResourceTarget::Pif(child_id)).await?;
     if resolved_ref != child_ref
         || resolved != child_record
-        || p.baseline[&class(op.review.kind).to_ascii_lowercase()].contains(&id)
-        || p.baseline["pif"].contains(&child_id.uuid())
+        || baseline[&class(op.review.kind).to_ascii_lowercase()].contains(&id)
+        || baseline["pif"].contains(&child_id.uuid())
         || network::uuid(&network::related(s, "PIF", &value[parent]).await?)?
             != op.review.input.id.uuid()
         || network::uuid(&network::related(s, "host", &child_record["host"]).await?)?
@@ -515,12 +537,10 @@ pub(super) async fn identity(s: &Session, r: &mut Record) -> Result<(), Error> {
         host: op.review.host,
         network: op.review.network,
     };
-    if p.created.as_ref().is_some_and(|old| old != &evidence) {
+    if saved.is_some_and(|old| old != &evidence) {
         return Err(Error::ResourceConflict);
     }
-    r.network_fabric_plan.as_mut().unwrap().created = Some(evidence.clone());
-    r.network_fabric_created = Some(evidence);
-    Ok(())
+    Ok(evidence)
 }
 pub(super) async fn verify(s: &Session, r: &Record) -> Result<Option<ResourceTarget>, Error> {
     let op = operation(r).ok_or(Error::InvalidResourceCommand)?;
@@ -528,13 +548,24 @@ pub(super) async fn verify(s: &Session, r: &Record) -> Result<Option<ResourceTar
         return Err(Error::ResourceConflict);
     }
     let f = Fresh::read(s, op.review.kind, op.creates()).await?;
+    let (target, _) = verify_fresh(
+        &f,
+        op,
+        r.result_reference.as_deref(),
+        r.network_fabric_created.as_ref(),
+    )?;
+    Ok(target)
+}
+fn verify_fresh(
+    f: &Fresh,
+    op: &Operation,
+    result: Option<&str>,
+    created_evidence: Option<&Evidence>,
+) -> Result<(Option<ResourceTarget>, Option<crate::NetworkFabricMember>), Error> {
     let mut expected = op.review.clone();
     let created = match op.change {
         Change::Create => {
-            let e = r
-                .network_fabric_created
-                .as_ref()
-                .ok_or(Error::ResourceConflict)?;
+            let e = created_evidence.ok_or(Error::ResourceConflict)?;
             let (_, child) = f.by_id("PIF", e.interface.uuid())?;
             f.clean_child(child, op.review.kind)?;
             let p = f
@@ -552,7 +583,7 @@ pub(super) async fn verify(s: &Session, r: &Record) -> Result<Option<ResourceTar
                 return Err(Error::ResourceConflict);
             }
             let (oraw, o) = f.by_id(class(op.review.kind), e.object.uuid())?;
-            if Some(oraw) != r.result_reference.as_deref() {
+            if Some(oraw) != result {
                 return Err(Error::ResourceConflict);
             }
             match op.review.kind {
@@ -616,9 +647,12 @@ pub(super) async fn verify(s: &Session, r: &Record) -> Result<Option<ResourceTar
     // Validate the completed graph without reapplying creation's pre-existing-object exclusion.
     let mut checked = op.clone();
     checked.review = current;
-    if let Some(e) = &r.network_fabric_created {
+    if let Some(e) = created_evidence {
         checked.change = Change::Delete(e.object);
     }
     f.graph(&checked)?;
-    Ok(created)
+    let member = created_evidence
+        .and_then(|e| checked.review.members.get(&e.interface))
+        .cloned();
+    Ok((created, member))
 }
