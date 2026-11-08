@@ -1382,6 +1382,7 @@ fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
 fn management_record(pool: PoolId) -> ResourceOperationRecord {
     let host = crate::HostId::from(uuid::Uuid::new_v4());
     let interface = crate::ManagementInterface {
+        topology: None,
         pif: uuid::Uuid::new_v4().into(),
         identity: crate::PifIdentity {
             host,

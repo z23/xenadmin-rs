@@ -290,7 +290,7 @@ pub struct VirtualInterface {
     pub allowed_operations: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhysicalInterface {
     #[serde(default)]
     pub metrics: Option<PifMetricsId>,
@@ -347,7 +347,7 @@ pub struct StorageAttachment {
     pub currently_attached: Option<bool>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkBond {
     #[serde(default)]
     pub primary_slave: Option<PifId>,
@@ -362,7 +362,7 @@ pub struct NetworkBond {
     pub links_up: Option<u64>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vlan {
     pub id: VlanId,
     pub tagged_pif: Option<PifId>,

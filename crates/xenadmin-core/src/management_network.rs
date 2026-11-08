@@ -20,6 +20,8 @@ impl ManagementAddressFamily {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagementInterface {
+    #[serde(default)]
+    pub topology: Option<Box<crate::ManagementTopology>>,
     pub pif: PifId,
     pub identity: PifIdentity,
     pub primary: ManagementAddressFamily,
@@ -31,6 +33,7 @@ pub struct ManagementInterface {
 impl ManagementInterface {
     pub fn from_inventory(p: &PhysicalInterface) -> Option<Self> {
         Some(Self {
+            topology: None,
             pif: p.id,
             identity: PifIdentity::from_inventory(p)?,
             primary: match p.primary_address_type.as_deref()? {
@@ -65,6 +68,36 @@ impl ManagementInterface {
             attached: p.currently_attached?,
             protected: p.disallow_unplug?,
         })
+    }
+    pub fn capture(inventory: &Inventory, id: PifId) -> Option<Self> {
+        let p = inventory.details.pifs.get(&id)?;
+        let mut value = Self::from_inventory(p)?;
+        if let Some(topology) = crate::ManagementTopology::capture(&inventory.details, id) {
+            if topology.pifs.values().any(|p| {
+                p.network
+                    .is_none_or(|id| !inventory.networks.iter().any(|n| n.uuid == id.uuid()))
+            }) {
+                return None;
+            }
+            if !topology.bonds.is_empty() || !topology.vlans.is_empty() {
+                value.topology = Some(Box::new(topology));
+            }
+        } else if p.physical != Some(true)
+            || p.vlan != Some(-1)
+            || inventory
+                .details
+                .bonds
+                .values()
+                .any(|b| b.master == Some(id) || b.slaves.contains(&id))
+            || inventory
+                .details
+                .vlans
+                .values()
+                .any(|v| v.tagged_pif == Some(id) || v.untagged_pif == Some(id))
+        {
+            return None;
+        }
+        Some(value)
     }
     pub fn address(&self) -> Option<IpAddr> {
         match self.primary {
@@ -107,6 +140,10 @@ impl ManagementInterface {
                 .filter(|v| !v.is_empty())
                 .all(|v| v.parse::<IpAddr>().is_ok())
             && self.address().is_some()
+            && self
+                .topology
+                .as_ref()
+                .is_none_or(|t| t.valid(self.pif) && t.matches_root(self))
             && match self.primary {
                 ManagementAddressFamily::Ipv4 => Ipv4Configuration {
                     mode: Ipv4Mode::Static,
@@ -323,13 +360,19 @@ impl ManagementNetworkOperation {
             let Some(p) = i.details.pifs.get(&expected.pif) else {
                 return ActionAvailability::Stale;
             };
-            if ManagementInterface::from_inventory(p).as_ref() != Some(expected) {
+            if (if expected.topology.is_some() {
+                ManagementInterface::capture(i, expected.pif)
+            } else {
+                ManagementInterface::from_inventory(p)
+            })
+            .as_ref()
+                != Some(expected)
+            {
                 return ActionAvailability::Stale;
             }
             if p.managed != Some(true)
                 || p.mtu != Some(1500)
-                || p.physical != Some(true)
-                || p.vlan != Some(-1)
+                || (expected.topology.is_none() && (p.physical != Some(true) || p.vlan != Some(-1)))
                 || p.management_purpose.is_some()
             {
                 return ActionAvailability::Prerequisite{reason:"Management handover requires managed interfaces at MTU 1500 without a separate storage or service purpose".into()};

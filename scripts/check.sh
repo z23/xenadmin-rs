@@ -164,3 +164,5 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/alarms-review-compact.png --tree artifacts/alarms-review-compact.json --scene alarms-review --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/alarms-email.png --tree artifacts/alarms-email.json --scene alarms-email --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/alarms-email-compact.png --tree artifacts/alarms-email-compact.json --scene alarms-email --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-vlan.png --tree artifacts/management-vlan.json --scene management-vlan --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-vlan-compact.png --tree artifacts/management-vlan-compact.json --scene management-vlan --theme dark --size 513x652 --scale 1 --at 1

@@ -25,6 +25,8 @@ enum Fault {
     WrongAssignment,
     WrongDynamicMode,
     SecondaryChanged,
+    TopologyReadAfterCompletion,
+    TopologyChangedAfterWrite,
 }
 struct Control {
     rows: BTreeMap<String, Value>,
@@ -160,7 +162,7 @@ fn rows(ipv6: bool) -> BTreeMap<String, Value> {
     ]);
     for n in [3, 4] {
         rows.insert(reference("network",n),json!({"uuid":id(n),"name_label":format!("Network {n}"),"MTU":"1500","managed":true,"VIFs":[],"PIFs":[reference("PIF",n+10)]}));
-        rows.insert(reference("PIF",n+10),json!({"uuid":id(n+10),"host":reference("host",2),"network":reference("network",n),"device":format!("eth{n}"),"MAC":format!("02:00:00:00:00:0{n}"),"management":n==3,"managed":true,"physical":true,"currently_attached":true,"disallow_unplug":false,"MTU":"1500","VLAN":"-1","bond_slave_of":"OpaqueRef:NULL","bond_master_of":[],"VLAN_master_of":"OpaqueRef:NULL","VLAN_slave_of":[],"tunnel_access_PIF_of":[],"tunnel_transport_PIF_of":[],"primary_address_type":if ipv6 {"IPv6"}else{"IPv4"},"ip_configuration_mode":if ipv6 {"None"}else{"Static"},"IP":if ipv6 {""}else if n==3 {"127.0.0.1"}else{"127.0.0.2"},"netmask":if ipv6 {""}else{"255.0.0.0"},"gateway":"","DNS":"","ipv6_configuration_mode":if ipv6 {"Static"}else{"None"},"IPv6":if ipv6 {json!([if n==3 {"::1/128"}else{"2001:db8::2/64"}])}else{json!([""])},"ipv6_gateway":"","other_config":{},"properties":{}}));
+        rows.insert(reference("PIF",n+10),json!({"uuid":id(n+10),"host":reference("host",2),"network":reference("network",n),"device":format!("eth{n}"),"MAC":format!("02:00:00:00:00:0{n}"),"management":n==3,"managed":true,"physical":true,"currently_attached":true,"disallow_unplug":false,"MTU":"1500","VLAN":"-1","bond_slave_of":"OpaqueRef:NULL","bond_master_of":[],"VLAN_master_of":"OpaqueRef:NULL","VLAN_slave_of":[],"tunnel_access_PIF_of":[],"tunnel_transport_PIF_of":[],"sriov_physical_PIF_of":[],"sriov_logical_PIF_of":[],"primary_address_type":if ipv6 {"IPv6"}else{"IPv4"},"ip_configuration_mode":if ipv6 {"None"}else{"Static"},"IP":if ipv6 {""}else if n==3 {"127.0.0.1"}else{"127.0.0.2"},"netmask":if ipv6 {""}else{"255.0.0.0"},"gateway":"","DNS":"","ipv6_configuration_mode":if ipv6 {"Static"}else{"None"},"IPv6":if ipv6 {json!([if n==3 {"::1/128"}else{"2001:db8::2/64"}])}else{json!([""])},"ipv6_gateway":"","other_config":{},"properties":{}}));
     }
     rows
 }
@@ -277,13 +279,14 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
             for (reference,record) in &c.rows {batch["events"].as_array_mut().unwrap().push(json!({"class":reference.split(':').nth(1).unwrap(),"operation":"add","ref":reference,"snapshot":record}));}
             return Some(RpcReply::Json(json!({"result":batch})));
         }
-        if let Some(class)=method.strip_suffix(".get_all_records") && ["host","pool","PIF","network","task"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_all_records") && ["host","pool","PIF","network","task","Bond","VLAN"].contains(&class) {
+            if class=="PIF" && c.writes>0 && c.fault==Fault::TopologyReadAfterCompletion {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})));}
             let rows=c.rows.iter().filter(|(r,_)|r.split(':').nth(1)==Some(class)).map(|(r,v)|(r.clone(),v.clone())).collect::<serde_json::Map<_,_>>();return Some(RpcReply::Json(json!({"result":rows})));
         }
-        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["host","pool","PIF","network","task"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["host","pool","PIF","network","task","Bond","VLAN"].contains(&class) {
             let row=c.rows.iter().find(|(r,v)|r.split(':').nth(1)==Some(class) && v["uuid"]==request["params"][1]);return Some(RpcReply::Json(match row {Some((r,_))=>json!({"result":r}),_=>json!({"error":{"code":1,"message":"UUID_INVALID","data":[]}})}));
         }
-        if let Some(class)=method.strip_suffix(".get_record") && ["host","pool","PIF","network","task"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_record") && ["host","pool","PIF","network","task","Bond","VLAN"].contains(&class) {
             if c.writes>0 && class=="PIF" && c.fault==Fault::ReadAfterCompletion {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})));}
             return Some(RpcReply::Json(match c.rows.get(request["params"][1].as_str().unwrap()) {Some(v)=>json!({"result":v}),_=>json!({"error":{"code":1,"message":"HANDLE_INVALID","data":[]}})}));
         }
@@ -295,6 +298,7 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
                 "Async.PIF.reconfigure_ip" | "Async.PIF.reconfigure_ipv6" => configure(&mut c, &pif, &request),
                 _=>panic!("unexpected write {method}"),
             }
+            if c.fault==Fault::TopologyChangedAfterWrite {c.rows.get_mut(&reference("PIF",16)).unwrap()["disallow_unplug"]=json!(true);}
             if c.fault==Fault::CertificateCopied {c.rows.insert(reference("host",9),json!({"uuid":id(9),"address":"192.0.2.9"}));}
             let status=match c.fault {Fault::Failed=>"failure",Fault::Pending=>"pending",_=>"success"};
             let task=if c.fault==Fault::WrongTask {50}else{51};
@@ -323,12 +327,11 @@ async fn connect(bridge: &Bridge, backend: &Backend) -> xenadmin_core::Connectio
 fn operation(c: &xenadmin_core::Connection, kind: u8) -> ManagementNetworkOperation {
     let view = c.latest();
     let i = view.inventory().unwrap();
-    let source = ManagementInterface::from_inventory(&i.details.pifs[&id(13).into()]).unwrap();
+    let source = ManagementInterface::capture(i, id(13).into()).unwrap();
     match kind {
         0 => ManagementNetworkOperation::Move {
             source,
-            destination: ManagementInterface::from_inventory(&i.details.pifs[&id(14).into()])
-                .unwrap(),
+            destination: ManagementInterface::capture(i, id(14).into()).unwrap(),
         },
         1 => {
             let mut configuration = source.ipv4.clone();
@@ -1053,3 +1056,6 @@ async fn management_cleanup_does_not_destroy_a_rebound_foreign_task() {
             .any(|m| m == "task.destroy")
     );
 }
+
+#[path = "management_network_topology.rs"]
+mod topology;

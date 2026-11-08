@@ -1,8 +1,10 @@
 mod management_network;
+mod management_topology;
 pub use management_network::{
     ManagementAddressFamily, ManagementDynamicMode, ManagementInterface, ManagementNetworkEvidence,
     ManagementNetworkOperation,
 };
+pub use management_topology::ManagementTopology;
 mod permissions;
 mod root_password;
 pub use root_password::{PoolRootPasswordChange, RootPassword, RootPasswordEvidence};

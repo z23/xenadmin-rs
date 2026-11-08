@@ -17,7 +17,10 @@ use crate::{
 
 #[path = "xapi_inventory.rs"]
 mod inventory;
+#[path = "xapi_management_topology.rs"]
+mod management_topology;
 pub(crate) use inventory::decode_server_message;
+pub(crate) use management_topology::ManagementTopologyRecords;
 #[cfg(test)]
 #[path = "xapi_inventory_tests.rs"]
 pub(crate) mod inventory_tests;

@@ -186,8 +186,14 @@ async fn pif(
     s: &Session,
     before: &ManagementInterface,
     dynamic: Option<(ManagementDynamicMode, std::net::IpAddr)>,
+    topology: Option<&crate::xapi::ManagementTopologyRecords>,
 ) -> Result<String, Error> {
-    let (reference, v) = xapi::read(s, ResourceTarget::Pif(before.pif)).await?;
+    let (reference, v) = if let Some(topology) = topology {
+        let (r, v) = topology.pif(before.pif)?;
+        (r.to_owned(), v.clone())
+    } else {
+        xapi::read(s, ResourceTarget::Pif(before.pif)).await?
+    };
     network::pif_identity(s, &v, &before.identity).await?;
     require(
         v["primary_address_type"] == before.primary.as_str()
@@ -217,19 +223,25 @@ async fn pif(
     )?;
     require(
         v["managed"] == true
-            && v["physical"] == true
             && network::number(&v["MTU"]) == Some(1500)
-            && network::number(&v["VLAN"]) == Some(-1)
             && v["bond_slave_of"] == "OpaqueRef:NULL"
-            && v["VLAN_master_of"] == "OpaqueRef:NULL",
-        "This handover requires ordinary physical interfaces at MTU 1500",
+            && (before.topology.is_some()
+                || (v["physical"] == true
+                    && network::number(&v["VLAN"]) == Some(-1)
+                    && v["VLAN_master_of"] == "OpaqueRef:NULL")),
+        "Management requires a physical interface, bond master or reviewed VLAN at MTU 1500",
     )?;
-    for field in [
-        "bond_master_of",
-        "VLAN_slave_of",
-        "tunnel_access_PIF_of",
-        "tunnel_transport_PIF_of",
-    ] {
+    let fields = if before.topology.is_some() {
+        vec!["tunnel_access_PIF_of", "tunnel_transport_PIF_of"]
+    } else {
+        vec![
+            "bond_master_of",
+            "VLAN_slave_of",
+            "tunnel_access_PIF_of",
+            "tunnel_transport_PIF_of",
+        ]
+    };
+    for field in fields {
         require(
             network::refs(&v[field])?.is_empty(),
             "Management topology requires a separate reviewed workflow",
@@ -251,6 +263,18 @@ async fn graph(
     after: bool,
 ) -> Result<Vec<String>, Error> {
     let op = operation(r)?;
+    let endpoints = match op {
+        ManagementNetworkOperation::Move {
+            source,
+            destination,
+        } => vec![source, destination],
+        _ => vec![op.source()],
+    };
+    let topology = if endpoints.iter().any(|p| p.topology.is_some()) {
+        Some(crate::xapi::ManagementTopologyRecords::read(s).await?)
+    } else {
+        None
+    };
     let (_, pool) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
     require(
         pool["ha_enabled"] == false,
@@ -293,9 +317,21 @@ async fn graph(
         }
         _ => None,
     };
-    let mut refs = vec![pif(s, &source, dynamic).await?];
+    let mut refs = vec![pif(s, &source, dynamic, topology.as_ref()).await?];
     if let Some(dest) = &destination {
-        refs.push(pif(s, dest, None).await?);
+        refs.push(pif(s, dest, None, topology.as_ref()).await?);
+    }
+    if let Some(topology) = &topology {
+        let ids = endpoints.iter().map(|p| p.pif).collect::<BTreeSet<_>>();
+        for endpoint in &endpoints {
+            if let Some(expected) = &endpoint.topology {
+                let fresh = topology.topology(endpoint.pif)?;
+                require(
+                    fresh.without_endpoints(&ids) == expected.without_endpoints(&ids),
+                    "Management VLAN/bond topology changed since review",
+                )?;
+            }
+        }
     }
     let expected = if after {
         op.recovery_address()
@@ -306,7 +342,16 @@ async fn graph(
         host["address"].as_str().and_then(|v| v.parse().ok()) == expected,
         "Host management address differs from the reviewed configuration",
     )?;
-    let pifs = network::all(s, "PIF").await?;
+    let queried;
+    let pifs = if let Some(topology) = &topology {
+        topology.pifs()
+    } else {
+        queried = network::all(s, "PIF")
+            .await?
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        &queried
+    };
     let recovery = op.recovery_address().ok_or(Error::InvalidResourceCommand)?;
     let receiver = match op {
         ManagementNetworkOperation::Move { destination, .. } => destination.pif,

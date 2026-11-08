@@ -1148,6 +1148,9 @@ pub(super) fn management_scene(s: &mut State) {
 pub(super) fn management_dynamic_scene(s: &mut State) {
     management::dynamic_scene(s);
 }
+pub(super) fn management_topology_scene(s: &mut State) {
+    management::topology_scene(s);
+}
 
 #[cfg(test)]
 mod tests {

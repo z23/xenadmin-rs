@@ -24,10 +24,9 @@ fn open(s: &mut State, id: PifId, moving: bool) {
     let Some(source) = s
         .inventory
         .as_ref()
-        .and_then(|i| i.details.pifs.get(&id))
-        .and_then(ManagementInterface::from_inventory)
+        .and_then(|i| ManagementInterface::capture(i, id))
     else {
-        edit(s).error = Some("Management interface identity or IP settings are incomplete".into());
+        edit(s).error = Some("Management interface identity, IP settings or VLAN/bond topology are incomplete. Bond members cannot be management endpoints.".into());
         return;
     };
     let ipv6 = source.primary == ManagementAddressFamily::Ipv6;
@@ -157,6 +156,47 @@ fn review(v: &Editor, i: &Inventory) -> Result<(ManagementNetworkOperation, Vec<
             summary(&v.source)
         ),
     ];
+    let mut components = std::collections::BTreeSet::new();
+    let endpoints = match &op {
+        ManagementNetworkOperation::Move {
+            source,
+            destination,
+        } => vec![source, destination],
+        _ => vec![op.source()],
+    };
+    for endpoint in endpoints {
+        if let Some(topology) = &endpoint.topology {
+            let ids = topology.pifs.keys().copied().collect::<Vec<_>>();
+            if !components.insert(ids) {
+                continue;
+            }
+            lines.push(format!("Reviewed topology: {} interfaces, {} bonds, {} VLANs. Membership, configuration and protection are rechecked before the change.",topology.pifs.len(),topology.bonds.len(),topology.vlans.len()));
+            for bond in topology.bonds.values() {
+                let label = |id| format!("{} ({id})", pif_name(i, id));
+                lines.push(format!(
+                    "Bond {} · {} · master {} · members {}",
+                    bond.id,
+                    bond.mode,
+                    label(bond.master.unwrap()),
+                    bond.slaves
+                        .iter()
+                        .map(|id| label(*id))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            for vlan in topology.vlans.values() {
+                lines.push(format!(
+                    "VLAN {} · tag {} · parent {} · interface {}",
+                    vlan.id,
+                    vlan.tag.unwrap(),
+                    vlan.tagged_pif.unwrap(),
+                    vlan.untagged_pif.unwrap()
+                ));
+            }
+            lines.push("Existing bond and VLAN topology is retained. This operation does not create, destroy or retag interfaces, or move the same address between interfaces.".into());
+        }
+    }
     match &op {
         ManagementNetworkOperation::Move { destination, .. } => {
             lines.push(format!(
@@ -238,7 +278,7 @@ pub(super) fn review_unavailable(s: &State, w: &Workspace) -> Option<String> {
 pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
     let mut body=col().gap(8.0).child(heading(if v.moving {"Move host management"}else{"Management IP settings"},k))
         .child(caption(format!("{} · {}",pif_name(i,v.source.pif),v.source.pif),k).wrap_anywhere())
-        .child(caption("Use the installed address family, ordinary physical interfaces, MTU 1500 and HA disabled. Bond/VLAN handovers need a separate workflow.",k).wrap());
+        .child(caption("Use the installed address family, MTU 1500 and HA disabled. Existing physical interfaces, bond masters and VLANs over physical interfaces or bonds are supported when their complete topology can be reviewed.",k).wrap());
     if v.moving {
         body=body.child(caption("Choose an already plugged, statically configured interface on this host, with a different network and address.",k).wrap());
         for p in i
@@ -247,7 +287,7 @@ pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
             .values()
             .filter(|p| p.host == Some(v.source.identity.host) && p.id != v.source.pif)
         {
-            let Some(candidate) = ManagementInterface::from_inventory(p) else {
+            let Some(candidate) = ManagementInterface::capture(i, p.id) else {
                 continue;
             };
             let available = ManagementNetworkOperation::Move {
@@ -403,9 +443,192 @@ pub(super) fn dynamic_scene(s: &mut State) {
     editor(s).recovery = TextEdit::new("192.0.2.30");
     prepare(s);
 }
+pub(super) fn topology_scene(s: &mut State) {
+    scene(s);
+    let source = editor(s).source.pif;
+    let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+    let original = i.details.pifs[&source].clone();
+    for n in [1_u128, 2, 3] {
+        let mut p = original.clone();
+        p.id = uuid::Uuid::from_u128(0xf000 + n).into();
+        p.network = Some(uuid::Uuid::from_u128(0xf100 + n).into());
+        p.device = if n == 1 {
+            "bond0".into()
+        } else {
+            format!("eth{}", n - 1)
+        };
+        p.mac = format!("02:00:00:00:00:{n:02x}");
+        p.physical = Some(n != 1);
+        p.management = Some(false);
+        p.ip_configuration_mode = "None".into();
+        p.ip.clear();
+        p.netmask.clear();
+        p.gateway.clear();
+        p.dns.clear();
+        i.networks.push(xenadmin_core::Network {
+            uuid: p.network.unwrap().uuid(),
+            name: format!("Uplink {n}"),
+            bridge: format!("xenbr{n}"),
+        });
+        i.details.pifs.insert(p.id, p);
+    }
+    let parent = uuid::Uuid::from_u128(0xf001).into();
+    let member = uuid::Uuid::from_u128(0xf002).into();
+    let second = uuid::Uuid::from_u128(0xf003).into();
+    let bond = uuid::Uuid::from_u128(0xf200).into();
+    let vlan = uuid::Uuid::from_u128(0xf201).into();
+    i.details.bonds.insert(
+        bond,
+        xenadmin_core::NetworkBond {
+            id: bond,
+            master: Some(parent),
+            slaves: vec![member, second],
+            primary_slave: Some(member),
+            mode: "active-backup".into(),
+            hashing_algorithm: None,
+            hashing_algorithm_known: true,
+            links_up: Some(2),
+        },
+    );
+    i.details.vlans.insert(
+        vlan,
+        xenadmin_core::Vlan {
+            id: vlan,
+            tagged_pif: Some(parent),
+            untagged_pif: Some(source),
+            tag: Some(17),
+        },
+    );
+    let p = i.details.pifs.get_mut(&source).unwrap();
+    p.physical = Some(false);
+    p.vlan = Some(17);
+    for class in ["pif", "bond", "vlan"] {
+        i.details
+            .classes
+            .insert(class.into(), xenadmin_core::ClassAvailability::Available);
+    }
+    open(s, source, false);
+    editor(s).address = TextEdit::new("192.0.2.30");
+    prepare(s);
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vlan_over_bond_review_captures_full_topology_at_both_widths() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut s = crate::init();
+            topology_scene(&mut s);
+            let review = s
+                .network_workspace
+                .as_ref()
+                .unwrap()
+                .review
+                .as_ref()
+                .unwrap();
+            let ResourceAction::ManagementNetwork(op) = &review.operation else {
+                panic!()
+            };
+            let topology = op.source().topology.as_ref().unwrap();
+            assert_eq!(topology.pifs.len(), 4);
+            assert_eq!(topology.bonds.len(), 1);
+            assert_eq!(topology.vlans.len(), 1);
+            assert!(review.lines.iter().any(|v| v.contains("bond0")));
+            assert!(review.lines.iter().any(|v| v.contains("tag 17")));
+            let mut runtime = rune::Runtime::new(
+                s,
+                crate::view,
+                size,
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            for _ in 0..30 {
+                runtime.frame(1.0 / 60.0);
+            }
+            let (x, y) = runtime.find("network-confirm").unwrap();
+            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            runtime.pointer_down(x, y);
+            runtime.pointer_up(x, y);
+            runtime.frame(0.0);
+            assert!(runtime.state.resource_operations.is_empty());
+        }
+    }
+    #[test]
+    fn topology_review_tracks_membership_protection_and_metadata_but_not_link_counters() {
+        let mut s = crate::init();
+        topology_scene(&mut s);
+        let before = s.inventory.clone().unwrap();
+        {
+            let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+            i.details.bonds.values_mut().next().unwrap().links_up = Some(0);
+            for p in i.details.pifs.values_mut() {
+                p.capabilities = Some(vec!["runtime-capability".into()]);
+            }
+        }
+        assert!(review_unavailable(&s, s.network_workspace.as_ref().unwrap()).is_none());
+        for change in ["primary", "mac", "protected", "tag", "class"] {
+            s.inventory = Some(before.clone());
+            let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+            match change {
+                "primary" => {
+                    let b = i.details.bonds.values_mut().next().unwrap();
+                    b.primary_slave = Some(b.slaves[1]);
+                }
+                "mac" => {
+                    i.details
+                        .pifs
+                        .get_mut(&uuid::Uuid::from_u128(0xf002).into())
+                        .unwrap()
+                        .mac = "02:00:00:00:ff:ff".into()
+                }
+                "protected" => {
+                    i.details
+                        .pifs
+                        .get_mut(&uuid::Uuid::from_u128(0xf002).into())
+                        .unwrap()
+                        .disallow_unplug = Some(true)
+                }
+                "tag" => i.details.vlans.values_mut().next().unwrap().tag = Some(18),
+                "class" => {
+                    i.details.classes.insert(
+                        "bond".into(),
+                        xenadmin_core::ClassAvailability::PermissionDenied,
+                    );
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                review_unavailable(&s, s.network_workspace.as_ref().unwrap()).is_some(),
+                "{change}"
+            );
+        }
+    }
+    #[test]
+    fn bond_members_and_nested_vlan_targets_do_not_form_a_management_review() {
+        let mut s = crate::init();
+        topology_scene(&mut s);
+        let i = s.inventory.as_ref().unwrap();
+        assert!(ManagementInterface::capture(i, uuid::Uuid::from_u128(0xf002).into()).is_none());
+        let source = editor(&mut s).source.pif;
+        let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+        let parent = uuid::Uuid::from_u128(0xf001).into();
+        let grandparent = uuid::Uuid::from_u128(0xf002).into();
+        i.details.bonds.clear();
+        i.details.pifs.get_mut(&parent).unwrap().vlan = Some(18);
+        let id = uuid::Uuid::from_u128(0xf202).into();
+        i.details.vlans.insert(
+            id,
+            xenadmin_core::Vlan {
+                id,
+                tagged_pif: Some(grandparent),
+                untagged_pif: Some(parent),
+                tag: Some(18),
+            },
+        );
+        assert!(ManagementInterface::capture(i, source).is_none());
+    }
     #[test]
     fn automatic_address_review_captures_mode_expected_ip_and_does_not_dispatch_demo() {
         for size in [(513.0, 652.0), (1440.0, 900.0)] {
