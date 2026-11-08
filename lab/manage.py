@@ -307,10 +307,61 @@ def doctor():
         print(f"libvirt system connection: {'available' if virsh('uri', check=False).returncode == 0 else 'unavailable'}")
 
 
+def draft(args):
+    """Prepare an offline handoff, never a manifest accepted by lifecycle commands."""
+    directory = root_path(args.directory)
+    if not 1 <= args.hosts <= 3:
+        raise ValueError("Use 1–3 disposable hosts")
+    subnet = private_network(args.subnet)
+    directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if any(directory.iterdir()):
+        raise ValueError("Preparation directory must be empty; existing evidence is never overwritten")
+    preparation = {
+        "schema": "xenadmin-rs-lab-preparation-v1",
+        "state": "awaiting-virtualization-and-verified-installer",
+        "target_release": "XCP-ng 8.3",
+        "hosts": args.hosts,
+        "memory_mib_per_host": 8192,
+        "vcpus_per_host": 4,
+        "system_disk_gib_per_host": 64,
+        "disposable_data_disk_gib_per_host": 32,
+        "subnet_candidate": subnet,
+        "forwarding": False,
+        "autostart": False,
+        "installer": None,
+        "installer_sha256": None,
+        "prerequisites": {
+            "kvm_accessible": os.access("/dev/kvm", os.R_OK | os.W_OK),
+            "tools": {tool: bool(shutil.which(tool)) for tool in ["virsh", "qemu-img", "qemu-system-x86_64", "ip", "virt-viewer"]},
+        },
+        "pending_checks": ["KVM access and nested virtualization", "libvirt system permissions", "free RAM and disk space",
+                           "subnet overlap against workstation and libvirt routes", "publisher-verified installer SHA-256",
+                           "QEMU storage-directory access"],
+    }
+    (directory / "preparation.json").write_text(json.dumps(preparation, indent=2) + "\n")
+    source = REPOSITORY / "lab" / "ACCEPTANCE.md"
+    (directory / "ACCEPTANCE.md").write_text(source.read_text())
+    (directory / "NEXT.md").write_text(
+        "# Local lab preparation\n\n"
+        f"Prepared {args.hosts} isolated hosts: 8 GiB RAM, four vCPUs, a 64 GiB system disk and a 32 GiB disposable data disk each.\n\n"
+        "No virtual machines, network interfaces, disks or services were created. This preparation file is not an active lab manifest.\n\n"
+        "When virtualization is available, run `python3 lab/manage.py doctor` from the application checkout. Obtain the XCP-ng 8.3 installer and independently verify its publisher SHA-256.\n\n"
+        "Choose a libvirt-accessible, empty storage directory and run:\n\n```sh\n"
+        f"python3 lab/manage.py plan --directory /var/lib/libvirt/images/xenadmin-rs-lab --hosts {args.hosts} --subnet {subnet} --iso /path/to/verified-installer.iso --sha256 VERIFIED_SHA256\n"
+        "```\n\nInspect the generated XML, then follow `lab/README.md` for prepare/install/start. The subnet is only a candidate until the overlap check runs.\n\n"
+        "Record scenario evidence in ACCEPTANCE.md using synthetic data. Keep credentials and real inventories outside Git.\n"
+    )
+    print(f"Offline lab preparation written to {directory}; virtualization and installer checks remain pending")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("doctor")
+    preparation = commands.add_parser("draft", help="Prepare an offline lab handoff before virtualization/installer are available")
+    preparation.add_argument("--directory", required=True)
+    preparation.add_argument("--hosts", type=int, default=3)
+    preparation.add_argument("--subnet", type=private_network, default="192.168.254.0/24")
     plan = commands.add_parser("plan", help="Write reviewable manifest/XML without creating VMs")
     plan.add_argument("--directory", required=True)
     plan.add_argument("--iso", required=True)
@@ -331,6 +382,8 @@ def main():
     try:
         if args.command == "doctor":
             doctor()
+        elif args.command == "draft":
+            draft(args)
         elif args.command == "plan":
             write_plan(args)
         else:

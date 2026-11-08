@@ -26,6 +26,7 @@ class LabTests(unittest.TestCase):
     def test_plan_is_offline_isolated_and_does_not_overwrite(self):
         with patch.object(manage, "run") as run:
             manage.write_plan(self.args)
+
             run.assert_not_called()
         directory, manifest = manage.load(self.plan)
         network = ET.fromstring((directory / "network.xml").read_text())
@@ -39,6 +40,23 @@ class LabTests(unittest.TestCase):
             self.assertEqual(domain.find("cpu").attrib["mode"], "host-passthrough")
         with self.assertRaisesRegex(ValueError, "never overwritten"):
             manage.write_plan(self.args)
+
+    def test_draft_needs_no_installer_or_hypervisor_and_is_not_an_active_manifest(self):
+        args = argparse.Namespace(directory=str(self.base / "preparation"), hosts=3, subnet="192.168.254.0/24")
+        with patch.object(manage, "run") as run:
+            manage.draft(args)
+            run.assert_not_called()
+        directory = Path(args.directory)
+        document = json.loads((directory / "preparation.json").read_text())
+        self.assertIsNone(document["installer"])
+        self.assertFalse(document["forwarding"])
+        self.assertEqual(document["hosts"], 3)
+        self.assertFalse((directory / "lab.json").exists())
+        self.assertIn("Pending", (directory / "ACCEPTANCE.md").read_text())
+        with self.assertRaises(OSError):
+            manage.load(directory)
+        with self.assertRaisesRegex(ValueError, "never overwritten"):
+            manage.draft(args)
 
     def test_invalid_hash_and_source_tree_paths_are_rejected(self):
         self.args.sha256 = "0" * 64
