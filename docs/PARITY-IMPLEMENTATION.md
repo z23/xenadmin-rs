@@ -68,7 +68,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P03-01 | Start, clean shutdown and reboot | Existing workflow; qualification open |
-| P03-02 | Force shutdown/reboot | Existing subset; remaining work queued |
+| P03-02 | Force shutdown/reboot | Reviewed force shutdown/reboot implemented; separate running-task recovery is tracked in P03-07. Live qualification open |
 | P03-03 | Pause/unpause and suspend/resume | Existing workflow; qualification open |
 | P03-04 | Start/resume on a chosen eligible host/home server | Chosen-host start/resume and fresh compatibility preflight implemented; live placement qualification open |
 | P03-05 | Explain unavailable actions | Host block messages preserved, current diagnostic context enforced and contradictory blocked/allowed operations refused; lab RBAC/state qualification open |
@@ -281,7 +281,7 @@ Implementation and qualification evidence: [host administration report](reports/
 | P14-09 | Custom graphs/data-source selection/historical ranges | Per-view source selection, bounded 10-minute/2-hour/week/year ranges with actual resolution, and validated VM/host graph presets implemented; unavailable preset sources are explicitly refused, fixture/native synthetic checks passed; live qualification open ([report](reports/2026-11-08-graph-presets-reports.md)) |
 | P14-10 | Host/pool messages/alerts: list/filter/dismiss/export | Activity list/filter, content-bound reviewed server dismissal and private native-dialog JSON export implemented; fixture-verified, native/lab qualification open ([report](reports/2026-11-08-activity.md)) |
 | P14-11 | Alarm thresholds/intervals/notification-email settings | Reviewed VM/host/control-domain/SR thresholds, duration/repeat intervals, pool email/relay/language and explicit host perfmon refresh implemented. Bounded XML preserves unrelated/custom settings; typed revisions, fresh identity/RBAC checks and durable no-replay refresh receipts are fixture verified. Actual evaluation/service/SMTP delivery remain live qualification ([report](reports/2026-11-08-performance-alarms.md)) |
-| P14-12 | Resource reports/support-status export | Activity JSON export and captured filtered cross-pool resource reports with freshness/coverage metadata implemented; private bounded file publication fixture verified. Support-status bundles remain queued ([report](reports/2026-11-08-graph-presets-reports.md)) |
+| P14-12 | Resource reports/support-status export | Activity JSON export, captured filtered cross-pool resource reports with freshness/coverage metadata, and reviewed selected-host support/log bundle downloads implemented; private bounded file publication fixture verified. Live qualification open ([reports](reports/2026-11-08-graph-presets-reports.md), [support bundles](reports/2026-11-08-host-backup-support.md)) |
 
 ## 15. Organization and grouped workflows
 
