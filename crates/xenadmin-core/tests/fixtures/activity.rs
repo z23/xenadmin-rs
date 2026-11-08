@@ -106,12 +106,19 @@ async fn recheck(
     c: &xenadmin_core::Connection,
     id: OperationId,
 ) -> Arc<Vec<xenadmin_core::ResourceOperationRecord>> {
-    let revision = c
-        .resource_history()
-        .iter()
-        .find(|r| r.id == id)
-        .unwrap()
-        .revision();
+    let revision =
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                if let Some(record) = c.resource_history().iter().find(|record| {
+                    record.id == id && record.state == OperationState::OutcomeUnknown
+                }) {
+                    return record.revision();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
     c.control_resource(id, OperationControl::Recheck).unwrap();
     tokio::time::timeout(Duration::from_secs(4), async {
         loop {
@@ -265,8 +272,7 @@ async fn message_dismissal_verifies_absence_and_lost_reply_recheck_does_not_repe
         } else {
             assert_eq!(row.state, OperationState::Succeeded);
         }
-        let payload = std::fs::read(dir.path().join("operations.sqlite3")).unwrap();
-        assert!(!String::from_utf8_lossy(&payload).contains("Fixture alert body"));
+        assert!(!journal_text(dir.path()).contains("Fixture alert body"));
         c.close().await;
         assert_eq!(
             mock.methods

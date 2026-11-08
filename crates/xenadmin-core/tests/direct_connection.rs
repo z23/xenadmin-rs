@@ -569,17 +569,9 @@ async fn power_action_tracks_the_host_task_and_deduplicates_submission() {
         .unwrap();
     assert_eq!(finish(&duplicate).await, OperationState::Succeeded);
     assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
-    let database = std::fs::read(directory.path().join("operations.sqlite3")).unwrap();
-    assert!(
-        !database
-            .windows(b"fixture-password".len())
-            .any(|bytes| bytes == b"fixture-password")
-    );
-    assert!(
-        !database
-            .windows(b"fixture-session".len())
-            .any(|bytes| bytes == b"fixture-session")
-    );
+    let database = journal_text(directory.path());
+    assert!(!database.contains("fixture-password"));
+    assert!(!database.contains("fixture-session"));
     connection.close().await;
 }
 
@@ -1980,3 +1972,19 @@ mod pool_security;
 
 #[path = "fixtures/snapshot_policy.rs"]
 mod snapshot_policy;
+
+fn journal_text(directory: &std::path::Path) -> String {
+    let db = rusqlite::Connection::open_with_flags(
+        directory.join("operations.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    db.busy_timeout(Duration::from_secs(5)).unwrap();
+    let mut query = db.prepare("SELECT payload || coalesce(task,'') FROM operations UNION ALL SELECT payload || coalesce(task,'') || coalesce(result_reference,'') FROM resource_operations").unwrap();
+    query
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>()
+        .join("\n")
+}

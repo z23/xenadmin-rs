@@ -38,3 +38,11 @@ Verification:
   isolated current main with the fix, with no initialization diagnostic or failed test.
 
 No application data or existing journal was removed. All database fixtures were temporary.
+
+A later affinity workspace run exposed a separate activity-fixture publication race:
+the operation watch reached `OutcomeUnknown` before connection history received that
+revision. The recheck helper now waits for that published state before comparing
+revisions, preventing the initial update from being mistaken for recheck completion.
+Two remaining privacy assertions now query SQLite through a read-only connection
+instead of opening/closing its inode directly; this also covers uncheckpointed WAL
+payloads. All eight activity tests and the affected power/deduplication test passed.
