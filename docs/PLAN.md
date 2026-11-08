@@ -70,7 +70,7 @@ isolated resources. No production infrastructure test is implied by application 
 The development client includes direct concurrent pool connections, inventory and consoles,
 reviewed VM/device/snapshot administration, host/pool/storage/network workflows, metrics,
 activity, organization and bounded XVA/raw/VHD/OVF transfers. The
-[0.9.1 checkpoint](reports/2026-11-08-checkpoint-0.9.1.md) records its packaged subset.
+[0.10 checkpoint](reports/2026-11-08-checkpoint-0.10.md) records its packaged subset.
 Further increments and outstanding workflows are tracked in the per-row ledger and their reports. Implemented behavior has protocol, journal, Rune and native synthetic-render
 checks, with remaining workflows explicitly open.
 
