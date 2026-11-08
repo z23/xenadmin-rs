@@ -98,3 +98,5 @@ controls. Forgetting deletes recorded RRD samples and may be followed immediatel
 collection; it is never presented as a harmless pause. Stock XCP-ng NRPE integration is explicitly
 unsupported. [Supported semantics and verification](reports/2026-11-08-host-monitoring-recording.md).
 The [network fabric increment](reports/2026-11-08-network-fabric-primitives.md) adds reviewed GRE/VXLAN and SR-IOV creation/removal on one host, optional controller/PCI inventory, explicit pool coverage and stable created-object/interface history. Controller activity, reboot requirements and actual traffic/VF qualification remain separate. Pool-wide orchestration and SR-IOV VLAN/capacity workflows remain retained.
+
+- Reviewed coordinated pool dissolution: exact member order, disabled/evacuated-host checks, durable ejection receipts and final single-host metadata clearing; live qualification remains open.

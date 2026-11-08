@@ -248,3 +248,7 @@ for conversion_scene in local-conversion local-conversion-review; do
 done
 "$check_binary" --snap artifacts/batch-export.png --tree artifacts/batch-export.json --scene batch-export --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/batch-export-compact.png --tree artifacts/batch-export-compact.json --scene batch-export --theme dark --size 513x652 --scale 1 --at 1
+
+for dissolve_size in 1440x900 513x652; do
+  "$check_binary" --snap "artifacts/pool-dissolve-${dissolve_size}.png" --tree "artifacts/pool-dissolve-${dissolve_size}.json" --scene pool-dissolve --theme dark --size "$dissolve_size" --scale 1 --at 1
+done

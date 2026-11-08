@@ -109,9 +109,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         body = body
             .child(caption(format!("{}. {}\n{}", n + 1, host.name, host.host), k).wrap_anywhere());
     }
-    body=body.child(caption("Stop lets an already submitted ejection finish and skips later steps. Interrupted work is never resumed automatically. Ejected-host reboot and independent connectivity require separate verification.",k).wrap())
-        .child(caption(format!("Enter the pool UUID to confirm: {}",e.pool),k).wrap_anywhere())
-        .child(TextInput::new(&e.confirmation).label("Confirmation pool UUID").on_edit(|s:&mut State|&mut s.pool_dissolve_editor.as_mut().unwrap().confirmation).build(k).key("pool-dissolve-identity"));
+    body=body.child(caption("Stop lets an already submitted ejection finish and skips later steps. Interrupted work is never resumed automatically. Ejected-host reboot and independent connectivity require separate verification.",k).wrap());
     if e.enabled_members > 0 {
         body=body.child(caption(format!("{} reviewed members are still enabled. Close this review, disable and evacuate them, then review again.",e.enabled_members),k).wrap());
     }
@@ -171,12 +169,30 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(session_permissions_view::footer(
-                    controls,
-                    Some(&permission),
-                    width - 36.0,
-                    k,
-                )),
+                .child(
+                    col()
+                        .gap(8.0)
+                        .child(
+                            caption(format!("Enter the pool UUID to confirm: {}", e.pool), k)
+                                .wrap_anywhere(),
+                        )
+                        .child(
+                            TextInput::new(&e.confirmation)
+                                .label("Confirmation pool UUID")
+                                .on_edit(|s: &mut State| {
+                                    &mut s.pool_dissolve_editor.as_mut().unwrap().confirmation
+                                })
+                                .build(k)
+                                .w_full()
+                                .key("pool-dissolve-identity"),
+                        )
+                        .child(session_permissions_view::footer(
+                            controls,
+                            Some(&permission),
+                            width - 36.0,
+                            k,
+                        )),
+                ),
         )
 }
 pub(super) fn scene(s: &mut State) {
@@ -222,7 +238,11 @@ mod tests {
                 },
             );
             runtime.frame(0.0);
-            for key in ["review-permission-explanation", "pool-dissolve-confirm"] {
+            for key in [
+                "pool-dissolve-identity",
+                "review-permission-explanation",
+                "pool-dissolve-confirm",
+            ] {
                 let (x, y) = runtime.find(key).unwrap();
                 assert!(
                     (0.0..size.0).contains(&x) && (0.0..size.1).contains(&y),

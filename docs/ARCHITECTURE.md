@@ -881,3 +881,10 @@ uses descriptor-relative no-replace rename after native format checks and full c
 comparison. Private local records never resume interrupted work; cleanup is limited to recorded
 temporary identities, and importing a successful output needs a separate captured transfer
 review. [Qualification and retained scope](reports/2026-11-08-local-conversion.md).
+Coordinated pool dissolution owns a boxed private plan with immutable coordinator/member identities,
+a pre-existing task UUID baseline and monotonic per-step receipts. All members are checked before
+the first ejection; each subsequent write rechecks exact remaining membership. The final dispatch
+CAS publishes without awaiting the UI channel. Recovery never executes pending steps or promotes
+old verification directly to success: it rereads final pool membership/HA/metadata. Task cleanup
+requires a proven owned completed task and is omitted by read-only rechecks. See the
+[pool dissolution report](reports/2026-11-08-pool-dissolution.md).

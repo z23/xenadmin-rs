@@ -15,7 +15,7 @@ fn operation(r: &ResourceOperationRecord) -> Result<&PoolDissolve, Error> {
 fn plan(r: &ResourceOperationRecord) -> Result<&Plan, Error> {
     r.pool_dissolve_plan.as_deref().ok_or(Error::Journal)
 }
-async fn state(s: &Session, r: &ResourceOperationRecord) -> Result<String, Error> {
+pub(super) async fn state(s: &Session, r: &ResourceOperationRecord) -> Result<String, Error> {
     let op = operation(r)?;
     let (pool, record) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
     if record["ha_enabled"] != false {

@@ -1153,7 +1153,15 @@ impl Journal {
                 *record = self.workflow_interrupt(pool, record.id, false)?;
                 continue;
             }
-            if record.state == OperationState::Preparing {
+            if matches!(record.action, ResourceAction::DissolvePool(_))
+                && record
+                    .pool_dissolve_plan
+                    .as_ref()
+                    .is_some_and(|p| p.evidence.iter().any(|e| e.sent))
+            {
+                record.state = OperationState::OutcomeUnknown;
+                record.detail = "Interrupted pool dissolution; read-only verification of current membership and submitted receipts is required.".into();
+            } else if record.state == OperationState::Preparing {
                 record.state = if !record.steps.is_empty()
                     && record
                         .steps

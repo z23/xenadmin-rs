@@ -63,7 +63,7 @@ impl ResourceRequest {
             self.record.steps[index].state = StepState::Dispatching;
             self.record.detail = format!("Submitting {}", self.record.steps[index].label);
             self.record.can_cancel = false;
-            self.save(j).await?;
+            self.save_dispatch(j)?;
             let result = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call(method,args)=>v?};
             let asynchronous = crate::pool_dissolve::Plan::kinds(
                 &self
@@ -237,6 +237,11 @@ impl ResourceRequest {
         s: &Session,
         c: &CancellationToken,
     ) -> Result<(), Error> {
+        self.reload(j)?;
+        if self.stopped_after_recovery() {
+            return Ok(());
+        }
+        tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=pool_dissolve::state(s,&self.record)=>v?};
         self.reload(j)?;
         if self.stopped_after_recovery() {
             return Ok(());

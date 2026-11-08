@@ -489,3 +489,118 @@ async fn dissolve_denied_final_setter_prevents_every_ejection() {
     );
     assert!(writes(&s).is_empty());
 }
+
+#[tokio::test]
+async fn dissolve_rechecks_final_pool_even_when_every_step_was_previously_verified() {
+    for fault in ["", "extra-host", "coordinator", "name", "description", "ha"] {
+        let op = operation(1, true);
+        let operation = OperationId::new();
+        let directory = tempfile::tempdir().unwrap();
+        let s = server(&op, "", directory.path(), operation).await;
+        let (handle, request) = pending(op, operation);
+        run(&s, directory.path(), request).await;
+        assert_eq!(handle.latest().state, OperationState::Succeeded);
+        let j = Journal::open(directory.path()).unwrap();
+        // Reconstruct a crash after all verification receipts, before the terminal save.
+        j.0.execute("UPDATE resource_operations SET terminal=0,payload=json_set(payload,'$.state',json(?1)) WHERE id=?2",rusqlite::params![serde_json::to_string(&OperationState::Preparing).unwrap(),operation.to_string()]).unwrap();
+        j.resource_recover(id(1).into()).unwrap();
+        let record = j.resource_load(operation).unwrap().unwrap();
+        assert!(
+            record
+                .steps
+                .iter()
+                .all(|s| s.state == crate::StepState::Verified)
+        );
+        {
+            let mut data = s.records.lock().unwrap();
+            match fault {
+                "extra-host" => {
+                    data.insert("OpaqueRef:host9".into(), json!({"uuid":id(9)}));
+                }
+                "coordinator" => {
+                    data.get_mut("OpaqueRef:pool").unwrap()["master"] = json!("OpaqueRef:other")
+                }
+                "name" => data.get_mut("OpaqueRef:pool").unwrap()["name_label"] = json!("New pool"),
+                "description" => {
+                    data.get_mut("OpaqueRef:pool").unwrap()["name_description"] = json!("Changed")
+                }
+                "ha" => data.get_mut("OpaqueRef:pool").unwrap()["ha_enabled"] = json!(true),
+                _ => {}
+            }
+        }
+        let before = s.calls.lock().unwrap().len();
+        let result = recheck(&s, directory.path(), record).await;
+        assert_eq!(
+            result.state,
+            if fault.is_empty() {
+                OperationState::Succeeded
+            } else {
+                OperationState::OutcomeUnknown
+            },
+            "{fault}: {}",
+            result.detail
+        );
+        let calls = s.calls.lock().unwrap();
+        assert!(!calls[before..].iter().any(|m| m.starts_with("Async.")
+            || m.starts_with("pool.set_")
+            || m == "task.destroy"
+            || m == "task.cancel"));
+        assert!(calls[before..].iter().any(|m| m == "pool.get_record"));
+    }
+}
+
+#[tokio::test]
+async fn dissolve_full_update_queue_never_defers_a_claimed_write_until_after_recovery() {
+    for after_dispatch in [false, true] {
+        let op = operation(2, true);
+        let operation = OperationId::new();
+        let directory = tempfile::tempdir().unwrap();
+        let s = server(&op, "", directory.path(), operation).await;
+        let (handle, request) = pending(op, operation);
+        let session = Arc::new(s.fixture.session().await);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let worker = tokio::spawn(request.run(
+            session,
+            directory.path().into(),
+            tokio_util::sync::CancellationToken::new(),
+            tx,
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while handle.latest().steps.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Preparation publication is blocked behind the first update. The dispatch
+        // publication must not introduce a second wait between its CAS and the RPC.
+        if after_dispatch {
+            rx.recv().await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while writes(&s).is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        Journal::open(directory.path())
+            .unwrap()
+            .resource_recover(id(1).into())
+            .unwrap();
+        drop(rx);
+        tokio::time::timeout(std::time::Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(writes(&s).len(), usize::from(after_dispatch));
+        assert_eq!(
+            handle.latest().state,
+            if after_dispatch {
+                OperationState::OutcomeUnknown
+            } else {
+                OperationState::Cancelled
+            }
+        );
+    }
+}
