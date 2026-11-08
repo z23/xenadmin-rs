@@ -23,3 +23,7 @@ Synthetic protocol tests cover live and halted serial moves, whole-selection rej
 The workspace test run passed 1,130 tests: 503 core unit, 299 direct protocol, 315 Rune, five profile, four TLS and four host-probe tests. The final migration-focused run passed 26 cases and the batch-focused run passed 11 groups. Workspace strict Clippy and release all-target checking passed. Synthetic native `batch-move` reviews were rendered at 513×652 and 1440×900 and visually checked for readable identity/mapping details and a visible action footer. These renders use demonstration data.
 
 No actual host migration or user inventory capture was used. Live XCP-ng compatibility, guest/device integrity and native accessibility qualification remain deferred to the disposable lab. Cross-pool bulk moves and bulk archive export remain open; this increment covers same-pool moves only.
+
+## Integrated verification
+
+Main at `86a56ce`, including host monitoring and dedicated VM workflow permission checks, passed 1,162 tests (516 core unit, 311 direct protocol, 322 Rune, five profile, four TLS and four host-probe tests). Workspace strict Clippy and whitespace checks also passed. Migration uses its exact shared requirement mapping in the central operation guard as well as the standalone and batch reviews. No live infrastructure changes were made.
