@@ -437,3 +437,27 @@ VMSS schedules are host-side typed resource operations with private creation/run
 and completion receipts. A dedicated read-only query captures the coordinator’s clock and
 execution contract; desktop scheduling is never substituted. Exact membership, task/plugin
 proof and per-VM snapshot read-back constrain success. See the [snapshot schedule report](reports/2026-11-08-snapshot-schedules.md).
+
+## Joining independently connected pools
+
+`Connection::join_pool(id, PoolJoinSelection, destination, Credentials)` captures both pool
+observations, the source host and destination coordinator. The credentials are transient;
+only a closed `PoolOperation::Join` intent, destination host UUID baseline and monotonic
+completion receipt enter the resource journal. The ordinary resource submission path
+rejects join intents that bypass this facade. Both connections must be writable and owned
+by the same backend; temporary credential validation uses the destination's existing
+endpoint and certificate policy and refuses coordinator redirects.
+
+Join reserves both pools in the same SQLite admission transaction. VM and resource writes
+consult the typed scopes in a bounded active-row scan; malformed active records fail
+closed. History and controls recognize either pool, while read-only join reconciliation
+routes to the destination. A recorded synchronous reply and fresh exact membership are
+both required for success. Lost replies, interrupted source identity transitions and
+later topology changes remain unknown; the worker never replays join. The destination
+connection's generation and lifetime fence preflight and verification without keeping
+a dropped connection alive.
+
+The review explicitly separates desktop trust from XAPI's initial host-to-host certificate
+bootstrap. Joining does not silently change saved profiles, pins, HA, guest power or
+network/storage prerequisites. See the [join report](reports/2026-11-08-pool-join.md) for
+qualification boundaries and primary protocol evidence.

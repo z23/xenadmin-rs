@@ -63,6 +63,19 @@ impl Session {
         options: &ConnectionOptions,
         credentials: &Credentials,
     ) -> Result<Self, Error> {
+        Self::login_inner(options, credentials, true).await
+    }
+    pub(crate) async fn login_exact(
+        options: &ConnectionOptions,
+        credentials: &Credentials,
+    ) -> Result<Self, Error> {
+        Self::login_inner(options, credentials, false).await
+    }
+    async fn login_inner(
+        options: &ConnectionOptions,
+        credentials: &Credentials,
+        follow_coordinator: bool,
+    ) -> Result<Self, Error> {
         let mut target = options.clone();
         let mut visited = std::collections::BTreeSet::new();
         for _ in 0..5 {
@@ -92,7 +105,7 @@ impl Session {
                 )
                 .await;
             let result = match result {
-                Err(Error::Coordinator(endpoint)) => {
+                Err(Error::Coordinator(endpoint)) if follow_coordinator => {
                     target = options.for_endpoint(endpoint);
                     continue;
                 }

@@ -1,5 +1,7 @@
 #[path = "host_worker.rs"]
 mod host;
+#[path = "pool_join_worker.rs"]
+mod pool_join_worker;
 #[path = "transfer_disk_worker.rs"]
 mod transfer_disk_worker;
 #[path = "transfer_worker.rs"]
@@ -18,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct ResourceRequest {
     pub(crate) sensitive: Option<crate::pool_security::SensitiveInputs>,
     pub generation: u64,
+    pub join: Option<crate::pool_join::Inputs>,
     pub record: ResourceOperationRecord,
     sender: watch::Sender<Arc<ResourceOperationRecord>>,
     updates: Option<mpsc::Sender<OperationUpdate>>,
@@ -32,6 +35,7 @@ impl ResourceRequest {
         Self {
             sensitive: None,
             generation,
+            join: None,
             record,
             sender,
             updates: None,
@@ -43,6 +47,7 @@ impl ResourceRequest {
         Self {
             sensitive: None,
             generation: 0,
+            join: None,
             record,
             sender,
             updates: None,
@@ -148,6 +153,9 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if crate::pool_join::destination(&self.record.action).is_some() {
+            return self.execute_join(journal, session, cancel).await;
+        }
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
             return self.execute_host(journal, session, cancel).await;
         }
@@ -261,6 +269,9 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if crate::pool_join::destination(&self.record.action).is_some() {
+            return self.reconcile_join(journal, session, cancel).await;
+        }
         self.reload(journal)?;
         if self.record.state.terminal() {
             return Ok(());

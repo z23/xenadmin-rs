@@ -34,6 +34,12 @@ impl HaRestartPriority {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PoolOperation {
+    Join {
+        source_host: HostId,
+        destination_pool: crate::PoolId,
+        destination_coordinator: HostId,
+        destination_address: String,
+    },
     Security(crate::PoolSecurityOperation),
     SetMigrationCompression {
         expected: bool,
@@ -71,6 +77,7 @@ pub enum PoolOperation {
 impl PoolOperation {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Join { .. } => "Join destination pool",
             Self::Security(op) => op.label(),
             Self::SetMigrationCompression { .. } => "Set migration compression",
             Self::SetHttpsOnly { .. } => "Set HTTPS-only access",
@@ -86,6 +93,7 @@ impl PoolOperation {
     }
     pub(crate) fn method(&self) -> &'static str {
         match self {
+            Self::Join { .. } => "pool.join",
             Self::Security(op) => op.method(),
             Self::SetMigrationCompression { .. } => "pool.set_migration_compression",
             Self::SetHttpsOnly { .. } => "Async.pool.set_https_only",
@@ -105,6 +113,16 @@ impl PoolOperation {
     pub(crate) fn validate(&self, target: ResourceTarget) -> Result<(), Error> {
         let valid = matches!(target, ResourceTarget::Pool(_))
             && match self {
+                Self::Join {
+                    source_host,
+                    destination_pool,
+                    destination_coordinator,
+                    destination_address,
+                } => {
+                    target != ResourceTarget::Pool(*destination_pool)
+                        && source_host != destination_coordinator
+                        && crate::pool_join::valid_address(destination_address)
+                }
                 Self::Security(op) => op.valid(),
                 Self::SetMigrationCompression { expected, enabled }
                 | Self::SetHttpsOnly { expected, enabled } => expected != enabled,

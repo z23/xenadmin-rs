@@ -287,3 +287,6 @@ impl Error {
         ) || matches!(self, Self::Api(code) if code == "SESSION_INVALID" || code == "EVENT_FROM_TOKEN_PARSE_FAILURE")
     }
 }
+
+mod pool_join;
+pub use pool_join::PoolJoinSelection;

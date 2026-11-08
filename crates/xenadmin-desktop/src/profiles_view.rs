@@ -5,6 +5,8 @@ use xenadmin_core::{
 
 #[path = "profile_credentials.rs"]
 mod credentials;
+#[path = "profile_pool_join.rs"]
+mod pool_join;
 #[path = "profile_reconnect.rs"]
 mod reconnect;
 use credentials::CredentialJob;
@@ -38,6 +40,7 @@ pub(super) fn inspection_connections(
 }
 
 pub(super) struct Workspace {
+    join: Option<pool_join::Editor>,
     reconnect: Option<reconnect::Editor>,
     session_accounts: BTreeMap<ProfileId, (String, bool)>,
     store: Result<ProfileStore, String>,
@@ -78,6 +81,7 @@ impl Workspace {
         };
         Self {
             reconnect: None,
+            join: None,
             session_accounts: BTreeMap::new(),
             store,
             writable,
@@ -519,6 +523,7 @@ fn remove_record(s: &mut State, id: ProfileId) {
 /// Poll every live pool, including those not currently selected in the UI.
 pub(super) fn refresh(s: &mut State) -> bool {
     let mut changed = refresh_credentials(s);
+    changed |= pool_join::poll(s);
     for (id, connection) in &s.workspace.active {
         let snapshot = connection.latest();
         if s.workspace
@@ -795,6 +800,9 @@ fn choose_ca(s: &mut State, tx: &mut Tx) {
 }
 
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
+    if s.workspace.join.is_some() {
+        return pool_join::dialog(s, k);
+    }
     if s.workspace.reconnect.is_some() {
         return reconnect::dialog(s, k);
     }
@@ -1619,4 +1627,36 @@ pub(super) fn reconnect_pool(s: &mut State, pool: PoolId) {
     if let Some(id) = id {
         reconnect::open(s, id);
     }
+}
+
+pub(super) fn join_pool(s: &mut State) {
+    pool_join::open(s);
+}
+#[cfg(debug_assertions)]
+pub(super) fn join_scene(s: &mut State) {
+    pool_join::scene(s);
+}
+pub(super) fn resource_control_connection(
+    s: &State,
+    id: xenadmin_core::OperationId,
+    control: xenadmin_core::OperationControl,
+) -> Option<Connection> {
+    let record = s.resource_rows.iter().find(|r| r.id == id)?;
+    let applies = |pool| {
+        if matches!(control, xenadmin_core::OperationControl::Recheck) {
+            pool == record.recovery_pool()
+        } else {
+            record.applies_to_pool(pool)
+        }
+    };
+    s.workspace
+        .active
+        .values()
+        .chain(s.connection.iter())
+        .find(|c| {
+            !c.is_read_only()
+                && c.latest().is_current()
+                && c.latest().inventory().is_some_and(|i| applies(i.pool_id))
+        })
+        .cloned()
 }

@@ -355,7 +355,7 @@ fn operation_value(record: &crate::OperationRecord) -> Value {
         "has_local_error": record.local_error.is_some(), "can_cancel": record.can_cancel})
 }
 fn resource_operation_value(record: &crate::ResourceOperationRecord) -> Value {
-    json!({"id":record.id,"pool":record.pool,"target":record.target,"action":record.action.label(),"state":record.state,
+    json!({"id":record.id,"pool":record.pool,"recovery_pool":record.recovery_pool(),"target":record.target,"action":record.action.label(),"state":record.state,
         "progress":record.progress,"created_at_ms":record.created_at_ms,"created":record.created,
         "transfer":record.transfer,"transfer_created":record.transfer_created,
         "detail":bounded(&record.detail),"local_error":record.local_error.as_deref().map(bounded),

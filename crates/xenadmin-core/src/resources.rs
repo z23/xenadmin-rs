@@ -474,8 +474,25 @@ pub struct ResourceOperationRecord {
     pub(crate) snapshot_policy_evidence: Option<snapshot_policy::Evidence>,
     #[serde(default)]
     pub(crate) subject_baseline: Option<Vec<crate::SubjectId>>,
+    #[serde(default)]
+    pub(crate) join_baseline: Option<Vec<HostId>>,
 }
 impl ResourceOperationRecord {
+    pub fn applies_to_pool(&self, pool: PoolId) -> bool {
+        self.pool == pool || crate::pool_join::destination(&self.action) == Some(pool)
+    }
+    pub fn recovery_pool(&self) -> PoolId {
+        crate::pool_join::destination(&self.action).unwrap_or(self.pool)
+    }
+    pub(crate) fn pool_scopes(&self) -> Vec<PoolId> {
+        let mut pools = vec![self.pool];
+        if let Some(pool) = crate::pool_join::destination(&self.action)
+            && pool != self.pool
+        {
+            pools.push(pool);
+        }
+        pools
+    }
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -551,6 +568,7 @@ pub(crate) fn channel(
         host_plan: None,
         snapshot_policy_evidence: None,
         subject_baseline: None,
+        join_baseline: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (

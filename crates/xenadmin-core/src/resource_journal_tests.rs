@@ -42,6 +42,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         host_plan: None,
         subject_baseline: None,
         snapshot_policy_evidence: None,
+        join_baseline: None,
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {
@@ -421,4 +422,133 @@ fn appliance_creation_baseline_and_receipt_cannot_be_retracted_after_reload() {
         journal.resource_save(&mut modified),
         Err(Error::JournalChanged)
     ));
+}
+
+fn join(source: PoolId, destination: PoolId) -> ResourceOperationRecord {
+    let mut record = resource(source);
+    record.target = ResourceTarget::Pool(source);
+    record.action = ResourceAction::Pool(crate::PoolOperation::Join {
+        source_host: crate::HostId::from(uuid::Uuid::new_v4()),
+        destination_pool: destination,
+        destination_coordinator: crate::HostId::from(uuid::Uuid::new_v4()),
+        destination_address: "192.0.2.20".into(),
+    });
+    record
+}
+#[test]
+fn joins_reserve_both_pools_against_vm_and_resource_writes_in_every_direction() {
+    for destination_first in [false, true] {
+        for resource_first in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut journal = Journal::open(dir.path()).unwrap();
+            let a = PoolId::from(uuid::Uuid::new_v4());
+            let b = PoolId::from(uuid::Uuid::new_v4());
+            let selected = if destination_first { b } else { a };
+            if resource_first {
+                journal.resource_admit(&mut resource(selected)).unwrap();
+            } else {
+                journal.admit(&mut vm(selected)).unwrap();
+            }
+            assert!(matches!(
+                journal.resource_admit(&mut join(a, b)),
+                Err(Error::ConflictingPoolOperation)
+            ));
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut journal = Journal::open(dir.path()).unwrap();
+    let a = PoolId::from(uuid::Uuid::new_v4());
+    let b = PoolId::from(uuid::Uuid::new_v4());
+    let mut record = join(a, b);
+    journal.resource_admit(&mut record).unwrap();
+    for pool in [a, b] {
+        assert!(matches!(
+            journal.admit(&mut vm(pool)),
+            Err(Error::ConflictingPoolOperation)
+        ));
+        assert!(matches!(
+            journal.resource_admit(&mut resource(pool)),
+            Err(Error::ConflictingPoolOperation)
+        ));
+        assert_eq!(journal.resource_history(pool).unwrap()[0].id, record.id);
+        assert_eq!(
+            journal
+                .resource_control(pool, record.id, OperationControl::Recheck)
+                .unwrap()
+                .id,
+            record.id
+        );
+    }
+    let c = PoolId::from(uuid::Uuid::new_v4());
+    assert!(journal.admit(&mut vm(c)).unwrap());
+    assert!(matches!(
+        journal.resource_control(c, record.id, OperationControl::RequestCancellation),
+        Err(Error::OperationConflict)
+    ));
+    record = journal
+        .resource_control(b, record.id, OperationControl::RequestCancellation)
+        .unwrap();
+    assert!(record.cancel_requested);
+    record.state = OperationState::OutcomeUnknown;
+    journal.resource_save(&mut record).unwrap();
+    journal
+        .resource_control(b, record.id, OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    for pool in [a, b] {
+        assert!(journal.admit(&mut vm(pool)).unwrap());
+    }
+    let mut late = record;
+    late.pool_completed = true;
+    let saved = journal.resource_evidence(&late).unwrap();
+    assert_eq!(saved.state, OperationState::AcknowledgedUnknown);
+    assert!(saved.pool_completed);
+}
+#[test]
+fn active_malformed_or_inconsistent_scopes_fail_closed_even_for_other_pools() {
+    for corrupt in [
+        "unknown-action",
+        "missing-destination",
+        "invalid-destination",
+        "wrong-pool",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let a = PoolId::from(uuid::Uuid::new_v4());
+        let b = PoolId::from(uuid::Uuid::new_v4());
+        let mut record = join(a, b);
+        journal.resource_admit(&mut record).unwrap();
+        let mut payload = serde_json::to_value(&record).unwrap();
+        match corrupt {
+            "unknown-action" => payload["action"] = json!("LegacyJoinWithoutScope"),
+            "missing-destination" => {
+                payload["action"]["Pool"]["Join"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("destination_pool");
+            }
+            "invalid-destination" => {
+                payload["action"]["Pool"]["Join"]["destination_pool"] = json!(a)
+            }
+            _ => payload["pool"] = json!(b),
+        }
+        journal
+            .0
+            .execute(
+                "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+                rusqlite::params![payload.to_string(), record.id.to_string()],
+            )
+            .unwrap();
+        let c = PoolId::from(uuid::Uuid::new_v4());
+        assert!(
+            matches!(journal.admit(&mut vm(c)), Err(Error::Journal)),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(
+                journal.resource_admit(&mut resource(c)),
+                Err(Error::Journal)
+            ),
+            "{corrupt}"
+        );
+    }
 }

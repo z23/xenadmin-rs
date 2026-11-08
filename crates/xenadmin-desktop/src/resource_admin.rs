@@ -275,7 +275,13 @@ fn review(s: &mut State) {
             }
             Kind::DeleteNetwork => review.lines.push("The internal network record will be deleted. The host must report no physical or VM interfaces on it.".into()),
             Kind::ScanStorage => review.lines.push("Ask the storage backend to refresh its disk inventory. The operation will appear in history.".into()),
-            Kind::Acknowledge(_) => review.lines.push("This releases the pool's write guard without establishing the server outcome. Inspect the affected resources and any host task before continuing.".into()),
+            Kind::Acknowledge(id) => {
+                let record=s.resource_rows.iter().find(|r|r.id==id&&r.applies_to_pool(editor.pool)).ok_or("The operation is no longer available for this pool")?;
+                review.lines.push(format!("{} · {}",record.action.label(),record.id));
+                review.lines.push(if record.recovery_pool()!=record.pool {
+                    format!("This releases write reservations for BOTH pools: {} and {}. The host's membership remains unverified. Inspect both pools before continuing.",record.pool,record.recovery_pool())
+                } else {"This releases the pool's write guard without establishing the server outcome. Inspect the affected resources and any host task before continuing.".into()});
+            },
             Kind::Mtu => {}
             Kind::History => return Err("Choose an administration action first.".into()),
         }
@@ -501,7 +507,8 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
         .iter()
         .rev()
         .filter(|r| {
-            r.pool == pool && (r.target == target || matches!(target, ResourceTarget::Pool(_)))
+            r.applies_to_pool(pool)
+                && (r.target == target || matches!(target, ResourceTarget::Pool(_)))
         })
         .take(12)
     {
@@ -530,12 +537,27 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
         }
         let id = record.id;
         if record.state == OperationState::OutcomeUnknown {
+            let can_recheck =
+                profiles_view::resource_control_connection(s, id, OperationControl::Recheck)
+                    .is_some();
             view = view.child(
                 Button::new("Recheck outcome")
-                    .disabled(!can_control)
+                    .disabled(!can_recheck)
                     .on_press(move |s: &mut State| control(s, id, OperationControl::Recheck))
                     .build(k),
             );
+            if !can_recheck && record.recovery_pool() != record.pool {
+                view = view.child(
+                    caption(
+                        format!(
+                            "Reconnect destination pool {} to recheck this join.",
+                            record.recovery_pool()
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
             view = view.child(
                 Button::new("Acknowledge unknown outcome…")
                     .variant(ButtonVariant::Ghost)
@@ -564,9 +586,7 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
     view
 }
 fn control(s: &mut State, id: OperationId, control: OperationControl) {
-    s.error = s
-        .connection
-        .as_ref()
+    s.error = profiles_view::resource_control_connection(s, id, control)
         .ok_or(xenadmin_core::Error::Closed)
         .and_then(|connection| connection.control_resource(id, control))
         .err()
@@ -629,7 +649,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if !s
             .resource_rows
             .iter()
-            .any(|record| record.pool == editor.pool)
+            .any(|record| record.applies_to_pool(editor.pool))
         {
             body = body
                 .child(caption("No administration operations recorded for this pool.", k).wrap());
@@ -790,7 +810,7 @@ pub(super) fn notice(s: &State, k: &Kit) -> Option<El> {
         .resource_rows
         .iter()
         .rev()
-        .find(|record| record.pool == pool)?;
+        .find(|record| record.applies_to_pool(pool))?;
     Some(
         Button::new(format!(
             "{} · {:?} · View operation history",
@@ -828,6 +848,53 @@ mod tests {
         let mut state = crate::init();
         crate::demo(&mut state);
         state
+    }
+    #[test]
+    fn joined_pool_history_is_visible_at_destination_and_acknowledges_both_reservations() {
+        let mut state = state();
+        let destination = state.inventory.as_ref().unwrap().pool_id;
+        let source = PoolId::from(uuid::Uuid::new_v4());
+        let id = OperationId::new();
+        state.resource_rows.push(serde_json::from_value(serde_json::json!({
+            "id":id,"pool":source,"target":{"Pool":source},"action":{"Pool":{"Join":{
+                "source_host":uuid::Uuid::new_v4(),"destination_pool":destination,
+                "destination_coordinator":uuid::Uuid::new_v4(),"destination_address":"192.0.2.20"
+            }}},"state":"OutcomeUnknown","progress":null,"detail":"Fixture interrupted join",
+            "created_at_ms":0,"can_cancel":false,"cancel_requested":false,"steps":[],"created":null
+        })).unwrap());
+        open_pool(&mut state, Kind::History);
+        let mut rt = rune::Runtime::new(
+            state,
+            crate::view,
+            (1440.0, 900.0),
+            rune::Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(
+            rt.accessibility_json()
+                .to_string()
+                .contains("Fixture interrupted join")
+        );
+        open_pool(&mut rt.state, Kind::Acknowledge(id));
+        review(&mut rt.state);
+        let review = rt
+            .state
+            .resource_editor
+            .as_ref()
+            .unwrap()
+            .review
+            .as_ref()
+            .unwrap();
+        assert!(review.lines.iter().any(|v| v.contains("BOTH pools")
+            && v.contains(&source.to_string())
+            && v.contains(&destination.to_string())));
+        submit(&mut rt.state);
+        assert!(rt.state.resource_operations.is_empty());
     }
     #[test]
     fn network_review_captures_pool_name_mtu_and_never_submits_from_preview() {

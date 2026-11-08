@@ -264,13 +264,13 @@ fn empty(records: &Records) {
     r.get_mut("VM-guest").unwrap()["resident_on"] = json!("OpaqueRef:host-other");
     r.get_mut("host").unwrap()["enabled"] = json!(false);
 }
-async fn recheck(c: &xenadmin_core::Connection, id: OperationId) -> ResourceOperationRecord {
-    let old = c
-        .resource_history()
-        .iter()
-        .find(|r| r.id == id)
-        .unwrap()
-        .revision();
+async fn recheck(
+    c: &xenadmin_core::Connection,
+    id: OperationId,
+    original: &ResourceOperation,
+) -> ResourceOperationRecord {
+    // The handle can settle before its final record reaches connection history.
+    let old = original.latest().revision();
     c.control_resource(id, OperationControl::Recheck).unwrap();
     tokio::time::timeout(Duration::from_secs(4), async {
         loop {
@@ -422,7 +422,7 @@ async fn lost_disable_response_remains_unknown_without_evacuating_or_replay() {
         .unwrap();
     assert_eq!(done(&op).await.state, OperationState::OutcomeUnknown);
     assert_eq!(r.lock().unwrap()["host"]["enabled"], false);
-    let out = recheck(&c, id).await;
+    let out = recheck(&c, id, &op).await;
     assert_eq!(out.state, OperationState::OutcomeUnknown, "{}", out.detail);
     assert_eq!(
         mock.methods
@@ -504,7 +504,7 @@ async fn restart_and_shutdown_require_evidence_not_disconnection() {
                 out.detail
             );
             if drop_reply {
-                let out = recheck(&c, id).await;
+                let out = recheck(&c, id, &op).await;
                 assert_eq!(
                     out.state,
                     if method == "Async.host.shutdown" {
@@ -643,7 +643,10 @@ async fn logging_applies_or_reports_saved_but_uncertain_reconfigure() {
         );
         assert_eq!(r.lock().unwrap()["host"]["logging"]["preserve"], "yes");
         if dropped {
-            assert_eq!(recheck(&c, id).await.state, OperationState::OutcomeUnknown);
+            assert_eq!(
+                recheck(&c, id, &op).await.state,
+                OperationState::OutcomeUnknown
+            );
         }
         assert_eq!(
             mock.methods
@@ -957,7 +960,7 @@ async fn missing_async_receipts_keep_evacuated_or_deleted_targets_unresolved() {
             )
             .unwrap();
         assert_eq!(done(&op).await.state, OperationState::OutcomeUnknown);
-        let out = recheck(&c, id).await;
+        let out = recheck(&c, id, &op).await;
         assert_eq!(out.state, OperationState::OutcomeUnknown, "{}", out.detail);
         assert_eq!(
             mock.methods

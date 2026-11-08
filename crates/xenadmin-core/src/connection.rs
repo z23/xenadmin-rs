@@ -27,6 +27,10 @@ enum Request {
     StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
     SecurityDiscovery(crate::security_discovery::Request),
     SnapshotPolicySupport(crate::snapshot_policy_support::Request),
+    JoinPeer(
+        crate::ObservedResource,
+        tokio::sync::oneshot::Sender<Result<JoinPeer, Error>>,
+    ),
     Diagnose(crate::diagnostics::DiagnosticRequest),
     Submit(Box<MutationRequest>),
     ResourceSubmit(Box<crate::resources::ResourceRequest>),
@@ -353,6 +357,7 @@ impl Backend {
             (history_sender, resource_sender),
         ));
         Connection {
+            backend_scope: self.authority_salt,
             lease,
             read_only,
             receiver,
@@ -374,6 +379,7 @@ impl Drop for Backend {
 
 #[derive(Clone)]
 pub struct Connection {
+    backend_scope: [u8; 16],
     lease: Arc<ConnectionLease>,
     read_only: bool,
     receiver: watch::Receiver<Arc<ConnectionSnapshot>>,
@@ -462,6 +468,9 @@ impl Connection {
             return Err(Error::ReadOnly);
         }
         let (observed, action, inputs) = command.submission();
+        if crate::pool_join::destination(&action).is_some() {
+            return Err(Error::InvalidResourceCommand);
+        }
         if let crate::ResourceAction::Pool(crate::PoolOperation::Security(op)) = &action
             && (op.secret_required() != inputs.is_some()
                 || inputs.as_ref().is_some_and(|v| !v.valid_for(op)))
@@ -915,6 +924,12 @@ async fn run(
                                         start_worker(*request,Some(reference),&mut workers,&mut worker_counts);
                                     } else {request.reject(Error::Stale);}
                                 }
+                                Request::JoinPeer(observed, reply)=>{
+                                    let value=if options.read_only {Err(Error::ReadOnly)} else if context.route.receiver.borrow().observe_resource(observed.target()).is_ok_and(|v|v==observed) {
+                                        Ok(JoinPeer{session:session.clone(),receiver:context.route.receiver.clone(),cancel:active.clone()})
+                                    } else {Err(Error::Stale)};
+                                    let _=reply.send(value);
+                                }
                                 Request::SecurityDiscovery(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
@@ -1247,6 +1262,7 @@ async fn forward_alias(
                         Request::StorageDiscovery(request) => request.fail(Error::Busy),
                         Request::SecurityDiscovery(request) => request.fail(Error::Busy),
                         Request::SnapshotPolicySupport(request) => request.fail(Error::Busy),
+                        Request::JoinPeer(_,reply)=>{let _=reply.send(Err(Error::Busy));},
                         Request::Diagnose(request) => request.fail(Error::Busy),
                         Request::RememberMembers(_) => {},
                         Request::Control(_, _) | Request::ResourceControl(_,_) => {
@@ -1359,4 +1375,64 @@ fn publish_resource_history(
     let mut ordered: Vec<_> = records.values().cloned().collect();
     ordered.sort_by_key(|r| r.created_at_ms);
     history.send_replace(Arc::new(ordered));
+}
+
+pub(crate) struct JoinPeer {
+    pub session: Arc<Session>,
+    pub receiver: watch::Receiver<Arc<ConnectionSnapshot>>,
+    pub cancel: CancellationToken,
+}
+pub(crate) struct JoinPeerHandle {
+    requests: mpsc::Sender<Request>,
+    pub cancel: CancellationToken,
+}
+impl JoinPeerHandle {
+    pub async fn get(&self, observed: crate::ObservedResource) -> Result<JoinPeer, Error> {
+        let (send, recv) = tokio::sync::oneshot::channel();
+        self.requests
+            .try_send(Request::JoinPeer(observed, send))
+            .map_err(|_| Error::Busy)?;
+        tokio::select! {_=self.cancel.cancelled()=>Err(Error::Closed),result=tokio::time::timeout(Duration::from_secs(45),recv)=>result.map_err(|_|Error::Timeout)?.map_err(|_|Error::Closed)?}
+    }
+}
+impl Connection {
+    pub(crate) fn submit_pool_join(
+        &self,
+        id: crate::OperationId,
+        selection: crate::PoolJoinSelection,
+        destination: &Connection,
+        credentials: Credentials,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only || destination.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if self.backend_scope != destination.backend_scope
+            || !crate::pool_join::credentials_valid(&credentials)
+        {
+            return Err(Error::InvalidResourceCommand);
+        }
+        if self.latest().observe_resource(selection.source.target())? != selection.source
+            || destination
+                .latest()
+                .observe_resource(selection.destination.target())?
+                != selection.destination
+        {
+            return Err(Error::Stale);
+        }
+        let action = selection.action()?;
+        let (handle, mut request) =
+            crate::resources::channel(id, selection.source, action, self.runtime.clone());
+        request.join = Some(crate::pool_join::Inputs {
+            destination: JoinPeerHandle {
+                requests: destination.requests.clone(),
+                cancel: destination.cancel.clone(),
+            },
+            observation: selection.destination,
+            credentials,
+        });
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
 }

@@ -474,12 +474,16 @@ fn recheck(s: &mut State) {
     let Target::History(key) = row.target else {
         return;
     };
-    if !s.can_mutate() || s.inventory.as_ref().is_none_or(|i| i.pool_id != key.pool) || row.terminal
-    {
+    if !can_recheck(s, &row) {
         return;
     }
-    let result = s
-        .connection
+    let connection = match key.family {
+        Family::Resource => {
+            profiles_view::resource_control_connection(s, key.id, OperationControl::Recheck)
+        }
+        Family::Vm => s.connection.clone(),
+    };
+    let result = connection
         .as_ref()
         .ok_or(xenadmin_core::Error::Closed)
         .and_then(|c| match key.family {
@@ -491,6 +495,21 @@ fn recheck(s: &mut State) {
             .map(|()| "Checking existing evidence; no mutation is replayed.".into())
             .unwrap_or_else(|e| e.to_string()),
     );
+}
+fn can_recheck(s: &State, row: &Row) -> bool {
+    if row.terminal {
+        return false;
+    }
+    match row.target {
+        Target::History(key) if matches!(key.family, Family::Resource) => {
+            profiles_view::resource_control_connection(s, key.id, OperationControl::Recheck)
+                .is_some()
+        }
+        Target::History(key) => {
+            s.can_mutate() && s.inventory.as_ref().is_some_and(|i| i.pool_id == key.pool)
+        }
+        _ => false,
+    }
 }
 fn next_pool(s: &mut State) {
     let mut pools = s
@@ -744,13 +763,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                             )
                             .child(
                                 Button::new("Recheck outcome")
-                                    .disabled(
-                                        selected.terminal
-                                            || !s.can_mutate()
-                                            || s.inventory
-                                                .as_ref()
-                                                .is_none_or(|i| i.pool_id != selected.pool),
-                                    )
+                                    .disabled(!can_recheck(s, selected))
                                     .on_press(recheck)
                                     .build(k)
                                     .key("activity-recheck"),

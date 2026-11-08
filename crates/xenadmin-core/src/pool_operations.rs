@@ -165,6 +165,7 @@ pub(super) async fn arguments(
     let (pool_ref, fresh) = xapi::read(session, record.target).await?;
     empty(&fresh, "current_operations")?;
     match op {
+        PoolOperation::Join { .. } => Err(Error::InvalidResourceCommand),
         PoolOperation::Security(_) => super::security::arguments(session, record).await,
         PoolOperation::SetMigrationCompression { expected, enabled } => {
             expect(&fresh, "migration_compression", json!(expected))?;
@@ -306,6 +307,7 @@ pub(super) async fn verify(
     }
     let (_, fresh) = xapi::read(session, record.target).await?;
     let matched = match operation(record)? {
+        PoolOperation::Join { .. } => return Err(Error::InvalidResourceCommand),
         PoolOperation::Security(_) => return super::security::verify(session, record).await,
         PoolOperation::SetMigrationCompression { enabled, .. } => {
             fresh["migration_compression"] == *enabled

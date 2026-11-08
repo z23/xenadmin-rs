@@ -12,15 +12,37 @@ impl Journal {
     fn active_resources(&self, pool: PoolId) -> Result<Vec<ResourceOperationRecord>, Error> {
         let mut query = self
             .0
-            .prepare("SELECT payload FROM resource_operations WHERE pool=?1 AND terminal=0")
+            .prepare("SELECT pool,payload FROM resource_operations WHERE terminal=0 LIMIT 1001")
             .map_err(|_| Error::Journal)?;
-        query
-            .query_map([pool.to_string()], |row| row.get::<_, String>(0))
+        let records = query
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
             .map_err(|_| Error::Journal)?
             .map(|row| {
-                serde_json::from_str(&row.map_err(|_| Error::Journal)?).map_err(|_| Error::Journal)
+                let (stored_pool, payload) = row.map_err(|_| Error::Journal)?;
+                let record: ResourceOperationRecord =
+                    serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+                if record.pool.to_string() != stored_pool || record.state.terminal() {
+                    return Err(Error::Journal);
+                }
+                record
+                    .action
+                    .validate(record.target)
+                    .map_err(|_| Error::Journal)?;
+                if matches!(record.target, ResourceTarget::Pool(pool) if pool!=record.pool) {
+                    return Err(Error::Journal);
+                }
+                Ok(record)
             })
-            .collect()
+            .collect::<Result<Vec<_>, Error>>()?;
+        if records.len() > 1000 {
+            return Err(Error::JournalFull);
+        }
+        Ok(records
+            .into_iter()
+            .filter(|record| record.applies_to_pool(pool))
+            .collect())
     }
     pub(crate) fn resource_load(
         &self,
@@ -51,6 +73,15 @@ impl Journal {
                 .map_err(|_| Error::Journal)?;
             let mut record: ResourceOperationRecord =
                 serde_json::from_value(payload).map_err(|_| Error::Journal)?;
+            if !record.state.terminal() {
+                record
+                    .action
+                    .validate(record.target)
+                    .map_err(|_| Error::Journal)?;
+                if matches!(record.target,ResourceTarget::Pool(pool) if pool!=record.pool) {
+                    return Err(Error::Journal);
+                }
+            }
             record.host_plan = host_plan;
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
@@ -97,6 +128,7 @@ impl Journal {
                 || (old.appliance_completed && !record.appliance_completed)
                 || (old.appliance_baseline.is_some()
                     && old.appliance_baseline != record.appliance_baseline)
+                || (old.join_baseline.is_some() && old.join_baseline != record.join_baseline)
                 || (old.subject_baseline.is_some()
                     && old.subject_baseline != record.subject_baseline)
                 || (old.storage_trim_succeeded && !record.storage_trim_succeeded)
@@ -167,15 +199,19 @@ impl Journal {
                     old.target == record.target && old.action == ResourceAction::CancelTask
                 })
             } else {
-                let vm_busy: bool = self
-                    .0
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM operations WHERE pool=?1 AND terminal=0)",
-                        [record.pool.to_string()],
-                        |row| row.get(0),
-                    )
-                    .map_err(|_| Error::Journal)?;
-                vm_busy || self.resource_pool_busy(record.pool)?
+                let mut busy = false;
+                for pool in record.pool_scopes() {
+                    let vm_busy: bool = self
+                        .0
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM operations WHERE pool=?1 AND terminal=0)",
+                            [pool.to_string()],
+                            |row| row.get(0),
+                        )
+                        .map_err(|_| Error::Journal)?;
+                    busy |= vm_busy || self.resource_pool_busy(pool)?;
+                }
+                busy
             };
             if busy {
                 return Err(Error::ConflictingPoolOperation);
@@ -296,19 +332,19 @@ impl Journal {
     ) -> Result<Vec<ResourceOperationRecord>, Error> {
         let mut query = self
             .0
-            .prepare(
-                "SELECT id FROM resource_operations WHERE pool=?1 ORDER BY rowid DESC LIMIT 1500",
-            )
+            .prepare("SELECT id FROM resource_operations ORDER BY rowid DESC LIMIT 1500")
             .map_err(|_| Error::Journal)?;
         let ids = query
-            .query_map([pool.to_string()], |row| row.get::<_, String>(0))
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(|_| Error::Journal)?;
         let mut records = Vec::new();
         for id in ids {
             let id: OperationId =
                 serde_json::from_value(serde_json::Value::String(id.map_err(|_| Error::Journal)?))
                     .map_err(|_| Error::Journal)?;
-            if let Some(record) = self.resource_load(id)? {
+            if let Some(record) = self.resource_load(id)?
+                && record.applies_to_pool(pool)
+            {
                 records.push(record);
             }
         }
@@ -323,7 +359,7 @@ impl Journal {
         for _ in 0..16 {
             let mut record = self
                 .resource_load(id)?
-                .filter(|record| record.pool == pool)
+                .filter(|record| record.applies_to_pool(pool))
                 .ok_or(Error::OperationConflict)?;
             if record.state.terminal() {
                 return Err(Error::UnavailableAction);

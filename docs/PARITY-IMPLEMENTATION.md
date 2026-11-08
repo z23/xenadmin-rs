@@ -251,8 +251,8 @@ Implementation and qualification evidence: [host administration report](reports/
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P13-01 | Create/dissolve pool | A standalone host is already a pool; naming and individually reviewed member ejection implemented. Joining members / coordinated dissolve remain queued ([report](reports/2026-11-08-pool-administration.md)) |
-| P13-02 | Join/eject/remove pool member | Reviewed ejection of disabled, evacuated non-coordinator members with empty local guest storage implemented; join and offline removal remain queued; live qualification open |
+| P13-01 | Create/dissolve pool | A standalone host is already a pool; naming, individually reviewed ejection and joining a standalone host to an independently connected pool implemented. Coordinated dissolve remains queued; live qualification open ([join report](reports/2026-11-08-pool-join.md)) |
+| P13-02 | Join/eject/remove pool member | Reviewed standalone-host join and ejection of disabled, evacuated non-coordinator members with empty local guest storage implemented; offline removal remains queued; live qualification open ([join report](reports/2026-11-08-pool-join.md)) |
 | P13-03 | Pool name/description | Reviewed metadata editing with fresh conflict checks and explicit partial outcomes implemented; lab qualification open |
 | P13-04 | Planned coordinator handover during evacuation | Explicit reviewed handover to a live enabled member implemented; HA must already be disabled. Separate from evacuation; live qualification open |
 | P13-05 | Enable/configure/disable HA; heartbeat SR selection | Reviewed enable/disable, heartbeat SR selection and failure-tolerance setting implemented with fresh server eligibility/failover-plan checks; advanced HA settings and live qualification open |
