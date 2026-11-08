@@ -12,7 +12,7 @@ impl ResourceRequest {
             return Err(Error::InvalidResourceCommand);
         };
         selection.validate(self.record.target)?;
-        self.record.power_batch_plan = Some(Plan::new(selection.clone()));
+        self.record.power_batch_plan = Some(Box::new(Plan::new(selection.clone())));
         self.record.steps = selection
             .vms
             .iter()

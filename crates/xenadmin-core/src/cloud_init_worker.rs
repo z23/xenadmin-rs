@@ -15,7 +15,7 @@ impl ResourceRequest {
     fn cloud_plan(&self) -> Result<&Plan, Error> {
         self.record
             .cloud_init_plan
-            .as_ref()
+            .as_deref()
             .ok_or(Error::TransferConflict)
     }
     pub(super) async fn cloud_target(

@@ -7,12 +7,12 @@ impl ResourceRequest {
     fn ipv6_plan(&self) -> Result<&Plan, Error> {
         self.record
             .management_ipv6_bond_plan
-            .as_ref()
+            .as_deref()
             .ok_or(Error::Journal)
     }
     fn set_ipv6_plan(&mut self, p: Plan) {
         p.project(&mut self.record);
-        self.record.management_ipv6_bond_plan = Some(p);
+        self.record.management_ipv6_bond_plan = Some(Box::new(p));
     }
     async fn ipv6_route(
         &self,
@@ -48,7 +48,7 @@ impl ResourceRequest {
             return Ok(());
         }
         let p = if let Some(p) = &self.record.management_ipv6_bond_plan {
-            p.clone()
+            (**p).clone()
         } else {
             tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=backend::prepare(s,&self.record)=>v?}
         };

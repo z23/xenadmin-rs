@@ -35,7 +35,7 @@ fn dispatched(journal: &mut Journal) -> ResourceRequest {
         tokio::runtime::Handle::current(),
     );
     assert!(journal.resource_admit(&mut request.record).unwrap());
-    request.record.storage_auth_plan = Some(Plan {
+    request.record.storage_auth_plan = Some(Box::new(Plan {
         operation,
         authentication: StorageAuthentication::Chap,
         baseline: vec![],
@@ -53,7 +53,7 @@ fn dispatched(journal: &mut Journal) -> ResourceRequest {
         provision_sent: false,
         provision_succeeded: false,
         verified: false,
-    });
+    }));
     request.record.steps = vec![
         step("Create temporary storage Secret"),
         step("Provision authenticated storage"),

@@ -137,7 +137,7 @@ impl ResourceRequest {
                 bounded(cancel, backend::unused(session, secret)).await?;
                 let mut plan = Plan::new(operation, vec![]);
                 plan.secret = Some(secret);
-                self.record.host_power_plan = Some(plan);
+                self.record.host_power_plan = Some(Box::new(plan));
                 crate::host_power::project(&mut self.record);
                 self.record.steps = vec![step("Remove proven-unused host power Secret")];
                 self.save(journal).await?;
@@ -179,7 +179,8 @@ impl ResourceRequest {
                 } else {
                     vec![]
                 };
-                self.record.host_power_plan = Some(Plan::new(operation.clone(), baseline));
+                self.record.host_power_plan =
+                    Some(Box::new(Plan::new(operation.clone(), baseline)));
                 self.record.steps = if settings.needs_password() {
                     vec![
                         step("Create host power-on Secret"),

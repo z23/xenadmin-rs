@@ -40,7 +40,7 @@ fn pending() -> (
     );
     request.record.transfer = Some(Default::default());
     request.record.transfer_plan = Some(Box::new(Plan::new(media.file.clone())));
-    request.record.cloud_init_plan = Some(crate::cloud_init::Plan {
+    request.record.cloud_init_plan = Some(Box::new(crate::cloud_init::Plan {
         operation: request.record.id,
         pool: request.record.pool,
         vm,
@@ -49,7 +49,7 @@ fn pending() -> (
         interrupted: false,
         upload_verified: false,
         attachment: None,
-    });
+    }));
     request.cloud_media = Some(media);
     (observed, request, path)
 }

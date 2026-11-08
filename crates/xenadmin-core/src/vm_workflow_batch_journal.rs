@@ -349,7 +349,7 @@ impl Journal {
             self.workflow_validate_links(&p)?;
             let Plan {
                 children, admitted, ..
-            } = p.workflow_batch_plan.ok_or(Error::Journal)?;
+            } = *p.workflow_batch_plan.ok_or(Error::Journal)?;
             if children.iter().take(admitted).any(|id| {
                 self.load(*id)
                     .map(|r| r.is_none_or(|r| !r.state.terminal()))

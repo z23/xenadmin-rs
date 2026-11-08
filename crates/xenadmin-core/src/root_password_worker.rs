@@ -89,13 +89,13 @@ impl ResourceRequest {
             .ok_or(Error::InvalidResourceCommand)?;
         self.record.action.validate(self.record.target)?;
         bounded(cancel, expected(session, &self.record, &change)).await?;
-        self.record.root_password_plan = Some(Plan {
+        self.record.root_password_plan = Some(Box::new(Plan {
             expected: change.clone(),
             sent: false,
             completed: false,
             login_verified: false,
             credentials_updated: false,
-        });
+        }));
         self.record.steps = vec![
             step("Change coordinator root password and request member synchronization"),
             step("Verify a new coordinator root login"),

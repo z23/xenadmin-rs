@@ -487,7 +487,7 @@ async fn private_plan_rejects_rewriting_receipts_or_selection_and_corrupt_reserv
             detail: String::new(),
         })
         .collect();
-    request.record.power_batch_plan = Some(Plan::new(selection()));
+    request.record.power_batch_plan = Some(Box::new(Plan::new(selection())));
     journal.resource_save(&mut request.record).unwrap();
     request.record.state = OperationState::Dispatching;
     request.record.power_batch_plan.as_mut().unwrap().items[0].dispatched = true;

@@ -145,13 +145,13 @@ pub(super) async fn prepare(
     let ResourceAction::DeleteHostCrashdump(dump) = &record.action else {
         return Err(Error::InvalidResourceCommand);
     };
-    record.crashdump_deletion = Some(Plan {
+    record.crashdump_deletion = Some(Box::new(Plan {
         pool: record.pool,
         host,
         dump: dump.clone(),
         dispatched: false,
         completed: false,
-    });
+    }));
     Ok(vec![Step {
         label: LABEL.into(),
         method: "host_crashdump.destroy".into(),
@@ -213,13 +213,13 @@ mod tests {
             tokio::runtime::Handle::current(),
         );
         let mut row = request.record;
-        row.crashdump_deletion = Some(Plan {
+        row.crashdump_deletion = Some(Box::new(Plan {
             pool,
             host,
             dump,
             dispatched: false,
             completed: false,
-        });
+        }));
         row.steps = vec![OperationStep {
             label: LABEL.into(),
             state: StepState::Pending,

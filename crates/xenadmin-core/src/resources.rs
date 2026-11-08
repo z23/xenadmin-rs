@@ -754,35 +754,35 @@ pub struct ResourceOperationRecord {
     #[serde(default)]
     pub management_ipv6_bond: Option<crate::ManagementIpv6BondEvidence>,
     #[serde(skip)]
-    pub(crate) management_ipv6_bond_plan: Option<crate::management_ipv6_bond::Plan>,
+    pub(crate) management_ipv6_bond_plan: Option<Box<crate::management_ipv6_bond::Plan>>,
     #[serde(skip)]
-    pub(crate) storage_graph_plan: Option<crate::storage_graph::Plan>,
+    pub(crate) storage_graph_plan: Option<Box<crate::storage_graph::Plan>>,
     #[serde(default)]
     pub storage_graph: Vec<crate::StorageGraphResult>,
     #[serde(skip)]
-    pub(crate) workflow_batch_plan: Option<crate::vm_workflow_batch::Plan>,
+    pub(crate) workflow_batch_plan: Option<Box<crate::vm_workflow_batch::Plan>>,
     #[serde(default)]
     pub workflow_batch: Vec<crate::VmWorkflowResult>,
     #[serde(skip)]
-    pub(crate) storage_maintenance_plan: Option<crate::storage_maintenance::Plan>,
+    pub(crate) storage_maintenance_plan: Option<Box<crate::storage_maintenance::Plan>>,
     #[serde(skip)]
-    pub(crate) crashdump_deletion: Option<crashdump::Plan>,
+    pub(crate) crashdump_deletion: Option<Box<crashdump::Plan>>,
     #[serde(skip)]
-    pub(crate) snapshot_preview_plan: Option<crate::snapshot_capture::Plan>,
+    pub(crate) snapshot_preview_plan: Option<Box<crate::snapshot_capture::Plan>>,
     #[serde(default)]
     pub(crate) alarm_refresh_receipts: Vec<HostId>,
     #[serde(skip)]
-    pub(crate) disk_plan: Option<crate::disk_administration::Plan>,
+    pub(crate) disk_plan: Option<Box<crate::disk_administration::Plan>>,
     #[serde(default)]
     pub disk_size: Option<u64>,
     #[serde(default)]
     pub management_network: Option<crate::ManagementNetworkEvidence>,
     #[serde(skip)]
-    pub(crate) management_network_plan: Option<crate::management_network::Plan>,
+    pub(crate) management_network_plan: Option<Box<crate::management_network::Plan>>,
     #[serde(default)]
     pub topology_changes: crate::NetworkTopologyChanges,
     #[serde(skip)]
-    pub(crate) network_topology_plan: Option<crate::network_topology::Plan>,
+    pub(crate) network_topology_plan: Option<Box<crate::network_topology::Plan>>,
     #[serde(default)]
     pub(crate) interrupted: bool,
     pub id: OperationId,
@@ -804,7 +804,7 @@ pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) transfer_plan: Option<Box<crate::transfer::Plan>>,
     #[serde(skip)]
-    pub(crate) cloud_init_plan: Option<crate::cloud_init::Plan>,
+    pub(crate) cloud_init_plan: Option<Box<crate::cloud_init::Plan>>,
     #[serde(skip)]
     pub local_error: Option<String>,
     #[serde(skip)]
@@ -834,27 +834,27 @@ pub struct ResourceOperationRecord {
     #[serde(default)]
     pub(crate) appliance_baseline: Option<Vec<crate::ApplianceId>>,
     #[serde(skip)]
-    pub(crate) host_plan: Option<host::Plan>,
+    pub(crate) host_plan: Option<Box<host::Plan>>,
     #[serde(skip)]
-    pub(crate) root_password_plan: Option<crate::root_password::Plan>,
+    pub(crate) root_password_plan: Option<Box<crate::root_password::Plan>>,
     #[serde(default)]
     pub root_password: Option<crate::RootPasswordEvidence>,
     #[serde(skip)]
-    pub(crate) host_power_plan: Option<crate::host_power::Plan>,
+    pub(crate) host_power_plan: Option<Box<crate::host_power::Plan>>,
     #[serde(default)]
     pub host_power_secret: Option<crate::HostPowerSecretEvidence>,
     #[serde(skip)]
-    pub(crate) power_batch_plan: Option<crate::power_batch::Plan>,
+    pub(crate) power_batch_plan: Option<Box<crate::power_batch::Plan>>,
     #[serde(skip)]
-    pub(crate) properties_batch_plan: Option<crate::properties_batch::Plan>,
+    pub(crate) properties_batch_plan: Option<Box<crate::properties_batch::Plan>>,
     #[serde(skip)]
-    pub(crate) storage_auth_plan: Option<crate::storage_auth::Plan>,
+    pub(crate) storage_auth_plan: Option<Box<crate::storage_auth::Plan>>,
     #[serde(skip)]
-    pub(crate) storage_secret_cleanup: Option<crate::storage_auth::CleanupPlan>,
+    pub(crate) storage_secret_cleanup: Option<Box<crate::storage_auth::CleanupPlan>>,
     #[serde(default)]
     pub storage_secrets: Vec<crate::StorageSecretEvidence>,
     #[serde(skip)]
-    pub(crate) snapshot_policy_evidence: Option<snapshot_policy::Evidence>,
+    pub(crate) snapshot_policy_evidence: Option<Box<snapshot_policy::Evidence>>,
     #[serde(default)]
     pub(crate) subject_baseline: Option<Vec<crate::SubjectId>>,
     #[serde(default)]
@@ -1004,7 +1004,7 @@ pub(crate) fn channel(
                 detail: "Not started".into(),
             })
             .collect();
-        record.workflow_batch_plan = Some(plan);
+        record.workflow_batch_plan = Some(Box::new(plan));
     }
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (
@@ -1028,4 +1028,14 @@ pub(crate) fn transfer_channel(
     pending.record.transfer = Some(Default::default());
     pending.record.transfer_plan = Some(Box::new(crate::transfer::Plan::new(request.file)));
     (operation, pending)
+}
+
+#[cfg(test)]
+#[test]
+fn operation_record_keeps_mutually_exclusive_workflows_off_the_stack() {
+    // Nested batch/child dispatch decodes several records on the default worker stack.
+    // Private plans belong on the heap even when most workflows are absent.
+    let size = std::mem::size_of::<ResourceOperationRecord>();
+    eprintln!("Resource operation record: {size} bytes");
+    assert!(size <= 4096);
 }

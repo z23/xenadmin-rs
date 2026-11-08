@@ -4,13 +4,13 @@ impl ResourceRequest {
     fn management_plan(&self) -> Result<&Plan, Error> {
         self.record
             .management_network_plan
-            .as_ref()
+            .as_deref()
             .ok_or(Error::Journal)
     }
     fn management_plan_mut(&mut self) -> Result<&mut Plan, Error> {
         self.record
             .management_network_plan
-            .as_mut()
+            .as_deref_mut()
             .ok_or(Error::Journal)
     }
     fn project_management(&mut self) -> Result<(), Error> {
@@ -33,7 +33,7 @@ impl ResourceRequest {
             state: StepState::Pending,
             detail: String::new(),
         }];
-        self.record.management_network_plan = Some(plan);
+        self.record.management_network_plan = Some(Box::new(plan));
         self.project_management()?;
         self.save(j).await?;
         let inputs = self.management.as_ref().ok_or(Error::Protocol(

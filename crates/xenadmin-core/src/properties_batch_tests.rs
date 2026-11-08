@@ -497,7 +497,7 @@ async fn properties_batch_journal_rejects_forged_success_changed_selection_and_r
             }
         })
         .collect();
-    request.record.properties_batch_plan = Some(plan);
+    request.record.properties_batch_plan = Some(Box::new(plan));
     journal.resource_save(&mut request.record).unwrap();
     for fake_label in [false, true] {
         let mut changed = request.record.clone();

@@ -37,7 +37,7 @@ impl ResourceRequest {
                 detail: String::new(),
             })
             .collect();
-        self.record.network_topology_plan = Some(plan);
+        self.record.network_topology_plan = Some(Box::new(plan));
         self.record.can_cancel = true;
         self.save(j).await?;
         for index in 0..self.record.steps.len() {

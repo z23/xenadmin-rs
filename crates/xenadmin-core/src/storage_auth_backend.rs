@@ -133,7 +133,7 @@ pub(super) async fn prepare(
         .values()
         .map(task_uuid)
         .collect::<Result<Vec<_>, _>>()?;
-    record.storage_auth_plan = Some(Plan {
+    record.storage_auth_plan = Some(Box::new(Plan {
         operation,
         authentication: credentials.authentication,
         baseline,
@@ -157,7 +157,7 @@ pub(super) async fn prepare(
         provision_sent: false,
         provision_succeeded: false,
         verified: false,
-    });
+    }));
     Ok(())
 }
 pub(super) async fn arguments(

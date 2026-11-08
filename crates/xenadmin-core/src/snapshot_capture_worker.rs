@@ -234,7 +234,7 @@ impl ResourceRequest {
                 "preview blob baseline has duplicate identities",
             ));
         }
-        self.record.snapshot_preview_plan = Some(Plan::new(expected, &image, baseline));
+        self.record.snapshot_preview_plan = Some(Box::new(Plan::new(expected, &image, baseline)));
         self.record.steps = vec![
             step("Create private snapshot preview"),
             step("Upload and verify preview image"),

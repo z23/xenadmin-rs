@@ -79,7 +79,7 @@ impl Plan {
     }
 }
 pub(crate) fn project(record: &mut ResourceOperationRecord) {
-    record.root_password = record.root_password_plan.as_ref().map(Plan::evidence);
+    record.root_password = record.root_password_plan.as_deref().map(Plan::evidence);
 }
 pub(crate) fn validate_record(record: &ResourceOperationRecord) -> Result<(), Error> {
     let action = matches!(record.action, ResourceAction::RootPassword(_));

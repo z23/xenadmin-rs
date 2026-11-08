@@ -310,7 +310,7 @@ fn resource_history_projection_excludes_private_rpc_evidence_and_intent() {
         }],
     };
     record.action = crate::ResourceAction::PowerBatch(selection.clone());
-    record.power_batch_plan = Some(crate::power_batch::Plan::new(selection));
+    record.power_batch_plan = Some(Box::new(crate::power_batch::Plan::new(selection)));
     record.power_batch_plan.as_mut().unwrap().items[0].task =
         Some("OpaqueRef:batch-private-task".into());
     let value = resource_operation_value(&record);

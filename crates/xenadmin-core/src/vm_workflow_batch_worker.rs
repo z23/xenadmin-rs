@@ -126,7 +126,7 @@ impl ResourceRequest {
                 children,
                 admitted,
                 selection,
-            } = self
+            } = *self
                 .record
                 .workflow_batch_plan
                 .clone()

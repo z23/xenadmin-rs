@@ -895,7 +895,7 @@ impl Connection {
         pending.record.transfer = Some(Default::default());
         pending.record.transfer_plan =
             Some(Box::new(crate::transfer::Plan::new(media.file.clone())));
-        pending.record.cloud_init_plan = Some(crate::cloud_init::Plan {
+        pending.record.cloud_init_plan = Some(Box::new(crate::cloud_init::Plan {
             operation: id,
             pool: vm.pool,
             vm: vm.id,
@@ -904,7 +904,7 @@ impl Connection {
             interrupted: false,
             upload_verified: false,
             attachment: None,
-        });
+        }));
         pending.cloud_media = Some(media);
         self.requests
             .try_send(Request::ResourceSubmit(Box::new(pending)))

@@ -314,7 +314,7 @@ pub(super) async fn prepare(
         );
         evidence.snapshots = Some(snapshot_ids(session, expected, false).await?);
     }
-    r.snapshot_policy_evidence = Some(evidence);
+    r.snapshot_policy_evidence = Some(Box::new(evidence));
     let mut steps = Vec::new();
     for check in checks(&operation) {
         let method = method(&operation, &check)?;

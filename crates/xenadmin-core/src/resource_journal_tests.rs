@@ -212,13 +212,13 @@ fn root_password_journal_rejects_changed_scope_and_retains_late_completion_after
             detail: String::new(),
         })
         .collect();
-    row.root_password_plan = Some(crate::root_password::Plan {
+    row.root_password_plan = Some(Box::new(crate::root_password::Plan {
         expected: change,
         sent: false,
         completed: false,
         login_verified: false,
         credentials_updated: false,
-    });
+    }));
     crate::root_password::project(&mut row);
     journal.resource_admit(&mut row).unwrap();
     let mut bad = row.clone();
@@ -283,13 +283,13 @@ fn root_password_rekey_guard_serializes_recovery_and_refuses_unknown_or_acknowle
             detail: String::new(),
         })
         .collect();
-    row.root_password_plan = Some(crate::root_password::Plan {
+    row.root_password_plan = Some(Box::new(crate::root_password::Plan {
         expected: change,
         sent: false,
         completed: false,
         login_verified: false,
         credentials_updated: false,
-    });
+    }));
     crate::root_password::project(&mut row);
     journal.resource_admit(&mut row).unwrap();
     row.state = OperationState::Verifying;
@@ -664,14 +664,14 @@ fn host_step_receipts_survive_cancellation_and_acknowledgement_without_resurrect
         expected_agent_start_time: "100".into(),
     });
     record.target = ResourceTarget::Host(crate::HostId::from(uuid::Uuid::new_v4()));
-    record.host_plan = Some(Plan {
+    record.host_plan = Some(Box::new(Plan {
         steps: vec![Step {
             kind: Kind::Restart,
             task: None,
             accepted: false,
             task_succeeded: false,
         }],
-    });
+    }));
     record.steps = vec![OperationStep {
         label: "Restart".into(),
         state: StepState::Dispatching,
@@ -1121,7 +1121,7 @@ fn authenticated_resource(pool: PoolId) -> ResourceOperationRecord {
         operation: operation.clone(),
         authentication: StorageAuthentication::Chap,
     };
-    r.storage_auth_plan = Some(Plan {
+    r.storage_auth_plan = Some(Box::new(Plan {
         operation,
         authentication: StorageAuthentication::Chap,
         baseline: vec![],
@@ -1139,7 +1139,7 @@ fn authenticated_resource(pool: PoolId) -> ResourceOperationRecord {
         provision_sent: false,
         provision_succeeded: false,
         verified: false,
-    });
+    }));
     r.steps = (0..3)
         .map(|_| OperationStep {
             label: "Fixture".into(),
@@ -1244,7 +1244,7 @@ fn host_power_private_plan_is_immutable_bounded_and_cannot_claim_unreceipted_suc
             detail: String::new(),
         },
     ];
-    row.host_power_plan = Some(crate::host_power::Plan::new(operation, vec![]));
+    row.host_power_plan = Some(Box::new(crate::host_power::Plan::new(operation, vec![])));
     journal.resource_save(&mut row).unwrap();
     let mut invalid = row.clone();
     invalid.state = OperationState::Succeeded;
@@ -1350,7 +1350,7 @@ fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
             detail: String::new(),
         }];
         record.action = ResourceAction::NetworkTopology(operation.clone());
-        record.network_topology_plan = Some(crate::network_topology::Plan {
+        record.network_topology_plan = Some(Box::new(crate::network_topology::Plan {
             pool,
             network,
             operation,
@@ -1369,7 +1369,7 @@ fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
                 verified: false,
             }],
             expires_at_ms: 1000,
-        });
+        }));
         journal.resource_admit(&mut record).unwrap();
         let text: String = journal
             .0
@@ -1488,7 +1488,7 @@ fn management_record(pool: PoolId) -> ResourceOperationRecord {
         expires_at_ms: 60_000,
     };
     r.management_network = Some(p.evidence());
-    r.management_network_plan = Some(p);
+    r.management_network_plan = Some(Box::new(p));
     r
 }
 #[test]
@@ -2109,7 +2109,7 @@ fn ipv6_staged_record(pool: PoolId) -> ResourceOperationRecord {
         temporary_properties: props,
     };
     p.project(&mut r);
-    r.management_ipv6_bond_plan = Some(p);
+    r.management_ipv6_bond_plan = Some(Box::new(p));
     r
 }
 #[test]

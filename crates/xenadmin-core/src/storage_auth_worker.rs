@@ -499,7 +499,7 @@ impl ResourceRequest {
         else {
             return Err(Error::InvalidResourceCommand);
         };
-        self.record.storage_secret_cleanup = Some(CleanupPlan {
+        self.record.storage_secret_cleanup = Some(Box::new(CleanupPlan {
             source: *operation,
             secrets: secrets
                 .iter()
@@ -509,7 +509,7 @@ impl ResourceRequest {
                     completed: false,
                 })
                 .collect(),
-        });
+        }));
         self.record.steps = secrets
             .iter()
             .map(|_| step("Remove reviewed unused storage Secret"))

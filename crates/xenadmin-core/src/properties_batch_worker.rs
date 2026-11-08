@@ -24,7 +24,7 @@ impl ResourceRequest {
                 }
             })
             .collect();
-        self.record.properties_batch_plan = Some(plan);
+        self.record.properties_batch_plan = Some(Box::new(plan));
         self.record.can_cancel = true;
         self.record.detail =
             "Checking every selected VM and property before the first change".into();
@@ -83,7 +83,7 @@ impl ResourceRequest {
     fn properties_plan(&self) -> Result<&Plan, Error> {
         self.record
             .properties_batch_plan
-            .as_ref()
+            .as_deref()
             .ok_or(Error::Journal)
     }
     async fn merge_properties_receipt(
