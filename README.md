@@ -97,3 +97,8 @@ XCP-ng or Vates application.
 
 Use `./scripts/dev.sh` to enable private local inspection of the running desktop, and
 `./scripts/inspect.sh` to query it. See [development diagnostics](docs/DEVELOPMENT.md).
+
+Version 0.7.0 adds reviewed host/pool and HA administration, directory roles and host
+certificates, XVA and raw/VHD disk transfers, tags/folders/custom fields, and vApp management.
+Journal locking and public diagnostic privacy fixes are included. See the
+[checkpoint report](docs/reports/2026-11-08-checkpoint-0.7.md) for verification and remaining scope.

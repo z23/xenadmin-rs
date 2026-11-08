@@ -45,3 +45,13 @@ target/debug/xenadmin-rs --snap artifacts/host-administration-compact.png --tree
 
 target/debug/xenadmin-rs --snap artifacts/organization.png --tree artifacts/organization.json --scene organization --theme dark --size 1440x900 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/organization-compact.png --tree artifacts/organization-compact.json --scene organization --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/pool-policies.png --tree artifacts/pool-policies.json --scene pool-policies --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/pool-policy-review.png --tree artifacts/pool-policy-review.json --scene pool-policy-review --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/archive-export.png --tree artifacts/archive-export.json --scene archive-export --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/archive-export-compact.png --tree artifacts/archive-export-compact.json --scene archive-export --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/appliances.png --tree artifacts/appliances.json --scene appliances --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/appliance-review.png --tree artifacts/appliance-review.json --scene appliance-review --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/pool-security.png --tree artifacts/pool-security.json --scene pool-security --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/pool-security-review.png --tree artifacts/pool-security-review.json --scene pool-security-review --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/disk-export.png --tree artifacts/disk-export.json --scene disk-export --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/disk-export-compact.png --tree artifacts/disk-export-compact.json --scene disk-export --theme dark --size 513x652 --scale 1 --at 1
