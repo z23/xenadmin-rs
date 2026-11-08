@@ -74,6 +74,10 @@ activity, organization and bounded XVA/raw/VHD/OVF transfers. The
 Further increments and outstanding workflows are tracked in the per-row ledger and their reports. Implemented behavior has protocol, journal, Rune and native synthetic-render
 checks, with remaining workflows explicitly open.
 
+Reviewed bulk deletion reuses the single-VM deletion worker under durable parent/child
+ownership. Its scope and recovery evidence are recorded in the
+[batch deletion report](reports/2026-11-08-bulk-vm-deletion.md); bulk move/export remain open.
+
 The user requested a prepared local disposable lab and deferred live tests until virtualization
 is available. No active lab has been provisioned. Actual host compatibility, guest data
 integrity, failover and the complete XO-down acceptance run remain qualification gates.

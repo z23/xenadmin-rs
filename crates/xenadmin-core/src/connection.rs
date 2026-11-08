@@ -1440,7 +1440,7 @@ async fn run(
                                     Ok(rows)=>{
                                         journal_error=None;
                                         for record in rows.into_iter().filter(|record|record.pool==inventory.pool_id) {
-                                            if !record.state.terminal() && record.has_task()
+                                            if record.batch_parent.is_none() && !record.state.terminal() && record.has_task()
                                                 && record.state!=crate::OperationState::OutcomeUnknown
                                                 && !worker_counts.contains_key(&record.id) {
                                                 start_worker(MutationRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
@@ -1489,7 +1489,8 @@ async fn run(
                                     if let Err(error)=result {publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update);}
                                 }
                                 Request::Submit(request)=>{
-                                    if options.read_only {request.reject(Error::ReadOnly);}
+                                    if operations::Journal::open(&directory).and_then(|j|j.workflow_owner(request.record.id)).map_or(true,|p|p.is_some()) {request.reject(Error::OperationConflict);}
+                                    else if options.read_only {request.reject(Error::ReadOnly);}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|inventory|inventory.pool_id==request.record.pool) {
                                         request.reject(Error::Stale);
                                     } else if journal_error.is_some() {request.reject(Error::Journal);}
@@ -1592,6 +1593,7 @@ async fn run(
                                         if options.read_only {return Err(Error::ReadOnly);}
                                         let pool=last_inventory.as_ref().filter(|_|!token.is_empty()).ok_or(Error::Stale)?.pool_id;
                                         let journal=operations::Journal::open(&directory)?;
+                                        if journal.workflow_owner(id)?.is_some() {return Err(Error::UnavailableAction);}
                                         let record=match control {
                                             crate::OperationControl::RequestCancellation=>journal.control(pool,id,false)?,
                                             crate::OperationControl::AcknowledgeUnknown=>journal.control(pool,id,true)?,
@@ -1695,7 +1697,9 @@ async fn run(
                                         match operations::recover(&directory, inventory.pool_id) {
                                             Ok(rows) => {
                                                 for record in rows {
-                                                    if !record.state.terminal() && record.has_task()
+                                                    if record.batch_parent.is_none()
+                                                        && !record.state.terminal()
+                                                        && record.has_task()
                                                     {
                                                         start_worker(
                                                             MutationRequest::tracking(

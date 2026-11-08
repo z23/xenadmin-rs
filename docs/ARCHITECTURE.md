@@ -361,6 +361,16 @@ unsubmitted steps. Network creation uses an operation tag plus a bounded pre-exi
 baseline; deletion and MTU changes require fresh empty PIF/VIF sets. Resource history is
 available from the pool dialog even after the target is removed, and from the private inspector.
 
+Journal version 4 adds normalized parent/child links for reviewed VM workflow batches.
+A pool-scoped parent reserves the pool while its exact captured children run serially through
+the existing VM workers. Only a private permit, checked against the immutable typed action,
+VM, pool, ordinal and child ID under the admission transaction, can exclude that parent from
+the child's conflict check. Public child controls and independent recovery workers are refused.
+Recovery and acknowledgement fence parent and active child together; recheck reads admitted
+children without starting the remainder. Terminal groups are pruned together, and unresolved
+children retain their parent evidence. Stop finishes the current child and skips the rest.
+The first supported workflow is reviewed deletion; see the [batch deletion report](reports/2026-11-08-bulk-vm-deletion.md).
+
 The [console adapter decision](decisions/0003-console-protocol-adapter.md) documents the
 vendored protocol fixes. Console target identity is independent of table selection. Clipboard
 requests are explicit and fenced by a console epoch, including reconnection; passwords and

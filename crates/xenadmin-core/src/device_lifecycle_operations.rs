@@ -8,7 +8,10 @@ impl MutationRequest {
         index: usize,
     ) -> Result<bool, Error> {
         let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
-        if current.state.terminal() || current.state == OperationState::OutcomeUnknown {
+        if current.state.terminal()
+            || current.state == OperationState::OutcomeUnknown
+            || journal.workflow_child_stopped(current.id)?
+        {
             self.record = current;
             self.emit().await;
             return Ok(false);
@@ -41,8 +44,11 @@ impl MutationRequest {
             index + 1,
             self.record.steps.len()
         );
-        match self.publish(journal).await {
-            Ok(()) => Ok(true),
+        match journal.save_vm_dispatch(&mut self.record) {
+            Ok(()) => {
+                self.emit_dispatch();
+                Ok(true)
+            }
             Err(Error::JournalChanged) => {
                 self.record = journal.load(self.record.id)?.ok_or(Error::Journal)?;
                 self.emit().await;

@@ -2,6 +2,7 @@ mod activity;
 mod activity_export;
 mod alarms_view;
 mod appliance_view;
+mod bulk_delete;
 mod bulk_power;
 mod bulk_properties;
 mod cloud_init_view;
@@ -182,6 +183,7 @@ struct State {
     failure_help: Option<failure_help::FailureHelp>,
     bulk_power: Option<bulk_power::Editor>,
     bulk_properties: Option<bulk_properties::Editor>,
+    bulk_delete: Option<bulk_delete::Editor>,
     row_menu: Option<inventory_menu::Context>,
     searches: Option<search_view::Workspace>,
     metrics: Option<metrics_view::MetricsUi>,
@@ -307,6 +309,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         console_seat: None,
         bulk_power: None,
         bulk_properties: None,
+        bulk_delete: None,
         row_menu: None,
         searches: None,
         metrics: None,
@@ -1192,6 +1195,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         content = content.child(bulk_power::selection_bar(s, &k));
     } else if s.page == Page::Templates {
         content = content.child(bulk_properties::selection_bar(s, &k));
+        content = content.child(bulk_delete::button(s, &k));
     }
     if s.demo {
         content = content.child(
@@ -1567,7 +1571,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
-    let root = if s.bulk_power.is_some() {
+    let root = if s.bulk_delete.is_some() {
+        rune_kit::root(root, [bulk_delete::dialog(s, &k)])
+    } else if s.bulk_power.is_some() {
         rune_kit::root(root, [bulk_power::dialog(s, &k)])
     } else {
         root
@@ -1927,7 +1933,20 @@ fn details(s: &State, k: &Kit) -> El {
                     .role("alert"),
             );
         }
-        if record.can_cancel && !record.cancel_requested && !record.state.terminal() {
+        if let Some(parent) = record.batch_parent {
+            actions = actions.child(
+                caption(
+                    format!("Managed by batch {parent}. Use the batch controls in pool history."),
+                    k,
+                )
+                .wrap_anywhere(),
+            );
+        }
+        if record.batch_parent.is_none()
+            && record.can_cancel
+            && !record.cancel_requested
+            && !record.state.terminal()
+        {
             let id = record.id;
             actions = actions.child(
                 Button::new(
@@ -1951,7 +1970,9 @@ fn details(s: &State, k: &Kit) -> El {
                 .build(k),
             );
         }
-        if record.state == xenadmin_core::OperationState::OutcomeUnknown {
+        if record.batch_parent.is_none()
+            && record.state == xenadmin_core::OperationState::OutcomeUnknown
+        {
             let id = record.id;
             if record.can_recheck() {
                 actions = actions.child(
@@ -2295,6 +2316,7 @@ fn main() -> std::process::ExitCode {
             }),
             ("batch-power", bulk_power::scene),
             ("batch-properties", bulk_properties::scene),
+            ("batch-delete", bulk_delete::scene),
             ("console-recovery", console_view::recovery_scene),
             ("multiple-consoles", console_windows::multiple_scene),
             ("guest-connections", |s| external_tools::scene(s, false)),

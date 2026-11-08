@@ -387,7 +387,7 @@ fn network_label(inventory: &Inventory, id: NetworkId) -> String {
             |network| format!("{} ({id})", network.name),
         )
 }
-fn disk_label(inventory: &Inventory, id: VdiId) -> String {
+pub(super) fn disk_label(inventory: &Inventory, id: VdiId) -> String {
     inventory.details.vdis.get(&id).map_or_else(
         || id.to_string(),
         |disk| {
@@ -806,7 +806,16 @@ fn history(s: &State, k: &Kit) -> El {
                     .build(k),
             );
         }
-        if record.can_cancel && !record.state.terminal() {
+        if let Some(parent) = record.batch_parent {
+            item = item.child(
+                caption(
+                    format!("Managed by batch {parent}; use pool history for controls."),
+                    k,
+                )
+                .wrap_anywhere(),
+            );
+        }
+        if record.batch_parent.is_none() && record.can_cancel && !record.state.terminal() {
             let id = record.id;
             item = item.child(
                 Button::new("Stop remaining steps")
@@ -882,4 +891,14 @@ pub(super) fn cloud_scene(s: &mut State) {
 }
 pub(super) fn cloud_pending_scene(s: &mut State) {
     creation_cloud::pending_scene(s);
+}
+
+pub(super) fn deletion_review(
+    inventory: &Inventory,
+    source: &Vm,
+    disks: &BTreeSet<VdiId>,
+    snapshots: &BTreeSet<SnapshotId>,
+    snapshot_disks: &BTreeSet<VdiId>,
+) -> Vec<String> {
+    deletion::describe(inventory, source, disks, snapshots, snapshot_disks)
 }

@@ -168,8 +168,10 @@ pub(super) fn selection_bar(s: &State, k: &Kit) -> El {
     let count = selection(s).len();
     row()
         .gap(10.0)
+        .flex_wrap()
         .center_y()
         .flex_wrap()
+        .child(bulk_delete::button(s, k))
         .child(
             caption(
                 if count > 32 {

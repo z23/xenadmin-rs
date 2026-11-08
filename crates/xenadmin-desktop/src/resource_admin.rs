@@ -283,6 +283,7 @@ fn review(s: &mut State) {
             Kind::Acknowledge(id) => {
                 let record=s.resource_rows.iter().find(|r|r.id==id&&r.applies_to_pool(editor.pool)).ok_or("The operation is no longer available for this pool")?;
                 review.lines.push(format!("{} · {}",record.action.label(),record.id));
+                if !record.workflow_batch.is_empty() { review.lines.push("Acknowledgement releases the batch and its active unknown child together. It does not prove deletion, cancel host work or delete remaining targets.".into()); }
                 review.lines.push(if let Some(peer)=record.peer_pool() {
                     format!("This releases write reservations for BOTH pools: {} and {}. The server outcome remains unverified. Inspect both pools before continuing.",record.pool,peer)
                 } else {"This releases the pool's write guard without establishing the server outcome. Inspect the affected resources and any host task before continuing.".into()});
@@ -716,6 +717,24 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
                 view = view.child(caption(format!("{label}: {id}"), k).wrap_anywhere());
             }
         }
+        for result in &record.workflow_batch {
+            view = view.child(
+                caption(
+                    format!(
+                        "VM {} · child {} · {}\n{}",
+                        result.vm,
+                        result.child,
+                        result
+                            .state
+                            .as_ref()
+                            .map_or_else(|| "Not started".into(), |s| format!("{s:?}")),
+                        result.detail
+                    ),
+                    k,
+                )
+                .wrap_anywhere(),
+            );
+        }
         for step in &record.steps {
             view = view.child(
                 caption(
@@ -769,6 +788,11 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             view = view.child(
                 Button::new(
                     if matches!(
+                        record.action,
+                        xenadmin_core::ResourceAction::VmWorkflowBatch(_)
+                    ) {
+                        "Finish current VM and stop"
+                    } else if matches!(
                         record.action,
                         xenadmin_core::ResourceAction::Host(_)
                             | xenadmin_core::ResourceAction::Disk(_)

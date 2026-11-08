@@ -530,7 +530,12 @@ fn can_recheck(s: &State, row: &Row) -> bool {
                 .is_some()
         }
         Target::History(key) => {
-            s.can_mutate() && s.inventory.as_ref().is_some_and(|i| i.pool_id == key.pool)
+            s.can_mutate()
+                && s.inventory.as_ref().is_some_and(|i| i.pool_id == key.pool)
+                && s.operation_rows
+                    .iter()
+                    .find(|r| r.id == key.id)
+                    .is_some_and(|r| r.batch_parent.is_none())
         }
         _ => false,
     }

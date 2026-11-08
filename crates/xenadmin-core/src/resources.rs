@@ -174,6 +174,10 @@ pub enum ResourceCommand {
         pool: ObservedResource,
         selection: crate::VmPropertiesBatch,
     },
+    VmWorkflowBatch {
+        pool: ObservedResource,
+        selection: crate::VmWorkflowBatch,
+    },
     PowerBatch {
         pool: ObservedResource,
         selection: crate::VmPowerBatch,
@@ -271,6 +275,7 @@ pub enum ResourceAction {
     ManagementNetwork(Box<crate::ManagementNetworkOperation>),
     HostPower(crate::HostPowerOperation),
     NetworkTopology(crate::NetworkTopologyOperation),
+    VmWorkflowBatch(crate::VmWorkflowBatch),
     PowerBatch(crate::VmPowerBatch),
     PropertiesBatch(crate::VmPropertiesBatch),
     CrossPoolVm(crate::CrossPoolVmOperation),
@@ -327,6 +332,7 @@ impl ResourceAction {
     pub fn permission_requirements(&self, target: ResourceTarget) -> crate::PermissionRequirements {
         use crate::PermissionRequirements as Required;
         match self {
+            Self::VmWorkflowBatch(selection) => selection.permission_requirements(),
             Self::Alarm(op) => Required::writes([match op {
                 crate::AlarmOperation::Refresh { .. } => "host.call_plugin".into(),
                 _ => format!("{}.set_other_config", target.class()),
@@ -420,6 +426,7 @@ impl ResourceAction {
             Self::SnapshotPreviewUpload(_) => "Attach snapshot preview",
             Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
+            Self::VmWorkflowBatch(_) => "Delete selected VMs",
             Self::PowerBatch(_) => "Power actions on selected VMs",
             Self::PropertiesBatch(_) => "Edit selected VM properties",
             Self::CrossPoolVm(operation) => operation.mode.label(),
@@ -470,6 +477,7 @@ impl ResourceAction {
             Self::HostPower(operation) => {
                 matches!(target, ResourceTarget::Host(_)) && operation.valid()
             }
+            Self::VmWorkflowBatch(selection) => return selection.validate(target),
             Self::PowerBatch(selection) => return selection.validate(target),
             Self::PropertiesBatch(selection) => return selection.validate(target),
             Self::CrossPoolVm(operation) => {
@@ -604,6 +612,9 @@ impl ResourceCommand {
             }
             Self::Disk { target, operation } => (target, ResourceAction::Disk(operation)),
             Self::HostPower { host, operation } => (host, ResourceAction::HostPower(operation)),
+            Self::VmWorkflowBatch { pool, selection } => {
+                (pool, ResourceAction::VmWorkflowBatch(selection))
+            }
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
             Self::PropertiesBatch { pool, selection } => {
                 (pool, ResourceAction::PropertiesBatch(selection))
@@ -722,6 +733,10 @@ pub struct ResourceOperationRecord {
     pub(crate) storage_graph_plan: Option<crate::storage_graph::Plan>,
     #[serde(default)]
     pub storage_graph: Vec<crate::StorageGraphResult>,
+    #[serde(skip)]
+    pub(crate) workflow_batch_plan: Option<crate::vm_workflow_batch::Plan>,
+    #[serde(default)]
+    pub workflow_batch: Vec<crate::VmWorkflowResult>,
     #[serde(skip)]
     pub(crate) storage_maintenance_plan: Option<crate::storage_maintenance::Plan>,
     #[serde(skip)]
@@ -881,7 +896,9 @@ pub(crate) fn channel(
     action: ResourceAction,
     runtime: tokio::runtime::Handle,
 ) -> (ResourceOperation, ResourceRequest) {
-    let record = ResourceOperationRecord {
+    let mut record = ResourceOperationRecord {
+        workflow_batch_plan: None,
+        workflow_batch: Vec::new(),
         snapshot_preview_plan: None,
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
@@ -943,6 +960,20 @@ pub(crate) fn channel(
         join_baseline: None,
         cross_pool_plan: None,
     };
+    if let ResourceAction::VmWorkflowBatch(selection) = &record.action {
+        let plan = crate::vm_workflow_batch::Plan::new(selection.clone());
+        record.workflow_batch = plan.results();
+        record.steps = selection
+            .items
+            .iter()
+            .map(|item| OperationStep {
+                label: format!("Delete VM {}", item.vm),
+                state: crate::StepState::Pending,
+                detail: "Not started".into(),
+            })
+            .collect();
+        record.workflow_batch_plan = Some(plan);
+    }
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (
         ResourceOperation { receiver, runtime },

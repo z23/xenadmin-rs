@@ -49,11 +49,19 @@ impl Journal {
             }
         }
     }
+    #[cfg(test)]
     pub(crate) fn resource_pool_busy(&self, pool: PoolId) -> Result<bool, Error> {
+        self.resource_pool_busy_except(pool, None)
+    }
+    pub(crate) fn resource_pool_busy_except(
+        &self,
+        pool: PoolId,
+        parent: Option<OperationId>,
+    ) -> Result<bool, Error> {
         Ok(self
             .active_resources(pool)?
             .iter()
-            .any(|record| record.action != ResourceAction::CancelTask))
+            .any(|record| Some(record.id) != parent && record.action != ResourceAction::CancelTask))
     }
     fn active_resources(&self, pool: PoolId) -> Result<Vec<ResourceOperationRecord>, Error> {
         let mut query = self
@@ -70,6 +78,7 @@ impl Journal {
                 let id = serde_json::from_value(serde_json::Value::String(id))
                     .map_err(|_| Error::Journal)?;
                 let record = self.resource_load(id)?.ok_or(Error::Journal)?;
+                self.workflow_validate_links(&record)?;
                 if record.pool.to_string() != stored_pool {
                     return Err(Error::Journal);
                 }
@@ -137,6 +146,13 @@ impl Journal {
                 .map_err(|_| Error::Journal)?;
             let network_topology_plan = payload
                 .get("network_topology_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
+            let workflow_batch_plan = payload
+                .get("workflow_batch_plan")
                 .filter(|v| !v.is_null())
                 .cloned()
                 .map(serde_json::from_value)
@@ -243,6 +259,7 @@ impl Journal {
             record.storage_maintenance_plan = storage_maintenance_plan;
             record.disk_plan = disk_plan;
             record.network_topology_plan = network_topology_plan;
+            record.workflow_batch_plan = workflow_batch_plan;
             record.power_batch_plan = power_batch_plan;
             record.properties_batch_plan = properties_batch_plan;
             record.storage_auth_plan = storage_auth_plan;
@@ -284,6 +301,8 @@ impl Journal {
             crate::transfer::checkpoint::validate_record(&record)?;
             super::crashdump::validate_record(&record)?;
             crate::host_support::restore::validate_record(&record)?;
+            crate::vm_workflow_batch::validate_record(&record)?;
+            self.workflow_validate_persisted(&record)?;
             Ok(record)
         })
         .transpose()
@@ -291,6 +310,10 @@ impl Journal {
     pub(crate) fn resource_save(&self, record: &mut ResourceOperationRecord) -> Result<(), Error> {
         if let Some(p) = &record.management_ipv6_bond_plan {
             record.management_ipv6_bond = Some(p.evidence(&record.state));
+        }
+        crate::vm_workflow_batch::validate_record(record)?;
+        if record.state.terminal() && record.workflow_batch_plan.is_some() {
+            self.workflow_validate_persisted(record)?;
         }
         super::alarms::validate_receipts(record)?;
         record.interrupted |= record.state == OperationState::OutcomeUnknown;
@@ -409,6 +432,14 @@ impl Journal {
             }) {
                 return Err(Error::JournalChanged);
             }
+            if old.workflow_batch_plan.as_ref().is_some_and(|p| {
+                record
+                    .workflow_batch_plan
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
+            }
             if old.power_batch_plan.as_ref().is_some_and(|p| {
                 record
                     .power_batch_plan
@@ -493,6 +524,12 @@ impl Journal {
             return Err(Error::JournalChanged);
         }
         let mut payload = serde_json::to_value(&record).map_err(|_| Error::Journal)?;
+        if let Some(plan) = &record.workflow_batch_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "workflow_batch_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         if let Some(plan) = &record.power_batch_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "power_batch_plan".into(),
@@ -625,10 +662,14 @@ impl Journal {
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::Journal)?;
         let result = (|| {
+            if self.workflow_owner(record.id)?.is_some() {
+                return Err(Error::OperationConflict);
+            }
             if self.load(record.id)?.is_some() {
                 return Err(Error::OperationConflict);
             }
             if let Some(old) = self.resource_load(record.id)? {
+                self.workflow_validate_links(&old)?;
                 if old.pool != record.pool
                     || old.target != record.target
                     || old.action != record.action
@@ -679,7 +720,9 @@ impl Journal {
             }
             self.claim_ipv6_predecessor(record)?;
             self.resource_save(record)?;
-            self.0.execute("DELETE FROM resource_operations WHERE terminal=1 AND COALESCE(json_extract(payload,'$.management_ipv6_bond.retains_reservation'),0)=0 AND rowid NOT IN (SELECT rowid FROM resource_operations WHERE terminal=1 ORDER BY rowid DESC LIMIT 500)",[]).map_err(|_|Error::Journal)?;
+            self.workflow_insert_links(record)?;
+            self.workflow_prune()?;
+            self.0.execute("DELETE FROM resource_operations WHERE terminal=1 AND COALESCE(json_extract(payload,'$.management_ipv6_bond.retains_reservation'),0)=0 AND id NOT IN (SELECT parent FROM workflow_batch_children UNION SELECT child FROM workflow_batch_children) AND rowid NOT IN (SELECT rowid FROM resource_operations WHERE terminal=1 ORDER BY rowid DESC LIMIT 500)",[]).map_err(|_|Error::Journal)?;
             Ok(true)
         })();
         if result.is_ok() {
@@ -882,6 +925,16 @@ impl Journal {
         id: OperationId,
         control: OperationControl,
     ) -> Result<ResourceOperationRecord, Error> {
+        if self.workflow_owner(id)?.is_some() {
+            return Err(Error::UnavailableAction);
+        }
+        if matches!(control, OperationControl::AcknowledgeUnknown)
+            && self
+                .resource_load(id)?
+                .is_some_and(|r| r.workflow_batch_plan.is_some())
+        {
+            return self.workflow_interrupt(pool, id, true);
+        }
         for _ in 0..16 {
             let mut record = self
                 .resource_load(id)?
@@ -944,6 +997,10 @@ impl Journal {
         }
         for record in &mut rows {
             if record.state.terminal() {
+                continue;
+            }
+            if record.workflow_batch_plan.is_some() {
+                *record = self.workflow_interrupt(pool, record.id, false)?;
                 continue;
             }
             if record.state == OperationState::Preparing {

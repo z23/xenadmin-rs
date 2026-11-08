@@ -28,7 +28,9 @@ impl MutationRequest {
                 return Ok(true);
             }
             let stop = current.state.terminal()
-                || !rechecking && current.state == OperationState::OutcomeUnknown;
+                || !rechecking
+                    && (current.state == OperationState::OutcomeUnknown
+                        || journal.workflow_child_stopped(current.id)?);
             if !stop {
                 current.state = received.state.clone();
                 current.steps = received.steps.clone();

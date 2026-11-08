@@ -7,6 +7,8 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
         management_ipv6_bond: None,
         management_ipv6_bond_plan: None,
+        workflow_batch: Vec::new(),
+        workflow_batch_plan: None,
         snapshot_preview_plan: None,
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
@@ -457,7 +459,7 @@ fn recovery_never_replays_unsubmitted_steps_and_revokes_old_worker_revision() {
     }
 }
 #[test]
-fn v2_migration_preserves_vm_evidence_and_installs_resource_journal_once() {
+fn v2_migration_preserves_vm_evidence_and_installs_resource_and_batch_tables() {
     let dir = tempfile::tempdir().unwrap();
     let pool = PoolId::from(uuid::Uuid::new_v4());
     let mut virtual_machine = vm(pool);
@@ -466,7 +468,7 @@ fn v2_migration_preserves_vm_evidence_and_installs_resource_journal_once() {
         journal.admit(&mut virtual_machine).unwrap();
         journal
             .0
-            .execute_batch("DROP TABLE resource_operations; PRAGMA user_version=2;")
+            .execute_batch("DROP TABLE resource_operations; DROP TABLE workflow_batch_children; PRAGMA user_version=2;")
             .unwrap();
     }
     let journal = Journal::open(dir.path()).unwrap();
@@ -480,12 +482,46 @@ fn v2_migration_preserves_vm_evidence_and_installs_resource_journal_once() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u64>(0))
             .unwrap(),
-        3
+        4
     );
     assert!(matches!(
         journal.resource_admit(&mut resource(pool)),
         Err(Error::ConflictingPoolOperation)
     ));
+}
+#[test]
+fn v3_migration_preserves_resource_evidence_and_installs_empty_child_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let mut record = resource(pool);
+    {
+        let journal = Journal::open(dir.path()).unwrap();
+        journal.resource_admit(&mut record).unwrap();
+        journal
+            .0
+            .execute_batch("DROP TABLE workflow_batch_children; PRAGMA user_version=3;")
+            .unwrap();
+    }
+    for _ in 0..2 {
+        let journal = Journal::open(dir.path()).unwrap();
+        assert_eq!(journal.resource_load(record.id).unwrap().unwrap(), record);
+        assert_eq!(
+            journal
+                .0
+                .query_row("SELECT COUNT(*) FROM workflow_batch_children", [], |row| {
+                    row.get::<_, u64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            journal
+                .0
+                .query_row("PRAGMA user_version", [], |row| row.get::<_, u64>(0))
+                .unwrap(),
+            4
+        );
+    }
 }
 #[test]
 fn resource_intents_are_closed_typed_and_reject_invalid_or_no_op_values() {

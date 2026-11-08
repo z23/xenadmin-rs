@@ -153,47 +153,54 @@ pub(super) fn editor(form: &Editor, k: &Kit) -> El {
     body.child(caption("Shared or unowned data is never included automatically. If another operator changes ownership or consumers, submission is refused. Completed deletions cannot be rolled back after a later failure.",k).wrap())
 }
 pub(super) fn review(form: &Editor) -> Vec<String> {
+    describe(
+        &form.initial,
+        &form.source,
+        &form.disks,
+        &form.snapshots,
+        &form.snapshot_disks,
+    )
+}
+pub(super) fn describe(
+    inventory: &Inventory,
+    source: &Vm,
+    disks: &BTreeSet<VdiId>,
+    snapshots: &BTreeSet<SnapshotId>,
+    snapshot_disks: &BTreeSet<VdiId>,
+) -> Vec<String> {
     let mut lines = vec![format!(
         "Permanently remove {} “{}” ({}) from the pool inventory.",
-        if form.source.is_template {
-            "template"
-        } else {
-            "VM"
-        },
-        form.source.name,
-        form.source.id
+        if source.is_template { "template" } else { "VM" },
+        source.name,
+        source.id
     )];
     lines.push("Its disk and network attachment records are also removed. Retained disks remain in storage.".into());
-    if form.disks.is_empty() && form.snapshots.is_empty() {
+    if disks.is_empty() && snapshots.is_empty() {
         lines.push(
             "Record-only deletion: no disk data or snapshot records were selected for deletion."
                 .into(),
         );
     }
-    for id in &form.disks {
-        lines.push(format!(
-            "DELETE DISK DATA: {}",
-            disk_label(&form.initial, *id)
-        ));
-        lines.extend(consumers(&form.initial, *id));
+    for id in disks {
+        lines.push(format!("DELETE DISK DATA: {}", disk_label(inventory, *id)));
+        lines.extend(consumers(inventory, *id));
     }
-    for snapshot in form.initial.snapshots.for_vm(form.source.id) {
-        if form.snapshots.contains(&snapshot.id) {
+    for snapshot in inventory.snapshots.for_vm(source.id) {
+        if snapshots.contains(&snapshot.id) {
             lines.push(format!(
                 "DELETE SNAPSHOT: {} ({})",
                 snapshot.name, snapshot.id
             ));
-            for disk in form
-                .initial
+            for disk in inventory
                 .snapshot_deletion_disks(snapshot.id)
                 .into_iter()
-                .filter(|id| form.snapshot_disks.contains(id))
+                .filter(|id| snapshot_disks.contains(id))
             {
                 lines.push(format!(
                     "DELETE SNAPSHOT DATA: {}",
-                    disk_label(&form.initial, disk)
+                    disk_label(inventory, disk)
                 ));
-                lines.extend(consumers(&form.initial, disk));
+                lines.extend(consumers(inventory, disk));
             }
         } else {
             lines.push(format!(
@@ -202,20 +209,16 @@ pub(super) fn review(form: &Editor) -> Vec<String> {
             ));
         }
     }
-    for id in form
-        .initial
+    for id in inventory
         .details
         .vbds
         .values()
-        .filter(|vbd| vbd.vm == Some(form.source.id) && vbd.kind == "Disk")
+        .filter(|vbd| vbd.vm == Some(source.id) && vbd.kind == "Disk")
         .filter_map(|vbd| vbd.vdi)
         .collect::<BTreeSet<_>>()
     {
-        if !form.disks.contains(&id) {
-            lines.push(format!(
-                "Retain disk data: {}",
-                disk_label(&form.initial, id)
-            ));
+        if !disks.contains(&id) {
+            lines.push(format!("Retain disk data: {}", disk_label(inventory, id)));
         }
     }
     lines.push("Only the exact reviewed UUIDs are eligible for deletion. New snapshots or disks are not silently added. Selected data deletion cannot be undone. Partial or uncertain results remain in VM changes after the source disappears.".into());

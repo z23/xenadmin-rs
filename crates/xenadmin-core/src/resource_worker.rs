@@ -38,6 +38,8 @@ mod storage_maintenance_worker;
 mod transfer_disk_worker;
 #[path = "transfer_worker.rs"]
 mod transfer_worker;
+#[path = "vm_workflow_batch_worker.rs"]
+mod vm_workflow_batch_worker;
 use super::{ResourceOperationRecord, xapi};
 use crate::{
     Error, OperationId, OperationState, OperationStep, StepState,
@@ -50,6 +52,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
+    directory: Option<PathBuf>,
     pub(crate) snapshot_preview_image: Option<crate::SnapshotPreviewImage>,
     pub(crate) management: Option<crate::management_network::Inputs>,
     pub(crate) storage_credentials: Option<crate::StorageCredentials>,
@@ -72,6 +75,7 @@ impl ResourceRequest {
         sender: watch::Sender<Arc<ResourceOperationRecord>>,
     ) -> Self {
         Self {
+            directory: None,
             snapshot_preview_image: None,
             management: None,
             sensitive: None,
@@ -91,6 +95,7 @@ impl ResourceRequest {
     pub(crate) fn tracking(record: ResourceOperationRecord) -> Self {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
+            directory: None,
             snapshot_preview_image: None,
             management: None,
             sensitive: None,
@@ -153,6 +158,7 @@ impl ResourceRequest {
         updates: mpsc::Sender<OperationUpdate>,
     ) -> OperationId {
         let id = self.record.id;
+        self.directory = Some(directory.clone());
         self.updates = Some(updates);
         let mut journal = match Journal::open(&directory) {
             Ok(journal) => journal,
@@ -294,6 +300,12 @@ impl ResourceRequest {
             super::ResourceAction::NetworkTopology(_)
         ) {
             return self.execute_topology(journal, session, cancel).await;
+        }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::VmWorkflowBatch(_)
+        ) {
+            return self.execute_workflow_batch(journal, session, cancel).await;
         }
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.execute_power_batch(journal, session, cancel).await;
@@ -524,6 +536,14 @@ impl ResourceRequest {
             super::ResourceAction::NetworkTopology(_)
         ) {
             return self.reconcile_topology(journal, session, cancel).await;
+        }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::VmWorkflowBatch(_)
+        ) {
+            return self
+                .reconcile_workflow_batch(journal, session, cancel)
+                .await;
         }
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.reconcile_power_batch(journal, session, cancel).await;
@@ -1030,6 +1050,7 @@ impl ResourceRequest {
             self.record.action,
             super::ResourceAction::PowerBatch(_)
                 | super::ResourceAction::PropertiesBatch(_)
+                | super::ResourceAction::VmWorkflowBatch(_)
                 | super::ResourceAction::DeleteHostCrashdump(_)
                 | super::ResourceAction::SnapshotPreviewUpload(_)
                 | super::ResourceAction::RootPassword(_)

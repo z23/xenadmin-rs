@@ -35,12 +35,14 @@ mod root_password;
 pub use root_password::{PoolRootPasswordChange, RootPassword, RootPasswordEvidence};
 mod power_batch;
 mod properties_batch;
+mod vm_workflow_batch;
 pub use permissions::{
     PermissionAssessment, PermissionDecision, PermissionRequirements, PermissionUnknown,
     SessionPermissions,
 };
 pub use power_batch::{BatchVmPower, VmPowerBatch};
 pub use properties_batch::{BatchVmProperties, VmPropertiesBatch};
+pub use vm_workflow_batch::{BatchVmWorkflow, VmWorkflow, VmWorkflowBatch, VmWorkflowResult};
 mod host_power;
 pub use host_power::{
     HostPowerConfiguration, HostPowerOperation, HostPowerPassword, HostPowerSecretEvidence,

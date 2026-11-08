@@ -1,3 +1,5 @@
+#[path = "vm_workflow_batch_journal.rs"]
+mod workflow_batch_journal;
 use crate::{Error, PoolId, VmId, xapi::Session};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
@@ -378,6 +380,8 @@ impl OperationState {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OperationRecord {
+    #[serde(default)]
+    pub batch_parent: Option<OperationId>,
     pub id: OperationId,
     pub pool: PoolId,
     pub vm: VmId,
@@ -525,6 +529,9 @@ impl OperationRecord {
         self.revision
     }
     pub fn can_recheck(&self) -> bool {
+        if self.batch_parent.is_some() {
+            return false;
+        }
         self.has_task()
             || matches!(
                 &self.action,
@@ -583,6 +590,7 @@ impl Operation {
 }
 
 pub(crate) struct MutationRequest {
+    pub(crate) batch_permit: Option<crate::vm_workflow_batch::ChildPermit>,
     pub generation: u64,
     pub record: OperationRecord,
     sender: watch::Sender<Arc<OperationRecord>>,
@@ -665,6 +673,7 @@ pub(crate) fn channel(
     runtime: tokio::runtime::Handle,
 ) -> (Operation, MutationRequest) {
     let record = OperationRecord {
+        batch_parent: None,
         id,
         pool,
         vm,
@@ -699,6 +708,7 @@ pub(crate) fn channel(
     (
         Operation { receiver, runtime },
         MutationRequest {
+            batch_permit: None,
             generation,
             record,
             sender,
@@ -772,7 +782,7 @@ impl Journal {
         let version: u64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|error| journal_sqlite_failure("read-version", error))?;
-        if version > 3 {
+        if version > 4 {
             return Err(Error::JournalVersion);
         }
         let journal_mode: String = connection
@@ -789,7 +799,7 @@ impl Journal {
         connection
             .execute_batch("PRAGMA synchronous=FULL;")
             .map_err(|error| journal_sqlite_failure("full-durability", error))?;
-        if version < 3 {
+        if version < 4 {
             let transaction = rusqlite::Transaction::new_unchecked(
                 &connection,
                 rusqlite::TransactionBehavior::Immediate,
@@ -798,7 +808,7 @@ impl Journal {
             let locked_version: u64 = transaction
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|error| journal_sqlite_failure("migration-read-version", error))?;
-            if locked_version > 3 {
+            if locked_version > 4 {
                 return Err(Error::JournalVersion);
             }
             transaction.execute_batch("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|error| journal_sqlite_failure("migration-create-vm-table",error))?;
@@ -811,7 +821,7 @@ impl Journal {
                     .map_err(|error| journal_sqlite_failure("migration-add-revision", error))?;
             }
             transaction
-                .execute_batch("CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, result_reference TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0); PRAGMA user_version=3;")
+                .execute_batch("CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, result_reference TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS workflow_batch_children (parent TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal >= 0 AND ordinal < 32), child TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK(kind IN ('vm','resource')), PRIMARY KEY(parent,ordinal)); PRAGMA user_version=4;")
                 .map_err(|error| journal_sqlite_failure("migration-create-resource-table",error))?;
             transaction
                 .commit()
@@ -895,11 +905,19 @@ impl Journal {
                 let mut record = Self::decode_record(&payload)?;
                 record.task = task;
                 record.revision = revision;
+                self.workflow_validate_child(&record)?;
                 Ok(record)
             })
             .transpose()
     }
     fn admit(&mut self, record: &mut OperationRecord) -> Result<bool, Error> {
+        self.admit_owned(record, None)
+    }
+    fn admit_owned(
+        &mut self,
+        record: &mut OperationRecord,
+        permit: Option<&crate::vm_workflow_batch::ChildPermit>,
+    ) -> Result<bool, Error> {
         self.0
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::Journal)?;
@@ -907,6 +925,7 @@ impl Journal {
             if self.resource_load(record.id)?.is_some() {
                 return Err(Error::OperationConflict);
             }
+            let parent = self.workflow_admit_child(record, permit)?;
             if let Some(existing) = self.load(record.id)? {
                 if existing.pool != record.pool
                     || existing.vm != record.vm
@@ -916,7 +935,7 @@ impl Journal {
                 }
                 return Ok(false);
             }
-            let busy = self.resource_pool_busy(record.pool)?;
+            let busy = self.resource_pool_busy_except(record.pool, parent)?;
             if busy {
                 return Err(Error::ConflictingPoolOperation);
             }
@@ -930,6 +949,7 @@ impl Journal {
                 .map_err(|_| Error::Journal)?;
             for payload in rows {
                 let existing = Self::decode_record(&payload.map_err(|_| Error::Journal)?)?;
+                self.workflow_validate_child(&existing)?;
                 if record.reserves_pool_creation() || existing.reserves_pool_creation() {
                     return Err(Error::PoolCreationConflict);
                 }
@@ -949,8 +969,14 @@ impl Journal {
             if total >= 1000 {
                 return Err(Error::JournalFull);
             }
-            self.save(record)?;
-            self.0.execute("DELETE FROM operations WHERE terminal=1 AND rowid NOT IN (SELECT rowid FROM operations WHERE terminal=1 ORDER BY rowid DESC LIMIT 500)", []).map_err(|_| Error::Journal)?;
+            if let Some(permit) = permit {
+                self.workflow_mark_admitted(record, permit)?;
+                self.save_validated(record)?;
+            } else {
+                self.save(record)?;
+            }
+            self.workflow_prune()?;
+            self.0.execute("DELETE FROM operations WHERE terminal=1 AND id NOT IN (SELECT child FROM workflow_batch_children) AND rowid NOT IN (SELECT rowid FROM operations WHERE terminal=1 ORDER BY rowid DESC LIMIT 500)", []).map_err(|_| Error::Journal)?;
             Ok(true)
         })();
         if result.is_ok() {
@@ -961,8 +987,13 @@ impl Journal {
         result
     }
     fn save(&self, record: &mut OperationRecord) -> Result<(), Error> {
+        self.workflow_validate_child(record)?;
+        self.save_validated(record)
+    }
+    fn save_validated(&self, record: &mut OperationRecord) -> Result<(), Error> {
         if let Some(previous) = self.load(record.id)? {
-            if previous.pool != record.pool
+            if previous.batch_parent != record.batch_parent
+                || previous.pool != record.pool
                 || previous.vm != record.vm
                 || previous.action != record.action
             {
@@ -1047,7 +1078,7 @@ impl Journal {
                 return Err(Error::JournalChanged);
             }
             current.task = Some(task.clone());
-            if !current.state.terminal() {
+            if !current.state.terminal() && !self.workflow_child_stopped(current.id)? {
                 current.state = OperationState::Tracking;
                 current.detail = "Host accepted the operation; tracking its task".into();
             }
@@ -1065,6 +1096,9 @@ impl Journal {
         id: OperationId,
         acknowledge: bool,
     ) -> Result<OperationRecord, Error> {
+        if self.workflow_owner(id)?.is_some() {
+            return Err(Error::UnavailableAction);
+        }
         for _ in 0..16 {
             let mut record = self
                 .load(id)?
@@ -1111,6 +1145,7 @@ impl Journal {
             let mut record = Self::decode_record(&payload)?;
             record.task = task;
             record.revision = revision;
+            self.workflow_validate_child(&record)?;
             Ok(record)
         })
         .collect()
@@ -1128,6 +1163,10 @@ pub(crate) fn recover(directory: &Path, pool: PoolId) -> Result<Vec<OperationRec
         .into_iter()
         .filter(|record| record.pool == pool)
     {
+        if record.batch_parent.is_some() {
+            recovered.push(record);
+            continue;
+        }
         if !record.state.terminal() && record.task.is_none() {
             record.state = if record.state == OperationState::Preparing
                 && record
@@ -1167,6 +1206,7 @@ impl MutationRequest {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
             generation: 0,
+            batch_permit: None,
             record,
             sender,
             updates: None,
@@ -1185,14 +1225,31 @@ impl MutationRequest {
                 .await;
         }
     }
+    fn emit_dispatch(&self) {
+        self.sender.send_replace(Arc::new(self.record.clone()));
+        if let Some(updates) = &self.updates {
+            let _ = updates.try_send(OperationUpdate::Record(Box::new(self.record.clone())));
+        }
+    }
     async fn publish(&mut self, journal: &mut Journal) -> Result<(), Error> {
         journal.save(&mut self.record)?;
         self.emit().await;
         Ok(())
     }
     pub(crate) async fn run(
-        mut self,
+        self,
         session: Arc<Session>,
+        reference: Option<String>,
+        directory: PathBuf,
+        connection_cancel: CancellationToken,
+        updates: mpsc::Sender<OperationUpdate>,
+    ) {
+        self.run_session(&session, reference, directory, connection_cancel, updates)
+            .await;
+    }
+    pub(crate) async fn run_session(
+        mut self,
+        session: &Session,
         reference: Option<String>,
         directory: PathBuf,
         connection_cancel: CancellationToken,
@@ -1200,7 +1257,7 @@ impl MutationRequest {
     ) {
         self.updates = Some(updates);
         let result = if let Some(reference) = reference {
-            self.execute(&session, reference, &directory, &connection_cancel)
+            self.execute(session, reference, &directory, &connection_cancel)
                 .await
         } else {
             match Journal::open(&directory) {
@@ -1210,13 +1267,13 @@ impl MutationRequest {
                         OperationAction::Snapshot(SnapshotOperation::Workflow { .. })
                     ) =>
                 {
-                    self.recheck_snapshot_workflow(&session, &mut journal).await
+                    self.recheck_snapshot_workflow(session, &mut journal).await
                 }
                 Ok(mut journal) if matches!(self.record.action, OperationAction::Recovery(_)) => {
-                    self.recheck_recovery(&session, &mut journal).await
+                    self.recheck_recovery(session, &mut journal).await
                 }
                 Ok(mut journal) if matches!(self.record.action, OperationAction::Settings(_)) => {
-                    self.recheck_settings(&session, &mut journal).await
+                    self.recheck_settings(session, &mut journal).await
                 }
                 Ok(mut journal)
                     if matches!(
@@ -1224,20 +1281,20 @@ impl MutationRequest {
                         OperationAction::Snapshot(SnapshotOperation::Delete { .. })
                     ) =>
                 {
-                    self.recheck_snapshot_delete(&session, &mut journal).await
+                    self.recheck_snapshot_delete(session, &mut journal).await
                 }
                 Ok(mut journal) if matches!(&self.record.action,OperationAction::Device(operation) if operation.is_lifecycle()) => {
-                    self.recheck_device_lifecycle(&session, &mut journal).await
+                    self.recheck_device_lifecycle(session, &mut journal).await
                 }
                 Ok(mut journal) if matches!(&self.record.action, OperationAction::Migration(_)) => {
-                    self.recheck_migration(&session, &mut journal, &connection_cancel)
+                    self.recheck_migration(session, &mut journal, &connection_cancel)
                         .await
                 }
                 Ok(mut journal) if matches!(&self.record.action, OperationAction::Lifecycle(_)) => {
-                    self.recheck_vm_lifecycle(&session, &mut journal).await
+                    self.recheck_vm_lifecycle(session, &mut journal).await
                 }
                 Ok(mut journal) => {
-                    self.track(&session, &mut journal, &connection_cancel, false)
+                    self.track(session, &mut journal, &connection_cancel, false)
                         .await
                 }
                 Err(error) => Err(error),
@@ -1327,7 +1384,12 @@ impl MutationRequest {
         connection_cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let mut journal = Journal::open(directory)?;
-        let new = match journal.admit(&mut self.record) {
+        let admission = if let Some(permit) = &self.batch_permit {
+            journal.admit_owned(&mut self.record, Some(permit))
+        } else {
+            journal.admit(&mut self.record)
+        };
+        let new = match admission {
             Ok(new) => new,
             Err(error) => {
                 self.record.state = OperationState::Rejected;
@@ -1464,7 +1526,10 @@ impl MutationRequest {
                 Ok(()) => return Ok(()),
                 Err(Error::JournalChanged) => {
                     let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
-                    if current.state.terminal() || current.state == OperationState::OutcomeUnknown {
+                    if current.state.terminal()
+                        || current.state == OperationState::OutcomeUnknown
+                        || journal.workflow_child_stopped(current.id)?
+                    {
                         self.record = current;
                         return Err(Error::JournalChanged);
                     }
@@ -1876,6 +1941,7 @@ mod tests {
     }
     fn record() -> OperationRecord {
         OperationRecord {
+            batch_parent: None,
             id: OperationId::new(),
             pool: PoolId::parse("11111111-1111-1111-1111-111111111111").unwrap(),
             vm: VmId::parse("22222222-2222-2222-2222-222222222222").unwrap(),
@@ -2229,3 +2295,7 @@ impl OperationRecord {
 #[cfg(test)]
 #[path = "snapshot_capture_tests.rs"]
 mod snapshot_capture_tests;
+
+#[cfg(test)]
+#[path = "vm_workflow_batch_tests.rs"]
+mod vm_workflow_batch_tests;

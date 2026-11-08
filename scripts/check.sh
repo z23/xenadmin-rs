@@ -215,3 +215,5 @@ done
 "$check_binary" --snap artifacts/failure-help-compact.png --tree artifacts/failure-help-compact.json --scene failure-help --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-ipv6-bond.png --tree artifacts/management-ipv6-bond.json --scene management-ipv6-bond --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-ipv6-bond-compact.png --tree artifacts/management-ipv6-bond-compact.json --scene management-ipv6-bond --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/batch-delete.png --tree artifacts/batch-delete.json --scene batch-delete --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/batch-delete-compact.png --tree artifacts/batch-delete-compact.json --scene batch-delete --theme dark --size 513x652 --scale 1 --at 1
