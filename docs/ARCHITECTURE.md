@@ -843,3 +843,10 @@ inspection and complete archive verification; zstd history is limited to 128 MiB
 match the chosen format and complete all decoded identity/checksum/termination checks before
 publication. Original compressed import bytes and existing receipt/provenance rules are preserved.
 See the [compression report](reports/2026-11-08-xva-compression.md) for validation limits.
+
+Host data-source recording uses a generation-bound read-only catalog request and a typed
+`HostOperation::DataSource` through the existing durable host worker. The action captures complete
+source metadata plus observed enabled state. Dispatch checks fresh host/source identity and exact
+method permission; positive synchronous completion is persisted before readback. Forget-history
+verification permits automatic source reappearance but never substitutes matching state for a lost
+receipt. Public state and private receipts remain separate. [Evidence](reports/2026-11-08-host-monitoring-recording.md).

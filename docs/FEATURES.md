@@ -91,3 +91,8 @@ discovery or fully verified capacity, signatures and ownership; additional backe
 remain retained.
 
 The [shared storage graph increment](reports/2026-11-08-storage-graph-repair.md) adds reviewed missing-PBD reconstruction for supported shared locations, server-side credential cloning without reading values, and complete-host multipath detach/settings/replug orchestration. Known partial results offer separately reviewed reconnection; custom host-dependent reconstruction and live path qualification remain open.
+
+Host monitoring includes a read-only data-source catalog and reviewed recording/history-deletion
+controls. Forgetting deletes recorded RRD samples and may be followed immediately by automatic
+collection; it is never presented as a harmless pause. Stock XCP-ng NRPE integration is explicitly
+unsupported. [Supported semantics and verification](reports/2026-11-08-host-monitoring-recording.md).

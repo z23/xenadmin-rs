@@ -119,6 +119,14 @@ pub(super) fn open(s: &mut State) {
     poll(s);
     rebuild(s);
 }
+pub(super) fn open_history(s: &mut State, pool: PoolId) {
+    open(s);
+    s.activity.pool = Some(pool);
+    s.activity.tab = Tab::History;
+    s.activity.search = TextEdit::new("");
+    s.activity.state_filter = TextEdit::new("");
+    rebuild(s);
+}
 pub(super) fn poll(s: &mut State) -> bool {
     let mut changed = activity_export::poll(s);
     if let Some(inventory) = &s.inventory {

@@ -129,6 +129,14 @@ async fn fixture_delayed(
                     |v| json!({"result":v}),
                 )));
             }
+            if method == "host.get_data_sources" {
+                return Some(RpcReply::Json(
+                    json!({"result":records.get("_sources").cloned().unwrap_or(json!([]))}),
+                ));
+            }
+            if method == "session.get_record" && records.contains_key("_session") {
+                return Some(RpcReply::Json(json!({"result":records["_session"]})));
+            }
             if method == "host.get_all" {
                 return Some(RpcReply::Json(
                     json!({"result":["OpaqueRef:host","OpaqueRef:host-other"]}),
@@ -216,6 +224,28 @@ async fn fixture_delayed(
                 }
                 "host.set_logging" => {
                     records.get_mut("host").unwrap()["logging"] = request["params"][2].clone();
+                    true
+                }
+                "host.record_data_source" | "host.forget_data_source_archives" => {
+                    assert_eq!(request["params"][1], "OpaqueRef:host");
+                    let auto = records.get("_auto_record") == Some(&json!(true));
+                    let changed_description = records
+                        .get("_after_monitoring_description")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let remove_source = records.get("_forget_remove") == Some(&json!(true));
+                    let sources = records.get_mut("_sources").unwrap().as_array_mut().unwrap();
+                    let source = sources
+                        .iter_mut()
+                        .find(|v| v["name_label"] == request["params"][2])
+                        .unwrap();
+                    source["enabled"] = json!(method == "host.record_data_source" || auto);
+                    if let Some(description) = changed_description {
+                        source["name_description"] = json!(description);
+                    }
+                    if remove_source && method == "host.forget_data_source_archives" {
+                        sources.clear();
+                    }
                     true
                 }
                 "host.syslog_reconfigure" => true,
@@ -1321,3 +1351,6 @@ async fn toolstack_restart_refuses_enabled_or_unknown_ha_before_dispatch() {
         c.close().await;
     }
 }
+
+#[path = "host_monitoring.rs"]
+mod monitoring;

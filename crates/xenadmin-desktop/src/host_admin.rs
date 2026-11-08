@@ -298,6 +298,7 @@ fn lines(w: &Workspace, op: &HostOperation) -> Vec<String> {
         format!("Target {}", w.target.uuid()),
     ];
     match op{
+ HostOperation::DataSource { action, .. } => lines.push(action.label().into()),
  HostOperation::EnterMaintenance{resident_vms,..}|HostOperation::Evacuate{resident_vms}=>{lines.push("Scheduling will be disabled for maintenance. The host selects compatible migration destinations after checking every reviewed guest. No guest shutdown, HA reduction or coordinator handover is automatic. A failure may leave scheduling disabled or some guests already moved.".into());for id in resident_vms{lines.push(format!("Move guest: {} ({id})",w.initial.vms.get(id).map(|v|v.name.as_str()).unwrap_or("Unknown guest")));}},
  HostOperation::ExitMaintenance=>lines.push("Enable scheduling, then clear the maintenance marker. No evacuated guest is automatically moved back.".into()),
  HostOperation::Reboot{..}|HostOperation::Shutdown{..}=>lines.push("The host must be disabled and empty of running or paused guests. Multi-host pool coordinators require separate handover. Connection loss leaves an uncertain outcome until independent task and host evidence can establish it.".into()),
@@ -353,6 +354,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
         let target = w.target;
+        body = body.child(
+            Button::new("Monitoring recording…")
+                .on_press(move |s: &mut State| host_monitoring_view::open(s, target))
+                .build(k)
+                .key("host-monitoring-open"),
+        );
         body = body.child(
             Button::new("Multipathing with storage reconnection…")
                 .on_press(move |s: &mut State| storage_graph_view::open(s, target))

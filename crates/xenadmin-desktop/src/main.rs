@@ -17,6 +17,7 @@ mod failure_help;
 mod guest_tools_view;
 mod host_admin;
 mod host_console;
+mod host_monitoring_view;
 mod host_power_view;
 mod host_support_view;
 mod instance_launch;
@@ -196,6 +197,7 @@ struct State {
     storage_editor: Option<storage_view::Editor>,
     storage_graph: Option<storage_graph_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
+    host_monitoring: Option<host_monitoring_view::Panel>,
     host_support: Option<host_support_view::Panel>,
     host_power: Option<host_power_view::Editor>,
     snapshot_policy_workspace: Option<snapshot_policy_view::Workspace>,
@@ -322,6 +324,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         storage_editor: None,
         storage_graph: None,
         host_workspace: None,
+        host_monitoring: None,
         host_support: None,
         host_power: None,
         snapshot_policy_workspace: None,
@@ -853,6 +856,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= snapshot_policy_view::poll(s);
     changed |= transfers::poll(s);
     changed |= host_support_view::poll(s);
+    changed |= host_monitoring_view::poll(s);
     changed |= cloud_init_view::poll(s);
     changed |= pool_security_view::poll(s);
     changed |= console_view::poll_export(s);
@@ -1472,6 +1476,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [host_support_view::dialog(s, &k)])
     } else if s.storage_graph.is_some() {
         rune_kit::root(base, [storage_graph_view::dialog(s, &k)])
+    } else if s.host_monitoring.is_some() {
+        rune_kit::root(base, [host_monitoring_view::dialog(s, &k)])
     } else if s.host_workspace.is_some() {
         rune_kit::root(base, [host_admin::dialog(s, &k)])
     } else if s.network_workspace.is_some() {
@@ -2412,6 +2418,11 @@ fn main() -> std::process::ExitCode {
                 network_admin::management_vlan_bond_scene,
             ),
             ("host-administration", host_admin::scene),
+            ("host-monitoring", host_monitoring_view::scene),
+            (
+                "host-monitoring-catalog",
+                host_monitoring_view::catalog_scene,
+            ),
             ("host-support", host_support_view::scene),
             ("host-restore", host_support_view::restore_scene),
             ("host-crashdump-delete", host_support_view::crashdump_scene),

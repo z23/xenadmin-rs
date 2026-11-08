@@ -29,6 +29,7 @@ enum Request {
     Metrics(crate::metrics::MetricsRequest),
     StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
     SecurityDiscovery(crate::security_discovery::Request),
+    HostDataSources(crate::host_monitoring::Request),
     HostSupport(crate::host_support::Request),
     SnapshotPolicySupport(crate::snapshot_policy_support::Request),
     GuestBoot(crate::guest_boot::Request),
@@ -670,6 +671,19 @@ impl Connection {
         Ok(handle)
     }
 
+    pub fn host_data_sources(
+        &self,
+        observed: crate::ObservedResource,
+    ) -> Result<crate::HostDataSourceQuery, Error> {
+        if self.latest().observe_resource(observed.target())? != observed {
+            return Err(Error::Stale);
+        }
+        let (handle, request) = crate::host_monitoring::channel(observed, self.runtime.clone())?;
+        self.requests
+            .try_send(Request::HostDataSources(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn host_support(
         &self,
         observed: crate::ObservedResource,
@@ -1517,6 +1531,11 @@ async fn run(
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
                                     else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
                                 }
+                                Request::HostDataSources(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if discoveries.len()>=4 {request.fail(Error::Busy);}
+                                    else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
+                                }
                                 Request::HostSupport(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
@@ -1925,6 +1944,7 @@ async fn forward_alias(
                         Request::Metrics(request) => request.fail(Error::Busy),
                         Request::StorageDiscovery(request) => request.fail(Error::Busy),
                         Request::SecurityDiscovery(request) => request.fail(Error::Busy),
+                        Request::HostDataSources(request) => request.fail(Error::Busy),
                         Request::HostSupport(request) => request.fail(Error::Busy),
                         Request::ManagementBondReview(request) => request.fail(Error::Busy),
                         Request::ManagementIpv6Review(request)=>request.fail(Error::Busy),

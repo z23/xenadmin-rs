@@ -75,8 +75,11 @@ impl ResourceRequest {
         self.record.state = OperationState::Succeeded;
         self.record.progress = Some(1.0);
         self.record.can_cancel = false;
-        self.record.detail =
-            "All host changes verified; no automatic compensation was performed".into();
+        self.record.detail = match &self.record.action {
+            crate::ResourceAction::Host(crate::HostOperation::DataSource { action: crate::HostRecordingAction::ForgetHistory, .. }) => "The host confirmed deletion of this source's recorded history. Automatic collection may already have restarted; refresh to inspect current recording.",
+            crate::ResourceAction::Host(crate::HostOperation::DataSource { .. }) => "The host confirmed recording and the source is currently enabled.",
+            _ => "All host changes verified; no automatic compensation was performed",
+        }.into();
         self.save(journal).await
     }
     fn host_step(&self, index: usize) -> Result<&host::Step, Error> {
@@ -103,7 +106,12 @@ impl ResourceRequest {
                 return Ok(());
             }
             self.record.steps[index].state = StepState::Verified;
-            self.record.steps[index].detail = if reconcile {
+            self.record.steps[index].detail = if matches!(
+                step.kind,
+                host::Kind::DataSource(crate::HostRecordingAction::ForgetHistory)
+            ) {
+                "Positive history-deletion receipt; current recording may already have restarted"
+            } else if reconcile {
                 "Confirmed by fresh reads; no write replayed"
             } else {
                 "Confirmed by fresh host state"

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
+    DataSource(crate::HostRecordingAction),
     Disable,
     Evacuate,
     MarkMaintenance(bool),
@@ -29,6 +30,7 @@ pub(crate) enum Kind {
 impl Kind {
     fn method(&self) -> &'static str {
         match self {
+            Self::DataSource(action) => action.method(),
             Self::Disable => "Async.host.disable",
             Self::Evacuate => "Async.host.evacuate",
             Self::MarkMaintenance(_) | Self::MultipathHandle => "host.set_other_config",
@@ -49,6 +51,7 @@ impl Kind {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::DataSource(action) => action.label(),
             Self::Disable => "Disable scheduling",
             Self::Evacuate => "Evacuate resident guests",
             Self::MarkMaintenance(true) => "Mark host in maintenance",
@@ -390,6 +393,7 @@ pub(crate) fn requirements(op: &HostOperation) -> crate::PermissionRequirements 
 }
 fn kinds(op: &HostOperation) -> Vec<Kind> {
     match op {
+        HostOperation::DataSource { action, .. } => vec![Kind::DataSource(*action)],
         HostOperation::EnterMaintenance {
             expected_enabled,
             resident_vms,
@@ -475,6 +479,29 @@ pub(crate) async fn arguments(
     let (reference, host, pool) = host(session, record).await?;
     idle(&host)?;
     let args = match kind {
+        Kind::DataSource(action) => {
+            let HostOperation::DataSource {
+                expected,
+                action: reviewed,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            require(
+                action == reviewed,
+                "Host monitoring step does not match the review",
+            )?;
+            live(session, &host, true).await?;
+            crate::host_monitoring::check(session, &reference, expected, *action, false).await?;
+            let (current_reference, current_host, _) = self::host(session, record).await?;
+            require(
+                current_reference == reference,
+                "Host identity changed during data-source review",
+            )?;
+            idle(&current_host)?;
+            live(session, &current_host, true).await?;
+            (kind.method(), vec![json!(reference), json!(expected.name)])
+        }
         Kind::Disable => {
             let HostOperation::EnterMaintenance {
                 expected_enabled,
@@ -795,6 +822,25 @@ pub(crate) async fn verify(
     }
     let (reference, host, _) = host(session, record).await?;
     match &step.kind {
+        Kind::DataSource(action) => {
+            let HostOperation::DataSource {
+                expected,
+                action: reviewed,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            require(
+                action == reviewed && step.accepted,
+                "Host monitoring completion reply was lost; current source state does not prove that the write completed",
+            )?;
+            crate::host_monitoring::check(session, &reference, expected, *action, true).await?;
+            let (current_reference, _, _) = self::host(session, record).await?;
+            require(
+                current_reference == reference,
+                "Host identity changed during recording verification",
+            )
+        }
         Kind::Disable => require(host["enabled"] == false, "Host scheduling is not disabled"),
         Kind::Enable => require(host["enabled"] == true, "Host scheduling is not enabled"),
         Kind::Evacuate => empty_disabled(session, &reference, &host).await,

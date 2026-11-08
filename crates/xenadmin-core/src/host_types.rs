@@ -19,6 +19,10 @@ impl HostPowerOnMode {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HostOperation {
+    DataSource {
+        expected: crate::HostDataSource,
+        action: crate::HostRecordingAction,
+    },
     EnterMaintenance {
         expected_enabled: bool,
         resident_vms: Vec<VmId>,
@@ -69,6 +73,7 @@ impl HostOperation {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::DataSource { action, .. } => action.label(),
             Self::EnterMaintenance { .. } => "Enter host maintenance",
             Self::Evacuate { .. } => "Evacuate host",
             Self::ExitMaintenance => "Exit host maintenance",
@@ -93,6 +98,10 @@ impl HostOperation {
             return Err(Error::InvalidResourceCommand);
         }
         let valid = match self {
+            Self::DataSource { expected, action } => {
+                expected.valid()
+                    && (*action == crate::HostRecordingAction::ForgetHistory || !expected.enabled)
+            }
             Self::EnterMaintenance { resident_vms, .. } | Self::Evacuate { resident_vms } => {
                 resident_vms.len() <= 10_000
                     && resident_vms.iter().collect::<BTreeSet<_>>().len() == resident_vms.len()
@@ -199,6 +208,7 @@ impl HostOperation {
         };
         let empty = || !host.enabled && residents.is_empty();
         let supported = match self {
+            Self::DataSource { .. } => live == Some(true),
             Self::EnterMaintenance {
                 expected_enabled,
                 resident_vms,
@@ -319,6 +329,9 @@ impl HostOperation {
             ActionAvailability::Available
         } else {
             unavailable(match self {
+                Self::DataSource { .. } => {
+                    "The selected host must be live; refresh its data-source catalog before editing"
+                }
                 Self::EnterMaintenance { .. } | Self::Evacuate { .. } => {
                     "Current host state and the exact resident VM list are required; evacuation is checked again by the host"
                 }

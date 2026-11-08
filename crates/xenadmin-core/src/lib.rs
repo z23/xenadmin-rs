@@ -440,3 +440,8 @@ mod failure_guidance;
 pub use failure_guidance::FailureGuidance;
 
 pub use transfer::XvaCompression;
+
+mod host_monitoring;
+pub use host_monitoring::{
+    HostDataSource, HostDataSourceQuery, HostDataSources, HostRecordingAction,
+};

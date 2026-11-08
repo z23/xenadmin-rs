@@ -50,6 +50,10 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/vm-recovery-compact.png --tree artifacts/vm-recovery-compact.json --scene vm-recovery --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/vm-migration.png --tree artifacts/vm-migration.json --scene vm-migration --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/vm-migration-compact.png --tree artifacts/vm-migration-compact.json --scene vm-migration --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-monitoring-catalog.png --tree artifacts/host-monitoring-catalog.json --scene host-monitoring-catalog --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-monitoring-catalog-compact.png --tree artifacts/host-monitoring-catalog-compact.json --scene host-monitoring-catalog --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-monitoring.png --tree artifacts/host-monitoring.json --scene host-monitoring --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/host-monitoring-compact.png --tree artifacts/host-monitoring-compact.json --scene host-monitoring --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/host-administration.png --tree artifacts/host-administration.json --scene host-administration --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/host-administration-compact.png --tree artifacts/host-administration-compact.json --scene host-administration --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/host-power-settings.png --tree artifacts/host-power-settings.json --scene host-power-settings --theme dark --size 1440x900 --scale 1 --at 1
