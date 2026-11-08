@@ -36,6 +36,11 @@ properties, chosen-host start/resume, memory checkpoints and console controls. S
 and [retained parity ledger](docs/PARITY-IMPLEMENTATION.md). The complete parity plan is
 still in progress.
 
+Version 0.4.0 adds snapshot-to-VM/template cloning, reviewed snapshot deletion, richer
+resource details and private live-client development inspection. It also preserves host
+administrative block messages and removes the demonstration entry from normal navigation.
+See the [verification report](docs/reports/2026-11-08-development-and-snapshots.md).
+
 ## Run it
 
 ```sh
@@ -85,3 +90,6 @@ same core through its public facade.
 The project uses the MIT license for original work. Binary archives include supplied
 dependency and embedded-font notices. This is an independent project, not an official
 XCP-ng or Vates application.
+
+Use `./scripts/dev.sh` to enable private local inspection of the running desktop, and
+`./scripts/inspect.sh` to query it. See [development diagnostics](docs/DEVELOPMENT.md).

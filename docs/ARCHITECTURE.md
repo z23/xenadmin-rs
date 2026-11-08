@@ -1,6 +1,6 @@
 # Architecture
 
-## Implemented alpha
+## Initial alpha baseline
 
 The sections below define the target architecture. The initial implementation lives in
 the three Cargo workspace members listed below; its current public facade is compiled
@@ -29,6 +29,9 @@ Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types.
 The [alpha report](reports/2026-11-07-alpha.md) owns the verification record and remaining
 gaps. The [snapshot increment](reports/2026-11-07-snapshots.md) records the newer single-task
 VM commands; multi-step deletion, provisioning and settings remain planned. Interface sketches below describe the broader design, not additional shipped APIs.
+
+The later implemented increments are recorded below and in `docs/reports/`; the initial
+alpha limitations above are historical rather than a description of every current feature.
 
 ## Deployment and ownership
 
@@ -300,3 +303,18 @@ The [console adapter decision](decisions/0003-console-protocol-adapter.md) docum
 vendored protocol fixes. Console target identity is independent of table selection. Clipboard
 requests are explicit and fenced by a console epoch, including reconnection; passwords and
 clipboard content are never part of the operation journal.
+
+Snapshot deletion binds the review to selected disk UUIDs. The journal persists its plan and
+each checkpoint-memory, snapshot-record and disk-deletion dispatch. Clone operations persist
+a bounded pre-existing UUID baseline before submission, retain the resulting new UUID and
+journal template conversion separately. Recovery verifies existing outcomes without submitting
+new conversion or deletion writes. A lost reply cannot be interpreted as successful cleanup.
+
+Development inspection is an explicitly enabled, read-only Unix socket inside the desktop
+process. The desktop registers its existing connection handles; the service does not own a
+second host login. Requests use typed projections of public snapshots and operation records,
+with captured freshness context and no raw RPC facility. Same-user ownership and peer checks,
+bounded messages, concurrency limits and deadlines protect this private development boundary.
+The application instance lock owns startup, and socket cleanup verifies inode identity.
+Normal launches do not enable inspection; `scripts/dev.sh` does. See
+[development diagnostics](DEVELOPMENT.md) for protocol consumers.

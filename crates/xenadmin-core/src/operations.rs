@@ -11,6 +11,9 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[path = "snapshot_operations.rs"]
+mod snapshot_operations;
+
 #[derive(Clone, Debug)]
 pub struct SnapshotName(String);
 impl SnapshotName {
@@ -52,6 +55,15 @@ pub enum VmCommand {
     RevertSnapshot {
         snapshot: crate::ObservedSnapshot,
     },
+    CloneSnapshot {
+        snapshot: crate::ObservedSnapshot,
+        name: SnapshotName,
+        as_template: bool,
+    },
+    DeleteSnapshot {
+        snapshot: crate::ObservedSnapshot,
+        disks: Vec<crate::VdiId>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,9 +83,24 @@ pub struct PlacementOperation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum SnapshotOperation {
-    Checkpoint { name: String },
-    Create { name: String },
-    Revert { snapshot: crate::SnapshotId },
+    Checkpoint {
+        name: String,
+    },
+    Create {
+        name: String,
+    },
+    Revert {
+        snapshot: crate::SnapshotId,
+    },
+    Clone {
+        snapshot: crate::SnapshotId,
+        name: String,
+        as_template: bool,
+    },
+    Delete {
+        snapshot: crate::SnapshotId,
+        disks: Vec<crate::VdiId>,
+    },
 }
 impl OperationAction {
     pub fn label(&self) -> &'static str {
@@ -91,12 +118,27 @@ impl OperationAction {
             Self::Snapshot(SnapshotOperation::Create { .. }) => "Create snapshot",
             Self::Snapshot(SnapshotOperation::Checkpoint { .. }) => "Create memory snapshot",
             Self::Snapshot(SnapshotOperation::Revert { .. }) => "Restore snapshot",
+            Self::Snapshot(SnapshotOperation::Clone {
+                as_template: true, ..
+            }) => "Create template from snapshot",
+            Self::Snapshot(SnapshotOperation::Clone {
+                as_template: false, ..
+            }) => "Create VM from snapshot",
+            Self::Snapshot(SnapshotOperation::Delete { .. }) => "Delete snapshot",
         }
     }
     fn resources(&self, vm: VmId) -> Vec<String> {
         let mut ids = vec![vm.to_string()];
-        if let Self::Snapshot(SnapshotOperation::Revert { snapshot }) = self {
+        if let Self::Snapshot(
+            SnapshotOperation::Revert { snapshot }
+            | SnapshotOperation::Clone { snapshot, .. }
+            | SnapshotOperation::Delete { snapshot, .. },
+        ) = self
+        {
             ids.push(snapshot.to_string());
+        }
+        if let Self::Snapshot(SnapshotOperation::Delete { disks, .. }) = self {
+            ids.extend(disks.iter().map(|id| format!("vdi:{id}")));
         }
         if let Self::Placement(p) = self {
             ids.push(format!("host:{}", p.host));
@@ -138,6 +180,40 @@ impl VmCommand {
                     snapshot: snapshot.id,
                 }),
             ),
+            Self::CloneSnapshot {
+                snapshot,
+                name,
+                as_template,
+            } => (
+                crate::ObservedVm {
+                    pool: snapshot.pool,
+                    generation: snapshot.generation,
+                    id: snapshot.vm,
+                },
+                OperationAction::Snapshot(SnapshotOperation::Clone {
+                    snapshot: snapshot.id,
+                    name: name.0,
+                    as_template,
+                }),
+            ),
+            Self::DeleteSnapshot {
+                snapshot,
+                mut disks,
+            } => {
+                disks.sort();
+                disks.dedup();
+                (
+                    crate::ObservedVm {
+                        pool: snapshot.pool,
+                        generation: snapshot.generation,
+                        id: snapshot.vm,
+                    },
+                    OperationAction::Snapshot(SnapshotOperation::Delete {
+                        snapshot: snapshot.id,
+                        disks,
+                    }),
+                )
+            }
         }
     }
 }
@@ -272,6 +348,12 @@ pub struct OperationRecord {
     #[serde(default)]
     pub created_snapshot: Option<crate::SnapshotId>,
     #[serde(default)]
+    pub created_vm: Option<crate::VmId>,
+    #[serde(default)]
+    snapshot_deletion: Option<crate::snapshots::DeletionPlan>,
+    #[serde(default)]
+    snapshot_clone_baseline: Option<Vec<VmId>>,
+    #[serde(default)]
     pub steps: Vec<crate::OperationStep>,
 }
 impl OperationRecord {
@@ -279,7 +361,12 @@ impl OperationRecord {
         self.revision
     }
     pub fn can_recheck(&self) -> bool {
-        self.has_task() || matches!(self.action, OperationAction::Settings(_))
+        self.has_task()
+            || matches!(
+                self.action,
+                OperationAction::Settings(_)
+                    | OperationAction::Snapshot(SnapshotOperation::Delete { .. })
+            )
     }
     pub fn has_task(&self) -> bool {
         self.task.is_some()
@@ -328,7 +415,7 @@ pub(crate) struct MutationRequest {
     updates: Option<mpsc::Sender<OperationUpdate>>,
 }
 pub(crate) enum OperationUpdate {
-    Record(OperationRecord),
+    Record(Box<OperationRecord>),
     Coordinator(crate::Endpoint),
 }
 struct DispatchPermit(OperationAction);
@@ -377,6 +464,13 @@ impl DispatchPermit {
                 "Async.VM.snapshot".into()
             }
             OperationAction::Snapshot(SnapshotOperation::Revert { .. }) => "Async.VM.revert".into(),
+            OperationAction::Snapshot(SnapshotOperation::Clone { name, .. }) => {
+                params.push(json!(name));
+                "Async.VM.clone".into()
+            }
+            OperationAction::Snapshot(SnapshotOperation::Delete { .. }) => {
+                return Err(Error::UnavailableAction);
+            }
         };
         tokio::select! { _=cancel.cancelled()=>Err(Error::Closed), result=session.call(&method,params)=>result }
     }
@@ -409,6 +503,9 @@ pub(crate) fn channel(
         task: None,
         result_reference: None,
         created_snapshot: None,
+        created_vm: None,
+        snapshot_deletion: None,
+        snapshot_clone_baseline: None,
         steps: Vec::new(),
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
@@ -595,6 +692,11 @@ impl Journal {
                     && previous.result_reference != record.result_reference)
                 || (previous.created_snapshot.is_some()
                     && previous.created_snapshot != record.created_snapshot)
+                || (previous.created_vm.is_some() && previous.created_vm != record.created_vm)
+                || (previous.snapshot_deletion.is_some()
+                    && previous.snapshot_deletion != record.snapshot_deletion)
+                || (previous.snapshot_clone_baseline.is_some()
+                    && previous.snapshot_clone_baseline != record.snapshot_clone_baseline)
             {
                 return Err(Error::JournalChanged);
             }
@@ -771,7 +873,7 @@ impl MutationRequest {
         self.sender.send_replace(Arc::new(self.record.clone()));
         if let Some(updates) = &self.updates {
             let _ = updates
-                .send(OperationUpdate::Record(self.record.clone()))
+                .send(OperationUpdate::Record(Box::new(self.record.clone())))
                 .await;
         }
     }
@@ -797,7 +899,18 @@ impl MutationRequest {
                 Ok(mut journal) if matches!(self.record.action, OperationAction::Settings(_)) => {
                     self.recheck_settings(&session, &mut journal).await
                 }
-                Ok(mut journal) => self.track(&session, &mut journal, &connection_cancel).await,
+                Ok(mut journal)
+                    if matches!(
+                        self.record.action,
+                        OperationAction::Snapshot(SnapshotOperation::Delete { .. })
+                    ) =>
+                {
+                    self.recheck_snapshot_delete(&session, &mut journal).await
+                }
+                Ok(mut journal) => {
+                    self.track(&session, &mut journal, &connection_cancel, false)
+                        .await
+                }
                 Err(error) => Err(error),
             }
         };
@@ -909,6 +1022,14 @@ impl MutationRequest {
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
         }
+        if matches!(
+            self.record.action,
+            OperationAction::Snapshot(SnapshotOperation::Delete { .. })
+        ) {
+            return self
+                .execute_snapshot_delete(session, &mut journal, connection_cancel)
+                .await;
+        }
         let device = if matches!(self.record.action, OperationAction::Device(_)) {
             Some(
                 tokio::select! {_=connection_cancel.cancelled()=>return Err(Error::Closed),result=crate::devices::prepare(session,&self.record)=>result?},
@@ -939,6 +1060,15 @@ impl MutationRequest {
                 .execute_settings(session, &reference, patch, &mut journal, connection_cancel)
                 .await;
         }
+        if matches!(
+            self.record.action,
+            OperationAction::Snapshot(SnapshotOperation::Clone { .. })
+        ) {
+            self.record.snapshot_clone_baseline = Some(tokio::select! {
+                _=connection_cancel.cancelled()=>return Err(Error::Closed),
+                result=crate::snapshots::clone_baseline(session)=>result?,
+            });
+        }
         let permit = journal.mark_dispatching(&mut self.record)?;
         self.emit().await;
         let task = permit
@@ -958,7 +1088,8 @@ impl MutationRequest {
         );
         self.record = journal.attach_task(&self.record)?;
         self.emit().await;
-        self.track(session, &mut journal, connection_cancel).await
+        self.track(session, &mut journal, connection_cancel, true)
+            .await
     }
     async fn persist_steps(&mut self, journal: &mut Journal) -> Result<(), Error> {
         for _ in 0..16 {
@@ -1131,6 +1262,7 @@ impl MutationRequest {
         session: &Session,
         journal: &mut Journal,
         connection_cancel: &CancellationToken,
+        allow_post_task_writes: bool,
     ) -> Result<(), Error> {
         let reference = self
             .record
@@ -1191,6 +1323,35 @@ impl MutationRequest {
                 Some("success") => {
                     if matches!(
                         self.record.action,
+                        OperationAction::Snapshot(SnapshotOperation::Clone { .. })
+                    ) {
+                        if self.record.result_reference.is_none() {
+                            self.record.result_reference =
+                                Some(crate::xapi::snapshot_task_result(&task)?);
+                            self.record.detail =
+                                "Clone task completed; verifying its identity".into();
+                            match self.publish(journal).await {
+                                Ok(()) => {}
+                                Err(Error::JournalChanged) => continue,
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        self.complete_snapshot_clone(
+                            session,
+                            journal,
+                            connection_cancel,
+                            allow_post_task_writes,
+                        )
+                        .await?;
+                        if matches!(
+                            self.record.state,
+                            OperationState::OutcomeUnknown | OperationState::PartiallyCompleted
+                        ) {
+                            return Ok(());
+                        }
+                    }
+                    if matches!(
+                        self.record.action,
                         OperationAction::Snapshot(
                             SnapshotOperation::Create { .. } | SnapshotOperation::Checkpoint { .. }
                         )
@@ -1232,6 +1393,8 @@ impl MutationRequest {
                     self.record.detail = match self.record.action {
                         OperationAction::Snapshot(SnapshotOperation::Create { .. } | SnapshotOperation::Checkpoint { .. }) => "Snapshot created and identity verified".into(),
                         OperationAction::Snapshot(SnapshotOperation::Revert { .. }) => "Snapshot restored. Inspect the VM state before starting or resuming it.".into(),
+                        OperationAction::Snapshot(SnapshotOperation::Clone {as_template:true,..}) => "Template created from snapshot and identity verified".into(),
+                        OperationAction::Snapshot(SnapshotOperation::Clone {as_template:false,..}) => "VM created from snapshot and identity verified; it remains halted".into(),
                         _=>"Host task completed".into(),
                     };
                     self.record.progress = Some(1.0);
@@ -1356,6 +1519,9 @@ mod tests {
             task: None,
             result_reference: None,
             created_snapshot: None,
+            created_vm: None,
+            snapshot_deletion: None,
+            snapshot_clone_baseline: None,
             steps: Vec::new(),
             cancel_requested: false,
             cancel_dispatched: false,

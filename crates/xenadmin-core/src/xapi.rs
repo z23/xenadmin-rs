@@ -473,6 +473,21 @@ impl Store {
                                         && advertises(candidate, "revert")
                                 })
                         }
+                        crate::OperationAction::Snapshot(
+                            crate::SnapshotOperation::Clone { snapshot, .. }
+                            | crate::SnapshotOperation::Delete { snapshot, .. },
+                        ) => self.class("vm").any(|(_, candidate)| {
+                            candidate["uuid"].as_str() == Some(snapshot.to_string().as_str())
+                                && candidate["is_a_snapshot"] == true
+                                && candidate["snapshot_of"].as_str()
+                                    == self.vm_reference(vm).as_deref()
+                                && match action {
+                                    crate::OperationAction::Snapshot(
+                                        crate::SnapshotOperation::Clone { .. },
+                                    ) => advertises(candidate, "clone"),
+                                    _ => can_delete_snapshot(candidate),
+                                }
+                        }),
                     }
             })
     }
@@ -606,19 +621,14 @@ impl Store {
         let mut snapshots = crate::SnapshotInventory::default();
         for (_, value) in self.class("vm") {
             if value["is_a_snapshot"] == true {
-                let allowed = |operation: &str| {
-                    value["allowed_operations"]
-                        .as_array()
-                        .is_some_and(|items| items.iter().any(|item| item == operation))
-                };
                 let mut actions = Vec::new();
-                if allowed("revert") {
+                if advertises(value, "revert") {
                     actions.push(crate::SnapshotAction::Revert);
                 }
-                if allowed("destroy") || allowed("hard_shutdown") {
+                if can_delete_snapshot(value) {
                     actions.push(crate::SnapshotAction::Delete);
                 }
-                if allowed("clone") {
+                if advertises(value, "clone") {
                     actions.push(crate::SnapshotAction::Clone);
                 }
                 snapshots.insert(crate::Snapshot {
@@ -645,18 +655,10 @@ impl Store {
             vms.insert(
                 id,
                 Vm {
-                    can_snapshot: value["allowed_operations"]
-                        .as_array()
-                        .is_some_and(|items| items.iter().any(|item| item == "snapshot")),
+                    can_snapshot: advertises(value, "snapshot"),
                     allowed_actions: crate::PowerAction::ALL
                         .into_iter()
-                        .filter(|action| {
-                            value["allowed_operations"]
-                                .as_array()
-                                .is_some_and(|operations| {
-                                    operations.iter().any(|v| v == action.wire())
-                                })
-                        })
+                        .filter(|action| advertises(value, action.wire()))
                         .collect(),
                     id,
                     name: label(value),
@@ -719,6 +721,15 @@ fn advertises(record: &Value, action: &str) -> bool {
     record["allowed_operations"]
         .as_array()
         .is_some_and(|operations| operations.iter().any(|value| value == action))
+        && record["blocked_operations"].get(action).is_none()
+}
+
+fn can_delete_snapshot(record: &Value) -> bool {
+    match record["power_state"].as_str() {
+        Some("Halted") => advertises(record, "destroy"),
+        Some("Suspended") => advertises(record, "hard_shutdown"),
+        _ => false,
+    }
 }
 
 pub(crate) async fn prepare_mutation(
@@ -784,6 +795,18 @@ pub(crate) async fn prepare_mutation(
             Ok(reference)
         }
         OperationAction::Placement(_) | OperationAction::Device(_) => Err(Error::UnavailableAction),
+        OperationAction::Snapshot(SnapshotOperation::Clone { snapshot, name, .. }) => {
+            crate::SnapshotName::new(name)?;
+            let (reference, candidate) =
+                crate::snapshots::snapshot_record(session, operation.vm, *snapshot).await?;
+            if !advertises(&candidate, "clone") {
+                return Err(Error::UnavailableAction);
+            }
+            Ok(reference)
+        }
+        OperationAction::Snapshot(SnapshotOperation::Delete { .. }) => {
+            Err(Error::UnavailableAction)
+        }
         OperationAction::Power(_) => unreachable!(),
     }
 }

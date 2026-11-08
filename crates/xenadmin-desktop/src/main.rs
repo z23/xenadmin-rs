@@ -1,7 +1,9 @@
 mod console_view;
 mod demo_details;
+mod dev_inspection;
 mod preferences;
 mod profiles_view;
+mod resource_details;
 mod vm_devices;
 mod vm_placement;
 mod vm_properties;
@@ -69,12 +71,67 @@ struct DisplayRow {
     vm: Option<VmId>,
 }
 struct ActionDiagnostics {
+    context: ActionDiagnosticContext,
+    handles: Vec<(xenadmin_core::PowerAction, xenadmin_core::ActionDiagnostic)>,
+}
+#[derive(Debug, PartialEq, Eq)]
+struct ActionDiagnosticContext {
     pool: PoolId,
     generation: u64,
     vm: VmId,
-    handles: Vec<(xenadmin_core::PowerAction, xenadmin_core::ActionDiagnostic)>,
+    power_state: PowerState,
+    host: Option<HostId>,
+    is_guest: bool,
+    allowed_actions: Vec<xenadmin_core::PowerAction>,
+    current_operations: Vec<xenadmin_core::RunningOperation>,
+    availability: Option<Vec<xenadmin_core::ActionAvailability>>,
+}
+impl ActionDiagnosticContext {
+    fn capture(current: bool, generation: u64, inventory: &Inventory, vm: VmId) -> Option<Self> {
+        if !current {
+            return None;
+        }
+        let vm = inventory.vms.get(&vm)?;
+        Some(Self {
+            pool: inventory.pool_id,
+            generation,
+            vm: vm.id,
+            power_state: vm.power_state.clone(),
+            host: vm.host,
+            is_guest: !vm.is_template && !vm.is_control_domain,
+            allowed_actions: vm.allowed_actions.clone(),
+            current_operations: inventory
+                .details
+                .vms
+                .get(&vm.id)
+                .map(|details| details.current_operations.clone())
+                .unwrap_or_default(),
+            availability: inventory.details.vms.get(&vm.id).map(|details| {
+                xenadmin_core::PowerAction::ALL
+                    .into_iter()
+                    .map(|action| details.power_availability(action, true))
+                    .collect()
+            }),
+        })
+    }
+}
+impl ActionDiagnostics {
+    fn is_current(&self, snapshot: Option<&ConnectionSnapshot>) -> bool {
+        snapshot
+            .and_then(|snapshot| {
+                ActionDiagnosticContext::capture(
+                    snapshot.is_current(),
+                    snapshot.generation(),
+                    snapshot.inventory()?,
+                    self.context.vm,
+                )
+            })
+            .as_ref()
+            == Some(&self.context)
+    }
 }
 struct State {
+    dev_inspection: Option<xenadmin_core::DevInspection>,
     placement: Option<vm_placement::Placement>,
     devices: Option<vm_devices::DeviceView>,
     workspace: profiles_view::Workspace,
@@ -156,10 +213,13 @@ fn init() -> State {
     for (name, width) in &preferences.columns {
         table.set_column_width(name, *width);
     }
+    let (dev_inspection, inspection_error) = dev_inspection::start(instance.is_some());
     let startup_error = live_state
         .then(|| backend.as_ref().err().cloned())
-        .flatten();
+        .flatten()
+        .or(inspection_error);
     let mut s = State {
+        dev_inspection,
         placement: None,
         devices: None,
         workspace: profiles_view::Workspace::load(preferences.last_profile, instance.is_some()),
@@ -233,10 +293,13 @@ impl State {
                 .ok_or(xenadmin_core::Error::Stale)?;
             let snapshot = self.snapshot.as_ref().ok_or(xenadmin_core::Error::Stale)?;
             let observed = snapshot.observe_vm(vm)?;
-            let pool = snapshot
-                .inventory()
-                .ok_or(xenadmin_core::Error::Stale)?
-                .pool_id;
+            let context = ActionDiagnosticContext::capture(
+                snapshot.is_current(),
+                snapshot.generation(),
+                snapshot.inventory().ok_or(xenadmin_core::Error::Stale)?,
+                vm,
+            )
+            .ok_or(xenadmin_core::Error::Stale)?;
             let connection = self
                 .connection
                 .as_ref()
@@ -249,12 +312,7 @@ impl State {
                 }
                 handles.push((action, handle));
             }
-            self.diagnostics = Some(ActionDiagnostics {
-                pool,
-                generation: snapshot.generation(),
-                vm,
-                handles,
-            });
+            self.diagnostics = Some(ActionDiagnostics { context, handles });
             Ok::<(), xenadmin_core::Error>(())
         })();
         self.error = result.err().map(|error| error.to_string());
@@ -603,6 +661,7 @@ fn setup(s: &mut State, waker: Waker) {
 }
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
+    dev_inspection::refresh(s);
     let diagnostic_results = s
         .diagnostics
         .as_ref()
@@ -679,6 +738,13 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     }
     s.inventory = snapshot.inventory().cloned();
     s.snapshot = Some(snapshot);
+    if s.diagnostics
+        .as_ref()
+        .is_some_and(|diagnostics| !diagnostics.is_current(s.snapshot.as_deref()))
+    {
+        s.diagnostics = None;
+        s.diagnostic_results.clear();
+    }
     s.rebuild();
     true
 }
@@ -706,6 +772,7 @@ fn heading(value: impl Into<String>, k: &Kit) -> El {
 }
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let k = Kit::neutral(cx.system_dark());
+    let repository_label = "z23 / xenadmin-rs";
     let sidebar = col()
         .w_full()
         .h_full()
@@ -757,13 +824,18 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .key("add-connection"),
         )
         .child(
-            Button::new("Explore demo inventory")
-                .variant(ButtonVariant::Ghost)
-                .on_press(demo)
-                .build(&k)
-                .key("demo"),
-        )
-        .child(caption("Independent of Xen Orchestra", &k));
+            caption(repository_label, &k)
+                .link(rune::Link::new(
+                    0..repository_label.len(),
+                    "https://github.com/z23/xenadmin-rs",
+                ))
+                .on_link(|s: &mut State, url, tx| {
+                    if let Err(error) = tx.open_url(url) {
+                        s.error = Some(error.to_string());
+                    }
+                })
+                .key("repository-link"),
+        );
     let table = Table::new(
         |s: &State| &s.table,
         |s: &mut State| &mut s.table,
@@ -1004,21 +1076,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     let mut controls = row().gap(4.0);
     if s.window_width < 800.0 {
-        controls = controls
-            .child(
-                Button::new("Connect")
-                    .variant(ButtonVariant::Outline)
-                    .on_press(profiles_view::begin_new)
-                    .build(&k)
-                    .key("add-connection"),
-            )
-            .child(
-                Button::new("Demo")
-                    .variant(ButtonVariant::Ghost)
-                    .on_press(demo)
-                    .build(&k)
-                    .key("demo"),
-            );
+        controls = controls.child(
+            Button::new("Connect")
+                .variant(ButtonVariant::Outline)
+                .on_press(profiles_view::begin_new)
+                .build(&k)
+                .key("add-connection"),
+        );
     }
     if s.window_width < 800.0 {
         controls = controls.child(
@@ -1228,7 +1292,7 @@ fn details(s: &State, k: &Kit) -> El {
             .child(field("Virtual CPUs", &selected.cpu));
     }
     if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
-        return detail;
+        return resource_details::append(s, &selected, detail, k);
     }
     let mut actions = col().gap(8.0);
     if s.connection.as_ref().is_some_and(|c| c.is_read_only()) {
@@ -1260,7 +1324,7 @@ fn details(s: &State, k: &Kit) -> El {
         if !s.demo && vm.allowed_actions.is_empty() {
             actions = actions.child(
                 caption(
-                    "No power actions are available in the received VM data. A host task or restriction may be preventing them, or the availability data may be incomplete. Reconnect to refresh it.",
+                    "No power actions are available in the received VM data. Check action availability below for the host's current reason. This check does not remove restrictions.",
                     k,
                 )
                 .wrap()
@@ -1290,6 +1354,9 @@ fn details(s: &State, k: &Kit) -> El {
                     .build(k),
             );
         }
+        let diagnostics = s.diagnostics.as_ref().filter(|diagnostics| {
+            diagnostics.context.vm == vm.id && diagnostics.is_current(s.snapshot.as_deref())
+        });
         for action in xenadmin_core::PowerAction::ALL {
             let enabled = s.can_mutate() && vm.allowed_actions.contains(&action);
             actions = actions.child(
@@ -1304,19 +1371,15 @@ fn details(s: &State, k: &Kit) -> El {
                     .build(k)
                     .key(format!("power-{action:?}")),
             );
-            let diagnostic = s
-                .diagnostics
-                .as_ref()
-                .filter(|d| {
-                    d.vm == vm.id
-                        && s.snapshot.as_ref().is_some_and(|snapshot| {
-                            snapshot.generation() == d.generation
-                                && snapshot.inventory().is_some_and(|i| i.pool_id == d.pool)
-                        })
-                })
+            let diagnostic = diagnostics
                 .and_then(|d| d.handles.iter().find(|(a, _)| *a == action))
                 .map(|(_, handle)| handle.latest());
             let reason = match diagnostic {
+                Some(Some(Ok(xenadmin_core::ActionAvailability::Available)))
+                    if !vm.allowed_actions.contains(&action) =>
+                {
+                    Some("The host check passed, but the inventory does not currently allow this action. The check is advisory; the action stays disabled until availability updates.".into())
+                }
                 Some(Some(Ok(availability))) => Some(availability.explanation()),
                 Some(Some(Err(error))) => Some(error),
                 Some(None) => Some("Checking with the host…".into()),
@@ -1742,6 +1805,127 @@ fn main() {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sidebar_links_to_the_repository_without_a_demo_entry() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut runtime = rune::Runtime::new(
+                super::init(),
+                super::view,
+                size,
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            for _ in 0..30 {
+                runtime.frame(1.0 / 60.0);
+            }
+            assert!(runtime.find("demo").is_none());
+            if size.0 >= 800.0 {
+                let (_, y) = runtime.find("repository-link").unwrap();
+                runtime.pointer_down(30.0, y);
+                runtime.pointer_up(30.0, y);
+                runtime.frame(0.0);
+                assert_eq!(
+                    runtime.take_url_requests(),
+                    ["https://github.com/z23/xenadmin-rs"]
+                );
+            }
+            assert!(!runtime.state.demo);
+        }
+    }
+
+    #[test]
+    fn action_checks_follow_vm_availability_without_expiring_on_unrelated_events() {
+        use xenadmin_core::{PowerAction, RunningOperation};
+        let mut state = super::init();
+        super::demo(&mut state);
+        let mut inventory = state.inventory.unwrap().as_ref().clone();
+        let vm = *inventory.vms.keys().next().unwrap();
+        let original = super::ActionDiagnosticContext::capture(true, 7, &inventory, vm);
+
+        inventory.revision += 1;
+        inventory.pool_name = "Renamed pool".into();
+        inventory.vms.get_mut(&vm).unwrap().name = "Renamed guest".into();
+        let other = *inventory.vms.keys().find(|id| **id != vm).unwrap();
+        inventory
+            .vms
+            .get_mut(&other)
+            .unwrap()
+            .allowed_actions
+            .clear();
+        assert_eq!(
+            original,
+            super::ActionDiagnosticContext::capture(true, 7, &inventory, vm),
+            "unrelated events and display names do not invalidate the check"
+        );
+
+        let mut blocked = inventory.clone();
+        blocked
+            .details
+            .vms
+            .entry(vm)
+            .or_default()
+            .blocked_operations
+            .insert("clean_shutdown".into(), "Protected by operator".into());
+        let blocked_context = super::ActionDiagnosticContext::capture(true, 7, &blocked, vm);
+        assert_ne!(
+            original, blocked_context,
+            "a newly added block expires Available"
+        );
+        assert_ne!(
+            blocked_context,
+            super::ActionDiagnosticContext::capture(true, 7, &inventory, vm),
+            "removing the block expires Blocked"
+        );
+
+        inventory.vms.get_mut(&vm).unwrap().allowed_actions = PowerAction::ALL.to_vec();
+        let before_task = super::ActionDiagnosticContext::capture(true, 7, &inventory, vm);
+        inventory
+            .details
+            .vms
+            .entry(vm)
+            .or_default()
+            .current_operations
+            .push(RunningOperation {
+                task: None,
+                operation: "snapshot".into(),
+            });
+        assert_ne!(
+            before_task,
+            super::ActionDiagnosticContext::capture(true, 7, &inventory, vm),
+            "starting a task expires earlier checks even if allowed actions have not updated"
+        );
+    }
+
+    #[test]
+    fn action_checks_require_the_same_current_connection_and_vm_state() {
+        let mut state = super::init();
+        super::demo(&mut state);
+        let mut inventory = state.inventory.unwrap().as_ref().clone();
+        let vm = *inventory.vms.keys().next().unwrap();
+        let original = super::ActionDiagnosticContext::capture(true, 7, &inventory, vm);
+        assert!(original.is_some());
+        assert_eq!(
+            super::ActionDiagnosticContext::capture(false, 7, &inventory, vm),
+            None,
+            "a disconnected or stale inventory cannot retain a check"
+        );
+        assert_ne!(
+            original,
+            super::ActionDiagnosticContext::capture(true, 8, &inventory, vm)
+        );
+        inventory.vms.get_mut(&vm).unwrap().power_state = super::PowerState::Paused;
+        assert_ne!(
+            original,
+            super::ActionDiagnosticContext::capture(true, 7, &inventory, vm)
+        );
+        inventory.vms.remove(&vm);
+        assert_eq!(
+            super::ActionDiagnosticContext::capture(true, 7, &inventory, vm),
+            None
+        );
+    }
 
     #[test]
     fn devices_keep_their_target_and_leave_compact_details() {

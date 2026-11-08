@@ -198,6 +198,8 @@ pub struct VirtualBlockDevice {
     pub currently_attached: Option<bool>,
     pub bootable: Option<bool>,
     pub empty: Option<bool>,
+    #[serde(default)]
+    pub owned: bool,
     pub allowed_operations: Option<Vec<String>>,
 }
 

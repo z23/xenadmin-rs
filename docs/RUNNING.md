@@ -101,9 +101,22 @@ the restored VM. Inspect its resulting state and use the appropriate power actio
 Snapshot actions share the operation history, cancellation and unknown-outcome handling
 above. A successful create is reported only after verifying the returned snapshot identity.
 A lost reply never causes automatic recreation. The demo previews both dialogs but cannot
-confirm host changes. Snapshot deletion, clone-to-VM and automatic shutdown/restore/restart
-orchestration remain queued. Snapshot writes are fixture-verified; live qualification requires
+confirm host changes. Automatic shutdown/restore/restart orchestration remains queued.
+Snapshot writes are fixture-verified; live qualification requires
 an explicitly designated disposable lab.
+
+**Create VM** and **Create template** clone the selected snapshot after reviewing its UUID
+and the new name. A created VM remains halted. The operation records the new object's UUID
+and offers navigation to it after identity verification. If conversion from template to VM
+cannot be confirmed, the record distinguishes the existing clone from the incomplete
+conversion; rechecking does not repeat either write.
+
+**Delete snapshot** defaults to deleting the snapshot record. The review separately lists
+the eligible owned snapshot disks and the disks that will be retained. Enabling disk
+cleanup binds the request to the exact reviewed UUIDs; a changed ownership or attachment
+check stops deletion. Shared, unowned and unselected disks are retained. Deleting a memory
+checkpoint also discards its saved memory, which is shown in the review. Completed steps
+stay completed if a later step fails, and interrupted outcomes remain visible in history.
 
 ## Use the read-only host probe
 
@@ -118,6 +131,20 @@ repeat `--host-cert https://member=HEX` for other verified pool endpoints. `--wa
 observes inventory after the first synchronization.
 `--insecure` disables certificate validation for the entire connection, including coordinator
 redirects. It overrides certificate pins and custom CA settings.
+
+To investigate unavailable power actions on one VM:
+
+```sh
+./target/debug/host-probe https://xcp-host.example --diagnose-vm VM_UUID
+```
+
+Add `--insecure` when deliberately using the certificate-validation opt-out, or `--json`
+for structured output. This mode reads the selected VM's advertised allowed, current and
+blocked operations, then checks each power action without submitting it. Administrative
+block messages are displayed as text, including when the host supplies no reason. It
+does not dump other VMs or the entire pool. Incomplete checks exit nonzero; a successfully
+diagnosed block is not a probe failure. The output can still contain private VM names,
+UUIDs and administrator messages, so keep it local while investigating.
 
 ## Local state
 

@@ -51,10 +51,10 @@ live-host qualification has yet been established by this change.
 | P02-03 | Search by name/UUID/host; sort and virtualized rows | Existing workflow; qualification open |
 | P02-04 | Persist sidebar/table column widths | Existing workflow; qualification open |
 | P02-05 | Full VM general information | Guest OS/tools/addresses and VM resource metadata added; full runtime/uptime presentation remains partial |
-| P02-06 | Full host/pool properties | Expanded host metadata/metrics parsed; full host/pool property views remain queued |
+| P02-06 | Full host/pool properties | Host software/CPU metadata, metrics and attachment details displayed; full pool properties remain queued |
 | P02-07 | VM disk/NIC and host/storage attachment graph | Typed VDI/VBD/VIF/PIF/PBD graph and VM devices view implemented; broader host/SR views and lab qualification remain open |
-| P02-08 | Physical NIC/link/bond/VLAN inspection | PIF/bond/VLAN graph parsed; VM network uplinks shown; full link-speed/bond inspection remains partial |
-| P02-09 | SR attachment/path and disk inspection | VDI/VBD/PBD/SR relationships parsed and VM disks shown; dedicated SR/path browser remains queued |
+| P02-08 | Physical NIC/link/bond/VLAN inspection | Host/network details display PIF addressing, management/physical flags, VLAN, MTU and bond members/mode/link count; link-speed/path inspection remains partial |
+| P02-09 | SR attachment/path and disk inspection | SR details display host attachments, disk capacity/flags and VM/snapshot consumers; multipath/path inspection remains queued |
 | P02-10 | Live inventory/stale-state handling | Optional-class negotiation, isolated decode failures and bounded resync implemented; live compatibility/scale qualification open |
 | P02-11 | Filtered/grouped/saved/cross-pool searches | Queued |
 | P02-12 | Multi-object actions and context menus | Queued |
@@ -67,7 +67,7 @@ live-host qualification has yet been established by this change.
 | P03-02 | Force shutdown/reboot | Existing subset; remaining work queued |
 | P03-03 | Pause/unpause and suspend/resume | Existing workflow; qualification open |
 | P03-04 | Start/resume on a chosen eligible host/home server | Chosen-host start/resume and fresh compatibility preflight implemented; live placement qualification open |
-| P03-05 | Explain unavailable actions | Typed availability reasons and fresh host validity diagnosis implemented; lab RBAC/state qualification open |
+| P03-05 | Explain unavailable actions | Host block messages preserved, current diagnostic context enforced and contradictory blocked/allowed operations refused; lab RBAC/state qualification open |
 | P03-06 | Show current tasks and administrative action blocks | Current operations, administrative blocks and typed server tasks parsed; per-action diagnosis implemented; full task center remains queued |
 | P03-07 | Reviewed force recovery with running tasks | Queued |
 | P03-08 | Recovery-mode boot | Queued |
@@ -101,9 +101,9 @@ live-host qualification has yet been established by this change.
 | P05-05 | Disk-and-memory checkpoint creation | Named memory checkpoint command, confirmation and result verification implemented; data-integrity qualification open |
 | P05-06 | Guest-quiesced snapshot creation | Queued |
 | P05-07 | Snapshot description at creation; edit name/description | Queued |
-| P05-08 | Delete snapshots with owned-disk cleanup | Queued |
-| P05-09 | New VM from snapshot | Queued |
-| P05-10 | New template from snapshot | Queued |
+| P05-08 | Delete snapshots with owned-disk cleanup | Reviewed record deletion and explicit owned disk UUID cleanup implemented with checkpoint-memory checks and durable partial/unknown outcomes; fixture verified, lab qualification open |
+| P05-09 | New VM from snapshot | Reviewed clone and separately journaled template conversion implemented; new halted VM identity verified against pre-existing UUID baseline; fixture verified, lab qualification open |
+| P05-10 | New template from snapshot | Reviewed clone with new template identity/provenance checks implemented; fixture verified, lab qualification open |
 | P05-11 | Export snapshot as template/backup | Queued |
 | P05-12 | Ancestry tree, preview image, storage/size detail | Queued |
 | P05-13 | Scheduled-snapshot policies | Capability review and implementation queued |
@@ -256,7 +256,7 @@ live-host qualification has yet been established by this change.
 | --- | --- | --- |
 | P14-01 | Track local power/snapshot progress/completion | Durable task tracking extended to placement, checkpoints and device actions; lab qualification open |
 | P14-02 | Unknown outcomes, recheck/acknowledge and cancellation | Existing workflow; qualification open |
-| P14-03 | Contextual error explanations/remediation | Action diagnostics and specific device/property conflicts added; broader remediation catalogue remains queued |
+| P14-03 | Contextual error explanations/remediation | Administrative messages, fresh action diagnostics and private live-client inspector added; broader remediation catalogue remains queued |
 | P14-04 | Pool-wide tasks from other clients | Server task inventory and current-operation links parsed; pool-wide task workspace remains queued |
 | P14-05 | Search/filter/dismiss history and inspect full task details | Queued |
 | P14-06 | Multi-step progress/partial outcomes/owned cleanup | Durable ordered VM property steps and partial/unknown outcomes implemented; owned-resource cleanup/provisioning orchestration remains queued |

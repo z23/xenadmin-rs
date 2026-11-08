@@ -11,6 +11,15 @@ enum CredentialWork {
     Remove(ProfileId),
 }
 
+pub(super) fn inspection_connections(
+    s: &State,
+) -> impl Iterator<Item = (ProfileId, Connection)> + '_ {
+    s.workspace
+        .active
+        .iter()
+        .map(|(id, connection)| (*id, connection.clone()))
+}
+
 pub(super) struct Workspace {
     store: Result<ProfileStore, String>,
     writable: bool,

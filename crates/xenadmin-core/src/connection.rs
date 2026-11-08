@@ -565,7 +565,7 @@ async fn run(
                         Some(update)=operation_updates.recv()=>{
                             match update {
                                 OperationUpdate::Coordinator(endpoint)=>break Some(Error::Coordinator(endpoint)),
-                                OperationUpdate::Record(record)=>{merge_record(&mut records,record);publish_history(&history,&mut records);},
+                                OperationUpdate::Record(record)=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
                             }
                             continue;
                         }
@@ -756,7 +756,7 @@ async fn run(
                 while !workers.is_empty() {
                     tokio::select! {
                         _=workers.join_next()=>{},
-                        Some(OperationUpdate::Record(record))=operation_updates.recv()=>{merge_record(&mut records,record);publish_history(&history,&mut records);},
+                        Some(OperationUpdate::Record(record))=operation_updates.recv()=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
                         _=&mut cleanup=>{workers.abort_all();break;},
                     }
                 }

@@ -25,7 +25,7 @@ pub(super) fn populate(inventory: &mut Inventory) {
         inventory
             .details
             .classes
-            .insert(class.into(), ClassAvailability::Available);
+            .insert(class.to_ascii_lowercase(), ClassAvailability::Available);
     }
     for vm in inventory.vms.values() {
         inventory.details.vms.insert(
@@ -137,6 +137,7 @@ pub(super) fn populate(inventory: &mut Inventory) {
             device: "xvda".into(),
             userdevice: "0".into(),
             kind: "Disk".into(),
+            owned: true,
             mode: "RW".into(),
             currently_attached: Some(running),
             bootable: Some(true),
@@ -154,6 +155,7 @@ pub(super) fn populate(inventory: &mut Inventory) {
             device: "xvdd".into(),
             userdevice: "3".into(),
             kind: "CD".into(),
+            owned: false,
             mode: "RO".into(),
             currently_attached: Some(running),
             bootable: Some(false),

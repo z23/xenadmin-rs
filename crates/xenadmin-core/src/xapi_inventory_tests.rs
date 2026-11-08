@@ -90,6 +90,138 @@ fn error(code: &str) -> Value {
     json!({"error":{"message":code,"data":["private-error-detail"]}})
 }
 
+#[test]
+fn explicit_blocks_override_advertised_vm_and_snapshot_actions() {
+    use crate::{OperationAction, SnapshotAction, SnapshotOperation};
+    let parent = json!({"uuid":"00000000-0000-0000-0000-000000000002", "power_state":"Halted",
+        "VCPUs_at_startup":2,"memory_static_max":1073741824,
+        "is_a_snapshot":false,"is_a_template":false,"is_control_domain":false,
+        "allowed_operations":["start","snapshot"],"blocked_operations":{"start":"Protected","snapshot":"Protected"}});
+    let mut snapshot = json!({"uuid":"00000000-0000-0000-0000-000000000003", "power_state":"Halted",
+        "is_a_snapshot":true,"is_a_template":true,"is_control_domain":false,"snapshot_of":"OpaqueRef:parent",
+        "allowed_operations":["clone","revert","destroy"],"blocked_operations":{"clone":"Protected","revert":"Protected","destroy":"Protected"}});
+    let batch: EventBatch = serde_json::from_value(json!({"token":"one", "events":[
+        {"class":"pool","operation":"add","ref":"OpaqueRef:pool","snapshot":{"uuid":"00000000-0000-0000-0000-000000000001"}},
+        {"class":"VM","operation":"add","ref":"OpaqueRef:parent","snapshot":parent},
+        {"class":"VM","operation":"add","ref":"OpaqueRef:snapshot","snapshot":snapshot}
+    ]})).unwrap();
+    let mut store = Store::default();
+    let inventory = store.apply(&batch).unwrap();
+    let vm = VmId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    let id = crate::SnapshotId::parse("00000000-0000-0000-0000-000000000003").unwrap();
+    assert!(inventory.vms[&vm].allowed_actions.is_empty());
+    assert!(!inventory.vms[&vm].can_snapshot);
+    assert!(
+        inventory
+            .snapshots
+            .get(&id)
+            .unwrap()
+            .allowed_actions
+            .is_empty()
+    );
+    for action in [
+        OperationAction::Power(PowerAction::Start),
+        OperationAction::Snapshot(SnapshotOperation::Create {
+            name: "Blocked".into(),
+        }),
+        OperationAction::Snapshot(SnapshotOperation::Clone {
+            snapshot: id,
+            name: "Blocked".into(),
+            as_template: false,
+        }),
+        OperationAction::Snapshot(SnapshotOperation::Revert { snapshot: id }),
+        OperationAction::Snapshot(SnapshotOperation::Delete {
+            snapshot: id,
+            disks: vec![],
+        }),
+    ] {
+        assert!(!store.allows(vm, &action));
+    }
+    snapshot["blocked_operations"] = json!({});
+    for (state, allowed, expected) in [
+        ("Halted", "hard_shutdown", false),
+        ("Suspended", "destroy", false),
+        ("Running", "destroy", false),
+        ("Halted", "destroy", true),
+        ("Suspended", "hard_shutdown", true),
+    ] {
+        snapshot["power_state"] = json!(state);
+        snapshot["allowed_operations"] = json!([allowed]);
+        let update: EventBatch = serde_json::from_value(json!({"token":"next","events":[
+            {"class":"VM","operation":"mod","ref":"OpaqueRef:snapshot","snapshot":snapshot}
+        ]}))
+        .unwrap();
+        let inventory = store.apply(&update).unwrap();
+        assert_eq!(
+            inventory
+                .snapshots
+                .get(&id)
+                .unwrap()
+                .allowed_actions
+                .contains(&SnapshotAction::Delete),
+            expected,
+            "{state}: {allowed}"
+        );
+        assert_eq!(
+            store.allows(
+                vm,
+                &OperationAction::Snapshot(SnapshotOperation::Delete {
+                    snapshot: id,
+                    disks: vec![]
+                })
+            ),
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn blocked_snapshot_clone_is_rejected_before_any_host_write() {
+    use crate::{OperationAction, OperationId, OperationState, SnapshotOperation};
+    let writes = Arc::new(AtomicUsize::new(0));
+    let fixture = Fixture::new({
+        let writes = writes.clone();
+        move |request| {
+            let parent = json!({"uuid":"00000000-0000-0000-0000-000000000002", "power_state":"Halted",
+                "is_a_snapshot":false,"is_a_template":false,"is_control_domain":false});
+            let snapshot = json!({"uuid":"00000000-0000-0000-0000-000000000003", "power_state":"Halted",
+                "is_a_snapshot":true,"is_a_template":true,"is_control_domain":false,"snapshot_of":"OpaqueRef:parent",
+                "allowed_operations":["clone"],"blocked_operations":{"clone":"Protected recovery point"}});
+            match request["method"].as_str().unwrap() {
+                "VM.get_by_uuid" => json!({"result":if request["params"][1] == parent["uuid"] {"OpaqueRef:parent"} else {"OpaqueRef:snapshot"}}),
+                "VM.get_record" => json!({"result":if request["params"][1] == "OpaqueRef:parent" {parent} else {snapshot}}),
+                "VM.get_all_records" => json!({"result":{"OpaqueRef:parent":parent,"OpaqueRef:snapshot":snapshot}}),
+                _ => { writes.fetch_add(1, Ordering::SeqCst); json!({"result":null}) }
+            }
+        }
+    }).await;
+    let directory = tempfile::tempdir().unwrap();
+    let (operation, request) = crate::operations::channel(
+        OperationId::new(),
+        PoolId::parse("00000000-0000-0000-0000-000000000001").unwrap(),
+        VmId::parse("00000000-0000-0000-0000-000000000002").unwrap(),
+        1,
+        OperationAction::Snapshot(SnapshotOperation::Clone {
+            snapshot: crate::SnapshotId::parse("00000000-0000-0000-0000-000000000003").unwrap(),
+            name: "Blocked clone".into(),
+            as_template: false,
+        }),
+        tokio::runtime::Handle::current(),
+    );
+    let (updates, _receiver) = tokio::sync::mpsc::channel(16);
+    request
+        .run(
+            Arc::new(fixture.session().await),
+            Some("OpaqueRef:parent".into()),
+            directory.path().into(),
+            tokio_util::sync::CancellationToken::new(),
+            updates,
+        )
+        .await;
+    assert_eq!(operation.latest().state, OperationState::Rejected);
+    assert_eq!(writes.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 async fn optional_classes_are_negotiated_without_losing_base_inventory() {
     let calls = Arc::new(AtomicUsize::new(0));
@@ -137,6 +269,40 @@ async fn optional_classes_are_negotiated_without_losing_base_inventory() {
     let next = session.events(&batch.token).await.unwrap();
     assert!(!next.reset);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn power_diagnostic_preserves_administrator_message_without_mutating_the_vm() {
+    let fixture = Fixture::new(|request| match request["method"].as_str().unwrap() {
+        "VM.get_by_uuid" => json!({"result":"OpaqueRef:current-vm"}),
+        "VM.get_record" => json!({"result":{
+            "uuid":"00000000-0000-0000-0000-000000000002",
+            "is_a_snapshot":false,"is_a_template":false,"is_control_domain":false,
+            "allowed_operations":[],
+            "blocked_operations":{
+                "clean_shutdown":"Maintenance: contact the VM owner (équipe).",
+                "hard_shutdown":""
+            }
+        }}),
+        _ => panic!("diagnosing a blocked action must only read its current VM record"),
+    })
+    .await;
+    let session = fixture.session().await;
+    let vm = VmId::parse("00000000-0000-0000-0000-000000000002").unwrap();
+    for (action, reason) in [
+        (
+            PowerAction::CleanShutdown,
+            "Maintenance: contact the VM owner (équipe).",
+        ),
+        (PowerAction::HardShutdown, "No reason supplied by the host"),
+    ] {
+        assert_eq!(
+            session.diagnose_power(vm, action).await.unwrap(),
+            ActionAvailability::Blocked {
+                reason: reason.into()
+            }
+        );
+    }
 }
 
 #[tokio::test]

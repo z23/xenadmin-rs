@@ -82,6 +82,36 @@ fn string_map(value: &Value) -> BTreeMap<String, String> {
         .collect()
 }
 
+fn blocked_operations(value: &Value) -> BTreeMap<String, String> {
+    value
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(operation, reason)| {
+            reason
+                .as_str()
+                .map(|reason| (operation.clone(), blocked_reason(reason)))
+        })
+        .collect()
+}
+
+fn blocked_reason(reason: &str) -> String {
+    // XAPI uses this field as the administrator's message parameter of OPERATION_BLOCKED.
+    let mut characters = reason.chars().filter(|c| {
+        (!c.is_control() || c.is_whitespace())
+            && !matches!(c, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    });
+    let bounded: String = characters.by_ref().take(1024).collect();
+    let mut display = bounded.split_whitespace().collect::<Vec<_>>().join(" ");
+    if display.is_empty() {
+        display = "No reason supplied by the host".into();
+    }
+    if characters.next().is_some() {
+        display.push('…');
+    }
+    display
+}
+
 pub(super) fn power_availability(record: &Value, action: crate::PowerAction) -> ActionAvailability {
     VmDetails {
         allowed_operations: strings(&record["allowed_operations"]),
@@ -96,10 +126,7 @@ pub(super) fn power_availability(record: &Value, action: crate::PowerAction) -> 
                 })
             })
             .collect(),
-        blocked_operations: string_map(&record["blocked_operations"])
-            .into_iter()
-            .map(|(operation, reason)| (operation, safe_error_code(&reason).into()))
-            .collect(),
+        blocked_operations: blocked_operations(&record["blocked_operations"]),
         ..Default::default()
     }
     .power_availability(action, true)
@@ -254,6 +281,9 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 currently_attached: boolean(record, "currently_attached")?,
                 bootable: boolean(record, "bootable")?,
                 empty: boolean(record, "empty")?,
+                owned: record["other_config"]
+                    .get("owner")
+                    .is_some_and(Value::is_string),
                 allowed_operations: strings(&record["allowed_operations"]),
             },
         ))
@@ -465,10 +495,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                             })
                         })
                         .collect(),
-                    blocked_operations: string_map(&record["blocked_operations"])
-                        .into_iter()
-                        .map(|(op, reason)| (op, safe_error_code(&reason).into()))
-                        .collect(),
+                    blocked_operations: blocked_operations(&record["blocked_operations"]),
                     vcpus_max: size(record, "VCPUs_max", "VM.VCPUs_max").ok().flatten(),
                     vcpus_at_startup: size(record, "VCPUs_at_startup", "VM.VCPUs_at_startup")
                         .ok()
@@ -826,6 +853,65 @@ mod tests {
         let encoded = serde_json::to_string(&inventory.details).unwrap();
         assert!(!encoded.contains("secret-"));
         assert!(!encoded.contains("OpaqueRef:"));
+    }
+
+    #[test]
+    fn blocked_action_messages_survive_inventory_and_changes() {
+        let mut record = vm(2);
+        record["allowed_operations"] = json!([]);
+        record["blocked_operations"] = json!({
+            "start": "Maintenance: contact the VM owner (équipe).",
+            "hard_shutdown": ""
+        });
+        let mut events = initial();
+        events.push(event("VM", "vm", record.clone()));
+        let mut store = Store::default();
+        let inventory = store.apply(&batch(events)).unwrap();
+        let details = &inventory.details.vms[&VmId::from(uuid(2))];
+        assert_eq!(
+            details.power_availability(crate::PowerAction::Start, true),
+            ActionAvailability::Blocked {
+                reason: "Maintenance: contact the VM owner (équipe).".into()
+            }
+        );
+        assert_eq!(
+            details.blocked_operations["hard_shutdown"],
+            "No reason supplied by the host"
+        );
+        assert!(
+            inventory.vms[&VmId::from(uuid(2))]
+                .allowed_actions
+                .is_empty()
+        );
+        record["blocked_operations"] = json!({});
+        record["allowed_operations"] = json!(["start"]);
+        let inventory = store
+            .apply(&batch(vec![event("VM", "vm", record)]))
+            .unwrap();
+        let details = &inventory.details.vms[&VmId::from(uuid(2))];
+        assert!(details.blocked_operations.is_empty());
+        assert_eq!(
+            details.power_availability(crate::PowerAction::Start, true),
+            ActionAvailability::Available
+        );
+    }
+
+    #[test]
+    fn blocked_action_messages_are_bounded_plain_text() {
+        assert_eq!(
+            blocked_reason(" \tmaintenance\nwindow\r\n"),
+            "maintenance window"
+        );
+        assert_eq!(blocked_reason("Hold\0\u{202e} this\u{2069}"), "Hold this");
+        assert_eq!(
+            blocked_reason("\0\u{202e}\n"),
+            "No reason supplied by the host"
+        );
+        assert_eq!(blocked_reason(&"é".repeat(1024)), "é".repeat(1024));
+        assert_eq!(
+            blocked_reason(&"é".repeat(1025)),
+            format!("{}…", "é".repeat(1024))
+        );
     }
 
     #[test]

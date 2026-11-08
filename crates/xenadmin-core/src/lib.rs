@@ -8,11 +8,14 @@ pub use credentials::{
 };
 mod diagnostics;
 pub use diagnostics::ActionDiagnostic;
+mod inspection;
+pub use inspection::{DevInspection, InspectionClass, InspectionRequest, inspect_live};
 mod console;
 mod model;
 mod operations;
 mod profiles;
 mod settings;
+mod snapshots;
 mod trust;
 mod xapi;
 
@@ -55,6 +58,10 @@ pub enum Error {
     InvalidSnapshotName,
     #[error("Shut down the VM before restoring a snapshot")]
     SnapshotRequiresHaltedVm,
+    #[error(
+        "The snapshot or its reviewed disk ownership changed; reload the snapshot before continuing"
+    )]
+    SnapshotConflict,
     #[error("Enter an HTTPS host URL without credentials, a query, or a fragment")]
     InvalidEndpoint,
     #[error("The certificate fingerprint must contain 64 hexadecimal digits")]
