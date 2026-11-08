@@ -157,8 +157,8 @@ pub use ovf::{OvfAttachment, OvfDisk, OvfGuest, OvfNic, OvfPackageFormat, OvfSum
 mod transfer;
 pub use disk_image::{DiskImageFormat, DiskImageSummary};
 pub use transfer::{
-    ArchiveGuest, ArchiveSummary, ExportSource, TransferAction, TransferCreated, TransferFile,
-    TransferProgress, TransferRequest,
+    ArchiveGuest, ArchiveMemory, ArchiveSummary, CheckpointMemory, ExportSource, TransferAction,
+    TransferCreated, TransferFile, TransferProgress, TransferRequest,
 };
 mod trust;
 mod xapi;

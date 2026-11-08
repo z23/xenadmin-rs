@@ -13,6 +13,8 @@ pub enum SnapshotParent {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SnapshotDetails {
+    #[serde(default)]
+    pub can_export: Option<bool>,
     pub parent: SnapshotParent,
     pub memory_vdi: Option<VdiId>,
     pub memory_vdi_known: bool,

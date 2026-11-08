@@ -618,6 +618,11 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             result.snapshots.insert(
                 id,
                 crate::SnapshotDetails {
+                    can_export: record["allowed_operations"].as_array().and_then(|_| {
+                        record["current_operations"]
+                            .as_object()
+                            .map(|ops| ops.is_empty() && advertises(record, "export"))
+                    }),
                     parent: refs.snapshot_parent(&record["parent"]),
                     memory_vdi: refs.link("vdi", &record["suspend_VDI"]),
                     memory_vdi_known: record["suspend_VDI"] == "OpaqueRef:NULL"
@@ -1129,6 +1134,49 @@ mod tests {
         let public = serde_json::to_string(&i.details).unwrap();
         assert!(!public.contains("OpaqueRef:"));
         assert!(!public.contains("XenCenter.VNCSnapshot"));
+    }
+
+    #[test]
+    fn checkpoint_export_capture_uses_snapshot_inventory_and_exact_memory_identity() {
+        let mut events = initial();
+        let mut snapshot = vm(3);
+        snapshot["is_a_snapshot"] = json!(true);
+        snapshot["snapshot_of"] = json!("OpaqueRef:vm");
+        snapshot["power_state"] = json!("Suspended");
+        snapshot["suspend_VDI"] = json!("OpaqueRef:memory");
+        snapshot["allowed_operations"] = json!(["export"]);
+        snapshot["current_operations"] = json!({});
+        snapshot["blocked_operations"] = json!({});
+        events.push(event("VM", "checkpoint", snapshot.clone()));
+        events.push(event(
+            "SR",
+            "storage",
+            json!({"uuid":uuid(4),"content_type":"user"}),
+        ));
+        events.push(event("VDI", "memory", json!({"uuid":uuid(20),"type":"suspend","SR":"OpaqueRef:storage","virtual_size":"4096","managed":true,"missing":false})));
+        let mut store = Store::default();
+        let i = store.apply(&batch(events)).unwrap();
+        assert!(!i.details.vms.contains_key(&uuid(3).into()));
+        assert_eq!(
+            crate::ExportSource::checkpoint(&i, uuid(3).into(), uuid(2).into(), true),
+            Some(crate::ExportSource::Checkpoint {
+                snapshot: uuid(3).into(),
+                parent: uuid(2).into(),
+                memory: crate::CheckpointMemory {
+                    vdi: uuid(20).into(),
+                    sr: uuid(4).into(),
+                    virtual_size: 4096
+                },
+                preserve_memory: true,
+            })
+        );
+        snapshot["blocked_operations"] = json!({"export":"fixture block"});
+        let i = store
+            .apply(&batch(vec![event("VM", "checkpoint", snapshot)]))
+            .unwrap();
+        assert!(
+            crate::ExportSource::checkpoint(&i, uuid(3).into(), uuid(2).into(), true).is_none()
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ Milestone order and dependencies are defined in the [implementation plan](PLAN.m
 | Host operations | M5 | Maintenance, evacuation, shutdown, reboot, logs and relevant host properties |
 | Storage administration | M5 | Attach, detach, rescan, reviewed multi-host attachment repair, read-cache policy and provisioning-capability inspection |
 | Network administration | M5 | Create networks and supported bonds/VLANs, inspect physical and virtual interfaces |
-| Bulk transfers | M6 | Streamed XVA, raw/VHD disk and ordinary OVF/OVA transfers with cancellation |
+| Bulk transfers | M6 | Streamed XVA including explicitly reviewed checkpoint memory, raw/VHD disk and ordinary OVF/OVA transfers with cancellation |
 | Cross-pool migration | M6 | Qualified version/storage/network combinations, progress and partial-failure handling |
 | Expanded compatibility | M6 | Each additional host version, distribution, or architecture has recorded evidence |
 

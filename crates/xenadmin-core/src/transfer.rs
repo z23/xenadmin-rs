@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 mod archive;
 #[path = "transfer_archive_stream.rs"]
 mod archive_stream;
+#[path = "transfer_checkpoint.rs"]
+pub(crate) mod checkpoint;
 #[path = "transfer_files.rs"]
 pub(crate) mod files;
 #[path = "transfer_http.rs"]
@@ -15,8 +17,26 @@ pub(crate) mod xapi;
 pub const MAX_TRANSFER_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExportSource {
-    Vm { vm: VmId, expected_template: bool },
-    Snapshot { snapshot: SnapshotId, parent: VmId },
+    Vm {
+        vm: VmId,
+        expected_template: bool,
+    },
+    Snapshot {
+        snapshot: SnapshotId,
+        parent: VmId,
+    },
+    Checkpoint {
+        snapshot: SnapshotId,
+        parent: VmId,
+        memory: CheckpointMemory,
+        preserve_memory: bool,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointMemory {
+    pub vdi: crate::VdiId,
+    pub sr: SrId,
+    pub virtual_size: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferAction {
@@ -33,6 +53,9 @@ pub enum TransferAction {
         source: ExportSource,
     },
     ImportXva {
+        sr: SrId,
+    },
+    ImportCheckpointXva {
         sr: SrId,
     },
     ImportOvf {
@@ -81,6 +104,7 @@ impl TransferAction {
             Self::ExportXva { .. } => "Export XVA",
             Self::ExportOvf { .. } => "Export OVF/OVA",
             Self::ImportXva { .. } => "Import XVA",
+            Self::ImportCheckpointXva { .. } => "Import checkpoint XVA",
             Self::ImportOvf { .. } => "Import OVF/OVA",
             Self::ExportDisk { .. } => "Export disk image",
             Self::ImportDisk { .. } => "Import disk image",
@@ -88,6 +112,9 @@ impl TransferAction {
     }
     pub fn availability(&self, i: &Inventory) -> ActionAvailability {
         if let Self::ExportOvf { source, .. } = self {
+            if matches!(source, ExportSource::Checkpoint { .. }) {
+                return ActionAvailability::Unsupported;
+            }
             return Self::ExportXva {
                 source: source.clone(),
             }
@@ -134,7 +161,10 @@ impl TransferAction {
                 expected_size,
                 format,
             } => return disk::availability(i, *vdi, *expected_sr, *expected_size, *format),
-            Self::ImportXva { sr } | Self::ImportDisk { sr, .. } | Self::ImportOvf { sr, .. } => {
+            Self::ImportXva { sr }
+            | Self::ImportCheckpointXva { sr }
+            | Self::ImportDisk { sr, .. }
+            | Self::ImportOvf { sr, .. } => {
                 if i.details.storage.get(sr).is_none_or(|r| {
                     r.content_type != "user"
                         || r.allowed_operations
@@ -190,13 +220,24 @@ impl TransferAction {
                 }
             }
             Self::ExportXva {
+                source:
+                    ExportSource::Checkpoint {
+                        snapshot,
+                        parent,
+                        memory,
+                        ..
+                    },
+            } => {
+                return checkpoint::availability(i, *snapshot, *parent, memory);
+            }
+            Self::ExportXva {
                 source: ExportSource::Snapshot { snapshot, parent },
             } => {
                 if i.snapshots.get(snapshot).is_none_or(|s| {
                     s.vm != Some(*parent) || s.power_state != crate::PowerState::Halted
                 }) {
                     return no(
-                        "Choose a current disk snapshot; memory-checkpoint export is not supported here",
+                        "Choose a current disk snapshot, or use a reviewed memory checkpoint export",
                     );
                 }
             }
@@ -254,7 +295,13 @@ impl TransferFile {
         self.ovf.as_ref().map(|v| &v.summary)
     }
     pub fn source(path: impl AsRef<Path>) -> Result<Self, Error> {
-        files::select_source(path.as_ref())
+        Self::source_with_cancel(path, &std::sync::atomic::AtomicBool::new(false))
+    }
+    pub fn source_with_cancel(
+        path: impl AsRef<Path>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Error> {
+        files::select_source(path.as_ref(), cancel)
     }
     pub fn disk_source(
         path: impl AsRef<Path>,
@@ -290,7 +337,14 @@ pub struct TransferRequest {
     pub file: TransferFile,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveMemory {
+    pub uuid: uuid::Uuid,
+    pub virtual_size: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchiveGuest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<ArchiveMemory>,
     pub uuid: uuid::Uuid,
     pub name: String,
     pub template: bool,
@@ -303,6 +357,11 @@ pub struct ArchiveSummary {
     pub networks: usize,
     pub(crate) metadata_digest: [u8; 32],
 }
+impl ArchiveSummary {
+    pub fn memory_images(&self) -> usize {
+        self.guests.iter().filter(|g| g.memory.is_some()).count()
+    }
+}
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferProgress {
     pub bytes: u64,
@@ -312,6 +371,8 @@ pub struct TransferProgress {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferCreated {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suspend_images: Vec<crate::VdiId>,
     pub vms: Vec<VmId>,
     pub disks: Vec<crate::VdiId>,
     pub networks: Vec<crate::NetworkId>,
@@ -382,6 +443,11 @@ pub(crate) fn valid_update(
         (None, None) => true,
         (Some(a), Some(b)) => {
             plan_accepts(a, b)
+                && old
+                    .transfer_created
+                    .suspend_images
+                    .iter()
+                    .all(|id| new.transfer_created.suspend_images.contains(id))
                 && old
                     .transfer_created
                     .vbds

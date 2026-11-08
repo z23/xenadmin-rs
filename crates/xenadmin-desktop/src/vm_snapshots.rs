@@ -509,10 +509,15 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     {
         content = content.child(transfers::export_button(
             s,
-            xenadmin_core::ExportSource::Snapshot {
-                snapshot: snapshot.id,
-                parent,
-            },
+            s.inventory
+                .as_ref()
+                .and_then(|i| {
+                    xenadmin_core::ExportSource::checkpoint(i, snapshot.id, parent, false)
+                })
+                .unwrap_or(xenadmin_core::ExportSource::Snapshot {
+                    snapshot: snapshot.id,
+                    parent,
+                }),
             k,
         ));
     }

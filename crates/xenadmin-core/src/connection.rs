@@ -920,8 +920,14 @@ impl Connection {
                 return Err(Error::TransferFile);
             }
             crate::TransferAction::ImportXva { .. }
-                if request.file.manifest.is_none()
-                    || request.file.disk.is_some()
+            | crate::TransferAction::ImportCheckpointXva { .. }
+                if request.file.manifest.as_ref().is_none_or(|a| {
+                    (a.memory_images() > 0)
+                        != matches!(
+                            request.action,
+                            crate::TransferAction::ImportCheckpointXva { .. }
+                        )
+                }) || request.file.disk.is_some()
                     || request.file.ovf.is_some() =>
             {
                 return Err(Error::TransferFile);

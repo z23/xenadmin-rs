@@ -78,7 +78,15 @@ pub(crate) async fn prepare(
     ) {
         return super::disk::prepare(s, pool, action, plan).await;
     }
-    if let TransferAction::ImportXva { sr } = action {
+    if let TransferAction::ImportXva { sr } | TransferAction::ImportCheckpointXva { sr } = action {
+        let summary = plan
+            .and_then(|p| p.file.manifest.as_ref())
+            .ok_or(Error::TransferConflict)?;
+        if (summary.memory_images() > 0)
+            != matches!(action, TransferAction::ImportCheckpointXva { .. })
+        {
+            return Err(Error::TransferConflict);
+        }
         if s.options().read_only {
             return Err(Error::ReadOnly);
         }
@@ -119,7 +127,10 @@ pub(crate) async fn prepare(
                     }
                     (r, v)
                 }
-                ExportSource::Snapshot { snapshot, parent } => {
+                ExportSource::Snapshot { snapshot, parent }
+                | ExportSource::Checkpoint {
+                    snapshot, parent, ..
+                } => {
                     let (parent, _) = fresh(s, "VM", parent.uuid()).await?;
                     let (r, v) = fresh(s, "VM", snapshot.uuid()).await?;
                     if v["is_a_snapshot"] != true || v["snapshot_of"] != parent {
@@ -128,23 +139,54 @@ pub(crate) async fn prepare(
                     (r, v)
                 }
             };
-            let _ = reference;
+            if let ExportSource::Checkpoint { memory, .. } = source {
+                super::checkpoint::fresh(s, &r, memory).await?;
+                let vms = records(s, "VM").await?;
+                if vms
+                    .iter()
+                    .filter(|(_, v)| v["suspend_VDI"] == r["suspend_VDI"])
+                    .map(|(k, _)| k)
+                    .collect::<Vec<_>>()
+                    != vec![&reference]
+                {
+                    return Err(Error::TransferConflict);
+                }
+            }
             idle(&r)?;
             if r["is_control_domain"] != false
-                || r["power_state"] != "Halted"
+                || r["power_state"]
+                    != if matches!(source, ExportSource::Checkpoint { .. }) {
+                        "Suspended"
+                    } else {
+                        "Halted"
+                    }
+                || r["blocked_operations"]
+                    .as_object()
+                    .is_some_and(|v| v.contains_key("export"))
                 || !crate::xapi::advertises(&r, "export")
             {
                 return Err(Error::UnavailableAction);
             }
             query.push(("uuid".into(), id(&r)?.to_string()));
             query.push(("use_compression".into(), "false".into()));
-            query.push(("preserve_power_state".into(), "false".into()));
+            query.push((
+                "preserve_power_state".into(),
+                matches!(
+                    source,
+                    ExportSource::Checkpoint {
+                        preserve_memory: true,
+                        ..
+                    }
+                )
+                .to_string(),
+            ));
         }
         TransferAction::ImportDisk { .. } | TransferAction::ExportDisk { .. } => {
             return Err(Error::TransferConflict);
         }
         TransferAction::Host { .. }
         | TransferAction::ImportXva { .. }
+        | TransferAction::ImportCheckpointXva { .. }
         | TransferAction::ImportOvf { .. }
         | TransferAction::ExportOvf { .. } => {
             return Err(Error::TransferConflict);
@@ -192,6 +234,7 @@ pub(crate) async fn created(
     let mut result = TransferCreated::default();
     let mut found = BTreeSet::new();
     let mut graph_disks = BTreeSet::new();
+    let mut graph_memory = BTreeSet::new();
     let mut names = vec![];
     for (reference, r) in &vms {
         if r["other_config"]["import_task"] != task {
@@ -203,19 +246,35 @@ pub(crate) async fn created(
         }
         if complete {
             idle(r)?;
-            if r["power_state"] != "Halted" || r["is_a_snapshot"] != false {
+            if !matches!(r["power_state"].as_str(), Some("Halted" | "Suspended"))
+                || r["is_a_snapshot"] != false
+            {
                 return Err(Error::TransferConflict);
             }
         }
         let template = r["is_a_template"]
             .as_bool()
             .ok_or(Error::TransferConflict)?;
+        let memory = match r["suspend_VDI"].as_str() {
+            Some(reference) if !matches!(reference, "OpaqueRef:NULL" | "Ref:NULL") => {
+                if !graph_memory.insert(reference.to_owned()) {
+                    return Err(Error::TransferConflict);
+                }
+                let d = disks.get(reference).ok_or(Error::TransferConflict)?;
+                Some(super::checkpoint::size(d)?)
+            }
+            _ => None,
+        };
+        if complete && ((r["power_state"] == "Suspended") != memory.is_some()) {
+            return Err(Error::TransferConflict);
+        }
         names.push((
             r["name_label"]
                 .as_str()
                 .ok_or(Error::TransferConflict)?
                 .to_owned(),
             template,
+            memory,
         ));
         found.insert(reference.clone());
         result.vms.push(VmId::from(uuid));
@@ -231,11 +290,23 @@ pub(crate) async fn created(
     }
     for (reference, r) in &disks {
         let tagged = r["sm_config"]["import_task"] == task;
-        if !tagged && !graph_disks.contains(reference) {
+        if !tagged && !graph_disks.contains(reference) && !graph_memory.contains(reference) {
             continue;
         }
         let uuid = id(r)?;
-        if baseline.disks.contains(&uuid) || r["type"] != "user" || r["managed"] != true {
+        let memory = r["type"] == "suspend";
+        if baseline.disks.contains(&uuid)
+            || (!memory && r["type"] != "user")
+            || r["managed"] != true
+            || (memory
+                && (!graph_memory.contains(reference)
+                    || graph_disks.contains(reference)
+                    || !refs(r, "VBDs")?.is_empty()))
+            || (memory
+                && vms
+                    .iter()
+                    .any(|(vm, v)| v["suspend_VDI"] == *reference && !found.contains(vm)))
+        {
             return Err(Error::TransferConflict);
         }
         let sr = crate::snapshots::reference(&r["SR"])?;
@@ -255,7 +326,11 @@ pub(crate) async fn created(
                 return Err(Error::TransferConflict);
             }
         }
-        result.disks.push(VdiId::from(uuid));
+        if memory {
+            result.suspend_images.push(VdiId::from(uuid));
+        } else {
+            result.disks.push(VdiId::from(uuid));
+        }
     }
     for r in networks.values() {
         if r["other_config"]["import_task"] == task {
@@ -269,6 +344,7 @@ pub(crate) async fn created(
     let manifest = plan.file.manifest.as_ref().ok_or(Error::TransferConflict)?;
     if result.vms.len() > manifest.guests.len()
         || result.disks.len() > manifest.data_disks
+        || result.suspend_images.len() > manifest.memory_images()
         || result.networks.len() > manifest.networks
     {
         return Err(Error::TransferConflict);
@@ -287,17 +363,27 @@ pub(crate) async fn created(
         let mut expected_names = manifest
             .guests
             .iter()
-            .map(|g| (g.name.clone(), g.template))
+            .map(|g| {
+                (
+                    g.name.clone(),
+                    g.template,
+                    g.memory.as_ref().map(|m| m.virtual_size),
+                )
+            })
             .collect::<Vec<_>>();
         names.sort();
         expected_names.sort();
-        if names != expected_names || result.disks.len() != manifest.data_disks {
+        if names != expected_names
+            || result.disks.len() != manifest.data_disks
+            || result.suspend_images.len() != manifest.memory_images()
+        {
             return Err(Error::TransferConflict);
         }
     }
     result.vms.sort();
     result.disks.sort();
     result.networks.sort();
+    result.suspend_images.sort();
     Ok(result)
 }
 

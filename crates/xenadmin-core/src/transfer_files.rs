@@ -75,7 +75,10 @@ fn open(path: &Path, write: bool, create: bool) -> Result<File, Error> {
     }
     Ok(file)
 }
-pub(crate) fn select_source(path: &Path) -> Result<TransferFile, Error> {
+pub(crate) fn select_source(
+    path: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<TransferFile, Error> {
     let (path, parent) = canonical(path)?;
     let mut file = open(&path, false, false)?;
     let identity = Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?);
@@ -83,6 +86,11 @@ pub(crate) fn select_source(path: &Path) -> Result<TransferFile, Error> {
         return Err(Error::TransferLimit);
     }
     let summary = super::archive::inspect(&mut file)?;
+    if summary.memory_images() > 0 {
+        super::archive_stream::verify_with_stop(&mut file, &summary.metadata_digest, &|| {
+            cancel.load(std::sync::atomic::Ordering::Relaxed)
+        })?;
+    }
     if Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?) != identity {
         return Err(Error::TransferFileChanged);
     }
@@ -399,9 +407,25 @@ pub(crate) fn validate_export(
     let summary = super::archive::inspect(&mut file)?;
     let expected = match source {
         ExportSource::Vm { vm, .. } => vm.uuid(),
-        ExportSource::Snapshot { snapshot, .. } => snapshot.uuid(),
+        ExportSource::Snapshot { snapshot, .. } | ExportSource::Checkpoint { snapshot, .. } => {
+            snapshot.uuid()
+        }
     };
     if summary.guests.len() != 1 || summary.guests[0].uuid != expected {
+        return Err(Error::TransferConflict);
+    }
+    let expected_memory = match source {
+        ExportSource::Checkpoint {
+            memory,
+            preserve_memory: true,
+            ..
+        } => Some(ArchiveMemory {
+            uuid: memory.vdi.uuid(),
+            virtual_size: memory.virtual_size,
+        }),
+        _ => None,
+    };
+    if summary.guests[0].memory != expected_memory {
         return Err(Error::TransferConflict);
     }
     super::archive_stream::verify(&mut file, &summary.metadata_digest, cancel)?;
@@ -479,4 +503,24 @@ pub(crate) fn select_plain(path: &Path) -> Result<TransferFile, Error> {
         ovf: None,
         host_backup: None,
     })
+}
+
+pub(crate) fn revalidate_checkpoint_source(
+    selection: &TransferFile,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(), Error> {
+    let mut file = source(selection)?;
+    let summary = super::archive::inspect(&mut file)?;
+    if selection.manifest.as_ref() != Some(&summary) || summary.memory_images() == 0 {
+        return Err(Error::TransferConflict);
+    }
+    super::archive_stream::verify(&mut file, &summary.metadata_digest, cancel)?;
+    if selection.identity.as_ref()
+        != Some(&Identity::from(
+            &file.metadata().map_err(|_| Error::TransferFile)?,
+        ))
+    {
+        return Err(Error::TransferFileChanged);
+    }
+    Ok(())
 }

@@ -485,6 +485,7 @@ pub(super) fn ancestry_scene(s: &mut State) {
     i.details.snapshots.insert(
         first,
         xenadmin_core::SnapshotDetails {
+            can_export: None,
             parent: SnapshotParent::Root,
             memory_vdi_known: true,
             ..Default::default()
@@ -493,6 +494,7 @@ pub(super) fn ancestry_scene(s: &mut State) {
     i.details.snapshots.insert(
         second,
         xenadmin_core::SnapshotDetails {
+            can_export: None,
             parent: SnapshotParent::Snapshot(first),
             memory_vdi_known: true,
             preview_available: true,

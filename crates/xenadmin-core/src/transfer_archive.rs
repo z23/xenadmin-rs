@@ -150,6 +150,7 @@ pub(crate) fn inspect(file: &mut std::fs::File) -> Result<ArchiveSummary, Error>
         .as_array()
         .filter(|a| a.len() <= 2048)
         .ok_or(Error::TransferArchive)?;
+    let memories = super::checkpoint::memory_graph(objects)?;
     let mut guests = vec![];
     let mut disks = 0;
     let mut virtual_bytes = 0u64;
@@ -169,7 +170,6 @@ pub(crate) fn inspect(file: &mut std::fs::File) -> Result<ArchiveSummary, Error>
         match object["class"].as_str().ok_or(Error::TransferArchive)? {
             "VM" => {
                 if record.get("is_control_domain") != Some(&Value::Bool(false))
-                    || record.get("power_state").and_then(Value::as_str) != Some("Halted")
                     || record.get("is_a_snapshot") == Some(&Value::Bool(true))
                 {
                     return Err(Error::TransferArchive);
@@ -195,13 +195,17 @@ pub(crate) fn inspect(file: &mut std::fs::File) -> Result<ArchiveSummary, Error>
                     return Err(Error::TransferArchive);
                 }
                 guests.push(ArchiveGuest {
+                    memory: memories.get(id).cloned(),
                     uuid,
                     name,
                     template,
                 });
             }
             "VDI" => {
-                if record.get("type").and_then(Value::as_str) == Some("user") {
+                if matches!(
+                    record.get("type").and_then(Value::as_str),
+                    Some("user" | "suspend")
+                ) {
                     let bytes = record
                         .get("virtual_size")
                         .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
@@ -211,7 +215,9 @@ pub(crate) fn inspect(file: &mut std::fs::File) -> Result<ArchiveSummary, Error>
                         .checked_add(bytes)
                         .filter(|n| *n <= MAX_TRANSFER_BYTES)
                         .ok_or(Error::TransferArchive)?;
-                    disks += 1;
+                    if record.get("type").and_then(Value::as_str) == Some("user") {
+                        disks += 1;
+                    }
                 }
             }
             "network" => networks += 1,

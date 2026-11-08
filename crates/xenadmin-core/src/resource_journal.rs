@@ -246,6 +246,7 @@ impl Journal {
             crate::storage_maintenance::validate_record(&record)?;
             crate::disk_administration::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
+            crate::transfer::checkpoint::validate_record(&record)?;
             super::crashdump::validate_record(&record)?;
             crate::host_support::restore::validate_record(&record)?;
             Ok(record)
@@ -273,6 +274,7 @@ impl Journal {
         crate::storage_maintenance::validate_record(record)?;
         crate::disk_administration::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
+        crate::transfer::checkpoint::validate_record(record)?;
         super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
@@ -532,6 +534,7 @@ impl Journal {
         crate::storage_maintenance::validate_record(record)?;
         crate::disk_administration::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
+        crate::transfer::checkpoint::validate_record(record)?;
         super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;
         self.0

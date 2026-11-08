@@ -1,3 +1,5 @@
+#[path = "transfer_checkpoint_tests.rs"]
+mod checkpoint_tests;
 use super::*;
 use crate::{
     ConnectionOptions, Credentials, Endpoint, OperationId, OperationState, ResourceTarget,
@@ -447,13 +449,20 @@ impl Fixture {
                                 status = "302 Found";
                                 extra = "Location: http://127.0.0.1:1/import\r\n".into();
                             } else {
-                                assert_eq!(input, archive(2));
+                                if data.contains_key("fixture:checkpoint") {
+                                    assert_eq!(input, checkpoint_tests::archive(2, 10, true));
+                                } else {
+                                    assert_eq!(input, archive(2));
+                                }
                                 if fault != Fault::Partial {
                                     data.insert("OpaqueRef:VM:new".into(),json!({"uuid":uuid(if fault==Fault::ExistingGuest{2}else{20}),"name_label":"Archive guest","is_control_domain":false,"is_a_template":false,"is_a_snapshot":false,"power_state":"Halted","current_operations":{},"other_config":{"import_task":"OpaqueRef:task:t"},"VBDs":["OpaqueRef:VBD:new"]}));
                                     data.insert("OpaqueRef:VBD:new".into(),json!({"uuid":uuid(21),"VM":"OpaqueRef:VM:new","VDI":"OpaqueRef:VDI:new","type":"Disk","empty":false}));
                                 }
                                 data.insert("OpaqueRef:VDI:new".into(),json!({"uuid":uuid(22),"SR":"OpaqueRef:SR:s","type":"user","managed":true,"missing":false,"current_operations":{},"sm_config":{"import_task":"OpaqueRef:task:t"},"VBDs":if fault==Fault::Partial{vec![]}else{vec!["OpaqueRef:VBD:new"]}}));
                                 data.insert("OpaqueRef:network:new".into(),json!({"uuid":uuid(23),"other_config":{"import_task":"OpaqueRef:task:t"}}));
+                                if data.contains_key("fixture:checkpoint") {
+                                    checkpoint_tests::imported(&mut data);
+                                }
                                 if fault == Fault::Untagged {
                                     data.get_mut("OpaqueRef:VM:new").unwrap()["other_config"] =
                                         json!({});
@@ -473,6 +482,8 @@ impl Fixture {
                                 task["result"] = json!(xml(&json!(["OpaqueRef:VM:new"])));
                                 task["error_info"] = json!(["IMPORT_ERROR", "private-source-path"]);
                             }
+                            pause_response =
+                                data.get("fixture:checkpoint_delay") == Some(&json!(true));
                             if fault == Fault::LostImport {
                                 return;
                             }
@@ -483,7 +494,24 @@ impl Fixture {
                                 status = "401 Unauthorized";
                                 b"session_id=PRIVATE".to_vec()
                             } else {
-                                let mut archive = if fault == Fault::Snapshot {
+                                let mut archive = if data.contains_key("fixture:checkpoint") {
+                                    let u = url::Url::parse(&format!(
+                                        "http://localhost{}",
+                                        request.split_whitespace().nth(1).unwrap()
+                                    ))
+                                    .unwrap();
+                                    let q = u.query_pairs().collect::<BTreeMap<_, _>>();
+                                    assert_eq!(q["use_compression"], "false");
+                                    let preserve = q["preserve_power_state"] == "true";
+                                    let memory = if data.get("fixture:checkpoint_fault")
+                                        == Some(&json!("wrong_export_memory"))
+                                    {
+                                        99
+                                    } else {
+                                        10
+                                    };
+                                    checkpoint_tests::archive(2, memory, preserve)
+                                } else if fault == Fault::Snapshot {
                                     // XAPI normal export omits snapshot lineage; metadata-export is a distinct endpoint.
                                     let mut v = data["OpaqueRef:VM:source"].clone();
                                     assert_eq!(v["is_a_snapshot"], true);
@@ -601,6 +629,14 @@ impl Fixture {
                             pause_response = fault == Fault::CloudDelayedUpload
                                 && method == "task.get_record"
                                 && c.lock().unwrap().iter().any(|v| v == "PUT /import_raw_vdi");
+                            pause_response |= data.get("fixture:checkpoint_task_gate")
+                                == Some(&json!(true))
+                                && method == "task.get_record"
+                                && c.lock().unwrap().iter().any(|v| v == "PUT /import");
+                            pause_response |= data.get("fixture:checkpoint_identity_gate")
+                                == Some(&json!(true))
+                                && method == "SR.get_record"
+                                && c.lock().unwrap().iter().any(|v| v == "PUT /import");
                             if fault == Fault::TaskGone
                                 && method == "task.get_record"
                                 && c.lock()

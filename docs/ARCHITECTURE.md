@@ -769,3 +769,19 @@ inferring safety from an empty result or unknown aliases. Local creation verifie
 state and a single exact host attachment; existing local attachment creation also scans PBDs
 independently of reverse SR lists. Legacy create actions omit the new optional declaration.
 See the [local storage report](reports/2026-11-08-storage-local.md) for the direct-API limits.
+## Checkpoint archive transfers
+
+`ExportSource::Checkpoint` captures a suspended snapshot's parent, memory VDI, SR and size,
+plus an explicit memory-preservation choice. Snapshot details supply export capability; VM
+inventory does not contain snapshots. Export re-resolves the captured identity and complete
+memory ownership before dispatch. A separate `ImportCheckpointXva` action prevents ordinary
+or legacy import plans from silently acquiring memory-preservation semantics.
+
+Checkpoint selection and dispatch both validate the complete bounded plain/gzip XVA stream,
+including sparse disk/memory chunks, checksums and archive termination. Imports use new guest
+and VDI identities, verify memory ownership/type/size/destination against the captured manifest
+and private pre-import UUID baseline, and leave memory guests suspended. Resume is a separate
+operation. The private transfer journal retains complete stream and owned-task receipts;
+monotonic merges preserve proven UUIDs after recovery or acknowledgement without continuing the
+original worker. Recheck never uploads again or sends a previously unsent cancellation. See the
+[checkpoint report](reports/2026-11-08-checkpoint-archives.md) for endpoint and compatibility limits.

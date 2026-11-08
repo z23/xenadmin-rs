@@ -92,6 +92,7 @@ pub(crate) async fn capture(
     let id = match source {
         ExportSource::Vm { vm, .. } => vm.uuid(),
         ExportSource::Snapshot { snapshot, .. } => snapshot.uuid(),
+        ExportSource::Checkpoint { .. } => return Err(Error::TransferConflict),
     };
     let (reference, v) = super::import::fresh(s, "VM", id).await?;
     let cpus = u32::try_from(num(&v["VCPUs_at_startup"])?)

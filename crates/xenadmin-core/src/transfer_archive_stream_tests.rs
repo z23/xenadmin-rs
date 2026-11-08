@@ -48,7 +48,7 @@ fn check(bytes: &[u8]) -> Result<(), Error> {
     stream(
         &mut Cursor::new(bytes),
         &Sha256::digest(metadata()).into(),
-        &CancellationToken::new(),
+        &|| false,
     )
 }
 
@@ -136,14 +136,14 @@ fn requires_complete_regular_tar_and_matching_bounded_metadata() {
     let mut modified = data.clone();
     modified.extend_from_slice(&vec![0; CHUNK as usize + 1]);
     assert!(check(&modified).is_err());
-    assert!(stream(&mut Cursor::new(&data), &[0; 32], &CancellationToken::new()).is_err());
+    assert!(stream(&mut Cursor::new(&data), &[0; 32], &|| false).is_err());
     let cancel = CancellationToken::new();
     cancel.cancel();
     assert!(matches!(
         stream(
             &mut Cursor::new(&data),
             &Sha256::digest(metadata()).into(),
-            &cancel
+            &|| cancel.is_cancelled()
         ),
         Err(Error::Closed)
     ));
@@ -177,7 +177,7 @@ fn cancellation_interrupts_scanning_empty_gzip_members_before_a_tar_header() {
         cancel: cancel.clone(),
     };
     assert!(matches!(
-        decode(&mut reader, true, &[0; 32], &cancel),
+        decode(&mut reader, true, &[0; 32], &|| cancel.is_cancelled()),
         Err(Error::Closed)
     ));
     assert_eq!(reader.count, 8);

@@ -1,5 +1,8 @@
 use super::*;
 #[cfg(test)]
+#[path = "checkpoint_transfer_tests.rs"]
+mod checkpoint_tests;
+#[cfg(test)]
 #[path = "ovf_transfer_tests.rs"]
 mod ovf_tests;
 #[path = "ovf_transfer_ui.rs"]
@@ -60,7 +63,8 @@ fn begin(s: &mut State, source: Option<ExportSource>) {
             let i = s.inventory.as_ref()?;
             match source {
                 ExportSource::Vm { vm, .. } => i.vms.get(vm).map(|v| v.name.clone()),
-                ExportSource::Snapshot { snapshot, .. } => {
+                ExportSource::Snapshot { snapshot, .. }
+                | ExportSource::Checkpoint { snapshot, .. } => {
                     i.snapshots.get(snapshot).map(|v| v.name.clone())
                 }
             }
@@ -167,7 +171,15 @@ fn action(p: &Panel) -> Option<TransferAction> {
                 format,
             }
         } else {
-            TransferAction::ImportXva { sr }
+            if p.file
+                .as_ref()
+                .and_then(|f| f.archive())
+                .is_some_and(|a| a.memory_images() > 0)
+            {
+                TransferAction::ImportCheckpointXva { sr }
+            } else {
+                TransferAction::ImportXva { sr }
+            }
         }
     })
 }
@@ -257,7 +269,7 @@ fn choose(s: &mut State, tx: &mut Tx) {
                             } else if let Some(format) = format {
                                 TransferFile::disk_source(path, format)
                             } else {
-                                TransferFile::source(path)
+                                TransferFile::source_with_cancel(path, &cancel)
                             }
                             .map_err(|e| e.to_string());
                             let _ = sender.send(result);
@@ -345,7 +357,8 @@ fn apply(s: &mut State) {
     let Some(action) = action(p) else { return };
     let Some(pool) = p.pool else { return };
     let Some(file) = p.file.clone() else { return };
-    if !p.review
+    if s.resource_operations.len() >= 64
+        || !p.review
         || !current(s, p)
         || s.demo
         || (!action.is_export() && !s.can_mutate())
@@ -464,6 +477,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             }
             for id in &r.transfer_created.disks {
                 card = card.child(caption(format!("Retained disk UUID: {id}"), k).wrap_anywhere())
+            }
+            for id in &r.transfer_created.suspend_images {
+                card = card.child(
+                    caption(format!("Retained guest memory image UUID: {id}"), k).wrap_anywhere(),
+                );
             }
             for id in &r.transfer_created.networks {
                 card =
@@ -584,6 +602,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 (Some(OvfPackageFormat::Ova), "OVA file", "ova"),
                 (Some(OvfPackageFormat::Ovf), "OVF directory", "ovf"),
             ] {
+                if format.is_some() && matches!(p.source, Some(ExportSource::Checkpoint { .. })) {
+                    continue;
+                }
                 formats = formats.child(
                     Button::new(format!(
                         "{}{label}",
@@ -603,6 +624,53 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 );
             }
             body = body.child(formats);
+            if let Some(ExportSource::Checkpoint {
+                memory,
+                preserve_memory,
+                ..
+            }) = &p.source
+            {
+                body = body.child(
+                    caption(
+                        format!(
+                            "Checkpoint memory image: {} · {} bytes · storage {}",
+                            memory.vdi, memory.virtual_size, memory.sr
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+                for (preserve, label) in [(false, "Disks only"), (true, "Include guest memory")] {
+                    body = body.child(
+                        Button::new(format!(
+                            "{}{label}",
+                            if *preserve_memory == preserve {
+                                "✓ "
+                            } else {
+                                ""
+                            }
+                        ))
+                        .disabled(p.review)
+                        .on_press(move |s: &mut State| {
+                            if let Some(ExportSource::Checkpoint {
+                                preserve_memory, ..
+                            }) = &mut s.transfers.source
+                            {
+                                *preserve_memory = preserve;
+                            }
+                            s.transfers.review = false;
+                        })
+                        .build(k)
+                        .key(if preserve {
+                            "checkpoint-preserve-memory"
+                        } else {
+                            "checkpoint-disks-only"
+                        }),
+                    );
+                }
+                body = body.child(caption(if *preserve_memory { "The archive includes guest RAM, which may contain credentials and other sensitive data. Import creates a suspended guest; CPU, hypervisor and guest compatibility must be checked before a separate resume action." } else { "Only configuration and disks are exported. Import creates a halted guest; the checkpoint's memory state is omitted." }, k).wrap());
+                body = body.child(caption("Full XVA export creates one independent guest archive. Snapshot ancestry is not included by this endpoint.", k).wrap());
+            }
             if let Some(format) = p.package_export {
                 body = body.child(caption(match format {
                     OvfPackageFormat::Ova => "Create one OVA file containing the descriptor and VHD disks.",
@@ -654,7 +722,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if let Some((vdi, sr, size)) = p.disk_export {
             body=body.child(caption(format!("Disk: {}\nUUID: {vdi}\nStorage: {sr}\nVirtual size: {size} bytes",p.source_name),k).wrap_anywhere()).child(caption("All consumers must remain halted. For a stable point in time, export a disk snapshot. The private file is published only after full transfer and format verification.",k).wrap());
         } else if let Some(source) = &p.source {
-            body=body.child(caption(match source{ExportSource::Vm{vm,expected_template}=>format!("{}: {}\nUUID: {vm}",if *expected_template{"Template"}else{"Virtual machine"},p.source_name),ExportSource::Snapshot{snapshot,parent}=>format!("Disk snapshot: {}\nSnapshot UUID: {snapshot}\nParent VM UUID: {parent}",p.source_name)},k).wrap_anywhere()).child(caption("Save to a new filename. Existing files are never overwritten. The final output appears only after all required transfers and verification complete. Exports contain guest disk data.",k).wrap());
+            body=body.child(caption(match source{ExportSource::Vm{vm,expected_template}=>format!("{}: {}\nUUID: {vm}",if *expected_template{"Template"}else{"Virtual machine"},p.source_name),ExportSource::Snapshot{snapshot,parent}=>format!("Disk snapshot: {}\nSnapshot UUID: {snapshot}\nParent VM UUID: {parent}",p.source_name),ExportSource::Checkpoint{snapshot,parent,..}=>format!("Memory checkpoint: {}\nSnapshot UUID: {snapshot}\nParent VM UUID: {parent}",p.source_name)},k).wrap_anywhere()).child(caption("Save to a new filename. Existing files are never overwritten. The final output appears only after all required transfers and verification complete. Exports contain guest disk data.",k).wrap());
         } else {
             if p.ovf_import {
                 body = body.child(caption("Import ordinary BIOS or UEFI guests from OVF or OVA packages containing raw or complete VHD disks. Map each package network explicitly. New guest, disk and NIC identities are created; MAC addresses are generated. Guests are not started. VMDK conversion and unsupported device extensions are not available yet.", k).wrap());
@@ -670,7 +738,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .key("transfer-disk-name")
                 });
             } else {
-                body=body.child(caption("Import ordinary halted VMs or custom templates from a plain or gzip XVA archive. New guest identities are created; existing guests are not replaced. Guests remain halted. XAPI matches networks by name or creates networks; review NICs before starting a guest.",k).wrap());
+                body=body.child(caption("Import halted guests or memory checkpoints from a plain or gzip XVA archive. New guest identities are created; existing guests are not replaced. Disk-only guests remain halted; memory checkpoints remain suspended and are never resumed automatically. XAPI matches networks by name or creates networks; review NICs before starting a guest.",k).wrap());
             }
             if let Some(i) = &s.inventory {
                 for sr in &i.storage {
@@ -735,13 +803,22 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             }
             if let Some(a) = file.archive() {
                 body=body.child(caption(format!("{} guests · {} data disks · {} virtual bytes · {} networks · {} archive bytes",a.guests.len(),a.data_disks,a.virtual_bytes,a.networks,file.size().unwrap_or(0)),k).wrap());
+                if a.memory_images() > 0 {
+                    body = body.child(caption(format!("{} guest memory image(s) fully checked. Import will create suspended guests. Memory may contain secrets; review target CPU/hypervisor compatibility and NICs before a separate resume action.", a.memory_images()), k).wrap());
+                }
                 for g in &a.guests {
                     body = body.child(
                         caption(
                             format!(
                                 "{} · {}",
                                 g.name,
-                                if g.template { "Template" } else { "VM" }
+                                if g.memory.is_some() {
+                                    "Suspended checkpoint"
+                                } else if g.template {
+                                    "Template"
+                                } else {
+                                    "Halted VM"
+                                }
                             ),
                             k,
                         )
@@ -764,7 +841,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             body = body.child(caption(a.explanation(), k).wrap());
         }
         if p.review {
-            body=body.child(caption(if exporting(p) { "This review uses the captured source and new destination. Interrupted exports retain their evidence in history. Transfers reserve pool changes until the outcome is resolved." } else { "This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain in history. Transfers reserve pool changes until the outcome is resolved." },k).wrap()).child(Button::new("Begin transfer").disabled(s.demo||!current(s,p)||!available.is_some_and(|a|a.is_available())||p.file.is_none()||(!exporting(p)&&!s.can_mutate())).on_press(apply).build(k).key("transfer-apply"));
+            body=body.child(caption(if exporting(p) { "This review uses the captured source and new destination. Interrupted exports retain their evidence in history. Transfers reserve pool changes until the outcome is resolved." } else { "This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain in history. Transfers reserve pool changes until the outcome is resolved." },k).wrap()).child(Button::new("Begin transfer").disabled(s.resource_operations.len()>=64||s.demo||!current(s,p)||!available.is_some_and(|a|a.is_available())||p.file.is_none()||(!exporting(p)&&!s.can_mutate())).on_press(apply).build(k).key("transfer-apply"));
         } else {
             body = body.child(
                 Button::new("Review transfer")
@@ -815,6 +892,41 @@ pub(super) fn scene(s: &mut State) {
             expected_template: false,
         }),
     );
+}
+pub(super) fn checkpoint_scene(s: &mut State) {
+    demo(s);
+    let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+    let parent = *i.vms.keys().next().unwrap();
+    let snapshot = xenadmin_core::SnapshotId::from(uuid::Uuid::from_u128(0x9901));
+    let memory = VdiId::from(uuid::Uuid::from_u128(0x9902));
+    let mut disk = i.details.vdis.values().next().unwrap().clone();
+    disk.id = memory;
+    disk.name = "Checkpoint memory".into();
+    disk.kind = "suspend".into();
+    disk.virtual_size = Some(512 * 1024 * 1024);
+    disk.managed = Some(true);
+    disk.missing = Some(false);
+    i.details.vdis.insert(memory, disk);
+    i.details.snapshots.insert(
+        snapshot,
+        xenadmin_core::SnapshotDetails {
+            memory_vdi: Some(memory),
+            memory_vdi_known: true,
+            can_export: Some(true),
+            ..Default::default()
+        },
+    );
+    i.snapshots.insert(xenadmin_core::Snapshot {
+        id: snapshot,
+        vm: Some(parent),
+        name: "Application memory checkpoint".into(),
+        description: "Synthetic checkpoint for archive review".into(),
+        created_at: None,
+        power_state: PowerState::Suspended,
+        allowed_actions: vec![],
+    });
+    let source = ExportSource::checkpoint(i, snapshot, parent, false).unwrap();
+    begin(s, Some(source));
 }
 pub(super) fn ovf_scene(s: &mut State, export: bool) {
     ovf_ui::scene(s, export);

@@ -80,6 +80,115 @@ impl ResourceRequest {
         Err(Error::JournalChanged)
     }
 
+    fn checkpoint_transfer(&self) -> bool {
+        matches!(
+            self.record.action,
+            ResourceAction::Transfer(
+                TransferAction::ImportCheckpointXva { .. }
+                    | TransferAction::ExportXva {
+                        source: crate::ExportSource::Checkpoint { .. }
+                    }
+            )
+        )
+    }
+    async fn save_checkpoint_evidence(&mut self, journal: &mut Journal) -> Result<bool, Error> {
+        let evidence = self.record.clone();
+        for _ in 0..16 {
+            self.reload(journal)?;
+            let proceed = !self.stopped_after_recovery();
+            if self.record.action != evidence.action
+                || self.record.pool != evidence.pool
+                || self.record.task != evidence.task
+            {
+                return Err(Error::TransferConflict);
+            }
+            let incoming = evidence
+                .transfer_plan
+                .as_ref()
+                .ok_or(Error::TransferConflict)?;
+            let current = self.transfer_plan_mut()?;
+            if current.file != incoming.file
+                || current.baseline != incoming.baseline
+                || current.task_uuid != incoming.task_uuid
+            {
+                return Err(Error::TransferConflict);
+            }
+            if let Some(result) = &incoming.result {
+                if current.result.as_ref().is_some_and(|old| old != result) {
+                    return Err(Error::TransferConflict);
+                }
+                current.result = Some(result.clone());
+            }
+            current.task_success |= incoming.task_success;
+            current.task_failed |= incoming.task_failed;
+            current.task_cancelled |= incoming.task_cancelled;
+            let out = &mut self.record.transfer_created;
+            macro_rules! retain {
+                ($field:ident) => {
+                    for value in &evidence.transfer_created.$field {
+                        if !out.$field.contains(value) {
+                            out.$field.push(*value);
+                        }
+                    }
+                };
+            }
+            retain!(vms);
+            retain!(disks);
+            retain!(networks);
+            retain!(suspend_images);
+            if proceed {
+                self.record.state = evidence.state.clone();
+                self.record.progress = evidence.progress;
+                self.record.can_cancel = evidence.can_cancel;
+                self.record.detail = evidence.detail.clone();
+                self.record.steps = evidence.steps.clone();
+            }
+            match self.save(journal).await {
+                Err(Error::JournalChanged) => continue,
+                Err(error) => return Err(error),
+                Ok(()) => return Ok(proceed),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
+    async fn save_checkpoint_stream(
+        &mut self,
+        journal: &mut Journal,
+        outcome: Result<files::Receipt, Error>,
+        mut progress: crate::TransferProgress,
+    ) -> Result<bool, Error> {
+        progress.stream_complete = outcome.is_ok();
+        progress.phase = "Checkpoint stream stopped; checking existing evidence".into();
+        for _ in 0..16 {
+            self.reload(journal)?;
+            let plan = self.transfer_plan_mut()?;
+            match &outcome {
+                Ok(receipt) => {
+                    if plan
+                        .stream_receipt
+                        .as_ref()
+                        .is_some_and(|old| old != receipt)
+                    {
+                        return Err(Error::TransferConflict);
+                    }
+                    plan.stream_receipt = Some(receipt.clone());
+                }
+                Err(error) => {
+                    plan.stream_invalid |= matches!(
+                        error,
+                        Error::TransferArchive | Error::TransferFileChanged | Error::TransferLimit
+                    )
+                }
+            }
+            self.record.transfer = Some(progress.clone());
+            match self.save(journal).await {
+                Err(Error::JournalChanged) => continue,
+                Err(e) => return Err(e),
+                Ok(()) => return Ok(!self.stopped_after_recovery()),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
     pub(super) fn transfer_plan(&self) -> Result<&Plan, Error> {
         self.record
             .transfer_plan
@@ -142,6 +251,15 @@ impl ResourceRequest {
             .await
             .map_err(|_| Error::TransferFile)??;
         }
+        if matches!(action, TransferAction::ImportCheckpointXva { .. }) {
+            let file = self.transfer_plan()?.file.clone();
+            let validation_cancel = cancel.clone();
+            tokio::task::spawn_blocking(move || {
+                files::revalidate_checkpoint_source(&file, &validation_cancel)
+            })
+            .await
+            .map_err(|_| Error::TransferFile)??;
+        }
         let previous_tasks = crate::device_lifecycle::baseline(session, "task").await?;
         let mut plan = self.transfer_plan()?.clone();
         if action.is_export() {
@@ -157,7 +275,10 @@ impl ResourceRequest {
             tokio::task::spawn_blocking(move || files::source(&file))
                 .await
                 .map_err(|_| Error::TransferFile)??;
-            if matches!(action, TransferAction::ImportXva { .. }) {
+            if matches!(
+                action,
+                TransferAction::ImportXva { .. } | TransferAction::ImportCheckpointXva { .. }
+            ) {
                 plan.baseline = Some(transfer::xapi::baseline(session).await?);
             }
         }
@@ -278,7 +399,8 @@ impl ResourceRequest {
                     Err(error) => return Err(error),
                 }
                 Ok(!self.record.cancel_requested
-                    && !(action.is_host_restore() && self.stopped_after_recovery()))
+                    && !((action.is_host_restore() || self.checkpoint_transfer())
+                        && self.stopped_after_recovery()))
             },
         )
         .await;
@@ -294,6 +416,15 @@ impl ResourceRequest {
         if action.is_host_restore() {
             if self
                 .save_host_restore_stream(journal, outcome, meter.progress())
+                .await?
+            {
+                return self.recheck_transfer(journal, session, cancel).await;
+            }
+            return Ok(());
+        }
+        if self.checkpoint_transfer() {
+            if self
+                .save_checkpoint_stream(journal, outcome, meter.progress())
                 .await?
             {
                 return self.recheck_transfer(journal, session, cancel).await;
@@ -379,7 +510,9 @@ impl ResourceRequest {
             }
             return Ok(());
         }
-        if let TransferAction::ImportXva { sr } = self.transfer_action()? {
+        if let TransferAction::ImportXva { sr } | TransferAction::ImportCheckpointXva { sr } =
+            self.transfer_action()?
+        {
             let task = self.record.task.as_deref().ok_or(Error::TransferConflict)?;
             let found =
                 transfer::xapi::created(session, self.transfer_plan()?, task, sr, complete).await?;
@@ -393,6 +526,11 @@ impl ResourceRequest {
             for v in found.disks {
                 if !old.disks.contains(&v) {
                     old.disks.push(v)
+                }
+            }
+            for v in found.suspend_images {
+                if !old.suspend_images.contains(&v) {
+                    old.suspend_images.push(v);
                 }
             }
             for v in found.networks {
@@ -416,7 +554,9 @@ impl ResourceRequest {
             return self.recheck_ovf_import(journal, session, cancel).await;
         }
         self.reload(journal)?;
-        if self.record.state.terminal() {
+        if self.record.state.terminal()
+            || self.checkpoint_transfer() && self.stopped_after_recovery()
+        {
             return Ok(());
         }
         if !self.transfer_plan()?.dispatched && self.transfer_plan()?.disk_creation.is_some() {
@@ -428,7 +568,9 @@ impl ResourceRequest {
         }
         loop {
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.record.state.terminal()
+                || self.checkpoint_transfer() && self.stopped_after_recovery()
+            {
                 return Ok(());
             }
             let known = self.transfer_plan()?;
@@ -437,7 +579,7 @@ impl ResourceRequest {
             }
             let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&task)])=>result?};
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.record.state.terminal() && !self.checkpoint_transfer() {
                 return Ok(());
             }
             if value["uuid"].as_str().and_then(|s| s.parse().ok())
@@ -492,7 +634,13 @@ impl ResourceRequest {
                 Some("pending" | "cancelling") => {}
                 _ => return Err(Error::TransferConflict),
             }
-            self.save(journal).await?;
+            if self.checkpoint_transfer() {
+                if !self.save_checkpoint_evidence(journal).await? {
+                    return Ok(());
+                }
+            } else {
+                self.save(journal).await?;
+            }
             let p = self.transfer_plan()?;
             if p.task_success || p.task_failed || p.task_cancelled {
                 break;
@@ -500,6 +648,7 @@ impl ResourceRequest {
             if self.record.cancel_requested
                 && self.record.can_cancel
                 && !self.record.cancel_dispatched
+                && (!self.checkpoint_transfer() || !self.reconcile && !self.record.interrupted)
             {
                 self.record.cancel_dispatched = true;
                 self.record.state = OperationState::CancellationRequested;
@@ -520,7 +669,11 @@ impl ResourceRequest {
                 self.collect_transfer_created(session, false).await?;
                 self.record.state = OperationState::OutcomeUnknown;
                 self.record.detail="Stream is stopped; host task is still pending. Recheck reads the existing task and never transfers again.".into();
-                return self.save(journal).await;
+                return if self.checkpoint_transfer() {
+                    self.save_checkpoint_evidence(journal).await.map(|_| ())
+                } else {
+                    self.save(journal).await
+                };
             }
             tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),_=tokio::time::sleep(Duration::from_secs(1))=>{}}
         }
@@ -529,7 +682,13 @@ impl ResourceRequest {
         self.save(journal).await?;
         let success = self.transfer_plan()?.task_success;
         self.collect_transfer_created(session, success).await?;
-        self.save(journal).await?;
+        if self.checkpoint_transfer() {
+            if !self.save_checkpoint_evidence(journal).await? {
+                return Ok(());
+            }
+        } else {
+            self.save(journal).await?;
+        }
         if success && self.transfer_action()?.is_export() {
             if self.transfer_plan()?.stream_receipt.is_none() {
                 self.record.state = OperationState::PartiallyCompleted;
@@ -607,12 +766,14 @@ impl ResourceRequest {
         } else if success && matches!(self.record.action, ResourceAction::CloudInit(_)) {
             return self.complete_cloud_upload(journal, session, cancel).await;
         } else if success {
-            self.record.state = if self.transfer_plan()?.stream_invalid {
+            self.record.state = if self.transfer_plan()?.stream_invalid
+                || self.checkpoint_transfer() && self.transfer_plan()?.stream_receipt.is_none()
+            {
                 OperationState::PartiallyCompleted
             } else {
                 OperationState::Succeeded
             };
-            self.record.detail = if matches!(self.transfer_action()?,TransferAction::ImportDisk{..})&&!self.transfer_plan()?.stream_invalid {"Disk image imported into a new verified unattached disk"}else if self.transfer_plan()?.stream_invalid {"Host completed import, but source file integrity changed during upload. Retained resource UUIDs require inspection."}else{"Imported guest identities and storage verified; guests remain halted"}.into();
+            self.record.detail = if matches!(self.transfer_action()?,TransferAction::ImportDisk{..})&&!self.transfer_plan()?.stream_invalid {"Disk image imported into a new verified unattached disk"}else if self.transfer_plan()?.stream_invalid {"Host completed import, but source file integrity changed during upload. Retained resource UUIDs require inspection."}else if self.checkpoint_transfer() && self.transfer_plan()?.stream_receipt.is_none(){"Host completed import, but a complete local upload receipt is unavailable. Retained suspended guest and memory image UUIDs require inspection."}else if self.checkpoint_transfer(){"Imported guest and memory image identities verified; memory guests remain suspended. Resume is a separate action requiring compatible CPU and host support."}else{"Imported guest identities and storage verified; guests remain halted"}.into();
         } else if matches!(self.transfer_action()?, TransferAction::ImportDisk { .. }) {
             self.record.state = OperationState::PartiallyCompleted;
             self.record.detail="Disk transfer did not complete. The new unattached disk is retained with partial or unknown contents; no existing disk was overwritten.".into();
@@ -645,7 +806,9 @@ impl ResourceRequest {
             p.phase = self.record.detail.clone()
         }
         self.save(journal).await?;
-        if self.record.state.terminal() {
+        if self.record.state.terminal()
+            || self.checkpoint_transfer() && self.stopped_after_recovery()
+        {
             self.cleanup_transfer_task(session).await;
         }
         if self.transfer_action()?.is_export() && self.record.state != OperationState::Succeeded {

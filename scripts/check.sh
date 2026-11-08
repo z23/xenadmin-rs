@@ -203,3 +203,5 @@ done
 
 "$check_binary" --snap artifacts/inventory-context.png --tree artifacts/inventory-context.json --scene inventory-context --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/inventory-context-compact.png --tree artifacts/inventory-context-compact.json --scene inventory-context --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/checkpoint-export.png --tree artifacts/checkpoint-export.json --scene checkpoint-export --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/checkpoint-export-compact.png --tree artifacts/checkpoint-export-compact.json --scene checkpoint-export --theme dark --size 513x652 --scale 1 --at 1

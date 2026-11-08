@@ -17,12 +17,12 @@ struct Header {
 
 struct Cancellable<'a> {
     reader: &'a mut dyn Read,
-    cancel: &'a CancellationToken,
+    cancel: &'a dyn Fn() -> bool,
 }
 
 impl Read for Cancellable<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        if self.cancel.is_cancelled() {
+        if (self.cancel)() {
             // Interrupted is retried by Read::read_exact and would not stop decompression.
             return Err(std::io::Error::other("archive verification cancelled"));
         }
@@ -35,7 +35,7 @@ fn decode(
     reader: &mut dyn Read,
     gzip: bool,
     expected_metadata: &[u8; 32],
-    cancel: &CancellationToken,
+    cancel: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     let mut input = Cancellable { reader, cancel };
     let result = if gzip {
@@ -47,11 +47,7 @@ fn decode(
     } else {
         stream(&mut input, expected_metadata, cancel)
     };
-    if cancel.is_cancelled() {
-        Err(Error::Closed)
-    } else {
-        result
-    }
+    if cancel() { Err(Error::Closed) } else { result }
 }
 
 fn invalid<T>() -> Result<T, Error> {
@@ -129,7 +125,8 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
         .as_array()
         .filter(|a| a.len() <= 2048)
         .ok_or(Error::TransferArchive)?;
-    // Full XVA exports stream user disks, while ISO references are metadata only.
+    let _ = super::checkpoint::memory_graph(objects)?;
+    // Full XVA exports stream user and reviewed suspend disks; ISO references are metadata only.
     let iso_srs = objects
         .iter()
         .filter(|o| o["class"] == "SR" && o["snapshot"]["content_type"] == "iso")
@@ -142,7 +139,7 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
         if record["SR"].as_str().is_some_and(|sr| iso_srs.contains(sr)) {
             continue;
         }
-        if record["type"] != "user" {
+        if record["type"] != "user" && record["type"] != "suspend" {
             return invalid();
         }
         let id = object["id"]
@@ -173,7 +170,7 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
 fn stream(
     reader: &mut dyn Read,
     expected_metadata: &[u8; 32],
-    cancel: &CancellationToken,
+    cancel: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     use sha2::Sha256;
     let first = header(reader)?.ok_or(Error::TransferArchive)?;
@@ -193,7 +190,7 @@ fn stream(
         let mut previous = None;
         let last = (size - 1) / CHUNK;
         loop {
-            if cancel.is_cancelled() {
+            if cancel() {
                 return Err(Error::Closed);
             }
             let current = next.take().ok_or(Error::TransferArchive)?;
@@ -246,7 +243,7 @@ fn stream(
     // Permit bounded conventional zero record padding, but never appended archives or data.
     let mut trailing = 0usize;
     loop {
-        if cancel.is_cancelled() {
+        if cancel() {
             return Err(Error::Closed);
         }
         let count = reader
@@ -263,10 +260,10 @@ fn stream(
     Ok(())
 }
 
-pub(crate) fn verify(
+pub(crate) fn verify_with_stop(
     file: &mut std::fs::File,
     expected_metadata: &[u8; 32],
-    cancel: &CancellationToken,
+    cancel: &dyn Fn() -> bool,
 ) -> Result<(), Error> {
     files::rewind(file)?;
     let mut magic = [0; 2];
@@ -275,4 +272,12 @@ pub(crate) fn verify(
     let result = decode(file, magic == [0x1f, 0x8b], expected_metadata, cancel);
     files::rewind(file)?;
     result
+}
+
+pub(crate) fn verify(
+    file: &mut std::fs::File,
+    expected_metadata: &[u8; 32],
+    cancel: &CancellationToken,
+) -> Result<(), Error> {
+    verify_with_stop(file, expected_metadata, &|| cancel.is_cancelled())
 }
