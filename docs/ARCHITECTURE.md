@@ -276,6 +276,14 @@ profile UUID, endpoint and username; session-only credentials remain the default
 OS file lock gives one mutating desktop ownership of a state directory. A second desktop
 cannot migrate/write profiles, preferences or the operation journal.
 
+Profile document version 2 adds explicit per-profile `auto_connect`, valid only with Secret
+Service credential mode. Version 1 documents default it to false. Startup queues opted-in
+profiles once, after the Rune waker is installed. Bulk connection and startup restoration share
+a four-slot credential queue. Each lookup carries its own attempt UUID and saved profile;
+completion validates both before connecting. Editor loads also compare the current form.
+Changing or removing a profile, cancelling its attempt, or disconnecting all invalidates late
+results. Keyring failures remain per-profile manual recovery states and are not retried by polling.
+
 Each Backend authenticates an incoming profile before resolving its pool. An in-memory pool
 registry then compares credentials, access mode and trust policy. Equivalent profiles share
 the canonical inventory generation, request path and operation history. Different authority

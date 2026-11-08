@@ -10,6 +10,8 @@ The first launch migrates the last host settings from `preferences.json` into `p
 
 **Connections** shows saved entries and their connection status. Several different pools can remain connected. The sidebar buttons switch the displayed pool; switching clears the selected object, property dialogs and current console so an action cannot accidentally retain a target from the previous pool. Inventory and operation tracking continue in the background.
 
+**Connect all** connects saved profiles with keyring credentials and skips connections that are already active. Session-only profiles show **Password required** and remain available through **Connect / edit**. Password lookups run four at a time, with a separate progress or error message for each profile. **Cancel connection attempt** cancels a pending lookup. **Disconnect all** also cancels queued lookups, so a delayed password response cannot reconnect a pool afterward.
+
 Connecting to another endpoint of an already connected pool authenticates the endpoint before sharing the existing pool connection. Sharing requires the same credentials, trust configuration and read-only setting. An incompatible connection fails explicitly; disconnect the pool before changing its authentication context. Disconnecting either same-pool entry disconnects the shared pool session.
 
 Once an endpoint has successfully returned the expected pool, the profile records that pool identity and the endpoints used to reach it. Reconnect can try these remembered members if the primary endpoint is unavailable. This is not discovery of every advertised host address: only previously authenticated endpoints are fallback candidates. An endpoint returning a different pool fails instead of replacing the displayed inventory.
@@ -28,6 +30,10 @@ Select **Remember password in desktop keyring** to use the desktop's Secret Serv
 
 Opening a saved profile with keyring storage enabled attempts to load its password. The password field stays empty; the form says when a saved password has loaded. Leave it empty to use the loaded password, or enter a replacement. Stored credentials are bound to the profile ID, endpoint and username. Editing the address or username cannot silently reuse another binding.
 
+**Connect automatically when XenAdmin RS starts** is a separate, per-profile opt-in that requires keyring credential storage. It defaults to off, including for older saved profiles. Startup makes one lookup attempt for each opted-in profile. A missing, locked, denied or unavailable keyring leaves that profile disconnected with an explanation; unlock the keyring and explicitly retry, or enter a session password. Forgetting a saved password also turns off automatic connection.
+
+Pending lookups retain the connection settings they started with. Editing the endpoint, username, trust policy or access settings, removing the profile, or cancelling the attempt invalidates a late result. Background lookups never read credentials or destinations from whichever editor happens to be open.
+
 **Load saved password** retries a lookup. **Forget saved password** removes all keyring entries belonging to the profile, including previous endpoint/account bindings, and returns the profile to session-only mode. Removing a profile with keyring storage enabled first removes its saved passwords; a locked or unavailable keyring leaves the profile available for retry.
 
 If the password manager is unavailable, locked or denies access, the form reports that condition and accepts a password for the current session. Unlock it through the desktop password manager and retry if desired. XenAdmin RS does not silently write an unencrypted fallback file. Keyring calls run away from the UI thread and have a bounded timeout. They use the Secret Service `plain` transfer algorithm on the local session D-Bus connection; the password manager controls at-rest encryption and unlocking.
@@ -38,10 +44,10 @@ The state directory is `XENADMIN_STATE_DIR`, or `$XDG_STATE_HOME/xenadmin-rs`, o
 
 One desktop window owns an advisory lock for a state directory. Another window reports that the directory is already in use and cannot connect or change saved settings. Close the first window before using that directory in another instance.
 
-Profiles use a versioned document and atomic replacement. Unknown newer profile formats fail without being overwritten. The state directory and newly written profile, preference and lock files use restrictive owner permissions.
+Profiles use a versioned document and atomic replacement. Version 1 profiles remain readable with automatic connection off; the next save writes version 2. Older application versions reject the newer document rather than overwrite it. Unknown newer profile formats fail without being overwritten. The state directory and newly written profile, preference and lock files use restrictive owner permissions.
 
 ## Validation and remaining limitations
 
 Tests use synthetic hosts, a private in-process Secret Service mock and Rune widget interaction. They cover profile migration, secret exclusion, pool identity binding, same-pool ownership, reconnect fallback, clone lifetimes, profile editing, instance locking and keyring lookup/save/removal failures. They do not exercise a user's actual password manager or production pool.
 
-The client currently asks the user to unlock a locked keyring in the desktop password manager; it does not display Secret Service unlock prompts itself. There is no bulk profile import/export or automatic connection on startup.
+The client currently asks the user to unlock a locked keyring in the desktop password manager; it does not display Secret Service unlock prompts itself. Bulk profile import/export remains planned. Automatic connection, bulk controls and cancellation have synthetic fixture coverage; actual desktop password-manager and live-pool qualification remain open.

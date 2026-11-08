@@ -32,9 +32,9 @@ live-host qualification has yet been established by this change.
 | P01-05 | Multiple saved connection profiles | Profile editor, persistence and legacy migration implemented; desktop/lab qualification open |
 | P01-06 | Simultaneous pools and unified inventory | Concurrent connections and pool switcher implemented; unified cross-pool views/search remain queued |
 | P01-07 | Deduplicate aliases/member endpoints for the same pool | Authenticated owner sharing, authority-mismatch rejection and exclusive desktop state-directory lock implemented; lab qualification open |
-| P01-08 | Connect/disconnect all; remove profiles; reconnect as another user | Profile edit/remove and per-connection controls implemented; bulk connect/disconnect workflows remain queued |
+| P01-08 | Connect/disconnect all; remove profiles; reconnect as another user | Profile edit/remove, per-connection and bulk controls implemented; bounded saved-credential loads, per-profile failures and pending cancellation fixture-verified; live qualification open |
 | P01-09 | Session-only password | Existing workflow; qualification open |
-| P01-10 | Save/forget credentials and protected session restore | Opt-in Secret Service save/load/forget implemented; automatic protected session restore and desktop-service qualification remain open |
+| P01-10 | Save/forget credentials and protected session restore | Opt-in Secret Service save/load/forget and per-profile startup restore implemented; stale credential results, locked/missing keyring and no-retry behavior fixture-verified; desktop-service qualification open |
 | P01-11 | System CA/name verification and endpoint pins | Existing workflow; qualification open |
 | P01-12 | Desktop custom-CA file selection | Existing subset; remaining work queued |
 | P01-13 | Inspect and accept unknown certificates | Queued |

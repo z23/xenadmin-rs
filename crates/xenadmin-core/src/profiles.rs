@@ -30,7 +30,7 @@ impl std::fmt::Display for ProfileId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionProfile {
     pub id: ProfileId,
@@ -39,6 +39,8 @@ pub struct ConnectionProfile {
     pub username: String,
     #[serde(default)]
     pub credential_mode: crate::CredentialMode,
+    #[serde(default)]
+    pub auto_connect: bool,
     #[serde(default)]
     pub ca_certificate: Option<PathBuf>,
     #[serde(default)]
@@ -65,6 +67,7 @@ impl ConnectionProfile {
             endpoint,
             username,
             credential_mode: crate::CredentialMode::SessionOnly,
+            auto_connect: false,
             ca_certificate: None,
             host_certificates: BTreeMap::new(),
             accept_invalid_certificates: false,
@@ -124,6 +127,7 @@ impl ConnectionProfile {
             || self.username.len() > 255
             || self.username.chars().any(char::is_control)
             || !(5..=300).contains(&self.request_timeout_seconds)
+            || (self.auto_connect && self.credential_mode != crate::CredentialMode::SecretService)
             || self.verified_members.len() > 128
             || self.host_certificates.len() > 128
             || self
@@ -177,13 +181,13 @@ impl ProfileStore {
                 if value
                     .get("version")
                     .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|version| version > 1)
+                    .is_some_and(|version| version > 2)
                 {
                     return Err(ProfileError::NewerVersion);
                 }
                 let document: ProfileDocument =
                     serde_json::from_value(value).map_err(|_| ProfileError::Invalid)?;
-                if document.version != 1 || document.profiles.len() > 1000 {
+                if !(1..=2).contains(&document.version) || document.profiles.len() > 1000 {
                     return Err(ProfileError::Invalid);
                 }
                 for profile in document.profiles {
@@ -240,7 +244,7 @@ impl ProfileStore {
             .create(&self.directory)
             .map_err(|_| ProfileError::Storage)?;
         let bytes = serde_json::to_vec_pretty(&ProfileDocument {
-            version: 1,
+            version: 2,
             profiles: profiles.values().cloned().collect(),
         })
         .map_err(|_| ProfileError::Storage)?;
@@ -357,7 +361,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::write(
             directory.path().join("profiles.json"),
-            "{\"version\":2,\"unknown\":true}",
+            "{\"version\":3,\"unknown\":true}",
         )
         .unwrap();
         assert!(matches!(
@@ -366,7 +370,7 @@ mod tests {
         ));
         assert_eq!(
             fs::read_to_string(directory.path().join("profiles.json")).unwrap(),
-            "{\"version\":2,\"unknown\":true}"
+            "{\"version\":3,\"unknown\":true}"
         );
         fs::remove_file(directory.path().join("profiles.json")).unwrap();
         let mut store = ProfileStore::open(directory.path().into()).unwrap();
@@ -377,5 +381,36 @@ mod tests {
         );
         assert!(store.save(profile).is_err());
         assert_eq!(store.profiles().count(), 0);
+    }
+
+    #[test]
+    fn startup_restore_is_opt_in_and_requires_secret_service() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut profile = ConnectionProfile::new(
+            "Fixture".into(),
+            Endpoint::parse("fixture.example").unwrap(),
+            "operator".into(),
+        );
+        assert!(!profile.auto_connect);
+        let mut legacy = serde_json::to_value(&profile).unwrap();
+        legacy.as_object_mut().unwrap().remove("auto_connect");
+        fs::write(
+            directory.path().join("profiles.json"),
+            serde_json::json!({"version":1,"profiles":[legacy]}).to_string(),
+        )
+        .unwrap();
+        let mut store = ProfileStore::open(directory.path().into()).unwrap();
+        assert!(!store.get(profile.id).unwrap().auto_connect);
+        profile.auto_connect = true;
+        assert!(store.save(profile.clone()).is_err());
+        profile.credential_mode = crate::CredentialMode::SecretService;
+        store.save(profile.clone()).unwrap();
+        let loaded = ProfileStore::open(directory.path().into()).unwrap();
+        assert!(loaded.get(profile.id).unwrap().auto_connect);
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.path().join("profiles.json")).unwrap())
+                .unwrap();
+        assert_eq!(document["version"], 2);
+        assert!(document["profiles"][0].get("password").is_none());
     }
 }

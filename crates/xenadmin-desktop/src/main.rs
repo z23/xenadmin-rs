@@ -658,6 +658,7 @@ impl State {
 }
 fn setup(s: &mut State, waker: Waker) {
     s.waker = Some(waker);
+    profiles_view::restore_sessions(s);
 }
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
@@ -1582,6 +1583,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
             Button::new("Cancel")
                 .variant(ButtonVariant::Ghost)
                 .on_press(|s: &mut State| {
+                    profiles_view::cancel_editor(s);
                     s.show_connect = false;
                     s.password = secure_field();
                 })
@@ -1610,6 +1612,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .fill(rune::Color::BLACK.alpha(0.5))
         .center()
         .modal(false, |s: &mut State| {
+            profiles_view::cancel_editor(s);
             s.show_connect = false;
             s.password = secure_field();
         })

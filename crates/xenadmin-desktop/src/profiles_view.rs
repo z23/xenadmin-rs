@@ -1,12 +1,27 @@
 use super::*;
 use xenadmin_core::{
-    ConnectionProfile, CredentialKey, CredentialMode, CredentialOutcome, CredentialTask, ProfileId,
-    ProfileStore,
+    ConnectionProfile, CredentialKey, CredentialMode, CredentialOutcome, ProfileId, ProfileStore,
 };
 
+#[path = "profile_credentials.rs"]
+mod credentials;
+use credentials::CredentialJob;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadPurpose {
+    Editor,
+    Connect,
+}
+#[derive(Clone)]
+struct CredentialLoad {
+    id: uuid::Uuid,
+    profile: ConnectionProfile,
+    purpose: LoadPurpose,
+}
+
 enum CredentialWork {
-    Load(CredentialKey),
-    Save(ProfileId),
+    Load(Box<CredentialLoad>),
+    Save(Box<ConnectionProfile>),
     Forget(ProfileId),
     Remove(ProfileId),
 }
@@ -35,8 +50,13 @@ pub(super) struct Workspace {
     read_only: bool,
     advanced: bool,
     remember_password: bool,
-    credential_tasks: Vec<(CredentialWork, CredentialTask)>,
-    cached_credentials: Option<(CredentialKey, Credentials)>,
+    auto_connect: bool,
+    restore_started: bool,
+    loads: BTreeMap<ProfileId, CredentialLoad>,
+    load_queue: std::collections::VecDeque<ProfileId>,
+    profile_status: BTreeMap<ProfileId, String>,
+    credential_tasks: Vec<(CredentialWork, CredentialJob)>,
+    cached_credentials: Option<(ConnectionProfile, Credentials)>,
     pending_credentials: BTreeMap<ProfileId, Credentials>,
     credential_status: Option<String>,
 }
@@ -66,6 +86,11 @@ impl Workspace {
             read_only: false,
             advanced: false,
             remember_password: false,
+            auto_connect: false,
+            restore_started: false,
+            loads: BTreeMap::new(),
+            load_queue: std::collections::VecDeque::new(),
+            profile_status: BTreeMap::new(),
             credential_tasks: Vec::new(),
             cached_credentials: None,
             pending_credentials: BTreeMap::new(),
@@ -101,11 +126,14 @@ pub(super) fn apply_initial(s: &mut State) {
         .cloned()
     {
         populate(s, &profile);
+    } else {
+        s.workspace.selected = None;
     }
 }
 
 fn populate(s: &mut State, profile: &ConnectionProfile) {
     s.workspace.remember_password = profile.credential_mode == CredentialMode::SecretService;
+    s.workspace.auto_connect = profile.auto_connect;
     s.workspace.cached_credentials = None;
     s.workspace.credential_status = None;
     s.workspace.editing = Some(profile.id);
@@ -143,7 +171,9 @@ fn populate(s: &mut State, profile: &ConnectionProfile) {
 }
 
 pub(super) fn begin_new(s: &mut State) {
+    cancel_editor(s);
     s.workspace.remember_password = false;
+    s.workspace.auto_connect = false;
     s.workspace.cached_credentials = None;
     s.workspace.credential_status = None;
     s.workspace.editing = None;
@@ -169,7 +199,10 @@ fn edit(s: &mut State, id: ProfileId) {
         return;
     }
     if let Some(profile) = s.workspace.profile(id).cloned() {
+        cancel_load(s, id);
+        cancel_editor(s);
         populate(s, &profile);
+        s.show_connect = true;
         if profile.credential_mode == CredentialMode::SecretService {
             load_password(s, &profile);
         }
@@ -209,6 +242,7 @@ fn form_profile(s: &State) -> Result<ConnectionProfile, String> {
     } else {
         CredentialMode::SessionOnly
     };
+    profile.auto_connect = s.workspace.auto_connect && s.workspace.remember_password;
     profile.ca_certificate = (!s.workspace.ca_certificate.text.trim().is_empty())
         .then(|| std::path::PathBuf::from(s.workspace.ca_certificate.text.trim()));
     profile.request_timeout_seconds =
@@ -238,7 +272,14 @@ fn save(s: &mut State) -> Result<ConnectionProfile, String> {
     if !s.workspace.writable {
         return Err("This window does not own the application state directory. Close the other window before saving connections.".into());
     }
+    if s.workspace
+        .editing
+        .is_some_and(|id| credential_pending(s, id))
+    {
+        return Err("Wait for this connection's password-store operation to finish before saving or connecting.".into());
+    }
     let profile = form_profile(s)?;
+    cancel_load(s, profile.id);
     s.workspace
         .store
         .as_mut()
@@ -255,14 +296,14 @@ fn save_only(s: &mut State) {
             if profile.credential_mode == CredentialMode::SecretService
                 && !s.password.text.is_empty()
             {
-                let task = CredentialTask::save(
+                let task = CredentialJob::save(
                     CredentialKey::for_profile(&profile),
                     Credentials::new(profile.username.clone(), s.password.text.clone()),
                     s.waker.clone(),
                 );
                 s.workspace
                     .credential_tasks
-                    .push((CredentialWork::Save(profile.id), task));
+                    .push((CredentialWork::Save(Box::new(profile.clone())), task));
             }
             s.password = secure_field();
             s.show_connect = false;
@@ -288,11 +329,10 @@ pub(super) fn connect(s: &mut State) {
                 );
             }
             Credentials::new(profile.username.clone(), s.password.text.clone())
-        } else if let Some((key, credentials)) = s.workspace.cached_credentials.take() {
-            if key != CredentialKey::for_profile(&profile)
-                || profile.credential_mode != CredentialMode::SecretService
+        } else if let Some((loaded_profile, credentials)) = s.workspace.cached_credentials.take() {
+            if loaded_profile != profile || profile.credential_mode != CredentialMode::SecretService
             {
-                return Err("Enter a password for this connection. Saved passwords are bound to their original host and username.".into());
+                return Err("Enter a password for this connection. Saved passwords are bound to their original connection settings.".into());
             }
             credentials
         } else {
@@ -301,15 +341,7 @@ pub(super) fn connect(s: &mut State) {
                     .into(),
             );
         };
-        let connection = s.backend.as_ref().map_err(Clone::clone)?.connect(
-            profile.options().map_err(|error| error.to_string())?,
-            credentials,
-        );
-        if let Some(waker) = &s.waker {
-            connection.notify_on_change(waker.clone());
-        }
-        s.workspace.active.insert(profile.id, connection);
-        s.workspace.seen.remove(&profile.id);
+        start_connection(s, &profile, credentials)?;
         s.password = secure_field();
         s.show_connect = false;
         s.workspace.show_manager = false;
@@ -322,6 +354,24 @@ pub(super) fn connect(s: &mut State) {
         Ok::<(), String>(())
     })();
     s.error = result.err();
+}
+
+fn start_connection(
+    s: &mut State,
+    profile: &ConnectionProfile,
+    credentials: Credentials,
+) -> Result<(), String> {
+    let connection = s.backend.as_ref().map_err(Clone::clone)?.connect(
+        profile.options().map_err(|error| error.to_string())?,
+        credentials,
+    );
+    if let Some(waker) = &s.waker {
+        connection.notify_on_change(waker.clone());
+    }
+    s.workspace.active.insert(profile.id, connection);
+    s.workspace.seen.remove(&profile.id);
+    s.workspace.profile_status.remove(&profile.id);
+    Ok(())
 }
 
 fn clear_view(s: &mut State) {
@@ -378,6 +428,9 @@ fn select(s: &mut State, id: ProfileId) {
 }
 
 pub(super) fn disconnect_selected(s: &mut State) {
+    if let Some(id) = s.workspace.selected {
+        cancel_load(s, id);
+    }
     console_view::release(s);
     s.console = None;
     s.console_snapshot = None;
@@ -393,6 +446,10 @@ pub(super) fn disconnect_selected(s: &mut State) {
 }
 
 fn remove(s: &mut State, id: ProfileId) {
+    if !s.workspace.writable {
+        return;
+    }
+    cancel_load(s, id);
     if s.workspace
         .profile(id)
         .is_some_and(|profile| profile.credential_mode == CredentialMode::SecretService)
@@ -406,7 +463,7 @@ fn remove(s: &mut State, id: ProfileId) {
         }
         s.workspace.credential_tasks.push((
             CredentialWork::Remove(id),
-            CredentialTask::remove(id, s.waker.clone()),
+            CredentialJob::remove(id, s.waker.clone()),
         ));
         s.workspace.credential_status = Some("Removing the saved password…".into());
         return;
@@ -432,6 +489,8 @@ fn remove_record(s: &mut State, id: ProfileId) {
         Ok(_) => {
             s.workspace.active.remove(&id);
             s.workspace.seen.remove(&id);
+            s.workspace.profile_status.remove(&id);
+            s.workspace.loads.remove(&id);
             if s.workspace.selected == Some(id) {
                 clear_view(s);
                 s.connection = None;
@@ -463,14 +522,14 @@ pub(super) fn refresh(s: &mut State) -> bool {
             if let Some(credentials) = s.workspace.pending_credentials.remove(id)
                 && let Some(profile) = s.workspace.profile(*id)
             {
-                let task = CredentialTask::save(
+                let task = CredentialJob::save(
                     CredentialKey::for_profile(profile),
                     credentials,
                     s.waker.clone(),
                 );
                 s.workspace
                     .credential_tasks
-                    .push((CredentialWork::Save(*id), task));
+                    .push((CredentialWork::Save(Box::new(profile.clone())), task));
             }
             if let Some((inventory, profile)) = snapshot.inventory().zip(s.workspace.profile(*id)) {
                 let mut profile = profile.clone();
@@ -615,6 +674,7 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
                 } else {
                     s.workspace.remember_password = !s.workspace.remember_password;
                     if !s.workspace.remember_password {
+                        s.workspace.auto_connect = false;
                         s.workspace.cached_credentials = None;
                     }
                 }
@@ -622,6 +682,16 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
             .build(k)
             .key("remember-password"),
     );
+    fields = fields.child(
+        Checkbox::new(s.workspace.auto_connect)
+            .label("Connect automatically when XenAdmin RS starts")
+            .disabled(!s.workspace.remember_password)
+            .on_toggle(|s: &mut State| {
+                if s.workspace.remember_password { s.workspace.auto_connect = !s.workspace.auto_connect; }
+            })
+            .build(k)
+            .key("profile-auto-connect"),
+    ).child(caption("Automatic connection requires a password saved in the desktop keyring. A locked or unavailable keyring leaves the connection disconnected.", k).wrap());
     if let Some(status) = &s.workspace.credential_status {
         fields = fields.child(caption(status, k).wrap());
     }
@@ -683,6 +753,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     if profiles.is_empty() && s.workspace.store.is_ok() {
         list = list.child(caption("Save a host address to reconnect to it later. Passwords are requested each session.", k).wrap());
     }
+    let has_profiles = !profiles.is_empty();
     for profile in profiles {
         let id = profile.id;
         let active = s.workspace.live(id);
@@ -710,6 +781,16 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 )
                 .wrap(),
             );
+        if profile.auto_connect {
+            entry = entry.child(caption("Connects automatically at startup", k));
+        }
+        if let Some(message) = s.workspace.profile_status.get(&id) {
+            entry = entry.child(
+                caption(message, k)
+                    .wrap()
+                    .key(format!("profile-status-{id}")),
+            );
+        }
         if let Some(error) =
             connection.and_then(|connection| connection.latest().error().map(str::to_owned))
         {
@@ -742,6 +823,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .build(k)
                         .key(format!("disconnect-profile-{id}")),
                 );
+        } else if s.workspace.loads.contains_key(&id) {
+            actions = actions.child(
+                Button::new("Cancel connection attempt")
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(move |s: &mut State| cancel_load(s, id))
+                    .build(k)
+                    .key(format!("cancel-profile-{id}")),
+            );
         } else {
             actions = actions
                 .child(
@@ -764,6 +853,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .fill(k.c.bg_base).border(1.0, k.c.border_weak)
         .child(heading("Connections", k))
         .child(caption("Keep several pools connected and switch between them. Same-pool entries share one session; disconnecting either disconnects that pool.", k).wrap())
+        .child(row().gap(8.0)
+            .child(Button::new("Connect all").disabled(!s.workspace.writable || !has_profiles).on_press(connect_all).build(k).key("connect-all"))
+            .child(Button::new("Disconnect all").variant(ButtonVariant::Ghost).disabled(s.workspace.active.is_empty() && s.workspace.loads.is_empty()).on_press(disconnect_all).build(k).key("disconnect-all")))
         .child(list)
         .child(if let Some(status) = &s.workspace.credential_status { caption(status, k).wrap() } else {el()})
         .child(if let Some(error) = &s.error { text(error.clone()).font(k.ty.text_small).color(k.c.danger.icon).wrap().role("alert") } else { el() })
@@ -788,36 +880,171 @@ fn credential_pending(s: &State, id: ProfileId) -> bool {
         .iter()
         .any(|(work, _)| match work {
             CredentialWork::Load(_) => false,
-            CredentialWork::Save(profile)
-            | CredentialWork::Forget(profile)
-            | CredentialWork::Remove(profile) => *profile == id,
+            CredentialWork::Save(profile) => profile.id == id,
+            CredentialWork::Forget(profile) | CredentialWork::Remove(profile) => *profile == id,
         })
 }
-fn load_password(s: &mut State, profile: &ConnectionProfile) {
-    let key = CredentialKey::for_profile(profile);
-    if s.workspace
-        .credential_tasks
-        .iter()
-        .any(|(work, _)| matches!(work,CredentialWork::Load(other) if other==&key))
-    {
+
+fn set_profile_status(s: &mut State, id: ProfileId, message: String) {
+    if s.workspace.editing == Some(id) {
+        s.workspace.credential_status = Some(message.clone());
+    }
+    s.workspace.profile_status.insert(id, message);
+}
+
+fn cancel_load(s: &mut State, id: ProfileId) {
+    if s.workspace.loads.remove(&id).is_some() {
+        set_profile_status(s, id, "Connection attempt cancelled.".into());
+    }
+    s.workspace.load_queue.retain(|queued| *queued != id);
+}
+
+pub(super) fn cancel_editor(s: &mut State) {
+    if let Some(id) = s.workspace.editing {
+        cancel_load(s, id);
+    }
+    s.workspace.cached_credentials = None;
+    s.workspace.credential_status = None;
+    s.password = secure_field();
+}
+
+fn queue_load(s: &mut State, profile: &ConnectionProfile, purpose: LoadPurpose) {
+    if s.workspace.live(profile.id) || s.workspace.loads.contains_key(&profile.id) {
         return;
     }
-    s.workspace.credential_tasks.push((
-        CredentialWork::Load(key.clone()),
-        CredentialTask::load(key, s.waker.clone()),
-    ));
-    s.workspace.credential_status = Some("Loading the saved password…".into());
+    if profile.credential_mode != CredentialMode::SecretService {
+        set_profile_status(
+            s,
+            profile.id,
+            "Password required. Open Connect / edit to enter a password for this session.".into(),
+        );
+        return;
+    }
+    if credential_pending(s, profile.id) {
+        set_profile_status(
+            s,
+            profile.id,
+            "Wait for the current password-store operation, then retry.".into(),
+        );
+        return;
+    }
+    s.workspace.loads.insert(
+        profile.id,
+        CredentialLoad {
+            id: uuid::Uuid::new_v4(),
+            profile: profile.clone(),
+            purpose,
+        },
+    );
+    s.workspace.load_queue.push_back(profile.id);
+    set_profile_status(s, profile.id, "Waiting to load saved password…".into());
 }
+
+fn pump_loads(s: &mut State) {
+    let mut running = s
+        .workspace
+        .credential_tasks
+        .iter()
+        .filter(|(work, _)| matches!(work, CredentialWork::Load(_)))
+        .count();
+    while running < 4 {
+        let Some(id) = s.workspace.load_queue.pop_front() else {
+            break;
+        };
+        let Some(load) = s.workspace.loads.get(&id).cloned() else {
+            continue;
+        };
+        if s.workspace.profile(id) != Some(&load.profile) {
+            cancel_load(s, id);
+            continue;
+        }
+        let task = CredentialJob::load(CredentialKey::for_profile(&load.profile), s.waker.clone());
+        s.workspace
+            .credential_tasks
+            .push((CredentialWork::Load(Box::new(load)), task));
+        set_profile_status(s, id, "Loading saved password…".into());
+        running += 1;
+    }
+}
+
+fn load_password(s: &mut State, profile: &ConnectionProfile) {
+    queue_load(s, profile, LoadPurpose::Editor);
+    pump_loads(s);
+}
+
+pub(super) fn restore_sessions(s: &mut State) {
+    if s.workspace.restore_started {
+        return;
+    }
+    s.workspace.restore_started = true;
+    if !s.workspace.writable || s.demo || preview_arguments(std::env::args().skip(1)) {
+        return;
+    }
+    let profiles = s
+        .workspace
+        .store
+        .as_ref()
+        .ok()
+        .into_iter()
+        .flat_map(|store| store.profiles())
+        .filter(|profile| profile.auto_connect)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !profiles.is_empty() {
+        s.workspace.show_manager = true;
+    }
+    for profile in profiles {
+        queue_load(s, &profile, LoadPurpose::Connect);
+    }
+    pump_loads(s);
+}
+
+fn preview_arguments(arguments: impl Iterator<Item = String>) -> bool {
+    arguments.into_iter().any(|argument| {
+        ["--demo", "--scene", "--snap", "--tree"]
+            .into_iter()
+            .any(|flag| {
+                argument == flag
+                    || argument
+                        .strip_prefix(flag)
+                        .is_some_and(|tail| tail.starts_with('='))
+            })
+    })
+}
+
+fn connect_all(s: &mut State) {
+    if !s.workspace.writable {
+        return;
+    }
+    let profiles = s
+        .workspace
+        .store
+        .as_ref()
+        .ok()
+        .into_iter()
+        .flat_map(|store| store.profiles())
+        .cloned()
+        .collect::<Vec<_>>();
+    for profile in profiles {
+        queue_load(s, &profile, LoadPurpose::Connect);
+    }
+    pump_loads(s);
+}
+
 fn forget_password(s: &mut State) {
     let Some(id) = s.workspace.editing else {
         return;
     };
+    if !s.workspace.writable {
+        return;
+    }
+    cancel_load(s, id);
     if credential_pending(s, id) {
         return;
     }
     s.workspace.credential_tasks.push((
         CredentialWork::Forget(id),
-        CredentialTask::remove(id, s.waker.clone()),
+        CredentialJob::remove(id, s.waker.clone()),
     ));
     s.workspace.credential_status = Some("Removing the saved password…".into());
 }
@@ -832,6 +1059,7 @@ fn refresh_credentials(s: &mut State) -> bool {
         changed = true;
         apply_credential_result(s, work, result);
     }
+    pump_loads(s);
     changed
 }
 
@@ -841,32 +1069,90 @@ fn apply_credential_result(
     result: Result<CredentialOutcome, xenadmin_core::CredentialStoreError>,
 ) {
     match (work, result) {
-        (CredentialWork::Load(key), Ok(CredentialOutcome::Loaded(credentials))) => {
-            let current = s.workspace.editing.and_then(|id| s.workspace.profile(id));
-            if current.is_some_and(|profile| {
-                CredentialKey::for_profile(profile) == key
-                    && profile.credential_mode == CredentialMode::SecretService
-                    && s.username.text.trim() == profile.username
-                    && Endpoint::parse(&s.endpoint.text)
-                        .is_ok_and(|endpoint| endpoint == profile.endpoint)
-            }) {
-                s.workspace.credential_status = Some(
-                    if credentials.is_some() {
-                        "Saved password loaded. Leave the password field empty to use it."
-                    } else {
-                        "No saved password was found. Enter one for this connection."
-                    }
-                    .into(),
+        (CredentialWork::Load(load), result) => {
+            let id = load.profile.id;
+            if !s
+                .workspace
+                .loads
+                .get(&id)
+                .is_some_and(|current| current.id == load.id)
+            {
+                return;
+            }
+            s.workspace.loads.remove(&id);
+            if s.workspace.profile(id) != Some(&load.profile) {
+                if s.workspace.profile(id).is_some() {
+                    set_profile_status(
+                        s,
+                        id,
+                        "Connection settings changed. Retry to load the matching password.".into(),
+                    );
+                }
+                return;
+            }
+            if load.purpose == LoadPurpose::Editor
+                && (!s.show_connect
+                    || s.workspace.editing != Some(id)
+                    || !form_profile(s).is_ok_and(|current| current == load.profile))
+            {
+                set_profile_status(
+                    s,
+                    id,
+                    "Connection settings changed. Retry to load the matching password.".into(),
                 );
-                s.workspace.cached_credentials = credentials.map(|credentials| (key, credentials));
+                return;
+            }
+            match result {
+                Ok(CredentialOutcome::Loaded(Some(credentials)))
+                    if load.purpose == LoadPurpose::Editor =>
+                {
+                    s.workspace.cached_credentials = Some((load.profile, credentials));
+                    set_profile_status(
+                        s,
+                        id,
+                        "Saved password loaded. Leave the password field empty to use it.".into(),
+                    );
+                }
+                Ok(CredentialOutcome::Loaded(Some(credentials))) => {
+                    if s.workspace.live(id) {
+                        return;
+                    }
+                    if let Err(error) = start_connection(s, &load.profile, credentials) {
+                        set_profile_status(s, id, error);
+                    } else if s.workspace.selected.is_none() || s.workspace.selected == Some(id) {
+                        let show_manager = s.workspace.show_manager;
+                        select(s, id);
+                        s.workspace.show_manager = show_manager;
+                    }
+                }
+                Ok(CredentialOutcome::Loaded(None)) => set_profile_status(
+                    s,
+                    id,
+                    "No saved password was found. Open Connect / edit to enter one.".into(),
+                ),
+                Err(error) => set_profile_status(s, id, error.to_string()),
+                _ => set_profile_status(
+                    s,
+                    id,
+                    "The password store returned an unexpected response.".into(),
+                ),
             }
         }
-        (CredentialWork::Save(_), Ok(CredentialOutcome::Saved)) => {
-            s.workspace.credential_status = Some("Password saved in the desktop keyring.".into())
+        (CredentialWork::Save(profile), Ok(CredentialOutcome::Saved)) => {
+            if s.workspace.profile(profile.id).is_some_and(|current| {
+                CredentialKey::for_profile(current) == CredentialKey::for_profile(&profile)
+            }) {
+                set_profile_status(
+                    s,
+                    profile.id,
+                    "Password saved in the desktop keyring.".into(),
+                );
+            }
         }
         (CredentialWork::Forget(id), Ok(CredentialOutcome::Removed)) => {
             if let Some(mut profile) = s.workspace.profile(id).cloned() {
                 profile.credential_mode = CredentialMode::SessionOnly;
+                profile.auto_connect = false;
                 if let Ok(store) = &mut s.workspace.store
                     && let Err(error) = store.save(profile)
                 {
@@ -875,6 +1161,7 @@ fn apply_credential_result(
             }
             if s.workspace.editing == Some(id) {
                 s.workspace.remember_password = false;
+                s.workspace.auto_connect = false;
                 s.workspace.cached_credentials = None;
             }
             s.workspace.credential_status = Some(
@@ -886,9 +1173,16 @@ fn apply_credential_result(
             remove_record(s, id);
             s.workspace.credential_status = Some("Connection and saved password removed.".into());
         }
-        (_, Err(error)) => {
-            s.workspace.credential_status = Some(error.to_string());
-            s.error = Some(error.to_string());
+        (work, Err(error)) => {
+            let id = match work {
+                CredentialWork::Save(profile) => profile.id,
+                CredentialWork::Forget(id) | CredentialWork::Remove(id) => id,
+                CredentialWork::Load(_) => unreachable!("load results handled above"),
+            };
+            set_profile_status(s, id, error.to_string());
+            if s.workspace.editing == Some(id) {
+                s.error = Some(error.to_string());
+            }
         }
         _ => {
             s.error = Some("The password store returned an unexpected response.".into());
@@ -897,6 +1191,11 @@ fn apply_credential_result(
 }
 
 pub(super) fn disconnect_all(s: &mut State) {
+    s.workspace.restore_started = true;
+    let pending = s.workspace.loads.keys().copied().collect::<Vec<_>>();
+    for id in pending {
+        cancel_load(s, id);
+    }
     disconnect_selected(s);
     for connection in s.workspace.active.values() {
         connection.disconnect();
@@ -938,12 +1237,12 @@ pub(super) fn scene(s: &mut State, configure: bool) {
 mod tests {
     use super::*;
 
-    struct Fixture {
-        state: State,
-        directory: std::path::PathBuf,
+    pub(super) struct Fixture {
+        pub(super) state: State,
+        pub(super) directory: std::path::PathBuf,
     }
     impl Fixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let directory =
                 std::env::temp_dir().join(format!("xenadmin-profiles-ui-{}", uuid::Uuid::new_v4()));
             let mut state = init();
@@ -1099,10 +1398,12 @@ mod tests {
             .save(profile.clone())
             .unwrap();
         populate(s, &profile);
-        let key = CredentialKey::for_profile(&profile);
+        s.show_connect = true;
+        queue_load(s, &profile, LoadPurpose::Editor);
+        let load = s.workspace.loads[&id].clone();
         apply_credential_result(
             s,
-            CredentialWork::Load(key.clone()),
+            CredentialWork::Load(Box::new(load.clone())),
             Ok(CredentialOutcome::Loaded(Some(Credentials::new(
                 "root".into(),
                 "fixture-secret".into(),
@@ -1120,7 +1421,7 @@ mod tests {
         begin_new(s);
         apply_credential_result(
             s,
-            CredentialWork::Load(key),
+            CredentialWork::Load(Box::new(load)),
             Ok(CredentialOutcome::Loaded(Some(Credentials::new(
                 "root".into(),
                 "late-response".into(),
@@ -1130,9 +1431,10 @@ mod tests {
             s.workspace.cached_credentials.is_none(),
             "a late response must not populate another connection"
         );
+        populate(s, &profile);
         apply_credential_result(
             s,
-            CredentialWork::Save(id),
+            CredentialWork::Save(Box::new(profile.clone())),
             Err(xenadmin_core::CredentialStoreError::Locked),
         );
         assert!(s.error.as_deref().unwrap().contains("for this session"));
@@ -1154,3 +1456,7 @@ mod tests {
         assert!(!stored.contains("manual-fixture"));
     }
 }
+
+#[cfg(test)]
+#[path = "profile_restore_tests.rs"]
+mod restore_tests;
