@@ -151,6 +151,7 @@ pub(super) async fn prepare(
         | ResourceAction::StorageMaintenance(_)
         | ResourceAction::Disk(_)
         | ResourceAction::NetworkTopology(_)
+        | ResourceAction::ManagementIpv6Bond(_)
         | ResourceAction::ManagementNetwork(_)
         | ResourceAction::PropertiesBatch(_)
         | ResourceAction::PowerBatch(_) => return Err(Error::InvalidResourceCommand),
@@ -467,6 +468,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         | ResourceAction::StorageMaintenance(_)
         | ResourceAction::Disk(_)
         | ResourceAction::NetworkTopology(_)
+        | ResourceAction::ManagementIpv6Bond(_)
         | ResourceAction::ManagementNetwork(_)
         | ResourceAction::PropertiesBatch(_)
         | ResourceAction::PowerBatch(_) => Vec::new(),

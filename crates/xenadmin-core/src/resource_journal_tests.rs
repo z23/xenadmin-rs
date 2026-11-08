@@ -5,6 +5,8 @@ use crate::{
 
 fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
+        management_ipv6_bond: None,
+        management_ipv6_bond_plan: None,
         snapshot_preview_plan: None,
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
@@ -1959,4 +1961,227 @@ fn management_guest_review_is_durable_immutable_and_rejects_unbound_destinations
         .unwrap();
         assert!(j.resource_load(r.id).is_err(), "{corrupt}");
     }
+}
+fn ipv6_staged_record(pool: PoolId) -> ResourceOperationRecord {
+    use crate::management_ipv6_bond::{Plan, Receipt, Stage};
+    let mut r = management_bond_record(pool);
+    let old = r.management_network_plan.take().unwrap();
+    r.management_network = None;
+    let crate::ManagementNetworkOperation::Bond {
+        mut source,
+        operation:
+            crate::ManagementBondOperation::Create {
+                mut members,
+                network,
+                mode,
+                hash,
+            },
+        ..
+    } = old.operation
+    else {
+        unreachable!()
+    };
+    for m in &mut members {
+        m.primary = crate::ManagementAddressFamily::Ipv6;
+        m.ipv4 = crate::Ipv4Configuration {
+            mode: crate::Ipv4Mode::None,
+            address: String::new(),
+            netmask: String::new(),
+            gateway: String::new(),
+            dns: String::new(),
+        };
+        m.ipv6 = crate::Ipv6Configuration {
+            mode: if m.pif == source.pif {
+                crate::Ipv6Mode::Static
+            } else {
+                crate::Ipv6Mode::None
+            },
+            addresses: if m.pif == source.pif {
+                vec!["2001:db8:1::10/64".into()]
+            } else {
+                vec![]
+            },
+            gateway: String::new(),
+            dns: String::new(),
+        };
+    }
+    source = members[0].clone();
+    let mut temporary = source.clone();
+    temporary.pif = uuid::Uuid::new_v4().into();
+    temporary.identity.management = false;
+    temporary.identity.network = uuid::Uuid::new_v4().into();
+    temporary.ipv6.addresses = vec!["2001:db8:2::10/64".into()];
+    let component = |p: &crate::ManagementInterface| {
+        let record:crate::PhysicalInterface=serde_json::from_value(json!({"id":p.pif,"host":p.identity.host,"network":p.identity.network,"device":p.identity.device,"mac":p.identity.mac,"mtu":1500,"vlan":-1,"management":p.identity.management,"physical":true,"currently_attached":true,"managed":true,"disallow_unplug":false,"management_purpose":null,"primary_address_type":"IPv6","ip_configuration_mode":"None","ip":"","netmask":"","gateway":"","dns":"","ipv6":p.ipv6.addresses,"ipv6_configuration_mode":p.ipv6.mode.as_str(),"ipv6_gateway":""})).unwrap();
+        crate::ManagementTopology {
+            pifs: std::collections::BTreeMap::from([(p.pif, record)]),
+            bonds: Default::default(),
+            vlans: Default::default(),
+        }
+    };
+    let originals = members.iter().map(component).collect();
+    let temporary_component = component(&temporary);
+    let props = std::collections::BTreeMap::from([(temporary.pif, Default::default())]);
+    let op = crate::ManagementIpv6Bond {
+        purpose: Default::default(),
+        source,
+        temporary,
+        operation: crate::ManagementBondOperation::Create {
+            members,
+            network,
+            mode,
+            hash,
+        },
+        consumers: None,
+        predecessor: None,
+    };
+    r.action = ResourceAction::ManagementIpv6Bond(Box::new(op.clone()));
+    r.state = OperationState::Preparing;
+    let p = Plan {
+        version: 1,
+        pool,
+        host: op.source.identity.host,
+        origin: r.id,
+        predecessor: None,
+        successor: None,
+        depth: 0,
+        lineage: 0,
+        temporary_endpoint: crate::management_ipv6_bond::endpoint(
+            &old.original_endpoint,
+            op.temporary.address().unwrap(),
+        )
+        .unwrap(),
+        final_endpoint: crate::management_ipv6_bond::endpoint(
+            &old.original_endpoint,
+            op.source.address().unwrap(),
+        )
+        .unwrap(),
+        original_endpoint: old.original_endpoint,
+        intent: op,
+        certificate: old.certificate,
+        registered: false,
+        temporary_route_verified: false,
+        final_route_verified: false,
+        expires_at_ms: old.expires_at_ms,
+        receipts: vec![Receipt::pending(Stage::MoveToTemporary)],
+        baseline: old.bond.unwrap(),
+        change_baseline: None,
+        original_components: originals,
+        temporary_component,
+        temporary_properties: props,
+    };
+    p.project(&mut r);
+    r.management_ipv6_bond_plan = Some(p);
+    r
+}
+#[test]
+fn staged_ipv6_private_plan_and_prefix_corruption_fail_closed_at_load_and_admission() {
+    for corrupt in [
+        "source",
+        "temporary",
+        "properties",
+        "task",
+        "prefix",
+        "scope",
+        "endpoint",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        let pool = uuid::Uuid::new_v4().into();
+        let mut r = ipv6_staged_record(pool);
+        j.resource_admit(&mut r).unwrap();
+        let raw: String =
+            j.0.query_row(
+                "SELECT payload FROM resource_operations WHERE id=?1",
+                [r.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let p = &mut v["management_ipv6_bond_plan"];
+        match corrupt {
+            "source" => p["original_components"][0]["pifs"] = json!({}),
+            "temporary" => p["temporary_component"]["pifs"] = json!({}),
+            "properties" => p["temporary_properties"] = json!({}),
+            "task" => p["receipts"][0]["task_uuid"] = json!(uuid::Uuid::new_v4()),
+            "prefix" => p["receipts"][0]["verified"] = json!(true),
+            "scope" => p["pool"] = json!(uuid::Uuid::new_v4()),
+            "endpoint" => p["temporary_endpoint"] = json!("https://unreviewed.invalid"),
+            _ => unreachable!(),
+        };
+        j.0.execute(
+            "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+            rusqlite::params![v.to_string(), r.id.to_string()],
+        )
+        .unwrap();
+        assert!(j.resource_load(r.id).is_err(), "{corrupt}");
+        assert!(j.resource_admit(&mut resource(pool)).is_err(), "{corrupt}");
+    }
+}
+#[test]
+fn staged_ipv6_claim_moves_pool_guard_atomically_and_acknowledgement_cannot_authorize_continuation()
+{
+    let dir = tempfile::tempdir().unwrap();
+    let mut j = Journal::open(dir.path()).unwrap();
+    let pool = uuid::Uuid::new_v4().into();
+    let mut r = ipv6_staged_record(pool);
+    j.resource_admit(&mut r).unwrap();
+    let p = r.management_ipv6_bond_plan.as_mut().unwrap();
+    p.registered = true;
+    p.temporary_route_verified = true;
+    let v = p.current_mut();
+    v.dispatched = true;
+    v.task = Some("OpaqueRef:owned-stage".into());
+    v.task_uuid = Some(uuid::Uuid::new_v4().into());
+    v.completed = true;
+    v.ended = true;
+    v.verified = true;
+    r.task = v.task.clone();
+    let p = p.clone();
+    p.project(&mut r);
+    r.state = OperationState::PartiallyCompleted;
+    j.resource_save(&mut r).unwrap();
+    assert!(matches!(
+        j.resource_admit(&mut resource(pool)),
+        Err(Error::ConflictingPoolOperation)
+    ));
+    assert!(j.admit(&mut vm(pool)).is_err());
+    let mut child = resource(pool);
+    child.target = r.target;
+    child.steps.clear();
+    let ResourceAction::ManagementIpv6Bond(mut op) = r.action.clone() else {
+        unreachable!()
+    };
+    op.predecessor = Some(r.id);
+    child.action = ResourceAction::ManagementIpv6Bond(op);
+    assert!(j.resource_admit(&mut child).unwrap());
+    assert_eq!(
+        j.resource_load(r.id)
+            .unwrap()
+            .unwrap()
+            .management_ipv6_bond
+            .unwrap()
+            .successor,
+        Some(child.id)
+    );
+    assert!(j.resource_pool_busy(pool).unwrap());
+    child.state = OperationState::OutcomeUnknown;
+    j.resource_save(&mut child).unwrap();
+    let ack = j
+        .resource_control(pool, child.id, OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    assert!(!ack.management_ipv6_bond.unwrap().retains_reservation);
+    assert!(!j.resource_pool_busy(pool).unwrap());
+    let mut invalid = resource(pool);
+    invalid.target = child.target;
+    invalid.steps.clear();
+    let ResourceAction::ManagementIpv6Bond(mut op) = child.action.clone() else {
+        unreachable!()
+    };
+    op.predecessor = Some(child.id);
+    invalid.action = ResourceAction::ManagementIpv6Bond(op);
+    assert!(matches!(
+        j.resource_admit(&mut invalid),
+        Err(Error::OperationConflict)
+    ));
 }

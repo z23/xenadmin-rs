@@ -320,7 +320,7 @@ impl Graph {
         })
     }
 }
-pub(super) async fn capture(
+pub(in crate::resources) async fn capture(
     s: &Session,
     source: &ManagementInterface,
     op: &crate::ManagementBondOperation,
@@ -354,7 +354,7 @@ pub(super) async fn capture(
     )?;
     Ok(result)
 }
-pub(super) async fn before(
+pub(in crate::resources) async fn before(
     s: &Session,
     operation: &ManagementNetworkOperation,
 ) -> Result<(), Error> {
@@ -374,7 +374,7 @@ pub(super) async fn before(
         "Guest interfaces, settings or placement changed since review; read their migration again",
     )
 }
-pub(super) async fn verify(
+pub(in crate::resources) async fn verify(
     s: &Session,
     operation: &ManagementNetworkOperation,
 ) -> Result<(), Error> {

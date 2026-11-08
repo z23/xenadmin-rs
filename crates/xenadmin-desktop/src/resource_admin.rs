@@ -596,6 +596,27 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
                 );
             }
         }
+        if let Some(e) = &record.management_ipv6_bond {
+            view=view.child(caption(format!("IPv6 management: {}/5 stages verified · staged reservation {} · temporary recovery {} · target {}",e.completed_stages,if e.retains_reservation{"held"}else{"not held by this row"},e.temporary_endpoint,e.target_endpoint),k).wrap_anywhere());
+            if let Some(m) = e.created_bond {
+                view = view.child(
+                    caption(format!("Created bond {} · master {}", m.bond, m.master), k)
+                        .wrap_anywhere(),
+                );
+            }
+            for m in &e.moved_vlans {
+                view = view.child(
+                    caption(
+                        format!(
+                            "Recreated VLAN {} → {} · PIF {} → {}",
+                            m.old_vlan, m.new_vlan, m.old_interface, m.new_interface
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
+        }
         if let Some(evidence) = &record.management_network {
             for moved in &evidence.moved_vlans {
                 view = view.child(

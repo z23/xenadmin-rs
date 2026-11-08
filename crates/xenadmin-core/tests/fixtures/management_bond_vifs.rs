@@ -1,6 +1,6 @@
 use super::*;
 use xenadmin_core::{ManagementVifChange as Change, ManagementVmLocality as Locality};
-fn guest(
+pub(super) fn guest(
     c: &mut Control,
     n: u128,
     network: u128,

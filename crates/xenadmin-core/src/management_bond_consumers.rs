@@ -157,7 +157,7 @@ pub(crate) fn scope(source: &ManagementInterface, op: &ManagementBondOperation) 
         }
     }
     let reattachments = op
-        .captured_vlans(source)?
+        .raw_vlans(source)?
         .values()
         .filter(|v| v.interface.currently_attached == Some(true))
         .map(|v| v.interface.network)

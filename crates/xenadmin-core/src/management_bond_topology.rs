@@ -46,6 +46,16 @@ impl ManagementBondOperation {
         &self,
         source: &ManagementInterface,
     ) -> Option<BTreeMap<VlanId, CapturedVlan>> {
+        let values = self.raw_vlans(source)?;
+        values
+            .values()
+            .all(|v| supported_vlan(&v.interface))
+            .then_some(values)
+    }
+    pub(crate) fn raw_vlans(
+        &self,
+        source: &ManagementInterface,
+    ) -> Option<BTreeMap<VlanId, CapturedVlan>> {
         let components = match self {
             Self::Create { members, .. } => members
                 .iter()
@@ -61,9 +71,6 @@ impl ManagementBondOperation {
                     return None;
                 }
                 let interface = t.pifs.get(&vlan.untagged_pif?)?.clone();
-                if !supported_vlan(&interface) {
-                    return None;
-                }
                 out.insert(
                     *id,
                     CapturedVlan {

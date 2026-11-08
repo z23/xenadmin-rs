@@ -1,6 +1,9 @@
 use super::*;
 use crate::{ManagementVlanReplacement, VlanId, management_bond::CapturedVlan};
-pub(super) fn before(t: &Records, expected: &BTreeMap<VlanId, CapturedVlan>) -> Result<(), Error> {
+pub(in crate::resources) fn before(
+    t: &Records,
+    expected: &BTreeMap<VlanId, CapturedVlan>,
+) -> Result<(), Error> {
     for captured in expected.values() {
         let (_, v) = lookup(t.records("vlan"), captured.vlan.id.uuid())?;
         let (_, p) = t.pif(captured.interface.id)?;
@@ -25,6 +28,15 @@ fn find(
         .as_ref()
         .and_then(|p| p.bond.as_ref())
         .ok_or(Error::Journal)?;
+    identities(t, b, parent, expected, strict)
+}
+pub(in crate::resources) fn identities(
+    t: &Records,
+    b: &Baseline,
+    parent: PifId,
+    expected: &BTreeMap<VlanId, CapturedVlan>,
+    strict: bool,
+) -> Result<BTreeMap<VlanId, ManagementVlanReplacement>, Error> {
     if expected.is_empty() {
         return Ok(BTreeMap::new());
     }

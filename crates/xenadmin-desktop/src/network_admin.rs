@@ -1,5 +1,7 @@
 #[path = "network_interfaces.rs"]
 mod interfaces;
+#[path = "management_ipv6_bond_ui.rs"]
+mod ipv6_bond;
 #[path = "management_network_ui.rs"]
 mod management;
 #[path = "management_bond_ui.rs"]
@@ -19,6 +21,7 @@ struct Review {
     lines: Vec<String>,
 }
 enum Form {
+    Ipv6Bond(Box<ipv6_bond::Editor>),
     ManagementBond(Box<management_bond::Editor>),
     Management(Box<management::Editor>),
     Topology(Box<topology::Editor>),
@@ -54,6 +57,7 @@ pub(super) struct Workspace {
     form: Form,
     review: Option<Review>,
     bond_review: Option<management_bond::Pending>,
+    ipv6_review: Option<ipv6_bond::Pending>,
     error: Option<String>,
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
@@ -86,6 +90,7 @@ pub(super) fn open(s: &mut State) {
         form: Form::Browse,
         review: None,
         bond_review: None,
+        ipv6_review: None,
         error: None,
     });
 }
@@ -124,6 +129,7 @@ fn set_form(s: &mut State, form: Form) {
     w.form = form;
     w.review = None;
     w.bond_review = None;
+    w.ipv6_review = None;
     w.error = None;
 }
 fn prepare(s: &mut State, target: ResourceTarget, operation: NetworkOperation, lines: Vec<String>) {
@@ -214,6 +220,13 @@ fn open_ipv4(s: &mut State, id: PifId) {
     );
 }
 fn form_review(s: &mut State) {
+    if s.network_workspace
+        .as_ref()
+        .is_some_and(|w| matches!(w.form, Form::Ipv6Bond(_)))
+    {
+        ipv6_bond::prepare(s);
+        return;
+    }
     if s.network_workspace
         .as_ref()
         .is_some_and(|w| matches!(w.form, Form::ManagementBond(_)))
@@ -369,7 +382,11 @@ fn form_review(s: &mut State) {
                 )
             }
             Form::Interface(editor) => interfaces::review(editor, i)?,
-            Form::ManagementBond(_) | Form::Management(_) | Form::Topology(_) | Form::Browse => {
+            Form::Ipv6Bond(_)
+            | Form::ManagementBond(_)
+            | Form::Management(_)
+            | Form::Topology(_)
+            | Form::Browse => {
                 return Err("Choose a change to review".into());
             }
         })
@@ -400,6 +417,19 @@ fn submit(s: &mut State) {
                         target,
                         operation: operation.clone(),
                     },
+                    xenadmin_core::ResourceAction::ManagementIpv6Bond(operation) => {
+                        if !s
+                            .inventory
+                            .as_ref()
+                            .is_some_and(|i| operation.availability(i).is_available())
+                        {
+                            return Err(xenadmin_core::Error::Stale);
+                        }
+                        ResourceCommand::ManagementIpv6Bond {
+                            host: target,
+                            operation: operation.clone(),
+                        }
+                    }
                     xenadmin_core::ResourceAction::ManagementNetwork(operation) => {
                         if !s.inventory.as_ref().is_some_and(|i| {
                             s.network_workspace
@@ -736,6 +766,7 @@ fn form(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
         );
     }
     match &w.form {
+        Form::Ipv6Bond(editor) => body = body.child(ipv6_bond::form(editor, i, k)),
         Form::ManagementBond(editor) => body = body.child(management_bond::form(editor, i, k)),
         Form::Management(editor) => body = body.child(management::form(editor, i, k)),
         Form::Interface(editor) => body = body.child(interfaces::form(editor, i, k)),
@@ -970,8 +1001,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         body =
             body.child(caption("The connection changed. Close and reopen networking.", k).wrap());
     }
-    if let Some(reason) =
-        topology::review_unavailable(s, w).or_else(|| management::review_unavailable(s, w))
+    if let Some(reason) = topology::review_unavailable(s, w)
+        .or_else(|| management::review_unavailable(s, w))
+        .or_else(|| ipv6_bond::unavailable(s, w))
     {
         body = body.child(caption(reason, k).wrap().role("alert"));
     }
@@ -983,6 +1015,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .color(k.c.danger.icon),
         );
     }
+    body = body.child(ipv6_bond::continuation(s, w, k));
     if let Some(record) = s.resource_rows.iter().rev().find(|r| r.pool == w.pool) {
         body = body.child(
             caption(
@@ -1036,6 +1069,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                                 .as_ref()
                                 .is_some_and(|p| p.decision().is_denied())
                             || management::review_unavailable(s, w).is_some()
+                            || ipv6_bond::unavailable(s, w).is_some()
                             || w.review
                                 .as_ref()
                                 .and_then(|r| r.observed)
@@ -1058,7 +1092,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .child(
                 Button::new("Review network change")
-                    .disabled(w.bond_review.is_some())
+                    .disabled(w.bond_review.is_some() || w.ipv6_review.is_some())
                     .on_press(form_review)
                     .build(k)
                     .key("network-review"),
@@ -1153,6 +1187,7 @@ pub(super) fn scene(s: &mut State) {
         },
         review: None,
         bond_review: None,
+        ipv6_review: None,
         error: None,
     });
 }
@@ -1183,11 +1218,16 @@ pub(super) fn management_bond_scene(s: &mut State) {
 }
 
 pub(super) fn poll(s: &mut State) -> bool {
-    management_bond::poll(s)
+    let ipv6 = ipv6_bond::poll(s);
+    management_bond::poll(s) || ipv6
 }
 
 pub(super) fn management_bond_consumer_scene(s: &mut State) {
     management_bond::consumer_scene(s)
+}
+
+pub(super) fn management_ipv6_bond_scene(s: &mut State) {
+    ipv6_bond::scene(s);
 }
 
 #[cfg(test)]

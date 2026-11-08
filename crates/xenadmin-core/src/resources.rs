@@ -8,6 +8,10 @@ mod host_power_backend;
 mod host_power_journal;
 #[path = "management_network_backend.rs"]
 pub(crate) mod management;
+#[path = "management_ipv6_backend.rs"]
+pub(crate) mod management_ipv6;
+#[path = "management_ipv6_journal.rs"]
+mod management_ipv6_journal;
 #[path = "root_password_journal.rs"]
 mod root_password_journal;
 #[path = "snapshot_capture_journal.rs"]
@@ -150,6 +154,10 @@ pub enum ResourceCommand {
         target: ObservedResource,
         operation: crate::DiskOperation,
     },
+    ManagementIpv6Bond {
+        host: ObservedResource,
+        operation: Box<crate::ManagementIpv6Bond>,
+    },
     ManagementNetwork {
         host: ObservedResource,
         operation: Box<crate::ManagementNetworkOperation>,
@@ -259,6 +267,7 @@ pub enum ResourceAction {
     DeleteHostCrashdump(crate::HostCrashdump),
     Disk(crate::DiskOperation),
     RootPassword(crate::PoolRootPasswordChange),
+    ManagementIpv6Bond(Box<crate::ManagementIpv6Bond>),
     ManagementNetwork(Box<crate::ManagementNetworkOperation>),
     HostPower(crate::HostPowerOperation),
     NetworkTopology(crate::NetworkTopologyOperation),
@@ -335,6 +344,20 @@ impl ResourceAction {
                 .permission_requirements()
                 .with_host_dependent_steps(),
             Self::Network(op) => op.permission_requirements(),
+            Self::ManagementIpv6Bond(op)
+                if op.purpose == crate::ManagementIpv6Next::LeavePartial =>
+            {
+                Required::writes(std::iter::empty::<&str>())
+            }
+            Self::ManagementIpv6Bond(op) => Required::writes([
+                "host.management_reconfigure",
+                "PIF.reconfigure_ipv6",
+                if op.operation.creates() {
+                    "Bond.create"
+                } else {
+                    "Bond.destroy"
+                },
+            ]),
             Self::ManagementNetwork(op) => Required::writes([match op.as_ref() {
                 crate::ManagementNetworkOperation::Bond { operation, .. } => {
                     if operation.creates() {
@@ -407,6 +430,7 @@ impl ResourceAction {
             Self::Pool(operation) => operation.label(),
             Self::Host(operation) => operation.label(),
             Self::Organization(_) => "Edit organization metadata",
+            Self::ManagementIpv6Bond(operation) => operation.label(),
             Self::ManagementNetwork(operation) => operation.label(),
             Self::NetworkTopology(operation) => operation.label(),
             Self::Network(operation) => operation.label(),
@@ -481,6 +505,7 @@ impl ResourceAction {
                 }
                 return patch.validate();
             }
+            Self::ManagementIpv6Bond(operation) => return operation.validate(target),
             Self::ManagementNetwork(operation) => return operation.validate(target),
             Self::NetworkTopology(operation) => return operation.validate(target),
             Self::Network(operation) => return operation.validate(target),
@@ -601,6 +626,9 @@ impl ResourceCommand {
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
             Self::Host { target, operation } => (target, ResourceAction::Host(operation)),
             Self::Organization { pool, patch } => (pool, ResourceAction::Organization(patch)),
+            Self::ManagementIpv6Bond { host, operation } => {
+                (host, ResourceAction::ManagementIpv6Bond(operation))
+            }
             Self::ManagementNetwork { host, operation } => {
                 (host, ResourceAction::ManagementNetwork(operation))
             }
@@ -686,6 +714,10 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(default)]
+    pub management_ipv6_bond: Option<crate::ManagementIpv6BondEvidence>,
+    #[serde(skip)]
+    pub(crate) management_ipv6_bond_plan: Option<crate::management_ipv6_bond::Plan>,
     #[serde(skip)]
     pub(crate) storage_graph_plan: Option<crate::storage_graph::Plan>,
     #[serde(default)]
@@ -858,6 +890,8 @@ pub(crate) fn channel(
         storage_maintenance_plan: None,
         disk_plan: None,
         disk_size: None,
+        management_ipv6_bond: None,
+        management_ipv6_bond_plan: None,
         management_network: None,
         management_network_plan: None,
         topology_changes: Default::default(),

@@ -58,7 +58,7 @@ impl Journal {
     fn active_resources(&self, pool: PoolId) -> Result<Vec<ResourceOperationRecord>, Error> {
         let mut query = self
             .0
-            .prepare("SELECT id,pool FROM resource_operations WHERE terminal=0 LIMIT 1001")
+            .prepare("SELECT id,pool FROM resource_operations WHERE terminal=0 OR json_type(payload,'$.management_ipv6_bond')='object' LIMIT 1501")
             .map_err(|_| Error::Journal)?;
         let records = query
             .query_map([], |row| {
@@ -70,18 +70,26 @@ impl Journal {
                 let id = serde_json::from_value(serde_json::Value::String(id))
                     .map_err(|_| Error::Journal)?;
                 let record = self.resource_load(id)?.ok_or(Error::Journal)?;
-                if record.pool.to_string() != stored_pool || record.state.terminal() {
+                if record.pool.to_string() != stored_pool {
                     return Err(Error::Journal);
                 }
                 Ok(record)
             })
             .collect::<Result<Vec<_>, Error>>()?;
-        if records.len() > 1000 {
+        if records.len() > 1500 {
             return Err(Error::JournalFull);
         }
         Ok(records
             .into_iter()
-            .filter(|record| record.applies_to_pool(pool))
+            .filter(|record| {
+                record.applies_to_pool(pool)
+                    && (!record.state.terminal()
+                        || record.state == OperationState::PartiallyCompleted
+                            && record
+                                .management_ipv6_bond
+                                .as_ref()
+                                .is_some_and(|v| v.retains_reservation))
+            })
             .collect())
     }
     pub(crate) fn resource_load(
@@ -92,6 +100,13 @@ impl Journal {
         data.map(|(payload, task, result_reference, revision)| {
             let payload: serde_json::Value =
                 serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+            let management_ipv6_bond_plan = payload
+                .get("management_ipv6_bond_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let management_network_plan = payload
                 .get("management_network_plan")
                 .filter(|v| !v.is_null())
@@ -222,6 +237,7 @@ impl Journal {
                     return Err(Error::Journal);
                 }
             }
+            record.management_ipv6_bond_plan = management_ipv6_bond_plan;
             record.management_network_plan = management_network_plan;
             record.storage_graph_plan = storage_graph_plan;
             record.storage_maintenance_plan = storage_maintenance_plan;
@@ -258,6 +274,7 @@ impl Journal {
             super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::root_password::validate_record(&record)?;
             crate::snapshot_capture::validate_record(&record)?;
+            crate::management_ipv6_bond::validate_record(&record)?;
             super::management::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
             crate::storage_graph::validate_record(&record)?;
@@ -272,6 +289,9 @@ impl Journal {
         .transpose()
     }
     pub(crate) fn resource_save(&self, record: &mut ResourceOperationRecord) -> Result<(), Error> {
+        if let Some(p) = &record.management_ipv6_bond_plan {
+            record.management_ipv6_bond = Some(p.evidence(&record.state));
+        }
         super::alarms::validate_receipts(record)?;
         record.interrupted |= record.state == OperationState::OutcomeUnknown;
         if !record.state.terminal() || record.power_batch_plan.is_some() {
@@ -280,6 +300,7 @@ impl Journal {
         crate::properties_batch::validate_record(record)?;
         crate::cross_pool_backend::validate_record(record)?;
         super::topology::validate_record(record).map_err(|_| Error::Journal)?;
+        crate::management_ipv6_bond::validate_record(record)?;
         super::management::validate_record(record).map_err(|_| Error::Journal)?;
         if record.state == OperationState::OutcomeUnknown
             && let Some(plan) = &mut record.cloud_init_plan
@@ -356,6 +377,14 @@ impl Journal {
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
                 return Err(Error::OperationConflict);
+            }
+            if old.management_ipv6_bond_plan.as_ref().is_some_and(|p| {
+                record
+                    .management_ipv6_bond_plan
+                    .as_ref()
+                    .is_none_or(|n| !p.accepts(n))
+            }) {
+                return Err(Error::JournalChanged);
             }
             if old.management_network_plan.as_ref().is_some_and(|p| {
                 record
@@ -513,6 +542,12 @@ impl Journal {
                 .ok_or(Error::Journal)?
                 .insert(key.into(), value.map_err(|_| Error::Journal)?);
         }
+        if let Some(plan) = &record.management_ipv6_bond_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "management_ipv6_bond_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         if let Some(plan) = &record.management_network_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "management_network_plan".into(),
@@ -624,19 +659,27 @@ impl Journal {
                             |row| row.get(0),
                         )
                         .map_err(|_| Error::Journal)?;
-                    busy |= vm_busy || self.resource_pool_busy(pool)?;
+                    let predecessor = match &record.action {
+                        ResourceAction::ManagementIpv6Bond(op) => op.predecessor,
+                        _ => None,
+                    };
+                    busy |= vm_busy
+                        || self.active_resources(pool)?.iter().any(|old| {
+                            old.action != ResourceAction::CancelTask && Some(old.id) != predecessor
+                        });
                 }
                 busy
             };
             if busy {
                 return Err(Error::ConflictingPoolOperation);
             }
-            let count:u64=self.0.query_row("SELECT (SELECT COUNT(*) FROM operations WHERE terminal=0)+(SELECT COUNT(*) FROM resource_operations WHERE terminal=0)",[],|row|row.get(0)).map_err(|_|Error::Journal)?;
+            let count:u64=self.0.query_row("SELECT (SELECT COUNT(*) FROM operations WHERE terminal=0)+(SELECT COUNT(*) FROM resource_operations WHERE terminal=0 OR COALESCE(json_extract(payload,'$.management_ipv6_bond.retains_reservation'),0)=1)",[],|row|row.get(0)).map_err(|_|Error::Journal)?;
             if count >= 1000 {
                 return Err(Error::JournalFull);
             }
+            self.claim_ipv6_predecessor(record)?;
             self.resource_save(record)?;
-            self.0.execute("DELETE FROM resource_operations WHERE terminal=1 AND rowid NOT IN (SELECT rowid FROM resource_operations WHERE terminal=1 ORDER BY rowid DESC LIMIT 500)",[]).map_err(|_|Error::Journal)?;
+            self.0.execute("DELETE FROM resource_operations WHERE terminal=1 AND COALESCE(json_extract(payload,'$.management_ipv6_bond.retains_reservation'),0)=0 AND rowid NOT IN (SELECT rowid FROM resource_operations WHERE terminal=1 ORDER BY rowid DESC LIMIT 500)",[]).map_err(|_|Error::Journal)?;
             Ok(true)
         })();
         if result.is_ok() {
@@ -842,7 +885,15 @@ impl Journal {
         for _ in 0..16 {
             let mut record = self
                 .resource_load(id)?
-                .filter(|record| record.applies_to_pool(pool))
+                .filter(|record| {
+                    record.applies_to_pool(pool)
+                        && (!record.state.terminal()
+                            || record.state == OperationState::PartiallyCompleted
+                                && record
+                                    .management_ipv6_bond
+                                    .as_ref()
+                                    .is_some_and(|v| v.retains_reservation))
+                })
                 .ok_or(Error::OperationConflict)?;
             if record.state.terminal() {
                 return Err(Error::UnavailableAction);

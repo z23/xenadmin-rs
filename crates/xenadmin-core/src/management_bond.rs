@@ -79,7 +79,7 @@ impl Baseline {
         source: &ManagementInterface,
         operation: &ManagementBondOperation,
     ) -> bool {
-        let Some(expected) = operation.captured_vlans(source) else {
+        let Some(expected) = operation.raw_vlans(source) else {
             return false;
         };
         self.valid()

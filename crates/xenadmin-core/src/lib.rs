@@ -17,7 +17,13 @@ pub use management_bond::{
     ManagementBondCreated, ManagementBondOperation, ManagementVlanReplacement,
 };
 pub use management_bond_review::ManagementBondReviewQuery;
+mod management_ipv6_bond;
+mod management_ipv6_review;
+pub use management_ipv6_review::ManagementIpv6BondReviewQuery;
 mod management_network;
+pub use management_ipv6_bond::{
+    ManagementIpv6Bond, ManagementIpv6BondEvidence, ManagementIpv6Next,
+};
 mod management_topology;
 pub use management_network::{
     ManagementAddressFamily, ManagementDynamicMode, ManagementInterface, ManagementNetworkEvidence,

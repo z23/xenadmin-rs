@@ -810,3 +810,19 @@ change operation state. Task rows use typed error codes; historical operation ro
 only exact application-owned error envelopes, with failed-step fallback. Arbitrary messages
 and administrative block text are never searched for code substrings. Informational Rune
 modals capture public operation/task identity and retain outcome uncertainty before advice.
+
+Static IPv6 management bond/VLAN changes use an explicit five-stage protocol through an
+independently configured temporary management component. Each operation submits at most one
+stage. The exact temporary host certificate is bound to the actual login TLS connection before
+the first write; the existing trust and proxy policies remain in force. Immutable private plans
+bind the original graph, guest consumers, task baselines, positive task receipts, replacement
+UUIDs and recovery endpoints. Reconciliation reads these proofs without repeating writes.
+
+A verified partial stage retains a pool-wide reservation even though its row is terminal.
+Continuing atomically claims that exact predecessor and inserts one child reservation inside
+`BEGIN IMMEDIATE`; no other VM/resource admission can slip between them. An interrupted or
+uncertain stage is never reclassified as partial merely to release its guard. The separately
+reviewed `LeavePartial` purpose claims a verified predecessor and records a terminal, journal-only
+release; it sends no host calls, preserves achieved-stage evidence, and permanently disables
+continuation of that lineage. Closing the UI does not release a staged reservation. See the
+[IPv6 handover report](reports/2026-11-08-management-ipv6-bonds.md).

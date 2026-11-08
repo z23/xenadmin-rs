@@ -8,6 +8,8 @@ mod disk_worker;
 mod host;
 #[path = "host_power_worker.rs"]
 mod host_power_worker;
+#[path = "management_ipv6_worker.rs"]
+mod management_ipv6_worker;
 #[path = "management_network_worker.rs"]
 mod management_network_worker;
 #[path = "network_topology_worker.rs"]
@@ -164,6 +166,18 @@ impl ResourceRequest {
         } else {
             match journal.resource_admit(&mut self.record) {
                 Ok(true) => {
+                    if let Some(id) = self
+                        .record
+                        .management_ipv6_bond_plan
+                        .as_ref()
+                        .and_then(|p| p.predecessor)
+                        && let Ok(Some(parent)) = journal.resource_load(id)
+                        && let Some(updates) = &self.updates
+                    {
+                        let _ = updates
+                            .send(OperationUpdate::Resource(Box::new(parent)))
+                            .await;
+                    }
                     if let Some(media) = &mut self.cloud_media {
                         media.retain();
                     }
@@ -249,6 +263,12 @@ impl ResourceRequest {
             .action
             .permission_requirements(self.record.target)
             .guard(session.permissions())?;
+        if matches!(
+            self.record.action,
+            super::ResourceAction::ManagementIpv6Bond(_)
+        ) {
+            return self.execute_ipv6_bond(journal, session, cancel).await;
+        }
         if matches!(
             self.record.action,
             super::ResourceAction::ManagementNetwork(_)
@@ -472,6 +492,12 @@ impl ResourceRequest {
             return self
                 .recheck_snapshot_preview(journal, session, cancel)
                 .await;
+        }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::ManagementIpv6Bond(_)
+        ) {
+            return self.reconcile_ipv6_bond(journal, session, cancel).await;
         }
         if matches!(
             self.record.action,
@@ -978,7 +1004,9 @@ impl ResourceRequest {
         if let Error::Coordinator(endpoint) = &error
             && !matches!(
                 self.record.action,
-                super::ResourceAction::CrossPoolVm(_) | super::ResourceAction::ManagementNetwork(_)
+                super::ResourceAction::CrossPoolVm(_)
+                    | super::ResourceAction::ManagementIpv6Bond(_)
+                    | super::ResourceAction::ManagementNetwork(_)
             )
             && let Some(updates) = &self.updates
         {
@@ -1005,6 +1033,7 @@ impl ResourceRequest {
                 | super::ResourceAction::DeleteHostCrashdump(_)
                 | super::ResourceAction::SnapshotPreviewUpload(_)
                 | super::ResourceAction::RootPassword(_)
+                | super::ResourceAction::ManagementIpv6Bond(_)
                 | super::ResourceAction::ManagementNetwork(_)
                 | super::ResourceAction::HostPower(_)
                 | super::ResourceAction::AuthenticatedStorage { .. }

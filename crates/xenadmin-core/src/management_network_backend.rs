@@ -1,5 +1,5 @@
 #[path = "management_bond_backend.rs"]
-mod bond;
+pub(super) mod bond;
 use super::{ResourceAction, ResourceOperationRecord, ResourceTarget, network, xapi};
 use crate::{
     Error, HostId, ManagementDynamicMode, ManagementInterface, ManagementNetworkOperation,
@@ -175,7 +175,7 @@ fn dns(value: &str) -> Result<BTreeSet<std::net::IpAddr>, Error> {
         })
         .collect()
 }
-fn configured_dns(before: &str, requested: &str, ipv4: bool) -> Result<String, Error> {
+pub(super) fn configured_dns(before: &str, requested: &str, ipv4: bool) -> Result<String, Error> {
     Ok(dns(before)?
         .into_iter()
         .filter(|v| v.is_ipv4() != ipv4)

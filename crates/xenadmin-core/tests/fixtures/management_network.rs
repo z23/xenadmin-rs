@@ -42,6 +42,7 @@ struct Control {
     coordinator_certificate: String,
     fault: Fault,
     writes: usize,
+    staged_ipv6: bool,
     requests: Vec<Value>,
     wrong_certificate: Arc<std::sync::atomic::AtomicBool>,
     delay: bool,
@@ -177,7 +178,7 @@ fn rows(ipv6: bool) -> BTreeMap<String, Value> {
 }
 fn configure(c: &mut Control, pif: &str, request: &Value) {
     let ipv4 = request["method"] == "Async.PIF.reconfigure_ip";
-    let dynamic = request["params"][2] != "Static";
+    let dynamic = matches!(request["params"][2].as_str(), Some("DHCP" | "Autoconf"));
     let fault = c.fault;
     let v = c.rows.get_mut(pif).unwrap();
     let old_dns = v["DNS"].as_str().unwrap().to_owned();
@@ -244,7 +245,9 @@ fn configure(c: &mut Control, pif: &str, request: &Value) {
     } else {
         json!(v["IPv6"][0].as_str().unwrap().split('/').next().unwrap())
     };
-    c.rows.get_mut(&reference("host", 2)).unwrap()["address"] = address;
+    if v["management"] == true {
+        c.rows.get_mut(&reference("host", 2)).unwrap()["address"] = address;
+    }
 }
 async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>) {
     let cert = rcgen::generate_simple_self_signed(vec![
@@ -275,6 +278,7 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
         coordinator_certificate: coordinator.cert.pem(),
         fault,
         writes: 0,
+        staged_ipv6: false,
         requests: Vec::new(),
         wrong_certificate: wrong_certificate.clone(),
         delay: false,
@@ -311,7 +315,7 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
         if method.starts_with("Async.") {
             c.requests.push(request.clone());c.writes+=1;let pif=request["params"][1].as_str().unwrap().to_owned();
             match method {
-                "Async.host.management_reconfigure"=>{for (r,v) in &mut c.rows {if r.starts_with("OpaqueRef:PIF:"){v["management"]=json!(r==&pif);}}let address=c.rows[&pif]["IP"].clone();c.rows.get_mut(&reference("host",2)).unwrap()["address"]=address;},
+                "Async.host.management_reconfigure"=>{for (r,v) in &mut c.rows {if r.starts_with("OpaqueRef:PIF:"){v["management"]=json!(r==&pif);}}let address=if c.rows[&pif]["primary_address_type"]=="IPv6" {json!(c.rows[&pif]["IPv6"][0].as_str().unwrap().split('/').next().unwrap())}else{c.rows[&pif]["IP"].clone()};c.rows.get_mut(&reference("host",2)).unwrap()["address"]=address;},
                 "Async.PIF.reconfigure_ip" | "Async.PIF.reconfigure_ipv6" => configure(&mut c, &pif, &request),
                 "Async.Bond.create" | "Async.Bond.destroy" => bond_changes::change(&mut c, &request),
                 _=>panic!("unexpected write {method}"),
@@ -319,10 +323,10 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
             if c.fault==Fault::TopologyChangedAfterWrite {c.rows.get_mut(&reference("PIF",16)).unwrap()["disallow_unplug"]=json!(true);}
             if c.fault==Fault::CertificateCopied {c.rows.insert(reference("host",9),json!({"uuid":id(9),"address":"192.0.2.9"}));}
             let status=match c.fault {Fault::Failed=>"failure",Fault::Pending=>"pending",_=>"success"};
-            let task=if c.fault==Fault::WrongTask {50}else{51};
+            let task_ref=if c.staged_ipv6{50+c.writes as u128}else{51};let task=if c.fault==Fault::WrongTask {50}else{task_ref};
             let result=if method=="Async.Bond.create" {format!("<value>{}</value>", reference("Bond", if c.fault==Fault::BondWrongResult {79}else{80}))} else {String::new()};
-            c.rows.insert(reference("task",51),json!({"uuid":id(task),"status":status,"allowed_operations":[],"progress":1,"result":result}));
-            return Some(if c.fault==Fault::LostReply {RpcReply::Drop}else{RpcReply::Json(json!({"result":reference("task",51)}))});
+            c.rows.insert(reference("task",task_ref),json!({"uuid":id(task),"status":status,"allowed_operations":[],"progress":1,"result":result}));
+            return Some(if c.fault==Fault::LostReply {RpcReply::Drop}else{RpcReply::Json(json!({"result":reference("task",task_ref)}))});
         }
         None
     }})).await;
@@ -1087,3 +1091,6 @@ mod vlan_bond_changes;
 
 #[path = "management_bond_vifs.rs"]
 mod vif_bond_changes;
+
+#[path = "management_ipv6_bond.rs"]
+mod ipv6_bond;

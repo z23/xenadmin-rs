@@ -2376,6 +2376,10 @@ fn main() -> std::process::ExitCode {
             ("management-vlan", network_admin::management_topology_scene),
             ("management-bond", network_admin::management_bond_scene),
             (
+                "management-ipv6-bond",
+                network_admin::management_ipv6_bond_scene,
+            ),
+            (
                 "management-bond-guests",
                 network_admin::management_bond_consumer_scene,
             ),

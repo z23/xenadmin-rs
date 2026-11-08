@@ -24,6 +24,7 @@ use crate::{
 enum Request {
     ManagementCandidate(Box<ManagementCandidate>),
     ManagementBondReview(Box<crate::management_bond_review::Request>),
+    ManagementIpv6Review(Box<crate::management_ipv6_review::Request>),
     Console(ConsoleRequest),
     Metrics(crate::metrics::MetricsRequest),
     StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
@@ -596,6 +597,21 @@ impl Connection {
             crate::management_bond_review::channel(observed, operation, self.runtime.clone())?;
         self.requests
             .try_send(Request::ManagementBondReview(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
+    pub fn review_management_ipv6_bond(
+        &self,
+        observed: crate::ObservedResource,
+        operation: crate::ManagementIpv6Bond,
+    ) -> Result<crate::ManagementIpv6BondReviewQuery, Error> {
+        if self.latest().observe_resource(observed.target())? != observed {
+            return Err(Error::Stale);
+        }
+        let (handle, request) =
+            crate::management_ipv6_review::channel(observed, operation, self.runtime.clone())?;
+        self.requests
+            .try_send(Request::ManagementIpv6Review(Box::new(request)))
             .map_err(|_| Error::Busy)?;
         Ok(handle)
     }
@@ -1221,7 +1237,25 @@ async fn run(
         && let Ok(rows) =
             operations::Journal::open(&directory).and_then(|j| j.resource_history(pool))
     {
-        for row in rows.into_iter().filter(|row| !row.state.terminal()) {
+        for row in rows.into_iter().filter(|row| {
+            !row.state.terminal()
+                || row.state == crate::OperationState::PartiallyCompleted
+                    && row
+                        .management_ipv6_bond
+                        .as_ref()
+                        .is_some_and(|v| v.retains_reservation)
+        }) {
+            if let Some(p) = row.management_ipv6_bond_plan.filter(|p| p.registered) {
+                for endpoint in [p.temporary_endpoint, p.final_endpoint] {
+                    if !options.fallback_endpoints.contains(&endpoint)
+                        && options.fallback_endpoints.len() < 128
+                    {
+                        options.fallback_endpoints.push(endpoint.clone());
+                    }
+                    management_candidates
+                        .insert(endpoint.to_string(), (p.host, p.certificate.clone()));
+                }
+            }
             if let Some(plan) = row.management_network_plan.filter(|plan| plan.registered) {
                 if !options.fallback_endpoints.contains(&plan.recovery)
                     && options.fallback_endpoints.len() < 128
@@ -1303,6 +1337,7 @@ async fn run(
                         if matches!(
                             request.record.action,
                             crate::ResourceAction::ManagementNetwork(_)
+                                | crate::ResourceAction::ManagementIpv6Bond(_)
                         ) {
                             request.management = Some(crate::management_network::Inputs {
                                 options: worker_options.clone(),
@@ -1476,6 +1511,11 @@ async fn run(
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
                                     else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
                                 }
+                                Request::ManagementIpv6Review(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if discoveries.len()>=4 {request.fail(Error::Busy);}
+                                    else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
+                                }
                                 Request::HostSupport(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
@@ -1529,12 +1569,8 @@ async fn run(
                                         if request.generation!=generation || token.is_empty() || last_inventory.as_ref().is_none_or(|i|i.pool_id!=request.pool) {return Err(Error::Stale);}
                                         let record=operations::Journal::open(&directory)?.resource_load(request.id)?.ok_or(Error::Journal)?;
                                         if record.pool!=request.pool || record.state.terminal() || record.interrupted {return Err(Error::Stale);}
-                                        let plan=record.management_network_plan.ok_or(Error::Journal)?;
-                                        if !options.fallback_endpoints.contains(&plan.recovery) {
-                                            if options.fallback_endpoints.len()>=128 {return Err(Error::Busy);}
-                                            options.fallback_endpoints.push(plan.recovery.clone());
-                                        }
-                                        management_candidates.insert(plan.recovery.to_string(),(plan.host,plan.certificate));
+                                        let candidates=if let Some(plan)=record.management_network_plan{vec![(plan.recovery,plan.host,plan.certificate)]}else if let Some(plan)=record.management_ipv6_bond_plan{vec![(plan.temporary_endpoint,plan.host,plan.certificate.clone()),(plan.final_endpoint,plan.host,plan.certificate)]}else{return Err(Error::Journal);};
+                                        for (endpoint,host,certificate) in candidates{if !options.fallback_endpoints.contains(&endpoint){if options.fallback_endpoints.len()>=128{return Err(Error::Busy);}options.fallback_endpoints.push(endpoint.clone());}management_candidates.insert(endpoint.to_string(),(host,certificate));}
                                         Ok(())
                                     })();
                                     let _=request.reply.send(result);
@@ -1887,6 +1923,7 @@ async fn forward_alias(
                         Request::SecurityDiscovery(request) => request.fail(Error::Busy),
                         Request::HostSupport(request) => request.fail(Error::Busy),
                         Request::ManagementBondReview(request) => request.fail(Error::Busy),
+                        Request::ManagementIpv6Review(request)=>request.fail(Error::Busy),
                         Request::SnapshotPolicySupport(request) => request.fail(Error::Busy),
                         Request::GuestBoot(request) => request.fail(Error::Busy),
                         Request::SnapshotPreview(request) => request.fail(Error::Busy),

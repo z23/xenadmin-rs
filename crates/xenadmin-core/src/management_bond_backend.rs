@@ -1,7 +1,7 @@
 #[path = "management_bond_consumer_backend.rs"]
-mod consumers;
+pub(in crate::resources) mod consumers;
 #[path = "management_bond_vlans.rs"]
-mod vlans;
+pub(in crate::resources) mod vlans;
 use super::*;
 use crate::{
     BondId, ManagementBondCreated, ManagementBondOperation as Op, PifId, management_bond::Baseline,
@@ -17,7 +17,7 @@ fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, 
         _ => Err(Error::InvalidResourceCommand),
     }
 }
-fn properties(v: &Value) -> Result<BTreeMap<String, String>, Error> {
+pub(in crate::resources) fn properties(v: &Value) -> Result<BTreeMap<String, String>, Error> {
     let p = v["properties"]
         .as_object()
         .filter(|p| p.len() <= 64)
@@ -34,14 +34,20 @@ fn properties(v: &Value) -> Result<BTreeMap<String, String>, Error> {
         })
         .collect()
 }
-fn lookup(records: &BTreeMap<String, Value>, id: uuid::Uuid) -> Result<(&str, &Value), Error> {
+pub(in crate::resources) fn lookup(
+    records: &BTreeMap<String, Value>,
+    id: uuid::Uuid,
+) -> Result<(&str, &Value), Error> {
     records
         .iter()
         .find(|(_, v)| network::uuid(v).ok() == Some(id))
         .map(|(r, v)| (r.as_str(), v))
         .ok_or(Error::ResourceConflict)
 }
-fn baseline(t: &Records, properties: BTreeMap<String, String>) -> Result<Baseline, Error> {
+pub(in crate::resources) fn baseline(
+    t: &Records,
+    properties: BTreeMap<String, String>,
+) -> Result<Baseline, Error> {
     Ok(Baseline {
         vlans: Some(
             t.records("vlan")
@@ -264,6 +270,26 @@ pub(in crate::resources) async fn created(
 }
 fn created_from(t: &Records, r: &ResourceOperationRecord) -> Result<ManagementBondCreated, Error> {
     let (source, op) = bond_operation(r)?;
+    let plan = r
+        .management_network_plan
+        .as_ref()
+        .and_then(|p| p.bond.as_ref())
+        .ok_or(Error::Journal)?;
+    identity(
+        t,
+        source,
+        op,
+        plan,
+        r.result_reference.as_deref().ok_or(Error::Journal)?,
+    )
+}
+pub(in crate::resources) fn identity(
+    t: &Records,
+    source: &ManagementInterface,
+    op: &Op,
+    plan: &Baseline,
+    reference: &str,
+) -> Result<ManagementBondCreated, Error> {
     let Op::Create {
         members,
         network: target,
@@ -272,14 +298,6 @@ fn created_from(t: &Records, r: &ResourceOperationRecord) -> Result<ManagementBo
     else {
         return Err(Error::InvalidResourceCommand);
     };
-    let plan = r
-        .management_network_plan
-        .as_ref()
-        .and_then(|p| p.bond.as_ref())
-        .ok_or(Error::Journal)?;
-    let reference = r.result_reference.as_ref().ok_or(Error::Protocol(
-        "Management bond result receipt unavailable",
-    ))?;
     let b = t
         .records("bond")
         .get(reference)

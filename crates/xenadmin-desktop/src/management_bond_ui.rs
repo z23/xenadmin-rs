@@ -319,6 +319,13 @@ pub(super) fn buttons(
     enabled: bool,
     k: &Kit,
 ) -> El {
+    if _p.primary_address_type.as_deref() == Some("IPv6") {
+        return Button::new("Staged IPv6 management bond…")
+            .disabled(!enabled)
+            .on_press(move |s: &mut State| ipv6_bond::open(s, id))
+            .build(k)
+            .key("ipv6-management-bond");
+    }
     let physical_parent = ManagementInterface::capture(i, id)
         .and_then(|v| Bond::management_parent(&v))
         .and_then(|id| i.details.pifs.get(&id))
