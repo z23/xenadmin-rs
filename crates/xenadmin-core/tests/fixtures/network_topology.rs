@@ -508,18 +508,32 @@ async fn late_vlan_task_receipts_survive_recovery_without_reviving_original_work
         async fn state(c: &xenadmin_core::Connection, id: OperationId, expected: OperationState) {
             tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
-                    if c.resource_history()
-                        .iter()
-                        .any(|r| r.id == id && r.state == expected)
-                    {
+                    if c.resource_history().iter().any(|r| {
+                        r.id == id
+                            && r.state == expected
+                            && (expected != OperationState::OutcomeUnknown
+                                || r.steps.first().is_some_and(|step| {
+                                    step.state == xenadmin_core::StepState::OutcomeUnknown
+                                }))
+                    }) {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
             })
             .await
-            .unwrap();
+            .unwrap_or_else(|_| {
+                let rows = c.resource_history();
+                let row = rows.iter().find(|r| r.id == id);
+                panic!(
+                    "waiting for {expected:?}: {:?}",
+                    row.map(|r| (&r.state, r.revision(), &r.detail))
+                );
+            });
         }
+        // Startup publishes Unknown before its automatic read-only observer starts.
+        // Wait for the dispatched step's unknown result, so acknowledgement cannot
+        // race that observer's intervening Verifying state.
         state(&recovered, op.latest().id, OperationState::OutcomeUnknown).await;
         if acknowledge {
             recovered
