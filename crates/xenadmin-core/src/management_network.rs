@@ -120,7 +120,7 @@ impl ManagementInterface {
         }
         .filter(usable_address)
     }
-    fn valid(&self) -> bool {
+    pub(crate) fn bounded(&self) -> bool {
         !self.pif.uuid().is_nil()
             && !self.identity.host.uuid().is_nil()
             && !self.identity.network.uuid().is_nil()
@@ -139,11 +139,14 @@ impl ManagementInterface {
                 .split(',')
                 .filter(|v| !v.is_empty())
                 .all(|v| v.parse::<IpAddr>().is_ok())
-            && self.address().is_some()
             && self
                 .topology
                 .as_ref()
                 .is_none_or(|t| t.valid(self.pif) && t.matches_root(self))
+    }
+    pub(crate) fn valid(&self) -> bool {
+        self.bounded()
+            && self.address().is_some()
             && match self.primary {
                 ManagementAddressFamily::Ipv4 => Ipv4Configuration {
                     mode: Ipv4Mode::Static,
@@ -210,6 +213,10 @@ fn usable_address(ip: &IpAddr) -> bool {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManagementNetworkOperation {
+    Bond {
+        source: ManagementInterface,
+        operation: crate::ManagementBondOperation,
+    },
     Move {
         source: ManagementInterface,
         destination: ManagementInterface,
@@ -231,6 +238,13 @@ pub enum ManagementNetworkOperation {
 impl ManagementNetworkOperation {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Bond { operation, .. } => {
+                if operation.creates() {
+                    "Create management bond"
+                } else {
+                    "Remove management bond"
+                }
+            }
             Self::Move { .. } => "Move host management interface",
             Self::ConfigureIpv4 { .. } => "Change management IPv4 settings",
             Self::ConfigureIpv6 { .. } => "Change management IPv6 settings",
@@ -239,7 +253,7 @@ impl ManagementNetworkOperation {
     }
     pub fn source(&self) -> &ManagementInterface {
         match self {
-            Self::Move { source, .. } => source,
+            Self::Move { source, .. } | Self::Bond { source, .. } => source,
             Self::ConfigureIpv4 { interface, .. }
             | Self::ConfigureIpv6 { interface, .. }
             | Self::ConfigureDynamic { interface, .. } => interface,
@@ -248,6 +262,7 @@ impl ManagementNetworkOperation {
     pub fn recovery_address(&self) -> Option<IpAddr> {
         match self {
             Self::Move { destination, .. } => destination.address(),
+            Self::Bond { source, .. } => source.address(),
             Self::ConfigureDynamic { recovery, .. } => Some(*recovery).filter(usable_address),
             Self::ConfigureIpv4 { configuration, .. } => {
                 configuration.address.parse().ok().filter(usable_address)
@@ -268,6 +283,7 @@ impl ManagementNetworkOperation {
             && source.attached
             && self.recovery_address().is_some()
             && match self {
+                Self::Bond { operation, .. } => operation.valid(source),
                 Self::Move { destination, .. } => {
                     destination.valid()
                         && !destination.identity.management
@@ -336,6 +352,9 @@ impl ManagementNetworkOperation {
             .validate(ResourceTarget::Host(self.source().identity.host))
             .is_err()
         {
+            if matches!(self, Self::Bond { .. }) {
+                return ActionAvailability::Prerequisite { reason: "Management bond handover requires static IPv4 on an unprotected management interface, no IPv6 settings, and 2–4 plain physical members for creation. Only the management member may have IP settings. Removal requires the exact existing bond and primary member without VLAN dependencies.".into() };
+            }
             return ActionAvailability::Prerequisite{reason:"Review a changed management configuration in the installed address family and a usable recovery IP. The current primary address must be unambiguous. Moving management requires a different, already statically configured and plugged interface with a distinct address.".into()};
         }
         let Some(pool) = &i.details.pool else {
@@ -349,7 +368,17 @@ impl ManagementNetworkOperation {
                 reason: "Disable HA before changing host management networking".into(),
             };
         }
+        if let Self::Bond { source, operation } = self {
+            let availability = operation.availability(source, i);
+            if !availability.is_available() {
+                return availability;
+            }
+        }
         let sources = match self {
+            Self::Bond {
+                operation: crate::ManagementBondOperation::Create { members, .. },
+                ..
+            } => members.iter().collect(),
             Self::Move {
                 source,
                 destination,
@@ -360,7 +389,7 @@ impl ManagementNetworkOperation {
             let Some(p) = i.details.pifs.get(&expected.pif) else {
                 return ActionAvailability::Stale;
             };
-            if (if expected.topology.is_some() {
+            if (if expected.topology.is_some() || matches!(self, Self::Bond { .. }) {
                 ManagementInterface::capture(i, expected.pif)
             } else {
                 ManagementInterface::from_inventory(p)
@@ -410,6 +439,8 @@ impl ManagementNetworkOperation {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
+    #[serde(default)]
+    pub bond: Option<crate::management_bond::Baseline>,
     pub pool: crate::PoolId,
     pub host: HostId,
     pub operation: ManagementNetworkOperation,
@@ -427,7 +458,11 @@ pub(crate) struct Plan {
 }
 impl Plan {
     pub(crate) fn accepts(&self, next: &Self) -> bool {
-        self.certificate == next.certificate
+        self.bond
+            .as_ref()
+            .map(|b| next.bond.as_ref().is_some_and(|n| b.accepts(n)))
+            .unwrap_or(next.bond.is_none())
+            && self.certificate == next.certificate
             && (!self.configuration_observed || next.configuration_observed)
             && (!self.route_verified || next.route_verified)
             && self.pool == next.pool
@@ -446,6 +481,8 @@ impl Plan {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManagementNetworkEvidence {
+    #[serde(default)]
+    pub created_bond: Option<crate::ManagementBondCreated>,
     pub configuration_observed: bool,
     pub recovery_endpoint_verified: bool,
     pub recovery_endpoint: Option<Endpoint>,
@@ -458,6 +495,7 @@ pub(crate) struct Inputs {
 impl Plan {
     pub fn evidence(&self) -> ManagementNetworkEvidence {
         ManagementNetworkEvidence {
+            created_bond: self.bond.as_ref().and_then(|b| b.created),
             configuration_observed: self.configuration_observed,
             recovery_endpoint_verified: self.route_verified,
             recovery_endpoint: Some(self.recovery.clone()),

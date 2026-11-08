@@ -592,6 +592,14 @@ impl Journal {
                 if current_plan.task_uuid.is_none() {
                     current_plan.task_uuid = received.task_uuid;
                 }
+                match (&mut current_plan.bond, &received.bond) {
+                    (Some(current), Some(new)) if current.accepts(new) => {
+                        current.created = new.created
+                    }
+                    (Some(current), Some(new)) if new.accepts(current) => {}
+                    (None, None) => {}
+                    _ => return Err(Error::JournalChanged),
+                }
                 current_plan.completed |= received.completed;
                 current_plan.ended |= received.ended;
                 current_plan.configuration_observed |= received.configuration_observed;

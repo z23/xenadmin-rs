@@ -2,6 +2,8 @@
 mod interfaces;
 #[path = "management_network_ui.rs"]
 mod management;
+#[path = "management_bond_ui.rs"]
+mod management_bond;
 #[path = "network_topology_ui.rs"]
 mod topology;
 use super::*;
@@ -17,6 +19,7 @@ struct Review {
     lines: Vec<String>,
 }
 enum Form {
+    ManagementBond(Box<management_bond::Editor>),
     Management(Box<management::Editor>),
     Topology(Box<topology::Editor>),
     Interface(Box<interfaces::Editor>),
@@ -210,6 +213,13 @@ fn open_ipv4(s: &mut State, id: PifId) {
 fn form_review(s: &mut State) {
     if s.network_workspace
         .as_ref()
+        .is_some_and(|w| matches!(w.form, Form::ManagementBond(_)))
+    {
+        management_bond::prepare(s);
+        return;
+    }
+    if s.network_workspace
+        .as_ref()
         .is_some_and(|w| matches!(w.form, Form::Management(_)))
     {
         management::prepare(s);
@@ -356,7 +366,7 @@ fn form_review(s: &mut State) {
                 )
             }
             Form::Interface(editor) => interfaces::review(editor, i)?,
-            Form::Management(_) | Form::Topology(_) | Form::Browse => {
+            Form::ManagementBond(_) | Form::Management(_) | Form::Topology(_) | Form::Browse => {
                 return Err("Choose a change to review".into());
             }
         })
@@ -614,7 +624,7 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
                 .wrap_anywhere(),
             );
         if p.management == Some(true) {
-            card=card.child(caption("Host management interface. XCP-ng requires the standard 1500-byte MTU. Review recovery addressing before changing management access.",k).wrap()).child(management::buttons(p.id,enabled,k));
+            card=card.child(caption("Host management interface. XCP-ng requires the standard 1500-byte MTU. Review recovery addressing before changing management access.",k).wrap()).child(management::buttons(p.id,enabled,k)).child(management_bond::buttons(p.id,p,enabled,k));
         }
         if let (Some(expected), Some(attached)) =
             (PifIdentity::from_inventory(p), p.currently_attached)
@@ -723,6 +733,7 @@ fn form(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
         );
     }
     match &w.form {
+        Form::ManagementBond(editor) => body = body.child(management_bond::form(editor, i, k)),
         Form::Management(editor) => body = body.child(management::form(editor, i, k)),
         Form::Interface(editor) => body = body.child(interfaces::form(editor, i, k)),
         Form::Topology(editor) => body = body.child(topology::form(editor, i, k)),
@@ -1152,6 +1163,9 @@ pub(super) fn management_topology_scene(s: &mut State) {
     management::topology_scene(s);
 }
 
+pub(super) fn management_bond_scene(s: &mut State) {
+    management_bond::scene(s);
+}
 #[cfg(test)]
 mod tests {
     use super::*;

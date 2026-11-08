@@ -132,6 +132,11 @@ impl ResourceRequest {
                     "Management task identity differs from this operation",
                 ));
             }
+            if v["status"] == "success"
+                && matches!(&self.management_plan()?.operation, crate::ManagementNetworkOperation::Bond { operation, .. } if operation.creates())
+            {
+                self.record.result_reference = Some(crate::xapi::snapshot_task_result(&v)?);
+            }
             let plan = self.management_plan_mut()?;
             plan.task_uuid = Some(id);
             match v["status"].as_str() {
@@ -174,6 +179,26 @@ impl ResourceRequest {
         s: &Session,
         c: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(&self.management_plan()?.operation, crate::ManagementNetworkOperation::Bond { operation, .. } if operation.creates())
+            && self
+                .management_plan()?
+                .bond
+                .as_ref()
+                .is_some_and(|b| b.created.is_none())
+        {
+            let created = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=management::created_bond(s,&self.record)=>v?};
+            self.management_plan_mut()?
+                .bond
+                .as_mut()
+                .ok_or(Error::Journal)?
+                .created = Some(created);
+            self.project_management()?;
+            self.record = j.resource_evidence(&self.record)?;
+            self.announce().await;
+            if self.stopped_after_recovery() {
+                return Ok(());
+            }
+        }
         tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=management::verify(s,&self.record)=>v?};
         self.management_plan_mut()?.configuration_observed = true;
         self.project_management()?;
@@ -210,7 +235,7 @@ impl ResourceRequest {
         self.record.state = OperationState::Succeeded;
         self.record.progress = Some(1.0);
         self.record.can_cancel = false;
-        self.record.detail="Management configuration and the reviewed host recovery endpoint verified. Existing connections were not deliberately restarted; old interface addresses were retained.".into();
+        self.record.detail = if matches!(plan.operation, crate::ManagementNetworkOperation::Bond { .. }) { "Management bond transition and certificate-bound recovery endpoint verified. The host transferred the reviewed static IPv4 configuration; no client rollback or retry was sent." } else { "Management configuration and the reviewed host recovery endpoint verified. Existing connections were not deliberately restarted; old interface addresses were retained." }.into();
         self.save(j).await?;
         if let (Some(task), Some(expected)) =
             (self.record.task.clone(), self.management_plan()?.task_uuid)

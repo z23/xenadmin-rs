@@ -569,6 +569,18 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             view = view.child(caption(error, k).wrap().color(k.c.danger.icon));
         }
         if let Some(evidence) = &record.management_network {
+            if let Some(created) = evidence.created_bond {
+                view = view.child(
+                    caption(
+                        format!(
+                            "Created bond {} · master interface {}",
+                            created.bond, created.master
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
             view = view.child(
                 caption(
                     format!(

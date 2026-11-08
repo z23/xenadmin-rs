@@ -178,6 +178,9 @@ impl ManagementTopologyRecords {
             .map(|(r, v)| (r.as_str(), v))
             .ok_or(Error::ResourceConflict)
     }
+    pub(crate) fn records(&self, class: &str) -> &BTreeMap<String, Value> {
+        &self.store.records[class]
+    }
     pub(crate) fn pifs(&self) -> &BTreeMap<String, Value> {
         &self.store.records["pif"]
     }

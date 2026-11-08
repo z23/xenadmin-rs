@@ -27,6 +27,8 @@ enum Fault {
     SecondaryChanged,
     TopologyReadAfterCompletion,
     TopologyChangedAfterWrite,
+    BondWrongResult,
+    BondChangedAfterWrite,
 }
 struct Control {
     rows: BTreeMap<String, Value>,
@@ -246,6 +248,12 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
     .unwrap();
     let coordinator = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
     let mut records = rows(ipv6);
+    for (r, v) in &mut records {
+        if r.starts_with("OpaqueRef:PIF:") {
+            v["properties"] = json!({});
+        }
+    }
+    records.get_mut(&reference("host", 2)).unwrap()["current_operations"] = json!({});
     if fault == Fault::Redirect {
         records.insert(
             reference("host", 9),
@@ -279,14 +287,14 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
             for (reference,record) in &c.rows {batch["events"].as_array_mut().unwrap().push(json!({"class":reference.split(':').nth(1).unwrap(),"operation":"add","ref":reference,"snapshot":record}));}
             return Some(RpcReply::Json(json!({"result":batch})));
         }
-        if let Some(class)=method.strip_suffix(".get_all_records") && ["host","pool","PIF","network","task","Bond","VLAN"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_all_records") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","Cluster_host"].contains(&class) {
             if class=="PIF" && c.writes>0 && c.fault==Fault::TopologyReadAfterCompletion {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})));}
             let rows=c.rows.iter().filter(|(r,_)|r.split(':').nth(1)==Some(class)).map(|(r,v)|(r.clone(),v.clone())).collect::<serde_json::Map<_,_>>();return Some(RpcReply::Json(json!({"result":rows})));
         }
-        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["host","pool","PIF","network","task","Bond","VLAN"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","Cluster_host"].contains(&class) {
             let row=c.rows.iter().find(|(r,v)|r.split(':').nth(1)==Some(class) && v["uuid"]==request["params"][1]);return Some(RpcReply::Json(match row {Some((r,_))=>json!({"result":r}),_=>json!({"error":{"code":1,"message":"UUID_INVALID","data":[]}})}));
         }
-        if let Some(class)=method.strip_suffix(".get_record") && ["host","pool","PIF","network","task","Bond","VLAN"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_record") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","Cluster_host"].contains(&class) {
             if c.writes>0 && class=="PIF" && c.fault==Fault::ReadAfterCompletion {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})));}
             return Some(RpcReply::Json(match c.rows.get(request["params"][1].as_str().unwrap()) {Some(v)=>json!({"result":v}),_=>json!({"error":{"code":1,"message":"HANDLE_INVALID","data":[]}})}));
         }
@@ -296,13 +304,15 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
             match method {
                 "Async.host.management_reconfigure"=>{for (r,v) in &mut c.rows {if r.starts_with("OpaqueRef:PIF:"){v["management"]=json!(r==&pif);}}let address=c.rows[&pif]["IP"].clone();c.rows.get_mut(&reference("host",2)).unwrap()["address"]=address;},
                 "Async.PIF.reconfigure_ip" | "Async.PIF.reconfigure_ipv6" => configure(&mut c, &pif, &request),
+                "Async.Bond.create" | "Async.Bond.destroy" => bond_changes::change(&mut c, &request),
                 _=>panic!("unexpected write {method}"),
             }
             if c.fault==Fault::TopologyChangedAfterWrite {c.rows.get_mut(&reference("PIF",16)).unwrap()["disallow_unplug"]=json!(true);}
             if c.fault==Fault::CertificateCopied {c.rows.insert(reference("host",9),json!({"uuid":id(9),"address":"192.0.2.9"}));}
             let status=match c.fault {Fault::Failed=>"failure",Fault::Pending=>"pending",_=>"success"};
             let task=if c.fault==Fault::WrongTask {50}else{51};
-            c.rows.insert(reference("task",51),json!({"uuid":id(task),"status":status,"allowed_operations":[],"progress":1,"result":""}));
+            let result=if method=="Async.Bond.create" {format!("<value>{}</value>", reference("Bond", if c.fault==Fault::BondWrongResult {79}else{80}))} else {String::new()};
+            c.rows.insert(reference("task",51),json!({"uuid":id(task),"status":status,"allowed_operations":[],"progress":1,"result":result}));
             return Some(if c.fault==Fault::LostReply {RpcReply::Drop}else{RpcReply::Json(json!({"result":reference("task",51)}))});
         }
         None
@@ -1059,3 +1069,6 @@ async fn management_cleanup_does_not_destroy_a_rebound_foreign_task() {
 
 #[path = "management_network_topology.rs"]
 mod topology;
+
+#[path = "management_bond.rs"]
+mod bond_changes;

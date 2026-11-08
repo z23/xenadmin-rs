@@ -304,6 +304,13 @@ impl ResourceAction {
                 .with_host_dependent_steps(),
             Self::Network(op) => op.permission_requirements(),
             Self::ManagementNetwork(op) => Required::writes([match op.as_ref() {
+                crate::ManagementNetworkOperation::Bond { operation, .. } => {
+                    if operation.creates() {
+                        "Bond.create"
+                    } else {
+                        "Bond.destroy"
+                    }
+                }
                 crate::ManagementNetworkOperation::Move { .. } => "host.management_reconfigure",
                 crate::ManagementNetworkOperation::ConfigureIpv4 { .. } => "PIF.reconfigure_ip",
                 crate::ManagementNetworkOperation::ConfigureIpv6 { .. } => "PIF.reconfigure_ipv6",

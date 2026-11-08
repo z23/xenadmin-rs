@@ -176,3 +176,5 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/disk-copy-compact.png --tree artifacts/disk-copy-compact.json --scene disk-copy --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/disk-cleanup.png --tree artifacts/disk-cleanup.json --scene disk-cleanup --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/disk-cleanup-compact.png --tree artifacts/disk-cleanup-compact.json --scene disk-cleanup --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-bond.png --tree artifacts/management-bond.json --scene management-bond --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-bond-compact.png --tree artifacts/management-bond-compact.json --scene management-bond --theme dark --size 513x652 --scale 1 --at 1

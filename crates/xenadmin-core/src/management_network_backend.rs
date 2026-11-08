@@ -1,3 +1,5 @@
+#[path = "management_bond_backend.rs"]
+mod bond;
 use super::{ResourceAction, ResourceOperationRecord, ResourceTarget, network, xapi};
 use crate::{
     Error, HostId, ManagementDynamicMode, ManagementInterface, ManagementNetworkOperation,
@@ -5,6 +7,7 @@ use crate::{
     management_network::{Plan, canonical_ipv6},
     xapi::Session,
 };
+pub(super) use bond::created as created_bond;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 fn require(condition: bool, message: &'static str) -> Result<(), Error> {
@@ -43,6 +46,29 @@ pub(crate) fn validate_record(r: &ResourceOperationRecord) -> Result<(), Error> 
         return Ok(());
     };
     p.operation.validate(r.target)?;
+    require(
+        match (&p.operation, &p.bond) {
+            (ManagementNetworkOperation::Bond { source, operation }, Some(b)) => {
+                b.valid_for(source, operation)
+            }
+            (ManagementNetworkOperation::Bond { .. }, None) | (_, Some(_)) => false,
+            (_, None) => true,
+        },
+        "Management bond baseline is unavailable or invalid",
+    )?;
+    if let Some(created) = p.bond.as_ref().and_then(|b| b.created) {
+        require(
+            p.completed && r.result_reference.is_some() && !created.master.uuid().is_nil(),
+            "Management bond created identity lacks completion evidence",
+        )?;
+    }
+    if r.result_reference.is_some() {
+        require(
+            matches!(&p.operation, ManagementNetworkOperation::Bond { operation, .. } if operation.creates())
+                && p.completed,
+            "Unexpected management result reference",
+        )?;
+    }
     require(
         operation(r)? == &p.operation
             && r.pool == p.pool
@@ -304,6 +330,7 @@ async fn graph(
                 source.ipv4.dns = source.ipv6.dns.clone();
             }
             ManagementNetworkOperation::ConfigureDynamic { .. } => {}
+            ManagementNetworkOperation::Bond { .. } => return Err(Error::InvalidResourceCommand),
         }
     } else if let ManagementNetworkOperation::Move {
         destination: dest, ..
@@ -424,7 +451,12 @@ pub(super) async fn unique_certificate(
 pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<Plan, Error> {
     let op = operation(r)?;
     op.validate(r.target)?;
-    graph(s, r, false).await?;
+    let bond = if matches!(op, ManagementNetworkOperation::Bond { .. }) {
+        Some(bond::before(s, r).await?.0)
+    } else {
+        graph(s, r, false).await?;
+        None
+    };
     let recovery = op.endpoint(&s.options().endpoint)?;
     require(
         recovery.as_str().starts_with("https://"),
@@ -438,6 +470,7 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
         .map(|v| network::uuid(v).map(Into::into))
         .collect::<Result<BTreeSet<_>, _>>()?;
     Ok(Plan {
+        bond,
         pool: r.pool,
         host,
         operation: op.clone(),
@@ -458,8 +491,27 @@ pub(super) async fn arguments(
     s: &Session,
     r: &ResourceOperationRecord,
 ) -> Result<(&'static str, Vec<Value>), Error> {
+    if let ManagementNetworkOperation::Bond { operation, .. } = operation(r)? {
+        let (fresh, args) = bond::before(s, r).await?;
+        require(
+            r.management_network_plan
+                .as_ref()
+                .and_then(|p| p.bond.as_ref())
+                == Some(&fresh),
+            "Bond creation baseline or interface properties changed before dispatch",
+        )?;
+        return Ok((
+            if operation.creates() {
+                "Async.Bond.create"
+            } else {
+                "Async.Bond.destroy"
+            },
+            args,
+        ));
+    }
     let refs = graph(s, r, false).await?;
     Ok(match operation(r)? {
+        ManagementNetworkOperation::Bond { .. } => unreachable!(),
         ManagementNetworkOperation::Move { .. } => {
             ("Async.host.management_reconfigure", vec![json!(refs[1])])
         }
@@ -517,5 +569,9 @@ pub(super) async fn arguments(
     })
 }
 pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(), Error> {
-    graph(s, r, true).await.map(|_| ())
+    if matches!(operation(r)?, ManagementNetworkOperation::Bond { .. }) {
+        bond::verify(s, r).await
+    } else {
+        graph(s, r, true).await.map(|_| ())
+    }
 }

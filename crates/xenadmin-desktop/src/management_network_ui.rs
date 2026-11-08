@@ -14,6 +14,11 @@ pub(super) struct Editor {
     automatic: Option<ManagementDynamicMode>,
     recovery: TextEdit,
 }
+impl Editor {
+    pub(super) fn source_id(&self) -> PifId {
+        self.source.pif
+    }
+}
 fn editor(s: &mut State) -> &mut Editor {
     let Form::Management(editor) = &mut edit(s).form else {
         unreachable!()
@@ -198,6 +203,9 @@ fn review(v: &Editor, i: &Inventory) -> Result<(ManagementNetworkOperation, Vec<
         }
     }
     match &op {
+        ManagementNetworkOperation::Bond { .. } => {
+            return Err("Review management bonds in the bond editor".into());
+        }
         ManagementNetworkOperation::Move { destination, .. } => {
             lines.push(format!(
                 "Destination: {} ({}) · network {}",

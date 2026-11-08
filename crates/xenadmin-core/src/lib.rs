@@ -1,5 +1,7 @@
 mod disk_administration;
 pub use disk_administration::{DiskConsumer, DiskOperation, OwnedDiskSource, ReviewedDisk};
+mod management_bond;
+pub use management_bond::{ManagementBondCreated, ManagementBondOperation};
 mod management_network;
 mod management_topology;
 pub use management_network::{

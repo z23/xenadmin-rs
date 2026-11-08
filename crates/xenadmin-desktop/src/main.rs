@@ -2295,6 +2295,7 @@ fn main() {
             ("management-network", network_admin::management_scene),
             ("management-dhcp", network_admin::management_dynamic_scene),
             ("management-vlan", network_admin::management_topology_scene),
+            ("management-bond", network_admin::management_bond_scene),
             ("host-administration", host_admin::scene),
             ("host-support", host_support_view::scene),
             ("host-restore", host_support_view::restore_scene),

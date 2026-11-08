@@ -1423,6 +1423,7 @@ fn management_record(pool: PoolId) -> ResourceOperationRecord {
     r.steps[0].label = op.label().into();
     let endpoint = crate::Endpoint::parse("https://192.0.2.10").unwrap();
     let p = crate::management_network::Plan {
+        bond: None,
         pool,
         host,
         recovery: op.endpoint(&endpoint).unwrap(),
@@ -1543,4 +1544,139 @@ fn alarm_refresh_receipts_are_durable_monotonic_and_bound_to_reviewed_hosts() {
     let mut invalid = row.clone();
     invalid.alarm_refresh_receipts.push(host);
     assert!(journal.resource_save(&mut invalid).is_err());
+}
+fn management_bond_record(pool: PoolId) -> ResourceOperationRecord {
+    let mut r = management_record(pool);
+    let mut source = r
+        .management_network_plan
+        .as_ref()
+        .unwrap()
+        .operation
+        .source()
+        .clone();
+    source.topology = None;
+    let mut other = source.clone();
+    other.pif = uuid::Uuid::new_v4().into();
+    other.identity.management = false;
+    other.identity.network = uuid::Uuid::new_v4().into();
+    other.ipv4.mode = crate::Ipv4Mode::None;
+    other.ipv4.address.clear();
+    other.ipv4.netmask.clear();
+    other.ipv4.gateway.clear();
+    other.ipv4.dns.clear();
+    let members = vec![source.clone(), other];
+    let pifs = members.iter().map(|p| p.pif).collect();
+    let operation = crate::ManagementNetworkOperation::Bond {
+        source,
+        operation: crate::ManagementBondOperation::Create {
+            members,
+            network: uuid::Uuid::new_v4().into(),
+            mode: crate::BondMode::ActiveBackup,
+            hash: None,
+        },
+    };
+    r.action = ResourceAction::ManagementNetwork(Box::new(operation.clone()));
+    r.steps[0].label = operation.label().into();
+    let plan = r.management_network_plan.as_mut().unwrap();
+    plan.operation = operation;
+    plan.recovery = plan.operation.endpoint(&plan.original_endpoint).unwrap();
+    plan.bond = Some(crate::management_bond::Baseline {
+        pifs,
+        bonds: Default::default(),
+        created: None,
+        properties: Default::default(),
+    });
+    r.management_network = Some(plan.evidence());
+    r
+}
+#[test]
+fn management_bond_baseline_is_private_scope_bound_and_created_evidence_is_monotonic() {
+    for corrupt in [
+        "missing_member",
+        "created_existing",
+        "properties",
+        "unexpected",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let j = Journal::open(dir.path()).unwrap();
+        let pool = PoolId::from(uuid::Uuid::new_v4());
+        let mut r = management_bond_record(pool);
+        j.resource_admit(&mut r).unwrap();
+        let payload: String =
+            j.0.query_row(
+                "SELECT payload FROM resource_operations WHERE id=?1",
+                [r.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        match corrupt {
+            "missing_member" => v["management_network_plan"]["bond"]["pifs"] = json!([]),
+            "created_existing" => {
+                let p = r.management_network_plan.as_ref().unwrap();
+                v["management_network_plan"]["bond"]["created"] =
+                    json!({"bond":uuid::Uuid::new_v4(),"master":p.operation.source().pif});
+            }
+            "properties" => {
+                v["management_network_plan"]["bond"]["properties"] =
+                    json!({"oversized":"x".repeat(129)})
+            }
+            "unexpected" => {
+                v["management_network_plan"]["bond"] = serde_json::Value::Null;
+            }
+            _ => unreachable!(),
+        };
+        j.0.execute(
+            "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+            rusqlite::params![v.to_string(), r.id.to_string()],
+        )
+        .unwrap();
+        assert!(j.resource_load(r.id).is_err(), "{corrupt}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let j = Journal::open(dir.path()).unwrap();
+    let mut r = management_bond_record(uuid::Uuid::new_v4().into());
+    j.resource_admit(&mut r).unwrap();
+    r.state = OperationState::Dispatching;
+    r.steps[0].state = StepState::Dispatching;
+    r.management_network_plan.as_mut().unwrap().registered = true;
+    r.management_network = Some(r.management_network_plan.as_ref().unwrap().evidence());
+    j.resource_save(&mut r).unwrap();
+    let mut late = r.clone();
+    r.state = OperationState::OutcomeUnknown;
+    j.resource_save(&mut r).unwrap();
+    late.task = Some("OpaqueRef:bond-task".into());
+    late.result_reference = Some("OpaqueRef:new-bond".into());
+    let p = late.management_network_plan.as_mut().unwrap();
+    p.task_uuid = Some(uuid::Uuid::new_v4().into());
+    p.completed = true;
+    p.ended = true;
+    let created = crate::ManagementBondCreated {
+        bond: uuid::Uuid::new_v4().into(),
+        master: uuid::Uuid::new_v4().into(),
+    };
+    p.bond.as_mut().unwrap().created = Some(created);
+    late.management_network = Some(p.evidence());
+    let mut merged = j.resource_evidence(&late).unwrap();
+    assert_eq!(merged.state, OperationState::OutcomeUnknown);
+    assert!(merged.interrupted);
+    assert_eq!(
+        merged.management_network.as_ref().unwrap().created_bond,
+        Some(created)
+    );
+    assert!(
+        !serde_json::to_string(&merged)
+            .unwrap()
+            .contains("OpaqueRef:")
+    );
+    merged
+        .management_network_plan
+        .as_mut()
+        .unwrap()
+        .bond
+        .as_mut()
+        .unwrap()
+        .created = None;
+    merged.management_network = Some(merged.management_network_plan.as_ref().unwrap().evidence());
+    assert!(j.resource_save(&mut merged).is_err());
 }
