@@ -141,7 +141,8 @@ pub(super) async fn prepare(
         ResourceAction::SnapshotPolicy(_) => unreachable!(),
         ResourceAction::Appliance(_) => unreachable!(),
         ResourceAction::Pool(_) => unreachable!(),
-        ResourceAction::AuthenticatedStorage { .. }
+        ResourceAction::SnapshotPreviewUpload(_)
+        | ResourceAction::AuthenticatedStorage { .. }
         | ResourceAction::CleanupStorageCredentials { .. }
         | ResourceAction::RootPassword(_)
         | ResourceAction::HostPower(_)
@@ -453,7 +454,8 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         ResourceAction::SnapshotPolicy(_) => super::snapshot_policy::reconciliation_checks(record),
         ResourceAction::Appliance(_) => super::appliance::reconciliation_checks(record),
         ResourceAction::Pool(_) => vec![Check::Pool],
-        ResourceAction::AuthenticatedStorage { .. }
+        ResourceAction::SnapshotPreviewUpload(_)
+        | ResourceAction::AuthenticatedStorage { .. }
         | ResourceAction::CleanupStorageCredentials { .. }
         | ResourceAction::RootPassword(_)
         | ResourceAction::HostPower(_)

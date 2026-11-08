@@ -332,6 +332,7 @@ async fn create_disk_and_memory_snapshots_save_description_on_new_identity() {
             result.created_snapshot,
             Some(SnapshotId::parse(&uuid(10)).unwrap())
         );
+        assert!(result.verified_snapshot_creation(result.created_snapshot.unwrap()));
         assert_eq!(
             r.lock().unwrap()["OpaqueRef:VM:new"]["name_description"],
             "Upgrade rollback\nTicket 42"

@@ -22,6 +22,8 @@ mod pool_join_worker;
 mod power_batch_worker;
 #[path = "root_password_worker.rs"]
 mod root_password_worker;
+#[path = "snapshot_capture_worker.rs"]
+mod snapshot_capture_worker;
 #[path = "storage_auth_worker.rs"]
 mod storage_auth_worker;
 #[path = "transfer_disk_worker.rs"]
@@ -40,6 +42,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
+    pub(crate) snapshot_preview_image: Option<crate::SnapshotPreviewImage>,
     pub(crate) management: Option<crate::management_network::Inputs>,
     pub(crate) storage_credentials: Option<crate::StorageCredentials>,
     pub(crate) root_password: Option<crate::RootPassword>,
@@ -61,6 +64,7 @@ impl ResourceRequest {
         sender: watch::Sender<Arc<ResourceOperationRecord>>,
     ) -> Self {
         Self {
+            snapshot_preview_image: None,
             management: None,
             sensitive: None,
             cloud_media: None,
@@ -79,6 +83,7 @@ impl ResourceRequest {
     pub(crate) fn tracking(record: ResourceOperationRecord) -> Self {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
+            snapshot_preview_image: None,
             management: None,
             sensitive: None,
             cloud_media: None,
@@ -269,6 +274,14 @@ impl ResourceRequest {
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.execute_join(journal, session, cancel).await;
         }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::SnapshotPreviewUpload(_)
+        ) {
+            return self
+                .execute_snapshot_preview(journal, session, cancel)
+                .await;
+        }
         if matches!(self.record.action, super::ResourceAction::RootPassword(_)) {
             return self.execute_root_password(journal, session, cancel).await;
         }
@@ -427,6 +440,14 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(
+            self.record.action,
+            super::ResourceAction::SnapshotPreviewUpload(_)
+        ) {
+            return self
+                .recheck_snapshot_preview(journal, session, cancel)
+                .await;
+        }
         if matches!(
             self.record.action,
             super::ResourceAction::ManagementNetwork(_)
@@ -937,6 +958,7 @@ impl ResourceRequest {
             self.record.action,
             super::ResourceAction::PowerBatch(_)
                 | super::ResourceAction::DeleteHostCrashdump(_)
+                | super::ResourceAction::SnapshotPreviewUpload(_)
                 | super::ResourceAction::RootPassword(_)
                 | super::ResourceAction::ManagementNetwork(_)
                 | super::ResourceAction::HostPower(_)

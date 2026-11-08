@@ -248,6 +248,11 @@ fn current(s: &State) -> bool {
     s.can_mutate()
 }
 pub(super) fn begin_create(s: &mut State) {
+    if s.snapshot_capture.busy() {
+        return;
+    }
+    s.snapshot_capture.opt_in = false;
+    s.snapshot_capture.message = None;
     let result = (|| {
         let vm = s.snapshot_view.ok_or(xenadmin_core::Error::Stale)?;
         let name = s
@@ -357,6 +362,9 @@ pub(super) fn begin_restore(s: &mut State) {
     s.error = result.err().map(|error| error.to_string());
 }
 fn submit(s: &mut State) {
+    if s.snapshot_capture.busy() {
+        return;
+    }
     let command = match &s.snapshot_dialog {
         Some(Dialog::Create {
             target: Target::Live(vm),
@@ -443,6 +451,12 @@ fn submit(s: &mut State) {
         },
         _ => return,
     };
+    if s.snapshot_capture.opt_in
+        && let Some(Dialog::Create { id, .. }) = s.snapshot_dialog
+    {
+        snapshot_capture::begin(s, command, id);
+        return;
+    }
     s.submit_command(command);
     if s.error.is_none() {
         s.snapshot_dialog = None;
@@ -501,6 +515,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             },
             k,
         ));
+    }
+    if let Some(message) = &s.snapshot_capture.message {
+        content = content.child(caption(message, k).wrap().role("status"));
     }
     if s.demo {
         content = content.child(
@@ -767,6 +784,15 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(caption(if s.snapshot_memory {"Captures disks and guest memory. The VM may pause while memory is saved."}else{"Guest memory is not included. For application-consistent data, quiesce applications or shut down the guest first."},k).wrap())
                 .child(TextInput::new(&s.snapshot_name).label("Snapshot name").placeholder("Snapshot name").on_edit(|s:&mut State|&mut s.snapshot_name).build(k).key("snapshot-name"))
                 .child(caption("Application quiescing is not available on XCP-ng 8.1 and later.", k).wrap());
+            body = body.child(Checkbox::new(s.snapshot_capture.opt_in).label("Save a console preview with the snapshot")
+                .disabled(s.snapshot_capture.busy() || (!s.demo && !snapshot_capture::available(s,*id)))
+                .on_toggle(|s:&mut State|s.snapshot_capture.opt_in = !s.snapshot_capture.opt_in).build(k).key("snapshot-capture-option"))
+                .child(caption("Optional: captures the console before creation and stores the image on the pool. It may contain sensitive guest information. Snapshot and preview outcomes are reported separately.",k).wrap());
+            if s.snapshot_capture.opt_in
+                && let Some(message) = &s.snapshot_capture.message
+            {
+                body = body.child(caption(message, k).wrap().role("status"));
+            }
             let selected_mode_available = if s.snapshot_memory {
                 memory_available(s, *id)
             } else {
@@ -1079,7 +1105,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .child(
                 Button::new("Cancel")
                     .variant(ButtonVariant::Ghost)
-                    .on_press(|s: &mut State| s.snapshot_dialog = None)
+                    .on_press(snapshot_capture::cancel_dialog)
                     .build(k)
                     .key("cancel-snapshot"),
             )
@@ -1092,7 +1118,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                             ButtonVariant::Outline
                         },
                     )
-                    .disabled(!valid || !live || !current(s))
+                    .disabled(!valid || !live || !current(s) || s.snapshot_capture.busy())
                     .on_press(submit)
                     .build(k)
                     .key("confirm-snapshot"),
@@ -1106,7 +1132,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .absolute(0.0, 0.0)
         .center()
         .fill(rune::Color::BLACK.alpha(0.5))
-        .modal(false, |s: &mut State| s.snapshot_dialog = None)
+        .modal(false, snapshot_capture::cancel_dialog)
         .child(body)
 }
 

@@ -28,6 +28,7 @@ mod resource_details;
 mod search_view;
 mod session_permissions_view;
 mod settings;
+mod snapshot_capture;
 mod snapshot_inspection;
 mod snapshot_policy_view;
 mod storage_view;
@@ -206,6 +207,7 @@ struct State {
     snapshot_rows: Vec<xenadmin_core::Snapshot>,
     snapshot_table: TableState,
     snapshot_dialog: Option<vm_snapshots::Dialog>,
+    snapshot_capture: snapshot_capture::Workflow,
     snapshot_name: TextEdit,
     snapshot_memory: bool,
     snapshot_description: TextEdit,
@@ -321,6 +323,7 @@ fn init() -> State {
         snapshot_rows: Vec::new(),
         snapshot_table: TableState::new().key("snapshots-table"),
         snapshot_dialog: None,
+        snapshot_capture: Default::default(),
         snapshot_name: TextEdit::new(""),
         snapshot_memory: false,
         snapshot_description: TextEdit::new(""),
@@ -818,6 +821,7 @@ fn merge_operation_rows(
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= snapshot_inspection::poll(s);
+    changed |= snapshot_capture::poll(s, tx);
     changed |= search_view::poll(s);
     changed |= resource_admin::poll(s);
     changed |= storage_view::poll(s);
@@ -2284,6 +2288,7 @@ fn main() {
             ("snapshot-information", snapshot_inspection::scene),
             ("snapshot-restore", vm_snapshots::restore_scene),
             ("snapshot-edit", vm_snapshots::edit_scene),
+            ("snapshot-capture", snapshot_capture::scene),
             ("connections", |s| profiles_view::scene(s, false)),
             ("connection-trust", |s| profiles_view::trust_scene(s, false)),
             ("certificate-review", |s| {

@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::Notify;
+use xenadmin_core::{OperationId, OperationState};
 
 async fn preview_mock(block: Arc<AtomicBool>, entered: Arc<Notify>, release: Arc<Notify>) -> Mock {
     mock_overridden(override_rpc(move |r|{
@@ -94,4 +95,66 @@ async fn snapshot_preview_pending_read_is_cancelled_by_connection_retirement() {
     assert!(result(&query).await.is_err());
     release.notify_one();
     assert_eq!(server.mutations.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn snapshot_upload_requires_write_access_generation_and_local_creation_evidence() {
+    fn image() -> xenadmin_core::SnapshotPreviewImage {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&[10, 20, 30, 255])
+                .unwrap();
+        }
+        xenadmin_core::SnapshotPreviewImage::from_png(bytes).unwrap()
+    }
+    let server = preview_mock(Default::default(), Default::default(), Default::default()).await;
+    let backend = Backend::start().unwrap();
+    let mut options = ConnectionOptions::new(server.endpoint.clone());
+    options.read_only = true;
+    let connection = backend.connect(
+        options.clone(),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = inventory.guests().next().unwrap().id;
+    let snapshot = xenadmin_core::SnapshotId::parse(SNAPSHOT_UUID).unwrap();
+    let observed = connection.latest().observe_snapshot(vm, snapshot).unwrap();
+    assert!(matches!(
+        connection.upload_snapshot_preview(
+            OperationId::new(),
+            observed,
+            OperationId::new(),
+            image()
+        ),
+        Err(xenadmin_core::Error::ReadOnly)
+    ));
+    options.read_only = false;
+    let other_backend = Backend::start().unwrap();
+    let other = other_backend.connect(options, Credentials::new("root".into(), "fixture".into()));
+    other.wait_ready(Duration::from_secs(3)).await.unwrap();
+    assert!(matches!(
+        other.upload_snapshot_preview(OperationId::new(), observed, OperationId::new(), image()),
+        Err(xenadmin_core::Error::Stale)
+    ));
+    let fresh = other.latest().observe_snapshot(vm, snapshot).unwrap();
+    let upload = other
+        .upload_snapshot_preview(OperationId::new(), fresh, OperationId::new(), image())
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !upload.latest().state.terminal() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(upload.latest().state, OperationState::Rejected);
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 0);
+    connection.close().await;
+    other.close().await;
 }

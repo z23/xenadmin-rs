@@ -5063,6 +5063,7 @@ dependencies = [
  "flate2",
  "http",
  "hyper-util",
+ "png 0.18.1",
  "rcgen",
  "reqwest",
  "roxmltree",

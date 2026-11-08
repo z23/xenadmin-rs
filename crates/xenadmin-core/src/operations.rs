@@ -425,6 +425,39 @@ pub struct OperationRecord {
     pub steps: Vec<crate::OperationStep>,
 }
 impl OperationRecord {
+    pub(crate) fn verified_snapshot_creation(&self, snapshot: crate::SnapshotId) -> bool {
+        use crate::snapshot_workflow::Step;
+        let OperationAction::Snapshot(SnapshotOperation::Workflow { operation }) = &self.action
+        else {
+            return false;
+        };
+        let Some(plan) = &self.snapshot_workflow else {
+            return false;
+        };
+        self.state == OperationState::Succeeded
+            && !self.cancel_requested
+            && self.created_snapshot == Some(snapshot)
+            && matches!(operation, crate::SnapshotWorkflow::Create { .. })
+            && plan.operation == *operation
+            && plan.created == Some(snapshot)
+            && !plan.baseline.iter().any(|id| id.uuid() == snapshot.uuid())
+            && plan.steps == [Step::Create, Step::Description]
+            && plan.evidence.len() == 2
+            && plan.evidence.iter().all(|e| e.completed)
+            && plan.evidence[0]
+                .task
+                .as_ref()
+                .is_some_and(|r| crate::snapshots::reference(&json!(r)).is_ok())
+            && plan.evidence[0]
+                .result
+                .as_ref()
+                .is_some_and(|r| crate::snapshots::reference(&json!(r)).is_ok())
+            && self.steps.len() == 2
+            && self
+                .steps
+                .iter()
+                .all(|s| s.state == crate::StepState::Verified)
+    }
     fn valid_recovery_plan(&self) -> bool {
         match (&self.action, &self.recovery_plan) {
             (OperationAction::Recovery(_), Some(plan)) => plan.valid(self),
@@ -530,6 +563,7 @@ pub enum OperationControl {
     AcknowledgeUnknown,
 }
 
+#[derive(Clone)]
 pub struct Operation {
     receiver: watch::Receiver<Arc<OperationRecord>>,
     runtime: tokio::runtime::Handle,
@@ -2192,3 +2226,6 @@ impl OperationRecord {
         None
     }
 }
+#[cfg(test)]
+#[path = "snapshot_capture_tests.rs"]
+mod snapshot_capture_tests;

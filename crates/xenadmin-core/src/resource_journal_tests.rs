@@ -5,6 +5,7 @@ use crate::{
 
 fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
+        snapshot_preview_plan: None,
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
         disk_plan: None,

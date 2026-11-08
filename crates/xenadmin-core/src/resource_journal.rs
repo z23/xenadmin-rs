@@ -125,6 +125,11 @@ impl Journal {
                 .filter(|v| !v.is_null())
                 .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
                 .transpose()?;
+            let snapshot_preview_plan = payload
+                .get("snapshot_preview_plan")
+                .filter(|v| !v.is_null())
+                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                .transpose()?;
             let root_password_plan = payload
                 .get("root_password_plan")
                 .filter(|v| !v.is_null())
@@ -206,6 +211,7 @@ impl Journal {
             record.host_plan = host_plan;
             record.host_power_plan = host_power_plan;
             record.root_password_plan = root_password_plan;
+            record.snapshot_preview_plan = snapshot_preview_plan;
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
             record.cross_pool_plan = cross_pool_plan;
@@ -226,6 +232,7 @@ impl Journal {
             crate::host_power::validate_record(&record)?;
             super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::root_password::validate_record(&record)?;
+            crate::snapshot_capture::validate_record(&record)?;
             super::management::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
             crate::disk_administration::validate_record(&record)?;
@@ -252,6 +259,7 @@ impl Journal {
         }
         crate::host_power::validate_record(record)?;
         crate::root_password::validate_record(record)?;
+        crate::snapshot_capture::validate_record(record)?;
         crate::storage_auth::validate_record(record)?;
         crate::disk_administration::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
@@ -261,6 +269,14 @@ impl Journal {
             if old.crashdump_deletion.as_ref().is_some_and(|p| {
                 record
                     .crashdump_deletion
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
+            }
+            if old.snapshot_preview_plan.as_ref().is_some_and(|p| {
+                record
+                    .snapshot_preview_plan
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
@@ -408,6 +424,10 @@ impl Journal {
             (
                 "crashdump_deletion",
                 serde_json::to_value(&record.crashdump_deletion),
+            ),
+            (
+                "snapshot_preview_plan",
+                serde_json::to_value(&record.snapshot_preview_plan),
             ),
             (
                 "root_password_plan",

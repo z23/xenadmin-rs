@@ -402,3 +402,6 @@ pub use alarm_policies::{
     AlarmEmailConfiguration, AlarmEmailSettings, AlarmMetric, AlarmOperation, AlarmPolicy,
     AlarmPolicyChange, AlarmRule,
 };
+
+mod snapshot_capture;
+pub use snapshot_capture::{SnapshotPreviewImage, SnapshotPreviewUpload};

@@ -701,6 +701,32 @@ impl Connection {
             .map_err(|_| Error::Busy)?;
         Ok(operation)
     }
+    pub fn upload_snapshot_preview(
+        &self,
+        id: crate::OperationId,
+        snapshot: crate::ObservedSnapshot,
+        source: crate::OperationId,
+        image: crate::SnapshotPreviewImage,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let latest = self.latest();
+        if latest.observe_snapshot(snapshot.vm, snapshot.id)? != snapshot {
+            return Err(Error::Stale);
+        }
+        let parent = latest.observe_resource(crate::ResourceTarget::Vm(snapshot.vm))?;
+        let action =
+            crate::ResourceAction::SnapshotPreviewUpload(image.descriptor(source, snapshot.id));
+        action.validate(parent.target)?;
+        let (handle, mut request) =
+            crate::resources::channel(id, parent, action, self.runtime.clone());
+        request.snapshot_preview_image = Some(image);
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn change_pool_root_password(
         &self,
         id: crate::OperationId,

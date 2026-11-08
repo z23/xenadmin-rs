@@ -10,6 +10,8 @@ mod host_power_journal;
 pub(crate) mod management;
 #[path = "root_password_journal.rs"]
 mod root_password_journal;
+#[path = "snapshot_capture_journal.rs"]
+mod snapshot_capture_journal;
 #[path = "storage_auth_backend.rs"]
 mod storage_auth_backend;
 #[path = "storage_auth_journal.rs"]
@@ -230,6 +232,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    SnapshotPreviewUpload(crate::SnapshotPreviewUpload),
     Alarm(crate::AlarmOperation),
     DeleteHostCrashdump(crate::HostCrashdump),
     Disk(crate::DiskOperation),
@@ -298,6 +301,9 @@ impl ResourceAction {
             }]),
             Self::DeleteHostCrashdump(_) => Required::writes(["host_crashdump.destroy"]),
             Self::Disk(op) => op.permission_requirements(),
+            Self::SnapshotPreviewUpload(_) => {
+                Required::writes(["VM.create_new_blob"]).with_host_dependent_steps()
+            }
             Self::Storage(op) => op.permission_requirements(),
             Self::AuthenticatedStorage { operation, .. } => operation
                 .permission_requirements()
@@ -360,6 +366,7 @@ impl ResourceAction {
             Self::Alarm(op) => op.label(),
             Self::DeleteHostCrashdump(_) => "Delete retained host crashdump",
             Self::Disk(op) => op.label(),
+            Self::SnapshotPreviewUpload(_) => "Attach snapshot preview",
             Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
             Self::PowerBatch(_) => "Power actions on selected VMs",
@@ -398,6 +405,7 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::SnapshotPreviewUpload(upload) => upload.valid(target),
             Self::Alarm(op) => return op.validate(target),
             Self::DeleteHostCrashdump(dump) => return crashdump::validate_command(target, dump),
             Self::Disk(op) => return op.validate(target),
@@ -639,6 +647,8 @@ impl ResourceCommand {
 pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) crashdump_deletion: Option<crashdump::Plan>,
+    #[serde(skip)]
+    pub(crate) snapshot_preview_plan: Option<crate::snapshot_capture::Plan>,
     #[serde(default)]
     pub(crate) alarm_refresh_receipts: Vec<HostId>,
     #[serde(skip)]
@@ -791,6 +801,7 @@ pub(crate) fn channel(
     runtime: tokio::runtime::Handle,
 ) -> (ResourceOperation, ResourceRequest) {
     let record = ResourceOperationRecord {
+        snapshot_preview_plan: None,
         alarm_refresh_receipts: Vec::new(),
         crashdump_deletion: None,
         disk_plan: None,
