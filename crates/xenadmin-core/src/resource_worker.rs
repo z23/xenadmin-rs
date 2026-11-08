@@ -236,6 +236,14 @@ impl ResourceRequest {
         if self.record.task.is_some() && !self.record.storage_trim_succeeded {
             return self.track(journal, session, cancel).await;
         }
+        if matches!(self.record.action, super::ResourceAction::Storage(_))
+            && self.record.result_reference.is_none()
+            && !self.record.storage_trim_succeeded
+        {
+            return Err(Error::Protocol(
+                "storage task identity is unavailable; matching resource state cannot establish asynchronous completion",
+            ));
+        }
         if matches!(
             self.record.action,
             super::ResourceAction::ScanStorage | super::ResourceAction::Network(_)
@@ -384,6 +392,28 @@ impl ResourceRequest {
             self.record.can_cancel = task["allowed_operations"]
                 .as_array()
                 .is_some_and(|ops| ops.iter().any(|op| op == "cancel"));
+            if (matches!(&self.record.action, super::ResourceAction::Storage(operation) if operation.creates_reference())
+                || matches!(&self.record.action,super::ResourceAction::Network(operation) if operation.creates()))
+                && matches!(task["status"].as_str(), Some("failure" | "cancelled"))
+            {
+                let code = task["error_info"]
+                    .as_array()
+                    .and_then(|values| values.first())
+                    .and_then(|value| value.as_str())
+                    .map(crate::xapi::safe_error_code);
+                self.record.state = OperationState::OutcomeUnknown;
+                self.record.can_cancel = false;
+                self.record.detail = match code {
+                    Some(code) => format!("Storage provisioning task failed: {code}. Partial resources may remain; inspect before acknowledging the unknown outcome"),
+                    None => "Storage provisioning task was cancelled. Partial resources may remain; inspect before acknowledging the unknown outcome".into(),
+                };
+                for step in &mut self.record.steps {
+                    step.state = StepState::OutcomeUnknown;
+                    step.detail = self.record.detail.clone();
+                }
+                // Keep the task and pool reservation: failure/cancellation does not prove cleanup.
+                return self.save(journal).await;
+            }
             match task["status"].as_str() {
                 Some("success") => {
                     if let super::ResourceAction::Network(op) = &self.record.action {

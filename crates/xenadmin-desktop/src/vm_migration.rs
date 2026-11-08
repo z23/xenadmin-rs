@@ -485,6 +485,10 @@ pub(super) fn scene(s: &mut State) {
             i.details.pbds.insert(
                 p,
                 xenadmin_core::StorageAttachment {
+                    location: None,
+                    requires_credentials: false,
+                    multipathed: None,
+                    paths: Vec::new(),
                     id: p,
                     host: Some(*host),
                     sr: Some(SrId::from(sr.uuid)),

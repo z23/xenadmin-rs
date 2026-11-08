@@ -42,7 +42,11 @@ admission guard with VM and infrastructure operations. Each command has one host
 The journal records dispatch before submission and retains private task/result references.
 Creation checks a pre-existing UUID baseline, returned identity, backend/metadata and
 attachment topology; PBD creation also uses an operation marker and verifies host/SR/config.
-Task result references survive a failed verification read. Rechecking uses saved evidence
+Task result references survive a failed verification read. Missing task identity cannot be
+replaced by matching attachment state or object absence: asynchronous completion remains
+unknown. Creation tasks reporting failure or cancellation also remain unknown because
+partial resources may remain; their tasks and pool reservation are retained for inspection.
+Rechecking uses saved evidence
 without repeating a creation or completing an unsubmitted attachment action. A lost task
 reply without sufficient result identity stays unknown and holds the local reservation.
 
@@ -96,3 +100,7 @@ These gaps remain open in the [retained parity ledger](../PARITY-IMPLEMENTATION.
   methods must not be gated on nonexistent SR_CREATE/SR_ATTACH/SR_DELETE capability flags.
 - Reference XenAdmin `SrCreateAction.cs`, `SrIntroduceAction.cs`, `SrRepairAction.cs`,
   `SrTrimAction.cs` and `PBD.cs` were consulted for behavior. Their source was not copied.
+
+Recovery follow-up: two additional RPC fixtures cover lost plug/unplug/removal replies with
+already-matching server state, plus failed/cancelled creation leaving partial resources.
+Both retain unknown outcomes and pool reservations without replay or automatic cleanup.

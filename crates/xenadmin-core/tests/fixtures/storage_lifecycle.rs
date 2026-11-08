@@ -20,6 +20,8 @@ enum Fault {
     DefaultStorage,
     SlowProbe,
     ProbeError,
+    TaskFailure,
+    TaskCancelled,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn nfs() -> StorageLocation {
@@ -106,6 +108,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             return Some(if fault==Fault::DropReply{RpcReply::Drop}else{RpcReply::Json(json!({"result":"OpaqueRef:storage-task"}))});
         }
         if method=="task.get_record" {
+            if fault==Fault::TaskFailure || fault==Fault::TaskCancelled {return Some(RpcReply::Json(json!({"result":{"status":if fault==Fault::TaskFailure{"failure"}else{"cancelled"},"progress":"0.5","allowed_operations":[],"error_info":if fault==Fault::TaskFailure{json!(["SR_BACKEND_FAILURE_1","private-provisioning-secret"])}else{json!([])}}})));}
             let result=result_ref.lock().unwrap().as_ref().map(|r|format!("<value>{r}</value>")).unwrap_or_else(||"<value/>".into());
             return Some(RpcReply::Json(json!({"result":{"status":"success","progress":"1","allowed_operations":[],"result":result}})));
         }
@@ -607,4 +610,147 @@ async fn destroy_dispatches_only_after_exact_detached_repository_review() {
             .any(|m| m == "Async.SR.forget")
     );
     c.close().await;
+}
+
+async fn recheck_unknown(c: &xenadmin_core::Connection, record: &ResourceOperationRecord) {
+    c.control_resource(record.id, OperationControl::Recheck)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(current) = c
+                .resource_history()
+                .iter()
+                .find(|r| r.id == record.id && r.revision() > record.revision())
+            {
+                assert_eq!(current.state, OperationState::OutcomeUnknown);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+#[tokio::test]
+async fn lost_async_attachment_or_removal_reply_stays_unknown_even_when_state_matches() {
+    let host = HostId::parse(HOST).unwrap();
+    let repository = SrId::parse(SR).unwrap();
+    for operation in [
+        StorageOperation::SetAttached {
+            sr: repository,
+            host,
+            expected_attached: false,
+            attached: true,
+        },
+        StorageOperation::SetAttached {
+            sr: repository,
+            host,
+            expected_attached: true,
+            attached: false,
+        },
+        StorageOperation::RemoveAttachment {
+            sr: repository,
+            host,
+        },
+        StorageOperation::Forget {
+            expected_name: "Fixture storage".into(),
+            expected_disks: vec![],
+        },
+        StorageOperation::Destroy {
+            expected_name: "Fixture storage".into(),
+            expected_disks: vec![],
+        },
+    ] {
+        let (mock, records) = fixture(Fault::DropReply).await;
+        if matches!(
+            operation,
+            StorageOperation::SetAttached {
+                expected_attached: true,
+                ..
+            }
+        ) {
+            records.lock().unwrap().get_mut("PBD").unwrap()["currently_attached"] = json!(true);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let target = if matches!(
+            operation,
+            StorageOperation::Forget { .. } | StorageOperation::Destroy { .. }
+        ) {
+            sr()
+        } else {
+            pbd()
+        };
+        let op = submit(&c, target, operation);
+        let record = finished(&op).await;
+        assert_eq!(
+            record.state,
+            OperationState::OutcomeUnknown,
+            "{}",
+            record.detail
+        );
+        recheck_unknown(&c, &record).await;
+        assert_eq!(
+            mock.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| m.starts_with("Async."))
+                .count(),
+            1
+        );
+        let blocked = submit(&c, pool(), create());
+        assert_eq!(finished(&blocked).await.state, OperationState::Rejected);
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "task.destroy")
+        );
+        c.close().await;
+    }
+}
+#[tokio::test]
+async fn failed_or_cancelled_creation_preserves_task_and_reservation_for_partial_resources() {
+    for fault in [Fault::TaskFailure, Fault::TaskCancelled] {
+        let (mock, records) = fixture(fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let op = submit(&c, pool(), create());
+        let record = finished(&op).await;
+        assert_eq!(
+            record.state,
+            OperationState::OutcomeUnknown,
+            "{}",
+            record.detail
+        );
+        assert!(records.lock().unwrap().contains_key("SR-created"));
+        assert_eq!(record.created, None);
+        assert!(!record.detail.contains("private-provisioning-secret"));
+        recheck_unknown(&c, &record).await;
+        let blocked = submit(&c, pool(), create());
+        assert_eq!(finished(&blocked).await.state, OperationState::Rejected);
+        assert_eq!(
+            mock.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| m.as_str() == "Async.SR.create")
+                .count(),
+            1
+        );
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "task.destroy")
+        );
+        c.close().await;
+    }
 }
