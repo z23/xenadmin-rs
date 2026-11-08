@@ -40,3 +40,11 @@ Still retained: local EXT/LVM and HBA/Fibre Channel provisioning/discovery; furt
 - Independent source review by the host workflow agent found no blocking issue in the backend/journal paths; the reviewer did not independently run fixtures.
 
 Live XCP-ng storage-driver behavior, real authentication/mounting and effective caching remain deferred to the designated virtualized lab. Synthetic previews contain invented data only and are not committed.
+
+## Integrated verification
+
+Combined source `a6f995e` passed all **958 workspace tests**: 432 core unit,
+262 direct protocol, 251 Rune/desktop, five profile, four TLS and four probe cases.
+Strict workspace/all-target Clippy and all-target compilation passed. This includes
+storage maintenance, snapshot preview, disk, crashdump, alarm and management-bond
+workflows. All servers/data were synthetic; live qualification remains deferred.

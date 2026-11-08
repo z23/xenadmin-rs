@@ -96,3 +96,11 @@ Fixtures use only local synthetic servers and images. No production operation, u
 or private inventory is included. Actual RFB capture timing, host HTTP behavior and snapshot
 compatibility still require the disposable lab; synthetic renders do not qualify real input,
 Wayland/X11 or accessibility behavior.
+
+## Integrated verification
+
+Combined source `a6f995e` passed all **958 workspace tests**: 432 core unit,
+262 direct protocol, 251 Rune/desktop, five profile, four TLS and four probe cases.
+Strict workspace/all-target Clippy and all-target compilation passed. This includes
+storage maintenance, snapshot preview, disk, crashdump, alarm and management-bond
+workflows. All servers/data were synthetic; live qualification remains deferred.
