@@ -56,6 +56,24 @@ fn open(s: &mut State, vm: VmId) {
         ..Default::default()
     };
 }
+pub(super) fn open_created(
+    s: &mut State,
+    vm: VmId,
+    sr: SrId,
+    hostname: String,
+    user_data: String,
+    network: String,
+) {
+    open(s, vm);
+    if s.cloud_init.vm != Some(vm) {
+        return;
+    }
+    s.cloud_init.sr = Some(sr);
+    s.cloud_init.hostname = TextEdit::new(hostname);
+    s.cloud_init.user_data = TextEdit::new(user_data);
+    s.cloud_init.network = TextEdit::new(network);
+    prepare(s);
+}
 pub(super) fn button(s: &State, vm: VmId, k: &Kit) -> El {
     let Some(v) = s
         .inventory

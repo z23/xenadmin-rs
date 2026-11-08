@@ -50,7 +50,7 @@ pub(super) fn next(s: &mut State) {
     };
     match valid {
         Ok(()) => {
-            form.step = (form.step + 1).min(2);
+            form.step = (form.step + 1).min(creation_cloud::last_step(form));
             form.error = None;
         }
         Err(error) => form.error = Some(error),
@@ -58,6 +58,9 @@ pub(super) fn next(s: &mut State) {
 }
 pub(super) fn operation(form: &Editor) -> Result<VmLifecycleOperation, String> {
     let (vcpus, memory) = resources(form)?;
+    if form.cloud {
+        form.cloud_input.validate()?;
+    }
     Ok(VmLifecycleOperation::Create {
         name: validate_name(&form.name.text)?,
         description: validate_description(&form.description.text)?,
@@ -114,9 +117,13 @@ fn bios_eligible(form: &Editor) -> bool {
 pub(super) fn editor(form: &Editor, k: &Kit) -> El {
     let mut body = col().w_full().gap(12.0).child(heading(
         match form.step {
+            0 if form.cloud => "1 of 4 · Identity",
             0 => "1 of 3 · Identity",
+            1 if form.cloud => "2 of 4 · CPU, memory and firmware",
             1 => "2 of 3 · CPU, memory and firmware",
-            _ => "3 of 3 · Storage, network and installation",
+            2 if form.cloud => "3 of 4 · Storage, network and installation",
+            2 => "3 of 3 · Storage, network and installation",
+            _ => "4 of 4 · Cloud-init configuration",
         },
         k,
     ));
@@ -139,9 +146,9 @@ pub(super) fn editor(form: &Editor, k: &Kit) -> El {
                 body=body.child(choices("Copy host BIOS identity","vm-lifecycle-bios-host",hosts,|f,id|f.bios_host=Some(id),k));
                 body=body.child(caption("Copying BIOS identity also sets the new VM's home-host preference to that exact host. The API only accepts an empty BIOS identity; this cannot be overwritten later.",k).wrap());
             }
-            body=body.child(caption("A cloud-init configuration drive is not prepared by this wizard yet.",k).wrap());
+
         }
-        _=>{
+        2=>{
             body=body.child(storage_choices(form,k));
             let disks=inherited_disks(form);
             body=body.child(heading("Template disks",k));
@@ -160,8 +167,11 @@ pub(super) fn editor(form: &Editor, k: &Kit) -> El {
             let mut media:Vec<_>=form.initial.details.vdis.values().filter(|disk|disk.kind=="iso"&&disk.missing==Some(false)&&disk.read_only==Some(true))
                 .map(|disk|(disk.id,disk_label(&form.initial,disk.id),form.iso==Some(disk.id))).collect();
             media.sort_by_cached_key(|(_,name,_)|name.to_lowercase());
-            body=body.child(choices("Available ISO images","vm-lifecycle-iso",media,|form,id|form.iso=Some(id),k));
+            body=body.child(choices("Available ISO images","vm-lifecycle-iso",media,|form,id|form.iso=Some(id),k))
+                .child(Checkbox::new(form.cloud).label("Configure cloud-init before first boot").on_toggle(|s:&mut State|if let Some(f)=editor_mut(s){f.cloud = !f.cloud;if !f.cloud {f.cloud_input=creation_cloud::Draft::default();}}).build(k).key("creation-cloud-enable"))
+                .child(caption("For templates with cloud-init and NoCloud support installed. After successful VM creation, review a private configuration drive for that exact new VM. The VM stays halted.",k).wrap());
         }
+        _=>body=body.child(creation_cloud::inputs(form,k)),
     }
     body
 }
@@ -222,6 +232,10 @@ pub(super) fn review(form: &Editor) -> Vec<String> {
                 "Retain inherited installation media; no ISO replacement was selected.".into()
             }),
     );
+    if form.cloud {
+        lines.push(format!("Cloud-init: hostname {}; {} bytes user-data; {} bytes network-config. After successful creation, review a new NoCloud drive on the selected SR for the exact created VM. Closing the wizard discards this unsaved configuration; it does not cancel creation.",form.cloud_input.hostname.text.trim(),form.cloud_input.user_data.text.len(),form.cloud_input.network.text.len()));
+        lines.push("User-data contents are not included in creation history. Configuration is a separately reviewed, tracked operation; neither stage starts the guest.".into());
+    }
     lines.push("The new VM stays halted. Each completed step and created VM/disk/interface UUID remains in VM changes if a later step fails. Uncertain operations are not automatically repeated.".into());
     lines.push("Other changes in this pool are blocked while creation is active or its outcome is unknown. Resolve or explicitly acknowledge an unknown outcome to release this block.".into());
     lines

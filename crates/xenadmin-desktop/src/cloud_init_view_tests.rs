@@ -151,3 +151,30 @@ fn cloud_init_slot_validation_refuses_occupied_and_noncanonical_slots() {
     rt.update(|s, _| s.cloud_init.device = TextEdit::new(slot));
     assert!(!can_prepare(&rt.state));
 }
+
+#[test]
+fn creation_handoff_prepares_private_media_for_the_exact_created_target_and_chosen_sr() {
+    let mut rt = runtime((513.0, 652.0));
+    let vm = rt.state.cloud_init.vm.unwrap();
+    let sr = rt.state.cloud_init.sr.unwrap();
+    close(&mut rt.state);
+    open_created(
+        &mut rt.state,
+        vm,
+        sr,
+        "created-fixture".into(),
+        "#cloud-config\nprivate-fixture-token: true\n".into(),
+        String::new(),
+    );
+    prepared(&mut rt);
+    assert_eq!(rt.state.cloud_init.vm, Some(vm));
+    assert_eq!(rt.state.cloud_init.sr, Some(sr));
+    assert!(rt.state.cloud_init.user_data.text.is_empty());
+    assert!(
+        !rt.accessibility_json()
+            .to_string()
+            .contains("private-fixture-token")
+    );
+    assert!(rt.state.resource_operations.is_empty());
+    close(&mut rt.state);
+}

@@ -7,12 +7,15 @@ use xenadmin_core::{
 
 #[path = "vm_creation.rs"]
 mod creation;
+#[path = "vm_creation_cloud.rs"]
+mod creation_cloud;
 #[path = "vm_deletion.rs"]
 mod deletion;
 
 pub(super) enum Panel {
     Editor(Box<Editor>),
     History,
+    CloudCreation(Box<creation_cloud::Pending>),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -42,6 +45,8 @@ pub(super) struct Editor {
     iso: Option<VdiId>,
     firmware: GuestFirmware,
     bios_host: Option<xenadmin_core::HostId>,
+    cloud: bool,
+    cloud_input: creation_cloud::Draft,
     full_copy: bool,
     as_template: bool,
     disks: BTreeSet<VdiId>,
@@ -54,13 +59,13 @@ pub(super) struct Editor {
 fn editor(s: &State) -> Option<&Editor> {
     match s.vm_lifecycle.as_ref()? {
         Panel::Editor(editor) => Some(editor),
-        Panel::History => None,
+        Panel::History | Panel::CloudCreation(_) => None,
     }
 }
 fn editor_mut(s: &mut State) -> Option<&mut Editor> {
     match s.vm_lifecycle.as_mut()? {
         Panel::Editor(editor) => Some(editor),
-        Panel::History => None,
+        Panel::History | Panel::CloudCreation(_) => None,
     }
 }
 fn close(s: &mut State) {
@@ -125,6 +130,8 @@ fn open(s: &mut State, id: VmId, kind: Kind) {
         iso: None,
         firmware: GuestFirmware::Inherited,
         bios_host: None,
+        cloud: false,
+        cloud_input: creation_cloud::Draft::default(),
         full_copy: false,
         as_template: source.is_template,
         disks: BTreeSet::new(),
@@ -333,9 +340,34 @@ fn apply(s: &mut State) {
         source: target,
         operation: review.operation.clone(),
     };
-    s.submit_command(command);
-    if s.error.is_none() {
-        close(s);
+    let pending = (form.kind == Kind::Create && form.cloud).then(|| {
+        (
+            form.pool,
+            form.source.id,
+            target,
+            review.operation.clone(),
+            form.sr.unwrap(),
+        )
+    });
+    match s.submit_tracked_command(command) {
+        Ok(id) => {
+            s.error = None;
+            if let Some((pool, source, target, operation, sr)) = pending {
+                let draft = std::mem::take(&mut editor_mut(s).unwrap().cloud_input);
+                s.vm_lifecycle = Some(Panel::CloudCreation(Box::new(creation_cloud::Pending {
+                    id,
+                    pool,
+                    source,
+                    target: Some(target),
+                    operation,
+                    sr,
+                    draft,
+                })));
+            } else {
+                close(s);
+            }
+        }
+        Err(e) => s.error = Some(e.to_string()),
     }
 }
 fn storage_label(inventory: &Inventory, id: SrId) -> String {
@@ -490,6 +522,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     if matches!(s.vm_lifecycle, Some(Panel::History)) {
         return history(s, k);
     }
+    if let Some(Panel::CloudCreation(p)) = &s.vm_lifecycle {
+        return creation_cloud::pending_view(s, p, k);
+    }
     let Some(form) = editor(s) else { return el() };
     let title = if form.review.is_some() {
         "Review VM change"
@@ -508,28 +543,16 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             }
         }
     };
-    let mut body = col()
-        .w((s.window_width - 40.0).clamp(280.0, 700.0))
-        .max_h((s.window_height - 60.0).clamp(280.0, 800.0))
-        .padding(22.0)
-        .gap(12.0)
-        .radius(10.0)
-        .fill(k.c.bg_base)
-        .scroll(rune::ScrollSpec {
-            stick_bottom: false,
-        })
-        .key("vm-lifecycle-body")
-        .child(heading(title, k))
-        .child(
-            caption(
-                format!(
-                    "Source: {}\nUUID: {}\nPool: {}",
-                    form.source.name, form.source.id, form.pool
-                ),
-                k,
-            )
-            .wrap_anywhere(),
-        );
+    let mut body = col().w_full().gap(12.0).key("vm-lifecycle-body").child(
+        caption(
+            format!(
+                "Source: {}\nUUID: {}\nPool: {}",
+                form.source.name, form.source.id, form.pool
+            ),
+            k,
+        )
+        .wrap_anywhere(),
+    );
     if let Some(review) = &form.review {
         for line in &review.lines {
             body = body.child(caption(line, k).wrap_anywhere());
@@ -640,15 +663,19 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
         buttons = buttons.child(
-            Button::new(if form.kind == Kind::Create && form.step < 2 {
-                "Next"
-            } else {
-                "Review change"
-            })
+            Button::new(
+                if form.kind == Kind::Create && form.step < creation_cloud::last_step(form) {
+                    "Next"
+                } else {
+                    "Review change"
+                },
+            )
             .variant(ButtonVariant::Outline)
             .disabled(!current || (!s.demo && !s.can_mutate()))
             .on_press(|s: &mut State| {
-                if editor(s).is_some_and(|form| form.kind == Kind::Create && form.step < 2) {
+                if editor(s).is_some_and(|form| {
+                    form.kind == Kind::Create && form.step < creation_cloud::last_step(form)
+                }) {
                     creation::next(s);
                 } else {
                     review(s);
@@ -658,7 +685,20 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .key("review-vm-lifecycle"),
         );
     }
-    overlay(body.child(buttons), title)
+    let card = col()
+        .w((s.window_width - 40.0).clamp(280.0, 700.0))
+        .h((s.window_height - 60.0).clamp(280.0, 800.0))
+        .min_h(0.0)
+        .padding(22.0)
+        .gap(12.0)
+        .radius(10.0)
+        .fill(k.c.bg_base)
+        .child(heading(title, k))
+        .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        }))
+        .child(buttons);
+    overlay(card, title)
 }
 fn overlay(body: El, title: &str) -> El {
     el().w_full()
@@ -833,4 +873,11 @@ pub(super) fn firmware_scene(s: &mut State) {
         details.firmware = Some("bios".into());
         details.bios_identity_empty = Some(true);
     }
+}
+
+pub(super) fn cloud_scene(s: &mut State) {
+    creation_cloud::scene(s);
+}
+pub(super) fn cloud_pending_scene(s: &mut State) {
+    creation_cloud::pending_scene(s);
 }

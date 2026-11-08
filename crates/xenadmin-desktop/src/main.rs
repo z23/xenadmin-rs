@@ -458,27 +458,33 @@ impl State {
         self.force_action = None;
     }
     fn submit_command(&mut self, command: xenadmin_core::VmCommand) {
-        let result = (|| {
-            if self.demo {
-                return Err(xenadmin_core::Error::Stale);
-            }
-            self.operations
-                .retain(|operation| !operation.latest().state.terminal());
-            if self.operations.len() >= 64 {
-                return Err(xenadmin_core::Error::Busy);
-            }
-            let operation = self
-                .connection
-                .as_ref()
-                .ok_or(xenadmin_core::Error::Closed)?
-                .submit(xenadmin_core::OperationId::new(), command)?;
-            if let Some(waker) = &self.waker {
-                operation.notify_on_change(waker.clone());
-            }
-            self.operations.push(operation);
-            Ok::<(), xenadmin_core::Error>(())
-        })();
-        self.error = result.err().map(|error| error.to_string());
+        self.error = self
+            .submit_tracked_command(command)
+            .err()
+            .map(|e| e.to_string());
+    }
+    fn submit_tracked_command(
+        &mut self,
+        command: xenadmin_core::VmCommand,
+    ) -> Result<xenadmin_core::OperationId, xenadmin_core::Error> {
+        if self.demo {
+            return Err(xenadmin_core::Error::Stale);
+        }
+        self.operations.retain(|op| !op.latest().state.terminal());
+        if self.operations.len() >= 64 {
+            return Err(xenadmin_core::Error::Busy);
+        }
+        let id = xenadmin_core::OperationId::new();
+        let operation = self
+            .connection
+            .as_ref()
+            .ok_or(xenadmin_core::Error::Closed)?
+            .submit(id, command)?;
+        if let Some(waker) = &self.waker {
+            operation.notify_on_change(waker.clone());
+        }
+        self.operations.push(operation);
+        Ok(id)
     }
     fn open_console(&mut self) {
         self.metrics = None;
@@ -2222,6 +2228,8 @@ fn main() {
             ("device-properties", vm_devices::properties_scene),
             ("home-host", vm_properties::home_host_scene),
             ("firmware-create", vm_lifecycle::firmware_scene),
+            ("creation-cloud", vm_lifecycle::cloud_scene),
+            ("creation-cloud-pending", vm_lifecycle::cloud_pending_scene),
             ("secure-boot", vm_properties::firmware_scene),
             ("vm-migration", vm_migration::scene),
             ("cross-pool", cross_pool_vm::scene),

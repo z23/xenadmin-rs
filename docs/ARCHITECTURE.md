@@ -642,6 +642,7 @@ insert can leave the reviewed drive empty. Reconciliation reads postconditions a
 replays either write or automatically remounts old media. The UI holds its captured pool/VM
 review across selection changes and reports the tracked operation. Guest installation is
 performed inside the guest; mounting media does not establish that tools were installed.
+
 ## Management networking recovery
 
 Management changes capture exact interface configuration in a typed intent and privately
@@ -654,3 +655,15 @@ try the registered candidate after normal transport failure, without deliberatel
 other workspaces. Unknown outcomes retain the pool guard and reconciliation never replays
 the management call. The [management report](reports/2026-11-08-management-network.md) records
 the qualified subset, evidence and remaining handover workflows.
+
+## Creation with a cloud-init configuration drive
+
+The creation wizard's optional NoCloud draft is transient UI state, separate from the
+serialized creation command and operation journal. Submission returns its admitted operation
+ID. The continuation captures that ID, the pool/source observation and immutable creation
+operation; only its successful verified new-VM result can open the existing private media
+workflow. The original generation, exact new halted ordinary VM and chosen SR must still
+match. Failed/unknown/acknowledged results cannot continue automatically. The configuration
+drive is separately reviewed and tracked, and neither stage starts the guest. Closing the
+wizard discards the draft without cancelling host creation. See the
+[creation cloud-init report](reports/2026-11-08-creation-cloud-init.md).
