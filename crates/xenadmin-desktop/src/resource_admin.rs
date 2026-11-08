@@ -384,16 +384,20 @@ fn submit(s: &mut State) {
 }
 pub(super) fn poll(s: &mut State) -> bool {
     let mut rows: BTreeMap<_, _> = s
-        .connection
-        .as_ref()
-        .map(|connection| {
-            connection
-                .resource_history()
-                .iter()
-                .map(|record| (record.id, record.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
+        .resource_rows
+        .iter()
+        .map(|record| (record.id, record.clone()))
+        .collect();
+    if let Some(connection) = &s.connection {
+        for record in connection.resource_history().iter() {
+            if rows
+                .get(&record.id)
+                .is_none_or(|old| record.supersedes(old))
+            {
+                rows.insert(record.id, record.clone());
+            }
+        }
+    }
     for operation in &s.resource_operations {
         let record = operation.latest();
         if rows
@@ -405,6 +409,19 @@ pub(super) fn poll(s: &mut State) -> bool {
     }
     let mut rows: Vec<_> = rows.into_values().collect();
     rows.sort_by_key(|record| record.created_at_ms);
+    let mut terminal_remaining = 100;
+    rows.reverse();
+    rows.retain(|record| {
+        if !record.state.terminal() {
+            return true;
+        }
+        if terminal_remaining == 0 {
+            return false;
+        }
+        terminal_remaining -= 1;
+        true
+    });
+    rows.reverse();
     if rows == s.resource_rows {
         false
     } else {
