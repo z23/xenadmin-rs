@@ -138,7 +138,10 @@ impl Session {
             .json(&json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
             .send()
             .await
-            .map_err(transport_error)?;
+            .map_err(|error| match transport_error(error) {
+                Error::Certificate => Error::EndpointCertificate(self.options.endpoint.clone()),
+                other => other,
+            })?;
         if !response.status().is_success() {
             return Err(Error::Http(response.status().as_u16()));
         }

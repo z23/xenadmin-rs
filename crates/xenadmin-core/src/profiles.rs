@@ -38,6 +38,8 @@ pub struct ConnectionProfile {
     pub endpoint: Endpoint,
     pub username: String,
     #[serde(default)]
+    pub proxy: crate::ProxyConfiguration,
+    #[serde(default)]
     pub credential_mode: crate::CredentialMode,
     #[serde(default)]
     pub auto_connect: bool,
@@ -45,6 +47,8 @@ pub struct ConnectionProfile {
     pub ca_certificate: Option<PathBuf>,
     #[serde(default)]
     pub host_certificates: BTreeMap<String, CertificateFingerprint>,
+    #[serde(default)]
+    pub certificate_details: BTreeMap<String, crate::CertificateDetails>,
     #[serde(default)]
     pub accept_invalid_certificates: bool,
     #[serde(default)]
@@ -66,10 +70,12 @@ impl ConnectionProfile {
             name,
             endpoint,
             username,
+            proxy: Default::default(),
             credential_mode: crate::CredentialMode::SessionOnly,
             auto_connect: false,
             ca_certificate: None,
             host_certificates: BTreeMap::new(),
+            certificate_details: BTreeMap::new(),
             accept_invalid_certificates: false,
             read_only: false,
             request_timeout_seconds: default_timeout(),
@@ -80,6 +86,7 @@ impl ConnectionProfile {
     pub fn options(&self) -> Result<ConnectionOptions, ProfileError> {
         self.validate()?;
         let mut options = ConnectionOptions::new(self.endpoint.clone());
+        options.proxy = self.proxy.clone();
         options.ca_certificate = self.ca_certificate.clone();
         options.accept_invalid_certificates = self.accept_invalid_certificates;
         options.read_only = self.read_only;
@@ -105,6 +112,30 @@ impl ConnectionProfile {
             self.verified_members.clear();
         }
     }
+    pub fn accept_certificate(
+        &mut self,
+        observation: &crate::CertificateObservation,
+    ) -> Result<(), ProfileError> {
+        if self.accept_invalid_certificates
+            || !observation.details.valid()
+            || self.host_certificates.get(observation.endpoint.as_str())
+                != observation.previous_fingerprint.as_ref()
+        {
+            return Err(ProfileError::CertificateChanged);
+        }
+        let mut profile = self.clone();
+        profile.host_certificates.insert(
+            observation.endpoint.to_string(),
+            observation.details.fingerprint.clone(),
+        );
+        profile.certificate_details.insert(
+            observation.endpoint.to_string(),
+            observation.details.clone(),
+        );
+        profile.validate()?;
+        *self = profile;
+        Ok(())
+    }
     pub fn remember_member(
         &mut self,
         pool: PoolId,
@@ -121,6 +152,7 @@ impl ConnectionProfile {
     }
     fn validate(&self) -> Result<(), ProfileError> {
         if self.name.trim().is_empty()
+            || !self.proxy.valid()
             || self.name.len() > 255
             || self.name.chars().any(char::is_control)
             || self.username.trim().is_empty()
@@ -130,6 +162,10 @@ impl ConnectionProfile {
             || (self.auto_connect && self.credential_mode != crate::CredentialMode::SecretService)
             || self.verified_members.len() > 128
             || self.host_certificates.len() > 128
+            || self.certificate_details.len() > 128
+            || self.certificate_details.iter().any(|(endpoint, detail)| {
+                !detail.valid() || self.host_certificates.get(endpoint) != Some(&detail.fingerprint)
+            })
             || self
                 .host_certificates
                 .keys()
@@ -151,6 +187,10 @@ pub enum ProfileError {
     Invalid,
     #[error("The endpoint belongs to a different pool; create a separate connection profile")]
     PoolChanged,
+    #[error(
+        "Certificate trust changed since inspection, or validation is disabled; inspect again before replacing this endpoint's pin"
+    )]
+    CertificateChanged,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -181,13 +221,13 @@ impl ProfileStore {
                 if value
                     .get("version")
                     .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|version| version > 2)
+                    .is_some_and(|version| version > 3)
                 {
                     return Err(ProfileError::NewerVersion);
                 }
                 let document: ProfileDocument =
                     serde_json::from_value(value).map_err(|_| ProfileError::Invalid)?;
-                if !(1..=2).contains(&document.version) || document.profiles.len() > 1000 {
+                if !(1..=3).contains(&document.version) || document.profiles.len() > 1000 {
                     return Err(ProfileError::Invalid);
                 }
                 for profile in document.profiles {
@@ -244,10 +284,13 @@ impl ProfileStore {
             .create(&self.directory)
             .map_err(|_| ProfileError::Storage)?;
         let bytes = serde_json::to_vec_pretty(&ProfileDocument {
-            version: 2,
+            version: 3,
             profiles: profiles.values().cloned().collect(),
         })
         .map_err(|_| ProfileError::Storage)?;
+        if bytes.len() > 2 * 1024 * 1024 {
+            return Err(ProfileError::Invalid);
+        }
         let temporary = self
             .directory
             .join(format!("profiles.{}.tmp", Uuid::new_v4()));
@@ -361,7 +404,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::write(
             directory.path().join("profiles.json"),
-            "{\"version\":3,\"unknown\":true}",
+            "{\"version\":4,\"unknown\":true}",
         )
         .unwrap();
         assert!(matches!(
@@ -370,7 +413,7 @@ mod tests {
         ));
         assert_eq!(
             fs::read_to_string(directory.path().join("profiles.json")).unwrap(),
-            "{\"version\":3,\"unknown\":true}"
+            "{\"version\":4,\"unknown\":true}"
         );
         fs::remove_file(directory.path().join("profiles.json")).unwrap();
         let mut store = ProfileStore::open(directory.path().into()).unwrap();
@@ -410,7 +453,7 @@ mod tests {
         let document: serde_json::Value =
             serde_json::from_slice(&fs::read(directory.path().join("profiles.json")).unwrap())
                 .unwrap();
-        assert_eq!(document["version"], 2);
+        assert_eq!(document["version"], 3);
         assert!(document["profiles"][0].get("password").is_none());
     }
 }

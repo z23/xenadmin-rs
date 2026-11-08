@@ -3,7 +3,6 @@ use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::TcpStream,
     sync::{mpsc, watch},
 };
 use tokio_util::sync::CancellationToken;
@@ -395,17 +394,18 @@ async fn tunnel(
     let mut url = url::Url::parse(location).map_err(|_| Error::ConsoleEndpoint)?;
     let original =
         url::Url::parse(session.options().endpoint.as_str()).map_err(|_| Error::ConsoleEndpoint)?;
-    let host = url.host_str().ok_or(Error::ConsoleEndpoint)?.to_owned();
+    let host = crate::connection_proxy::host_name(&url).map_err(|_| Error::ConsoleEndpoint)?;
+    let original_host =
+        crate::connection_proxy::host_name(&original).map_err(|_| Error::ConsoleEndpoint)?;
     if !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
         || !["http", "https"].contains(&url.scheme())
-        || !(original.host_str() == Some(host.as_str())
-            || inventory.hosts.values().any(|h| h.address == host))
+        || !(original_host == host || inventory.hosts.values().any(|h| h.address == host))
     {
         return Err(Error::ConsoleEndpoint);
     }
-    let same_host = original.host_str() == Some(host.as_str());
+    let same_host = original_host == host;
     let loopback_http = original.scheme() == "http" && same_host;
     if !loopback_http {
         if url.port() == Some(80) {
@@ -415,13 +415,9 @@ async fn tunnel(
         url.set_scheme("https")
             .map_err(|_| Error::ConsoleEndpoint)?;
     }
-    let port = url.port_or_known_default().ok_or(Error::ConsoleEndpoint)?;
     let endpoint = crate::Endpoint::parse(&url[..url::Position::BeforePath])?;
     let options = session.options().for_endpoint(endpoint.clone());
-    let socket = TcpStream::connect((host.as_str(), port))
-        .await
-        .map_err(|_| Error::Transport)?;
-    socket.set_nodelay(true).map_err(|_| Error::Transport)?;
+    let socket = options.endpoint_socket(&endpoint).await?;
     let mut stream: Box<dyn Stream> = if url.scheme() == "https" {
         let tls = tokio_rustls::TlsConnector::from(Arc::new(options.tls_config()?));
         let name = rustls::pki_types::ServerName::try_from(host.clone())

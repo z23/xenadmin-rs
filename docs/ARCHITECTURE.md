@@ -267,6 +267,24 @@ validation enabled, do not forward credentials to an unverified advertised desti
 Support a credential prompt when Secret Service is unavailable or locked. Session-only login keeps the client
 usable without a functioning keyring. Redact secrets and sensitive URL parameters from logs.
 
+Certificate inspection uses a separate credential-free TLS handshake. It records the normal
+platform/custom-CA verification result while retaining handshake signature verification;
+only that inspection can proceed after a certificate validation failure. Normal connections
+still enforce their configured CA, exact-endpoint SHA-256 pin or explicit bypass policy.
+The editor compares the previous pin, captured form and editor epoch before accepting a
+reviewed certificate into its unsaved draft. Accepting never retries login or changes another
+endpoint. Version 3 profiles retain bounded certificate summaries and proxy configuration;
+versions 1 and 2 continue to load with Environment routing as the default.
+
+Each connection captures environment proxy settings once. Direct, captured Environment and
+explicit HTTP CONNECT routes feed both HTTP clients and raw console/inspection sockets;
+redirected host endpoints receive the same frozen routing policy. Unsupported proxy schemes
+fail rather than falling back to a direct route. Transient Basic proxy credentials bind to
+the exact proxy endpoint and username and form part of the pool-owner authority key. They
+are never saved with profiles or sent inside the host TLS tunnel. HTTP proxy authentication
+itself is not protected by TLS to the proxy; the editor states that boundary. Certificate
+pins and host credentials remain scoped to the inner host endpoint.
+
 Closing the desktop stops new admission, journals outstanding state, closes consoles, and
 performs bounded local cleanup and logout where safe. Explain that server tasks may continue.
 On restart, reconcile unfinished journal entries after fresh pool inventory is available.

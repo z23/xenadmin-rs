@@ -28,6 +28,10 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/properties-running.png --tree artifacts/properties-running.json --scene properties-running --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/connections.png --tree artifacts/connections.json --scene connections --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/connection-settings.png --tree artifacts/connection-settings.json --scene connection-settings --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/connection-trust.png --tree artifacts/connection-trust.json --scene connection-trust --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/connection-trust-compact.png --tree artifacts/connection-trust-compact.json --scene connection-trust --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/certificate-review.png --tree artifacts/certificate-review.json --scene certificate-review --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/certificate-review-compact.png --tree artifacts/certificate-review-compact.json --scene certificate-review --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/vm-devices.png --tree artifacts/vm-devices.json --scene vm-devices --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/network-create.png --tree artifacts/network-create.json --scene network-create --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/pool-administration.png --tree artifacts/pool-administration.json --scene pool-administration --theme dark --size 1440x900 --scale 1 --at 1

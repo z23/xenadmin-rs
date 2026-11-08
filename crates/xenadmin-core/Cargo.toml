@@ -17,6 +17,11 @@ zeroize.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 sha2.workspace = true
+base64 = "=0.22.1"
+http = "1"
+hyper-util = { version = "=0.1.21", default-features = false, features = ["client-proxy"] }
+x509-parser = "=0.18.1"
+rustls-platform-verifier = "=0.7.1"
 sha1 = "=0.10.7"
 tokio-rustls.workspace = true
 rustls-native-certs = "0.8"

@@ -10,9 +10,17 @@ pub use search::{
 };
 mod appliances;
 pub use appliances::{ApplianceMember, ApplianceOperation, ApplianceOrder, AppliancePower};
+mod certificate_inspection;
 mod cloud_init;
 mod connection;
+mod connection_proxy;
+#[cfg(test)]
+mod connection_trust_tests;
+pub use certificate_inspection::{
+    CertificateDetails, CertificateInspectionTask, CertificateObservation, CertificateValidation,
+};
 pub use cloud_init::{CloudInitConfiguration, CloudInitInputs, CloudInitMedia};
+pub use connection_proxy::{ProxyConfiguration, ProxyCredentials, ProxyEndpoint};
 mod device_lifecycle;
 mod devices;
 pub use device_lifecycle::CreatedDevice;
@@ -108,7 +116,8 @@ mod trust;
 mod xapi;
 
 pub use connection::{
-    Backend, Connection, ConnectionSnapshot, ConnectionState, ObservedSnapshot, ObservedVm,
+    Backend, Connection, ConnectionFailure, ConnectionSnapshot, ConnectionStage, ConnectionState,
+    ObservedSnapshot, ObservedVm,
 };
 pub use console::{
     Console, ConsoleCursor, ConsoleFrame, ConsoleInput, ConsoleSnapshot, ConsoleState,
@@ -239,6 +248,26 @@ pub enum Error {
     InvalidFingerprint,
     #[error("Enter additional host certificates as one https://host=SHA256 entry per line")]
     InvalidHostCertificate,
+    #[error(
+        "TLS inspection could not complete a valid signed handshake or decode a bounded X.509 certificate; no credentials were sent"
+    )]
+    CertificateInspection,
+    #[error("Enter a valid HTTP proxy URL without embedded credentials, a path, query or fragment")]
+    ProxyConfiguration,
+    #[error(
+        "Only HTTP CONNECT proxies are supported. HTTPS proxies, SOCKS and PAC are not supported; choose a supported proxy or explicitly choose Direct"
+    )]
+    UnsupportedProxy,
+    #[error(
+        "Enter this HTTP proxy's password for the current session; the host password is not used for proxy authentication"
+    )]
+    ProxyAuthenticationRequired,
+    #[error("Cannot connect to the configured HTTP proxy")]
+    ProxyConnect,
+    #[error("HTTP proxy refused CONNECT with status {0}; check proxy access and authentication")]
+    ProxyRefused(u16),
+    #[error("The HTTP proxy returned an invalid or oversized CONNECT response")]
+    ProxyProtocol,
     #[error(
         "TLS verification failed. Supply a trusted CA certificate or verify and pin the host certificate fingerprint"
     )]

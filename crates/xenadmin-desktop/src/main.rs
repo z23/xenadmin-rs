@@ -1835,10 +1835,12 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
                 .build(k),
         )
     };
-    let mut dialog = col().w_full().grow(1.0).min_h(0.0)
+    let dialog_height = (s.window_height - 48.0).clamp(280.0, 720.0);
+    let reviewing_certificate = profiles_view::certificate_review_controls(s, k);
+    let mut dialog = col().w_full().h(dialog_height - 120.0).min_h(0.0)
         .scroll(rune::ScrollSpec { stick_bottom: false })
+        .key("connect-fields-scroll")
         .padding(24.0).gap(12.0).radius(12.0).fill(k.c.bg_base).border(1.0, k.c.border_weak)
-        .child(heading("Connect to XCP-ng", k))
         .child(profiles_view::form_fields(s,k))
         .child(caption("Use a host management address. Credentials go directly to that host over HTTPS.", k).wrap())
         .child(col().gap(6.0).child(caption("Host endpoint",k))
@@ -1867,12 +1869,25 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
     }
     if !s.accept_invalid_certificates && s.show_certificate_details {
         dialog = dialog
+            .child(profiles_view::certificate_fields(s,k))
             .child(field("Certificate SHA-256 • optional", &s.fingerprint, |s| &mut s.fingerprint, "Verified fingerprint for a self-signed host"))
             .child(caption("Leave the fingerprint empty for CA and hostname verification. Verify a fingerprint through a trusted channel before using it.", k).wrap())
             .child(col().gap(6.0).child(caption("Other pool host certificates • optional", k))
                 .child(rune_kit::TextArea::new(&s.host_certificates).label("Additional host certificates")
                     .placeholder("One https://host=SHA256 entry per line")
                     .on_edit(|s: &mut State| &mut s.host_certificates).build(k).h(72.0)));
+    }
+    if reviewing_certificate.is_some() {
+        dialog = col()
+            .w_full()
+            .h(dialog_height - 120.0)
+            .min_h(0.0)
+            .padding(20.0)
+            .scroll(rune::ScrollSpec {
+                stick_bottom: false,
+            })
+            .key("certificate-review-scroll")
+            .child(profiles_view::certificate_fields(s, k));
     }
     dialog = dialog.child(if let Some(error) = &s.error {
         text(error.to_owned())
@@ -1885,6 +1900,8 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
     });
     let controls = row()
         .w_full()
+        .h(64.0)
+        .min_h(64.0)
         .padding(16.0)
         .justify_end()
         .gap(8.0)
@@ -1905,11 +1922,26 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
                 .build(k)
                 .key("connect"),
         );
+    let review_heading = reviewing_certificate.is_some();
+    let controls = reviewing_certificate.unwrap_or(controls);
     let dialog = col()
         .w((s.window_width - 32.0).clamp(280.0, 480.0))
-        .h((s.window_height - 48.0).clamp(280.0, 720.0))
+        .h(dialog_height)
         .radius(12.0)
         .fill(k.c.bg_base)
+        .child(
+            heading(
+                if review_heading {
+                    "Review certificate"
+                } else {
+                    "Connect to XCP-ng"
+                },
+                k,
+            )
+            .h(56.0)
+            .padding(18.0)
+            .key("connect-heading"),
+        )
         .child(dialog)
         .child(controls);
     el().key("connect-dialog")
@@ -2131,6 +2163,10 @@ fn main() {
             ("snapshot-restore", vm_snapshots::restore_scene),
             ("snapshot-edit", vm_snapshots::edit_scene),
             ("connections", |s| profiles_view::scene(s, false)),
+            ("connection-trust", |s| profiles_view::trust_scene(s, false)),
+            ("certificate-review", |s| {
+                profiles_view::trust_scene(s, true)
+            }),
             ("network-interfaces", network_admin::scene),
             ("network-ipv6", network_admin::ipv6_scene),
             ("host-administration", host_admin::scene),

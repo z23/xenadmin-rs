@@ -41,10 +41,10 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P01-10 | Save/forget credentials and protected session restore | Opt-in Secret Service save/load/forget and per-profile startup restore implemented; stale credential results, locked/missing keyring and no-retry behavior fixture-verified; desktop-service qualification open |
 | P01-11 | System CA/name verification and endpoint pins | Existing workflow; qualification open |
 | P01-12 | Desktop custom-CA file selection | Native portal file picker and manual path entry implemented; cancelled/stale editor results fixture verified, native portal qualification open |
-| P01-13 | Inspect and accept unknown certificates | Queued |
-| P01-14 | Review changed certificate and replace trust | Existing subset; remaining work queued |
+| P01-13 | Inspect and accept unknown certificates | Credential-free TLS inspection, bounded certificate details and explicit exact-endpoint SHA-256 review implemented; fixture verified, live qualification open ([report](reports/2026-11-08-connection-trust.md)) |
+| P01-14 | Review changed certificate and replace trust | Previous/presented pin and stored certificate comparison, stale-review rejection and draft-only replacement implemented; no automatic save/login or trust propagation; fixture verified, live qualification open |
 | P01-15 | Easy certificate-validation opt-out | Existing workflow; qualification open |
-| P01-16 | Proxy/timeout options and richer connection diagnostics | Request timeout and connection errors implemented; proxy configuration and richer diagnostics remain queued |
+| P01-16 | Proxy/timeout options and richer connection diagnostics | Request timeout, Direct/captured Environment/HTTP CONNECT routing, transient proxy authentication, effective route and login/inventory/event failure stage implemented; unsupported HTTPS/SOCKS/PAC proxies refused explicitly; fixture verified, live/native proxy qualification open |
 
 ## 2. Inventory, navigation and inspection
 

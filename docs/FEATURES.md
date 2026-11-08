@@ -47,6 +47,12 @@ database, proxy, or cached XO metadata. It requires reachable XAPI and console e
 The workstation must have an authorized host account. Pool coordination, storage access,
 and VM availability remain properties of the XCP-ng installation.
 
+The [connection trust increment](reports/2026-11-08-connection-trust.md) adds credential-free
+certificate inspection, exact-endpoint pin acceptance/replacement and Direct, captured
+Environment or explicit HTTP CONNECT routes. Proxy authentication stays in the application
+session. Certificate review changes an unsaved profile draft and never automatically logs in.
+HTTPS/SOCKS/PAC proxy configurations are explicitly unsupported in this increment.
+
 The application does not promise a generic console for guests that expose no RFB console.
 Guest RDP and SSH integrations can be added later without becoming management dependencies.
 

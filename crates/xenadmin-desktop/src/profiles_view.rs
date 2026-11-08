@@ -9,6 +9,8 @@ mod credentials;
 mod pool_join;
 #[path = "profile_reconnect.rs"]
 mod reconnect;
+#[path = "profile_trust.rs"]
+mod trust;
 use credentials::CredentialJob;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,6 +42,14 @@ pub(super) fn inspection_connections(
 }
 
 pub(super) struct Workspace {
+    trust: trust::Panel,
+    proxy_sessions: BTreeMap<
+        ProfileId,
+        (
+            xenadmin_core::ProxyConfiguration,
+            xenadmin_core::ProxyCredentials,
+        ),
+    >,
     join: Option<pool_join::Editor>,
     reconnect: Option<reconnect::Editor>,
     session_accounts: BTreeMap<ProfileId, (String, bool)>,
@@ -80,6 +90,8 @@ impl Workspace {
             Err("Another XenAdmin RS window owns this state directory. Close it before changing connections here.".into())
         };
         Self {
+            trust: Default::default(),
+            proxy_sessions: BTreeMap::new(),
             reconnect: None,
             join: None,
             session_accounts: BTreeMap::new(),
@@ -144,6 +156,7 @@ pub(super) fn apply_initial(s: &mut State) {
 }
 
 fn populate(s: &mut State, profile: &ConnectionProfile) {
+    trust::populate(s, profile);
     s.workspace.editor_epoch = uuid::Uuid::new_v4();
     s.workspace.remember_password = profile.credential_mode == CredentialMode::SecretService;
     s.workspace.auto_connect = profile.auto_connect;
@@ -185,6 +198,7 @@ fn populate(s: &mut State, profile: &ConnectionProfile) {
 
 pub(super) fn begin_new(s: &mut State) {
     cancel_editor(s);
+    s.workspace.trust = Default::default();
     s.workspace.editor_epoch = uuid::Uuid::new_v4();
     s.workspace.remember_password = false;
     s.workspace.auto_connect = false;
@@ -278,6 +292,7 @@ fn form_profile(s: &State) -> Result<ConnectionProfile, String> {
             .map_err(|error| error.to_string())?;
         profile.host_certificates = options.host_certificates();
     }
+    trust::form(s, &mut profile)?;
     profile.options().map_err(|error| error.to_string())?;
     Ok(profile)
 }
@@ -321,6 +336,7 @@ fn save_only(s: &mut State) {
             }
             s.password = secure_field();
             s.show_connect = false;
+            trust::cancel(s);
             s.workspace.show_manager = true;
             s.error = None;
         }
@@ -375,11 +391,14 @@ fn start_connection(
     profile: &ConnectionProfile,
     credentials: Credentials,
 ) -> Result<(), String> {
+    let options = trust::options(s, profile)?;
+    trust::remember_proxy(s, profile);
     s.workspace.session_accounts.remove(&profile.id);
-    let connection = s.backend.as_ref().map_err(Clone::clone)?.connect(
-        profile.options().map_err(|error| error.to_string())?,
-        credentials,
-    );
+    let connection = s
+        .backend
+        .as_ref()
+        .map_err(Clone::clone)?
+        .connect(options, credentials);
     if let Some(waker) = &s.waker {
         connection.notify_on_change(waker.clone());
     }
@@ -504,6 +523,7 @@ fn remove_record(s: &mut State, id: ProfileId) {
         .and_then(|store| store.remove(id).map_err(|error| error.to_string()));
     match result {
         Ok(_) => {
+            s.workspace.proxy_sessions.remove(&id);
             s.workspace.active.remove(&id);
             s.workspace.seen.remove(&id);
             s.workspace.profile_status.remove(&id);
@@ -525,6 +545,7 @@ fn remove_record(s: &mut State, id: ProfileId) {
 /// Poll every live pool, including those not currently selected in the UI.
 pub(super) fn refresh(s: &mut State) -> bool {
     let mut changed = refresh_credentials(s);
+    changed |= trust::poll(s);
     changed |= pool_join::poll(s);
     for (id, connection) in &s.workspace.active {
         let snapshot = connection.latest();
@@ -648,6 +669,7 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
         );
     if s.workspace.advanced {
         fields = fields
+            .child(trust::proxy_fields(s, k))
             .child(
                 TextInput::new(&s.workspace.ca_certificate)
                     .label("CA certificate file")
@@ -890,6 +912,28 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .wrap(),
             );
         }
+        if let Some(route) =
+            connection.and_then(|c| c.latest().connection_route().map(str::to_owned))
+        {
+            entry = entry.child(caption(format!("Last connection route: {route}"), k).wrap());
+        }
+        if let Some(failure) = connection.and_then(|c| c.latest().failure().cloned()) {
+            entry = entry
+                .child(caption(format!("Last failure stage: {}", failure.stage.label()), k).wrap());
+            if let Some(endpoint) = failure.certificate_endpoint
+                && !active
+            {
+                entry = entry.child(
+                    Button::new("Review this endpoint's certificate…")
+                        .variant(ButtonVariant::Outline)
+                        .on_press(move |s: &mut State| {
+                            trust::inspect_failed(s, id, endpoint.clone())
+                        })
+                        .build(k)
+                        .key(format!("inspect-failed-{id}")),
+                );
+            }
+        }
         let mut actions = row().gap(8.0);
         if active {
             actions = actions
@@ -997,12 +1041,22 @@ fn cancel_load(s: &mut State, id: ProfileId) {
 }
 
 pub(super) fn cancel_editor(s: &mut State) {
+    trust::cancel(s);
     if let Some(id) = s.workspace.editing {
         cancel_load(s, id);
     }
     s.workspace.cached_credentials = None;
     s.workspace.credential_status = None;
     s.password = secure_field();
+}
+pub(super) fn certificate_fields(s: &State, k: &Kit) -> El {
+    trust::certificate_fields(s, k)
+}
+pub(super) fn trust_scene(s: &mut State, review: bool) {
+    trust::scene(s, review);
+}
+pub(super) fn certificate_review_controls(s: &State, k: &Kit) -> Option<El> {
+    trust::review_controls(s, k)
 }
 
 fn queue_load(s: &mut State, profile: &ConnectionProfile, purpose: LoadPurpose) {

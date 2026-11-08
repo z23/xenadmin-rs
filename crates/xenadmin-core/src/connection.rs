@@ -52,12 +52,36 @@ pub enum ConnectionState {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionStage {
+    Login,
+    Inventory,
+    EventStream,
+}
+impl ConnectionStage {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Login => "Connecting and authenticating",
+            Self::Inventory => "Synchronizing inventory",
+            Self::EventStream => "Maintaining inventory events",
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectionFailure {
+    pub stage: ConnectionStage,
+    pub certificate_endpoint: Option<crate::Endpoint>,
+    pub message: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct ConnectionSnapshot {
     generation: u64,
     state: ConnectionState,
     inventory: Option<Arc<Inventory>>,
     error: Option<String>,
+    failure: Option<ConnectionFailure>,
+    route: Option<String>,
     updated_at: Option<SystemTime>,
     endpoint: Option<crate::Endpoint>,
     verified_members: Vec<crate::Endpoint>,
@@ -81,6 +105,12 @@ impl std::fmt::Display for ObservedVm {
     }
 }
 impl ConnectionSnapshot {
+    pub fn connection_route(&self) -> Option<&str> {
+        self.route.as_deref()
+    }
+    pub fn failure(&self) -> Option<&ConnectionFailure> {
+        self.failure.as_ref()
+    }
     pub fn observe_metrics(
         &self,
         target: crate::MetricTarget,
@@ -325,6 +355,8 @@ impl Backend {
             state: ConnectionState::Connecting,
             inventory: None,
             error: None,
+            failure: None,
+            route: options.connection_route(&options.endpoint).ok(),
             updated_at: None,
             endpoint: None,
             verified_members: Vec::new(),
@@ -947,12 +979,14 @@ async fn run(
             None,
             last_update,
         );
+        let mut failure_stage = ConnectionStage::Login;
         let result = tokio::select! {
             _=cancel.cancelled()=>break,
             result=Session::login(&options,&credentials)=>result,
         };
         let error = match result {
             Ok(session) => {
+                failure_stage = ConnectionStage::Inventory;
                 let session = Arc::new(session);
                 let active = cancel.child_token();
                 publish(
@@ -1219,6 +1253,10 @@ async fn run(
                                 {
                                     let mut snapshot = (*sender.borrow().clone()).clone();
                                     snapshot.endpoint = Some(session.options().endpoint.clone());
+                                    snapshot.route = session
+                                        .options()
+                                        .connection_route(&session.options().endpoint)
+                                        .ok();
                                     for endpoint in [&options.endpoint, &session.options().endpoint]
                                     {
                                         if !snapshot.verified_members.contains(endpoint) {
@@ -1330,6 +1368,7 @@ async fn run(
                                     }
                                     recovered = true;
                                 }
+                                failure_stage = ConnectionStage::EventStream;
                                 last_inventory = Some(Arc::new(inventory));
                                 last_update = Some(SystemTime::now());
                                 backoff = 1;
@@ -1409,18 +1448,29 @@ async fn run(
                 });
             options = options.for_endpoint(options.fallback_endpoints[next].clone());
         }
-        publish(
-            &sender,
+        let previous = sender.borrow().clone();
+        sender.send_replace(Arc::new(ConnectionSnapshot {
             generation,
-            if retry {
+            state: if retry {
                 ConnectionState::Reconnecting
             } else {
                 ConnectionState::Failed
             },
-            &last_inventory,
-            Some(error.to_string()),
-            last_update,
-        );
+            inventory: last_inventory.clone(),
+            error: Some(error.to_string()),
+            failure: Some(ConnectionFailure {
+                stage: failure_stage,
+                certificate_endpoint: match &error {
+                    Error::EndpointCertificate(endpoint) => Some(endpoint.clone()),
+                    _ => None,
+                },
+                message: error.to_string(),
+            }),
+            updated_at: last_update,
+            route: previous.route.clone(),
+            endpoint: previous.endpoint.clone(),
+            verified_members: previous.verified_members.clone(),
+        }));
         if !retry {
             return;
         }
@@ -1552,6 +1602,8 @@ fn publish(
         state,
         inventory: inventory.clone(),
         error,
+        failure: None,
+        route: previous.route.clone(),
         updated_at,
         endpoint: previous.endpoint.clone(),
         verified_members: previous.verified_members.clone(),

@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap, fmt, io::Read, path::PathBuf, str::FromStr, sync::Arc, time::Duration,
+};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
@@ -138,6 +140,9 @@ impl fmt::Debug for Credentials {
 #[derive(Clone, Debug)]
 pub struct ConnectionOptions {
     pub endpoint: Endpoint,
+    pub proxy: crate::ProxyConfiguration,
+    pub(crate) proxy_environment: crate::connection_proxy::Environment,
+    pub(crate) proxy_credentials: Option<(crate::ProxyEndpoint, Arc<crate::ProxyCredentials>)>,
     pub ca_certificate: Option<PathBuf>,
     pub certificate_fingerprint: Option<CertificateFingerprint>,
     /// Skip certificate identity/validity checks for this connection and its discovered endpoints.
@@ -153,6 +158,9 @@ impl ConnectionOptions {
     pub fn new(endpoint: Endpoint) -> Self {
         Self {
             endpoint,
+            proxy: Default::default(),
+            proxy_environment: crate::connection_proxy::Environment::capture(),
+            proxy_credentials: None,
             ca_certificate: None,
             certificate_fingerprint: None,
             accept_invalid_certificates: false,
@@ -204,6 +212,7 @@ impl ConnectionOptions {
         field(salt);
         field(credentials.username.as_bytes());
         field(credentials.password.as_bytes());
+        field(&self.proxy_authority());
         field(&[
             u8::from(self.read_only),
             u8::from(self.accept_invalid_certificates),
@@ -211,8 +220,11 @@ impl ConnectionOptions {
         if !self.accept_invalid_certificates {
             if let Some(path) = &self.ca_certificate {
                 field(path.as_os_str().as_encoded_bytes());
-                if let Ok(pem) = std::fs::read(path) {
-                    field(&pem);
+                if let Ok(file) = std::fs::File::open(path) {
+                    let mut pem = Vec::new();
+                    if file.take(1024 * 1024 + 1).read_to_end(&mut pem).is_ok() {
+                        field(&pem);
+                    }
                 }
             }
             for (endpoint, pin) in self.host_certificates() {
@@ -245,18 +257,10 @@ impl ConnectionOptions {
             .connect_timeout(Duration::from_secs(10))
             .timeout(self.request_timeout)
             .user_agent(concat!("xenadmin-rs/", env!("CARGO_PKG_VERSION")));
-        if !self.accept_invalid_certificates
-            && let Some(path) = &self.ca_certificate
-        {
-            let pem = std::fs::read(path).map_err(|_| Error::CertificateFile)?;
-            builder = builder.add_root_certificate(
-                reqwest::Certificate::from_pem(&pem).map_err(|_| Error::CertificateFile)?,
-            );
-        }
-        if self.accept_invalid_certificates || self.certificate_fingerprint.is_some() {
-            builder = builder.use_preconfigured_tls(self.tls_config()?);
-        }
-        builder.build().map_err(|_| Error::Transport)
+        builder = builder.use_preconfigured_tls(self.tls_config()?);
+        self.apply_proxy(builder)?
+            .build()
+            .map_err(|_| Error::Transport)
     }
 
     pub(crate) fn tls_config(&self) -> Result<rustls::ClientConfig, Error> {
@@ -274,20 +278,9 @@ impl ConnectionOptions {
                 .with_custom_certificate_verifier(Arc::new(verifier))
                 .with_no_client_auth());
         }
-        let mut roots = rustls::RootCertStore::empty();
-        for certificate in rustls_native_certs::load_native_certs().certs {
-            let _ = roots.add(certificate);
-        }
-        if let Some(path) = &self.ca_certificate {
-            let pem = std::fs::read(path).map_err(|_| Error::CertificateFile)?;
-            for certificate in rustls_pemfile::certs(&mut &*pem) {
-                roots
-                    .add(certificate.map_err(|_| Error::CertificateFile)?)
-                    .map_err(|_| Error::CertificateFile)?;
-            }
-        }
         Ok(rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
+            .dangerous()
+            .with_custom_certificate_verifier(crate::certificate_inspection::ca_verifier(self)?)
             .with_no_client_auth())
     }
 }

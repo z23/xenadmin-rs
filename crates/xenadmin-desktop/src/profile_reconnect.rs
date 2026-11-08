@@ -75,7 +75,7 @@ fn apply(s: &mut State) {
         profile.username = e.username.text.trim().into();
         profile.read_only = e.read_only;
         profile.pool = Some(e.pool);
-        profile.options().map_err(|e| e.to_string())?;
+        trust::options(s, &profile)?;
         if e.password.text.is_empty()
             || e.password.text.len() > 65536
             || e.password.text.contains('\0')
