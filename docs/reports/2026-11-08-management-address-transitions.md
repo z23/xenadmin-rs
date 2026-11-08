@@ -37,6 +37,13 @@ the other DNS family. The [8.3 release documentation](https://docs.xcp-ng.org/re
 requires installation to change the host's address-family mode; this workflow does
 not attempt such a conversion.
 
+That release's [known IPv6 issues](https://docs.xcp-ng.org/releases/release-8-3/#ipv6-related-issues)
+also identify incomplete DHCPv6 support and autoconfiguration replacing manually
+configured DNS. The corresponding review shows these limitations. The exposed API
+modes are implemented, but fixture success is not a claim that every 8.3 host/network
+supports them reliably. Actual assignment and authenticated reachability are always
+required for completion. Dual-stack host installation remains experimental upstream.
+
 Recovery uses a reviewed IP. DNS aliases are neither created nor updated; hostname-based
 recovery, automatic discovery of unexpected leases and ambiguous multiple global IPv6
 source addresses remain open. Static same-IP settings changes are supported. Moving the

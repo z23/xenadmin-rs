@@ -187,6 +187,11 @@ fn review(v: &Editor, i: &Inventory) -> Result<(ManagementNetworkOperation, Vec<
                 "New addressing: {}. Expected assigned address: {recovery}.",
                 mode.label()
             ));
+            if *mode == ManagementDynamicMode::Ipv6Dhcp {
+                lines.push("XCP-ng 8.3 documents incomplete DHCPv6 support. This workflow requires the actual assignment and recovery connection to succeed before reporting completion.".into());
+            } else if *mode == ManagementDynamicMode::Ipv6Autoconf {
+                lines.push("XCP-ng 8.3 autoconfiguration can replace manually configured DNS. The host supplies the new IPv6 network settings; the other address family's settings must remain unchanged.".into());
+            }
             lines.push("The host obtains its address and primary-family network settings automatically. This address must match a DHCP reservation or a known stable autoconfiguration address; entering it does not create a reservation.".into());
             lines.push("If the host obtains a different address, this operation remains unresolved. The client does not scan the network or update DNS aliases. Use an independently verified host address to reconnect and inspect it.".into());
         }
@@ -528,6 +533,13 @@ mod tests {
             assert!(
                 matches!(&review.operation,ResourceAction::ManagementNetwork(op) if matches!(&**op,ManagementNetworkOperation::ConfigureDynamic { mode:m,.. } if *m==mode))
             );
+            assert!(review.lines.iter().any(|v| v.contains(
+                if mode == ManagementDynamicMode::Ipv6Dhcp {
+                    "incomplete DHCPv6"
+                } else {
+                    "replace manually configured DNS"
+                }
+            )));
             edit(&mut s).review = None;
             editor(&mut s).recovery = TextEdit::new("fe80::30");
             prepare(&mut s);
