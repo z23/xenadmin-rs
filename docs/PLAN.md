@@ -67,16 +67,18 @@ isolated resources. No production infrastructure test is implied by application 
 
 ## Current state
 
-A development alpha implements the Rune shell, direct JSON-RPC session and event inventory,
-VM power operations with a durable journal, and an embedded console adapter. A later
-[snapshot increment](reports/2026-11-07-snapshots.md) adds listing, disk-snapshot creation
-and halted-VM restore through that same journal. Local protocol,
-TLS, RFB, and Rune interaction fixtures exercise these paths. A native window smoke test and
-a local release archive have also run. See the [alpha report](reports/2026-11-07-alpha.md).
+The development client includes direct concurrent pool connections, inventory and consoles,
+reviewed VM/device/snapshot administration, host/pool/storage/network workflows, metrics,
+activity, organization and bounded XVA/raw/VHD/OVF transfers. The
+[0.8 checkpoint](reports/2026-11-08-checkpoint-0.8.md) records its packaged subset; subsequent
+firmware, bulk power and console-recovery increments are tracked in the per-row ledger and
+their reports. Implemented behavior has protocol, journal, Rune and native synthetic-render
+checks, with remaining workflows explicitly open.
 
-No live lab has been designated. M0, M1, and M2 remain open: actual XCP-ng compatibility,
-console extensions, and the outage-recovery acceptance run are not established. Later
-milestones remain planned, apart from preliminary packaging and CI infrastructure.
+The user requested a prepared local disposable lab and deferred live tests until virtualization
+is available. No active lab has been provisioned. Actual host compatibility, guest data
+integrity, failover and the complete XO-down acceptance run remain qualification gates.
+Milestones remain open until their retained workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols
 

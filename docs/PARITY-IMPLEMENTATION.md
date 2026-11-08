@@ -58,7 +58,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P02-06 | Full host/pool properties | Host software/CPU metadata, metrics and attachment details displayed; full pool properties remain queued |
 | P02-07 | VM disk/NIC and host/storage attachment graph | Typed VDI/VBD/VIF/PIF/PBD graph and VM devices view implemented; broader host/SR views and lab qualification remain open |
 | P02-08 | Physical NIC/link/bond/VLAN inspection | Host/network details display PIF addressing, management/physical flags, VLAN, MTU and bond members/mode/link count; link-speed/path inspection remains partial |
-| P02-09 | SR attachment/path and disk inspection | SR details display host attachments, disk capacity/flags and VM/snapshot consumers; multipath/path inspection remains queued |
+| P02-09 | SR attachment/path and disk inspection | SR details display host attachments, disk capacity/flags, VM/snapshot consumers and bounded per-PBD multipath/path observations; fixture verified, actual path health and live qualification remain open |
 | P02-10 | Live inventory/stale-state handling | Optional-class negotiation, isolated decode failures and bounded resync implemented; live compatibility/scale qualification open |
 | P02-11 | Filtered/grouped/saved/cross-pool searches | Typed cross-pool text/type/power/host/pool/tag/folder/custom-field filters, grouped ordering and saved definitions implemented and fixture verified; [search report](reports/2026-11-08-cross-pool-search.md); live qualification open |
 | P02-12 | Multi-object actions and context menus | VM multi-selection, reviewed same-pool power batches and name-cell context menus implemented; fixture verified. Keyboard/whole-row menus and other bulk workflows remain open ([report](reports/2026-11-08-bulk-power-ui.md)) |
@@ -72,7 +72,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P03-03 | Pause/unpause and suspend/resume | Existing workflow; qualification open |
 | P03-04 | Start/resume on a chosen eligible host/home server | Chosen-host start/resume and fresh compatibility preflight implemented; live placement qualification open |
 | P03-05 | Explain unavailable actions | Host block messages preserved, current diagnostic context enforced and contradictory blocked/allowed operations refused; lab RBAC/state qualification open |
-| P03-06 | Show current tasks and administrative action blocks | Current operations, administrative blocks and typed server tasks parsed; per-action diagnosis implemented; full task center remains queued |
+| P03-06 | Show current tasks and administrative action blocks | Current operations, administrative blocks, per-action diagnosis and pool-wide task Activity workspace implemented; fixture verified, live qualification open |
 | P03-07 | Reviewed force recovery with running tasks | Queued |
 | P03-08 | Recovery-mode boot | Queued |
 | P03-09 | Batch VM power actions | Reviewed 1–32 VM same-pool serial power batches implemented with per-VM outcomes, whole-selection preflight and no-replay recovery; protocol/Rune fixtures verified, live qualification open ([report](reports/2026-11-08-bulk-power-backend.md)) |
@@ -108,7 +108,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P05-08 | Delete snapshots with owned-disk cleanup | Reviewed record deletion and explicit owned disk UUID cleanup implemented with checkpoint-memory checks and durable partial/unknown outcomes; fixture verified, lab qualification open |
 | P05-09 | New VM from snapshot | Reviewed clone and separately journaled template conversion implemented; new halted VM identity verified against pre-existing UUID baseline; fixture verified, lab qualification open |
 | P05-10 | New template from snapshot | Reviewed clone with new template identity/provenance checks implemented; fixture verified, lab qualification open |
-| P05-11 | Export snapshot as template/backup | Queued |
+| P05-11 | Export snapshot as template/backup | Reviewed halted disk-snapshot XVA export implemented; source/parent identity and private atomic output fixture verified. Memory-checkpoint export, snapshot-chain coverage and live qualification remain open; see P11-07 |
 | P05-12 | Ancestry tree, preview image, storage/size detail | Queued |
 | P05-13 | Scheduled-snapshot policies | Implemented/fixture-verified: reviewed host VMSS create/edit/assignment/enable/run/delete; XCP-ng 8.3 plugin contract and local clock checked. Live cron/DST/retention qualification open. [Evidence](reports/2026-11-08-snapshot-schedules.md) |
 
@@ -122,7 +122,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P06-04 | Static/dynamic memory limits, ballooning/live changes | Halted static/dynamic limits and reviewed running-VM dynamic ranges implemented with fresh static-bound checks; fixture verified, live ballooning qualification open |
 | P06-05 | Boot order, bootable devices, autostart | Boot-order/autostart editors and reviewed halted-VM bootable disk-attachment flags implemented; fixture verified, live qualification open |
 | P06-06 | Home server/host affinity | Reviewed pool-host preference/set-clear editor implemented with fresh UUID resolution and lost-reply reconciliation; fixture verified, live placement qualification open ([evidence](reports/2026-11-08-home-host.md)) |
-| P06-07 | VM HA restart priority/protection | Queued |
+| P06-07 | VM HA restart priority/protection | Reviewed restart/best-effort/disabled priorities and server eligibility checks implemented; fixture verified, advanced HA policy and live qualification open ([report](reports/2026-11-08-pool-administration.md)) |
 | P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Reviewed creation modes, halted UEFI Secure Boot policy and read-only guest/pool readiness implemented; installed-image BIOS/UEFI switches refused, fixture verified, live enforcement qualification open ([evidence](reports/2026-11-08-firmware-templates.md)) |
 | P06-09 | HVM shadow-memory settings | Reviewed halted/live shadow-memory multiplier editing implemented with modern HVM identity and advertised capability checks; fixture verified, live qualification open |
 | P06-10 | Cloud-config parameters/config drive | Queued |
@@ -303,11 +303,11 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | --- | --- | --- |
 | P18-01 | Linux executable/desktop-entry archive | Existing workflow; qualification open |
 | P18-02 | Clean-system installation/offline cold start | Qualification open |
-| P18-03 | Portable/distro package, upgrade and uninstall | Queued |
+| P18-03 | Portable/distro package, upgrade and uninstall | Versioned portable archive with desktop/icon metadata and dependency notices implemented; automated installation/upgrade/uninstall, AppImage/distro packaging and clean-system qualification remain open |
 | P18-04 | Native Wayland/X11/GPU compatibility | Existing subset; remaining work queued |
 | P18-05 | HiDPI/multimonitor/compact windows | Existing subset; remaining work queued |
 | P18-06 | Keyboard navigation/focus/Orca | Qualification open |
-| P18-07 | Native file selection/clipboard integration | Explicit console clipboard, CA file selection and screenshot save dialogs implemented; transfer pickers and native desktop qualification remain open |
+| P18-07 | Native file selection/clipboard integration | Explicit console clipboard and native CA/screenshot/transfer/search/activity pickers implemented with cancelled/stale-callback fixtures; real portal/clipboard/desktop qualification remains open |
 | P18-08 | General/confirmation/console/display options | Connection-profile and console options extended; general options center remains partial |
 | P18-09 | External tools/plugins | Capability review and implementation queued |
 | P18-10 | Localization/integrated help | Queued |
