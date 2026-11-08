@@ -46,3 +46,7 @@ references remain excluded from public operation serialization.
 
 No live device writes were performed. Storage/guest behavior, priority effects,
 NIC throughput and backup-chain effects remain deferred to the disposable lab.
+
+Merged verification on `main`: 493 workspace tests passed, including the VMSS,
+reconnect-as and raw/VHD transfer increments. Strict workspace Clippy and all-target
+compilation passed. Both device-property scenes are included in `scripts/check.sh`.

@@ -59,3 +59,5 @@ check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import
 
 "$check_binary" --snap artifacts/snapshot-schedules.png --tree artifacts/snapshot-schedules.json --scene snapshot-schedules --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/snapshot-schedules-compact.png --tree artifacts/snapshot-schedules-compact.json --scene snapshot-schedules --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/device-properties.png --tree artifacts/device-properties.json --scene device-properties --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/device-properties-compact.png --tree artifacts/device-properties-compact.json --scene device-properties --theme dark --size 513x652 --scale 1 --at 1
