@@ -410,6 +410,15 @@ pub(super) fn dialog(s: &State, k: &Kit) -> rune::El {
         );
         if let Some(v) = &e.overview {
             body=body.child(caption(if v.is_local_superuser{"Local superuser session · security changes available"}else{"Read-only security inspection. Reconnect as local root to change authentication or certificates."},k).wrap());
+            if !v.is_local_superuser {
+                let pool = e.pool;
+                body = body.child(
+                    Button::new("Reconnect as local administrator…")
+                        .disabled(s.demo || !current(s, e))
+                        .on_press(move |s: &mut State| profiles_view::reconnect_pool(s, pool))
+                        .build(k),
+                );
+            }
             for (section, error) in &v.errors {
                 body = body.child(caption(format!("{section}: {error}"), k).wrap());
             }

@@ -5,6 +5,8 @@ use xenadmin_core::{
 
 #[path = "profile_credentials.rs"]
 mod credentials;
+#[path = "profile_reconnect.rs"]
+mod reconnect;
 use credentials::CredentialJob;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -36,6 +38,8 @@ pub(super) fn inspection_connections(
 }
 
 pub(super) struct Workspace {
+    reconnect: Option<reconnect::Editor>,
+    session_accounts: BTreeMap<ProfileId, (String, bool)>,
     store: Result<ProfileStore, String>,
     writable: bool,
     preview_profiles: Vec<ConnectionProfile>,
@@ -73,6 +77,8 @@ impl Workspace {
             Err("Another XenAdmin RS window owns this state directory. Close it before changing connections here.".into())
         };
         Self {
+            reconnect: None,
+            session_accounts: BTreeMap::new(),
             store,
             writable,
             preview_profiles: Vec::new(),
@@ -365,6 +371,7 @@ fn start_connection(
     profile: &ConnectionProfile,
     credentials: Credentials,
 ) -> Result<(), String> {
+    s.workspace.session_accounts.remove(&profile.id);
     let connection = s.backend.as_ref().map_err(Clone::clone)?.connect(
         profile.options().map_err(|error| error.to_string())?,
         credentials,
@@ -591,15 +598,24 @@ pub(super) fn sidebar(s: &State, k: &Kit) -> El {
             continue;
         };
         panel = panel.child(
-            Button::new(format!("{} · {}", profile.name, status(Some(connection))))
-                .variant(if s.workspace.selected == Some(id) && !s.demo {
-                    ButtonVariant::Neutral
-                } else {
-                    ButtonVariant::Ghost
-                })
-                .on_press(move |s: &mut State| select(s, id))
-                .build(k)
-                .key(format!("pool-{id}")),
+            Button::new(format!(
+                "{}{} · {}",
+                profile.name,
+                s.workspace
+                    .session_accounts
+                    .get(&id)
+                    .map(|(username, _)| format!(" · as {username}"))
+                    .unwrap_or_default(),
+                status(Some(connection))
+            ))
+            .variant(if s.workspace.selected == Some(id) && !s.demo {
+                ButtonVariant::Neutral
+            } else {
+                ButtonVariant::Ghost
+            })
+            .on_press(move |s: &mut State| select(s, id))
+            .build(k)
+            .key(format!("pool-{id}")),
         );
     }
     panel
@@ -779,6 +795,9 @@ fn choose_ca(s: &mut State, tx: &mut Tx) {
 }
 
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
+    if s.workspace.reconnect.is_some() {
+        return reconnect::dialog(s, k);
+    }
     let mut list = col()
         .gap(12.0)
         .min_h(0.0)
@@ -831,6 +850,19 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if profile.auto_connect {
             entry = entry.child(caption("Connects automatically at startup", k));
         }
+        if let Some((username, read_only)) = s.workspace.session_accounts.get(&id) {
+            entry = entry.child(
+                caption(
+                    format!(
+                        "Current session account: {username}{} · saved account unchanged",
+                        if *read_only { " · Read-only" } else { "" }
+                    ),
+                    k,
+                )
+                .wrap(),
+            );
+        }
+
         if let Some(message) = s.workspace.profile_status.get(&id) {
             entry = entry.child(
                 caption(message, k)
@@ -893,6 +925,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .build(k)
                         .key(format!("remove-profile-{id}")),
                 );
+        }
+        if active {
+            entry = entry.child(
+                Button::new("Reconnect as another account…")
+                    .on_press(move |s: &mut State| reconnect::open(s, id))
+                    .build(k)
+                    .key(format!("reconnect-profile-{id}")),
+            );
         }
         list = list.child(entry.child(actions));
     }
@@ -1558,3 +1598,25 @@ mod tests {
 #[cfg(test)]
 #[path = "profile_restore_tests.rs"]
 mod restore_tests;
+
+pub(super) fn reconnect_pool(s: &mut State, pool: PoolId) {
+    let id = s
+        .workspace
+        .selected
+        .filter(|id| {
+            s.workspace
+                .active
+                .get(id)
+                .is_some_and(|c| c.latest().inventory().is_some_and(|i| i.pool_id == pool))
+        })
+        .or_else(|| {
+            s.workspace
+                .active
+                .iter()
+                .find(|(_, c)| c.latest().inventory().is_some_and(|i| i.pool_id == pool))
+                .map(|(id, _)| *id)
+        });
+    if let Some(id) = id {
+        reconnect::open(s, id);
+    }
+}
