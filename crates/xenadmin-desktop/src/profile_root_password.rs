@@ -417,7 +417,6 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(footer),
         )
 }
-#[cfg(any(test, debug_assertions))]
 pub(super) fn scene(s: &mut State) {
     let pool = PoolId::parse("11111111-1111-1111-1111-111111111111").unwrap();
     let coordinator = HostId::parse("22222222-2222-2222-2222-222222222222").unwrap();

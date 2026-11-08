@@ -1774,7 +1774,6 @@ pub(super) fn select_transfer_destination(
 pub(super) fn change_root_password(s: &mut State) {
     root_password::open(s);
 }
-#[cfg(debug_assertions)]
 pub(super) fn root_password_scene(s: &mut State) {
     root_password::scene(s);
 }
