@@ -95,13 +95,15 @@ availability, and confirmation checks the selected mode.
 To restore, shut down the VM, select a snapshot and choose **Restore snapshot**. Review
 both UUIDs before confirming: restoration replaces the configuration and disk contents,
 and newer changes are lost. The backend rechecks the halted state, snapshot identity and
-parent relationship immediately before dispatch. It does not automatically start or resume
-the restored VM. Inspect its resulting state and use the appropriate power action.
+parent relationship immediately before dispatch. The review offers explicit clean shutdown before restore and optional start or resume
+after verified restore. Leaving those options off keeps the corresponding power state
+unchanged; no recovery step is replayed after interruption.
 
 Snapshot actions share the operation history, cancellation and unknown-outcome handling
 above. A successful create is reported only after verifying the returned snapshot identity.
 A lost reply never causes automatic recreation. The demo previews both dialogs but cannot
-confirm host changes. Automatic shutdown/restore/restart orchestration remains queued.
+confirm host changes. Optional shutdown/restore/start or resume steps have separate
+durable results and stop on failure.
 Snapshot writes are fixture-verified; live qualification requires
 an explicitly designated disposable lab.
 
@@ -184,11 +186,11 @@ unknown steps. Rechecking uncertain properties reads the host without repeating 
 Pool-level autostart must also be enabled for a VM's autostart setting to take effect.
 
 **Disks and network interfaces** shows attachments, VDIs/SRs, ISO drives, NICs/uplinks and
-guest tools/addresses. The first device controls support ISO insert/eject, existing disk and
-NIC activation/deactivation, and growing an exclusive writable disk while its VM is halted.
+guest tools/addresses. Reviewed controls support disk/CD/NIC creation and removal, ISO
+insert/eject, activation/deactivation, eligible disk growth and device-property changes.
 Growing a virtual disk does not resize guest partitions or filesystems. Every action reviews
 the captured VM/device and rechecks ownership and current host restrictions before dispatch.
-Creating/removing attachments and broader device properties remain in the parity backlog.
+Backing disk deletion is separate from attachment removal; the review shows retained data.
 
 ## Console controls
 
@@ -198,7 +200,8 @@ available; legacy servers accept only representable Latin-1 text. Middle-button 
 input are supported. Rune's current secondary-click API lacks a release callback, so use
 **Hold right button** and **Release input** for right-button dragging. Focus loss releases
 held input. Reconnect keeps the original VM target even if table selection changes.
-Separate console windows and broader native keyboard/layout qualification remain open.
+Up to eight separate console windows keep their original targets. Broader native
+keyboard/layout and compositor qualification remain open.
 
 ## Host networking
 
@@ -206,6 +209,37 @@ Choose **Host networking…** in host or network Details. Select an existing net
 VLAN interface or unused-NIC bond. The dialog also offers physical NIC scans, interface
 attachment, IPv4 settings, MTU, automatic new-VM attachment and pool IGMP snooping. Changes
 show a separate review and use the pool operation history. Network changes can interrupt
-traffic; the current implementation excludes management-interface reconfiguration and
-requires VLAN/IP/VM users to be moved before creating or destroying bonds. See the
-[network increment report](reports/2026-11-08-network-administration.md) for exact limits.
+traffic. Management changes use a separate captured reconnection plan; ordinary bond
+changes require reviewed VLAN/IP/VM dependencies. GRE/VXLAN and SR-IOV workflows expose
+host coverage and reviewed pool-wide changes. Controller state, actual traffic and
+reboot outcomes remain separate from configuration verification.
+
+## Convert and export disks locally
+
+Offline disk conversion accepts self-contained raw, VHD, QCOW2, VMDK and VHDX images
+and produces raw or dynamic VHD. Choose the input format and trusted qemu-img executable,
+then review the inspected image before conversion. A successful output can continue to a
+separate disk-import review; conversion alone does not contact a host or create a guest.
+
+This optional workflow requires Linux x86-64, QEMU 8 or newer with the requested formats,
+Bubblewrap, util-linux prlimit, working user namespaces and a kernel supporting
+close_range(CLOEXEC). These tools are not bundled or installed by the application.
+Unsupported backing files, encryption and internal snapshot selection are refused.
+Every inspection/conversion/comparison runs in the same restricted sandbox. Cancel local
+work stops the process; interrupted history offers cleanup of owned temporary files,
+without resuming conversion or deleting published output.
+
+Select multiple eligible halted VMs or custom templates for a reviewed serial XVA or
+OVF/OVA export. Each source has its own destination; existing outputs are never replaced.
+Stop finishes the current transfer and skips the remainder. Recheck inspects existing
+evidence and never publishes a new file. Snapshot and checkpoint exports have their own
+reviews; full XVA does not include snapshot ancestry.
+
+## Dissolve a pool
+
+Pool administration offers **Dissolve pool…**. Review the retained coordinator and exact
+member order, then enter the pool UUID. Members must already be disabled, evacuated and
+free of local guest-disk data, with HA disabled. Ejection reboots each selected member;
+the coordinator remains and its pool name/description are cleared last. Stop and recheck
+never submit remaining steps automatically. Verify each ejected host independently after
+reboot. Qualification of these host changes remains deferred to a disposable lab.
