@@ -40,7 +40,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P01-09 | Session-only password | Existing workflow; qualification open |
 | P01-10 | Save/forget credentials and protected session restore | Opt-in Secret Service save/load/forget and per-profile startup restore implemented; stale credential results, locked/missing keyring and no-retry behavior fixture-verified; desktop-service qualification open |
 | P01-11 | System CA/name verification and endpoint pins | Existing workflow; qualification open |
-| P01-12 | Desktop custom-CA file selection | Existing subset; remaining work queued |
+| P01-12 | Desktop custom-CA file selection | Native portal file picker and manual path entry implemented; cancelled/stale editor results fixture verified, native portal qualification open |
 | P01-13 | Inspect and accept unknown certificates | Queued |
 | P01-14 | Review changed certificate and replace trust | Existing subset; remaining work queued |
 | P01-15 | Easy certificate-validation opt-out | Existing workflow; qualification open |
@@ -91,7 +91,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P04-08 | Keep console target aligned with Details/actions | Console target pinned to pool/VM identity; selection changes no longer silently retarget input; lab qualification open |
 | P04-09 | Scaling, framebuffer resize and cursor behavior | Fit/actual-size/panning and cursor handling extended; live resize/display matrix remains open |
 | P04-10 | Full-screen, detached and multiple console windows | Fullscreen implemented; detached/multiple windows require further Rune integration |
-| P04-11 | Save console screenshot | Queued |
+| P04-11 | Save console screenshot | Explicit native save dialog and background PNG export of the captured frame implemented; private atomic file output and console-switch fencing fixture verified, native qualification open |
 | P04-12 | Host text console; guest SSH/RDP/external viewer | Queued |
 
 ## 5. Snapshots
@@ -293,7 +293,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P18-04 | Native Wayland/X11/GPU compatibility | Existing subset; remaining work queued |
 | P18-05 | HiDPI/multimonitor/compact windows | Existing subset; remaining work queued |
 | P18-06 | Keyboard navigation/focus/Orca | Qualification open |
-| P18-07 | Native file selection/clipboard integration | Explicit console clipboard integration added; native file-selection flows remain queued |
+| P18-07 | Native file selection/clipboard integration | Explicit console clipboard, CA file selection and screenshot save dialogs implemented; transfer pickers and native desktop qualification remain open |
 | P18-08 | General/confirmation/console/display options | Connection-profile and console options extended; general options center remains partial |
 | P18-09 | External tools/plugins | Capability review and implementation queued |
 | P18-10 | Localization/integrated help | Queued |

@@ -670,6 +670,7 @@ fn setup(s: &mut State, waker: Waker) {
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= resource_admin::poll(s);
+    changed |= console_view::poll_export(s);
     dev_inspection::refresh(s);
     let diagnostic_results = s
         .diagnostics

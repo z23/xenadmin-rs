@@ -43,6 +43,7 @@ pub(super) struct Workspace {
     seen: BTreeMap<ProfileId, Arc<ConnectionSnapshot>>,
     selected: Option<ProfileId>,
     editing: Option<ProfileId>,
+    editor_epoch: uuid::Uuid,
     pub(super) show_manager: bool,
     name: TextEdit,
     ca_certificate: TextEdit,
@@ -79,6 +80,7 @@ impl Workspace {
             seen: BTreeMap::new(),
             selected,
             editing: None,
+            editor_epoch: uuid::Uuid::new_v4(),
             show_manager: false,
             name: TextEdit::new(""),
             ca_certificate: TextEdit::new(""),
@@ -132,6 +134,7 @@ pub(super) fn apply_initial(s: &mut State) {
 }
 
 fn populate(s: &mut State, profile: &ConnectionProfile) {
+    s.workspace.editor_epoch = uuid::Uuid::new_v4();
     s.workspace.remember_password = profile.credential_mode == CredentialMode::SecretService;
     s.workspace.auto_connect = profile.auto_connect;
     s.workspace.cached_credentials = None;
@@ -172,6 +175,7 @@ fn populate(s: &mut State, profile: &ConnectionProfile) {
 
 pub(super) fn begin_new(s: &mut State) {
     cancel_editor(s);
+    s.workspace.editor_epoch = uuid::Uuid::new_v4();
     s.workspace.remember_password = false;
     s.workspace.auto_connect = false;
     s.workspace.cached_credentials = None;
@@ -630,6 +634,14 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
                     .key("profile-ca"),
             )
             .child(
+                Button::new("Choose CA certificate…")
+                    .variant(ButtonVariant::Outline)
+                    .disabled(s.accept_invalid_certificates)
+                    .on_press_tx(choose_ca)
+                    .build(k)
+                    .key("choose-ca-file"),
+            )
+            .child(
                 row()
                     .gap(12.0)
                     .center_y()
@@ -729,6 +741,41 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
         );
     }
     fields
+}
+
+fn choose_ca(s: &mut State, tx: &mut Tx) {
+    let epoch = s.workspace.editor_epoch;
+    tx.open_file(
+        rune::FileDialogOptions {
+            title: "Choose CA certificate".into(),
+            ..Default::default()
+        }
+        .filter("PEM certificates", &["pem", "crt", "cer"]),
+        move |s: &mut State, result, _| {
+            if !s.show_connect || s.workspace.editor_epoch != epoch {
+                return;
+            }
+            match result {
+                Ok(Some(path)) => match path.to_str() {
+                    Some(path) => {
+                        s.workspace.ca_certificate = TextEdit::new(path);
+                        s.workspace.cached_credentials = None;
+                        s.error = None;
+                    }
+                    None => {
+                        s.error =
+                            Some("Choose a certificate path with valid Unicode characters.".into())
+                    }
+                },
+                Ok(None) => {}
+                Err(error) => {
+                    s.error = Some(format!(
+                        "Cannot open the file chooser: {error}. Enter the CA file path instead."
+                    ))
+                }
+            }
+        },
+    );
 }
 
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
@@ -1236,6 +1283,57 @@ pub(super) fn scene(s: &mut State, configure: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ca_picker_applies_to_its_editor_only_and_cancel_preserves_the_path() {
+        let mut state = init();
+        begin_new(&mut state);
+        let mut runtime = rune::Runtime::new(
+            state,
+            |_: &State, cx: &mut rune::Cx<State>| {
+                Button::new("Choose CA")
+                    .on_press_tx(choose_ca)
+                    .build(&Kit::neutral(cx.system_dark()))
+                    .key("pick")
+            },
+            (480.0, 640.0),
+            rune::Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        let pick = |runtime: &mut rune::Runtime<State>| {
+            runtime.frame(0.0);
+            let (x, y) = runtime.find("pick").unwrap();
+            runtime.pointer_down(x, y);
+            runtime.pointer_up(x, y);
+            runtime.frame(0.0);
+            assert_eq!(runtime.file_dialog().unwrap().0, rune::FileDialogKind::Open);
+        };
+        pick(&mut runtime);
+        runtime
+            .resolve_file_dialog(Some("/tmp/synthetic-ca.pem".into()))
+            .unwrap();
+        runtime.frame(0.0);
+        assert_eq!(
+            runtime.state.workspace.ca_certificate.text,
+            "/tmp/synthetic-ca.pem"
+        );
+        pick(&mut runtime);
+        runtime.resolve_file_dialog(None).unwrap();
+        runtime.frame(0.0);
+        assert_eq!(
+            runtime.state.workspace.ca_certificate.text,
+            "/tmp/synthetic-ca.pem"
+        );
+        pick(&mut runtime);
+        begin_new(&mut runtime.state);
+        runtime
+            .resolve_file_dialog(Some("/tmp/old-editor.pem".into()))
+            .unwrap();
+        runtime.frame(0.0);
+        assert!(runtime.state.workspace.ca_certificate.text.is_empty());
+    }
 
     pub(super) struct Fixture {
         pub(super) state: State,

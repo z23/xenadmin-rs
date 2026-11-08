@@ -4879,6 +4879,7 @@ dependencies = [
 name = "xenadmin-desktop"
 version = "0.4.0"
 dependencies = [
+ "image",
  "rune",
  "rune-kit",
  "serde",

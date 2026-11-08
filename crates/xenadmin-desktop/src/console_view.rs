@@ -7,6 +7,10 @@ use rune_kit::{Button, ButtonVariant, Kit};
 use std::sync::atomic::{AtomicU64, Ordering};
 use xenadmin_core::{ConsoleInput, ConsoleState, PoolId, VmId};
 
+#[path = "console_export.rs"]
+mod export;
+pub(super) use export::poll as poll_export;
+
 #[derive(Clone)]
 pub(super) struct ConsoleTarget {
     pub pool: PoolId,
@@ -21,6 +25,7 @@ pub(super) struct ConsoleUi {
     pointer: [f32; 2],
     wheel: [f32; 2],
     message: Option<String>,
+    export: export::Export,
 }
 impl ConsoleUi {
     pub fn target(&self) -> Option<&ConsoleTarget> {
@@ -44,6 +49,7 @@ pub(super) fn reconnecting(s: &mut State) {
     release(s);
     s.console_ui.serial = next_serial();
     s.console_ui.message = None;
+    s.console_ui.export = Default::default();
     s.console_pixels = rune::Pixels::new();
 }
 pub(super) fn release(s: &mut State) {
@@ -251,6 +257,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(
             row()
                 .gap(8.0)
+                .flex_wrap()
                 .child(
                     Button::new("Reconnect")
                         .disabled(connected)
@@ -278,11 +285,24 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                         })
                         .build(k),
                 )
-                .child(Button::new("Release input").on_press(release).build(k)),
+                .child(Button::new("Release input").on_press(release).build(k))
+                .child(
+                    Button::new("Save screenshot…")
+                        .disabled(
+                            s.console_ui.export.pending
+                                || s.console_snapshot
+                                    .as_ref()
+                                    .is_none_or(|snapshot| snapshot.frame.is_none()),
+                        )
+                        .on_press_tx(export::choose)
+                        .build(k)
+                        .key("save-console-screenshot"),
+                ),
         )
         .child(
             row()
                 .gap(8.0)
+                .flex_wrap()
                 .child(chord(
                     "Ctrl+Alt+Delete",
                     vec![0xffe3, 0xffe9, 0xffff],
@@ -310,6 +330,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(
             row()
                 .gap(8.0)
+                .flex_wrap()
                 .child(
                     Button::new("Send clipboard to VM")
                         .disabled(!connected)
