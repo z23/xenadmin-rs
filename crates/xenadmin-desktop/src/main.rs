@@ -175,6 +175,7 @@ struct State {
     snapshot_dialog: Option<vm_snapshots::Dialog>,
     snapshot_name: TextEdit,
     snapshot_memory: bool,
+    snapshot_description: TextEdit,
     window_width: f32,
     window_height: f32,
     show_details: bool,
@@ -279,6 +280,7 @@ fn init() -> State {
         snapshot_dialog: None,
         snapshot_name: TextEdit::new(""),
         snapshot_memory: false,
+        snapshot_description: TextEdit::new(""),
         window_width: 1440.0,
         window_height: 900.0,
         show_details: false,
@@ -1654,7 +1656,13 @@ fn details(s: &State, k: &Kit) -> El {
             let id = record.id;
             actions = actions.child(
                 Button::new(
-                    if matches!(record.action, xenadmin_core::OperationAction::Lifecycle(_)) {
+                    if matches!(
+                        record.action,
+                        xenadmin_core::OperationAction::Lifecycle(_)
+                            | xenadmin_core::OperationAction::Snapshot(
+                                xenadmin_core::SnapshotOperation::Workflow { .. }
+                            )
+                    ) {
                         "Stop remaining steps"
                     } else {
                         "Request cancellation"
@@ -1999,14 +2007,8 @@ fn main() {
                 vm_snapshots::open(s);
                 vm_snapshots::begin_create(s);
             }),
-            ("snapshot-restore", |s| {
-                demo(s);
-                let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
-                s.table.select(id.to_string());
-                vm_snapshots::open(s);
-                s.snapshot_table.select(s.snapshot_rows[0].id.to_string());
-                vm_snapshots::begin_restore(s);
-            }),
+            ("snapshot-restore", vm_snapshots::restore_scene),
+            ("snapshot-edit", vm_snapshots::edit_scene),
             ("connections", |s| profiles_view::scene(s, false)),
             ("network-interfaces", network_admin::scene),
             ("host-administration", host_admin::scene),

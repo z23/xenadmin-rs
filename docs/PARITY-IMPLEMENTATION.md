@@ -100,11 +100,11 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | --- | --- | --- |
 | P05-01 | List per-VM snapshots and basic details | Existing workflow; qualification open |
 | P05-02 | Create named disk snapshot | Existing workflow; qualification open |
-| P05-03 | Restore to existing VM | Existing subset; remaining work queued |
-| P05-04 | Shutdown-before/boot-or-resume-after restore | Queued |
+| P05-03 | Restore to existing VM | Reviewed exact-identity disk/checkpoint restore with task and postcondition verification; fixture verified, lab data-integrity qualification open. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
+| P05-04 | Shutdown-before/boot-or-resume-after restore | Explicit clean shutdown of a running VM and optional start/resume after verified restore; durable per-step partial/unknown outcomes and no replay. Fixture verified, live qualification open |
 | P05-05 | Disk-and-memory checkpoint creation | Named memory checkpoint command, confirmation and result verification implemented; data-integrity qualification open |
-| P05-06 | Guest-quiesced snapshot creation | Queued |
-| P05-07 | Snapshot description at creation; edit name/description | Queued |
+| P05-06 | Guest-quiesced snapshot creation | Explicitly unsupported on XCP-ng 8.1+ because VSS/quiesced support was removed; no legacy API or consistency fallback offered. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
+| P05-07 | Snapshot description at creation; edit name/description | Create description after new snapshot identity verification; reviewed name/description edits with concurrent-change guards and partial outcomes. Fixture verified, live qualification open |
 | P05-08 | Delete snapshots with owned-disk cleanup | Reviewed record deletion and explicit owned disk UUID cleanup implemented with checkpoint-memory checks and durable partial/unknown outcomes; fixture verified, lab qualification open |
 | P05-09 | New VM from snapshot | Reviewed clone and separately journaled template conversion implemented; new halted VM identity verified against pre-existing UUID baseline; fixture verified, lab qualification open |
 | P05-10 | New template from snapshot | Reviewed clone with new template identity/provenance checks implemented; fixture verified, lab qualification open |

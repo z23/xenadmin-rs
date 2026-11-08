@@ -461,3 +461,14 @@ The review explicitly separates desktop trust from XAPI's initial host-to-host c
 bootstrap. Joining does not silently change saved profiles, pins, HA, guest power or
 network/storage prerequisites. See the [join report](reports/2026-11-08-pool-join.md) for
 qualification boundaries and primary protocol evidence.
+
+## Snapshot metadata and restore orchestration
+
+The typed snapshot workflow owns creation metadata, existing-snapshot metadata edits, and
+reviewed shutdown/revert/start-or-resume steps. Its private plan stores immutable target and
+baseline identities plus monotonic task receipts/completion evidence. The normal VM journal
+reserves the parent and selected snapshot; public serialization omits reconciliation internals.
+A dedicated evidence merge preserves recovery/acknowledgment controls when a late response
+arrives, and a fresh per-step revision check prevents dispatch after recovery. Reconciliation
+is read-only and does not continue pending power or metadata steps. See the
+[snapshot workflow report](reports/2026-11-08-snapshot-workflows.md) for scope and verification.

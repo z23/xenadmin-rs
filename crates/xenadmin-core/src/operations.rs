@@ -17,6 +17,8 @@ mod device_lifecycle_operations;
 mod migration_operations;
 #[path = "snapshot_operations.rs"]
 mod snapshot_operations;
+#[path = "snapshot_workflow_operations.rs"]
+mod snapshot_workflow_operations;
 #[path = "vm_lifecycle_operations.rs"]
 mod vm_lifecycle_operations;
 
@@ -36,6 +38,10 @@ impl SnapshotName {
 }
 
 pub enum VmCommand {
+    SnapshotWorkflow {
+        vm: crate::ObservedVm,
+        operation: crate::SnapshotWorkflow,
+    },
     Migrate {
         vm: crate::ObservedVm,
         operation: crate::VmMigration,
@@ -99,6 +105,9 @@ pub struct PlacementOperation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum SnapshotOperation {
+    Workflow {
+        operation: crate::SnapshotWorkflow,
+    },
     Checkpoint {
         name: String,
     },
@@ -133,6 +142,7 @@ impl OperationAction {
                     "Start on host"
                 }
             }
+            Self::Snapshot(SnapshotOperation::Workflow { operation }) => operation.label(),
             Self::Snapshot(SnapshotOperation::Create { .. }) => "Create snapshot",
             Self::Snapshot(SnapshotOperation::Checkpoint { .. }) => "Create memory snapshot",
             Self::Snapshot(SnapshotOperation::Revert { .. }) => "Restore snapshot",
@@ -147,6 +157,11 @@ impl OperationAction {
     }
     fn resources(&self, vm: VmId) -> Vec<String> {
         let mut ids = vec![vm.to_string()];
+        if let Self::Snapshot(SnapshotOperation::Workflow { operation }) = self
+            && let Some(id) = operation.snapshot()
+        {
+            ids.push(id.to_string());
+        }
         if let Self::Snapshot(
             SnapshotOperation::Revert { snapshot }
             | SnapshotOperation::Clone { snapshot, .. }
@@ -176,6 +191,10 @@ impl OperationAction {
 impl VmCommand {
     pub(crate) fn normalize(self) -> (crate::ObservedVm, OperationAction) {
         match self {
+            Self::SnapshotWorkflow { vm, operation } => (
+                vm,
+                OperationAction::Snapshot(SnapshotOperation::Workflow { operation }),
+            ),
             Self::Migrate { vm, operation } => (vm, OperationAction::Migration(operation)),
             Self::Lifecycle { source, operation } => {
                 (source, OperationAction::Lifecycle(operation))
@@ -380,6 +399,8 @@ pub struct OperationRecord {
     #[serde(skip)]
     snapshot_deletion: Option<crate::snapshots::DeletionPlan>,
     #[serde(skip)]
+    snapshot_workflow: Option<Box<crate::snapshot_workflow::Plan>>,
+    #[serde(skip)]
     snapshot_clone_baseline: Option<Vec<VmId>>,
     #[serde(skip)]
     device_plan: Option<crate::device_lifecycle::Plan>,
@@ -430,7 +451,9 @@ impl OperationRecord {
             || matches!(
                 self.action,
                 OperationAction::Settings(_)
-                    | OperationAction::Snapshot(SnapshotOperation::Delete { .. })
+                    | OperationAction::Snapshot(
+                        SnapshotOperation::Delete { .. } | SnapshotOperation::Workflow { .. }
+                    )
             )
     }
     pub fn has_task(&self) -> bool {
@@ -536,7 +559,9 @@ impl DispatchPermit {
                 params.push(json!(name));
                 "Async.VM.clone".into()
             }
-            OperationAction::Snapshot(SnapshotOperation::Delete { .. }) => {
+            OperationAction::Snapshot(
+                SnapshotOperation::Delete { .. } | SnapshotOperation::Workflow { .. },
+            ) => {
                 return Err(Error::UnavailableAction);
             }
         };
@@ -573,6 +598,7 @@ pub(crate) fn channel(
         created_snapshot: None,
         created_vm: None,
         snapshot_deletion: None,
+        snapshot_workflow: None,
         snapshot_clone_baseline: None,
         device_plan: None,
         lifecycle_plan: None,
@@ -712,6 +738,7 @@ impl Journal {
             cancel_dispatched,
             result_reference,
             snapshot_deletion,
+            snapshot_workflow,
             snapshot_clone_baseline,
             device_plan,
             lifecycle_plan,
@@ -738,6 +765,7 @@ impl Journal {
         let cancel_dispatched = take(&mut value, "cancel_dispatched")?;
         let result_reference = take(&mut value, "result_reference")?;
         let snapshot_deletion = take(&mut value, "snapshot_deletion")?;
+        let snapshot_workflow = take(&mut value, "snapshot_workflow")?;
         let snapshot_clone_baseline = take(&mut value, "snapshot_clone_baseline")?;
         let device_plan = take(&mut value, "device_plan")?;
         let lifecycle_plan = take(&mut value, "lifecycle_plan")?;
@@ -747,6 +775,7 @@ impl Journal {
         record.cancel_dispatched = cancel_dispatched;
         record.result_reference = result_reference;
         record.snapshot_deletion = snapshot_deletion;
+        record.snapshot_workflow = snapshot_workflow;
         record.snapshot_clone_baseline = snapshot_clone_baseline;
         record.device_plan = device_plan;
         record.lifecycle_plan = lifecycle_plan;
@@ -850,6 +879,12 @@ impl Journal {
                 || (previous.created_snapshot.is_some()
                     && previous.created_snapshot != record.created_snapshot)
                 || (previous.created_vm.is_some() && previous.created_vm != record.created_vm)
+                || previous.snapshot_workflow.as_ref().is_some_and(|old| {
+                    !record
+                        .snapshot_workflow
+                        .as_ref()
+                        .is_some_and(|new| new.extends(old))
+                })
                 || (previous.snapshot_deletion.is_some()
                     && previous.snapshot_deletion != record.snapshot_deletion)
                 || (previous.snapshot_clone_baseline.is_some()
@@ -999,7 +1034,11 @@ pub(crate) fn recover(directory: &Path, pool: PoolId) -> Result<Vec<OperationRec
             } else {
                 OperationState::OutcomeUnknown
             };
-            record.detail = "Interrupted operation without a saved task reference. Inspect the host before acknowledging its unknown outcome.".into();
+            record.detail = if matches!(record.action, OperationAction::Snapshot(SnapshotOperation::Workflow { .. })) {
+                "Interrupted snapshot workflow. Recheck saved step evidence and inspect the host; remaining steps will not be submitted automatically."
+            } else {
+                "Interrupted operation without a saved task reference. Inspect the host before acknowledging its unknown outcome."
+            }.into();
             match journal.save(&mut record) {
                 Ok(()) => {}
                 Err(Error::JournalChanged) => {
@@ -1055,6 +1094,14 @@ impl MutationRequest {
                 .await
         } else {
             match Journal::open(&directory) {
+                Ok(mut journal)
+                    if matches!(
+                        self.record.action,
+                        OperationAction::Snapshot(SnapshotOperation::Workflow { .. })
+                    ) =>
+                {
+                    self.recheck_snapshot_workflow(&session, &mut journal).await
+                }
                 Ok(mut journal) if matches!(self.record.action, OperationAction::Settings(_)) => {
                     self.recheck_settings(&session, &mut journal).await
                 }
@@ -1190,6 +1237,14 @@ impl MutationRequest {
         }
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
+        }
+        if matches!(
+            &self.record.action,
+            OperationAction::Snapshot(SnapshotOperation::Workflow { .. })
+        ) {
+            return self
+                .execute_snapshot_workflow(session, &mut journal, connection_cancel)
+                .await;
         }
         if matches!(&self.record.action, OperationAction::Migration(_)) {
             return self
@@ -1704,6 +1759,7 @@ mod tests {
             created_snapshot: None,
             created_vm: None,
             snapshot_deletion: None,
+            snapshot_workflow: None,
             snapshot_clone_baseline: None,
             device_plan: None,
             lifecycle_plan: None,

@@ -1,7 +1,7 @@
 use super::*;
 use xenadmin_core::{
-    ClassAvailability, ObservedSnapshot, ObservedVm, SnapshotAction, SnapshotId, SnapshotName,
-    VdiId, VmCommand,
+    ClassAvailability, ObservedSnapshot, ObservedVm, PowerAction, SnapshotAction, SnapshotId,
+    SnapshotName, SnapshotWorkflow, VdiId, VmCommand,
 };
 
 #[derive(Clone, Copy)]
@@ -21,6 +21,14 @@ pub(super) enum Dialog {
         id: VmId,
         snapshot: String,
         snapshot_id: xenadmin_core::SnapshotId,
+        vm_target: Target<ObservedVm>,
+        expected_state: PowerState,
+        checkpoint: bool,
+        shutdown: bool,
+        start_after: bool,
+    },
+    Edit {
+        source: SnapshotReview,
     },
     Clone {
         source: SnapshotReview,
@@ -43,6 +51,8 @@ pub(super) struct SnapshotReview {
     snapshot: String,
     snapshot_id: SnapshotId,
     power_state: PowerState,
+    description: String,
+    vm_target: Target<ObservedVm>,
 }
 pub(super) struct ReviewedDisk {
     id: VdiId,
@@ -76,6 +86,17 @@ impl SnapshotReview {
             snapshot: snapshot.name.clone(),
             snapshot_id: snapshot.id,
             power_state: snapshot.power_state.clone(),
+            description: snapshot.description.clone(),
+            vm_target: if s.demo {
+                Target::Demo
+            } else {
+                Target::Live(
+                    s.snapshot
+                        .as_ref()
+                        .ok_or(xenadmin_core::Error::Stale)?
+                        .observe_vm(id)?,
+                )
+            },
         })
     }
     fn live(&self, s: &State) -> bool {
@@ -111,6 +132,17 @@ fn selected_snapshot(s: &State) -> Option<&xenadmin_core::Snapshot> {
             .iter()
             .find(|snapshot| snapshot.id.to_string() == id)
     })
+}
+fn begin_edit(s: &mut State) {
+    match SnapshotReview::capture(s) {
+        Ok(source) => {
+            s.snapshot_name = TextEdit::new(&source.snapshot);
+            s.snapshot_description = TextEdit::new(&source.description);
+            s.snapshot_dialog = Some(Dialog::Edit { source });
+            s.error = None;
+        }
+        Err(error) => s.error = Some(error.to_string()),
+    }
 }
 fn begin_clone(s: &mut State, as_template: bool) {
     match SnapshotReview::capture(s) {
@@ -222,6 +254,7 @@ pub(super) fn begin_create(s: &mut State) {
             )
         };
         s.snapshot_name = TextEdit::new("");
+        s.snapshot_description = TextEdit::new("");
         s.snapshot_memory = !s
             .inventory
             .as_ref()
@@ -236,6 +269,29 @@ pub(super) fn begin_create(s: &mut State) {
         Ok::<_, xenadmin_core::Error>(())
     })();
     s.error = result.err().map(|error| error.to_string());
+}
+pub(super) fn edit_scene(s: &mut State) {
+    demo(s);
+    s.table.select("30000000-0000-0000-0000-000000000000");
+    open(s);
+    s.snapshot_table
+        .select("60000000-0000-0000-0000-000000000000");
+    begin_edit(s);
+}
+pub(super) fn restore_scene(s: &mut State) {
+    demo(s);
+    let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
+    let guest = Arc::make_mut(s.inventory.as_mut().unwrap())
+        .vms
+        .get_mut(&id)
+        .unwrap();
+    guest.power_state = PowerState::Running;
+    guest.allowed_actions.push(PowerAction::CleanShutdown);
+    s.table.select(id.to_string());
+    open(s);
+    s.snapshot_table
+        .select("60000000-0000-0000-0000-000000000000");
+    begin_restore(s);
 }
 pub(super) fn begin_restore(s: &mut State) {
     let result = (|| {
@@ -267,6 +323,20 @@ pub(super) fn begin_restore(s: &mut State) {
             id: vm,
             snapshot: selected.name.clone(),
             snapshot_id: selected.id,
+            vm_target: if s.demo {
+                Target::Demo
+            } else {
+                Target::Live(
+                    s.snapshot
+                        .as_ref()
+                        .ok_or(xenadmin_core::Error::Stale)?
+                        .observe_vm(vm)?,
+                )
+            },
+            expected_state: guest.power_state.clone(),
+            checkpoint: selected.power_state == PowerState::Suspended,
+            shutdown: false,
+            start_after: false,
         });
         Ok::<_, xenadmin_core::Error>(())
     })();
@@ -277,24 +347,50 @@ fn submit(s: &mut State) {
         Some(Dialog::Create {
             target: Target::Live(vm),
             ..
-        }) => match SnapshotName::new(&s.snapshot_name.text) {
-            Ok(name) => {
-                if s.snapshot_memory {
-                    VmCommand::CreateCheckpoint { vm: *vm, name }
-                } else {
-                    VmCommand::CreateSnapshot { vm: *vm, name }
-                }
-            }
-            Err(error) => {
-                s.error = Some(error.to_string());
-                return;
-            }
+        }) => VmCommand::SnapshotWorkflow {
+            vm: *vm,
+            operation: SnapshotWorkflow::Create {
+                name: s.snapshot_name.text.trim().into(),
+                description: s.snapshot_description.text.clone(),
+                memory: s.snapshot_memory,
+            },
         },
         Some(Dialog::Restore {
-            target: Target::Live(snapshot),
+            vm_target: Target::Live(vm),
+            snapshot_id,
+            expected_state,
+            checkpoint,
+            shutdown,
+            start_after,
             ..
-        }) => VmCommand::RevertSnapshot {
-            snapshot: *snapshot,
+        }) => VmCommand::SnapshotWorkflow {
+            vm: *vm,
+            operation: SnapshotWorkflow::Restore {
+                snapshot: *snapshot_id,
+                expected_state: expected_state.clone(),
+                checkpoint: *checkpoint,
+                shutdown: *shutdown,
+                start_after: *start_after,
+            },
+        },
+        Some(Dialog::Edit {
+            source:
+                SnapshotReview {
+                    vm_target: Target::Live(vm),
+                    snapshot_id,
+                    snapshot,
+                    description,
+                    ..
+                },
+        }) => VmCommand::SnapshotWorkflow {
+            vm: *vm,
+            operation: SnapshotWorkflow::Edit {
+                snapshot: *snapshot_id,
+                expected_name: snapshot.clone(),
+                expected_description: description.clone(),
+                name: s.snapshot_name.text.trim().into(),
+                description: s.snapshot_description.text.clone(),
+            },
         },
         Some(Dialog::Clone {
             source:
@@ -349,7 +445,11 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let can_create =
         current(s) && vm.is_some_and(|vm| vm.can_snapshot || memory_available(s, vm.id));
     let can_restore = current(s)
-        && vm.is_some_and(|vm| vm.power_state == PowerState::Halted)
+        && vm.is_some_and(|vm| {
+            vm.power_state == PowerState::Halted
+                || (vm.power_state == PowerState::Running
+                    && vm.allowed_actions.contains(&PowerAction::CleanShutdown))
+        })
         && selected
             .is_some_and(|snapshot| snapshot.allowed_actions.contains(&SnapshotAction::Revert));
     let can_clone = current(s)
@@ -369,8 +469,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(row().gap(8.0).flex_wrap()
             .child(Button::new("Create snapshot").variant(ButtonVariant::Outline).disabled(!s.demo && !can_create).on_press(begin_create).build(k).key("create-snapshot"))
             .child(Button::new("Restore snapshot").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_restore)).on_press(begin_restore).build(k).key("restore-snapshot"))
+            .child(Button::new("Edit properties").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !current(s))).on_press(begin_edit).build(k).key("edit-snapshot"))
             .child(Button::new("Create VM").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, false)).build(k).key("clone-snapshot-vm"))
             .child(Button::new("Create template").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, true)).build(k).key("clone-snapshot-template"))
+            .child(Button::new("Activity").variant(ButtonVariant::Ghost).on_press(activity::open).build(k).key("snapshot-activity"))
             .child(Button::new("Delete snapshot").variant(ButtonVariant::Danger).disabled(selected.is_none() || (!s.demo && !can_delete)).on_press(begin_delete).build(k).key("delete-snapshot")));
     if let Some(snapshot) = selected
         && let Some(parent) = snapshot.vm
@@ -409,7 +511,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         );
     }
     if vm.is_some_and(|vm| vm.power_state != PowerState::Halted) {
-        content = content.child(caption("Shut down the VM before restoring a snapshot.", k).wrap());
+        content = content.child(caption("Restore can cleanly shut down a running VM when explicitly selected. Paused or suspended VMs must be shut down separately.", k).wrap());
     }
     if !s.demo && current(s) && selected.is_some() {
         if !can_clone {
@@ -457,30 +559,32 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         } else {
             table
         };
-        content = content.child(
-            table
-                .cell(|s: &State, i, column| {
-                    let snapshot = &s.snapshot_rows[i];
-                    if column == "name" {
-                        Cell::text(&snapshot.name)
-                    } else {
-                        Cell::text(snapshot.created_at.as_deref().unwrap_or("Unknown")).muted()
-                    }
-                })
-                .zebra(true)
-                .build(s, k)
-                .grow(1.0)
-                .min_h(0.0),
-        );
+        let table = table
+            .cell(|s: &State, i, column| {
+                let snapshot = &s.snapshot_rows[i];
+                if column == "name" {
+                    Cell::text(&snapshot.name)
+                } else {
+                    Cell::text(snapshot.created_at.as_deref().unwrap_or("Unknown")).muted()
+                }
+            })
+            .zebra(true)
+            .build(s, k);
+        content = content.child(if s.window_width < 700.0 {
+            table.h(180.0).min_h(180.0)
+        } else {
+            table.grow(1.0).min_h(0.0)
+        });
     }
     if let Some(selected) = selected {
         content = content.child(
             caption(
                 format!(
-                    "{} • {}\nUUID: {}",
+                    "{} • {}\nUUID: {}\n{}",
                     selected.name,
                     selected.created_at.as_deref().unwrap_or("Unknown date"),
-                    selected.id
+                    selected.id,
+                    selected.description
                 ),
                 k,
             )
@@ -509,6 +613,45 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             )
             .wrap(),
         );
+        if matches!(
+            &operation.action,
+            xenadmin_core::OperationAction::Snapshot(
+                xenadmin_core::SnapshotOperation::Workflow { .. }
+            )
+        ) {
+            let id = operation.id;
+            if operation.can_cancel && !operation.cancel_requested && !operation.state.terminal() {
+                content = content.child(
+                    Button::new("Stop remaining steps")
+                        .variant(ButtonVariant::Ghost)
+                        .disabled(!current(s))
+                        .on_press(move |s: &mut State| {
+                            s.control_operation(
+                                id,
+                                xenadmin_core::OperationControl::RequestCancellation,
+                            )
+                        })
+                        .build(k),
+                );
+            }
+            if operation.can_recheck()
+                && operation.state == xenadmin_core::OperationState::OutcomeUnknown
+            {
+                content = content.child(
+                    Button::new("Recheck snapshot outcome")
+                        .variant(ButtonVariant::Outline)
+                        .disabled(!current(s))
+                        .on_press(move |s: &mut State| {
+                            s.control_operation(id, xenadmin_core::OperationControl::Recheck)
+                        })
+                        .build(k),
+                );
+            }
+        }
+        if let Some(id) = operation.created_snapshot {
+            content =
+                content.child(caption(format!("Created snapshot UUID: {id}"), k).wrap_anywhere());
+        }
         if let Some(id) = operation.created_vm {
             content =
                 content.child(caption(format!("Created object UUID: {id}"), k).wrap_anywhere());
@@ -542,7 +685,13 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             }
         }
     }
-    content
+    if s.window_width < 700.0 {
+        content.scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+    } else {
+        content
+    }
 }
 
 fn memory_available(s: &State, id: VmId) -> bool {
@@ -562,7 +711,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     };
     let mut body = col()
         .w((s.window_width - 40.0).clamp(280.0, 480.0))
-        .max_h(600.0)
+        .max_h((s.window_height - 40.0).clamp(280.0, 650.0))
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
@@ -586,7 +735,21 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .and_then(|i| i.vms.get(id))
                     .is_some_and(|vm| vm.can_snapshot)
             };
-            let valid = SnapshotName::new(&s.snapshot_name.text).is_ok();
+            body = body.child(caption("Description", k)).child(
+                TextInput::new(&s.snapshot_description)
+                    .label("Snapshot description")
+                    .placeholder("Optional description")
+                    .on_edit(|s: &mut State| &mut s.snapshot_description)
+                    .build(k)
+                    .key("snapshot-description"),
+            );
+            let valid = SnapshotWorkflow::Create {
+                name: s.snapshot_name.text.trim().into(),
+                description: s.snapshot_description.text.clone(),
+                memory: s.snapshot_memory,
+            }
+            .validate()
+            .is_ok();
             if !s.demo && !selected_mode_available {
                 body = body.child(
                     caption(
@@ -599,7 +762,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             }
             if !valid && !s.snapshot_name.text.is_empty() {
                 body = body.child(
-                    caption(xenadmin_core::Error::InvalidSnapshotName.to_string(), k)
+                    caption(xenadmin_core::Error::InvalidSnapshotMetadata.to_string(), k)
                         .wrap()
                         .role("alert"),
                 );
@@ -617,22 +780,92 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             id,
             snapshot,
             snapshot_id,
+            expected_state,
+            checkpoint,
+            shutdown,
+            start_after,
+            ..
         } => {
             body=body.child(heading("Restore this snapshot?",k))
                 .child(caption(format!("VM: {vm}\nVM UUID: {id}\nSnapshot: {snapshot}\nSnapshot UUID: {snapshot_id}"),k).wrap_anywhere())
-                .child(caption("This replaces the VM's configuration and disk contents. Changes made since the snapshot will be lost. The VM must be shut down, and it will not start automatically after restore.",k).wrap());
+                .child(caption("This replaces the VM's configuration and disk contents. Changes made since the snapshot will be lost.",k).wrap());
+            if *expected_state == PowerState::Running {
+                body = body.child(
+                    Checkbox::new(*shutdown)
+                        .label("Cleanly shut down this running VM before restore")
+                        .on_toggle(|s: &mut State| {
+                            if let Some(Dialog::Restore { shutdown, .. }) = &mut s.snapshot_dialog {
+                                *shutdown = !*shutdown
+                            }
+                        })
+                        .build(k)
+                        .key("restore-shutdown"),
+                );
+            }
+            body=body.child(Checkbox::new(*start_after).label(if *checkpoint {"Resume restored memory after restore"} else {"Start VM after restore"}).on_toggle(|s:&mut State|if let Some(Dialog::Restore{start_after,..})=&mut s.snapshot_dialog {*start_after = !*start_after}).build(k).key("restore-start"))
+                .child(caption(if *checkpoint {"Restores the saved memory as a separate VM memory image. Without Resume, the VM remains suspended."}else{"Without Start, the restored VM remains halted."},k).wrap())
+                .child(caption("Shutdown, restore and startup are tracked separately. A failure stops later steps; interrupted writes are never automatically repeated. Stop remaining steps does not interrupt a running host task.",k).wrap());
+            let operation = SnapshotWorkflow::Restore {
+                snapshot: *snapshot_id,
+                expected_state: expected_state.clone(),
+                checkpoint: *checkpoint,
+                shutdown: *shutdown,
+                start_after: *start_after,
+            };
+            let valid = operation.validate().is_ok()
+                && s.inventory.as_ref().is_some_and(|i| {
+                    i.vms.get(id).is_some_and(|vm| {
+                        vm.power_state == *expected_state
+                            && (!shutdown
+                                || vm.allowed_actions.contains(&PowerAction::CleanShutdown))
+                    }) && i.snapshots.get(snapshot_id).is_some_and(|snap| {
+                        snap.vm == Some(*id)
+                            && snap.power_state
+                                == if *checkpoint {
+                                    PowerState::Suspended
+                                } else {
+                                    PowerState::Halted
+                                }
+                            && snap.allowed_actions.contains(&SnapshotAction::Revert)
+                    })
+                });
+            if !valid {
+                body=body.child(caption("Review the current VM state and explicitly select a permitted clean shutdown before restoring a running VM.",k).wrap().role("status"));
+            }
             (
                 "Restore snapshot",
                 "Restore snapshot",
-                s.inventory.as_ref().is_some_and(|i| {
-                    i.vms
-                        .get(id)
-                        .is_some_and(|vm| vm.power_state == PowerState::Halted)
-                        && i.snapshots.get(snapshot_id).is_some_and(|snap| {
-                            snap.allowed_actions.contains(&SnapshotAction::Revert)
-                        })
-                }),
+                valid,
                 matches!(target,Target::Live(observed) if s.snapshot.as_ref().and_then(|s|s.observe_snapshot(*id,*snapshot_id).ok())==Some(*observed)),
+            )
+        }
+        Dialog::Edit { source } => {
+            body=body.child(heading("Edit snapshot properties",k)).child(source.summary(k))
+                .child(caption("Name",k)).child(TextInput::new(&s.snapshot_name).label("Snapshot name").on_edit(|s:&mut State| &mut s.snapshot_name).build(k).key("snapshot-name"))
+                .child(caption("Description",k)).child(TextInput::new(&s.snapshot_description).label("Snapshot description").on_edit(|s:&mut State| &mut s.snapshot_description).build(k).key("snapshot-description"))
+                .child(caption("Name and description are saved in separate verified steps. Concurrent metadata changes stop the update.",k).wrap());
+            let valid = SnapshotWorkflow::Edit {
+                snapshot: source.snapshot_id,
+                expected_name: source.snapshot.clone(),
+                expected_description: source.description.clone(),
+                name: s.snapshot_name.text.trim().into(),
+                description: s.snapshot_description.text.clone(),
+            }
+            .validate()
+            .is_ok()
+                && s.inventory.as_ref().is_some_and(|i| {
+                    i.pool_id == source.pool
+                        && i.snapshots.get(&source.snapshot_id).is_some_and(|snap| {
+                            snap.vm == Some(source.id)
+                                && snap.name == source.snapshot
+                                && snap.description == source.description
+                        })
+                });
+            (
+                "Edit snapshot properties",
+                "Save properties",
+                valid,
+                source.live(s),
             )
         }
         Dialog::Clone {
@@ -877,6 +1110,133 @@ mod tests {
         for _ in 0..30 {
             rt.frame(1.0 / 60.0);
         }
+    }
+    #[test]
+    fn snapshot_metadata_creation_is_editable_at_compact_and_wide_sizes() {
+        for size in [(1440.0, 900.0), (513.0, 652.0)] {
+            let mut rt = runtime(snapshot_state(), size);
+            click(&mut rt, "create-snapshot");
+            click(&mut rt, "snapshot-name");
+            rt.key(rune::Key::Text("Before upgrade".into()).into());
+            rt.frame(0.0);
+            rt.update(|_, tx| tx.scroll_into_view("snapshot-description"));
+            rt.frame(0.0);
+            click(&mut rt, "snapshot-description");
+            rt.key(rune::Key::Text("Reviewed rollback point".into()).into());
+            rt.frame(0.0);
+            assert_eq!(
+                rt.state.snapshot_description.text,
+                "Reviewed rollback point"
+            );
+            assert!(
+                rt.accessibility_json()
+                    .to_string()
+                    .contains("Application quiescing is not available on XCP-ng 8.1 and later")
+            );
+            rt.update(|_, tx| tx.scroll_into_view("confirm-snapshot"));
+            rt.frame(0.0);
+            click(&mut rt, "confirm-snapshot");
+            assert!(rt.state.operations.is_empty());
+            assert!(rt.state.snapshot_dialog.is_some());
+        }
+    }
+    #[test]
+    fn restore_requires_explicit_shutdown_and_start_choices_and_captures_identity() {
+        for size in [(1440.0, 900.0), (513.0, 652.0)] {
+            let mut state = snapshot_state();
+            let id = state.snapshot_view.unwrap();
+            let guest = Arc::make_mut(state.inventory.as_mut().unwrap())
+                .vms
+                .get_mut(&id)
+                .unwrap();
+            guest.power_state = PowerState::Running;
+            guest.allowed_actions.push(PowerAction::CleanShutdown);
+            let mut rt = runtime(state, size);
+            click(&mut rt, "restore-snapshot");
+            assert!(matches!(
+                &rt.state.snapshot_dialog,
+                Some(Dialog::Restore {
+                    expected_state: PowerState::Running,
+                    shutdown: false,
+                    start_after: false,
+                    ..
+                })
+            ));
+            click(&mut rt, "restore-shutdown");
+            click(&mut rt, "restore-start");
+            assert!(
+                matches!(&rt.state.snapshot_dialog,Some(Dialog::Restore{shutdown:true,start_after:true,snapshot,..}) if snapshot=="Before upgrade")
+            );
+            rt.update(|s, _| {
+                s.snapshot_table
+                    .select("60000000-0000-0000-0000-000000000001")
+            });
+            rt.frame(0.0);
+            assert!(
+                matches!(&rt.state.snapshot_dialog,Some(Dialog::Restore{snapshot,..}) if snapshot=="Before upgrade")
+            );
+            rt.update(|_, tx| tx.scroll_into_view("confirm-snapshot"));
+            rt.frame(0.0);
+            click(&mut rt, "confirm-snapshot");
+            assert!(rt.state.operations.is_empty());
+        }
+    }
+    #[test]
+    fn snapshot_editor_keeps_reviewed_metadata_when_selection_changes() {
+        for size in [(1440.0, 900.0), (513.0, 652.0)] {
+            let mut rt = runtime(snapshot_state(), size);
+            click(&mut rt, "edit-snapshot");
+            assert_eq!(rt.state.snapshot_name.text, "Before upgrade");
+            click(&mut rt, "snapshot-description");
+            rt.key(rune::Key::Text("Extra context".into()).into());
+            rt.frame(0.0);
+            rt.update(|s, _| {
+                s.snapshot_table
+                    .select("60000000-0000-0000-0000-000000000001")
+            });
+            rt.frame(0.0);
+            assert!(
+                matches!(&rt.state.snapshot_dialog,Some(Dialog::Edit{source}) if source.snapshot=="Before upgrade")
+            );
+            assert!(rt.state.snapshot_description.text.contains("Extra context"));
+            rt.update(|_, tx| tx.scroll_into_view("confirm-snapshot"));
+            rt.frame(0.0);
+            click(&mut rt, "confirm-snapshot");
+            assert!(rt.state.operations.is_empty());
+        }
+    }
+    #[test]
+    fn checkpoint_restore_offers_resume_and_retains_saved_memory() {
+        let mut state = snapshot_state();
+        let inventory = Arc::make_mut(state.inventory.as_mut().unwrap());
+        let id = SnapshotId::parse("60000000-0000-0000-0000-000000000000").unwrap();
+        let mut snap = inventory.snapshots.get(&id).unwrap().clone();
+        snap.power_state = PowerState::Suspended;
+        inventory.snapshots.insert(snap);
+        refresh(&mut state);
+        let mut rt = runtime(state, (513.0, 652.0));
+        click(&mut rt, "restore-snapshot");
+        assert!(
+            rt.accessibility_json()
+                .to_string()
+                .contains("Resume restored memory after restore")
+        );
+        assert!(matches!(
+            &rt.state.snapshot_dialog,
+            Some(Dialog::Restore {
+                checkpoint: true,
+                start_after: false,
+                ..
+            })
+        ));
+        click(&mut rt, "restore-start");
+        assert!(matches!(
+            &rt.state.snapshot_dialog,
+            Some(Dialog::Restore {
+                start_after: true,
+                ..
+            })
+        ));
     }
     #[test]
     fn cloning_reviews_the_captured_snapshot_in_both_modes_and_stays_safe_in_demo() {

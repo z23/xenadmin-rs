@@ -454,6 +454,22 @@ impl Store {
                     && value["is_a_snapshot"] != true
                     && match action {
                         crate::OperationAction::Power(action) => advertises(value, action.wire()),
+                        crate::OperationAction::Snapshot(crate::SnapshotOperation::Workflow {
+                            operation,
+                        }) => {
+                            let source = operation.snapshot().and_then(|id| {
+                                self.class("vm")
+                                    .find(|(_, candidate)| {
+                                        candidate["uuid"].as_str() == Some(id.to_string().as_str())
+                                            && candidate["is_a_snapshot"] == true
+                                            && candidate["is_control_domain"] == false
+                                            && candidate["snapshot_of"].as_str()
+                                                == self.vm_reference(vm).as_deref()
+                                    })
+                                    .map(|(_, candidate)| candidate)
+                            });
+                            operation.allows(value, source)
+                        }
                         crate::OperationAction::Migration(_)
                         | crate::OperationAction::Lifecycle(_)
                         | crate::OperationAction::Settings(_)
@@ -822,9 +838,9 @@ pub(crate) async fn prepare_mutation(
             }
             Ok(reference)
         }
-        OperationAction::Snapshot(SnapshotOperation::Delete { .. }) => {
-            Err(Error::UnavailableAction)
-        }
+        OperationAction::Snapshot(
+            SnapshotOperation::Delete { .. } | SnapshotOperation::Workflow { .. },
+        ) => Err(Error::UnavailableAction),
         OperationAction::Power(_) => unreachable!(),
     }
 }

@@ -64,6 +64,7 @@ mod settings;
 pub use host_types::{HostOperation, HostPowerOnMode};
 mod snapshot_policy;
 mod snapshot_policy_support;
+mod snapshot_workflow;
 mod snapshots;
 pub use migration::{DiskPlacement, NicPlacement, VmMigration};
 pub use snapshot_policy::{
@@ -71,6 +72,7 @@ pub use snapshot_policy::{
     SnapshotPolicyState, SnapshotSchedule,
 };
 pub use snapshot_policy_support::{SnapshotPolicySupport, SnapshotPolicySupportQuery};
+pub use snapshot_workflow::SnapshotWorkflow;
 mod vm_lifecycle;
 mod vm_lifecycle_backend;
 pub use vm_lifecycle::{
@@ -194,6 +196,10 @@ pub enum Error {
     SettingsConflict,
     #[error("Enter a snapshot name of 1–255 characters without control characters")]
     InvalidSnapshotName,
+    #[error(
+        "Enter a changed snapshot name (1–255 characters) and description (up to 4096 characters) without unsupported control characters"
+    )]
+    InvalidSnapshotMetadata,
     #[error("Shut down the VM before restoring a snapshot")]
     SnapshotRequiresHaltedVm,
     #[error(
