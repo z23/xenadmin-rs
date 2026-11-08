@@ -32,6 +32,7 @@ struct Control {
     destination: Records,
     fault: Fault,
     sent: bool,
+    hold_poll: bool,
     copy: bool,
 }
 struct Fixture {
@@ -135,6 +136,7 @@ async fn fixture(fault: Fault, live: bool) -> Fixture {
         destination,
         fault,
         sent: false,
+        hold_poll: false,
         copy: false,
     }));
     let entered = Arc::new(tokio::sync::Notify::new());
@@ -147,6 +149,8 @@ async fn fixture(fault: Fault, live: bool) -> Fixture {
         mocks.push(mock_overridden(override_rpc(move|r:Value| {let c=c.clone();let entered=entered.clone();let release=release.clone();async move {
             let method=r["method"].as_str().unwrap();let p=&r["params"];
             if method=="event.from" {tokio::time::sleep(Duration::from_millis(20)).await;}
+            let hold_poll = source && method=="task.get_record" && { let mut control=c.lock().unwrap();std::mem::take(&mut control.hold_poll) };
+            if hold_poll { entered.notify_one(); release.notified().await; }
             if method=="Async.VM.migrate_send" && c.lock().unwrap().fault==Fault::DelaySubmit { entered.notify_one();release.notified().await; }
             let mut c=c.lock().unwrap();let fault=c.fault;let sent=c.sent;
             let rows=if source{&mut c.source}else{&mut c.destination};
@@ -672,11 +676,27 @@ async fn cancellation_remains_unknown_until_server_completion_and_recheck_does_n
     let check = recovered_source
         .recheck_cross_pool_vm(op.latest().id, &recovered_dest)
         .unwrap();
-    assert_eq!(done(&check).await.state, OperationState::OutcomeUnknown);
+    let checked = done(&check).await;
+    assert_eq!(
+        checked.state,
+        OperationState::OutcomeUnknown,
+        "{} / {:?}",
+        checked.detail,
+        checked.local_error
+    );
+    assert!(checked.local_error.is_none(), "{:?}", checked.local_error);
     let check = recovered_source
         .recheck_cross_pool_vm(op.latest().id, &recovered_dest)
         .unwrap();
-    assert_eq!(done(&check).await.state, OperationState::OutcomeUnknown);
+    let checked = done(&check).await;
+    assert_eq!(
+        checked.state,
+        OperationState::OutcomeUnknown,
+        "{} / {:?}",
+        checked.detail,
+        checked.local_error
+    );
+    assert!(checked.local_error.is_none(), "{:?}", checked.local_error);
     assert_eq!(count(&f.source, "task.cancel"), 1);
     assert_eq!(count(&f.source, "Async.VM.migrate_send"), 1);
     assert_eq!(count(&f.destination, "host.migrate_receive"), 1);
@@ -738,9 +758,82 @@ async fn tracking_deadline_stops_locally_without_repeating_or_claiming_cancellat
     assert!(!result.cancel_requested);
     assert!(!result.can_cancel);
     let check = source.recheck_cross_pool_vm(result.id, &dest).unwrap();
-    assert_eq!(done(&check).await.state, OperationState::OutcomeUnknown);
+    let checked = done(&check).await;
+    assert_eq!(
+        checked.state,
+        OperationState::OutcomeUnknown,
+        "{} / {:?}",
+        checked.detail,
+        checked.local_error
+    );
+    assert!(checked.local_error.is_none(), "{:?}", checked.local_error);
     assert_eq!(count(&f.source, "Async.VM.migrate_send"), 1);
     assert_eq!(count(&f.source, "task.cancel"), 0);
+    source.close().await;
+    dest.close().await;
+}
+
+#[tokio::test]
+async fn concurrent_recheck_waits_for_owned_tracker_without_rejecting_the_operation() {
+    let f = fixture(Fault::Pending, false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let source = connect(&f.source, &backend, false).await;
+    let dest = connect(&f.destination, &backend, false).await;
+    let op = source
+        .transfer_vm_to_pool(
+            OperationId::new(),
+            selection(&source, &dest, CrossPoolMode::MoveHalted),
+            &dest,
+        )
+        .unwrap();
+    history_state(&source, op.latest().id, OperationState::Tracking).await;
+    source.close().await;
+    dest.close().await;
+    let source = connect(&f.source, &backend, false).await;
+    let dest = connect(&f.destination, &backend, false).await;
+    history_state(&source, op.latest().id, OperationState::OutcomeUnknown).await;
+    f.control.lock().unwrap().hold_poll = true;
+    let first = source.recheck_cross_pool_vm(op.latest().id, &dest).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), f.entered.notified())
+        .await
+        .unwrap();
+    let second = source.recheck_cross_pool_vm(op.latest().id, &dest).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let record = second.latest();
+            if record.state != OperationState::Preparing {
+                assert_eq!(
+                    record.state,
+                    OperationState::Tracking,
+                    "{} / {:?}",
+                    record.detail,
+                    record.local_error
+                );
+                assert!(record.detail.contains("Waiting for the previous"));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let reads = count(&f.source, "task.get_record");
+    f.release.notify_one();
+    for check in [&first, &second] {
+        let record = done(check).await;
+        assert_eq!(
+            record.state,
+            OperationState::OutcomeUnknown,
+            "{} / {:?}",
+            record.detail,
+            record.local_error
+        );
+        assert!(record.local_error.is_none());
+    }
+    assert_eq!(count(&f.source, "task.get_record"), reads + 1);
+    assert_eq!(count(&f.source, "Async.VM.migrate_send"), 1);
+    assert_eq!(count(&f.destination, "host.migrate_receive"), 1);
     source.close().await;
     dest.close().await;
 }

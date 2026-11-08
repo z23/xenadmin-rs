@@ -78,9 +78,20 @@ impl ResourceRequest {
     pub(crate) fn mark_recheck(&mut self) {
         self.reconcile = true;
     }
+    pub(crate) fn queued_recheck(&self) {
+        let mut view = self.record.clone();
+        view.state = OperationState::Tracking;
+        view.detail =
+            "Waiting for the previous operation observer to finish before rechecking".into();
+        self.sender.send_replace(Arc::new(view));
+    }
     pub(crate) fn reject(mut self, error: Error) {
-        self.record.state = OperationState::Rejected;
-        self.record.detail = error.to_string();
+        if self.reconcile {
+            self.record.local_error = Some(error.to_string());
+        } else {
+            self.record.state = OperationState::Rejected;
+            self.record.detail = error.to_string();
+        }
         self.sender.send_replace(Arc::new(self.record));
     }
     async fn announce(&self) {
@@ -899,6 +910,38 @@ impl ResourceRequest {
 mod stopped_worker_tests {
     use super::*;
     use crate::{ObservedResource, OperationControl, PoolId, ResourceAction, ResourceTarget};
+
+    #[tokio::test]
+    async fn refused_recheck_does_not_turn_existing_unknown_operation_into_rejection() {
+        let pool = uuid::Uuid::new_v4().into();
+        let (handle, mut request) = crate::resources::channel(
+            OperationId::new(),
+            ObservedResource {
+                pool,
+                generation: 1,
+                target: ResourceTarget::Pool(pool),
+            },
+            ResourceAction::CreateInternalNetwork {
+                name: "Fixture".into(),
+                description: String::new(),
+                mtu: 1500,
+            },
+            tokio::runtime::Handle::current(),
+        );
+        request.record.state = OperationState::OutcomeUnknown;
+        request.record.detail = "The submitted write remains unverified".into();
+        request.mark_recheck();
+        request.reject(Error::Busy);
+        assert_eq!(handle.latest().state, OperationState::OutcomeUnknown);
+        assert_eq!(
+            handle.latest().detail,
+            "The submitted write remains unverified"
+        );
+        assert_eq!(
+            handle.latest().local_error.as_deref(),
+            Some(Error::Busy.to_string().as_str())
+        );
+    }
 
     #[tokio::test]
     async fn cancellation_cas_does_not_leave_a_stopped_worker_tracking_or_release_its_guard() {

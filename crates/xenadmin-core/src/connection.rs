@@ -974,6 +974,8 @@ async fn run(
                 let mut resource_workers = tokio::task::JoinSet::new();
                 let mut resource_counts = BTreeMap::<crate::OperationId, usize>::new();
                 let mut resource_rechecks = BTreeSet::new();
+                let mut cross_pool_rechecks =
+                    BTreeMap::<crate::OperationId, crate::resources::ResourceRequest>::new();
                 let start_resource =
                     |request: crate::resources::ResourceRequest,
                      workers: &mut tokio::task::JoinSet<crate::OperationId>,
@@ -1021,6 +1023,10 @@ async fn run(
                             match done {
                                 Some(Ok(id))=>{
                                     if let Some(count)=resource_counts.get_mut(&id) {*count-=1;if *count==0 {resource_counts.remove(&id);}}
+                                    if !resource_counts.contains_key(&id)
+                                        && let Some(request) = cross_pool_rechecks.remove(&id) {
+                                        start_resource(request,&mut resource_workers,&mut resource_counts);
+                                    }
                                     if !resource_counts.contains_key(&id)&&resource_rechecks.remove(&id) {
                                         match operations::Journal::open(&directory).and_then(|journal|journal.resource_load(id)) {
                                             Ok(Some(record)) if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_))=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts),
@@ -1082,7 +1088,13 @@ async fn run(
                                     if options.read_only && !request.record.action.read_only_export() {request.reject(Error::ReadOnly);}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.record.pool) {request.reject(Error::Stale);}
                                     else if journal_error.is_some() {request.reject(Error::Journal);}
-                                    else if resource_workers.len()>=8 || (matches!(request.record.action,crate::ResourceAction::CrossPoolVm(_)) && request.record.revision()>0 && resource_counts.contains_key(&request.record.id)) {request.reject(Error::Busy);}
+                                    else if matches!(request.record.action,crate::ResourceAction::CrossPoolVm(_)) && request.record.revision()>0 && resource_counts.contains_key(&request.record.id) {
+                                        match cross_pool_rechecks.entry(request.record.id) {
+                                            std::collections::btree_map::Entry::Vacant(entry)=>{request.queued_recheck();entry.insert(*request);},
+                                            std::collections::btree_map::Entry::Occupied(_)=>request.reject(Error::Busy),
+                                        }
+                                    }
+                                    else if resource_workers.len()>=8 {request.reject(Error::Busy);}
                                     else {start_resource(*request,&mut resource_workers,&mut resource_counts);}
                                 }
                                 Request::ResourceControl(id,control)=>{
@@ -1349,6 +1361,9 @@ async fn run(
                     last_update,
                 );
                 active.cancel();
+                for request in cross_pool_rechecks.into_values() {
+                    request.reject(Error::Closed);
+                }
                 let cleanup = tokio::time::sleep(Duration::from_secs(3));
                 tokio::pin!(cleanup);
                 while !workers.is_empty() || !resource_workers.is_empty() || !metrics.is_empty() {
