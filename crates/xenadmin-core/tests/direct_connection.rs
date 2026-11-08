@@ -1959,9 +1959,9 @@ mod activity;
 #[path = "fixtures/resource_administration.rs"]
 mod resource_administration;
 
+#[path = "fixtures/advanced_properties.rs"]
+mod advanced_properties;
 #[path = "fixtures/network_administration.rs"]
 mod network_administration;
 #[path = "fixtures/storage_lifecycle.rs"]
 mod storage_lifecycle;
-#[path = "fixtures/advanced_properties.rs"]
-mod advanced_properties;

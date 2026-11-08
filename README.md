@@ -41,10 +41,9 @@ resource details and private live-client development inspection. It also preserv
 administrative block messages and removes the demonstration entry from normal navigation.
 See the [verification report](docs/reports/2026-11-08-development-and-snapshots.md).
 
-Version 0.5.0 adds VM creation and clone/copy workflows, reviewed VM/template deletion,
-disk and NIC lifecycle controls, resource administration, startup connection restore,
-performance charts, native CA selection and local console image export. See the
-[checkpoint report](docs/reports/2026-11-08-checkpoint-0.5.md) for verification and limitations.
+Version 0.6.0 adds reviewed VLAN/bond and storage administration, same-pool migration,
+pool task/alert activity, and live VM resource settings. See the
+[checkpoint report](docs/reports/2026-11-08-checkpoint-0.6.md) for verification and limitations.
 
 ## Run it
 
