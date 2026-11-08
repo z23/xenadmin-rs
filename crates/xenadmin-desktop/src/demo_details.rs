@@ -108,6 +108,7 @@ pub(super) fn populate(inventory: &mut Inventory) {
         inventory.details.networks.insert(
             id,
             NetworkDetails {
+                purposes: Some(Default::default()),
                 automatic: None,
                 automatic_known: true,
                 id,

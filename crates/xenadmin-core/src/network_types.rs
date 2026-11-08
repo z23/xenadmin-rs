@@ -161,6 +161,11 @@ fn purpose_valid(value: &Option<String>) -> bool {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkOperation {
+    SetServicePurpose {
+        review: crate::NetworkServiceReview,
+        purpose: crate::NetworkServicePurpose,
+        enabled: bool,
+    },
     ConfigureIpv6 {
         expected: PifIdentity,
         before: Ipv6Configuration,
@@ -236,6 +241,8 @@ impl NetworkOperation {
     }
     pub(crate) fn method(&self) -> &'static str {
         match self {
+            Self::SetServicePurpose { enabled: true, .. } => "Async.network.add_purpose",
+            Self::SetServicePurpose { enabled: false, .. } => "Async.network.remove_purpose",
             NetworkOperation::ConfigureIpv6 { .. } => "Async.PIF.reconfigure_ipv6",
             NetworkOperation::SetInterfacePurpose { .. } => "Async.PIF.set_other_config",
             NetworkOperation::SetUnplugProtection { .. } => "Async.PIF.set_disallow_unplug",
@@ -259,6 +266,8 @@ impl NetworkOperation {
 
     pub fn label(&self) -> &'static str {
         match self {
+            Self::SetServicePurpose { enabled: true, .. } => "Enable network service purpose",
+            Self::SetServicePurpose { enabled: false, .. } => "Remove network service purpose",
             Self::ConfigureIpv6 { .. } => "Configure host IPv6 interface",
             Self::SetInterfacePurpose { .. } => "Set interface purpose",
             Self::SetUnplugProtection { .. } => "Set interface unplug protection",
@@ -287,6 +296,15 @@ impl NetworkOperation {
         let network = matches!(target, ResourceTarget::Network(_));
         let bond = matches!(target, ResourceTarget::Bond(_));
         let valid = match self {
+            Self::SetServicePurpose {
+                review,
+                purpose,
+                enabled,
+            } => {
+                matches!(target, ResourceTarget::Network(id) if review.valid(id))
+                    && review.purposes.contains(purpose.as_str()) != *enabled
+                    && (!enabled || !review.purposes.contains(purpose.opposite()))
+            }
             Self::ConfigureIpv6 {
                 expected,
                 before,

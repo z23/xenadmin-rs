@@ -23,6 +23,9 @@ enum Fault {
     MissingMembers,
     TaskFailed,
     TaskCancelled,
+    ServicePolicyChanged,
+    ServiceNetworkRebound,
+    ServiceNetworkMissing,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 async fn fixture(fault: Fault) -> (Mock, Records) {
@@ -37,11 +40,11 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         ),
         (
             "network".into(),
-            json!({"uuid":NET,"name_label":"VLAN target","bridge":"xapi0","MTU":"1500","PIFs":[],"VIFs":[],"other_config":{"unrelated":"preserve"}}),
+            json!({"uuid":NET,"name_label":"VLAN target","managed":true,"purpose":[],"bridge":"xapi0","MTU":"1500","PIFs":[],"VIFs":[],"other_config":{"unrelated":"preserve"}}),
         ),
         (
             "network-underlay".into(),
-            json!({"uuid":UNDERLAY,"name_label":"Underlay","bridge":"xenbr0","MTU":"1500","PIFs":["OpaqueRef:PIF"],"VIFs":[],"other_config":{}}),
+            json!({"uuid":UNDERLAY,"name_label":"Underlay","managed":true,"purpose":[],"bridge":"xenbr0","MTU":"1500","PIFs":["OpaqueRef:PIF"],"VIFs":[],"other_config":{}}),
         ),
         (
             "PIF".into(),
@@ -93,11 +96,27 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                 && ["pool", "host", "network", "PIF", "VLAN", "Bond"].contains(&class)
             {
                 let map = records.lock().unwrap();
-                let values = map
+                let mut values = map
                     .iter()
                     .filter(|(key, _)| key.split('-').next() == Some(class))
                     .map(|(key, value)| (format!("OpaqueRef:{key}"), value.clone()))
                     .collect::<serde_json::Map<_, _>>();
+                if class == "network" && writes.load(Ordering::SeqCst) > 0 {
+                    match fault {
+                        Fault::ServicePolicyChanged => {
+                            values.get_mut("OpaqueRef:network-underlay").unwrap()["purpose"] =
+                                json!([])
+                        }
+                        Fault::ServiceNetworkRebound => {
+                            values.get_mut("OpaqueRef:network-underlay").unwrap()["uuid"] =
+                                json!("00000000-0000-0000-0000-000000000099")
+                        }
+                        Fault::ServiceNetworkMissing => {
+                            values.remove("OpaqueRef:network-underlay");
+                        }
+                        _ => {}
+                    }
+                }
                 return Some(RpcReply::Json(json!({"result":values})));
             }
             if let Some(class) = method.strip_suffix(".get_by_uuid")
@@ -223,6 +242,20 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                             ("DNS", 6),
                         ] {
                             pif[field] = request["params"][index].clone();
+                        }
+                    }
+                    "Async.network.add_purpose" | "Async.network.remove_purpose" => {
+                        let key = request["params"][1]
+                            .as_str()
+                            .unwrap()
+                            .strip_prefix("OpaqueRef:")
+                            .unwrap();
+                        let purposes = map.get_mut(key).unwrap()["purpose"].as_array_mut().unwrap();
+                        let purpose = request["params"][2].clone();
+                        if method.ends_with(".add_purpose") {
+                            purposes.push(purpose);
+                        } else {
+                            purposes.retain(|p| p != &purpose);
                         }
                     }
                     "Async.network.set_MTU" => {
@@ -818,6 +851,233 @@ async fn changed_purpose_and_unplug_protection_refuse_stale_or_protected_writes(
                 .unwrap()
                 .iter()
                 .any(|m| m.starts_with("Async."))
+        );
+    }
+}
+
+fn service_target() -> ResourceTarget {
+    ResourceTarget::Network(NetworkId::parse(UNDERLAY).unwrap())
+}
+fn service_operation(
+    c: &xenadmin_core::Connection,
+    purpose: xenadmin_core::NetworkServicePurpose,
+    enabled: bool,
+) -> NetworkOperation {
+    let snapshot = c.latest();
+    NetworkOperation::SetServicePurpose {
+        review: xenadmin_core::NetworkServiceReview::capture(
+            snapshot.inventory().unwrap(),
+            NetworkId::parse(UNDERLAY).unwrap(),
+        )
+        .unwrap(),
+        purpose,
+        enabled,
+    }
+}
+async fn service_fixture(fault: Fault) -> (Mock, Records) {
+    let (mock, records) = fixture(fault).await;
+    records.lock().unwrap().get_mut("network-underlay").unwrap()["PIFs"] =
+        json!(["OpaqueRef:PIF", "OpaqueRef:PIF-second"]);
+    (mock, records)
+}
+#[tokio::test]
+async fn network_services_add_remove_both_modes_with_exact_scope_and_no_other_setting_changes() {
+    use xenadmin_core::NetworkServicePurpose as Purpose;
+    for purpose in [Purpose::NbdTls, Purpose::NbdPlaintext] {
+        for enabled in [true, false] {
+            let (mock, records) = service_fixture(Fault::None).await;
+            if !enabled {
+                records.lock().unwrap().get_mut("network-underlay").unwrap()["purpose"] =
+                    json!([purpose.as_str()]);
+            }
+            let before = records.lock().unwrap().clone();
+            let dir = tempfile::tempdir().unwrap();
+            let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+            let c = connect(&mock, &backend, false).await;
+            let r = finish(&submit(
+                &c,
+                service_target(),
+                service_operation(&c, purpose, enabled),
+            ))
+            .await;
+            assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+            let mut after = records.lock().unwrap().clone();
+            assert_eq!(
+                after["network-underlay"]["purpose"],
+                if enabled {
+                    json!([purpose.as_str()])
+                } else {
+                    json!([])
+                }
+            );
+            after.get_mut("network-underlay").unwrap()["purpose"] =
+                before["network-underlay"]["purpose"].clone();
+            assert_eq!(before, after);
+            let methods = mock.methods.lock().unwrap();
+            assert_eq!(
+                methods.iter().filter(|m| m.starts_with("Async.")).count(),
+                1
+            );
+        }
+    }
+}
+#[tokio::test]
+async fn network_services_refuse_pool_conflicts_unknown_policy_and_changed_interface_graph() {
+    for case in 0..8 {
+        let (mock, records) = service_fixture(Fault::None).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let op = service_operation(&c, xenadmin_core::NetworkServicePurpose::NbdTls, true);
+        {
+            let mut records = records.lock().unwrap();
+            match case {
+                0 => records.get_mut("network").unwrap()["purpose"] = json!(["insecure_nbd"]),
+                1 => {
+                    records
+                        .get_mut("network")
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("purpose");
+                }
+                2 => records.get_mut("PIF").unwrap()["IP"] = json!("192.0.2.55"),
+                3 => records.get_mut("PIF").unwrap()["currently_attached"] = json!(false),
+                4 => {
+                    records.get_mut("network-underlay").unwrap()["PIFs"] = json!(["OpaqueRef:PIF"])
+                }
+                5 => records.get_mut("PIF-second").unwrap()["uuid"] = json!(PIF),
+                6 => {
+                    records.get_mut("network-underlay").unwrap()["purpose"] =
+                        json!(["future-purpose"])
+                }
+                7 => {
+                    records.get_mut("pool").unwrap()["uuid"] =
+                        json!("00000000-0000-0000-0000-000000000099")
+                }
+                _ => unreachable!(),
+            }
+        }
+        let r = finish(&submit(&c, service_target(), op)).await;
+        assert_eq!(
+            r.state,
+            OperationState::Rejected,
+            "case {case}: {}",
+            r.detail
+        );
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.starts_with("Async."))
+        );
+    }
+}
+#[tokio::test]
+async fn network_service_lost_reply_retains_guard_and_recheck_never_replays_matching_policy() {
+    let (mock, records) = service_fixture(Fault::DropReply).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let op = service_operation(&c, xenadmin_core::NetworkServicePurpose::NbdTls, true);
+    let r = finish(&submit(&c, service_target(), op.clone())).await;
+    assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+    assert_eq!(
+        records.lock().unwrap()["network-underlay"]["purpose"],
+        json!(["nbd"])
+    );
+    c.control_resource(r.id, xenadmin_core::OperationControl::Recheck)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let blocked = finish(&submit(&c, service_target(), op)).await;
+    assert_eq!(blocked.state, OperationState::Rejected);
+    assert_eq!(
+        mock.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == "Async.network.add_purpose")
+            .count(),
+        1
+    );
+    assert_eq!(
+        c.resource_history()
+            .iter()
+            .find(|row| row.id == r.id)
+            .unwrap()
+            .state,
+        OperationState::OutcomeUnknown
+    );
+}
+#[tokio::test]
+async fn network_service_task_or_verification_read_failure_remains_unknown_and_readonly_cannot_write()
+ {
+    for (fault, readonly) in [
+        (Fault::TaskRead, false),
+        (Fault::VerifyRead, false),
+        (Fault::None, true),
+    ] {
+        let (mock, _) = service_fixture(fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, readonly).await;
+        let result = c.submit_resource(
+            OperationId::new(),
+            ResourceCommand::Network {
+                target: c.latest().observe_resource(service_target()).unwrap(),
+                operation: service_operation(
+                    &c,
+                    xenadmin_core::NetworkServicePurpose::NbdTls,
+                    true,
+                ),
+            },
+        );
+        if readonly {
+            assert!(matches!(result, Err(xenadmin_core::Error::ReadOnly)));
+        } else {
+            let r = finish(&result.unwrap()).await;
+            assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+        }
+        assert_eq!(
+            mock.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| m.starts_with("Async."))
+                .count(),
+            usize::from(!readonly)
+        );
+    }
+}
+
+#[tokio::test]
+async fn network_service_verification_uses_one_current_pool_map_not_an_older_selected_record() {
+    for fault in [
+        Fault::ServicePolicyChanged,
+        Fault::ServiceNetworkRebound,
+        Fault::ServiceNetworkMissing,
+    ] {
+        let (mock, _) = service_fixture(fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let r = finish(&submit(
+            &c,
+            service_target(),
+            service_operation(&c, xenadmin_core::NetworkServicePurpose::NbdTls, true),
+        ))
+        .await;
+        assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+        assert_eq!(
+            mock.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| *m == "Async.network.add_purpose")
+                .count(),
+            1
         );
     }
 }

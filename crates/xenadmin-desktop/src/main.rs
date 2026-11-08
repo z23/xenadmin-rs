@@ -2391,6 +2391,7 @@ fn main() -> std::process::ExitCode {
                 profiles_view::trust_scene(s, true)
             }),
             ("network-interfaces", network_admin::scene),
+            ("network-services", network_admin::service_scene),
             ("network-ipv6", network_admin::ipv6_scene),
             ("network-topology", network_admin::topology_scene),
             ("management-network", network_admin::management_scene),

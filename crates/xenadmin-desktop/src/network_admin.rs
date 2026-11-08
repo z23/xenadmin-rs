@@ -6,6 +6,8 @@ mod ipv6_bond;
 mod management;
 #[path = "management_bond_ui.rs"]
 mod management_bond;
+#[path = "network_service_ui.rs"]
+mod service;
 #[path = "network_topology_ui.rs"]
 mod topology;
 use super::*;
@@ -401,6 +403,13 @@ fn submit(s: &mut State) {
         if !s.can_mutate() {
             return Err(xenadmin_core::Error::Stale);
         }
+        if s.network_workspace
+            .as_ref()
+            .and_then(|w| service::unavailable(s, w))
+            .is_some()
+        {
+            return Err(xenadmin_core::Error::ResourceConflict);
+        }
         let review = s
             .network_workspace
             .as_ref()
@@ -569,6 +578,7 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
                     k,
                 ));
         }
+        body = body.child(service::view(i, id, enabled, k));
     } else {
         body=body.child(caption("Choose a network to add VLAN interfaces, create bonds or edit attachment settings.",k).wrap());
         for n in &i.networks {
@@ -1002,6 +1012,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             body.child(caption("The connection changed. Close and reopen networking.", k).wrap());
     }
     if let Some(reason) = topology::review_unavailable(s, w)
+        .or_else(|| service::unavailable(s, w))
         .or_else(|| management::review_unavailable(s, w))
         .or_else(|| ipv6_bond::unavailable(s, w))
     {
@@ -1064,6 +1075,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 Button::new("Confirm network change")
                     .disabled(
                         !s.can_mutate()
+                            || service::unavailable(s, w).is_some()
                             || topology::review_unavailable(s, w).is_some()
                             || permission
                                 .as_ref()
@@ -1228,6 +1240,9 @@ pub(super) fn management_bond_consumer_scene(s: &mut State) {
 
 pub(super) fn management_ipv6_bond_scene(s: &mut State) {
     ipv6_bond::scene(s);
+}
+pub(super) fn service_scene(s: &mut State) {
+    service::scene(s);
 }
 
 #[cfg(test)]

@@ -158,6 +158,10 @@ pub(super) async fn arguments(
     let (target, fresh) = xapi::read(session, record.target).await?;
     let mut args = vec![json!(target)];
     match op {
+        NetworkOperation::SetServicePurpose { purpose, .. } => {
+            super::network_service::check(session, record, &target, false).await?;
+            args.push(json!(purpose.as_str()));
+        }
         NetworkOperation::ScanInterfaces => {}
         NetworkOperation::SetAttached {
             expected,
@@ -467,8 +471,12 @@ pub(super) async fn verify(
             Err(error) => Err(error),
         };
     }
-    let (_, fresh) = xapi::read(session, record.target).await?;
+    let (target, fresh) = xapi::read(session, record.target).await?;
     let matches = match op {
+        NetworkOperation::SetServicePurpose { .. } => {
+            super::network_service::check(session, record, &target, true).await?;
+            true
+        }
         NetworkOperation::ConfigureIpv6 {
             expected,
             configuration,

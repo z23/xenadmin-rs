@@ -44,6 +44,8 @@ pub(crate) mod host;
 pub(crate) mod journal;
 #[path = "network_operations.rs"]
 mod network;
+#[path = "network_service_backend.rs"]
+mod network_service;
 #[path = "snapshot_policy_operations.rs"]
 pub(crate) mod snapshot_policy;
 #[path = "network_topology_backend.rs"]

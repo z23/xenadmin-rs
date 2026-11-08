@@ -258,6 +258,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             NetworkDetails {
+                purposes: crate::network_service::purposes(&record["purpose"]),
                 automatic: record["other_config"]["automatic"]
                     .as_str()
                     .map(str::to_owned),

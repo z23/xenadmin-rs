@@ -226,6 +226,8 @@ pub struct StorageDetails {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NetworkDetails {
     #[serde(default)]
+    pub purposes: Option<std::collections::BTreeSet<String>>,
+    #[serde(default)]
     pub automatic: Option<String>,
     #[serde(default)]
     pub automatic_known: bool,

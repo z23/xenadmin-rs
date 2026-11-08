@@ -89,8 +89,10 @@ pub use metrics::{
     MetricCategory, MetricSample, MetricSeries, MetricSource, MetricTarget, Metrics,
     MetricsOptions, MetricsSnapshot, MetricsState, MetricsWindow, ObservedMetrics,
 };
+mod network_service;
 mod network_topology;
 mod network_types;
+pub use network_service::{NetworkServiceInterface, NetworkServicePurpose, NetworkServiceReview};
 pub use network_topology::{
     NetworkTopologyChanges, NetworkTopologyOperation, ReviewedVlan, VlanUplink,
 };
