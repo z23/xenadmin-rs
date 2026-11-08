@@ -636,38 +636,38 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .key("resource-mtu"),
             );
         }
-        if editor.kind == Kind::DefaultStorage {
-            if let Some(inventory) = &s.inventory {
-                for sr in &inventory.storage {
-                    let id = SrId::from(sr.uuid);
-                    if inventory
-                        .details
-                        .storage
-                        .get(&id)
-                        .is_none_or(|details| details.content_type != "user")
-                    {
-                        continue;
-                    }
-                    body = body.child(
-                        Button::new(format!(
-                            "{}{} · {}",
-                            if editor.selected_sr == Some(id) {
-                                "✓ "
-                            } else {
-                                ""
-                            },
-                            sr.name,
-                            id
-                        ))
-                        .variant(ButtonVariant::Outline)
-                        .on_press(move |s: &mut State| {
-                            if let Some(editor) = &mut s.resource_editor {
-                                editor.selected_sr = Some(id);
-                            }
-                        })
-                        .build(k),
-                    );
+        if editor.kind == Kind::DefaultStorage
+            && let Some(inventory) = &s.inventory
+        {
+            for sr in &inventory.storage {
+                let id = SrId::from(sr.uuid);
+                if inventory
+                    .details
+                    .storage
+                    .get(&id)
+                    .is_none_or(|details| details.content_type != "user")
+                {
+                    continue;
                 }
+                body = body.child(
+                    Button::new(format!(
+                        "{}{} · {}",
+                        if editor.selected_sr == Some(id) {
+                            "✓ "
+                        } else {
+                            ""
+                        },
+                        sr.name,
+                        id
+                    ))
+                    .variant(ButtonVariant::Outline)
+                    .on_press(move |s: &mut State| {
+                        if let Some(editor) = &mut s.resource_editor {
+                            editor.selected_sr = Some(id);
+                        }
+                    })
+                    .build(k),
+                );
             }
         }
     }

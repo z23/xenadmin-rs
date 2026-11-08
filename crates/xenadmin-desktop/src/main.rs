@@ -1664,6 +1664,9 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
 }
 fn demo(s: &mut State) {
     console_view::release(s);
+    s.resource_editor = None;
+    s.resource_operations.clear();
+    s.resource_rows.clear();
     s.devices = None;
     s.properties = None;
     s.placement = None;
