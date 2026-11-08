@@ -392,3 +392,13 @@ retains the reservation; a matching field alone cannot prove async completion.
 Recovery only polls or verifies saved evidence. It never replays pool mutations.
 TLS verification here is host-to-host pool policy, independent of desktop trust.
 No pool authentication secrets are read or included in history.
+Host administration uses a typed operation nested in the existing resource journal. Each
+step persists dispatch, accepted response and task-success evidence independently. Fresh
+identity, guest membership, prerequisite and previous-value checks precede every mutation.
+Maintenance failures retain completed changes; no automatic re-enable, guest shutdown,
+HA reduction or coordinator handover runs. Recovery reads existing task/object evidence
+without submitting remaining steps. A newer boot/toolstack marker can establish restart;
+an offline host alone cannot establish a lost shutdown request. Stopping the workflow only
+prevents later steps after in-flight work resolves. Private receipt merging preserves
+cancellation and never resurrects an acknowledged operation. See the
+[host administration report](reports/2026-11-08-host-administration.md).

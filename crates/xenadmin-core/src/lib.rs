@@ -40,7 +40,9 @@ pub use storage::{NfsVersion, StorageLocation, StorageOperation};
 pub use storage_discovery::{
     DiscoveredRepository, StorageBackend, StorageDiscovery, StorageDiscoveryResult, StorageQuery,
 };
+mod host_types;
 mod settings;
+pub use host_types::{HostOperation, HostPowerOnMode};
 mod snapshots;
 pub use migration::{DiskPlacement, NicPlacement, VmMigration};
 mod vm_lifecycle;
@@ -80,6 +82,8 @@ pub enum Error {
     UnsupportedMigration,
     #[error("Choose valid resource settings and a change to apply")]
     InvalidResourceCommand,
+    #[error("{0}")]
+    HostPrerequisite(&'static str),
     #[error("The resource changed since review. Refresh it before retrying")]
     ResourceConflict,
     #[error(

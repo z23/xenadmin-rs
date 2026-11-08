@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::SystemTime};
 use tokio::sync::watch;
 
+#[path = "host_operations.rs"]
+pub(crate) mod host;
 #[path = "resource_journal.rs"]
 pub(crate) mod journal;
 #[path = "network_operations.rs"]
@@ -80,6 +82,10 @@ pub enum ResourceCommand {
         target: ObservedResource,
         operation: crate::PoolOperation,
     },
+    Host {
+        target: ObservedResource,
+        operation: crate::HostOperation,
+    },
     Network {
         target: ObservedResource,
         operation: NetworkOperation,
@@ -134,6 +140,7 @@ pub enum ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
     Pool(crate::PoolOperation),
+    Host(crate::HostOperation),
     Network(NetworkOperation),
     CancelTask,
     DismissMessage {
@@ -172,6 +179,7 @@ impl ResourceAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Pool(operation) => operation.label(),
+            Self::Host(operation) => operation.label(),
             Self::Network(operation) => operation.label(),
             Self::CancelTask => "Request task cancellation",
             Self::DismissMessage { .. } => "Dismiss server message",
@@ -196,6 +204,7 @@ impl ResourceAction {
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
             Self::Pool(operation) => return operation.validate(target),
+            Self::Host(operation) => return operation.validate(target),
             Self::Network(operation) => return operation.validate(target),
             Self::CancelTask => matches!(target, ResourceTarget::Task(_)),
             Self::DismissMessage { .. } => matches!(target, ResourceTarget::Message(_)),
@@ -261,6 +270,7 @@ impl ResourceCommand {
     pub(crate) fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
+            Self::Host { target, operation } => (target, ResourceAction::Host(operation)),
             Self::Network { target, operation } => (target, ResourceAction::Network(operation)),
             Self::CancelTask { task } => (task, ResourceAction::CancelTask),
             Self::DismissMessage {
@@ -372,6 +382,8 @@ pub struct ResourceOperationRecord {
     pub(crate) storage_trim_succeeded: bool,
     #[serde(default)]
     pub(crate) pool_completed: bool,
+    #[serde(skip)]
+    pub(crate) host_plan: Option<host::Plan>,
 }
 impl ResourceOperationRecord {
     pub fn revision(&self) -> u64 {
@@ -441,6 +453,7 @@ pub(crate) fn channel(
         storage_baseline: None,
         storage_trim_succeeded: false,
         pool_completed: false,
+        host_plan: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (

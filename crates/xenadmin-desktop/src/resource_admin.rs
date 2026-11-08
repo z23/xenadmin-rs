@@ -543,13 +543,19 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             );
         } else if record.can_cancel && !record.state.terminal() {
             view = view.child(
-                Button::new("Request cancellation")
-                    .variant(ButtonVariant::Ghost)
-                    .disabled(!can_control)
-                    .on_press(move |s: &mut State| {
-                        control(s, id, OperationControl::RequestCancellation)
-                    })
-                    .build(k),
+                Button::new(
+                    if matches!(record.action, xenadmin_core::ResourceAction::Host(_)) {
+                        "Stop remaining steps"
+                    } else {
+                        "Request cancellation"
+                    },
+                )
+                .variant(ButtonVariant::Ghost)
+                .disabled(!can_control)
+                .on_press(move |s: &mut State| {
+                    control(s, id, OperationControl::RequestCancellation)
+                })
+                .build(k),
             );
         }
     }
@@ -611,6 +617,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .on_press(|s: &mut State| open_pool(s, Kind::DefaultStorage))
                     .build(k),
             );
+        body = body.child(
+            Button::new("Pool VM autostart…")
+                .disabled(!same_pool || (!s.demo && !s.can_mutate()))
+                .on_press(host_admin::pool)
+                .build(k)
+                .key("pool-autostart"),
+        );
         if !s
             .resource_rows
             .iter()

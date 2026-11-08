@@ -66,6 +66,16 @@ fn text_option(record: &Value, key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
+fn map_bool(record: &Value, key: &str) -> Option<bool> {
+    match record["other_config"].as_object()?.get(key) {
+        None => Some(false),
+        Some(value) => match value.as_str()? {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+    }
+}
 pub(crate) fn decode_server_message(record: &Value) -> Result<ServerMessage, Error> {
     Ok(ServerMessage {
         id: id(record)?,
@@ -192,6 +202,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         let default_sr = refs.link("sr", &record["default_SR"]);
         Some(PoolDetails {
             administration: pool_administration(record, &refs, store),
+            auto_poweron: map_bool(record, "auto_poweron"),
+            ha_enabled: record["ha_enabled"].as_bool(),
             igmp_snooping_enabled: record["igmp_snooping_enabled"].as_bool(),
             id: id(record).ok()?,
             description: string(record, "name_description"),
@@ -592,6 +604,38 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             result.hosts.insert(
                 id,
                 HostDetails {
+                    allowed_operations: strings(&record["allowed_operations"]),
+                    current_operations: record["current_operations"].as_object().map(|ops| {
+                        ops.iter()
+                            .map(|(task, operation)| RunningOperation {
+                                task: refs.link("task", &Value::String(task.clone())),
+                                operation: operation.as_str().unwrap_or("Unknown").into(),
+                            })
+                            .collect()
+                    }),
+                    maintenance_mode: map_bool(record, "MAINTENANCE_MODE"),
+                    boot_time: record["other_config"]["boot_time"]
+                        .as_str()
+                        .filter(|s| crate::host_types::valid_epoch(s))
+                        .map(str::to_owned),
+                    agent_start_time: record["other_config"]["agent_start_time"]
+                        .as_str()
+                        .filter(|s| crate::host_types::valid_epoch(s))
+                        .map(str::to_owned),
+                    control_domain: refs.vm(&record["control_domain"]),
+                    power_on_mode: record["power_on_mode"].as_str().map(str::to_owned),
+                    power_on_config_empty: record["power_on_config"]
+                        .as_object()
+                        .map(|config| config.is_empty()),
+                    syslog_destination: record["logging"]["syslog_destination"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                    syslog_known: record["logging"].as_object().is_some_and(|map| {
+                        map.get("syslog_destination")
+                            .is_none_or(|value| value.is_string())
+                    }),
+                    multipathing: record["multipathing"].as_bool(),
                     description: string(record, "name_description"),
                     hostname: string(record, "hostname"),
                     metrics: refs.link("host_metrics", &record["metrics"]),

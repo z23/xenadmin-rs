@@ -150,6 +150,28 @@ impl VmDetails {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HostDetails {
+    #[serde(default)]
+    pub allowed_operations: Option<Vec<String>>,
+    #[serde(default)]
+    pub current_operations: Option<Vec<RunningOperation>>,
+    #[serde(default)]
+    pub maintenance_mode: Option<bool>,
+    #[serde(default)]
+    pub boot_time: Option<String>,
+    #[serde(default)]
+    pub agent_start_time: Option<String>,
+    #[serde(default)]
+    pub control_domain: Option<VmId>,
+    #[serde(default)]
+    pub power_on_mode: Option<String>,
+    #[serde(default)]
+    pub power_on_config_empty: Option<bool>,
+    #[serde(default)]
+    pub syslog_destination: Option<String>,
+    #[serde(default)]
+    pub syslog_known: bool,
+    #[serde(default)]
+    pub multipathing: Option<bool>,
     pub description: String,
     pub hostname: String,
     pub metrics: Option<HostMetricsId>,
@@ -414,6 +436,10 @@ pub struct StorageManager {
 pub struct PoolDetails {
     #[serde(default)]
     pub administration: crate::PoolAdministration,
+    #[serde(default)]
+    pub auto_poweron: Option<bool>,
+    #[serde(default)]
+    pub ha_enabled: Option<bool>,
     #[serde(default)]
     pub igmp_snooping_enabled: Option<bool>,
     pub id: PoolId,

@@ -40,3 +40,5 @@ target/debug/xenadmin-rs --snap artifacts/storage-create.png --tree artifacts/st
 target/debug/xenadmin-rs --snap artifacts/storage-review.png --tree artifacts/storage-review.json --scene storage-review --theme dark --size 513x652 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/vm-migration.png --tree artifacts/vm-migration.json --scene vm-migration --theme dark --size 1440x900 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/vm-migration-compact.png --tree artifacts/vm-migration-compact.json --scene vm-migration --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/host-administration.png --tree artifacts/host-administration.json --scene host-administration --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/host-administration-compact.png --tree artifacts/host-administration-compact.json --scene host-administration --theme dark --size 513x652 --scale 1 --at 1

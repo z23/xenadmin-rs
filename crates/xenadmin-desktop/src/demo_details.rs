@@ -19,6 +19,8 @@ pub(super) fn populate(inventory: &mut Inventory) {
             secret_rotation_pending: Some(false),
             ..Default::default()
         },
+        auto_poweron: Some(false),
+        ha_enabled: Some(false),
         igmp_snooping_enabled: Some(false),
         id: inventory.pool_id,
         description: "Synthetic pool for isolated UI tests".into(),

@@ -1,0 +1,906 @@
+use super::{ResourceAction, ResourceOperationRecord, ResourceTarget};
+use crate::{
+    Error, HostOperation, MemoryLimits, VmId,
+    host_types::{same_vms, valid_epoch},
+    xapi::Session,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Kind {
+    Disable,
+    Evacuate,
+    MarkMaintenance(bool),
+    Enable,
+    Reboot,
+    Shutdown,
+    Restart,
+    PowerOn,
+    PowerMode,
+    Memory,
+    Logging,
+    ReconfigureLogging,
+    Multipath,
+    MultipathHandle,
+    PoolAutostart,
+    Forget,
+}
+impl Kind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Disable => "Disable scheduling",
+            Self::Evacuate => "Evacuate resident guests",
+            Self::MarkMaintenance(true) => "Mark host in maintenance",
+            Self::MarkMaintenance(false) => "Clear maintenance marker",
+            Self::Enable => "Enable scheduling",
+            Self::Reboot => "Reboot host",
+            Self::Shutdown => "Request host shutdown",
+            Self::Restart => "Restart toolstack",
+            Self::PowerOn => "Power on host",
+            Self::PowerMode => "Configure power-on mode",
+            Self::Memory => "Set control-domain memory",
+            Self::Logging => "Set remote logging destination",
+            Self::ReconfigureLogging => "Apply logging configuration",
+            Self::Multipath => "Set multipathing",
+            Self::MultipathHandle => "Set multipath handler",
+            Self::PoolAutostart => "Set pool VM autostart",
+            Self::Forget => "Forget dead host record",
+        }
+    }
+    pub fn asynchronous(&self) -> bool {
+        matches!(
+            self,
+            Self::Disable
+                | Self::Evacuate
+                | Self::Enable
+                | Self::Reboot
+                | Self::Shutdown
+                | Self::Restart
+                | Self::PowerOn
+                | Self::Forget
+        )
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Step {
+    pub kind: Kind,
+    pub task: Option<String>,
+    pub accepted: bool,
+    pub task_succeeded: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Plan {
+    pub steps: Vec<Step>,
+}
+impl Plan {
+    pub fn accepts(&self, new: &Self) -> bool {
+        self.steps.len() == new.steps.len()
+            && self.steps.iter().zip(&new.steps).all(|(old, new)| {
+                old.kind == new.kind
+                    && old
+                        .task
+                        .as_ref()
+                        .is_none_or(|task| Some(task) == new.task.as_ref())
+                    && (!old.accepted || new.accepted)
+                    && (!old.task_succeeded || new.task_succeeded)
+            })
+    }
+}
+fn operation(record: &ResourceOperationRecord) -> Result<&HostOperation, Error> {
+    if let ResourceAction::Host(operation) = &record.action {
+        Ok(operation)
+    } else {
+        Err(Error::InvalidResourceCommand)
+    }
+}
+fn require(yes: bool, reason: &'static str) -> Result<(), Error> {
+    if yes {
+        Ok(())
+    } else {
+        Err(Error::HostPrerequisite(reason))
+    }
+}
+fn reference(value: &Value) -> Result<String, Error> {
+    super::xapi::reply_reference(value)
+}
+fn integer(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+fn map_bool(record: &Value, key: &str) -> Option<bool> {
+    match record["other_config"].as_object()?.get(key) {
+        None => Some(false),
+        Some(value) => match value.as_str()? {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+    }
+}
+fn destination(record: &Value) -> Result<Option<String>, Error> {
+    let map = record["logging"]
+        .as_object()
+        .ok_or(Error::HostPrerequisite(
+            "Host logging configuration is unavailable",
+        ))?;
+    match map.get("syslog_destination") {
+        None => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(|s| (!s.is_empty()).then(|| s.into()))
+            .ok_or(Error::Protocol("invalid syslog destination")),
+    }
+}
+fn idle(record: &Value) -> Result<(), Error> {
+    require(
+        record["current_operations"]
+            .as_object()
+            .is_some_and(|ops| ops.is_empty()),
+        "The host or VM has running operations, or their availability is unknown",
+    )
+}
+fn allowed(record: &Value, operation: &str) -> Result<(), Error> {
+    require(
+        record["allowed_operations"]
+            .as_array()
+            .is_some_and(|ops| ops.iter().any(|op| op == operation)),
+        "The host no longer advertises the reviewed operation",
+    )
+}
+fn memory(record: &Value) -> Result<MemoryLimits, Error> {
+    Ok(MemoryLimits {
+        static_min: integer(&record["memory_static_min"])
+            .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
+        dynamic_min: integer(&record["memory_dynamic_min"])
+            .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
+        dynamic_max: integer(&record["memory_dynamic_max"])
+            .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
+        static_max: integer(&record["memory_static_max"])
+            .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
+    })
+}
+async fn read(session: &Session, class: &str, uuid: uuid::Uuid) -> Result<(String, Value), Error> {
+    let object = reference(
+        &session
+            .call(
+                &format!("{class}.get_by_uuid"),
+                vec![json!(uuid.to_string())],
+            )
+            .await?,
+    )?;
+    let record = session
+        .call(&format!("{class}.get_record"), vec![json!(&object)])
+        .await?;
+    require(
+        record["uuid"].as_str() == Some(uuid.to_string().as_str()),
+        "Object identity changed since review",
+    )?;
+    Ok((object, record))
+}
+async fn host(
+    session: &Session,
+    record: &ResourceOperationRecord,
+) -> Result<(String, Value, Value), Error> {
+    let (_, pool) = read(session, "pool", record.pool.uuid()).await?;
+    let ResourceTarget::Host(id) = record.target else {
+        return Err(Error::InvalidResourceCommand);
+    };
+    let (reference, host) = read(session, "host", id.uuid()).await?;
+    Ok((reference, host, pool))
+}
+async fn metrics(session: &Session, host: &Value) -> Result<Value, Error> {
+    let metrics = reference(&host["metrics"])?;
+    session
+        .call("host_metrics.get_record", vec![json!(metrics)])
+        .await
+}
+async fn live(session: &Session, host: &Value, expected: bool) -> Result<(), Error> {
+    require(
+        metrics(session, host).await?["live"] == expected,
+        "The host's fresh liveness does not match the reviewed operation",
+    )
+}
+async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Vec<VmId>, Error> {
+    let values = host["resident_VMs"]
+        .as_array()
+        .filter(|v| v.len() <= 10_000)
+        .ok_or(Error::HostPrerequisite(
+            "Resident VM membership is unavailable",
+        ))?;
+    let mut result = Vec::new();
+    for value in values {
+        let vm_ref = reference(value)?;
+        let vm = session.call("VM.get_record", vec![json!(&vm_ref)]).await?;
+        require(
+            vm["resident_on"] == host_ref,
+            "Resident VM location changed",
+        )?;
+        let control = vm["is_control_domain"]
+            .as_bool()
+            .ok_or(Error::Protocol("resident VM type unavailable"))?;
+        require(
+            matches!(
+                vm["power_state"].as_str(),
+                Some("Running" | "Paused" | "Halted" | "Suspended")
+            ),
+            "Resident VM power state is unavailable",
+        )?;
+        if !control && matches!(vm["power_state"].as_str(), Some("Running" | "Paused")) {
+            idle(&vm)?;
+            let id = vm["uuid"]
+                .as_str()
+                .and_then(|v| VmId::parse(v).ok())
+                .ok_or(Error::Protocol("resident VM UUID unavailable"))?;
+            require(
+                !result.contains(&id),
+                "Resident VM membership is inconsistent",
+            )?;
+            result.push(id);
+        }
+    }
+    Ok(result)
+}
+async fn evacuation(
+    session: &Session,
+    host_ref: &str,
+    host: &Value,
+    expected: &[VmId],
+) -> Result<(), Error> {
+    require(
+        same_vms(&residents(session, host_ref, host).await?, expected),
+        "Resident VMs changed since review; inspect the host before retrying",
+    )?;
+    let blockers = session
+        .call(
+            "host.get_vms_which_prevent_evacuation",
+            vec![json!(host_ref)],
+        )
+        .await?;
+    require(
+        blockers.as_object().is_some_and(|map| map.is_empty()),
+        "The host reports VMs that prevent evacuation; resolve their migration restrictions before retrying",
+    )?;
+    for id in expected {
+        let (vm_ref, _) = read(session, "VM", id.uuid()).await?;
+        let possible = session
+            .call("VM.get_possible_hosts", vec![json!(vm_ref)])
+            .await?;
+        let possible = possible
+            .as_array()
+            .filter(|hosts| hosts.len() <= 1024)
+            .ok_or(Error::Protocol("evacuation destinations unavailable"))?;
+        let mut suitable = false;
+        for candidate in possible {
+            let candidate = reference(candidate)?;
+            if candidate == host_ref {
+                continue;
+            }
+            let record = session
+                .call("host.get_record", vec![json!(candidate)])
+                .await?;
+            if record["enabled"] == true
+                && record["uuid"]
+                    .as_str()
+                    .is_some_and(|uuid| uuid::Uuid::parse_str(uuid).is_ok())
+                && metrics(session, &record).await?["live"] == true
+            {
+                suitable = true;
+                break;
+            }
+        }
+        require(
+            suitable,
+            "A resident VM has no live enabled destination; no automatic shutdown or HA reduction will be attempted",
+        )?;
+    }
+    session
+        .call("host.assert_can_evacuate", vec![json!(host_ref)])
+        .await?;
+    Ok(())
+}
+async fn empty_disabled(session: &Session, host_ref: &str, host: &Value) -> Result<(), Error> {
+    require(
+        host["enabled"] == false,
+        "Disable host scheduling before this operation",
+    )?;
+    require(
+        residents(session, host_ref, host).await?.is_empty(),
+        "Evacuate all running or paused guests before this operation",
+    )
+}
+async fn safe_coordinator(session: &Session, reference: &str, pool: &Value) -> Result<(), Error> {
+    if pool["master"] == reference {
+        let hosts = session.call("host.get_all", vec![]).await?;
+        require(
+            hosts.as_array().is_some_and(|hosts| hosts.len() == 1),
+            "Hand over the pool coordinator separately before shutting down or rebooting it",
+        )?;
+    }
+    Ok(())
+}
+fn epoch(host: &Value, key: &str, expected: &str) -> Result<(), Error> {
+    require(
+        host["other_config"][key].as_str() == Some(expected) && valid_epoch(expected),
+        "The host restarted after the view opened, or its start marker is unavailable",
+    )
+}
+async fn detached_storage(
+    session: &Session,
+    reference_host: &str,
+    host: &Value,
+) -> Result<(), Error> {
+    let pbds = host["PBDs"]
+        .as_array()
+        .filter(|v| v.len() <= 10_000)
+        .ok_or(Error::HostPrerequisite(
+            "Host storage attachments are unavailable",
+        ))?;
+    for pbd in pbds {
+        let record = session
+            .call("PBD.get_record", vec![json!(reference(pbd)?)])
+            .await?;
+        require(
+            record["host"] == reference_host && record["currently_attached"] == false,
+            "Detach the host's storage connections before changing multipathing",
+        )?;
+    }
+    Ok(())
+}
+fn map_argument(
+    record: &Value,
+    field: &str,
+    key: &str,
+    value: Option<Value>,
+) -> Result<Value, Error> {
+    let mut map = record[field]
+        .as_object()
+        .filter(|map| map.values().all(Value::is_string))
+        .cloned()
+        .ok_or(Error::Protocol("host configuration map unavailable"))?;
+    if let Some(value) = value {
+        map.insert(key.into(), value);
+    } else {
+        map.remove(key);
+    }
+    Ok(Value::Object(map))
+}
+
+pub(crate) async fn prepare(
+    session: &Session,
+    record: &ResourceOperationRecord,
+) -> Result<Plan, Error> {
+    let op = operation(record)?;
+    op.validate(record.target)?;
+    let kinds = match op {
+        HostOperation::EnterMaintenance {
+            expected_enabled,
+            resident_vms,
+        } => {
+            let mut kinds = Vec::new();
+            if *expected_enabled {
+                kinds.push(Kind::Disable);
+            }
+            if !resident_vms.is_empty() {
+                kinds.push(Kind::Evacuate);
+            }
+            kinds.push(Kind::MarkMaintenance(true));
+            kinds
+        }
+        HostOperation::Evacuate { .. } => vec![Kind::Evacuate],
+        HostOperation::ExitMaintenance => vec![Kind::Enable, Kind::MarkMaintenance(false)],
+        HostOperation::Reboot { .. } => vec![Kind::Reboot],
+        HostOperation::Shutdown { .. } => vec![Kind::Shutdown],
+        HostOperation::RestartToolstack { .. } => vec![Kind::Restart],
+        HostOperation::PowerOn => vec![Kind::PowerOn],
+        HostOperation::ConfigurePowerOn { .. } => vec![Kind::PowerMode],
+        HostOperation::SetDom0Memory { .. } => vec![Kind::Memory],
+        HostOperation::SetSyslog { .. } => vec![Kind::Logging, Kind::ReconfigureLogging],
+        HostOperation::SetMultipath { .. } => vec![Kind::Multipath, Kind::MultipathHandle],
+        HostOperation::SetPoolAutostart { .. } => vec![Kind::PoolAutostart],
+        HostOperation::ForgetDeadHost { .. } => vec![Kind::Forget],
+    };
+    // Check migration feasibility before disabling scheduling; every dispatch checks again.
+    if let HostOperation::EnterMaintenance { resident_vms, .. } = op {
+        let (reference, host, _) = host(session, record).await?;
+        live(session, &host, true).await?;
+        idle(&host)?;
+        evacuation(session, &reference, &host, resident_vms).await?;
+    }
+    let plan = Plan {
+        steps: kinds
+            .into_iter()
+            .map(|kind| Step {
+                kind,
+                task: None,
+                accepted: false,
+                task_succeeded: false,
+            })
+            .collect(),
+    };
+    arguments(session, record, &plan.steps[0].kind).await?;
+    Ok(plan)
+}
+pub(crate) async fn arguments(
+    session: &Session,
+    record: &ResourceOperationRecord,
+    kind: &Kind,
+) -> Result<(&'static str, Vec<Value>), Error> {
+    let op = operation(record)?;
+    if let HostOperation::SetPoolAutostart { expected, enabled } = op {
+        require(*kind == Kind::PoolAutostart, "Invalid pool autostart step")?;
+        let (reference, pool) = read(session, "pool", record.pool.uuid()).await?;
+        require(
+            map_bool(&pool, "auto_poweron") == Some(*expected),
+            "Pool VM autostart changed since review",
+        )?;
+        return Ok((
+            "pool.set_other_config",
+            vec![
+                json!(reference),
+                map_argument(
+                    &pool,
+                    "other_config",
+                    "auto_poweron",
+                    Some(json!(enabled.to_string())),
+                )?,
+            ],
+        ));
+    }
+    let (reference, host, pool) = host(session, record).await?;
+    idle(&host)?;
+    let args = match kind {
+        Kind::Disable => {
+            let HostOperation::EnterMaintenance {
+                expected_enabled,
+                resident_vms,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            require(
+                *expected_enabled
+                    && host["enabled"] == true
+                    && map_bool(&host, "MAINTENANCE_MODE") == Some(false),
+                "Host scheduling or maintenance state changed",
+            )?;
+            live(session, &host, true).await?;
+            evacuation(session, &reference, &host, resident_vms).await?;
+            ("Async.host.disable", vec![json!(&reference)])
+        }
+        Kind::Evacuate => {
+            let expected = match op {
+                HostOperation::Evacuate { resident_vms }
+                | HostOperation::EnterMaintenance { resident_vms, .. } => resident_vms,
+                _ => return Err(Error::InvalidResourceCommand),
+            };
+            require(
+                host["enabled"] == false,
+                "Disable scheduling before evacuating",
+            )?;
+            live(session, &host, true).await?;
+            allowed(&host, "evacuate")?;
+            evacuation(session, &reference, &host, expected).await?;
+            ("Async.host.evacuate", vec![json!(&reference)])
+        }
+        Kind::MarkMaintenance(value) => {
+            live(session, &host, true).await?;
+            if *value {
+                empty_disabled(session, &reference, &host).await?;
+                require(
+                    map_bool(&host, "MAINTENANCE_MODE") == Some(false),
+                    "Maintenance marker changed",
+                )?;
+            } else {
+                require(
+                    host["enabled"] == true && map_bool(&host, "MAINTENANCE_MODE") == Some(true),
+                    "Host scheduling or maintenance state changed",
+                )?;
+            }
+            (
+                "host.set_other_config",
+                vec![
+                    json!(&reference),
+                    map_argument(
+                        &host,
+                        "other_config",
+                        "MAINTENANCE_MODE",
+                        value.then(|| json!("true")),
+                    )?,
+                ],
+            )
+        }
+        Kind::Enable => {
+            require(
+                matches!(op, HostOperation::ExitMaintenance)
+                    && host["enabled"] == false
+                    && map_bool(&host, "MAINTENANCE_MODE") == Some(true),
+                "The host is no longer disabled in maintenance",
+            )?;
+            live(session, &host, true).await?;
+            allowed(&host, "enable")?;
+            ("Async.host.enable", vec![json!(&reference)])
+        }
+        Kind::Reboot | Kind::Shutdown => {
+            let expected = match op {
+                HostOperation::Reboot { expected_boot_time }
+                | HostOperation::Shutdown { expected_boot_time } => expected_boot_time,
+                _ => return Err(Error::InvalidResourceCommand),
+            };
+            epoch(&host, "boot_time", expected)?;
+            live(session, &host, true).await?;
+            empty_disabled(session, &reference, &host).await?;
+            safe_coordinator(session, &reference, &pool).await?;
+            allowed(
+                &host,
+                if *kind == Kind::Reboot {
+                    "reboot"
+                } else {
+                    "shutdown"
+                },
+            )?;
+            (
+                if *kind == Kind::Reboot {
+                    "Async.host.reboot"
+                } else {
+                    "Async.host.shutdown"
+                },
+                vec![json!(&reference)],
+            )
+        }
+        Kind::Restart => {
+            require(
+                pool["ha_enabled"] == false,
+                "Disable pool HA separately before restarting the toolstack; active HA may fence the host",
+            )?;
+            let HostOperation::RestartToolstack {
+                expected_agent_start_time,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            epoch(&host, "agent_start_time", expected_agent_start_time)?;
+            live(session, &host, true).await?;
+            let tasks = session.call("task.get_all_records", vec![]).await?;
+            require(
+                tasks.as_object().is_some_and(|tasks| {
+                    tasks.len() <= 10_000
+                        && tasks.values().all(|task| {
+                            matches!(
+                                task["status"].as_str(),
+                                Some("success" | "failure" | "cancelled")
+                            )
+                        })
+                }),
+                "Finish pending pool tasks before restarting the toolstack",
+            )?;
+            ("Async.host.restart_agent", vec![json!(&reference)])
+        }
+        Kind::PowerOn => {
+            live(session, &host, false).await?;
+            allowed(&host, "power_on")?;
+            require(
+                host["power_on_mode"]
+                    .as_str()
+                    .is_some_and(|v| !v.is_empty()),
+                "Configure host power-on first",
+            )?;
+            ("Async.host.power_on", vec![json!(&reference)])
+        }
+        Kind::PowerMode => {
+            let HostOperation::ConfigurePowerOn {
+                expected_mode,
+                mode,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            live(session, &host, true).await?;
+            require(
+                host["power_on_mode"] == *expected_mode
+                    && host["power_on_config"]
+                        .as_object()
+                        .is_some_and(|m| m.is_empty()),
+                "Power-on mode changed or contains BMC configuration that this editor does not replace",
+            )?;
+            (
+                "host.set_power_on_mode",
+                vec![json!(&reference), json!(mode.as_str()), json!({})],
+            )
+        }
+        Kind::Memory => {
+            let HostOperation::SetDom0Memory {
+                control_domain,
+                expected,
+                memory: desired,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            live(session, &host, true).await?;
+            let (vm_ref, vm) = read(session, "VM", control_domain.uuid()).await?;
+            require(
+                host["control_domain"] == vm_ref
+                    && vm["is_control_domain"] == true
+                    && vm["resident_on"] == reference,
+                "Control-domain identity changed",
+            )?;
+            idle(&vm)?;
+            require(
+                memory(&vm)? == *expected,
+                "Control-domain memory limits changed since review",
+            )?;
+            let total = integer(&metrics(session, &host).await?["memory_total"])
+                .ok_or(Error::HostPrerequisite("Host total memory is unavailable"))?;
+            require(
+                *desired <= total,
+                "Control-domain memory exceeds host physical memory",
+            )?;
+            (
+                "VM.set_memory",
+                vec![json!(vm_ref), json!(desired.to_string())],
+            )
+        }
+        Kind::Logging | Kind::ReconfigureLogging => {
+            let HostOperation::SetSyslog {
+                expected_destination,
+                destination: desired,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            live(session, &host, true).await?;
+            require(
+                destination(&host)?
+                    == if *kind == Kind::Logging {
+                        expected_destination.clone()
+                    } else {
+                        desired.clone()
+                    },
+                "Remote logging destination changed",
+            )?;
+            if *kind == Kind::Logging {
+                (
+                    "host.set_logging",
+                    vec![
+                        json!(&reference),
+                        map_argument(
+                            &host,
+                            "logging",
+                            "syslog_destination",
+                            desired.as_ref().map(|v| json!(v)),
+                        )?,
+                    ],
+                )
+            } else {
+                ("host.syslog_reconfigure", vec![json!(&reference)])
+            }
+        }
+        Kind::Multipath | Kind::MultipathHandle => {
+            let HostOperation::SetMultipath { expected, enabled } = op else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            live(session, &host, true).await?;
+            empty_disabled(session, &reference, &host).await?;
+            require(
+                map_bool(&host, "MAINTENANCE_MODE") == Some(true),
+                "Enter maintenance before changing multipathing",
+            )?;
+            detached_storage(session, &reference, &host).await?;
+            require(
+                host["multipathing"]
+                    == if *kind == Kind::Multipath {
+                        *expected
+                    } else {
+                        *enabled
+                    },
+                "Multipath configuration changed",
+            )?;
+            let handler = host["other_config"]
+                .as_object()
+                .and_then(|m| m.get("multipathhandle"));
+            require(
+                handler.is_none_or(|v| v == "dmp"),
+                "Custom multipath handlers require separate configuration",
+            )?;
+            if *kind == Kind::Multipath {
+                (
+                    "host.set_multipathing",
+                    vec![json!(&reference), json!(enabled)],
+                )
+            } else {
+                (
+                    "host.set_other_config",
+                    vec![
+                        json!(&reference),
+                        map_argument(
+                            &host,
+                            "other_config",
+                            "multipathhandle",
+                            enabled.then(|| json!("dmp")),
+                        )?,
+                    ],
+                )
+            }
+        }
+        Kind::Forget => {
+            require(
+                matches!(
+                    op,
+                    HostOperation::ForgetDeadHost {
+                        verified_power_off: true
+                    }
+                ),
+                "Independently verify that the host is powered off before forgetting it",
+            )?;
+            live(session, &host, false).await?;
+            empty_disabled(session, &reference, &host).await?;
+            require(
+                pool["master"] != reference && pool["ha_enabled"] == false,
+                "The coordinator cannot be forgotten and HA must be disabled",
+            )?;
+            ("Async.host.destroy", vec![json!(&reference)])
+        }
+        Kind::PoolAutostart => return Err(Error::InvalidResourceCommand),
+    };
+    Ok(args)
+}
+pub(crate) async fn verify(
+    session: &Session,
+    record: &ResourceOperationRecord,
+    step: &Step,
+) -> Result<(), Error> {
+    let op = operation(record)?;
+    if step.kind.asynchronous() && !matches!(step.kind, Kind::Reboot | Kind::Restart) {
+        require(
+            step.task_succeeded,
+            "Host task completion is unresolved; matching state alone does not establish that the dispatched task finished",
+        )?;
+    }
+    if step.kind == Kind::PoolAutostart {
+        let HostOperation::SetPoolAutostart { enabled, .. } = op else {
+            return Err(Error::InvalidResourceCommand);
+        };
+        let (_, pool) = read(session, "pool", record.pool.uuid()).await?;
+        return require(
+            map_bool(&pool, "auto_poweron") == Some(*enabled),
+            "Pool VM autostart has not been verified",
+        );
+    }
+    if step.kind == Kind::Forget {
+        read(session, "pool", record.pool.uuid()).await?;
+        let ResourceTarget::Host(id) = record.target else {
+            return Err(Error::InvalidResourceCommand);
+        };
+        return match read(session, "host", id.uuid()).await {
+            Err(Error::Api(code)) if code == "UUID_INVALID" => Ok(()),
+            Ok(_) => Err(Error::HostPrerequisite("The host record still exists")),
+            Err(error) => Err(error),
+        };
+    }
+    let (reference, host, _) = host(session, record).await?;
+    match &step.kind {
+        Kind::Disable => require(host["enabled"] == false, "Host scheduling is not disabled"),
+        Kind::Enable => require(host["enabled"] == true, "Host scheduling is not enabled"),
+        Kind::Evacuate => empty_disabled(session, &reference, &host).await,
+        Kind::MarkMaintenance(value) => {
+            if *value {
+                empty_disabled(session, &reference, &host).await?;
+            } else {
+                require(host["enabled"] == true, "Host scheduling is not enabled")?;
+            }
+            require(
+                map_bool(&host, "MAINTENANCE_MODE") == Some(*value),
+                "Host maintenance marker is not verified",
+            )
+        }
+        Kind::Reboot | Kind::Restart => {
+            let (key, old) = match op {
+                HostOperation::Reboot { expected_boot_time } => ("boot_time", expected_boot_time),
+                HostOperation::RestartToolstack {
+                    expected_agent_start_time,
+                } => ("agent_start_time", expected_agent_start_time),
+                _ => return Err(Error::InvalidResourceCommand),
+            };
+            live(session, &host, true).await?;
+            let fresh = host["other_config"][key]
+                .as_str()
+                .filter(|s| valid_epoch(s))
+                .and_then(|s| s.parse::<f64>().ok());
+            require(
+                fresh.is_some_and(|fresh| old.parse::<f64>().is_ok_and(|old| fresh > old)),
+                "Host restart has not been confirmed by a newer start marker",
+            )
+        }
+        Kind::Shutdown => {
+            require(
+                step.task_succeeded,
+                "Shutdown delivery is unresolved; an offline host alone does not prove shutdown",
+            )?;
+            live(session, &host, false).await
+        }
+        Kind::PowerOn => live(session, &host, true).await,
+        Kind::PowerMode => {
+            let HostOperation::ConfigurePowerOn { mode, .. } = op else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            require(
+                host["power_on_mode"] == mode.as_str()
+                    && host["power_on_config"]
+                        .as_object()
+                        .is_some_and(|m| m.is_empty()),
+                "Host power-on configuration is not verified",
+            )
+        }
+        Kind::Memory => {
+            let HostOperation::SetDom0Memory {
+                control_domain,
+                expected,
+                memory: desired,
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            let (vm_ref, vm) = read(session, "VM", control_domain.uuid()).await?;
+            require(
+                host["control_domain"] == vm_ref
+                    && vm["is_control_domain"] == true
+                    && vm["resident_on"] == reference,
+                "Control-domain identity changed",
+            )?;
+            require(
+                memory(&vm)?
+                    == MemoryLimits {
+                        static_min: expected.static_min,
+                        dynamic_min: *desired,
+                        dynamic_max: *desired,
+                        static_max: *desired,
+                    },
+                "Control-domain memory limits are not verified",
+            )
+        }
+        Kind::Logging | Kind::ReconfigureLogging => {
+            let HostOperation::SetSyslog {
+                destination: desired,
+                ..
+            } = op
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            require(
+                destination(&host)? == *desired,
+                "Remote logging configuration is not verified",
+            )?;
+            if step.kind == Kind::ReconfigureLogging {
+                require(
+                    step.accepted,
+                    "Logging configuration was saved, but applying it remains unresolved",
+                )?;
+            }
+            Ok(())
+        }
+        Kind::Multipath | Kind::MultipathHandle => {
+            let HostOperation::SetMultipath { enabled, .. } = op else {
+                return Err(Error::InvalidResourceCommand);
+            };
+            require(
+                host["multipathing"] == *enabled,
+                "Host multipathing mode is not verified",
+            )?;
+            if step.kind == Kind::MultipathHandle {
+                let actual = host["other_config"]
+                    .as_object()
+                    .and_then(|m| m.get("multipathhandle"));
+                require(
+                    if *enabled {
+                        actual == Some(&json!("dmp"))
+                    } else {
+                        actual.is_none()
+                    },
+                    "Host multipath handler is not verified",
+                )?;
+            }
+            Ok(())
+        }
+        Kind::PoolAutostart | Kind::Forget => Err(Error::InvalidResourceCommand),
+    }
+}

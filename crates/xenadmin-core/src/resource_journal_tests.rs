@@ -34,6 +34,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         storage_baseline: None,
         storage_trim_succeeded: false,
         pool_completed: false,
+        host_plan: None,
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {
@@ -311,6 +312,73 @@ fn pool_completion_receipt_survives_reload_and_late_control_without_being_retrac
     saved.pool_completed = false;
     assert!(matches!(
         journal.resource_save(&mut saved),
+        Err(Error::JournalChanged)
+    ));
+}
+
+#[test]
+fn host_step_receipts_survive_cancellation_and_acknowledgement_without_resurrection() {
+    use crate::resources::host::{Kind, Plan, Step};
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let mut record = resource(pool);
+    record.action = ResourceAction::Host(crate::HostOperation::RestartToolstack {
+        expected_agent_start_time: "100".into(),
+    });
+    record.target = ResourceTarget::Host(crate::HostId::from(uuid::Uuid::new_v4()));
+    record.host_plan = Some(Plan {
+        steps: vec![Step {
+            kind: Kind::Restart,
+            task: None,
+            accepted: false,
+            task_succeeded: false,
+        }],
+    });
+    record.steps = vec![OperationStep {
+        label: "Restart".into(),
+        state: StepState::Dispatching,
+        detail: String::new(),
+    }];
+    record.state = OperationState::Dispatching;
+    journal.resource_admit(&mut record).unwrap();
+    journal
+        .resource_control(pool, record.id, OperationControl::RequestCancellation)
+        .unwrap();
+    record.host_plan.as_mut().unwrap().steps[0].task = Some("OpaqueRef:restart-task".into());
+    record.host_plan.as_mut().unwrap().steps[0].accepted = true;
+    let mut current = journal.host_evidence(&record, 0).unwrap();
+    assert!(
+        !serde_json::to_string(&current)
+            .unwrap()
+            .contains("OpaqueRef:")
+    );
+    assert!(
+        !serde_json::to_string(&current)
+            .unwrap()
+            .contains("host_plan")
+    );
+    assert!(current.cancel_requested);
+    assert_eq!(current.host_plan, record.host_plan);
+    current.state = OperationState::OutcomeUnknown;
+    journal.resource_save(&mut current).unwrap();
+    journal
+        .resource_control(pool, record.id, OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    record.host_plan.as_mut().unwrap().steps[0].task_succeeded = true;
+    let current = journal.host_evidence(&record, 0).unwrap();
+    assert_eq!(current.state, OperationState::AcknowledgedUnknown);
+    assert!(current.host_plan.as_ref().unwrap().steps[0].task_succeeded);
+    let mut replacement = current.clone();
+    replacement.host_plan.as_mut().unwrap().steps[0].task = Some("OpaqueRef:other-task".into());
+    assert!(matches!(
+        journal.resource_save(&mut replacement),
+        Err(Error::JournalChanged)
+    ));
+    let mut rollback = current;
+    rollback.host_plan.as_mut().unwrap().steps[0].task_succeeded = false;
+    assert!(matches!(
+        journal.resource_save(&mut rollback),
         Err(Error::JournalChanged)
     ));
 }

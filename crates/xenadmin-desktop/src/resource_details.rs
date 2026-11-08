@@ -188,6 +188,29 @@ pub(super) fn append(s: &State, selected: &DisplayRow, mut view: El, k: &Kit) ->
             if let Some(details) = inventory.details.hosts.get(&id) {
                 view = view
                     .child(field("Hostname", supplied(&details.hostname), k))
+                    .child(field("Maintenance", known(details.maintenance_mode), k))
+                    .child(field("Multipathing", known(details.multipathing), k))
+                    .child(field(
+                        "Remote logging",
+                        if details.syslog_known {
+                            details
+                                .syslog_destination
+                                .as_deref()
+                                .unwrap_or("Local only")
+                        } else {
+                            "Unknown"
+                        },
+                        k,
+                    ))
+                    .child(field(
+                        "Power-on mode",
+                        details
+                            .power_on_mode
+                            .as_deref()
+                            .map(|v| if v.is_empty() { "Disabled" } else { v })
+                            .unwrap_or("Unknown"),
+                        k,
+                    ))
                     .child(field(
                         "Capabilities",
                         supplied(&details.capabilities.join(", ")),

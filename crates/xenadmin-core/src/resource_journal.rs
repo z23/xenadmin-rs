@@ -28,8 +28,16 @@ impl Journal {
     ) -> Result<Option<ResourceOperationRecord>, Error> {
         let data:Option<(String,Option<String>,Option<String>,u64)>=self.0.query_row("SELECT payload,task,result_reference,revision FROM resource_operations WHERE id=?1",[id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(|_|Error::Journal)?;
         data.map(|(payload, task, result_reference, revision)| {
-            let mut record: ResourceOperationRecord =
+            let payload: serde_json::Value =
                 serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+            let host_plan = payload
+                .get("host_plan")
+                .filter(|v| !v.is_null())
+                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                .transpose()?;
+            let mut record: ResourceOperationRecord =
+                serde_json::from_value(payload).map_err(|_| Error::Journal)?;
+            record.host_plan = host_plan;
             record.task = task;
             record.result_reference = result_reference;
             record.revision = revision;
@@ -50,6 +58,12 @@ impl Journal {
                 || (old.created.is_some() && old.created != record.created)
                 || (old.cancel_requested && !record.cancel_requested)
                 || (old.cancel_dispatched && !record.cancel_dispatched)
+                || old.host_plan.as_ref().is_some_and(|plan| {
+                    record
+                        .host_plan
+                        .as_ref()
+                        .is_none_or(|new| !plan.accepts(new))
+                })
                 || (old.network_baseline.is_some()
                     && old.network_baseline != record.network_baseline)
                 || (old.pool_completed && !record.pool_completed)
@@ -64,7 +78,15 @@ impl Journal {
         } else if record.revision != 0 {
             return Err(Error::JournalChanged);
         }
-        let changed=self.0.execute("INSERT INTO resource_operations(id,pool,payload,task,result_reference,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,result_reference=excluded.result_reference,terminal=excluded.terminal,revision=excluded.revision WHERE resource_operations.revision=?7 AND (resource_operations.terminal=0 OR excluded.terminal=1)",params![record.id.to_string(),record.pool.to_string(),serde_json::to_string(record).map_err(|_|Error::Journal)?,record.task,record.result_reference,record.state.terminal(),record.revision]).map_err(|_|Error::Journal)?;
+        let mut payload = serde_json::to_value(&record).map_err(|_| Error::Journal)?;
+        if let Some(plan) = &record.host_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "host_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
+        let payload = serde_json::to_string(&payload).map_err(|_| Error::Journal)?;
+        let changed=self.0.execute("INSERT INTO resource_operations(id,pool,payload,task,result_reference,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,result_reference=excluded.result_reference,terminal=excluded.terminal,revision=excluded.revision WHERE resource_operations.revision=?7 AND (resource_operations.terminal=0 OR excluded.terminal=1)",params![record.id.to_string(),record.pool.to_string(),payload,record.task,record.result_reference,record.state.terminal(),record.revision]).map_err(|_|Error::Journal)?;
         if changed != 1 {
             return Err(Error::JournalChanged);
         }
@@ -162,6 +184,54 @@ impl Journal {
                 Ok(()) => return Ok(current),
                 Err(Error::JournalChanged) => continue,
                 Err(error) => return Err(error),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
+    pub(crate) fn host_evidence(
+        &self,
+        evidence: &ResourceOperationRecord,
+        index: usize,
+    ) -> Result<ResourceOperationRecord, Error> {
+        for _ in 0..16 {
+            let mut current = self.resource_load(evidence.id)?.ok_or(Error::Journal)?;
+            if current.pool != evidence.pool
+                || current.target != evidence.target
+                || current.action != evidence.action
+            {
+                return Err(Error::OperationConflict);
+            }
+            let received = evidence
+                .host_plan
+                .as_ref()
+                .and_then(|p| p.steps.get(index))
+                .ok_or(Error::Journal)?;
+            let step = current
+                .host_plan
+                .as_mut()
+                .and_then(|p| p.steps.get_mut(index))
+                .ok_or(Error::Journal)?;
+            if step.kind != received.kind
+                || (step.task.is_some() && received.task.is_some() && step.task != received.task)
+            {
+                return Err(Error::JournalChanged);
+            }
+            if step.task.is_none() {
+                step.task = received.task.clone();
+            }
+            step.accepted |= received.accepted;
+            step.task_succeeded |= received.task_succeeded;
+            if !current.state.terminal() {
+                current.state = if step.task.is_some() && !step.task_succeeded {
+                    OperationState::Tracking
+                } else {
+                    OperationState::Verifying
+                };
+            }
+            match self.resource_save(&mut current) {
+                Ok(()) => return Ok(current),
+                Err(Error::JournalChanged) => continue,
+                Err(e) => return Err(e),
             }
         }
         Err(Error::JournalChanged)

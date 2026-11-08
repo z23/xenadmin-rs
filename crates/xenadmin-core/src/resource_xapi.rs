@@ -123,6 +123,7 @@ pub(super) async fn prepare(
     let mut steps = Vec::new();
     match &record.action {
         ResourceAction::Pool(_) => unreachable!(),
+        ResourceAction::Host(_) => return Err(Error::InvalidResourceCommand),
         ResourceAction::Network(_) => return super::network::prepare(session, record).await,
         ResourceAction::CancelTask => {
             cancellable_task(&fresh)?;
@@ -398,6 +399,7 @@ fn cancellable_task(record: &Value) -> Result<(), Error> {
 pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Check> {
     match &record.action {
         ResourceAction::Pool(_) => vec![Check::Pool],
+        ResourceAction::Host(_) => Vec::new(),
         ResourceAction::Network(_) => vec![Check::Network],
         ResourceAction::CancelTask => vec![Check::TaskCancellation],
         ResourceAction::DismissMessage { .. } => vec![Check::MessageDeleted],

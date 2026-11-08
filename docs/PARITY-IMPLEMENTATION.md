@@ -182,7 +182,7 @@ Implementation boundaries and evidence: [storage lifecycle report](reports/2026-
 | P09-09 | Forget versus destroy SR | Separate exact-UUID reviews implemented with captured disk set, fresh detach/consumer/default/HA dependency checks and tracked tasks; UI removal limited to 100 reviewed disks; fixture verified, destructive lab qualification open |
 | P09-10 | Choose default SR | Reviewed pool default SR selection with fresh prior-value and user-storage checks implemented; lab qualification open |
 | P09-11 | SR name/description edits | Reviewed metadata editing with fresh conflict checks and explicit partial outcomes implemented; lab qualification open |
-| P09-12 | Multipath settings/path inspection | Bounded per-PBD multipathing and active/maximum path inspection implemented without raw device config; host multipath setting changes pending; live path qualification open |
+| P09-12 | Multipath settings/path inspection | Bounded per-PBD path inspection and reviewed standard multipathing changes on empty maintenance hosts with all PBDs detached implemented; automatic detach/replug orchestration remains pending; fixture verified, live path qualification open |
 | P09-13 | Trim/reclaim | Explicit SR_TRIM-capable attached-host reclaim via fixed trim plugin implemented with tracked task and positive-result evidence; unavailable plugin is a reported host error; fixture verified, lab qualification open |
 | P09-14 | Read caching/provisioning options | Capability review and implementation queued |
 | P09-15 | Backend-specific wizards | Typed NFS, ISO-NFS and unauthenticated LVM-iSCSI forms implemented; other backends, port selection, target enumeration and authentication remain pending |
@@ -224,22 +224,24 @@ See the [same-pool migration increment](reports/2026-11-08-migration.md) for the
 
 ## 12. Host administration
 
+Implementation and qualification evidence: [host administration report](reports/2026-11-08-host-administration.md).
+
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P12-01 | Host hardware/software properties | Existing subset; remaining work queued |
+| P12-01 | Host hardware/software properties | Host software/CPU metadata, live memory, attachments, maintenance, multipathing, logging and power-on mode displayed; broader hardware fields and live qualification remain open |
 | P12-02 | Rename/description | Reviewed host metadata editing implemented with fresh conflict checks and explicit partial outcomes; lab qualification open |
-| P12-03 | Enable/disable scheduling; enter/exit maintenance | Reviewed scheduling enable/disable implemented; evacuation and full maintenance orchestration remain queued |
-| P12-04 | Evacuate host with destination checks | Queued |
-| P12-05 | Shutdown/reboot host | Queued |
-| P12-06 | Restart toolstack | Queued |
-| P12-07 | Host power-on/configuration | Queued |
-| P12-08 | dom0 memory | Queued |
-| P12-09 | Host autostart | Queued |
-| P12-10 | Change host/root password | Queued |
-| P12-11 | Forget/remove dead host | Queued |
-| P12-12 | Host configuration backup/restore | Queued |
-| P12-13 | Logging destination/monitoring settings | Queued |
-| P12-14 | Crash dumps and support bundles | Queued |
+| P12-03 | Enable/disable scheduling; enter/exit maintenance | Reviewed disable/evacuate/maintenance marker and enable/exit workflows implemented with exact guest review and per-step outcomes; fixture-verified, lab open |
+| P12-04 | Evacuate host with destination checks | Reviewed guest UUID set, fresh blockers/possible-host checks and authoritative assert_can_evacuate before disable and evacuation; no automatic HA reduction or guest shutdown; fixture-verified, lab open |
+| P12-05 | Shutdown/reboot host | Reviewed shutdown/reboot for disabled empty hosts; separate handover required for multi-host coordinators; task success/offline or newer boot marker verifies outcome; fixture-verified, lab open |
+| P12-06 | Restart toolstack | Reviewed toolstack restart with pending-task preflight and newer agent-start marker recovery; fixture-verified, lab open |
+| P12-07 | Host power-on/configuration | Power-on using configured method and disabled/Wake-on-LAN configuration implemented; BMC credential/Secret-backed editing remains queued; fixture-verified, lab open |
+| P12-08 | dom0 memory | Reviewed exact-control-domain memory change with current bounds/physical limit checks and fresh verification; fixture-verified, lab open |
+| P12-09 | Host autostart | Explicit pool-wide VM autostart review implemented; preserves per-VM flags and does not start VMs immediately; fixture-verified, lab open |
+| P12-10 | Change host/root password | Retained dependency: volatile old/new credentials, session password-change and reconnect credential update workflow queued |
+| P12-11 | Forget/remove dead host | Reviewed offline/disabled/empty non-coordinator removal with independent power-off acknowledgement and HA disabled; retains SR records/data; fixture-verified, lab open |
+| P12-12 | Host configuration backup/restore | Retained dependency: authenticated bounded host backup/restore transfers and exact-host recovery review queued |
+| P12-13 | Logging destination/monitoring settings | Reviewed remote syslog destination and separately journaled reconfigure implemented; further monitoring settings remain queued; fixture-verified, lab open |
+| P12-14 | Crash dumps and support bundles | Retained dependency: crash-dump inventory and private support-bundle download workflow queued |
 
 ## 13. Pools, HA, identity and server security
 
