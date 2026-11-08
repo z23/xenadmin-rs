@@ -11,19 +11,19 @@ fn now() -> u64 {
         .as_millis() as u64
 }
 impl ResourceRequest {
-    fn transfer_plan(&self) -> Result<&Plan, Error> {
+    pub(super) fn transfer_plan(&self) -> Result<&Plan, Error> {
         self.record
             .transfer_plan
             .as_deref()
             .ok_or(Error::TransferConflict)
     }
-    fn transfer_plan_mut(&mut self) -> Result<&mut Plan, Error> {
+    pub(super) fn transfer_plan_mut(&mut self) -> Result<&mut Plan, Error> {
         self.record
             .transfer_plan
             .as_deref_mut()
             .ok_or(Error::TransferConflict)
     }
-    fn transfer_action(&self) -> Result<TransferAction, Error> {
+    pub(super) fn transfer_action(&self) -> Result<TransferAction, Error> {
         if let ResourceAction::Transfer(a) = &self.record.action {
             Ok(a.clone())
         } else {
@@ -37,7 +37,20 @@ impl ResourceRequest {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let action = self.transfer_action()?;
-        transfer::xapi::prepare(session, self.record.pool, &action).await?;
+        if matches!(action, TransferAction::ImportDisk { .. }) {
+            self.create_transfer_disk(journal, session, cancel).await?;
+            if self.record.state.terminal() {
+                return Ok(());
+            }
+        }
+        let stream_index = usize::from(self.transfer_plan()?.disk_creation.is_some());
+        transfer::xapi::prepare(
+            session,
+            self.record.pool,
+            &action,
+            Some(self.transfer_plan()?),
+        )
+        .await?;
         let previous_tasks = crate::device_lifecycle::baseline(session, "task").await?;
         let mut plan = self.transfer_plan()?.clone();
         if action.is_export() {
@@ -53,7 +66,9 @@ impl ResourceRequest {
             tokio::task::spawn_blocking(move || files::source(&file))
                 .await
                 .map_err(|_| Error::TransferFile)??;
-            plan.baseline = Some(transfer::xapi::baseline(session).await?);
+            if matches!(action, TransferAction::ImportXva { .. }) {
+                plan.baseline = Some(transfer::xapi::baseline(session).await?);
+            }
         }
         plan.expires_at_ms = now().saturating_add(24 * 60 * 60 * 1000);
         self.reload(journal)?;
@@ -64,7 +79,7 @@ impl ResourceRequest {
         self.record.transfer_plan = Some(Box::new(plan));
         self.record.steps = vec![
             OperationStep {
-                label: "Transfer archive".into(),
+                label: "Transfer image".into(),
                 state: StepState::Pending,
                 detail: String::new(),
             },
@@ -74,11 +89,21 @@ impl ResourceRequest {
                 detail: String::new(),
             },
         ];
+        if stream_index == 1 {
+            self.record.steps.insert(
+                0,
+                OperationStep {
+                    label: "Create unattached disk".into(),
+                    state: StepState::Verified,
+                    detail: "New disk UUID and ownership marker verified".into(),
+                },
+            );
+        }
         let task_name = format!("XenAdmin RS transfer {}", self.record.id);
         self.record.detail = "Creating an owned transfer task".into();
         self.record.state = OperationState::Dispatching;
         self.save(journal).await?;
-        let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.call("task.create",vec![json!(&task_name),json!("Client-owned archive transfer")])=>v?};
+        let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.call("task.create",vec![json!(&task_name),json!("Client-owned image transfer")])=>v?};
         self.record.task = Some(crate::resources::xapi::reply_reference(&task)?);
         self.record = journal.resource_evidence(&self.record)?;
         if self.record.state.terminal() {
@@ -98,8 +123,17 @@ impl ResourceRequest {
         self.transfer_plan_mut()?.task_uuid = Some(task_uuid);
         self.save(journal).await?;
         if self.record.cancel_requested {
-            self.record.state = OperationState::Cancelled;
-            self.record.detail = "Stopped before transferring archive bytes".into();
+            self.record.state = if stream_index == 1 {
+                OperationState::PartiallyCompleted
+            } else {
+                OperationState::Cancelled
+            };
+            self.record.detail = if stream_index == 1 {
+                "Stopped before image upload; the new unattached disk is retained"
+            } else {
+                "Stopped before transferring image bytes"
+            }
+            .into();
             self.record.can_cancel = false;
             self.save(journal).await?;
             self.cleanup_transfer_task(session).await;
@@ -107,7 +141,13 @@ impl ResourceRequest {
             return Ok(());
         }
 
-        let mut prepared = transfer::xapi::prepare(session, self.record.pool, &action).await?;
+        let mut prepared = transfer::xapi::prepare(
+            session,
+            self.record.pool,
+            &action,
+            Some(self.transfer_plan()?),
+        )
+        .await?;
         prepared.query.push((
             "task_id".into(),
             self.record.task.clone().ok_or(Error::TransferConflict)?,
@@ -115,8 +155,8 @@ impl ResourceRequest {
         self.transfer_plan_mut()?.dispatched = true;
         self.record.state = OperationState::Tracking;
         self.record.can_cancel = true;
-        self.record.steps[0].state = StepState::Dispatching;
-        self.record.detail = "Streaming archive; host completion must also be verified".into();
+        self.record.steps[stream_index].state = StepState::Dispatching;
+        self.record.detail = "Streaming image; host completion must also be verified".into();
         self.save(journal).await?;
         let meter = Arc::new(http::Meter::default());
         let outcome = {
@@ -137,7 +177,7 @@ impl ResourceRequest {
                         if self.record.cancel_requested {meter.cancel.cancel();}
                         if now()>=self.transfer_plan()?.expires_at_ms {meter.cancel.cancel();break Err(Error::TransferExpired)}
                         self.record.transfer=Some(meter.progress());
-                        self.record.detail=if self.record.cancel_requested{"Stopping the local stream; server cancellation still requires confirmation"}else{"Streaming archive"}.into();
+                        self.record.detail=if self.record.cancel_requested{"Stopping the local stream; server cancellation still requires confirmation"}else{"Streaming image"}.into();
                         match self.save(journal).await{Ok(())|Err(Error::JournalChanged)=>{},Err(error)=>{meter.cancel.cancel();return Err(error)}}
                     }
                 }
@@ -147,14 +187,23 @@ impl ResourceRequest {
         if self.record.state.terminal() {
             return Ok(());
         }
+        if !action.is_export() {
+            let file = self.transfer_plan()?.file.clone();
+            let unchanged = tokio::task::spawn_blocking(move || files::source(&file))
+                .await
+                .map_err(|_| Error::TransferFile)?;
+            if unchanged.is_err() {
+                self.transfer_plan_mut()?.stream_invalid = true;
+            }
+        }
         let mut progress = meter.progress();
         match outcome {
             Ok(receipt) => {
                 progress.stream_complete = true;
                 progress.phase = "Verifying host result".into();
                 self.transfer_plan_mut()?.stream_receipt = Some(receipt);
-                self.record.steps[0].state = StepState::Verified;
-                self.record.steps[0].detail = "Complete stream receipt saved".into();
+                self.record.steps[stream_index].state = StepState::Verified;
+                self.record.steps[stream_index].detail = "Complete stream receipt saved".into();
             }
             Err(error) => {
                 if matches!(
@@ -164,15 +213,15 @@ impl ResourceRequest {
                     self.transfer_plan_mut()?.stream_invalid = true;
                 }
                 progress.phase = "Stream stopped; checking host outcome".into();
-                self.record.steps[0].state = StepState::OutcomeUnknown;
-                self.record.steps[0].detail = error.to_string();
+                self.record.steps[stream_index].state = StepState::OutcomeUnknown;
+                self.record.steps[stream_index].detail = error.to_string();
             }
         }
         self.record.transfer = Some(progress);
         self.save(journal).await?;
         self.recheck_transfer(journal, session, cancel).await
     }
-    async fn cleanup_transfer_task(&self, session: &Session) {
+    pub(super) async fn cleanup_transfer_task(&self, session: &Session) {
         if let Some(task) = &self.record.task
             && let Some(uuid) = self.record.transfer_plan.as_ref().and_then(|p| p.task_uuid)
             && let Ok(Ok(record)) = tokio::time::timeout(
@@ -197,6 +246,22 @@ impl ResourceRequest {
         session: &Session,
         complete: bool,
     ) -> Result<(), Error> {
+        if matches!(self.transfer_action()?, TransferAction::ImportDisk { .. }) {
+            let (reference, id) = transfer::disk::identify(
+                session,
+                self.transfer_plan()?,
+                &self.transfer_action()?,
+                self.record.id,
+            )
+            .await?;
+            if complete && self.transfer_plan()?.result.as_deref() != Some(&[reference]) {
+                return Err(Error::TransferConflict);
+            }
+            if !self.record.transfer_created.disks.contains(&id) {
+                self.record.transfer_created.disks.push(id)
+            }
+            return Ok(());
+        }
         if let TransferAction::ImportXva { sr } = self.transfer_action()? {
             let task = self.record.task.as_deref().ok_or(Error::TransferConflict)?;
             let found =
@@ -230,6 +295,9 @@ impl ResourceRequest {
         self.reload(journal)?;
         if self.record.state.terminal() {
             return Ok(());
+        }
+        if !self.transfer_plan()?.dispatched && self.transfer_plan()?.disk_creation.is_some() {
+            return self.recover_transfer_disk_creation(journal, session).await;
         }
         let task = self.record.task.clone().ok_or(Error::TransferConflict)?;
         if !self.transfer_plan()?.dispatched {
@@ -268,7 +336,14 @@ impl ResourceRequest {
                 Some("success") => {
                     let imported = !self.transfer_action()?.is_export();
                     let result = if imported {
-                        Some(transfer::xapi::result(&value)?)
+                        Some(
+                            if matches!(self.transfer_action()?, TransferAction::ImportDisk { .. })
+                            {
+                                vec![crate::xapi::snapshot_task_result(&value)?]
+                            } else {
+                                transfer::xapi::result(&value)?
+                            },
+                        )
                     } else {
                         None
                     };
@@ -337,17 +412,43 @@ impl ResourceRequest {
                 self.record.detail="Host export completed, but a complete local archive receipt is unavailable. No final file was published.".into();
             } else {
                 let plan = self.transfer_plan()?.clone();
-                let TransferAction::ExportXva { source } = self.transfer_action()? else {
-                    return Err(Error::TransferConflict);
-                };
+                let action = self.transfer_action()?;
+                if let TransferAction::ExportDisk {
+                    vdi,
+                    expected_sr,
+                    format,
+                    expected_size,
+                } = &action
+                {
+                    let (_, record) =
+                        transfer::disk::disk_record(session, *vdi, *expected_sr, *format, false)
+                            .await?;
+                    if record["virtual_size"]
+                        .as_u64()
+                        .or_else(|| record["virtual_size"].as_str()?.parse().ok())
+                        != Some(*expected_size)
+                    {
+                        return Err(Error::TransferConflict);
+                    }
+                }
                 tokio::task::spawn_blocking(move || {
-                    files::validate_export(&plan, &source)?;
+                    match action {
+                        TransferAction::ExportXva { source } => {
+                            files::validate_export(&plan, &source)?
+                        }
+                        TransferAction::ExportDisk {
+                            format,
+                            expected_size,
+                            ..
+                        } => files::validate_disk_export(&plan, format, expected_size)?,
+                        _ => return Err(Error::TransferConflict),
+                    }
                     files::finalize(&plan)
                 })
                 .await
                 .map_err(|_| Error::TransferFile)??;
                 self.record.state = OperationState::Succeeded;
-                self.record.detail = "Export verified and saved as a private archive".into();
+                self.record.detail = "Export verified and saved as a private image".into();
             }
         } else if success {
             self.record.state = if self.transfer_plan()?.stream_invalid {
@@ -355,7 +456,10 @@ impl ResourceRequest {
             } else {
                 OperationState::Succeeded
             };
-            self.record.detail = if self.transfer_plan()?.stream_invalid {"Host completed import, but source file integrity changed during upload. Retained resource UUIDs require inspection."}else{"Imported guest identities and storage verified; guests remain halted"}.into();
+            self.record.detail = if matches!(self.transfer_action()?,TransferAction::ImportDisk{..})&&!self.transfer_plan()?.stream_invalid {"Disk image imported into a new verified unattached disk"}else if self.transfer_plan()?.stream_invalid {"Host completed import, but source file integrity changed during upload. Retained resource UUIDs require inspection."}else{"Imported guest identities and storage verified; guests remain halted"}.into();
+        } else if matches!(self.transfer_action()?, TransferAction::ImportDisk { .. }) {
+            self.record.state = OperationState::PartiallyCompleted;
+            self.record.detail="Disk transfer did not complete. The new unattached disk is retained with partial or unknown contents; no existing disk was overwritten.".into();
         } else if !self.transfer_action()?.is_export() {
             // VM/network creation precedes import_task tagging in XAPI. A failed task
             // cannot prove that every partially created resource was identified or removed.
@@ -374,7 +478,9 @@ impl ResourceRequest {
                 step.state = StepState::Verified;
             }
         } else {
-            self.record.steps[1].state = StepState::Failed;
+            if let Some(step) = self.record.steps.last_mut() {
+                step.state = StepState::Failed;
+            }
         }
         if let Some(p) = &mut self.record.transfer {
             p.phase = self.record.detail.clone()

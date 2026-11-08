@@ -1970,6 +1970,7 @@ fn main() {
             ("vm-create", vm_lifecycle::scene),
             ("vm-migration", vm_migration::scene),
             ("archive-export", transfers::scene),
+            ("disk-export", transfers::disk_scene),
             ("snapshots", |s| {
                 demo(s);
                 let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();

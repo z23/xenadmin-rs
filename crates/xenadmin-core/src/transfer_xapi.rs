@@ -62,8 +62,29 @@ pub(crate) async fn prepare(
     s: &Session,
     pool: crate::PoolId,
     action: &TransferAction,
+    plan: Option<&Plan>,
 ) -> Result<http::Prepared, Error> {
-    let (_, pool) = fresh(s, "pool", pool.uuid()).await?;
+    if matches!(
+        action,
+        TransferAction::ImportDisk { .. } | TransferAction::ExportDisk { .. }
+    ) {
+        return super::disk::prepare(s, pool, action, plan).await;
+    }
+    if let TransferAction::ImportXva { sr } = action {
+        if s.options().read_only {
+            return Err(Error::ReadOnly);
+        }
+        let mut prepared = storage_route(s, pool, *sr, true).await?;
+        let (reference, _) = fresh(s, "SR", sr.uuid()).await?;
+        prepared.kind = http::Kind::Archive;
+        prepared.query = vec![
+            ("sr_id".into(), reference),
+            ("restore".into(), "false".into()),
+            ("force".into(), "false".into()),
+        ];
+        return Ok(prepared);
+    }
+    let _ = fresh(s, "pool", pool.uuid()).await?;
     let hosts = records(s, "host").await?;
     let known_hosts = hosts
         .values()
@@ -75,7 +96,7 @@ pub(crate) async fn prepare(
                 .ok_or(Error::TransferEndpoint)
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let mut endpoint = s.options().endpoint.clone();
+    let endpoint = s.options().endpoint.clone();
     let mut query = vec![];
     match action {
         TransferAction::ExportXva { source } => {
@@ -111,57 +132,13 @@ pub(crate) async fn prepare(
             query.push(("use_compression".into(), "false".into()));
             query.push(("preserve_power_state".into(), "false".into()));
         }
-        TransferAction::ImportXva { sr } => {
-            if s.options().read_only {
-                return Err(Error::ReadOnly);
-            }
-            let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
-            idle(&r)?;
-            if r["content_type"] != "user" || !crate::xapi::advertises(&r, "vdi_create") {
-                return Err(Error::UnavailableAction);
-            }
-            let mut candidates = vec![];
-            for p in refs(&r, "PBDs")? {
-                let attachment = s.call("PBD.get_record", vec![json!(p)]).await?;
-                if attachment["SR"] != reference {
-                    return Err(Error::TransferConflict);
-                }
-                if attachment["currently_attached"] == true {
-                    let hostref = crate::snapshots::reference(&attachment["host"])?;
-                    let host = hosts.get(&hostref).ok_or(Error::TransferConflict)?;
-                    if host["enabled"] == true {
-                        candidates.push((hostref, host));
-                    }
-                }
-            }
-            candidates.sort_by_key(|(reference, _)| {
-                reference != pool["master"].as_str().unwrap_or_default()
-            });
-            let (_, host) = candidates.first().ok_or(Error::UnavailableAction)?;
-            let address = host["address"].as_str().ok_or(Error::TransferEndpoint)?;
-            let original =
-                url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
-            if original.host_str() != Some(address) {
-                let mut target = original.clone();
-                target
-                    .set_host(Some(address))
-                    .map_err(|_| Error::TransferEndpoint)?;
-                target
-                    .set_scheme("https")
-                    .map_err(|_| Error::TransferEndpoint)?;
-                target
-                    .set_port(Some(443))
-                    .map_err(|_| Error::TransferEndpoint)?;
-                endpoint = Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint)?;
-            }
-            query.extend([
-                ("sr_id".into(), reference),
-                ("restore".into(), "false".into()),
-                ("force".into(), "false".into()),
-            ]);
+        TransferAction::ImportDisk { .. } | TransferAction::ExportDisk { .. } => {
+            return Err(Error::TransferConflict);
         }
+        TransferAction::ImportXva { .. } => return Err(Error::TransferConflict),
     }
     Ok(http::Prepared {
+        kind: http::Kind::Archive,
         endpoint,
         known_hosts,
         query,
@@ -308,4 +285,68 @@ pub(crate) async fn created(
     result.disks.sort();
     result.networks.sort();
     Ok(result)
+}
+
+pub(crate) async fn storage_route(
+    s: &Session,
+    pool: crate::PoolId,
+    sr: SrId,
+    write: bool,
+) -> Result<http::Prepared, Error> {
+    let (_, pool) = fresh(s, "pool", pool.uuid()).await?;
+    let hosts = records(s, "host").await?;
+    let known_hosts = hosts
+        .values()
+        .map(|h| {
+            h["address"]
+                .as_str()
+                .filter(|v| v.len() <= 253 && !v.contains('/'))
+                .map(str::to_owned)
+                .ok_or(Error::TransferEndpoint)
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
+    idle(&r)?;
+    if r["content_type"] != "user" || (write && !crate::xapi::advertises(&r, "vdi_create")) {
+        return Err(Error::UnavailableAction);
+    }
+    let mut candidates = vec![];
+    for p in refs(&r, "PBDs")? {
+        let p = s.call("PBD.get_record", vec![json!(p)]).await?;
+        if p["SR"] != reference {
+            return Err(Error::TransferConflict);
+        }
+        if p["currently_attached"] == true {
+            let h = crate::snapshots::reference(&p["host"])?;
+            let host = hosts.get(&h).ok_or(Error::TransferConflict)?;
+            if host["enabled"] == true {
+                candidates.push((h, host));
+            }
+        }
+    }
+    candidates.sort_by_key(|(r, _)| r != pool["master"].as_str().unwrap_or_default());
+    let (_, host) = candidates.first().ok_or(Error::UnavailableAction)?;
+    let address = host["address"].as_str().ok_or(Error::TransferEndpoint)?;
+    let mut endpoint = s.options().endpoint.clone();
+    let original = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
+    if original.host_str() != Some(address) {
+        let mut target = original;
+        target
+            .set_host(Some(address))
+            .map_err(|_| Error::TransferEndpoint)?;
+        target
+            .set_scheme("https")
+            .map_err(|_| Error::TransferEndpoint)?;
+        target
+            .set_port(Some(443))
+            .map_err(|_| Error::TransferEndpoint)?;
+        endpoint = Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint)?;
+    }
+    Ok(http::Prepared {
+        kind: http::Kind::Disk,
+        endpoint,
+        known_hosts,
+        query: vec![],
+        upload: write,
+    })
 }

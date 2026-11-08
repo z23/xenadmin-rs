@@ -91,6 +91,7 @@ pub(crate) fn select_source(path: &Path) -> Result<TransferFile, Error> {
         identity: Some(identity),
         parent,
         manifest: Some(summary),
+        disk: None,
     })
 }
 pub(crate) fn select_destination(path: &Path) -> Result<TransferFile, Error> {
@@ -103,6 +104,7 @@ pub(crate) fn select_destination(path: &Path) -> Result<TransferFile, Error> {
         identity: None,
         parent,
         manifest: None,
+        disk: None,
     })
 }
 fn parent_handle(file: &TransferFile) -> Result<File, Error> {
@@ -291,6 +293,52 @@ pub(crate) fn validate_export(plan: &Plan, source: &ExportSource) -> Result<(), 
         ExportSource::Snapshot { snapshot, .. } => snapshot.uuid(),
     };
     if summary.guests.len() != 1 || summary.guests[0].uuid != expected {
+        return Err(Error::TransferConflict);
+    }
+    Ok(())
+}
+
+pub(crate) fn select_disk_source(
+    path: &Path,
+    format: crate::DiskImageFormat,
+) -> Result<TransferFile, Error> {
+    let (path, parent) = canonical(path)?;
+    let mut file = open(&path, false, false)?;
+    let identity = Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?);
+    let disk = crate::disk_image::inspect(&mut file, format)?;
+    if Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?) != identity {
+        return Err(Error::TransferFileChanged);
+    }
+    Ok(TransferFile {
+        path,
+        parent,
+        identity: Some(identity),
+        manifest: None,
+        disk: Some(disk),
+    })
+}
+
+pub(crate) fn validate_disk_export(
+    plan: &Plan,
+    format: crate::DiskImageFormat,
+    size: u64,
+) -> Result<(), Error> {
+    let receipt = plan.stream_receipt.as_ref().ok_or(Error::TransferFile)?;
+    let path = if plan.file.path.symlink_metadata().is_ok()
+        && matches_receipt(&plan.file.path, receipt)?
+    {
+        &plan.file.path
+    } else {
+        plan.temporary.as_ref().ok_or(Error::TransferFile)?
+    };
+    let mut file = open(path, false, false)?;
+    if !receipt.identity.same_inode(&Identity::from(
+        &file.metadata().map_err(|_| Error::TransferFile)?,
+    )) {
+        return Err(Error::TransferFileChanged);
+    }
+    let summary = crate::disk_image::inspect(&mut file, format)?;
+    if summary.virtual_size != size {
         return Err(Error::TransferConflict);
     }
     Ok(())

@@ -1,5 +1,7 @@
 #[path = "host_worker.rs"]
 mod host;
+#[path = "transfer_disk_worker.rs"]
+mod transfer_disk_worker;
 #[path = "transfer_worker.rs"]
 mod transfer_worker;
 use super::{ResourceOperationRecord, xapi};

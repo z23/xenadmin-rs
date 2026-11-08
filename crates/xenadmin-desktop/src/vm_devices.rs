@@ -299,6 +299,9 @@ fn disk_card(
             .child(field("Missing from storage", boolean(disk.missing), k))
             .child(field("Attachment count", sharing.to_string(), k))
             .child(field("Disk UUID", disk.id.to_string(), k));
+        if !cd {
+            view = view.child(crate::transfers::disk_button(s, disk, k));
+        }
         if !disk.description.is_empty() {
             view = view.child(field("Description", &disk.description, k));
         }

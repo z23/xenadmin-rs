@@ -79,8 +79,18 @@ enum Fault {
     Pending,
     Snapshot,
     Untagged,
+    LostDiskCreate,
+    ExistingDisk,
+    WrongDiskResult,
+    ChangedDisk,
+    DiskFailure,
+    DynamicDisk,
+    PendingDisk,
+    ChangedInput,
+    DelayedDiskCreate,
 }
 struct Fixture {
+    fault: Fault,
     options: ConnectionOptions,
     server: tokio::task::JoinHandle<()>,
     calls: Arc<Mutex<Vec<String>>>,
@@ -158,6 +168,9 @@ impl Fixture {
                             break;
                         }
                         if let Some((k, v)) = line.split_once(':') {
+                            if request.contains("_raw_vdi?") {
+                                assert!(!k.eq_ignore_ascii_case("transfer-encoding"));
+                            }
                             if k.eq_ignore_ascii_case("content-length") {
                                 len = v.trim().parse::<usize>().unwrap();
                             }
@@ -174,7 +187,69 @@ impl Fixture {
                     let mut status = "200 OK";
                     let mut extra = String::new();
                     let mut declared = None;
-                    let body = if request.starts_with("GET /export?")
+                    let mut delay_create = false;
+                    let body = if request.starts_with("GET /export_raw_vdi?")
+                        || request.starts_with("PUT /import_raw_vdi?")
+                    {
+                        assert_eq!(cookie, "session_id=OpaqueRef:synthetic-secret");
+                        assert!(!request.contains("synthetic-secret"));
+                        let put = request.starts_with("PUT");
+                        let path = if put {
+                            "PUT /import_raw_vdi"
+                        } else {
+                            "GET /export_raw_vdi"
+                        };
+                        c.lock().unwrap().push(path.into());
+                        let url = url::Url::parse(&format!(
+                            "http://localhost{}",
+                            request.split_whitespace().nth(1).unwrap()
+                        ))
+                        .unwrap();
+                        let q = url.query_pairs().collect::<BTreeMap<_, _>>();
+                        let vhd = q["format"] == "vhd";
+                        let bytes = if vhd && fault == Fault::DynamicDisk {
+                            crate::disk_image::tests::dynamic(true)
+                        } else if vhd {
+                            crate::disk_image::tests::fixed()
+                        } else {
+                            vec![7; 4096]
+                        };
+                        let mut data = r.lock().unwrap();
+                        let t = data.get_mut("OpaqueRef:task:t").unwrap();
+                        t["status"] = json!(if fault == Fault::DiskFailure {
+                            "failure"
+                        } else if fault == Fault::PendingDisk {
+                            "pending"
+                        } else {
+                            "success"
+                        });
+                        t["error_info"] = json!(["IMPORT_ERROR"]);
+                        t["result"] = json!(xml(&json!(if fault == Fault::WrongDiskResult {
+                            "OpaqueRef:VDI:source"
+                        } else {
+                            "OpaqueRef:VDI:new"
+                        })));
+                        if put {
+                            assert_eq!(input, bytes);
+                            assert_eq!(q["vdi"], "OpaqueRef:VDI:new");
+                            if fault == Fault::ChangedInput {
+                                let path = data["fixture:sourcepath"].as_str().unwrap();
+                                std::fs::write(path, vec![9; 4096]).unwrap();
+                                return;
+                            }
+                            if matches!(fault, Fault::LostImport | Fault::PendingDisk) {
+                                return;
+                            }
+                            Vec::new()
+                        } else {
+                            assert_eq!(q["vdi"], "OpaqueRef:VDI:source");
+                            if fault == Fault::ChangedDisk {
+                                data.get_mut("OpaqueRef:VDI:source").unwrap()["virtual_size"] =
+                                    json!(8192);
+                            }
+                            bytes
+                        }
+                    } else if request.starts_with("GET /export?")
                         || request.starts_with("PUT /import?")
                     {
                         assert_eq!(cookie, "session_id=OpaqueRef:synthetic-secret");
@@ -273,6 +348,19 @@ impl Fixture {
                                 })
                                 .map(|(k, _)| json!({"result":k}))
                                 .unwrap_or(json!({"error":{"message":"UUID_INVALID"}}))
+                        } else if method == "VDI.create" {
+                            delay_create = fault == Fault::DelayedDiskCreate;
+                            let mut v = disk_record(
+                                if fault == Fault::ExistingDisk { 10 } else { 22 },
+                                p[1]["name_label"].as_str().unwrap(),
+                            );
+                            v["other_config"] = p[1]["other_config"].clone();
+                            v["virtual_size"] = p[1]["virtual_size"].clone();
+                            data.insert("OpaqueRef:VDI:new".into(), v);
+                            if fault == Fault::LostDiskCreate {
+                                return;
+                            }
+                            json!({"result":"OpaqueRef:VDI:new"})
                         } else if method == "task.create" {
                             data.insert("OpaqueRef:task:t".into(),json!({"uuid":uuid(100),"name_label":p[1],"status":"pending","progress":0.0,"allowed_operations":["cancel"]}));
                             json!({"result":"OpaqueRef:task:t"})
@@ -304,6 +392,9 @@ impl Fixture {
                         response["jsonrpc"] = json!("2.0");
                         serde_json::to_vec(&response).unwrap()
                     };
+                    if delay_create {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
                     let header = format!(
                         "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
                         declared.unwrap_or(body.len())
@@ -315,11 +406,18 @@ impl Fixture {
             }
         });
         Self {
+            fault,
             options,
             server,
             calls,
             records,
         }
+    }
+    fn disk(&self) {
+        self.records.lock().unwrap().insert(
+            "OpaqueRef:VDI:source".into(),
+            disk_record(10, "Existing disk"),
+        );
     }
     async fn session(&self) -> Session {
         Session::login(
@@ -807,3 +905,9 @@ async fn acknowledging_failed_import_releases_only_local_guard_without_cleanup_o
     assert_eq!(f.count("task.destroy"), 0);
     assert!(f.records.lock().unwrap().contains_key("OpaqueRef:VM:new"));
 }
+
+fn disk_record(n: u128, name: &str) -> Value {
+    json!({"uuid":uuid(n),"name_label":name,"SR":"OpaqueRef:SR:s","type":"user","managed":true,"missing":false,"sharable":false,"read_only":false,"is_a_snapshot":false,"cbt_enabled":false,"virtual_size":"4096","current_operations":{},"other_config":{},"VBDs":[]})
+}
+#[path = "transfer_disk_tests.rs"]
+mod disk_tests;

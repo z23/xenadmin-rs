@@ -14,7 +14,23 @@ use std::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio_util::sync::CancellationToken;
 
+#[derive(Clone, Copy)]
+pub(crate) enum Kind {
+    Archive,
+    Disk,
+}
+impl Kind {
+    fn path(self, upload: bool) -> &'static str {
+        match (self, upload) {
+            (Self::Archive, true) => "/import",
+            (Self::Archive, false) => "/export",
+            (Self::Disk, true) => "/import_raw_vdi",
+            (Self::Disk, false) => "/export_raw_vdi",
+        }
+    }
+}
 pub(crate) struct Prepared {
+    pub kind: Kind,
     pub endpoint: Endpoint,
     pub known_hosts: BTreeSet<String>,
     pub query: Vec<(String, String)>,
@@ -61,9 +77,14 @@ impl AsyncRead for Reader {
         result
     }
 }
-fn url(endpoint: &Endpoint, upload: bool, query: &[(String, String)]) -> Result<url::Url, Error> {
+fn url(
+    endpoint: &Endpoint,
+    upload: bool,
+    kind: Kind,
+    query: &[(String, String)],
+) -> Result<url::Url, Error> {
     let mut u = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
-    u.set_path(if upload { "/import" } else { "/export" });
+    u.set_path(kind.path(upload));
     u.query_pairs_mut().extend_pairs(query.iter());
     Ok(u)
 }
@@ -144,7 +165,7 @@ async fn export_response(
         if !visited.insert(endpoint.to_string()) {
             return Err(Error::TransferEndpoint);
         }
-        let target = url(&endpoint, false, &prepared.query)?;
+        let target = url(&endpoint, false, prepared.kind, &prepared.query)?;
         let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,endpoint.clone())?.get(target.clone()).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::ACCEPT,"application/octet-stream").send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             let location = response
@@ -174,7 +195,7 @@ pub(crate) async fn run(
             file: tokio::fs::File::from_std(input).take(bytes),
             meter: meter.clone(),
         };
-        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone())?.put(url(&prepared.endpoint,true,&prepared.query)?).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
+        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone())?.put(url(&prepared.endpoint,true,prepared.kind,&prepared.query)?).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             return Err(Error::TransferEndpoint);
         }
@@ -192,7 +213,7 @@ pub(crate) async fn run(
             return Err(Error::TransferConflict);
         }
         files::source_unchanged(&plan.file, &verifier)?;
-        // Upload integrity is checked by XAPI's XVA checksums; this receipt records exact file identity and sent byte count.
+        // This receipt records selected file identity and sent byte count; it does not claim a server-side disk digest.
         files::receipt(&verifier, bytes, [0; 32])
     } else {
         let output = files::output(&plan)?;
@@ -239,6 +260,7 @@ mod tests {
         let options =
             ConnectionOptions::new(Endpoint::parse("https://coordinator.example").unwrap());
         let prepared = Prepared {
+            kind: Kind::Archive,
             endpoint: options.endpoint.clone(),
             known_hosts: BTreeSet::from(["member.example".into()]),
             query: vec![
@@ -247,7 +269,7 @@ mod tests {
             ],
             upload: false,
         };
-        let current = url(&prepared.endpoint, false, &prepared.query).unwrap();
+        let current = url(&prepared.endpoint, false, prepared.kind, &prepared.query).unwrap();
         assert!(
             redirected(
                 &current,

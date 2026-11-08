@@ -18,23 +18,53 @@ pub enum ExportSource {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferAction {
-    ExportXva { source: ExportSource },
-    ImportXva { sr: SrId },
+    ExportXva {
+        source: ExportSource,
+    },
+    ImportXva {
+        sr: SrId,
+    },
+    ExportDisk {
+        vdi: crate::VdiId,
+        expected_sr: SrId,
+        expected_size: u64,
+        format: crate::DiskImageFormat,
+    },
+    ImportDisk {
+        sr: SrId,
+        name: String,
+        format: crate::DiskImageFormat,
+    },
 }
 impl TransferAction {
     pub fn is_export(&self) -> bool {
-        matches!(self, Self::ExportXva { .. })
+        matches!(self, Self::ExportXva { .. } | Self::ExportDisk { .. })
     }
     pub fn label(&self) -> &'static str {
         match self {
             Self::ExportXva { .. } => "Export XVA",
             Self::ImportXva { .. } => "Import XVA",
+            Self::ExportDisk { .. } => "Export disk image",
+            Self::ImportDisk { .. } => "Import disk image",
         }
     }
     pub fn availability(&self, i: &Inventory) -> ActionAvailability {
         let no = |s: &str| ActionAvailability::Prerequisite { reason: s.into() };
+        if let Self::ImportDisk { name, .. } = self
+            && (name.trim().is_empty()
+                || name.chars().count() > 255
+                || name.chars().any(char::is_control))
+        {
+            return no("Enter a new disk name of 1–255 printable characters");
+        };
         match self {
-            Self::ImportXva { sr } => {
+            Self::ExportDisk {
+                vdi,
+                expected_sr,
+                expected_size,
+                format,
+            } => return disk::availability(i, *vdi, *expected_sr, *expected_size, *format),
+            Self::ImportXva { sr } | Self::ImportDisk { sr, .. } => {
                 if i.details.storage.get(sr).is_none_or(|r| {
                     r.content_type != "user"
                         || r.allowed_operations
@@ -111,10 +141,21 @@ pub struct TransferFile {
     pub(crate) identity: Option<files::Identity>,
     pub(crate) parent: files::Identity,
     pub(crate) manifest: Option<ArchiveSummary>,
+    #[serde(default)]
+    pub(crate) disk: Option<crate::DiskImageSummary>,
 }
 impl TransferFile {
     pub fn source(path: impl AsRef<Path>) -> Result<Self, Error> {
         files::select_source(path.as_ref())
+    }
+    pub fn disk_source(
+        path: impl AsRef<Path>,
+        format: crate::DiskImageFormat,
+    ) -> Result<Self, Error> {
+        files::select_disk_source(path.as_ref(), format)
+    }
+    pub fn disk_image(&self) -> Option<&crate::DiskImageSummary> {
+        self.disk.as_ref()
     }
     pub fn destination(path: impl AsRef<Path>) -> Result<Self, Error> {
         files::select_destination(path.as_ref())
@@ -167,6 +208,8 @@ pub struct TransferCreated {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
     pub file: TransferFile,
+    #[serde(default)]
+    pub disk_creation: Option<disk::Creation>,
     pub temporary: Option<PathBuf>,
     pub temporary_identity: Option<files::Identity>,
     pub baseline: Option<xapi::Baseline>,
@@ -193,6 +236,7 @@ impl Plan {
     pub fn new(file: TransferFile) -> Self {
         Self {
             file,
+            disk_creation: None,
             temporary: None,
             temporary_identity: None,
             baseline: None,
@@ -217,6 +261,7 @@ pub(crate) fn valid_update(
         (None, None) => true,
         (Some(a), Some(b)) => {
             a.file == b.file
+                && disk::valid_creation_update(a.disk_creation.as_ref(), b.disk_creation.as_ref())
                 && (a.baseline.is_none() || a.baseline == b.baseline)
                 && (a.temporary.is_none() || a.temporary == b.temporary)
                 && (a.temporary_identity.is_none() || a.temporary_identity == b.temporary_identity)
@@ -252,3 +297,6 @@ pub(crate) fn valid_update(
 #[cfg(test)]
 #[path = "transfer_tests.rs"]
 mod tests;
+
+#[path = "transfer_disk.rs"]
+pub(crate) mod disk;

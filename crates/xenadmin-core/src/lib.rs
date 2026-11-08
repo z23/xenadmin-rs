@@ -67,7 +67,9 @@ mod vm_lifecycle_backend;
 pub use vm_lifecycle::{
     GuestFirmware, SnapshotDeletionSelection, VmCopyMode, VmLifecycleOperation,
 };
+mod disk_image;
 mod transfer;
+pub use disk_image::{DiskImageFormat, DiskImageSummary};
 pub use transfer::{
     ArchiveGuest, ArchiveSummary, ExportSource, TransferAction, TransferCreated, TransferFile,
     TransferProgress, TransferRequest,
@@ -104,6 +106,8 @@ pub enum Error {
         "This archive is malformed or uses a format/configuration not supported by this importer"
     )]
     TransferArchive,
+    #[error("Invalid or unsupported disk image; choose a complete raw or fixed/dynamic VHD image")]
+    DiskImage,
     #[error(
         "The transfer redirect is outside the authenticated pool or changes the requested operation"
     )]

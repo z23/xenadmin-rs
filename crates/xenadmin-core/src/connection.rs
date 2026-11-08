@@ -460,7 +460,7 @@ impl Connection {
             .map_err(|_| Error::Busy)?;
         Ok(operation)
     }
-    /// Transfer only a selected local XVA file through the fixed authenticated endpoints.
+    /// Transfer a selected archive or disk image through fixed authenticated endpoints.
     pub fn transfer(
         &self,
         id: crate::OperationId,
@@ -478,6 +478,24 @@ impl Connection {
         }
         if request.action.is_export() != request.file.identity.is_none() {
             return Err(Error::TransferFile);
+        }
+        match &request.action {
+            crate::TransferAction::ImportXva { .. }
+                if request.file.manifest.is_none() || request.file.disk.is_some() =>
+            {
+                return Err(Error::TransferFile);
+            }
+            crate::TransferAction::ImportDisk { format, .. }
+                if request
+                    .file
+                    .disk
+                    .as_ref()
+                    .is_none_or(|d| d.format != *format)
+                    || request.file.manifest.is_some() =>
+            {
+                return Err(Error::TransferFile);
+            }
+            _ => {}
         }
         let (operation, pending) =
             crate::resources::transfer_channel(id, pool, request, self.runtime.clone());
