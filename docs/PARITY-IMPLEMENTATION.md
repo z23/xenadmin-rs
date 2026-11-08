@@ -245,7 +245,7 @@ Implementation and qualification evidence: [host administration report](reports/
 | P12-11 | Forget/remove dead host | Reviewed offline/disabled/empty non-coordinator removal with independent power-off acknowledgement and HA disabled; retains SR records/data; fixture-verified, lab open |
 | P12-12 | Host configuration backup/restore | Implemented: exact-host private filesystem backup and reviewed backup-partition staging for installer-assisted recovery. This does not restore the running host or pool database. Strict trusted-archive inspection, UUID/version/SHA-256 binding, exact TLS peer and owned-task evidence; disposable-lab qualification remains. [Evidence](reports/2026-11-08-host-recovery-staging.md) |
 | P12-13 | Logging destination/monitoring settings | Reviewed remote syslog destination and separately journaled reconfigure implemented; further monitoring settings remain queued; fixture-verified, lab open |
-| P12-14 | Crash dumps and support bundles | Partial: advertised support categories, selected-host crashdump metadata and private support/log bundle download. Raw dump transfer/deletion remains open; logs explicitly exclude raw cores. [Evidence](reports/2026-11-08-host-backup-support.md) |
+| P12-14 | Crash dumps and support bundles | Partial: advertised support categories, selected-host crashdump metadata, private support/log bundles and reviewed retained-crashdump deletion with durable completion evidence. Raw dump transfer remains open; target API has upload/destroy, no direct raw-download endpoint, and logs exclude raw cores. [Downloads](reports/2026-11-08-host-backup-support.md), [deletion](reports/2026-11-08-host-crashdump-deletion.md) |
 
 ## 13. Pools, HA, identity and server security
 

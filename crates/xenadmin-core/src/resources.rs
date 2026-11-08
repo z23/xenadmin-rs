@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::SystemTime};
 use tokio::sync::watch;
 
+#[path = "crashdump_operations.rs"]
+pub(crate) mod crashdump;
 #[path = "host_operations.rs"]
 pub(crate) mod host;
 #[path = "resource_journal.rs"]
@@ -114,6 +116,10 @@ pub enum ResourceCommand {
     Alarm {
         target: ObservedResource,
         operation: crate::AlarmOperation,
+    },
+    DeleteHostCrashdump {
+        host: ObservedResource,
+        dump: crate::HostCrashdump,
     },
     ManagementNetwork {
         host: ObservedResource,
@@ -214,6 +220,7 @@ pub enum ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
     Alarm(crate::AlarmOperation),
+    DeleteHostCrashdump(crate::HostCrashdump),
     RootPassword(crate::PoolRootPasswordChange),
     ManagementNetwork(Box<crate::ManagementNetworkOperation>),
     HostPower(crate::HostPowerOperation),
@@ -277,6 +284,7 @@ impl ResourceAction {
                 crate::AlarmOperation::Refresh { .. } => "host.call_plugin".into(),
                 _ => format!("{}.set_other_config", target.class()),
             }]),
+            Self::DeleteHostCrashdump(_) => Required::writes(["host_crashdump.destroy"]),
             Self::Storage(op) => op.permission_requirements(),
             Self::AuthenticatedStorage { operation, .. } => operation
                 .permission_requirements()
@@ -330,6 +338,7 @@ impl ResourceAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Alarm(op) => op.label(),
+            Self::DeleteHostCrashdump(_) => "Delete retained host crashdump",
             Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
             Self::PowerBatch(_) => "Power actions on selected VMs",
@@ -369,6 +378,7 @@ impl ResourceAction {
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
             Self::Alarm(op) => return op.validate(target),
+            Self::DeleteHostCrashdump(dump) => return crashdump::validate_command(target, dump),
             Self::RootPassword(change) => {
                 matches!(target, ResourceTarget::Pool(_)) && change.valid()
             }
@@ -496,6 +506,9 @@ impl ResourceCommand {
     fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
             Self::Alarm { target, operation } => (target, ResourceAction::Alarm(operation)),
+            Self::DeleteHostCrashdump { host, dump } => {
+                (host, ResourceAction::DeleteHostCrashdump(dump))
+            }
             Self::HostPower { host, operation } => (host, ResourceAction::HostPower(operation)),
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
             Self::CleanupStorageCredentials {
@@ -601,6 +614,8 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(skip)]
+    pub(crate) crashdump_deletion: Option<crashdump::Plan>,
     #[serde(default)]
     pub(crate) alarm_refresh_receipts: Vec<HostId>,
     #[serde(default)]
@@ -750,6 +765,7 @@ pub(crate) fn channel(
 ) -> (ResourceOperation, ResourceRequest) {
     let record = ResourceOperationRecord {
         alarm_refresh_receipts: Vec::new(),
+        crashdump_deletion: None,
         management_network: None,
         management_network_plan: None,
         topology_changes: Default::default(),

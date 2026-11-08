@@ -38,6 +38,7 @@ macro_rules! identity {
 
 identity!(PoolId);
 identity!(HostId);
+identity!(HostCrashdumpId);
 identity!(VmId);
 identity!(SnapshotId);
 identity!(SubjectId);

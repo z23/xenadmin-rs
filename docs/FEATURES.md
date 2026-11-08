@@ -63,3 +63,11 @@ firmware switches remain refused. Custom-template properties have explicit kind 
 built-in-template guards. The [NoCloud increment](reports/2026-11-08-cloud-init.md) adds
 private local FAT media, chosen-SR upload and reviewed read-only attachment to halted VMs.
 It requires guest cloud-init/NoCloud support and does not claim guest execution.
+
+Host backup and support also provides reviewed retained-crashdump deletion. It captures the
+host and exact dump UUID/time/size, requires the dump UUID as confirmation, and checks fresh
+ownership and host availability before dispatch. Completion requires a durable positive host
+response plus record absence; this is not independent filesystem inspection. Lost or failed
+responses remain uncertain and are never replayed by Recheck. Support logs exclude raw memory
+dumps, and direct raw-dump download remains unavailable for the target API. See the
+[crashdump deletion report](reports/2026-11-08-host-crashdump-deletion.md).

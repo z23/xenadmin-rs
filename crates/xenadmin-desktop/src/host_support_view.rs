@@ -29,6 +29,8 @@ pub(super) struct Panel {
     result: Option<std::sync::mpsc::Receiver<Result<TransferFile, String>>>,
     file: Option<TransferFile>,
     review: Option<TransferAction>,
+    deletion: Option<xenadmin_core::HostCrashdump>,
+    dump_page: usize,
     error: Option<String>,
 }
 impl Drop for Panel {
@@ -86,6 +88,8 @@ fn open(s: &mut State) {
         result: None,
         file: None,
         review: None,
+        deletion: None,
+        dump_page: 0,
         error: None,
     });
     refresh(s);
@@ -97,9 +101,11 @@ fn refresh(s: &mut State) {
     p.epoch += 1;
     p.file = None;
     p.review = None;
+    p.deletion = None;
     p.pending = false;
     p.result = None;
     p.overview = None;
+    p.dump_page = 0;
     p.selected.clear();
     p.error = None;
     if s.demo {
@@ -215,6 +221,7 @@ fn mode(s: &mut State, mode: Mode) {
         p.result = None;
         p.file = None;
         p.review = None;
+        p.deletion = None;
         p.error = None;
     }
 }
@@ -357,6 +364,66 @@ fn submit(s: &mut State) {
         }
     }
 }
+fn review_deletion(s: &mut State, dump: xenadmin_core::HostCrashdump) {
+    let Some(p) = &mut s.host_support else {
+        return;
+    };
+    if !p
+        .overview
+        .as_ref()
+        .is_some_and(|o| o.crashdumps_error.is_none() && o.crashdumps.contains(&dump))
+    {
+        return;
+    }
+    cancel_inspection(p);
+    p.epoch += 1;
+    p.pending = false;
+    p.result = None;
+    p.file = None;
+    p.review = None;
+    p.error = None;
+    p.confirmation = TextEdit::new("");
+    p.deletion = Some(dump);
+}
+fn submit_deletion(s: &mut State) {
+    let result = (|| {
+        let p = s.host_support.as_ref().ok_or(xenadmin_core::Error::Stale)?;
+        let dump = p.deletion.as_ref().ok_or(xenadmin_core::Error::Stale)?;
+        if s.demo
+            || s.resource_operations.len() >= 64
+            || !s.can_mutate()
+            || !current(s, p)
+            || p.confirmation.text.as_ref() != dump.uuid.to_string()
+        {
+            return Err(xenadmin_core::Error::Stale);
+        }
+        s.connection
+            .as_ref()
+            .ok_or(xenadmin_core::Error::Closed)?
+            .submit_resource(
+                OperationId::new(),
+                xenadmin_core::ResourceCommand::DeleteHostCrashdump {
+                    host: p.observed.ok_or(xenadmin_core::Error::Stale)?,
+                    dump: dump.clone(),
+                },
+            )
+    })();
+    match result {
+        Ok(op) => {
+            if let Some(w) = &s.waker {
+                op.notify_on_change(w.clone());
+            }
+            s.resource_operations.push(op);
+            s.host_support = None;
+            activity::open(s);
+        }
+        Err(e) => {
+            if let Some(p) = &mut s.host_support {
+                p.error = Some(e.to_string());
+            }
+        }
+    }
+}
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let Some(p) = &s.host_support else {
         return el();
@@ -366,9 +433,17 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .child(heading("Host backup and support", k))
         .child(caption(format!("{} · {}\nHost {}", p.name, p.version, p.host), k).wrap_anywhere());
     if !current(s, p) {
-        body=body.child(caption("The captured connection or host version changed. Close and reopen before transferring.",k).color(k.c.danger.icon).wrap());
+        body=body.child(caption("The captured connection or host version changed. Close and reopen before continuing.",k).color(k.c.danger.icon).wrap());
     }
-    if let Some(review) = &p.review {
+    if let Some(dump) = &p.deletion {
+        body=body.child(heading("Delete retained host crashdump",k))
+            .child(caption(format!("Crashdump {}\n{} · {}",dump.uuid,dump.timestamp,bytes(dump.size)),k).wrap_anywhere())
+            .child(caption("This asks the captured host to permanently remove this retained crashdump directory and its XAPI record. It can remove raw memory and logs needed for investigation. It does not create an export, affect another dump or remove previously downloaded support files. There is no undo.",k).wrap())
+            .child(caption("A support log bundle does not include the raw memory dump. Raw dumps cannot be downloaded here. Retain any evidence you need before deleting.",k).wrap())
+            .child(caption("A lost or failed response remains uncertain even if the record disappears. Recheck never repeats deletion. Successful verification establishes API completion and record absence, not an independent inspection of the host filesystem.",k).wrap())
+            .child(caption("Type the crashdump UUID to confirm permanent deletion",k).wrap())
+            .child(TextInput::new(&p.confirmation).label("Confirm crashdump UUID").on_edit(|s:&mut State|&mut s.host_support.as_mut().unwrap().confirmation).build(k).key("host-crashdump-confirmation"));
+    } else if let Some(review) = &p.review {
         body = body.child(heading(review.label(), k)).child(
             caption(
                 format!(
@@ -515,19 +590,61 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         format!("{} crashdump records", v.crashdumps.len()),
                         k,
                     ));
-                    for dump in v.crashdumps.iter().take(32) {
+                    let pages = v.crashdumps.len().div_ceil(32).max(1);
+                    let page = p.dump_page.min(pages - 1);
+                    if pages > 1 {
                         body = body.child(
-                            caption(
-                                format!(
-                                    "{} · {} · {}",
-                                    dump.uuid,
-                                    dump.timestamp,
-                                    bytes(dump.size)
+                            row()
+                                .gap(8.0)
+                                .child(
+                                    Button::new("Previous dumps")
+                                        .disabled(page == 0)
+                                        .on_press(|s: &mut State| {
+                                            if let Some(p) = &mut s.host_support {
+                                                p.dump_page = p.dump_page.saturating_sub(1);
+                                            }
+                                        })
+                                        .build(k)
+                                        .key("host-crashdump-previous"),
+                                )
+                                .child(caption(format!("Page {} of {}", page + 1, pages), k))
+                                .child(
+                                    Button::new("Next dumps")
+                                        .disabled(page + 1 == pages)
+                                        .on_press(move |s: &mut State| {
+                                            if let Some(p) = &mut s.host_support {
+                                                p.dump_page = (page + 1).min(pages - 1);
+                                            }
+                                        })
+                                        .build(k)
+                                        .key("host-crashdump-next"),
                                 ),
-                                k,
-                            )
-                            .wrap_anywhere(),
                         );
+                    }
+                    for dump in v.crashdumps.iter().skip(page * 32).take(32) {
+                        body = body
+                            .child(
+                                caption(
+                                    format!(
+                                        "{} · {} · {}",
+                                        dump.uuid,
+                                        dump.timestamp,
+                                        bytes(dump.size)
+                                    ),
+                                    k,
+                                )
+                                .wrap_anywhere(),
+                            )
+                            .child(
+                                Button::new("Review deletion…")
+                                    .disabled(!s.demo && (!s.can_mutate() || !current(s, p)))
+                                    .on_press({
+                                        let dump = dump.clone();
+                                        move |s: &mut State| review_deletion(s, dump.clone())
+                                    })
+                                    .build(k)
+                                    .key(format!("host-crashdump-delete-{}", dump.uuid)),
+                            );
                     }
                 }
             }
@@ -583,14 +700,39 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .key("host-support-close"),
         )
         .child(
-            Button::new("Transfer history")
-                .on_press(|s: &mut State| {
-                    s.host_support = None;
+            Button::new(if p.deletion.is_some() {
+                "Activity history"
+            } else {
+                "Transfer history"
+            })
+            .on_press(|s: &mut State| {
+                let deletion = s
+                    .host_support
+                    .as_ref()
+                    .is_some_and(|p| p.deletion.is_some());
+                s.host_support = None;
+                if deletion {
+                    activity::open(s);
+                } else {
                     transfers::history(s);
-                })
-                .build(k),
+                }
+            })
+            .build(k),
         )
-        .child(if p.review.is_some() {
+        .child(if let Some(dump) = &p.deletion {
+            Button::new("Permanently delete crashdump")
+                .variant(ButtonVariant::Danger)
+                .disabled(
+                    s.demo
+                        || !s.can_mutate()
+                        || !current(s, p)
+                        || s.resource_operations.len() >= 64
+                        || p.confirmation.text.as_ref() != dump.uuid.to_string(),
+                )
+                .on_press(submit_deletion)
+                .build(k)
+                .key("host-crashdump-submit")
+        } else if p.review.is_some() {
             Button::new(if p.mode == Mode::Restore {
                 "Replace backup partition"
             } else {
@@ -692,6 +834,19 @@ pub(super) fn restore_scene(s: &mut State) {
     }
 }
 
+pub(super) fn crashdump_scene(s: &mut State) {
+    scene(s);
+    let dump = xenadmin_core::HostCrashdump {
+        uuid: uuid::Uuid::from_u128(400).into(),
+        timestamp: "20261108T00:00:00Z".into(),
+        size: 8 * 1024 * 1024 * 1024,
+    };
+    if let Some(p) = &mut s.host_support {
+        p.overview.as_mut().unwrap().crashdumps = vec![dump.clone()];
+    }
+    review_deletion(s, dump);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +941,105 @@ mod tests {
             click(&mut r, "host-support-close");
             assert!(r.state.host_support.is_none());
         }
+    }
+    #[test]
+    fn crashdump_delete_review_captures_exact_dump_and_keeps_footer_visible() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut r = runtime(size);
+            r.update(|s, _| crashdump_scene(s));
+            settle(&mut r);
+            let p = r.state.host_support.as_ref().unwrap();
+            let captured_host = p.host;
+            let captured_dump = p.deletion.clone().unwrap();
+            assert!(p.file.is_none() && p.review.is_none());
+            click(&mut r, "host-crashdump-submit");
+            assert!(r.state.resource_operations.is_empty());
+            r.update(|s, _| {
+                s.table.select(uuid::Uuid::from_u128(999).to_string());
+                s.host_support.as_mut().unwrap().confirmation =
+                    TextEdit::new(captured_dump.uuid.to_string());
+            });
+            settle(&mut r);
+            let p = r.state.host_support.as_ref().unwrap();
+            assert_eq!(p.host, captured_host);
+            assert_eq!(p.deletion.as_ref(), Some(&captured_dump));
+            click(&mut r, "host-crashdump-submit");
+            assert!(
+                r.state.resource_operations.is_empty(),
+                "synthetic reviews cannot mutate"
+            );
+            r.update(|s, _| mode(s, Mode::Backup));
+            settle(&mut r);
+            assert!(r.state.host_support.as_ref().unwrap().deletion.is_none());
+            assert!(
+                r.state
+                    .host_support
+                    .as_ref()
+                    .unwrap()
+                    .confirmation
+                    .text
+                    .is_empty()
+            );
+        }
+    }
+    #[test]
+    fn crashdump_catalogue_pages_make_every_captured_candidate_reachable() {
+        let mut r = runtime((513.0, 652.0));
+        r.update(|s, _| {
+            s.host_support
+                .as_mut()
+                .unwrap()
+                .overview
+                .as_mut()
+                .unwrap()
+                .crashdumps = (1..=65)
+                .map(|id| xenadmin_core::HostCrashdump {
+                    uuid: uuid::Uuid::from_u128(id).into(),
+                    timestamp: "20261108T00:00:00Z".into(),
+                    size: 4096,
+                })
+                .collect();
+        });
+        settle(&mut r);
+        click(&mut r, "host-crashdump-next");
+        assert_eq!(r.state.host_support.as_ref().unwrap().dump_page, 1);
+        click(&mut r, "host-crashdump-next");
+        assert_eq!(r.state.host_support.as_ref().unwrap().dump_page, 2);
+        let last = uuid::Uuid::from_u128(65);
+        click(&mut r, &format!("host-crashdump-delete-{last}"));
+        assert_eq!(
+            r.state
+                .host_support
+                .as_ref()
+                .unwrap()
+                .deletion
+                .as_ref()
+                .unwrap()
+                .uuid
+                .uuid(),
+            last
+        );
+    }
+    #[test]
+    fn crashdump_delete_refuses_unadvertised_review_or_changed_host() {
+        let mut r = runtime((513.0, 652.0));
+        let invented = xenadmin_core::HostCrashdump {
+            uuid: uuid::Uuid::from_u128(88).into(),
+            timestamp: "20261108T00:00:00Z".into(),
+            size: 4096,
+        };
+        r.update(|s, _| review_deletion(s, invented.clone()));
+        assert!(r.state.host_support.as_ref().unwrap().deletion.is_none());
+        r.update(|s, _| crashdump_scene(s));
+        let host = r.state.host_support.as_ref().unwrap().host;
+        r.update(|s, _| {
+            Arc::make_mut(s.inventory.as_mut().unwrap())
+                .hosts
+                .remove(&host);
+        });
+        assert!(!current(&r.state, r.state.host_support.as_ref().unwrap()));
+        click(&mut r, "host-crashdump-submit");
+        assert!(r.state.resource_operations.is_empty());
     }
     #[test]
     fn stale_native_file_callback_cannot_set_a_reopened_host_review() {

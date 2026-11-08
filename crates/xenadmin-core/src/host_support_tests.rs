@@ -192,7 +192,7 @@ async fn support_discovery_exposes_only_selected_host_crashdump_metadata() {
     assert_eq!(overview.host, uuid(3).into());
     assert_eq!(overview.version, "8.3.0");
     assert_eq!(overview.crashdumps.len(), 1);
-    assert_eq!(overview.crashdumps[0].uuid, uuid(90));
+    assert_eq!(overview.crashdumps[0].uuid, uuid(90).into());
     assert!(overview.capabilities_error.is_none());
     assert!(overview.crashdumps_error.is_none());
     let json = serde_json::to_string(&overview).unwrap();

@@ -29,7 +29,7 @@ pub struct HostSupportCapability {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostCrashdump {
-    pub uuid: uuid::Uuid,
+    pub uuid: crate::HostCrashdumpId,
     pub timestamp: String,
     pub size: u64,
 }
@@ -222,24 +222,28 @@ async fn crashdumps(s: &Session, reference: &str) -> Result<Vec<HostCrashdump>, 
     let mut seen = BTreeSet::new();
     let mut out = vec![];
     for r in values.values().filter(|r| r["host"] == reference) {
-        let uuid = r["uuid"]
-            .as_str()
-            .and_then(|s| s.parse().ok())
-            .filter(|u| seen.insert(*u))
-            .ok_or(Error::Protocol("invalid host crashdump UUID"))?;
-        let size = r["size"]
-            .as_u64()
-            .or_else(|| r["size"].as_str()?.parse().ok())
-            .ok_or(Error::Protocol("invalid host crashdump size"))?;
-        let timestamp = crate::security_discovery::text(&r["timestamp"], 64)?;
-        out.push(HostCrashdump {
-            uuid,
-            size,
-            timestamp,
-        });
+        let dump = decode_crashdump(r)?;
+        if !seen.insert(dump.uuid) {
+            return Err(Error::Protocol("duplicate host crashdump UUID"));
+        }
+        out.push(dump);
     }
     out.sort_by_key(|d| d.uuid);
     Ok(out)
+}
+pub(crate) fn decode_crashdump(r: &Value) -> Result<HostCrashdump, Error> {
+    Ok(HostCrashdump {
+        uuid: r["uuid"]
+            .as_str()
+            .and_then(|s| crate::HostCrashdumpId::parse(s).ok())
+            .filter(|id| !id.uuid().is_nil())
+            .ok_or(Error::Protocol("invalid host crashdump UUID"))?,
+        size: r["size"]
+            .as_u64()
+            .or_else(|| r["size"].as_str()?.parse().ok())
+            .ok_or(Error::Protocol("invalid host crashdump size"))?,
+        timestamp: crate::security_discovery::text(&r["timestamp"], 64)?,
+    })
 }
 pub(crate) async fn discover(
     s: &Session,

@@ -696,3 +696,14 @@ are preserved when late stream evidence arrives; explicit recheck reads the save
 
 Typed alarm settings project bounded host perfmon XML and pool email keys without exposing raw definitions or unrelated SMTP credentials. Each reviewed setter re-resolves exact identity and settings revision, merges the latest unrelated metadata, and verifies the requested postcondition. Separate fixed-plugin refresh operations retain monotonic host-bound positive receipts; missing responses cannot be replayed or inferred from saved configuration. The [alarm report](reports/2026-11-08-performance-alarms.md) records the whole-map concurrency limit and configuration/service/delivery distinction.
 Existing management VLAN/bond endpoints carry a bounded typed component in the reviewed interface. Fresh XAPI discovery checks forward/reverse references before inventory projection, then compares captured members, tags, identity, protection and configuration. Endpoint IP/management fields are validated separately against the same raw PIF observations, including automatic assignments. Runtime link counters are excluded. Legacy journal captures without topology retain the original physical-interface restrictions. The existing single-task worker and certificate-bound recovery path remain shared; see the [existing topology report](reports/2026-11-08-management-existing-topology.md).
+
+### Retained host crashdump deletion
+
+`DeleteHostCrashdump` captures a current host observation and typed crashdump UUID/time/size.
+Its private immutable plan joins the resource journal and pool-wide mutation reservation.
+Dispatch is persisted before the synchronous host call; a separate monotonic completion receipt
+is merged without reviving interrupted or acknowledged work. Reconciliation requires that
+receipt before accepting record absence. The host implementation destroys its database record
+in a finally block, so API failure or disappearance alone cannot prove successful deletion.
+The host's internal filename is not a public API field and is never exposed or fabricated by
+the client. See the [source/verification report](reports/2026-11-08-host-crashdump-deletion.md).

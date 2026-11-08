@@ -113,6 +113,11 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let crashdump_deletion = payload
+                .get("crashdump_deletion")
+                .filter(|v| !v.is_null())
+                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                .transpose()?;
             let root_password_plan = payload
                 .get("root_password_plan")
                 .filter(|v| !v.is_null())
@@ -189,6 +194,7 @@ impl Journal {
             record.power_batch_plan = power_batch_plan;
             record.storage_auth_plan = storage_auth_plan;
             record.storage_secret_cleanup = storage_secret_cleanup;
+            record.crashdump_deletion = crashdump_deletion;
             record.host_plan = host_plan;
             record.host_power_plan = host_power_plan;
             record.root_password_plan = root_password_plan;
@@ -215,6 +221,7 @@ impl Journal {
             super::management::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
+            super::crashdump::validate_record(&record)?;
             crate::host_support::restore::validate_record(&record)?;
             Ok(record)
         })
@@ -238,8 +245,17 @@ impl Journal {
         crate::root_password::validate_record(record)?;
         crate::storage_auth::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
+        super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
+            if old.crashdump_deletion.as_ref().is_some_and(|p| {
+                record
+                    .crashdump_deletion
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
+            }
             if old.root_password_plan.as_ref().is_some_and(|p| {
                 record
                     .root_password_plan
@@ -373,6 +389,10 @@ impl Journal {
         }
         for (key, value) in [
             (
+                "crashdump_deletion",
+                serde_json::to_value(&record.crashdump_deletion),
+            ),
+            (
                 "root_password_plan",
                 serde_json::to_value(&record.root_password_plan),
             ),
@@ -443,6 +463,7 @@ impl Journal {
         record: &mut ResourceOperationRecord,
     ) -> Result<bool, Error> {
         crate::cloud_init::validate_record(record)?;
+        super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;
         self.0
             .execute_batch("BEGIN IMMEDIATE")
@@ -558,6 +579,13 @@ impl Journal {
                 if !current.alarm_refresh_receipts.contains(host) {
                     current.alarm_refresh_receipts.push(*host);
                 }
+            }
+            super::crashdump::validate_record(evidence)?;
+            if let (Some(current), Some(received)) = (
+                &mut current.crashdump_deletion,
+                &evidence.crashdump_deletion,
+            ) {
+                current.merge(received)?;
             }
             current.pool_completed |= evidence.pool_completed;
             if let (Some(current_plan), Some(evidence_plan)) =

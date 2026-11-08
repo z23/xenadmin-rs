@@ -7,6 +7,7 @@ pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 pub(super) enum Check {
     Alarm,
     AlarmRefresh(HostId),
+    HostCrashdumpDeletion,
     SnapshotPolicy(Box<super::snapshot_policy::Verify>),
     Appliance(super::appliance::Verify),
     Pool,
@@ -130,9 +131,13 @@ pub(super) async fn prepare(
     if matches!(record.action, ResourceAction::Storage(_)) {
         return super::storage::prepare(session, record).await;
     }
+    if matches!(record.action, ResourceAction::DeleteHostCrashdump(_)) {
+        return super::crashdump::prepare(session, record).await;
+    }
     let (_, fresh) = read(session, record.target).await?;
     let mut steps = Vec::new();
     match &record.action {
+        ResourceAction::DeleteHostCrashdump(_) => unreachable!(),
         ResourceAction::SnapshotPolicy(_) => unreachable!(),
         ResourceAction::Appliance(_) => unreachable!(),
         ResourceAction::Pool(_) => unreachable!(),
@@ -325,6 +330,9 @@ pub(super) async fn arguments(
     record: &ResourceOperationRecord,
     step: &Step,
 ) -> Result<Vec<Value>, Error> {
+    if matches!(step.check, Check::HostCrashdumpDeletion) {
+        return super::crashdump::arguments(session, record).await;
+    }
     if let Check::SnapshotPolicy(check) = &step.check {
         return super::snapshot_policy::arguments(session, record, check).await;
     }
@@ -345,6 +353,7 @@ pub(super) async fn arguments(
         Check::Alarm | Check::AlarmRefresh(_) => {
             super::alarms::arguments(session, record, &step.check).await
         }
+        Check::HostCrashdumpDeletion => unreachable!(),
         Check::Appliance(_) => unreachable!(),
         Check::Pool => super::pool::arguments(session, record).await,
         Check::Organization(edit) => super::organization::arguments(session, record, edit).await,
@@ -439,6 +448,7 @@ fn cancellable_task(record: &Value) -> Result<(), Error> {
 }
 pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Check> {
     match &record.action {
+        ResourceAction::DeleteHostCrashdump(_) => vec![Check::HostCrashdumpDeletion],
         ResourceAction::SnapshotPolicy(_) => super::snapshot_policy::reconciliation_checks(record),
         ResourceAction::Appliance(_) => super::appliance::reconciliation_checks(record),
         ResourceAction::Pool(_) => vec![Check::Pool],
@@ -496,6 +506,9 @@ pub(super) async fn verify(
     }
     if let Check::SnapshotPolicy(check) = check {
         return super::snapshot_policy::verify(session, record, check).await;
+    }
+    if matches!(check, Check::HostCrashdumpDeletion) {
+        return super::crashdump::verify(session, record).await;
     }
     if let Check::Appliance(check) = check {
         return super::appliance::verify(session, record, check).await;

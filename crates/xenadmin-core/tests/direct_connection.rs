@@ -1,3 +1,5 @@
+#[path = "fixtures/crashdump_deletion.rs"]
+mod crashdump_deletion;
 #[path = "fixtures/management_network.rs"]
 mod management_network;
 use serde_json::{Value, json};

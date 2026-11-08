@@ -317,6 +317,13 @@ impl ResourceRequest {
                     &mut arguments,
                 )?;
             }
+            if matches!(step.check, xapi::Check::HostCrashdumpDeletion) {
+                self.record
+                    .crashdump_deletion
+                    .as_mut()
+                    .ok_or(Error::Journal)?
+                    .dispatched = true;
+            }
             self.record.state = OperationState::Dispatching;
             self.record.steps[index].state = StepState::Dispatching;
             self.record.detail = format!("Submitting {}", step.label);
@@ -343,6 +350,13 @@ impl ResourceRequest {
                     return Err(Error::Protocol("alarm refresh was not accepted"));
                 }
                 self.record.alarm_refresh_receipts.push(host);
+            }
+            if matches!(step.check, xapi::Check::HostCrashdumpDeletion) {
+                self.record
+                    .crashdump_deletion
+                    .as_mut()
+                    .ok_or(Error::Journal)?
+                    .completed = true;
             }
             if matches!(step.check, xapi::Check::CreatedNetwork) {
                 self.record.result_reference = Some(xapi::reply_reference(&value)?);
@@ -397,6 +411,7 @@ impl ResourceRequest {
             super::ResourceAction::Alarm(crate::AlarmOperation::Refresh { .. }) => "Host refresh notifications accepted; evaluation and email delivery are not verified",
             super::ResourceAction::Alarm(crate::AlarmOperation::SetEmail { .. }) => "Pool email settings verified; SMTP delivery is not verified",
             super::ResourceAction::Alarm(crate::AlarmOperation::SetPolicy(_)) => "Alarm configuration verified; host evaluation is not verified",
+            super::ResourceAction::DeleteHostCrashdump(_) => super::crashdump::COMPLETION,
             _ => "All requested changes were verified",
         }.into();
         self.save(journal).await
@@ -556,8 +571,16 @@ impl ResourceRequest {
             OperationState::PartiallyCompleted
         };
         self.record.can_cancel = false;
-        self.record.detail =
-            "Dispatched changes reconciled; unsubmitted steps were not replayed".into();
+        self.record.detail = if self.record.state == OperationState::Succeeded
+            && matches!(
+                self.record.action,
+                super::ResourceAction::DeleteHostCrashdump(_)
+            ) {
+            super::crashdump::COMPLETION
+        } else {
+            "Dispatched changes reconciled; unsubmitted steps were not replayed"
+        }
+        .into();
         self.save(journal).await
     }
     async fn track_cancellation(
@@ -905,6 +928,7 @@ impl ResourceRequest {
         let explicit_rejection = !matches!(
             self.record.action,
             super::ResourceAction::PowerBatch(_)
+                | super::ResourceAction::DeleteHostCrashdump(_)
                 | super::ResourceAction::RootPassword(_)
                 | super::ResourceAction::ManagementNetwork(_)
                 | super::ResourceAction::HostPower(_)

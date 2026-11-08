@@ -2292,6 +2292,7 @@ fn main() {
             ("host-administration", host_admin::scene),
             ("host-support", host_support_view::scene),
             ("host-restore", host_support_view::restore_scene),
+            ("host-crashdump-delete", host_support_view::crashdump_scene),
             ("host-power-settings", host_power_view::scene),
             ("snapshot-schedules", snapshot_policy_view::scene),
             ("alarms", alarms_view::scene),
