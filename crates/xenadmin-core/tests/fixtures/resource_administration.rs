@@ -793,3 +793,45 @@ async fn default_storage_requires_positive_disk_repository_identification() {
         connection.close().await;
     }
 }
+
+#[tokio::test]
+async fn bulk_power_refuses_read_only_and_previous_connection_generation_before_admission() {
+    let (mock, _) = fixture(Fault::None).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let first = connection(&mock, &backend, true).await;
+    let pool = first
+        .latest()
+        .observe_resource(ResourceTarget::Pool(PoolId::parse(POOL).unwrap()))
+        .unwrap();
+    let command = || ResourceCommand::PowerBatch {
+        pool,
+        selection: xenadmin_core::VmPowerBatch {
+            action: PowerAction::Start,
+            vms: vec![xenadmin_core::BatchVmPower {
+                vm: uuid::Uuid::from_u128(2).into(),
+                expected_state: PowerState::Halted,
+            }],
+        },
+    };
+    assert!(matches!(
+        first.submit_resource(OperationId::new(), command()),
+        Err(xenadmin_core::Error::ReadOnly)
+    ));
+    first.close().await;
+    let second = connection(&mock, &backend, false).await;
+    assert!(matches!(
+        second.submit_resource(OperationId::new(), command()),
+        Err(xenadmin_core::Error::Stale)
+    ));
+    assert!(second.resource_history().is_empty());
+    assert!(
+        !mock
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m.starts_with("Async.VM."))
+    );
+    second.close().await;
+}

@@ -301,6 +301,23 @@ fn resource_history_projection_excludes_private_rpc_evidence_and_intent() {
     let value = resource_operation_value(&record);
     assert_eq!(value["state"], "OutcomeUnknown");
     assert_eq!(value["steps"][0]["label"], "Create network");
+    let vm = uuid::Uuid::new_v4().into();
+    let selection = crate::VmPowerBatch {
+        action: crate::PowerAction::Start,
+        vms: vec![crate::BatchVmPower {
+            vm,
+            expected_state: crate::PowerState::Halted,
+        }],
+    };
+    record.action = crate::ResourceAction::PowerBatch(selection.clone());
+    record.power_batch_plan = Some(crate::power_batch::Plan::new(selection));
+    record.power_batch_plan.as_mut().unwrap().items[0].task =
+        Some("OpaqueRef:batch-private-task".into());
+    let value = resource_operation_value(&record);
+    assert_eq!(value["power_batch"]["vms"][0]["vm"], vm.to_string());
+    assert_eq!(value["power_batch"]["action"], "Start");
+    assert!(!value.to_string().contains("batch-private-task"));
+    assert!(!value.to_string().contains("power_batch_plan"));
     for forbidden in [
         "private-name",
         "private-description",

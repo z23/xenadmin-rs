@@ -89,6 +89,28 @@ impl ResourceRequest {
         }
         self.finish_batch(journal).await
     }
+    pub(super) async fn cleanup_power_batch(&self, session: &Session, cancel: &CancellationToken) {
+        if !self.record.state.terminal() || self.record.state == OperationState::AcknowledgedUnknown
+        {
+            return;
+        }
+        let Some(plan) = &self.record.power_batch_plan else {
+            return;
+        };
+        // Completion evidence is already durable; cleanup is best effort and never
+        // changes the outcome. Unknown tasks remain available for inspection.
+        let cleanup = async {
+            for task in plan
+                .items
+                .iter()
+                .filter(|item| item.verified)
+                .filter_map(|item| item.task.as_ref())
+            {
+                let _ = session.call("task.destroy", vec![json!(task)]).await;
+            }
+        };
+        tokio::select! { _=cancel.cancelled()=>{}, _=tokio::time::timeout(Duration::from_secs(3),cleanup)=>{} }
+    }
     fn batch_item(&self, index: usize) -> Result<&Item, Error> {
         self.record
             .power_batch_plan

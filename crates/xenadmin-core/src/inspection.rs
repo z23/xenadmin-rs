@@ -358,6 +358,7 @@ fn resource_operation_value(record: &crate::ResourceOperationRecord) -> Value {
     json!({"id":record.id,"pool":record.pool,"recovery_pool":record.recovery_pool(),"target":record.target,"action":record.action.label(),"state":record.state,
         "progress":record.progress,"created_at_ms":record.created_at_ms,"created":record.created,
         "transfer":record.transfer,"transfer_created":record.transfer_created,
+        "power_batch":match &record.action {crate::ResourceAction::PowerBatch(selection)=>Some(json!({"action":selection.action,"vms":selection.vms.iter().take(32).map(|item|json!({"vm":item.vm,"expected_state":bounded(&item.expected_state.to_string())})).collect::<Vec<_>>()})),_=>None},
         "detail":bounded(&record.detail),"local_error":record.local_error.as_deref().map(bounded),
         "can_cancel":record.can_cancel,"cancel_requested":record.cancel_requested,
         "steps":record.steps.iter().take(64).map(|step|json!({"label":bounded(&step.label),"state":step.state,"detail":bounded(&step.detail)})).collect::<Vec<_>>()})
@@ -618,7 +619,7 @@ async fn dispatch(registry: &Registry, request: InspectionRequest) -> Result<Val
                 .collect::<Vec<_>>();
             Ok(
                 json!({"connection": context(id,&connection,&connection.latest()), "operations": rows,
-                 "resource_operations": if vm.is_none() {connection.resource_history().iter().rev().take(limit).map(resource_operation_value).collect::<Vec<_>>()} else {Vec::new()}}),
+                 "resource_operations": connection.resource_history().iter().rev().filter(|record| vm.is_none_or(|id|matches!(&record.action,crate::ResourceAction::PowerBatch(selection) if selection.vms.iter().any(|item|item.vm==id)))).take(limit).map(resource_operation_value).collect::<Vec<_>>()}),
             )
         }
         InspectionRequest::DiagnosePower { connection, vm } => {

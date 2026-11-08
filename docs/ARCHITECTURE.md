@@ -497,3 +497,11 @@ Opening a result rechecks the live pool and exact object/parent before selecting
 Versioned `SearchCatalog` files contain filters only; imports are bounded and reviewed,
 conflicts do not overwrite local definitions, and native callbacks are scoped to a workspace.
 See [verification and remaining work](reports/2026-11-08-cross-pool-search.md).
+
+Bulk VM power actions use one pool-scoped resource command with at most 32 captured guest
+UUID/state pairs. Whole-selection preflight precedes serial fresh checks and a per-item
+persist-before-dispatch CAS. The private immutable plan keeps monotonic dispatch/task/success/
+verification evidence; recovery checks sent work only and never submits pending items.
+A user stop finishes the current task and skips the rest without calling task.cancel. Late
+receipts preserve recovered unknown or acknowledged state. See the
+[bulk power backend report](reports/2026-11-08-bulk-power-backend.md).

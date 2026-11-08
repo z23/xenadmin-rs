@@ -557,3 +557,48 @@ fn active_malformed_or_inconsistent_scopes_fail_closed_even_for_other_pools() {
         );
     }
 }
+
+#[test]
+fn power_batch_reserves_whole_pool_against_vm_and_resource_writes_in_both_directions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let mut batch = resource(pool);
+    batch.target = ResourceTarget::Pool(pool);
+    batch.steps.clear();
+    batch.action = ResourceAction::PowerBatch(crate::VmPowerBatch {
+        action: crate::PowerAction::Start,
+        vms: vec![crate::BatchVmPower {
+            vm: uuid::Uuid::new_v4().into(),
+            expected_state: crate::PowerState::Halted,
+        }],
+    });
+    assert!(journal.resource_admit(&mut batch).unwrap());
+    assert!(matches!(
+        journal.admit(&mut vm(pool)),
+        Err(Error::ConflictingPoolOperation)
+    ));
+    assert!(matches!(
+        journal.resource_admit(&mut resource(pool)),
+        Err(Error::ConflictingPoolOperation)
+    ));
+    batch.state = OperationState::Cancelled;
+    journal.resource_save(&mut batch).unwrap();
+    let mut running = vm(pool);
+    journal.admit(&mut running).unwrap();
+    let mut another = batch.clone();
+    another.id = OperationId::new();
+    another.state = OperationState::Preparing;
+    another.revision = 0;
+    assert!(matches!(
+        journal.resource_admit(&mut another),
+        Err(Error::ConflictingPoolOperation)
+    ));
+    running.state = OperationState::Succeeded;
+    journal.save(&mut running).unwrap();
+    journal.resource_admit(&mut resource(pool)).unwrap();
+    assert!(matches!(
+        journal.resource_admit(&mut another),
+        Err(Error::ConflictingPoolOperation)
+    ));
+}

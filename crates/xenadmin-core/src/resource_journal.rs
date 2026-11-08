@@ -100,16 +100,17 @@ impl Journal {
                 }
             }
             record.power_batch_plan = power_batch_plan;
-            // Terminal rejection before preparation may legitimately have no plan.
-            if !record.state.terminal() || record.power_batch_plan.is_some() {
-                crate::power_batch::validate_record(&record)?;
-            }
             record.host_plan = host_plan;
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
             record.task = task;
             record.result_reference = result_reference;
             record.revision = revision;
+            // Terminal rejection before preparation may legitimately have no plan.
+            if !record.state.terminal() || record.power_batch_plan.is_some() {
+                crate::power_batch::validate_record(&record)?;
+            }
+
             Ok(record)
         })
         .transpose()

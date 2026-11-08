@@ -64,6 +64,10 @@ enum Fault {
     CancelAfter,
     Recover,
     Acknowledge,
+    RecoverTask,
+    AcknowledgeTask,
+    RecoverVerify,
+    AcknowledgeVerify,
 }
 struct Data {
     calls: Vec<(String, Value)>,
@@ -210,6 +214,12 @@ fn respond(data: &mut Data, request: &Value) -> Option<Value> {
             "OpaqueRef:vm3"
         })),
         "VM.get_record" => {
+            if data.running[0]
+                && matches!(data.fault, Fault::RecoverVerify | Fault::AcknowledgeVerify)
+                && !data.hooked
+            {
+                recover_hook(data);
+            }
             let index = usize::from(p[1] == "OpaqueRef:vm3");
             let blocked = index == 1
                 && (data.fault == Fault::BlockBefore
@@ -247,6 +257,9 @@ fn respond(data: &mut Data, request: &Value) -> Option<Value> {
             }
         }
         "task.get_record" => {
+            if matches!(data.fault, Fault::RecoverTask | Fault::AcknowledgeTask) && !data.hooked {
+                recover_hook(data);
+            }
             if data.fault == Fault::CancelAfter && !data.hooked {
                 data.hooked = true;
                 Journal::open(&data.directory)
@@ -262,8 +275,25 @@ fn respond(data: &mut Data, request: &Value) -> Option<Value> {
                 json!({"status":if data.fault==Fault::Failure{"failure"}else{"success"},"error_info":["FIXTURE_FAILURE"],"progress":1.0}),
             )
         }
-        "session.logout" => Some(json!(null)),
+        "session.logout" | "task.destroy" => Some(json!(null)),
         _ => panic!("Unexpected fixture RPC {method}"),
+    }
+}
+fn recover_hook(data: &mut Data) {
+    data.hooked = true;
+    let journal = Journal::open(&data.directory).unwrap();
+    journal.resource_recover(poolid()).unwrap();
+    if matches!(
+        data.fault,
+        Fault::AcknowledgeTask | Fault::AcknowledgeVerify
+    ) {
+        journal
+            .resource_control(
+                poolid(),
+                data.operation,
+                OperationControl::AcknowledgeUnknown,
+            )
+            .unwrap();
     }
 }
 #[tokio::test]
@@ -277,6 +307,7 @@ async fn ordered_power_batch_tracks_each_task_and_preserves_private_receipts() {
     assert!(result.steps.iter().all(|s| s.state == StepState::Verified));
     assert_eq!(f.writes(), ["OpaqueRef:vm2", "OpaqueRef:vm3"]);
     let calls = &f.data.lock().unwrap().calls;
+    assert_eq!(calls.iter().filter(|(m, _)| m == "task.destroy").count(), 2);
     let first = calls
         .iter()
         .position(|(m, _)| m == "Async.VM.start")
@@ -385,7 +416,14 @@ async fn stop_finishes_current_task_without_task_cancel_and_skips_remaining_vms(
 }
 #[tokio::test]
 async fn late_receipt_preserves_recovered_unknown_or_acknowledgement_without_continuation() {
-    for fault in [Fault::Recover, Fault::Acknowledge] {
+    for fault in [
+        Fault::Recover,
+        Fault::Acknowledge,
+        Fault::RecoverTask,
+        Fault::AcknowledgeTask,
+        Fault::RecoverVerify,
+        Fault::AcknowledgeVerify,
+    ] {
         let d = tempfile::tempdir().unwrap();
         let (op, request) = channel();
         let f = Fixture::new(fault, d.path(), request.record.id).await;
@@ -393,7 +431,10 @@ async fn late_receipt_preserves_recovered_unknown_or_acknowledgement_without_con
         let r = op.latest();
         assert_eq!(
             r.state,
-            if fault == Fault::Acknowledge {
+            if matches!(
+                fault,
+                Fault::Acknowledge | Fault::AcknowledgeTask | Fault::AcknowledgeVerify
+            ) {
                 OperationState::AcknowledgedUnknown
             } else {
                 OperationState::OutcomeUnknown
@@ -412,7 +453,10 @@ async fn late_receipt_preserves_recovered_unknown_or_acknowledgement_without_con
                 .task
                 .is_none()
         );
-        if fault == Fault::Recover {
+        if matches!(
+            fault,
+            Fault::Recover | Fault::RecoverTask | Fault::RecoverVerify
+        ) {
             f.run(ResourceRequest::tracking(saved), d.path()).await;
             let saved = journal.resource_load(r.id).unwrap().unwrap();
             assert_eq!(

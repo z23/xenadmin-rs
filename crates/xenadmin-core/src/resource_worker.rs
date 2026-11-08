@@ -115,6 +115,9 @@ impl ResourceRequest {
         if let Err(error) = result {
             self.finish_error(&mut journal, error).await;
         }
+        if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
+            self.cleanup_power_batch(&session, &cancel).await;
+        }
         self.announce().await;
         id
     }
