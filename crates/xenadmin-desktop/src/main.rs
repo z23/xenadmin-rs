@@ -1098,6 +1098,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .build(s, &k)
         .grow(1.0)
         .min_h(0.0);
+    let table = inventory_menu::attach(s, table);
     let tabs = [
         Page::Guests,
         Page::Templates,
@@ -2256,6 +2257,7 @@ fn main() -> std::process::ExitCode {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("inventory-context", inventory_menu::scene),
             ("general-information", inventory_information::scene),
             ("options", settings::open),
             ("help", settings::help),

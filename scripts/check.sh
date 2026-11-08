@@ -200,3 +200,6 @@ done
 "$check_binary" --snap artifacts/external-tools-compact.png --tree artifacts/external-tools-compact.json --scene external-tools --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-bond-guests.png --tree artifacts/management-bond-guests.json --scene management-bond-guests --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-bond-guests-compact.png --tree artifacts/management-bond-guests-compact.json --scene management-bond-guests --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/inventory-context.png --tree artifacts/inventory-context.json --scene inventory-context --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/inventory-context-compact.png --tree artifacts/inventory-context-compact.json --scene inventory-context --theme dark --size 513x652 --scale 1 --at 1

@@ -61,7 +61,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P02-09 | SR attachment/path and disk inspection | SR details display host attachments, disk capacity/flags, VM/snapshot consumers and bounded per-PBD multipath/path observations; fixture verified, actual path health and live qualification remain open |
 | P02-10 | Live inventory/stale-state handling | Optional-class negotiation, isolated decode failures and bounded resync implemented; live compatibility/scale qualification open |
 | P02-11 | Filtered/grouped/saved/cross-pool searches | Typed cross-pool text/type/power/host/pool/tag/folder/custom-field filters, grouped ordering and saved definitions implemented and fixture verified; [search report](reports/2026-11-08-cross-pool-search.md); live qualification open |
-| P02-12 | Multi-object actions and context menus | VM multi-selection, reviewed same-pool power batches and name-cell context menus implemented; fixture verified. Keyboard/whole-row menus and other bulk workflows remain open ([report](reports/2026-11-08-bulk-power-ui.md)) |
+| P02-12 | Multi-object actions and context menus | VM multi-selection, reviewed same-pool power batches and whole-row/keyboard context menus implemented; Rune fixtures cover selection, virtual scrolling, stale targets and focus return ([menu report](reports/2026-11-08-inventory-context-menus.md)). Other bulk workflows and native qualification remain open ([power report](reports/2026-11-08-bulk-power-ui.md)) |
 
 ## 3. VM power and recovery
 
