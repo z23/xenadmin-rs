@@ -10,6 +10,10 @@ use std::{
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+#[path = "cloud_init_journal.rs"]
+mod journal;
+pub(crate) use journal::validate_record;
+
 pub(crate) const MEDIA_BYTES: usize = 8 * 1024 * 1024;
 const USER_DATA_LIMIT: usize = 2 * 1024 * 1024;
 const NETWORK_LIMIT: usize = 1024 * 1024;
@@ -375,6 +379,10 @@ pub(crate) struct Attachment {
 }
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Plan {
+    pub operation: crate::OperationId,
+    pub pool: crate::PoolId,
+    pub vm: VmId,
+    pub configuration: CloudInitConfiguration,
     pub sha256: [u8; 32],
     pub interrupted: bool,
     pub upload_verified: bool,
@@ -382,7 +390,11 @@ pub(crate) struct Plan {
 }
 impl Plan {
     pub fn accepts(&self, next: &Self) -> bool {
-        self.sha256 == next.sha256
+        self.operation == next.operation
+            && self.pool == next.pool
+            && self.vm == next.vm
+            && self.configuration == next.configuration
+            && self.sha256 == next.sha256
             && (!self.upload_verified || next.upload_verified)
             && (!self.interrupted || next.interrupted)
             && match (&self.attachment, &next.attachment) {

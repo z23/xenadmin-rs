@@ -582,13 +582,17 @@ impl Connection {
         let (operation, mut pending) = crate::resources::channel(
             id,
             target,
-            crate::ResourceAction::CloudInit(config),
+            crate::ResourceAction::CloudInit(config.clone()),
             self.runtime.clone(),
         );
         pending.record.transfer = Some(Default::default());
         pending.record.transfer_plan =
             Some(Box::new(crate::transfer::Plan::new(media.file.clone())));
         pending.record.cloud_init_plan = Some(crate::cloud_init::Plan {
+            operation: id,
+            pool: vm.pool,
+            vm: vm.id,
+            configuration: config,
             sha256: media.sha256,
             interrupted: false,
             upload_verified: false,

@@ -132,6 +132,7 @@ impl Journal {
             }
             crate::cross_pool_backend::validate_record(&record)?;
             crate::storage_auth::validate_record(&record)?;
+            crate::cloud_init::validate_record(&record)?;
             Ok(record)
         })
         .transpose()
@@ -147,6 +148,7 @@ impl Journal {
             plan.interrupted = true;
         }
         crate::storage_auth::validate_record(record)?;
+        crate::cloud_init::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
             if old.storage_auth_plan.as_ref().is_some_and(|p| {
                 record
@@ -299,6 +301,7 @@ impl Journal {
         &self,
         record: &mut ResourceOperationRecord,
     ) -> Result<bool, Error> {
+        crate::cloud_init::validate_record(record)?;
         self.0
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::Journal)?;

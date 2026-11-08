@@ -75,6 +75,22 @@ All infrastructure mutations remain fixture-only. XCP-ng/guest qualification, re
 consumption, Wayland/X11 input/accessibility and distribution packaging for this increment
 remain open. No private screenshots, live inventory or credentials were used or published.
 
+## Private recovery-plan validation follow-up
+
+The private journal now binds the operation ID, pool UUID, VM UUID and complete reviewed
+configuration to the public operation. Loading, admitting and saving records reject
+mismatches, unexpected transfer formats/paths/sizes, oversized or repeated baselines,
+inconsistent task receipts and impossible attachment evidence. Public created identities
+must match the verified private disk/VBD identities. Unknown outcomes retain their
+interruption latch. Validation does not reopen the artifact, which may already have been
+removed after a verified upload; rechecking still never recreates or attaches resources.
+
+Two regression tests cover 21 malformed records across admission, save and actual journal
+reload, plus legitimate rejection before media preparation. The complete workspace passed
+623 tests; all 14 focused NoCloud tests passed, including delayed replies after recovery
+and acknowledgement. Strict workspace Clippy, formatting and whitespace checks passed.
+These checks remain synthetic and do not establish live-host compatibility.
+
 ## Primary evidence and dependency
 
 [Cloud-init's NoCloud documentation](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)
