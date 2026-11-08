@@ -5,6 +5,7 @@ use crate::{
 
 fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
+        interrupted: false,
         id: OperationId::new(),
         pool,
         target: ResourceTarget::Network(NetworkId::from(uuid::Uuid::new_v4())),

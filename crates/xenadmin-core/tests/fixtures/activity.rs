@@ -267,7 +267,9 @@ async fn message_dismissal_verifies_absence_and_lost_reply_recheck_does_not_repe
             let rows = recheck(&c, id).await;
             assert_eq!(
                 rows.iter().find(|r| r.id == id).unwrap().state,
-                OperationState::Succeeded
+                OperationState::Succeeded,
+                "{}",
+                rows.iter().find(|r| r.id == id).unwrap().detail
             );
         } else {
             assert_eq!(row.state, OperationState::Succeeded);

@@ -24,7 +24,19 @@ enum Fault {
     SlowRead,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
+#[derive(Default)]
+struct ReadGate {
+    enabled: std::sync::atomic::AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
 async fn fixture(fault: Fault) -> (Mock, Records) {
+    let (mock, records, _) = gated_fixture(fault).await;
+    (mock, records)
+}
+async fn gated_fixture(fault: Fault) -> (Mock, Records, Arc<ReadGate>) {
+    let gate = Arc::new(ReadGate::default());
+    let reader_gate = gate.clone();
     let records: Records = Arc::new(Mutex::new(BTreeMap::from([
         (
             "pool".into(),
@@ -46,6 +58,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
     let mutations = Arc::new(AtomicUsize::new(0));
     let captured_records = records.clone();
     let callback = move |request: Value| {
+        let gate = reader_gate.clone();
         let records = captured_records.clone();
         let records = records.clone();
         let mutations = mutations.clone();
@@ -94,6 +107,10 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             if let Some(class) = method.strip_suffix(".get_record")
                 && ["pool", "host", "network", "SR"].contains(&class)
             {
+                if gate.enabled.swap(false, Ordering::SeqCst) {
+                    gate.entered.notify_one();
+                    gate.release.notified().await;
+                }
                 if fault == Fault::SlowRead {
                     tokio::time::sleep(Duration::from_millis(150)).await;
                 }
@@ -174,7 +191,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         }
     };
     let mock = mock_overridden(override_rpc(callback)).await;
-    (mock, records)
+    (mock, records, gate)
 }
 fn pool() -> ResourceTarget {
     ResourceTarget::Pool(PoolId::parse(POOL).unwrap())
@@ -834,4 +851,78 @@ async fn bulk_power_refuses_read_only_and_previous_connection_generation_before_
             .any(|m| m.starts_with("Async.VM."))
     );
     second.close().await;
+}
+
+#[tokio::test]
+async fn explicit_recheck_publishes_verifying_until_final_read_finishes() {
+    let (mock, _, gate) = gated_fixture(Fault::DropRename).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let connection = connection(&mock, &backend, false).await;
+    let id = OperationId::new();
+    let operation = connection
+        .submit_resource(id, rename(&connection, "Renamed", "Network description"))
+        .unwrap();
+    let original = finish_resource(&operation).await;
+    assert_eq!(original.state, OperationState::OutcomeUnknown);
+    gate.enabled.store(true, Ordering::SeqCst);
+    connection
+        .control_resource(id, OperationControl::Recheck)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())
+        .await
+        .unwrap();
+    let db = rusqlite::Connection::open(dir.path().join("operations.sqlite3")).unwrap();
+    let state: String = db
+        .query_row(
+            "SELECT payload FROM resource_operations WHERE id=?1",
+            [id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&state).unwrap()["state"],
+        "Verifying"
+    );
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(row) = connection
+                .resource_history()
+                .iter()
+                .find(|row| row.id == id && row.revision() > original.revision())
+            {
+                assert_eq!(row.state, OperationState::Verifying, "{}", row.detail);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    gate.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(row) = connection
+                .resource_history()
+                .iter()
+                .find(|row| row.id == id && row.state.terminal())
+            {
+                assert_eq!(row.state, OperationState::Succeeded, "{}", row.detail);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        mock.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|method| method.as_str() == "network.set_name_label")
+            .count(),
+        1
+    );
+    connection.close().await;
 }

@@ -122,6 +122,7 @@ impl Journal {
             record.task = task;
             record.result_reference = result_reference;
             record.revision = revision;
+            record.interrupted |= record.state == OperationState::OutcomeUnknown;
             // Terminal rejection before preparation may legitimately have no plan.
             if !record.state.terminal() || record.power_batch_plan.is_some() {
                 crate::power_batch::validate_record(&record)?;
@@ -138,6 +139,7 @@ impl Journal {
         .transpose()
     }
     pub(crate) fn resource_save(&self, record: &mut ResourceOperationRecord) -> Result<(), Error> {
+        record.interrupted |= record.state == OperationState::OutcomeUnknown;
         if !record.state.terminal() || record.power_batch_plan.is_some() {
             crate::power_batch::validate_record(record)?;
         }
@@ -209,6 +211,7 @@ impl Journal {
                 || (old.result_reference.is_some()
                     && old.result_reference != record.result_reference)
                 || (old.created.is_some() && old.created != record.created)
+                || (old.interrupted && !record.interrupted)
                 || (old.cancel_requested && !record.cancel_requested)
                 || (old.cancel_dispatched && !record.cancel_dispatched)
                 || old.host_plan.as_ref().is_some_and(|plan| {
@@ -419,7 +422,10 @@ impl Journal {
                 }
             }
             current.appliance_completed |= evidence.appliance_completed;
-            if !current.state.terminal() && current.state != OperationState::OutcomeUnknown {
+            if !current.state.terminal()
+                && !current.interrupted
+                && current.state != OperationState::OutcomeUnknown
+            {
                 current.state = if current.task.is_some() {
                     OperationState::Tracking
                 } else {
@@ -467,7 +473,10 @@ impl Journal {
             }
             step.accepted |= received.accepted;
             step.task_succeeded |= received.task_succeeded;
-            if !current.state.terminal() && current.state != OperationState::OutcomeUnknown {
+            if !current.state.terminal()
+                && !current.interrupted
+                && current.state != OperationState::OutcomeUnknown
+            {
                 current.state = if step.task.is_some() && !step.task_succeeded {
                     OperationState::Tracking
                 } else {

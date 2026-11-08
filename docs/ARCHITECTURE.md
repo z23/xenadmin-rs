@@ -210,6 +210,12 @@ operation-specific evidence. Do not replay the mutation automatically. Matching 
 alone might not prove that this operation caused it. Preserve OutcomeUnknown and offer
 inspection or explicit operator resolution when evidence cannot establish the result.
 
+Resource operations retain a monotonic interruption flag after any uncertain outcome.
+An explicit recheck may publish Verifying while reading existing evidence, but this flag
+continues to stop the original execution worker and prevents later mutation steps. Late
+positive receipts merge into the durable row without reviving that worker. Old journal
+records in OutcomeUnknown acquire the flag when decoded.
+
 Cancellation is a request with its own outcome. Closing an observer or cancelling a local
 future does not cancel a server task. Multi-step operations record each dispatch and owned
 resource. They can finish PartiallyCompleted. Compensation is conditional on resource

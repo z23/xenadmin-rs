@@ -182,10 +182,14 @@ impl ResourceRequest {
     }
     fn stopped_after_recovery(&self) -> bool {
         self.record.state.terminal()
-            || (!self.reconcile && self.record.state == OperationState::OutcomeUnknown)
+            || (!self.reconcile
+                && (self.record.interrupted || self.record.state == OperationState::OutcomeUnknown))
     }
     fn stop_before_dispatch(&mut self) -> bool {
-        if self.record.state.terminal() || self.record.state == OperationState::OutcomeUnknown {
+        if self.record.state.terminal()
+            || self.record.interrupted
+            || self.record.state == OperationState::OutcomeUnknown
+        {
             return true;
         }
         if self.record.cancel_requested {
@@ -442,6 +446,10 @@ impl ResourceRequest {
                 "resource operation dispatch evidence unavailable",
             ));
         }
+        self.record.state = OperationState::Verifying;
+        self.record.can_cancel = false;
+        self.record.detail = "Rechecking dispatched changes; no write will be repeated".into();
+        self.save(journal).await?;
         for (index, check) in checks.iter().enumerate() {
             if self.record.steps[index].state == StepState::Pending {
                 continue;
@@ -830,7 +838,8 @@ impl ResourceRequest {
             .any(|step| step.state == StepState::Verified);
         if let Ok(Some(current)) = journal.resource_load(self.record.id) {
             if current.state.terminal()
-                || (!self.reconcile && current.state == OperationState::OutcomeUnknown)
+                || (!self.reconcile
+                    && (current.interrupted || current.state == OperationState::OutcomeUnknown))
             {
                 self.record = current;
                 return;
@@ -877,7 +886,8 @@ impl ResourceRequest {
                 self.record.state = OperationState::OutcomeUnknown;
                 return;
             }
-            if self.record.state.terminal() || self.record.state == OperationState::OutcomeUnknown {
+            if self.stopped_after_recovery() || self.record.state == OperationState::OutcomeUnknown
+            {
                 return;
             }
             if self.record.state != OperationState::Preparing || !self.stop_before_dispatch() {
@@ -1001,6 +1011,33 @@ mod stopped_worker_tests {
             assert_eq!(request.record.state, OperationState::OutcomeUnknown);
             assert!(request.stopped_after_recovery());
             assert!(request.stop_before_dispatch());
+            let mut rechecking = journal.resource_load(result.id).unwrap().unwrap();
+            rechecking.state = OperationState::Verifying;
+            journal.resource_save(&mut rechecking).unwrap();
+            assert!(rechecking.interrupted);
+            request.record = journal.resource_evidence(&request.record).unwrap();
+            assert_eq!(request.record.state, OperationState::Verifying);
+            assert!(request.stopped_after_recovery());
+            assert!(request.stop_before_dispatch());
+            request.finish_error(&mut journal, Error::Closed).await;
+            assert_eq!(
+                journal.resource_load(result.id).unwrap().unwrap().state,
+                OperationState::Verifying
+            );
+            request.finish_conflict(&mut journal).await;
+            assert_eq!(
+                journal.resource_load(result.id).unwrap().unwrap().state,
+                OperationState::Verifying
+            );
+            let mut bad = rechecking.clone();
+            bad.interrupted = false;
+            assert!(matches!(
+                journal.resource_save(&mut bad),
+                Err(Error::JournalChanged)
+            ));
+            rechecking = journal.resource_load(result.id).unwrap().unwrap();
+            rechecking.state = OperationState::OutcomeUnknown;
+            journal.resource_save(&mut rechecking).unwrap();
             journal
                 .resource_control(pool, result.id, OperationControl::AcknowledgeUnknown)
                 .unwrap();

@@ -492,6 +492,8 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(default)]
+    pub(crate) interrupted: bool,
     pub id: OperationId,
     pub pool: PoolId,
     pub target: ResourceTarget,
@@ -617,6 +619,7 @@ pub(crate) fn channel(
     runtime: tokio::runtime::Handle,
 ) -> (ResourceOperation, ResourceRequest) {
     let record = ResourceOperationRecord {
+        interrupted: false,
         id,
         pool: target.pool,
         target: target.target,
