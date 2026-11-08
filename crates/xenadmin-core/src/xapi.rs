@@ -585,6 +585,7 @@ impl Store {
                             });
                             operation.allows(value, source)
                         }
+                        crate::OperationAction::Recovery(operation) => operation.allows(value),
                         crate::OperationAction::Migration(_)
                         | crate::OperationAction::Lifecycle(_)
                         | crate::OperationAction::Device(_) => true,
@@ -943,7 +944,8 @@ pub(crate) async fn prepare_mutation(
             }
             Ok(reference)
         }
-        OperationAction::Migration(_)
+        OperationAction::Recovery(_)
+        | OperationAction::Migration(_)
         | OperationAction::Lifecycle(_)
         | OperationAction::Placement(_)
         | OperationAction::Device(_) => Err(Error::UnavailableAction),

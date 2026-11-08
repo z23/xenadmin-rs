@@ -718,6 +718,7 @@ pub(super) fn history_button(s: &State, k: &Kit) -> El {
             record.action,
             xenadmin_core::OperationAction::Lifecycle(_)
                 | xenadmin_core::OperationAction::Migration(_)
+                | xenadmin_core::OperationAction::Recovery(_)
         )
     }) {
         return el();
@@ -736,6 +737,7 @@ fn history(s: &State, k: &Kit) -> El {
             record.action,
             xenadmin_core::OperationAction::Lifecycle(_)
                 | xenadmin_core::OperationAction::Migration(_)
+                | xenadmin_core::OperationAction::Recovery(_)
         )
     }) {
         let can_control = s.can_mutate()

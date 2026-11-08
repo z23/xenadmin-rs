@@ -21,6 +21,8 @@ mod snapshot_operations;
 mod snapshot_workflow_operations;
 #[path = "vm_lifecycle_operations.rs"]
 mod vm_lifecycle_operations;
+#[path = "vm_recovery_operations.rs"]
+mod vm_recovery_operations;
 
 #[derive(Clone, Debug)]
 pub struct SnapshotName(String);
@@ -38,6 +40,10 @@ impl SnapshotName {
 }
 
 pub enum VmCommand {
+    Recovery {
+        vm: crate::ObservedVm,
+        operation: crate::VmRecoveryOperation,
+    },
     SnapshotWorkflow {
         vm: crate::ObservedVm,
         operation: crate::SnapshotWorkflow,
@@ -89,6 +95,7 @@ pub enum VmCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum OperationAction {
+    Recovery(crate::VmRecoveryOperation),
     Power(PowerAction),
     Snapshot(SnapshotOperation),
     Settings(crate::VmSettingsPatch),
@@ -130,6 +137,7 @@ pub enum SnapshotOperation {
 impl OperationAction {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Recovery(operation) => operation.label(),
             Self::Power(action) => action.label(),
             Self::Lifecycle(operation) => operation.label(),
             Self::Migration(operation) => operation.label(),
@@ -191,6 +199,7 @@ impl OperationAction {
 impl VmCommand {
     pub(crate) fn normalize(self) -> (crate::ObservedVm, OperationAction) {
         match self {
+            Self::Recovery { vm, operation } => (vm, OperationAction::Recovery(operation)),
             Self::SnapshotWorkflow { vm, operation } => (
                 vm,
                 OperationAction::Snapshot(SnapshotOperation::Workflow { operation }),
@@ -401,6 +410,8 @@ pub struct OperationRecord {
     #[serde(skip)]
     snapshot_workflow: Option<Box<crate::snapshot_workflow::Plan>>,
     #[serde(skip)]
+    recovery_plan: Option<Box<crate::vm_recovery::Plan>>,
+    #[serde(skip)]
     snapshot_clone_baseline: Option<Vec<VmId>>,
     #[serde(skip)]
     device_plan: Option<crate::device_lifecycle::Plan>,
@@ -414,6 +425,45 @@ pub struct OperationRecord {
     pub steps: Vec<crate::OperationStep>,
 }
 impl OperationRecord {
+    fn valid_recovery_plan(&self) -> bool {
+        match (&self.action, &self.recovery_plan) {
+            (OperationAction::Recovery(_), Some(plan)) => plan.valid(self),
+            (OperationAction::Recovery(_), None) => {
+                self.steps.is_empty()
+                    && matches!(
+                        self.state,
+                        OperationState::Submitting
+                            | OperationState::Rejected
+                            | OperationState::Failed
+                            | OperationState::Cancelled
+                    )
+            }
+            (_, plan) => plan.is_none(),
+        }
+    }
+    pub fn recovery_boot_restoration(&self) -> Option<crate::VmRecoveryOperation> {
+        let OperationAction::Recovery(crate::VmRecoveryOperation::Boot { configuration }) =
+            &self.action
+        else {
+            return None;
+        };
+        let plan = self.recovery_plan.as_ref()?;
+        if !self.state.terminal()
+            || configuration.order.as_deref() == Some("dn")
+            || plan.steps.first() != Some(&crate::vm_recovery::Step::Override)
+            || !plan.evidence.first().is_some_and(|e| e.completed)
+            || !plan.steps.iter().zip(&self.steps).any(|(kind, public)| {
+                *kind == crate::vm_recovery::Step::Restore
+                    && matches!(public.state, crate::StepState::Pending)
+            })
+        {
+            return None;
+        }
+        Some(crate::VmRecoveryOperation::RestoreBoot {
+            source: self.id,
+            configuration: configuration.clone(),
+        })
+    }
     pub(crate) fn reserves_pool_creation(&self) -> bool {
         matches!(
             &self.action,
@@ -445,7 +495,9 @@ impl OperationRecord {
         self.has_task()
             || matches!(
                 &self.action,
-                OperationAction::Lifecycle(_) | OperationAction::Migration(_)
+                OperationAction::Lifecycle(_)
+                    | OperationAction::Migration(_)
+                    | OperationAction::Recovery(_)
             )
             || matches!(&self.action,OperationAction::Device(operation) if operation.is_lifecycle())
             || matches!(
@@ -520,6 +572,7 @@ impl DispatchPermit {
     ) -> Result<serde_json::Value, Error> {
         let mut params = vec![json!(reference)];
         let method = match self.0 {
+            OperationAction::Recovery(_) => return Err(Error::UnavailableAction),
             OperationAction::Settings(_) => return Err(Error::InvalidSettings),
             OperationAction::Migration(_) => return Err(Error::InvalidMigration),
             OperationAction::Lifecycle(_) => return Err(Error::InvalidVmLifecycle),
@@ -600,6 +653,7 @@ pub(crate) fn channel(
         created_vm: None,
         snapshot_deletion: None,
         snapshot_workflow: None,
+        recovery_plan: None,
         snapshot_clone_baseline: None,
         device_plan: None,
         lifecycle_plan: None,
@@ -732,6 +786,9 @@ impl Journal {
         Ok(Self(connection))
     }
     fn encode_record(record: &OperationRecord) -> Result<String, Error> {
+        if !record.valid_recovery_plan() {
+            return Err(Error::Journal);
+        }
         let mut value = serde_json::to_value(record).map_err(|_| Error::Journal)?;
         let object = value.as_object_mut().ok_or(Error::Journal)?;
         macro_rules! evidence { ($($field:ident),+ $(,)?) => {$(object.insert(stringify!($field).into(),serde_json::to_value(&record.$field).map_err(|_|Error::Journal)?);)+}; }
@@ -740,6 +797,7 @@ impl Journal {
             result_reference,
             snapshot_deletion,
             snapshot_workflow,
+            recovery_plan,
             snapshot_clone_baseline,
             device_plan,
             lifecycle_plan,
@@ -767,6 +825,7 @@ impl Journal {
         let result_reference = take(&mut value, "result_reference")?;
         let snapshot_deletion = take(&mut value, "snapshot_deletion")?;
         let snapshot_workflow = take(&mut value, "snapshot_workflow")?;
+        let recovery_plan = take(&mut value, "recovery_plan")?;
         let snapshot_clone_baseline = take(&mut value, "snapshot_clone_baseline")?;
         let device_plan = take(&mut value, "device_plan")?;
         let lifecycle_plan = take(&mut value, "lifecycle_plan")?;
@@ -777,6 +836,10 @@ impl Journal {
         record.result_reference = result_reference;
         record.snapshot_deletion = snapshot_deletion;
         record.snapshot_workflow = snapshot_workflow;
+        record.recovery_plan = recovery_plan;
+        if !record.valid_recovery_plan() {
+            return Err(Error::Journal);
+        }
         record.snapshot_clone_baseline = snapshot_clone_baseline;
         record.device_plan = device_plan;
         record.lifecycle_plan = lifecycle_plan;
@@ -889,6 +952,12 @@ impl Journal {
                 || previous.snapshot_workflow.as_ref().is_some_and(|old| {
                     !record
                         .snapshot_workflow
+                        .as_ref()
+                        .is_some_and(|new| new.extends(old))
+                })
+                || previous.recovery_plan.as_ref().is_some_and(|old| {
+                    !record
+                        .recovery_plan
                         .as_ref()
                         .is_some_and(|new| new.extends(old))
                 })
@@ -1109,6 +1178,9 @@ impl MutationRequest {
                 {
                     self.recheck_snapshot_workflow(&session, &mut journal).await
                 }
+                Ok(mut journal) if matches!(self.record.action, OperationAction::Recovery(_)) => {
+                    self.recheck_recovery(&session, &mut journal).await
+                }
                 Ok(mut journal) if matches!(self.record.action, OperationAction::Settings(_)) => {
                     self.recheck_settings(&session, &mut journal).await
                 }
@@ -1253,6 +1325,11 @@ impl MutationRequest {
                 .permission_requirements()
                 .guard(session.permissions())?,
             _ => (),
+        }
+        if matches!(&self.record.action, OperationAction::Recovery(_)) {
+            return self
+                .execute_recovery(session, &mut journal, connection_cancel)
+                .await;
         }
         if matches!(
             &self.record.action,
@@ -1781,6 +1858,7 @@ mod tests {
             created_vm: None,
             snapshot_deletion: None,
             snapshot_workflow: None,
+            recovery_plan: None,
             snapshot_clone_baseline: None,
             device_plan: None,
             lifecycle_plan: None,

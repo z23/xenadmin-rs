@@ -386,3 +386,7 @@ pub use snapshot_preview::{SnapshotPreview, SnapshotPreviewQuery};
 
 mod guest_tools;
 pub use guest_tools::GuestToolsMediaSource;
+mod vm_recovery;
+pub use vm_recovery::{
+    ForceRecoveryAction, RecoveryBootConfiguration, RecoveryTask, VmRecoveryOperation,
+};

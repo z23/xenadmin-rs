@@ -73,8 +73,8 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P03-04 | Start/resume on a chosen eligible host/home server | Chosen-host start/resume and fresh compatibility preflight implemented; live placement qualification open |
 | P03-05 | Explain unavailable actions | Host block messages preserved, current diagnostic context enforced and contradictory blocked/allowed operations refused; lab RBAC/state qualification open |
 | P03-06 | Show current tasks and administrative action blocks | Current operations, administrative blocks, per-action diagnosis and pool-wide task Activity workspace implemented; fixture verified, live qualification open |
-| P03-07 | Reviewed force recovery with running tasks | Queued |
-| P03-08 | Recovery-mode boot | Queued |
+| P03-07 | Reviewed force recovery with running tasks | Captured task inspection, separately reviewed local operation cancellation, and fresh task/state/block/RBAC/assert-valid force admission implemented; unresolved reservations preserved and other-client tasks untouched. Protocol/Rune verified; live qualification open ([report](reports/2026-11-08-vm-recovery.md)) |
+| P03-08 | Recovery-mode boot | Existing HVM guest CD/network boot with journaled exact boot-order restoration and separate provenance-checked interrupted-override restoration implemented; PV/firmware conversion refused. Protocol/Rune verified; guest/media and live-host qualification open ([report](reports/2026-11-08-vm-recovery.md)) |
 | P03-09 | Batch VM power actions | Reviewed 1–32 VM same-pool serial power batches implemented with per-VM outcomes, whole-selection preflight and no-replay recovery; protocol/Rune fixtures verified, live qualification open ([report](reports/2026-11-08-bulk-power-backend.md)) |
 
 ## 4. Consoles

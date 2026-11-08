@@ -35,6 +35,7 @@ mod vm_lifecycle;
 mod vm_migration;
 mod vm_placement;
 mod vm_properties;
+mod vm_recovery_view;
 mod vm_snapshots;
 
 use preferences::Preferences;
@@ -187,6 +188,7 @@ struct State {
     devices: Option<vm_devices::DeviceView>,
     vm_lifecycle: Option<vm_lifecycle::Panel>,
     vm_migration: Option<Box<vm_migration::Editor>>,
+    vm_recovery: Option<Box<vm_recovery_view::Panel>>,
     cross_pool: cross_pool_vm::Panel,
     transfers: transfers::Panel,
     cloud_init: cloud_init_view::Panel,
@@ -299,6 +301,7 @@ fn init() -> State {
         devices: None,
         vm_lifecycle: None,
         vm_migration: None,
+        vm_recovery: None,
         cross_pool: Default::default(),
         transfers: Default::default(),
         cloud_init: Default::default(),
@@ -1439,6 +1442,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [transfers::dialog(s, &k)])
     } else if s.cross_pool.show {
         rune_kit::root(base, [cross_pool_vm::dialog(s, &k)])
+    } else if s.vm_recovery.is_some() {
+        rune_kit::root(base, [vm_recovery_view::dialog(s, &k)])
     } else if s.vm_migration.is_some() {
         rune_kit::root(base, [vm_migration::dialog(s, &k)])
     } else if s.vm_lifecycle.is_some() {
@@ -1652,6 +1657,7 @@ fn details(s: &State, k: &Kit) -> El {
         detail = detail
             .child(vm_lifecycle::controls(s, vm, k))
             .child(vm_migration::button(s, vm, k))
+            .child(vm_recovery_view::button(s, vm, k))
             .child(cross_pool_vm::button(s, vm, k))
             .child(transfers::button(s, vm, k))
             .child(cloud_init_view::button(s, vm, k));
@@ -1850,6 +1856,7 @@ fn details(s: &State, k: &Kit) -> El {
                     if matches!(
                         record.action,
                         xenadmin_core::OperationAction::Lifecycle(_)
+                            | xenadmin_core::OperationAction::Recovery(_)
                             | xenadmin_core::OperationAction::Snapshot(
                                 xenadmin_core::SnapshotOperation::Workflow { .. }
                             )
@@ -2062,6 +2069,7 @@ fn demo(s: &mut State) {
     s.devices = None;
     s.vm_lifecycle = None;
     s.vm_migration = None;
+    s.vm_recovery = None;
     s.cross_pool = Default::default();
     s.operation_rows.clear();
     s.operations.clear();
@@ -2232,6 +2240,8 @@ fn main() {
             ("creation-cloud-pending", vm_lifecycle::cloud_pending_scene),
             ("secure-boot", vm_properties::firmware_scene),
             ("vm-migration", vm_migration::scene),
+            ("vm-recovery", vm_recovery_view::scene),
+            ("vm-recovery-force", vm_recovery_view::force_scene),
             ("cross-pool", cross_pool_vm::scene),
             ("archive-export", transfers::scene),
             ("cloud-init", cloud_init_view::scene),

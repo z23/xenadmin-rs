@@ -667,3 +667,14 @@ match. Failed/unknown/acknowledged results cannot continue automatically. The co
 drive is separately reviewed and tracked, and neither stage starts the guest. Closing the
 wizard discards the draft without cancelling host creation. See the
 [creation cloud-init report](reports/2026-11-08-creation-cloud-init.md).
+
+## VM recovery controls
+
+Typed `VmRecoveryOperation` commands preserve normal VM/pool reservation admission. Force
+recovery binds the captured Running VM and task UUID set, preserves administrative blocks
+and invokes fresh host validity checks without cancelling other clients' tasks. HVM
+recovery boot owns a temporary order-only change, single startup and exact guarded
+restoration. Its private plan stores immutable step shape/task baseline and monotonic
+receipts; public step status is validated against that evidence. Recovery is read-only.
+Separate restoration requires a positive original setter receipt, an unsubmitted original
+restore and an unused source claim. See the [recovery report](reports/2026-11-08-vm-recovery.md).
