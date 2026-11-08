@@ -1,3 +1,4 @@
+use super::workflow_children::WorkflowChild;
 use super::*;
 use crate::vm_workflow_batch::{ChildPermit, Plan};
 use rusqlite::params;
@@ -18,10 +19,30 @@ impl Journal {
         };
         let parent: OperationId =
             serde_json::from_value(json!(parent)).map_err(|_| Error::Journal)?;
-        let record = self.resource_load(parent)?.ok_or(Error::Journal)?;
+        let record = self
+            .resource_load_linked(parent, false)?
+            .ok_or(Error::Journal)?;
+        if record.batch_parent.is_some()
+            || self
+                .0
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM workflow_batch_children WHERE child=?1)",
+                    [parent.to_string()],
+                    |r| r.get::<_, bool>(0),
+                )
+                .map_err(|_| Error::Journal)?
+        {
+            return Err(Error::Journal);
+        }
         self.workflow_validate_links(&record)?;
         let plan = record.workflow_batch_plan.as_ref().ok_or(Error::Journal)?;
-        if kind != "vm" || plan.children.get(index) != Some(&child) {
+        if plan
+            .selection
+            .items
+            .get(index)
+            .is_none_or(|i| i.workflow.kind() != kind)
+            || plan.children.get(index) != Some(&child)
+        {
             return Err(Error::Journal);
         }
         Ok(Some(parent))
@@ -48,7 +69,9 @@ impl Journal {
             .map_err(|_| Error::Journal)?;
         if rows.len() != p.children.len()
             || rows.iter().enumerate().any(|(i, (n, id, kind))| {
-                *n != i || *id != p.children[i].to_string() || kind != "vm"
+                *n != i
+                    || *id != p.children[i].to_string()
+                    || *kind != p.selection.items[i].workflow.kind()
             })
         {
             return Err(Error::Journal);
@@ -66,7 +89,7 @@ impl Journal {
             if self.load(*child)?.is_some() || self.resource_load(*child)?.is_some() {
                 return Err(Error::OperationConflict);
             }
-            self.0.execute("INSERT INTO workflow_batch_children(parent,ordinal,child,kind) VALUES(?1,?2,?3,'vm')", params![r.id.to_string(),i,child.to_string()]).map_err(|_|Error::OperationConflict)?;
+            self.0.execute("INSERT INTO workflow_batch_children(parent,ordinal,child,kind) VALUES(?1,?2,?3,?4)", params![r.id.to_string(),i,child.to_string(),p.selection.items[i].workflow.kind()]).map_err(|_|Error::OperationConflict)?;
         }
         Ok(())
     }
@@ -79,32 +102,18 @@ impl Journal {
             return Ok(());
         };
         self.workflow_validate_links(parent)?;
-        for (index, id) in plan.children.iter().enumerate() {
-            let payload: Option<(String, Option<String>)> = self
-                .0
-                .query_row(
-                    "SELECT payload,task FROM operations WHERE id=?1",
-                    [id.to_string()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(|_| Error::Journal)?;
+        for index in 0..plan.children.len() {
+            let child = self.workflow_load_child(parent, index)?;
             if index >= plan.admitted {
-                if payload.is_some() {
+                if child.is_some() {
                     return Err(Error::Journal);
                 }
                 continue;
             }
-            let (payload, task) = payload.ok_or(Error::Journal)?;
-            let mut child = Self::decode_record(&payload)?;
-            child.task = task;
-            if !crate::migration_backend::valid_receipts(&child, child.migration_plan.as_deref()) {
-                return Err(Error::Journal);
-            }
-            self.workflow_child_matches(&child, parent, index)?;
+            let child = child.ok_or(Error::Journal)?;
             if parent.state.terminal()
-                && (!child.state.terminal()
-                    || parent.workflow_batch[index].state.as_ref() != Some(&child.state))
+                && (!child.state().terminal()
+                    || parent.workflow_batch[index].state.as_ref() != Some(child.state()))
             {
                 return Err(Error::Journal);
             }
@@ -138,7 +147,8 @@ impl Journal {
     ) -> Result<(), Error> {
         let plan = parent.workflow_batch_plan.as_ref().ok_or(Error::Journal)?;
         let item = plan.selection.items.get(index).ok_or(Error::Journal)?;
-        if plan.children.get(index) != Some(&record.id)
+        if item.workflow.kind() != "vm"
+            || plan.children.get(index) != Some(&record.id)
             || record.batch_parent != Some(parent.id)
             || parent.pool != record.pool
             || item.vm != record.vm
@@ -174,69 +184,22 @@ impl Journal {
         record: &OperationRecord,
         permit: Option<&ChildPermit>,
     ) -> Result<Option<OperationId>, Error> {
-        let owner = self.workflow_owner(record.id)?;
-        let Some(permit) = permit else {
-            return if owner.is_some() || record.batch_parent.is_some() {
-                Err(Error::OperationConflict)
-            } else {
-                Ok(None)
-            };
-        };
-        if owner != Some(permit.parent) {
-            return Err(Error::OperationConflict);
-        }
-        let parent = self.resource_load(permit.parent)?.ok_or(Error::Journal)?;
-        self.workflow_child_matches(record, &parent, permit.index)?;
-        if parent.interrupted
-            || parent.state.terminal()
-            || parent.cancel_requested
-            || parent.state == OperationState::OutcomeUnknown
-        {
-            return Err(Error::JournalChanged);
-        }
-        let plan = parent.workflow_batch_plan.as_ref().ok_or(Error::Journal)?;
-        if let Some(old) = self.load(record.id)? {
-            self.workflow_child_matches(&old, &parent, permit.index)?;
-            if permit.index >= plan.admitted {
-                return Err(Error::Journal);
-            }
-            return Ok(owner);
-        }
-        if plan.admitted != permit.index {
-            return Err(Error::JournalChanged);
-        }
-        for (index, id) in plan.children.iter().take(permit.index).enumerate() {
-            let old = self.load(*id)?.ok_or(Error::Journal)?;
-            self.workflow_child_matches(&old, &parent, index)?;
-            if old.state != OperationState::Succeeded {
-                return Err(Error::JournalChanged);
-            }
-        }
-        Ok(owner)
+        self.workflow_admit_any_child(
+            WorkflowChild::Vm(Box::new(record.clone())),
+            record.id,
+            record.batch_parent,
+            permit,
+        )
     }
+
     pub(super) fn workflow_mark_admitted(
         &self,
         record: &OperationRecord,
         permit: &ChildPermit,
     ) -> Result<(), Error> {
-        let mut parent = self.resource_load(permit.parent)?.ok_or(Error::Journal)?;
-        self.workflow_child_matches(record, &parent, permit.index)?;
-        parent
-            .workflow_batch_plan
-            .as_mut()
-            .ok_or(Error::Journal)?
-            .admitted += 1;
-        parent.workflow_batch[permit.index].state = Some(record.state.clone());
-        parent.workflow_batch[permit.index].detail =
-            "Child admitted; no completion inferred".into();
-        parent.state = OperationState::Tracking;
-        parent.can_cancel = true;
-        parent.steps[permit.index].state = crate::StepState::Dispatching;
-        parent.steps[permit.index].detail =
-            "Child admitted; its durable workflow owns this VM".into();
-        self.resource_save(&mut parent)?;
-        Ok(())
+        self.workflow_mark_any_admitted(WorkflowChild::Vm(Box::new(record.clone())), permit)
     }
+
     pub(crate) fn workflow_child_stopped(&self, child: OperationId) -> Result<bool, Error> {
         let Some(parent) = self.workflow_owner(child)? else {
             return Ok(false);
@@ -293,27 +256,22 @@ impl Journal {
                 .ok_or(Error::Journal)?
                 .clone();
             let mut active = 0;
-            for (index, id) in plan.children.iter().take(plan.admitted).enumerate() {
-                let mut child = self.load(*id)?.ok_or(Error::Journal)?;
-                self.workflow_child_matches(&child, &parent, index)?;
-                if !child.state.terminal() {
+            for index in 0..plan.admitted {
+                let mut child = self
+                    .workflow_load_child(&parent, index)?
+                    .ok_or(Error::Journal)?;
+                if !child.state().terminal() {
                     active += 1;
-                    child.state = if acknowledge {
-                        OperationState::AcknowledgedUnknown
-                    } else {
-                        OperationState::OutcomeUnknown
-                    };
-                    child.can_cancel = false;
-                    child.detail = "Batch interrupted; unsent child steps will not run".into();
-                    self.save(&mut child)?;
+                    self.workflow_interrupt_child(&mut child, acknowledge)?;
                 }
-                parent.workflow_batch[index].state = Some(child.state.clone());
-                parent.workflow_batch[index].detail = child.detail.chars().take(1024).collect();
-                parent.steps[index].state = if child.state == OperationState::Succeeded {
+                parent.workflow_batch[index].state = Some(child.state().clone());
+                parent.workflow_batch[index].detail = child.detail().chars().take(1024).collect();
+                parent.steps[index].state = if *child.state() == OperationState::Succeeded {
                     crate::StepState::Verified
-                } else if child.state == OperationState::AcknowledgedUnknown
-                    || child.state == OperationState::OutcomeUnknown
-                {
+                } else if matches!(
+                    child.state(),
+                    OperationState::AcknowledgedUnknown | OperationState::OutcomeUnknown
+                ) {
                     crate::StepState::OutcomeUnknown
                 } else {
                     crate::StepState::Failed
@@ -349,21 +307,23 @@ impl Journal {
             self.workflow_validate_links(&p)?;
             let Plan {
                 children, admitted, ..
-            } = *p.workflow_batch_plan.ok_or(Error::Journal)?;
-            if children.iter().take(admitted).any(|id| {
-                self.load(*id)
-                    .map(|r| r.is_none_or(|r| !r.state.terminal()))
+            } = p.workflow_batch_plan.as_deref().ok_or(Error::Journal)?;
+            if (0..*admitted).any(|index| {
+                self.workflow_load_child(&p, index)
+                    .map(|r| r.is_none_or(|r| !r.state().terminal()))
                     .unwrap_or(true)
             }) {
                 continue;
             }
             for child in children {
-                self.0
-                    .execute(
-                        "DELETE FROM operations WHERE id=?1 AND terminal=1",
-                        [child.to_string()],
-                    )
-                    .map_err(|_| Error::Journal)?;
+                for table in ["operations", "resource_operations"] {
+                    self.0
+                        .execute(
+                            &format!("DELETE FROM {table} WHERE id=?1 AND terminal=1"),
+                            [child.to_string()],
+                        )
+                        .map_err(|_| Error::Journal)?;
+                }
             }
             self.0
                 .execute(

@@ -439,6 +439,7 @@ fn clear_view(s: &mut State) {
     s.bulk_properties = None;
     s.bulk_delete = None;
     s.bulk_move = None;
+    s.bulk_export = None;
     s.row_menu = None;
     for (name, width) in &s.preferences.columns {
         s.table.set_column_width(name, *width);
@@ -1724,6 +1725,9 @@ pub(super) fn resource_control_connection(
     control: xenadmin_core::OperationControl,
 ) -> Option<Connection> {
     let record = s.resource_rows.iter().find(|r| r.id == id)?;
+    if record.batch_parent.is_some() {
+        return None;
+    }
     if matches!(control, xenadmin_core::OperationControl::Recheck)
         && matches!(record.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
         && !cross_pool_vm::can_recheck(s, id)
@@ -1742,7 +1746,7 @@ pub(super) fn resource_control_connection(
         .values()
         .chain(s.connection.iter())
         .find(|c| {
-            !c.is_read_only()
+            (!c.is_read_only() || record.action.read_only_export())
                 && c.latest().is_current()
                 && c.latest().inventory().is_some_and(|i| applies(i.pool_id))
         })

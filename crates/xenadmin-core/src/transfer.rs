@@ -81,6 +81,9 @@ pub enum TransferAction {
     },
 }
 impl TransferAction {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        crate::PermissionRequirements::writes(["task.create"]).with_host_dependent_steps()
+    }
     pub fn is_host_restore(&self) -> bool {
         matches!(
             self,

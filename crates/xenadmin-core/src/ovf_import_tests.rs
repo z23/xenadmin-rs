@@ -880,3 +880,114 @@ async fn ovf_collection_creates_private_disk_copies_for_each_guest() {
     assert_eq!(f.count("task.create"), 2);
     assert_eq!(f.count("task.destroy"), 2);
 }
+
+#[tokio::test]
+async fn batch_ovf_and_ova_exports_keep_each_manifest_and_child_identity() {
+    for format in [crate::OvfPackageFormat::Ovf, crate::OvfPackageFormat::Ova] {
+        let mut fixture = OvfFixture::new(OvfFault::None).await;
+        fixture.options.read_only = true;
+        fixture.export_source(false);
+        {
+            let mut records = fixture.records.lock().unwrap();
+            let mut guest = records["OpaqueRef:VM:old"].clone();
+            guest["uuid"] = json!(uuid(19));
+            guest["name_label"] = json!("Second captured guest");
+            guest["VBDs"] = json!(["OpaqueRef:VBD:second"]);
+            guest["VIFs"] = json!([]);
+            records.insert("OpaqueRef:VM:second".into(), guest);
+            let mut disk = records["OpaqueRef:VDI:source"].clone();
+            disk["uuid"] = json!(uuid(70));
+            disk["VBDs"] = json!(["OpaqueRef:VBD:second"]);
+            records.insert("OpaqueRef:VDI:second".into(), disk);
+            let mut attachment = records["OpaqueRef:VBD:source"].clone();
+            attachment["uuid"] = json!(uuid(71));
+            attachment["VM"] = json!("OpaqueRef:VM:second");
+            attachment["VDI"] = json!("OpaqueRef:VDI:second");
+            records.insert("OpaqueRef:VBD:second".into(), attachment);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let selection = crate::VmWorkflowBatch {
+            items: [9, 19]
+                .into_iter()
+                .map(|id| crate::BatchVmWorkflow {
+                    vm: uuid(id).into(),
+                    expected_state: crate::PowerState::Halted,
+                    workflow: crate::VmWorkflow::Export {
+                        expected_template: false,
+                        format: crate::VmExportFormat::Ovf { format },
+                    },
+                })
+                .collect(),
+        };
+        let outputs = [9, 19]
+            .into_iter()
+            .map(|id| {
+                (
+                    uuid(id).into(),
+                    TransferFile::destination(dir.path().join(format!(
+                        "guest-{id}.{}",
+                        if format == crate::OvfPackageFormat::Ova {
+                            "ova"
+                        } else {
+                            "ovf-package"
+                        }
+                    )))
+                    .unwrap(),
+                )
+            })
+            .collect();
+        let files = crate::vm_workflow_export::bind(&selection, outputs).unwrap();
+        let (handle, mut request) = resources::channel(
+            OperationId::new(),
+            ObservedResource {
+                pool: uuid(1).into(),
+                target: ResourceTarget::Pool(uuid(1).into()),
+                generation: 1,
+            },
+            crate::ResourceAction::VmWorkflowBatch(selection),
+            tokio::runtime::Handle::current(),
+        );
+        request.record.workflow_batch_plan.as_mut().unwrap().outputs = files;
+        let (tx, mut rx) = mpsc::channel(128);
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            request.run(
+                Arc::new(fixture.session().await),
+                dir.path().into(),
+                CancellationToken::new(),
+                tx,
+            ),
+        )
+        .await
+        .unwrap();
+        drain.abort();
+        assert_eq!(
+            handle.latest().state,
+            OperationState::Succeeded,
+            "{}",
+            handle.latest().detail
+        );
+        for (id, name) in [(9, "Exported guest & test"), (19, "Second captured guest")] {
+            let output = dir.path().join(format!(
+                "guest-{id}.{}",
+                if format == crate::OvfPackageFormat::Ova {
+                    "ova"
+                } else {
+                    "ovf-package"
+                }
+            ));
+            let source = TransferFile::ovf_source(if format == crate::OvfPackageFormat::Ovf {
+                output.join("guest.ovf")
+            } else {
+                output
+            })
+            .unwrap();
+            assert!(source.ovf().unwrap().manifest_verified);
+            assert_eq!(source.ovf().unwrap().guests[0].name, name);
+        }
+        assert_eq!(fixture.count("GET"), 2);
+        assert_eq!(fixture.count("task.destroy"), 2);
+        assert_eq!(fixture.count("VM.create"), 0);
+    }
+}

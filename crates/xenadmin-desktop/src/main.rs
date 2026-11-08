@@ -3,6 +3,7 @@ mod activity_export;
 mod alarms_view;
 mod appliance_view;
 mod bulk_delete;
+mod bulk_export;
 mod bulk_move;
 mod bulk_power;
 mod bulk_properties;
@@ -188,6 +189,7 @@ struct State {
     bulk_properties: Option<bulk_properties::Editor>,
     bulk_delete: Option<bulk_delete::Editor>,
     bulk_move: Option<bulk_move::Editor>,
+    bulk_export: Option<bulk_export::Editor>,
     row_menu: Option<inventory_menu::Context>,
     searches: Option<search_view::Workspace>,
     metrics: Option<metrics_view::MetricsUi>,
@@ -317,6 +319,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         bulk_properties: None,
         bulk_delete: None,
         bulk_move: None,
+        bulk_export: None,
         row_menu: None,
         searches: None,
         metrics: None,
@@ -861,6 +864,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= network_admin::poll(s);
     changed |= snapshot_policy_view::poll(s);
     changed |= transfers::poll(s);
+    changed |= bulk_export::poll(s);
     changed |= host_support_view::poll(s);
     changed |= host_monitoring_view::poll(s);
     changed |= local_conversion_view::poll(s);
@@ -1206,7 +1210,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         content = content.child(bulk_power::selection_bar(s, &k));
     } else if s.page == Page::Templates {
         content = content.child(bulk_properties::selection_bar(s, &k));
-        content = content.child(bulk_delete::button(s, &k));
+        content = content
+            .child(bulk_delete::button(s, &k))
+            .child(bulk_export::button(s, &k));
     }
     if s.demo {
         content = content.child(
@@ -1592,7 +1598,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
-    let root = if s.bulk_move.is_some() {
+    let root = if s.bulk_export.is_some() {
+        rune_kit::root(root, [bulk_export::dialog(s, &k)])
+    } else if s.bulk_move.is_some() {
         rune_kit::root(root, [bulk_move::dialog(s, &k)])
     } else if s.bulk_delete.is_some() {
         rune_kit::root(root, [bulk_delete::dialog(s, &k)])
@@ -2342,6 +2350,7 @@ fn main() -> std::process::ExitCode {
             ("batch-delete", bulk_delete::scene),
             ("lifecycle-permissions", vm_lifecycle::review_scene),
             ("batch-move", bulk_move::scene),
+            ("batch-export", bulk_export::scene),
             ("console-recovery", console_view::recovery_scene),
             ("multiple-consoles", console_windows::multiple_scene),
             ("guest-connections", |s| external_tools::scene(s, false)),

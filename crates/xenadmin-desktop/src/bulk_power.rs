@@ -173,6 +173,7 @@ pub(super) fn selection_bar(s: &State, k: &Kit) -> El {
         .flex_wrap()
         .child(bulk_delete::button(s, k))
         .child(bulk_move::button(s, k))
+        .child(bulk_export::button(s, k))
         .child(
             caption(
                 if count > 32 {

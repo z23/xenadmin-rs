@@ -155,7 +155,7 @@ impl ResourceRequest {
         self.record.state = OperationState::Tracking;
         self.record.detail = "Creating an owned disk export task".into();
         self.record.steps[index].state = StepState::Dispatching;
-        self.save(j).await?;
+        self.save_dispatch(j)?;
         let task = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.create",vec![json!(name),json!("Client-owned OVF disk export")])=>crate::resources::xapi::reply_reference(&v?)?};
         self.export_task_evidence(j, index, &task, None).await?;
         let v = s.call("task.get_record", vec![json!(task)]).await?;
@@ -179,7 +179,7 @@ impl ResourceRequest {
         self.reload(j)?;
         if self.stop_before_dispatch() {
             self.save(j).await?;
-            self.export_cleanup_task(s, index).await;
+            self.export_cleanup_task(j, s, index).await;
             return Ok(());
         }
         if self.record.state == OperationState::OutcomeUnknown {
@@ -197,7 +197,7 @@ impl ResourceRequest {
         self.reload(j)?;
         if self.stop_before_dispatch() {
             self.save(j).await?;
-            self.export_cleanup_task(s, index).await;
+            self.export_cleanup_task(j, s, index).await;
             return Ok(());
         }
         if self.record.state == OperationState::OutcomeUnknown {
@@ -206,13 +206,13 @@ impl ResourceRequest {
         self.ovf_export_mut()?.steps[index].stream.dispatched = true;
         self.record.can_cancel = true;
         self.record.detail = "Streaming a verified source disk into the private package".into();
-        self.save(j).await?;
+        self.save_dispatch(j)?;
         let stream = self.ovf_export()?.steps[index].stream.clone();
         let meter = Arc::new(http::Meter::default());
         let result =
             http::drive(s, route, stream, meter.clone(), c, |progress| {
                 self.reload(j)?;
-                if self.record.state.terminal() {
+                if self.record.state.terminal() || self.stopped_after_recovery() {
                     return Ok(false);
                 }
                 self.record.transfer = Some(progress);
@@ -224,19 +224,53 @@ impl ResourceRequest {
                     && self.record.state != OperationState::OutcomeUnknown)
             })
             .await;
-        self.reload(j)?;
-        if self.record.state.terminal() {
-            return Ok(());
-        }
         let mut progress = meter.progress();
         if let Ok(receipt) = result {
-            self.ovf_export_mut()?.steps[index].stream.stream_receipt = Some(receipt);
+            if !self.export_stream_evidence(j, index, receipt).await? {
+                return Ok(());
+            }
             progress.stream_complete = true;
+        }
+        self.reload(j)?;
+        if self.record.state.terminal() || self.stopped_after_recovery() {
+            return Ok(());
         }
         progress.phase = "Verifying disk export task".into();
         self.record.transfer = Some(progress);
         self.save(j).await?;
         self.check_ovf_export_disk(j, s, c, index).await
+    }
+    async fn export_stream_evidence(
+        &mut self,
+        j: &mut Journal,
+        index: usize,
+        receipt: files::Receipt,
+    ) -> Result<bool, Error> {
+        for _ in 0..16 {
+            self.reload(j)?;
+            let stream = &mut self
+                .ovf_export_mut()?
+                .steps
+                .get_mut(index)
+                .ok_or(Error::Journal)?
+                .stream;
+            if stream
+                .stream_receipt
+                .as_ref()
+                .is_some_and(|old| old != &receipt)
+            {
+                return Err(Error::TransferConflict);
+            }
+            stream.stream_receipt = Some(receipt.clone());
+            match self.save(j).await {
+                Err(Error::JournalChanged) => continue,
+                Err(error) => return Err(error),
+                Ok(()) => {
+                    return Ok(!self.record.state.terminal() && !self.stopped_after_recovery());
+                }
+            }
+        }
+        Err(Error::JournalChanged)
     }
     async fn export_task_evidence(
         &mut self,
@@ -264,6 +298,41 @@ impl ResourceRequest {
         }
         Err(Error::JournalChanged)
     }
+    async fn export_outcome_evidence(
+        &mut self,
+        j: &mut Journal,
+        index: usize,
+        task: Uuid,
+        status: &str,
+    ) -> Result<bool, Error> {
+        for _ in 0..16 {
+            self.reload(j)?;
+            let stream = &mut self
+                .ovf_export_mut()?
+                .steps
+                .get_mut(index)
+                .ok_or(Error::Journal)?
+                .stream;
+            if stream.task_uuid != Some(task) {
+                return Err(Error::TransferConflict);
+            }
+            match status {
+                "success" => stream.task_success = true,
+                "failure" => stream.task_failed = true,
+                "cancelled" => stream.task_cancelled = true,
+                "pending" | "cancelling" => {}
+                _ => return Err(Error::TransferConflict),
+            }
+            match self.save(j).await {
+                Err(Error::JournalChanged) => continue,
+                Err(error) => return Err(error),
+                Ok(()) => {
+                    return Ok(!self.record.state.terminal() && !self.stopped_after_recovery());
+                }
+            }
+        }
+        Err(Error::JournalChanged)
+    }
     async fn check_ovf_export_disk(
         &mut self,
         j: &mut Journal,
@@ -273,7 +342,7 @@ impl ResourceRequest {
     ) -> Result<(), Error> {
         loop {
             self.reload(j)?;
-            if self.record.state.terminal() {
+            if self.record.state.terminal() || self.stopped_after_recovery() {
                 return Ok(());
             }
             let st = &self.ovf_export()?.steps[index];
@@ -290,26 +359,19 @@ impl ResourceRequest {
             let id = st.stream.task_uuid.ok_or(Error::TransferConflict)?;
             let value = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.get_record",vec![json!(task)])=>v?};
             self.reload(j)?;
-            if self.record.state.terminal() {
-                return Ok(());
-            }
             if value["uuid"].as_str().and_then(|v| v.parse::<Uuid>().ok()) != Some(id) {
                 return Err(Error::TransferConflict);
             }
-            let p = &mut self.ovf_export_mut()?.steps[index].stream;
-            match value["status"].as_str() {
-                Some("success") => p.task_success = true,
-                Some("failure") => p.task_failed = true,
-                Some("cancelled") => p.task_cancelled = true,
-                Some("pending" | "cancelling") => {}
-                _ => return Err(Error::TransferConflict),
+            let status = value["status"].as_str().ok_or(Error::TransferConflict)?;
+            if !self.export_outcome_evidence(j, index, id, status).await? {
+                return Ok(());
             }
-            self.save(j).await?;
             let st = &self.ovf_export()?.steps[index];
             if st.stream.task_success || st.stream.task_failed || st.stream.task_cancelled {
                 break;
             }
             if self.record.cancel_requested
+                && self.record.batch_parent.is_none()
                 && !st.cancel_dispatched
                 && value["allowed_operations"]
                     .as_array()
@@ -337,20 +399,33 @@ impl ResourceRequest {
         let st = &self.ovf_export()?.steps[index];
         if !st.stream.task_success || st.stream.stream_receipt.is_none() {
             self.export_partial(j,"Host export ended without a complete verified local disk; no final package was published").await?;
-            self.export_cleanup_task(s, index).await;
+            self.export_cleanup_task(j, s, index).await;
             return Ok(());
         }
         self.verify_export_capture(s).await?;
         let stream = st.stream.clone();
         let size = self.ovf_export()?.captured.disks[index].size;
-        tokio::task::spawn_blocking(move || {
+        let publication = tokio::task::spawn_blocking(move || {
             files::validate_disk_export(&stream, crate::DiskImageFormat::Vhd, size)?;
-            files::finalize(&stream)
+            files::prepare_publication(&stream)
         })
         .await
         .map_err(|_| Error::TransferFile)??;
         self.reload(j)?;
-        if self.record.state.terminal() {
+        if self.record.state.terminal() || self.stopped_after_recovery() {
+            return Ok(());
+        }
+        self.record.state = OperationState::Verifying;
+        self.save(j).await?;
+        if self.reconcile && self.record.batch_parent.is_some() {
+            publication.verify_existing()?;
+        } else {
+            j.ovf_publication_guard(&self.record, self.reconcile, Some(index), c, || {
+                publication.publish()
+            })?;
+        }
+        self.reload(j)?;
+        if self.record.state.terminal() || self.stopped_after_recovery() {
             return Ok(());
         }
         self.ovf_export_mut()?.steps[index].complete = true;
@@ -359,18 +434,21 @@ impl ResourceRequest {
             self.record.state = OperationState::Preparing;
         }
         self.save(j).await?;
-        self.export_cleanup_task(s, index).await;
+        self.export_cleanup_task(j, s, index).await;
         Ok(())
     }
     async fn export_partial(&mut self, j: &mut Journal, message: &str) -> Result<(), Error> {
         self.reload(j)?;
-        if self.record.state.terminal() {
+        if self.record.state.terminal() || self.stopped_after_recovery() {
             return Ok(());
         }
         self.record.state = OperationState::PartiallyCompleted;
         self.record.can_cancel = false;
         self.record.detail = message.into();
         self.save(j).await?;
+        if self.record.batch_parent.is_some() && self.reconcile {
+            return Ok(());
+        }
         let plan = self.transfer_plan()?.clone();
         tokio::task::spawn_blocking(move || {
             output::cleanup(&plan);
@@ -380,7 +458,10 @@ impl ResourceRequest {
         .map_err(|_| Error::TransferFile)?;
         Ok(())
     }
-    async fn export_cleanup_task(&self, s: &Session, index: usize) {
+    async fn export_cleanup_task(&self, j: &mut Journal, s: &Session, index: usize) {
+        if self.record.batch_parent.is_some() && (self.reconcile || self.record.interrupted) {
+            return;
+        }
         if let Ok(p) = self.ovf_export()
             && let Some(st) = p.steps.get(index)
             && let Some(task) = &st.task
@@ -392,6 +473,9 @@ impl ResourceRequest {
             .await
             && v["uuid"].as_str().and_then(|v| v.parse::<Uuid>().ok()) == Some(id)
         {
+            if j.workflow_child_stopped(self.record.id).unwrap_or(true) {
+                return;
+            }
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),
                 s.call("task.destroy", vec![json!(task)]),
@@ -427,20 +511,17 @@ impl ResourceRequest {
             || self.record.state == OperationState::OutcomeUnknown
             || self.record.cancel_requested
             || c.is_cancelled()
+            || j.workflow_child_stopped(self.record.id)?
         {
             return Ok(false);
         }
         let plan = self.transfer_plan()?.clone();
-        let cancel = c.clone();
-        match tokio::task::spawn_blocking(move || {
-            if cancel.is_cancelled() {
-                return Err(Error::Closed);
-            }
-            files::finalize(&plan)
-        })
-        .await
-        .map_err(|_| Error::TransferFile)?
-        {
+        let publication = tokio::task::spawn_blocking(move || files::prepare_publication(&plan))
+            .await
+            .map_err(|_| Error::TransferFile)??;
+        match j.ovf_publication_guard(&self.record, self.reconcile, None, c, || {
+            publication.publish()
+        }) {
             Err(Error::Closed) => Ok(false),
             result => {
                 result?;
@@ -460,7 +541,7 @@ impl ResourceRequest {
         self.verify_export_capture(s).await?;
         let (_, format) = self.export_action()?;
         self.reload(j)?;
-        if self.record.state.terminal() {
+        if self.record.state.terminal() || self.stopped_after_recovery() {
             return Ok(());
         }
         if !self.ovf_export()?.published {
@@ -506,6 +587,12 @@ impl ResourceRequest {
                         .export_partial(j, "Export stopped before final package publication")
                         .await;
                 }
+                if format == OvfPackageFormat::Ovf {
+                    let plan = self.transfer_plan()?.clone();
+                    j.ovf_publication_guard(&self.record, self.reconcile, None, c, || {
+                        output::finalize_directory(&plan)
+                    })?;
+                }
             }
             self.reload(j)?;
             self.ovf_export_mut()?.published = true;
@@ -534,7 +621,7 @@ impl ResourceRequest {
         c: &CancellationToken,
     ) -> Result<(), Error> {
         self.reload(j)?;
-        if self.record.state.terminal() {
+        if self.record.state.terminal() || self.stopped_after_recovery() {
             return Ok(());
         }
         for index in 0..self.ovf_export()?.steps.len() {
@@ -544,6 +631,27 @@ impl ResourceRequest {
                     return Ok(());
                 }
             }
+        }
+        if self.record.batch_parent.is_some() {
+            let (_, format) = self.export_action()?;
+            let plan = self.transfer_plan()?.clone();
+            tokio::task::spawn_blocking(move || {
+                output::verify_published(&plan, format, &AtomicBool::new(false))
+            })
+            .await
+            .map_err(|_| Error::TransferFile)??;
+            self.reload(j)?;
+            if self.record.state.terminal() || self.stopped_after_recovery() {
+                return Ok(());
+            }
+            self.ovf_export_mut()?.published = true;
+            self.record.state = OperationState::Succeeded;
+            self.record.detail="Previously published package identity and contents verified; no file was published during recheck".into();
+            self.record.can_cancel = false;
+            for step in &mut self.record.steps {
+                step.state = StepState::Verified;
+            }
+            return self.save(j).await;
         }
         self.finish_ovf_export(j, s, c).await
     }
@@ -584,6 +692,22 @@ mod tests {
             let mut journal = Journal::open(directory.path()).unwrap();
             journal.resource_admit(&mut request.record).unwrap();
             files::create_output(request.transfer_plan_mut().unwrap(), id).unwrap();
+            let directory = output::create(&request.transfer_plan().unwrap().file, id).unwrap();
+            request.transfer_plan_mut().unwrap().ovf_export = Some(Box::new(ExportPlan {
+                captured: export::Captured {
+                    summary: crate::OvfSummary {
+                        guests: vec![],
+                        disks: vec![],
+                        networks: vec![],
+                        manifest_verified: true,
+                    },
+                    disks: vec![],
+                },
+                directory,
+                task_baseline: vec![],
+                steps: vec![],
+                published: false,
+            }));
             request.record.state = OperationState::Verifying;
             request.save(&mut journal).await.unwrap();
             let mut output = files::output(request.transfer_plan().unwrap()).unwrap();

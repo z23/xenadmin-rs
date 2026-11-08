@@ -354,6 +354,7 @@ impl ResourceAction {
             }
             Self::NetworkTopology(op) => op.permission_requirements(),
             Self::CloudInit(op) => op.permission_requirements(),
+            Self::Transfer(action) => action.permission_requirements(),
             Self::Alarm(op) => Required::writes([match op {
                 crate::AlarmOperation::Refresh { .. } => "host.call_plugin".into(),
                 _ => format!("{}.set_other_config", target.class()),
@@ -434,8 +435,9 @@ impl ResourceAction {
         }
     }
 
-    pub(crate) fn read_only_export(&self) -> bool {
+    pub fn read_only_export(&self) -> bool {
         matches!(self, Self::Transfer(action) if action.is_export())
+            || matches!(self, Self::VmWorkflowBatch(selection) if selection.is_export())
     }
     pub fn label(&self) -> &'static str {
         match self {
@@ -450,6 +452,7 @@ impl ResourceAction {
             Self::VmWorkflowBatch(selection) => {
                 match selection.items.first().map(|i| &i.workflow) {
                     Some(crate::VmWorkflow::Move(_)) => "Move selected VMs",
+                    Some(crate::VmWorkflow::Export { .. }) => "Export selected VMs",
                     _ => "Delete selected VMs",
                 }
             }
@@ -752,6 +755,8 @@ impl ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
     #[serde(default)]
+    pub batch_parent: Option<OperationId>,
+    #[serde(default)]
     pub management_ipv6_bond: Option<crate::ManagementIpv6BondEvidence>,
     #[serde(skip)]
     pub(crate) management_ipv6_bond_plan: Option<Box<crate::management_ipv6_bond::Plan>>,
@@ -889,7 +894,7 @@ impl ResourceOperationRecord {
         self.revision
     }
     pub fn can_recheck(&self) -> bool {
-        !self.state.terminal()
+        self.batch_parent.is_none() && !self.state.terminal()
     }
     pub fn supersedes(&self, other: &Self) -> bool {
         (
@@ -927,6 +932,7 @@ pub(crate) fn channel(
     runtime: tokio::runtime::Handle,
 ) -> (ResourceOperation, ResourceRequest) {
     let mut record = ResourceOperationRecord {
+        batch_parent: None,
         workflow_batch_plan: None,
         workflow_batch: Vec::new(),
         snapshot_preview_plan: None,

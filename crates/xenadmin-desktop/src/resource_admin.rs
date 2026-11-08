@@ -285,7 +285,7 @@ fn review(s: &mut State) {
             Kind::Acknowledge(id) => {
                 let record=s.resource_rows.iter().find(|r|r.id==id&&r.applies_to_pool(editor.pool)).ok_or("The operation is no longer available for this pool")?;
                 review.lines.push(format!("{} · {}",record.action.label(),record.id));
-                if !record.workflow_batch.is_empty() { review.lines.push("Acknowledgement releases the batch and its active unknown child together. It does not prove deletion, cancel host work or delete remaining targets.".into()); }
+                if !record.workflow_batch.is_empty() { review.lines.push("Acknowledgement releases the batch and its active unknown child together. It does not prove completion, cancel host work or execute remaining targets.".into()); }
                 review.lines.push(if let Some(peer)=record.peer_pool() {
                     format!("This releases write reservations for BOTH pools: {} and {}. The server outcome remains unverified. Inspect both pools before continuing.",record.pool,peer)
                 } else {"This releases the pool's write guard without establishing the server outcome. Inspect the affected resources and any host task before continuing.".into()});
@@ -323,7 +323,10 @@ fn review(s: &mut State) {
     }
 }
 fn current(s: &State, editor: &Editor) -> bool {
-    s.can_mutate()
+    (s.can_mutate()
+        || matches!(editor.kind, Kind::Acknowledge(id) if s.resource_rows.iter().any(|r|r.id == id && r.batch_parent.is_none() && r.action.read_only_export()))
+            && s.connection.is_some()
+            && !s.demo)
         && editor.observed.is_some()
         && editor.observed
             == s.snapshot
@@ -550,17 +553,23 @@ pub(super) fn buttons(s: &State, k: &Kit) -> El {
 }
 fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
     let mut view = col().gap(8.0);
-    let can_control = s.can_mutate() && s.inventory.as_ref().is_some_and(|i| i.pool_id == pool);
     for record in s
         .resource_rows
         .iter()
         .rev()
         .filter(|r| {
-            r.applies_to_pool(pool)
+            r.batch_parent.is_none()
+                && r.applies_to_pool(pool)
                 && (r.target == target || matches!(target, ResourceTarget::Pool(_)))
         })
         .take(12)
     {
+        let can_control = profiles_view::resource_control_connection(
+            s,
+            record.id,
+            OperationControl::RequestCancellation,
+        )
+        .is_some();
         view = view
             .child(heading(
                 format!("{} · {:?}", record.action.label(), record.state),

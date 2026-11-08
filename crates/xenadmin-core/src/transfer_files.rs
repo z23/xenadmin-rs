@@ -284,6 +284,17 @@ pub(crate) struct Publication {
     existing: bool,
 }
 impl Publication {
+    pub(crate) fn verify_existing(&self) -> Result<(), Error> {
+        if !self.existing {
+            return Err(Error::TransferFile);
+        }
+        let dir = parent_handle(&self.file)?;
+        let named = open_in(&dir, &self.file.path, false, false)?;
+        if Identity::from(&named.metadata().map_err(|_| Error::TransferFile)?) != self.identity {
+            return Err(Error::TransferFileChanged);
+        }
+        Ok(())
+    }
     /// Only short identity checks and the atomic rename happen at the journal fence.
     pub(crate) fn publish(self) -> Result<(), Error> {
         let dir = parent_handle(&self.file)?;
@@ -342,9 +353,6 @@ pub(crate) fn prepare_publication(plan: &Plan) -> Result<Publication, Error> {
         identity,
         existing,
     })
-}
-pub(crate) fn finalize(plan: &Plan) -> Result<(), Error> {
-    prepare_publication(plan)?.publish()
 }
 pub(crate) fn cleanup(plan: &Plan) {
     if let (Some(path), Some(expected)) = (&plan.temporary, &plan.temporary_identity)

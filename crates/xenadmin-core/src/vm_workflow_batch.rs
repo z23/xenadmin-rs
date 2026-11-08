@@ -8,6 +8,10 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VmWorkflow {
+    Export {
+        expected_template: bool,
+        format: VmExportFormat,
+    },
     Move(crate::VmMigration),
     Delete {
         expected_template: bool,
@@ -15,16 +19,23 @@ pub enum VmWorkflow {
         snapshots: Vec<SnapshotDeletionSelection>,
     },
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VmExportFormat {
+    Xva { compression: crate::XvaCompression },
+    Ovf { format: crate::OvfPackageFormat },
+}
 impl VmWorkflow {
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::Delete { .. } => "Delete VM",
             Self::Move(_) => "Move VM",
+            Self::Export { .. } => "Export VM",
         }
     }
     pub(crate) fn action(&self) -> OperationAction {
         match self {
             Self::Move(operation) => OperationAction::Migration(operation.clone()),
+            Self::Export { .. } => unreachable!("resource transfer children have no VM action"),
             Self::Delete {
                 expected_template,
                 disks,
@@ -34,6 +45,36 @@ impl VmWorkflow {
                 disks: disks.clone(),
                 snapshots: snapshots.clone(),
             }),
+        }
+    }
+    pub(crate) fn transfer(&self, vm: VmId) -> Option<crate::TransferAction> {
+        let Self::Export {
+            expected_template,
+            format,
+        } = self
+        else {
+            return None;
+        };
+        let source = crate::ExportSource::Vm {
+            vm,
+            expected_template: *expected_template,
+        };
+        Some(match format {
+            VmExportFormat::Xva { compression } => crate::TransferAction::ExportXva {
+                source,
+                compression: *compression,
+            },
+            VmExportFormat::Ovf { format } => crate::TransferAction::ExportOvf {
+                source,
+                format: *format,
+            },
+        })
+    }
+    pub(crate) fn kind(&self) -> &'static str {
+        if matches!(self, Self::Export { .. }) {
+            "resource"
+        } else {
+            "vm"
         }
     }
 }
@@ -48,6 +89,13 @@ pub struct VmWorkflowBatch {
     pub items: Vec<BatchVmWorkflow>,
 }
 impl VmWorkflowBatch {
+    pub(crate) fn is_export(&self) -> bool {
+        !self.items.is_empty()
+            && self
+                .items
+                .iter()
+                .all(|i| matches!(i.workflow, VmWorkflow::Export { .. }))
+    }
     pub(crate) fn validate(&self, target: ResourceTarget) -> Result<(), Error> {
         let mut identities = BTreeSet::new();
         if !matches!(target, ResourceTarget::Pool(_)) || !(1..=32).contains(&self.items.len()) {
@@ -77,6 +125,9 @@ impl VmWorkflowBatch {
             if item.expected_state != PowerState::Halted {
                 return Err(Error::InvalidResourceCommand);
             }
+            if matches!(item.workflow, VmWorkflow::Export { .. }) {
+                continue;
+            }
             let OperationAction::Lifecycle(op) = item.workflow.action() else {
                 return Err(Error::InvalidResourceCommand);
             };
@@ -105,6 +156,7 @@ impl VmWorkflowBatch {
         let mut writes = Vec::new();
         for item in &self.items {
             match &item.workflow {
+                VmWorkflow::Export { .. } => {}
                 VmWorkflow::Move(operation) => writes.extend(
                     operation
                         .permission_requirements()
@@ -120,7 +172,11 @@ impl VmWorkflowBatch {
         }) {
             writes.push("VDI.destroy".to_owned());
         }
-        crate::PermissionRequirements::writes(writes)
+        if self.is_export() {
+            crate::PermissionRequirements::writes(["task.create"]).with_host_dependent_steps()
+        } else {
+            crate::PermissionRequirements::writes(writes)
+        }
     }
 }
 
@@ -132,17 +188,28 @@ pub struct VmWorkflowResult {
     pub state: Option<OperationState>,
     pub detail: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
+    #[serde(default)]
+    pub outputs: Vec<crate::TransferFile>,
     pub selection: VmWorkflowBatch,
     pub children: Vec<OperationId>,
     pub admitted: usize,
+}
+impl std::fmt::Debug for Plan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkflowBatchPlan")
+            .field("selection", &self.selection)
+            .field("admitted", &self.admitted)
+            .finish_non_exhaustive()
+    }
 }
 impl Plan {
     pub(crate) fn new(selection: VmWorkflowBatch) -> Self {
         let children = selection.items.iter().map(|_| OperationId::new()).collect();
         Self {
+            outputs: Vec::new(),
             selection,
             children,
             admitted: 0,
@@ -150,6 +217,7 @@ impl Plan {
     }
     pub(crate) fn extends(&self, old: &Self) -> bool {
         self.selection == old.selection
+            && self.outputs == old.outputs
             && self.children == old.children
             && self.admitted >= old.admitted
     }
@@ -180,7 +248,10 @@ pub(crate) fn validate_record(r: &ResourceOperationRecord) -> Result<(), Error> 
         };
     };
     selection.validate(r.target).map_err(|_| Error::Journal)?;
+    crate::vm_workflow_export::validate(&p.outputs).map_err(|_| Error::Journal)?;
     if p.selection != *selection
+        || (selection.is_export() && p.outputs.len() != selection.items.len())
+        || (!selection.is_export() && !p.outputs.is_empty())
         || p.children.len() != selection.items.len()
         || p.children.iter().collect::<BTreeSet<_>>().len() != p.children.len()
         || p.children.contains(&r.id)

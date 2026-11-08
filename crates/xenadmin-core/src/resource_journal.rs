@@ -3,6 +3,65 @@ use crate::{OperationControl, StepState, operations::Journal};
 use rusqlite::{OptionalExtension, params};
 
 impl Journal {
+    pub(crate) fn ovf_publication_guard<T>(
+        &self,
+        expected: &ResourceOperationRecord,
+        reconcile: bool,
+        disk: Option<usize>,
+        cancel: &tokio_util::sync::CancellationToken,
+        publish: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.0
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|_| Error::Journal)?;
+        let result = (|| {
+            let current = self.resource_load(expected.id)?.ok_or(Error::Journal)?;
+            if current.revision() != expected.revision()
+                || current.pool != expected.pool
+                || current.action != expected.action
+                || current.target != expected.target
+                || current.transfer_plan != expected.transfer_plan
+                || current.state != OperationState::Verifying
+                || current.cancel_requested
+                || current.interrupted && !reconcile
+                || self.workflow_child_stopped(current.id)?
+                || !matches!(
+                    current.action,
+                    ResourceAction::Transfer(crate::TransferAction::ExportOvf { .. })
+                )
+                || current
+                    .transfer_plan
+                    .as_ref()
+                    .and_then(|p| p.ovf_export.as_ref())
+                    .is_none_or(|p| match disk {
+                        Some(index) => p.steps.get(index).is_none_or(|s| {
+                            !s.stream.task_success || s.stream.stream_receipt.is_none()
+                        }),
+                        None => p.steps.iter().any(|s| {
+                            !s.complete
+                                || !s.stream.task_success
+                                || s.stream.stream_receipt.is_none()
+                        }),
+                    })
+            {
+                return Err(Error::JournalChanged);
+            }
+            if cancel.is_cancelled() {
+                return Err(Error::Closed);
+            }
+            publish()
+        })();
+        match result {
+            Ok(v) => {
+                self.0.execute_batch("COMMIT").map_err(|_| Error::Journal)?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.0.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
     pub(crate) fn transfer_publication_guard<T>(
         &self,
         expected: &ResourceOperationRecord,
@@ -23,6 +82,7 @@ impl Journal {
                 || current.state != OperationState::Verifying
                 || current.cancel_requested
                 || current.interrupted && !reconcile
+                || self.workflow_child_stopped(current.id)?
                 || !matches!(&current.action,crate::ResourceAction::Transfer(action) if action.is_export())
                 || current.transfer_plan.as_ref().is_none_or(|p| {
                     !p.task_success || p.stream_invalid || p.stream_receipt.is_none()
@@ -105,216 +165,228 @@ impl Journal {
         &self,
         id: OperationId,
     ) -> Result<Option<ResourceOperationRecord>, Error> {
+        self.resource_load_linked(id, true)
+    }
+    pub(crate) fn resource_load_linked(
+        &self,
+        id: OperationId,
+        links: bool,
+    ) -> Result<Option<ResourceOperationRecord>, Error> {
         let data:Option<(String,Option<String>,Option<String>,u64)>=self.0.query_row("SELECT payload,task,result_reference,revision FROM resource_operations WHERE id=?1",[id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional().map_err(|_|Error::Journal)?;
-        data.map(|(payload, task, result_reference, revision)| {
-            let payload: serde_json::Value =
-                serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
-            let management_ipv6_bond_plan = payload
-                .get("management_ipv6_bond_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let management_network_plan = payload
-                .get("management_network_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let storage_graph_plan = payload
-                .get("storage_graph_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let storage_maintenance_plan = payload
-                .get("storage_maintenance_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let disk_plan = payload
-                .get("disk_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let network_fabric_plan = payload
-                .get("network_fabric_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let network_topology_plan = payload
-                .get("network_topology_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let workflow_batch_plan = payload
-                .get("workflow_batch_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let power_batch_plan = payload
-                .get("power_batch_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let properties_batch_plan = payload
-                .get("properties_batch_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let crashdump_deletion = payload
-                .get("crashdump_deletion")
-                .filter(|v| !v.is_null())
-                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
-                .transpose()?;
-            let snapshot_preview_plan = payload
-                .get("snapshot_preview_plan")
-                .filter(|v| !v.is_null())
-                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
-                .transpose()?;
-            let root_password_plan = payload
-                .get("root_password_plan")
-                .filter(|v| !v.is_null())
-                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
-                .transpose()?;
-            let host_power_plan = payload
-                .get("host_power_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let host_plan = payload
-                .get("host_plan")
-                .filter(|v| !v.is_null())
-                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
-                .transpose()?;
-            let transfer_plan = payload
-                .get("transfer_plan")
-                .filter(|value| !value.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let snapshot_policy_evidence = payload
-                .get("snapshot_policy_evidence")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let cross_pool_plan = payload
-                .get("cross_pool_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let storage_auth_plan = payload
-                .get("storage_auth_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let cloud_init_plan = payload
-                .get("cloud_init_plan")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let storage_secret_cleanup = payload
-                .get("storage_secret_cleanup")
-                .filter(|v| !v.is_null())
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| Error::Journal)?;
-            let mut record: ResourceOperationRecord =
-                serde_json::from_value(payload).map_err(|_| Error::Journal)?;
-            super::alarms::validate_receipts(&record)?;
-            if !record.state.terminal() {
-                record
-                    .action
-                    .validate(record.target)
+        let record = data
+            .map(|(payload, task, result_reference, revision)| {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+                let management_ipv6_bond_plan = payload
+                    .get("management_ipv6_bond_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
                     .map_err(|_| Error::Journal)?;
-                if matches!(record.target,ResourceTarget::Pool(pool) if pool!=record.pool) {
+                let management_network_plan = payload
+                    .get("management_network_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let storage_graph_plan = payload
+                    .get("storage_graph_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let storage_maintenance_plan = payload
+                    .get("storage_maintenance_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let disk_plan = payload
+                    .get("disk_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let network_fabric_plan = payload
+                    .get("network_fabric_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let network_topology_plan = payload
+                    .get("network_topology_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let workflow_batch_plan = payload
+                    .get("workflow_batch_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let power_batch_plan = payload
+                    .get("power_batch_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let properties_batch_plan = payload
+                    .get("properties_batch_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let crashdump_deletion = payload
+                    .get("crashdump_deletion")
+                    .filter(|v| !v.is_null())
+                    .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                    .transpose()?;
+                let snapshot_preview_plan = payload
+                    .get("snapshot_preview_plan")
+                    .filter(|v| !v.is_null())
+                    .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                    .transpose()?;
+                let root_password_plan = payload
+                    .get("root_password_plan")
+                    .filter(|v| !v.is_null())
+                    .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                    .transpose()?;
+                let host_power_plan = payload
+                    .get("host_power_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let host_plan = payload
+                    .get("host_plan")
+                    .filter(|v| !v.is_null())
+                    .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                    .transpose()?;
+                let transfer_plan = payload
+                    .get("transfer_plan")
+                    .filter(|value| !value.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let snapshot_policy_evidence = payload
+                    .get("snapshot_policy_evidence")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let cross_pool_plan = payload
+                    .get("cross_pool_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let storage_auth_plan = payload
+                    .get("storage_auth_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let cloud_init_plan = payload
+                    .get("cloud_init_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let storage_secret_cleanup = payload
+                    .get("storage_secret_cleanup")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                let mut record: ResourceOperationRecord =
+                    serde_json::from_value(payload).map_err(|_| Error::Journal)?;
+                super::alarms::validate_receipts(&record)?;
+                if !record.state.terminal() {
+                    record
+                        .action
+                        .validate(record.target)
+                        .map_err(|_| Error::Journal)?;
+                    if matches!(record.target,ResourceTarget::Pool(pool) if pool!=record.pool) {
+                        return Err(Error::Journal);
+                    }
+                }
+                record.management_ipv6_bond_plan = management_ipv6_bond_plan;
+                record.management_network_plan = management_network_plan;
+                record.storage_graph_plan = storage_graph_plan;
+                record.storage_maintenance_plan = storage_maintenance_plan;
+                record.disk_plan = disk_plan;
+                record.network_fabric_plan = network_fabric_plan;
+                record.network_topology_plan = network_topology_plan;
+                record.workflow_batch_plan = workflow_batch_plan;
+                record.power_batch_plan = power_batch_plan;
+                record.properties_batch_plan = properties_batch_plan;
+                record.storage_auth_plan = storage_auth_plan;
+                record.storage_secret_cleanup = storage_secret_cleanup;
+                record.crashdump_deletion = crashdump_deletion;
+                record.host_plan = host_plan;
+                record.host_power_plan = host_power_plan;
+                record.root_password_plan = root_password_plan;
+                record.snapshot_preview_plan = snapshot_preview_plan;
+                record.snapshot_policy_evidence = snapshot_policy_evidence;
+                record.transfer_plan = transfer_plan;
+                record.cross_pool_plan = cross_pool_plan;
+                record.cloud_init_plan = cloud_init_plan;
+                record.task = task;
+                record.result_reference = result_reference;
+                record.revision = revision;
+                record.interrupted |= record.state == OperationState::OutcomeUnknown;
+                // Terminal rejection before preparation may legitimately have no plan.
+                if !record.state.terminal() || record.power_batch_plan.is_some() {
+                    crate::power_batch::validate_record(&record)?;
+                }
+                crate::properties_batch::validate_record(&record)?;
+
+                if record.id != id {
                     return Err(Error::Journal);
                 }
-            }
-            record.management_ipv6_bond_plan = management_ipv6_bond_plan;
-            record.management_network_plan = management_network_plan;
-            record.storage_graph_plan = storage_graph_plan;
-            record.storage_maintenance_plan = storage_maintenance_plan;
-            record.disk_plan = disk_plan;
-            record.network_fabric_plan = network_fabric_plan;
-            record.network_topology_plan = network_topology_plan;
-            record.workflow_batch_plan = workflow_batch_plan;
-            record.power_batch_plan = power_batch_plan;
-            record.properties_batch_plan = properties_batch_plan;
-            record.storage_auth_plan = storage_auth_plan;
-            record.storage_secret_cleanup = storage_secret_cleanup;
-            record.crashdump_deletion = crashdump_deletion;
-            record.host_plan = host_plan;
-            record.host_power_plan = host_power_plan;
-            record.root_password_plan = root_password_plan;
-            record.snapshot_preview_plan = snapshot_preview_plan;
-            record.snapshot_policy_evidence = snapshot_policy_evidence;
-            record.transfer_plan = transfer_plan;
-            record.cross_pool_plan = cross_pool_plan;
-            record.cloud_init_plan = cloud_init_plan;
-            record.task = task;
-            record.result_reference = result_reference;
-            record.revision = revision;
-            record.interrupted |= record.state == OperationState::OutcomeUnknown;
-            // Terminal rejection before preparation may legitimately have no plan.
-            if !record.state.terminal() || record.power_batch_plan.is_some() {
-                crate::power_batch::validate_record(&record)?;
-            }
-            crate::properties_batch::validate_record(&record)?;
-
-            if record.id != id {
-                return Err(Error::Journal);
-            }
-            crate::cross_pool_backend::validate_record(&record)?;
-            crate::host_power::validate_record(&record)?;
-            super::network_fabric::validate_record(&record)?;
-            super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
-            crate::root_password::validate_record(&record)?;
-            crate::snapshot_capture::validate_record(&record)?;
-            crate::management_ipv6_bond::validate_record(&record)?;
-            super::management::validate_record(&record).map_err(|_| Error::Journal)?;
-            crate::storage_auth::validate_record(&record)?;
-            crate::storage_graph::validate_record(&record)?;
-            crate::storage_maintenance::validate_record(&record)?;
-            crate::disk_administration::validate_record(&record)?;
-            crate::cloud_init::validate_record(&record)?;
-            crate::transfer::checkpoint::validate_record(&record)?;
-            super::crashdump::validate_record(&record)?;
-            crate::host_support::restore::validate_record(&record)?;
-            crate::vm_workflow_batch::validate_record(&record)?;
-            self.workflow_validate_persisted(&record)?;
-            Ok(record)
-        })
-        .transpose()
+                crate::cross_pool_backend::validate_record(&record)?;
+                crate::host_power::validate_record(&record)?;
+                super::network_fabric::validate_record(&record)?;
+                super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
+                crate::root_password::validate_record(&record)?;
+                crate::snapshot_capture::validate_record(&record)?;
+                crate::management_ipv6_bond::validate_record(&record)?;
+                super::management::validate_record(&record).map_err(|_| Error::Journal)?;
+                crate::storage_auth::validate_record(&record)?;
+                crate::storage_graph::validate_record(&record)?;
+                crate::storage_maintenance::validate_record(&record)?;
+                crate::disk_administration::validate_record(&record)?;
+                crate::cloud_init::validate_record(&record)?;
+                crate::transfer::checkpoint::validate_record(&record)?;
+                super::crashdump::validate_record(&record)?;
+                crate::host_support::restore::validate_record(&record)?;
+                crate::vm_workflow_batch::validate_record(&record)?;
+                Ok(record)
+            })
+            .transpose()?;
+        if links && let Some(record) = &record {
+            self.workflow_validate_persisted(record)?;
+            self.workflow_validate_resource_child(record)?;
+        }
+        Ok(record)
     }
     pub(crate) fn resource_save(&self, record: &mut ResourceOperationRecord) -> Result<(), Error> {
         super::network_fabric::validate_record(record)?;
@@ -352,6 +424,9 @@ impl Journal {
         super::crashdump::validate_record(record)?;
         crate::host_support::restore::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
+            if old.batch_parent != record.batch_parent {
+                return Err(Error::JournalChanged);
+            }
             if old.storage_graph_plan.as_ref().is_some_and(|p| {
                 record
                     .storage_graph_plan
@@ -671,9 +746,17 @@ impl Journal {
         record.revision += 1;
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn resource_admit(
         &self,
         record: &mut ResourceOperationRecord,
+    ) -> Result<bool, Error> {
+        self.resource_admit_permitted(record, None)
+    }
+    pub(crate) fn resource_admit_permitted(
+        &self,
+        record: &mut ResourceOperationRecord,
+        permit: Option<&crate::vm_workflow_batch::ChildPermit>,
     ) -> Result<bool, Error> {
         crate::storage_graph::validate_record(record)?;
         crate::storage_maintenance::validate_record(record)?;
@@ -686,9 +769,7 @@ impl Journal {
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::Journal)?;
         let result = (|| {
-            if self.workflow_owner(record.id)?.is_some() {
-                return Err(Error::OperationConflict);
-            }
+            let batch_parent = self.workflow_admit_resource_child(record, permit)?;
             if self.load(record.id)?.is_some() {
                 return Err(Error::OperationConflict);
             }
@@ -730,7 +811,9 @@ impl Journal {
                     };
                     busy |= vm_busy
                         || self.active_resources(pool)?.iter().any(|old| {
-                            old.action != ResourceAction::CancelTask && Some(old.id) != predecessor
+                            old.action != ResourceAction::CancelTask
+                                && Some(old.id) != predecessor
+                                && Some(old.id) != batch_parent
                         });
                 }
                 busy
@@ -743,6 +826,9 @@ impl Journal {
                 return Err(Error::JournalFull);
             }
             self.claim_ipv6_predecessor(record)?;
+            if let Some(permit) = permit {
+                self.workflow_mark_resource_admitted(record, permit)?;
+            }
             self.resource_save(record)?;
             self.workflow_insert_links(record)?;
             self.workflow_prune()?;
@@ -1032,6 +1118,9 @@ impl Journal {
             rows.retain(|r| r.action.read_only_export())
         }
         for record in &mut rows {
+            if record.batch_parent.is_some() {
+                continue;
+            }
             if record.state.terminal() {
                 continue;
             }

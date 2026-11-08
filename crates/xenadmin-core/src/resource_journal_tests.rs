@@ -5,6 +5,7 @@ use crate::{
 
 fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
+        batch_parent: None,
         management_ipv6_bond: None,
         management_ipv6_bond_plan: None,
         workflow_batch: Vec::new(),

@@ -1,5 +1,7 @@
 #[path = "vm_workflow_batch_journal.rs"]
 mod workflow_batch_journal;
+#[path = "vm_workflow_children.rs"]
+pub(crate) mod workflow_children;
 use crate::{Error, PoolId, VmId, xapi::Session};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};

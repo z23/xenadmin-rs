@@ -229,6 +229,18 @@ pub(super) fn overlay(s: &State, k: &Kit, base: El) -> El {
     }
     if matches!(context.scope.page, Page::Guests | Page::Templates) {
         menu = menu.item(
+            rune_kit::MenuItem::new("Export selection…")
+                .disabled(!current)
+                .on_select(|s: &mut State| {
+                    if let Some(context) = s.row_menu.take()
+                        && valid(s, &context)
+                        && selected(s) == context.selection
+                    {
+                        bulk_export::open(s);
+                    }
+                }),
+        );
+        menu = menu.item(
             rune_kit::MenuItem::new("Delete selection…")
                 .disabled(!current)
                 .on_select(|s: &mut State| {

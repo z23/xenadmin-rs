@@ -78,7 +78,9 @@ Reviewed bulk deletion reuses the single-VM deletion worker under durable parent
 ownership. Its scope and recovery evidence are recorded in the
 [batch deletion report](reports/2026-11-08-bulk-vm-deletion.md). Reviewed
 [same-pool bulk moves](reports/2026-11-08-bulk-vm-move.md) reuse those child ownership rules;
-cross-pool bulk moves and bulk export remain open.
+[bulk archive exports](reports/2026-11-08-bulk-vm-export.md) now use exact resource-transfer
+children under the same reservation. Cross-pool bulk moves and batch snapshot/checkpoint
+exports remain open.
 
 The user requested a prepared local disposable lab and deferred live tests until virtualization
 is available. No active lab has been provisioned. Actual host compatibility, guest data

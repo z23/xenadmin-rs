@@ -246,3 +246,5 @@ for conversion_scene in local-conversion local-conversion-review; do
     "$check_binary" --snap "artifacts/${conversion_scene}-${conversion_size}.png" --tree "artifacts/${conversion_scene}-${conversion_size}.json" --scene "$conversion_scene" --theme dark --size "$conversion_size" --scale 1 --at 1
   done
 done
+"$check_binary" --snap artifacts/batch-export.png --tree artifacts/batch-export.json --scene batch-export --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/batch-export-compact.png --tree artifacts/batch-export-compact.json --scene batch-export --theme dark --size 513x652 --scale 1 --at 1

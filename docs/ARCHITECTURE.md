@@ -363,15 +363,21 @@ available from the pool dialog even after the target is removed, and from the pr
 
 Journal version 4 adds normalized parent/child links for reviewed VM workflow batches.
 A pool-scoped parent reserves the pool while its exact captured children run serially through
-the existing VM workers. Only a private permit, checked against the immutable typed action,
-VM, pool, ordinal and child ID under the admission transaction, can exclude that parent from
+the existing VM or resource-transfer workers. Only a private permit, checked against the
+immutable typed action, journal kind, VM, pool, ordinal, child ID and private output selection
+under the admission transaction, can exclude that parent from
 the child's conflict check. Public child controls and independent recovery workers are refused.
 Recovery and acknowledgement fence parent and active child together; recheck reads admitted
 children without starting the remainder. Terminal groups are pruned together, and unresolved
 children retain their parent evidence. Stop finishes the current child and skips the rest.
-Reviewed deletion and same-pool VM moves share this ownership mechanism; see the
+Reviewed deletion, same-pool moves and local archive exports share this ownership mechanism; see the
 [batch deletion](reports/2026-11-08-bulk-vm-deletion.md) and
-[batch move](reports/2026-11-08-bulk-vm-move.md) reports. Migration preflight is read-only;
+[batch move](reports/2026-11-08-bulk-vm-move.md) and
+[batch export](reports/2026-11-08-bulk-vm-export.md) reports. Export parents keep local paths
+private, check every destination before starting, and allow read-only profiles. Their rechecks
+verify existing published files only: no rename, download, task cancellation or pending child
+can occur. Short publication transactions fence the final rename against interruption.
+Migration preflight is read-only;
 receiver-token preparation belongs to the admitted child. Migration evidence has its own
 monotonic interruption fence, so recheck can observe final placement without permitting
 an original worker to submit another setter or batch target.

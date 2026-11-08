@@ -42,8 +42,11 @@ pub use permissions::{
 };
 pub use power_batch::{BatchVmPower, VmPowerBatch};
 pub use properties_batch::{BatchVmProperties, VmPropertiesBatch};
-pub use vm_workflow_batch::{BatchVmWorkflow, VmWorkflow, VmWorkflowBatch, VmWorkflowResult};
+pub use vm_workflow_batch::{
+    BatchVmWorkflow, VmExportFormat, VmWorkflow, VmWorkflowBatch, VmWorkflowResult,
+};
 mod host_power;
+mod vm_workflow_export;
 pub use host_power::{
     HostPowerConfiguration, HostPowerOperation, HostPowerPassword, HostPowerSecretEvidence,
     HostPowerSettings,

@@ -1,5 +1,5 @@
 use super::*;
-use crate::{OperationAction, vm_workflow_batch::Plan};
+use crate::{OperationAction, operations::workflow_children::WorkflowChild};
 
 impl ResourceRequest {
     pub(super) async fn execute_workflow_batch(
@@ -21,9 +21,22 @@ impl ResourceRequest {
             .workflow_batch_plan
             .clone()
             .ok_or(Error::Journal)?;
+        if plan.selection.is_export() {
+            let outputs = plan.outputs.clone();
+            tokio::task::spawn_blocking(move || crate::vm_workflow_export::preflight(&outputs))
+                .await
+                .map_err(|_| Error::TransferFile)??;
+        }
         tokio::select! { _=c.cancelled()=>return Err(Error::Closed), value=async {
             crate::power_batch::pool(s, &self.record).await?;
             for item in &plan.selection.items {
+                if let Some(action) = item.workflow.transfer(item.vm) {
+                    match &action {
+                        crate::TransferAction::ExportOvf { source, .. } => { crate::ovf::export::capture(s,self.record.pool,source).await?; },
+                        _ => { crate::transfer::xapi::prepare(s,self.record.pool,&action,None).await?; },
+                    }
+                    continue;
+                }
                 match item.workflow.action() {
                     OperationAction::Lifecycle(op) => {crate::vm_lifecycle_backend::plan(s,item.vm,&op).await?;},
                     OperationAction::Migration(op) => {crate::migration_backend::preflight(s,item.vm,&op).await?;},
@@ -45,25 +58,46 @@ impl ResourceRequest {
             }
             crate::power_batch::pool(s, &self.record).await?;
             let item = &plan.selection.items[index];
-            let reference = s
-                .call("VM.get_by_uuid", vec![json!(item.vm.to_string())])
-                .await?;
-            let reference = crate::xapi::opaque_reference(&reference)?;
-            let (_, mut child) = crate::operations::channel(
-                plan.children[index],
-                self.record.pool,
-                item.vm,
-                self.generation,
-                item.workflow.action(),
-                tokio::runtime::Handle::current(),
-            );
-            child.record.batch_parent = Some(self.record.id);
-            child.batch_permit = Some(j.workflow_permit(self.record.id, index)?);
             let directory = self.directory.clone().ok_or(Error::Journal)?;
             let updates = self.updates.clone().ok_or(Error::Journal)?;
-            child
-                .run_session(s, Some(reference), directory, c.clone(), updates)
-                .await;
+            let permit = j.workflow_permit(self.record.id, index)?;
+            if let Some(action) = item.workflow.transfer(item.vm) {
+                let observed = crate::ObservedResource {
+                    pool: self.record.pool,
+                    target: crate::ResourceTarget::Pool(self.record.pool),
+                    generation: self.generation,
+                };
+                let (_, mut child) = crate::resources::transfer_channel(
+                    plan.children[index],
+                    observed,
+                    crate::TransferRequest {
+                        action,
+                        file: plan.outputs.get(index).ok_or(Error::Journal)?.clone(),
+                    },
+                    tokio::runtime::Handle::current(),
+                );
+                child.record.batch_parent = Some(self.record.id);
+                child.batch_permit = Some(permit);
+                Box::pin(child.run_session(s, directory, c.clone(), updates)).await;
+            } else {
+                let reference = s
+                    .call("VM.get_by_uuid", vec![json!(item.vm.to_string())])
+                    .await?;
+                let reference = crate::xapi::opaque_reference(&reference)?;
+                let (_, mut child) = crate::operations::channel(
+                    plan.children[index],
+                    self.record.pool,
+                    item.vm,
+                    self.generation,
+                    item.workflow.action(),
+                    tokio::runtime::Handle::current(),
+                );
+                child.record.batch_parent = Some(self.record.id);
+                child.batch_permit = Some(permit);
+                child
+                    .run_session(s, Some(reference), directory, c.clone(), updates)
+                    .await;
+            }
             self.reload(j)?;
             self.refresh_workflow_results(j).await?;
             if self.stopped_after_recovery() {
@@ -94,22 +128,30 @@ impl ResourceRequest {
             .workflow_batch_plan
             .clone()
             .ok_or(Error::Journal)?;
-        for (index, id) in plan.children.iter().take(plan.admitted).enumerate() {
-            let record = j.load(*id)?.ok_or(Error::Journal)?;
-            if record.state.terminal() {
+        for index in 0..plan.admitted {
+            let record = j
+                .workflow_load_child(&self.record, index)?
+                .ok_or(Error::Journal)?;
+            if record.state().terminal() {
                 continue;
             }
-            let mut child = crate::operations::MutationRequest::tracking(record);
-            child.batch_permit = Some(j.workflow_permit(self.record.id, index)?);
-            child
-                .run_session(
-                    s,
-                    None,
-                    self.directory.clone().ok_or(Error::Journal)?,
-                    c.clone(),
-                    self.updates.clone().ok_or(Error::Journal)?,
-                )
-                .await;
+            let permit = j.workflow_permit(self.record.id, index)?;
+            let directory = self.directory.clone().ok_or(Error::Journal)?;
+            let updates = self.updates.clone().ok_or(Error::Journal)?;
+            match record {
+                WorkflowChild::Vm(record) => {
+                    let mut child = crate::operations::MutationRequest::tracking(*record);
+                    child.batch_permit = Some(permit);
+                    child
+                        .run_session(s, None, directory, c.clone(), updates)
+                        .await;
+                }
+                WorkflowChild::Resource(record) => {
+                    let mut child = Self::tracking(*record);
+                    child.batch_permit = Some(permit);
+                    Box::pin(child.run_session(s, directory, c.clone(), updates)).await;
+                }
+            }
             self.reload(j)?;
             self.refresh_workflow_results(j).await?;
             if self.record.state.terminal() {
@@ -122,28 +164,20 @@ impl ResourceRequest {
         for _ in 0..16 {
             self.reload(j)?;
             j.workflow_validate_links(&self.record)?;
-            let Plan {
-                children,
-                admitted,
-                selection,
-            } = *self
+            let admitted = self
                 .record
                 .workflow_batch_plan
-                .clone()
-                .ok_or(Error::Journal)?;
-            for (index, id) in children.iter().take(admitted).enumerate() {
-                let child = j.load(*id)?.ok_or(Error::Journal)?;
-                if child.batch_parent != Some(self.record.id)
-                    || child.pool != self.record.pool
-                    || child.vm != selection.items[index].vm
-                    || child.action != selection.items[index].workflow.action()
-                {
-                    return Err(Error::Journal);
-                }
-                self.record.workflow_batch[index].state = Some(child.state.clone());
+                .as_ref()
+                .ok_or(Error::Journal)?
+                .admitted;
+            for index in 0..admitted {
+                let child = j
+                    .workflow_load_child(&self.record, index)?
+                    .ok_or(Error::Journal)?;
+                self.record.workflow_batch[index].state = Some(child.state().clone());
                 self.record.workflow_batch[index].detail =
-                    child.detail.chars().take(1024).collect();
-                self.record.steps[index].state = match child.state {
+                    child.detail().chars().take(1024).collect();
+                self.record.steps[index].state = match child.state() {
                     OperationState::Succeeded => StepState::Verified,
                     OperationState::OutcomeUnknown | OperationState::AcknowledgedUnknown => {
                         StepState::OutcomeUnknown

@@ -52,6 +52,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
+    pub(crate) batch_permit: Option<crate::vm_workflow_batch::ChildPermit>,
     directory: Option<PathBuf>,
     pub(crate) snapshot_preview_image: Option<crate::SnapshotPreviewImage>,
     pub(crate) management: Option<crate::management_network::Inputs>,
@@ -75,6 +76,7 @@ impl ResourceRequest {
         sender: watch::Sender<Arc<ResourceOperationRecord>>,
     ) -> Self {
         Self {
+            batch_permit: None,
             directory: None,
             snapshot_preview_image: None,
             management: None,
@@ -95,6 +97,7 @@ impl ResourceRequest {
     pub(crate) fn tracking(record: ResourceOperationRecord) -> Self {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
+            batch_permit: None,
             directory: None,
             snapshot_preview_image: None,
             management: None,
@@ -144,6 +147,14 @@ impl ResourceRequest {
         self.announce().await;
         Ok(())
     }
+    fn save_dispatch(&mut self, journal: &Journal) -> Result<(), Error> {
+        journal.resource_dispatch(&mut self.record)?;
+        self.sender.send_replace(Arc::new(self.record.clone()));
+        if let Some(updates) = &self.updates {
+            let _ = updates.try_send(OperationUpdate::Resource(Box::new(self.record.clone())));
+        }
+        Ok(())
+    }
     fn reload(&mut self, journal: &mut Journal) -> Result<(), Error> {
         self.record = journal
             .resource_load(self.record.id)?
@@ -151,8 +162,17 @@ impl ResourceRequest {
         Ok(())
     }
     pub(crate) async fn run(
-        mut self,
+        self,
         session: Arc<Session>,
+        directory: PathBuf,
+        cancel: CancellationToken,
+        updates: mpsc::Sender<OperationUpdate>,
+    ) -> OperationId {
+        self.run_session(&session, directory, cancel, updates).await
+    }
+    pub(crate) async fn run_session(
+        mut self,
+        session: &Session,
         directory: PathBuf,
         cancel: CancellationToken,
         updates: mpsc::Sender<OperationUpdate>,
@@ -167,10 +187,17 @@ impl ResourceRequest {
                 return id;
             }
         };
+        if self.reconcile
+            && let Err(error) =
+                journal.workflow_reconcile_resource_child(&self.record, self.batch_permit.as_ref())
+        {
+            self.reject(error);
+            return id;
+        }
         let result = if self.reconcile {
-            self.reconcile(&mut journal, &session, &cancel).await
+            self.reconcile(&mut journal, session, &cancel).await
         } else {
-            match journal.resource_admit(&mut self.record) {
+            match journal.resource_admit_permitted(&mut self.record, self.batch_permit.as_ref()) {
                 Ok(true) => {
                     if let Some(id) = self
                         .record
@@ -187,7 +214,7 @@ impl ResourceRequest {
                     if let Some(media) = &mut self.cloud_media {
                         media.retain();
                     }
-                    self.execute(&mut journal, &session, &cancel).await
+                    self.execute(&mut journal, session, &cancel).await
                 }
                 Ok(false) => self.observe(&mut journal, &cancel).await,
                 Err(error) => {
@@ -200,7 +227,7 @@ impl ResourceRequest {
             self.finish_error(&mut journal, error).await;
         }
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
-            self.cleanup_power_batch(&session, &cancel).await;
+            self.cleanup_power_batch(session, &cancel).await;
         }
         if self.record.state == OperationState::Rejected
             && self.record.cloud_init_plan.is_some()

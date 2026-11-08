@@ -92,6 +92,9 @@ impl ResourceRequest {
             )
         )
     }
+    fn fenced_transfer(&self) -> bool {
+        self.checkpoint_transfer() || self.record.batch_parent.is_some()
+    }
     async fn save_checkpoint_evidence(&mut self, journal: &mut Journal) -> Result<bool, Error> {
         let evidence = self.record.clone();
         for _ in 0..16 {
@@ -110,10 +113,13 @@ impl ResourceRequest {
             let current = self.transfer_plan_mut()?;
             if current.file != incoming.file
                 || current.baseline != incoming.baseline
-                || current.task_uuid != incoming.task_uuid
+                || current.task_uuid.is_some()
+                    && incoming.task_uuid.is_some()
+                    && current.task_uuid != incoming.task_uuid
             {
                 return Err(Error::TransferConflict);
             }
+            current.task_uuid = current.task_uuid.or(incoming.task_uuid);
             if let Some(result) = &incoming.result {
                 if current.result.as_ref().is_some_and(|old| old != result) {
                     return Err(Error::TransferConflict);
@@ -159,7 +165,7 @@ impl ResourceRequest {
         mut progress: crate::TransferProgress,
     ) -> Result<bool, Error> {
         progress.stream_complete = outcome.is_ok();
-        progress.phase = "Checkpoint stream stopped; checking existing evidence".into();
+        progress.phase = "Transfer stream stopped; checking existing evidence".into();
         for _ in 0..16 {
             self.reload(journal)?;
             let plan = self.transfer_plan_mut()?;
@@ -320,7 +326,7 @@ impl ResourceRequest {
         let task_name = format!("XenAdmin RS transfer {}", self.record.id);
         self.record.detail = "Creating an owned transfer task".into();
         self.record.state = OperationState::Dispatching;
-        self.save(journal).await?;
+        self.save_dispatch(journal)?;
         let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.call("task.create",vec![json!(&task_name),json!("Client-owned image transfer")])=>v?};
         self.record.task = Some(crate::resources::xapi::reply_reference(&task)?);
         self.record = journal.resource_evidence(&self.record)?;
@@ -339,7 +345,13 @@ impl ResourceRequest {
             return Err(Error::TransferConflict);
         }
         self.transfer_plan_mut()?.task_uuid = Some(task_uuid);
-        self.save(journal).await?;
+        if self.record.batch_parent.is_some() {
+            if !self.save_checkpoint_evidence(journal).await? {
+                return Ok(());
+            }
+        } else {
+            self.save(journal).await?;
+        }
         if self.record.cancel_requested {
             self.record.state = if stream_index == 1 {
                 OperationState::PartiallyCompleted
@@ -375,7 +387,7 @@ impl ResourceRequest {
         self.record.can_cancel = true;
         self.record.steps[stream_index].state = StepState::Dispatching;
         self.record.detail = "Streaming image; host completion must also be verified".into();
-        self.save(journal).await?;
+        self.save_dispatch(journal)?;
         let meter = Arc::new(http::Meter::default());
         let outcome = http::drive(
             session,
@@ -423,7 +435,7 @@ impl ResourceRequest {
             }
             return Ok(());
         }
-        if self.checkpoint_transfer() {
+        if self.fenced_transfer() {
             if self
                 .save_checkpoint_stream(journal, outcome, meter.progress())
                 .await?
@@ -471,6 +483,9 @@ impl ResourceRequest {
         self.recheck_transfer(journal, session, cancel).await
     }
     pub(super) async fn cleanup_transfer_task(&self, session: &Session) {
+        if self.record.batch_parent.is_some() && (self.reconcile || self.record.interrupted) {
+            return;
+        }
         if let Some(task) = &self.record.task
             && let Some(uuid) = self.record.transfer_plan.as_ref().and_then(|p| p.task_uuid)
             && let Ok(Ok(record)) = tokio::time::timeout(
@@ -555,9 +570,7 @@ impl ResourceRequest {
             return self.recheck_ovf_import(journal, session, cancel).await;
         }
         self.reload(journal)?;
-        if self.record.state.terminal()
-            || self.checkpoint_transfer() && self.stopped_after_recovery()
-        {
+        if self.record.state.terminal() || self.fenced_transfer() && self.stopped_after_recovery() {
             return Ok(());
         }
         if !self.transfer_plan()?.dispatched && self.transfer_plan()?.disk_creation.is_some() {
@@ -570,7 +583,7 @@ impl ResourceRequest {
         loop {
             self.reload(journal)?;
             if self.record.state.terminal()
-                || self.checkpoint_transfer() && self.stopped_after_recovery()
+                || self.fenced_transfer() && self.stopped_after_recovery()
             {
                 return Ok(());
             }
@@ -580,7 +593,7 @@ impl ResourceRequest {
             }
             let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&task)])=>result?};
             self.reload(journal)?;
-            if self.record.state.terminal() && !self.checkpoint_transfer() {
+            if self.record.state.terminal() && !self.fenced_transfer() {
                 return Ok(());
             }
             if value["uuid"].as_str().and_then(|s| s.parse().ok())
@@ -635,7 +648,7 @@ impl ResourceRequest {
                 Some("pending" | "cancelling") => {}
                 _ => return Err(Error::TransferConflict),
             }
-            if self.checkpoint_transfer() {
+            if self.fenced_transfer() {
                 if !self.save_checkpoint_evidence(journal).await? {
                     return Ok(());
                 }
@@ -649,6 +662,7 @@ impl ResourceRequest {
             if self.record.cancel_requested
                 && self.record.can_cancel
                 && !self.record.cancel_dispatched
+                && self.record.batch_parent.is_none()
                 && (!self.checkpoint_transfer() || !self.reconcile && !self.record.interrupted)
             {
                 self.record.cancel_dispatched = true;
@@ -670,7 +684,7 @@ impl ResourceRequest {
                 self.collect_transfer_created(session, false).await?;
                 self.record.state = OperationState::OutcomeUnknown;
                 self.record.detail="Stream is stopped; host task is still pending. Recheck reads the existing task and never transfers again.".into();
-                return if self.checkpoint_transfer() {
+                return if self.fenced_transfer() {
                     self.save_checkpoint_evidence(journal).await.map(|_| ())
                 } else {
                     self.save(journal).await
@@ -683,7 +697,7 @@ impl ResourceRequest {
         self.save(journal).await?;
         let success = self.transfer_plan()?.task_success;
         self.collect_transfer_created(session, success).await?;
-        if self.checkpoint_transfer() {
+        if self.fenced_transfer() {
             if !self.save_checkpoint_evidence(journal).await? {
                 return Ok(());
             }
@@ -746,9 +760,16 @@ impl ResourceRequest {
                 })
                 .await
                 .map_err(|_| Error::TransferFile)??;
-                journal.transfer_publication_guard(&self.record, self.reconcile, cancel, || {
-                    publication.publish()
-                })?;
+                if self.reconcile && self.record.batch_parent.is_some() {
+                    publication.verify_existing()?;
+                } else {
+                    journal.transfer_publication_guard(
+                        &self.record,
+                        self.reconcile,
+                        cancel,
+                        || publication.publish(),
+                    )?;
+                }
                 self.record.state = OperationState::Succeeded;
                 self.record.detail =
                     if matches!(self.transfer_action()?, TransferAction::Host { .. }) {
@@ -810,9 +831,7 @@ impl ResourceRequest {
             p.phase = self.record.detail.clone()
         }
         self.save(journal).await?;
-        if self.record.state.terminal()
-            || self.checkpoint_transfer() && self.stopped_after_recovery()
-        {
+        if self.record.state.terminal() || self.fenced_transfer() && self.stopped_after_recovery() {
             self.cleanup_transfer_task(session).await;
         }
         if self.transfer_action()?.is_export() && self.record.state != OperationState::Succeeded {

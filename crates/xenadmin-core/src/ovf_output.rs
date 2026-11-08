@@ -252,37 +252,6 @@ pub(crate) fn publish(
     dir.sync_all().map_err(|_| Error::TransferFile)?;
     cancelled(cancel)?;
     if format == OvfPackageFormat::Ovf {
-        let parent = files::parent_handle(&plan.file)?;
-        if plan.file.path.symlink_metadata().is_ok() {
-            let final_dir = File::from(
-                rustix::fs::openat(
-                    &parent,
-                    plan.file.path.file_name().ok_or(Error::TransferFile)?,
-                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
-                    Mode::empty(),
-                )
-                .map_err(|_| Error::TransferDestinationExists)?,
-            );
-            if !export.directory.identity.same_inode(&files::Identity::from(
-                &final_dir.metadata().map_err(|_| Error::TransferFile)?,
-            )) {
-                return Err(Error::TransferDestinationExists);
-            }
-        } else {
-            rustix::fs::renameat_with(
-                &parent,
-                export
-                    .directory
-                    .path
-                    .file_name()
-                    .ok_or(Error::TransferFile)?,
-                &parent,
-                plan.file.path.file_name().ok_or(Error::TransferFile)?,
-                rustix::fs::RenameFlags::NOREPLACE,
-            )
-            .map_err(|_| Error::TransferDestinationExists)?;
-        }
-        parent.sync_all().map_err(|_| Error::TransferFile)?;
         Ok(None)
     } else {
         let output = files::output(plan)?;
@@ -349,4 +318,86 @@ pub(crate) fn cleanup(plan: &Plan) {
             AtFlags::REMOVEDIR,
         );
     }
+}
+
+pub(crate) fn finalize_directory(plan: &Plan) -> Result<(), Error> {
+    let export = plan.ovf_export.as_ref().ok_or(Error::TransferConflict)?;
+    let _directory = handle(&export.directory, &plan.file)?;
+    let parent = files::parent_handle(&plan.file)?;
+    if plan.file.path.symlink_metadata().is_ok() {
+        let final_dir = File::from(
+            rustix::fs::openat(
+                &parent,
+                plan.file.path.file_name().ok_or(Error::TransferFile)?,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map_err(|_| Error::TransferDestinationExists)?,
+        );
+        if !export.directory.identity.same_inode(&files::Identity::from(
+            &final_dir.metadata().map_err(|_| Error::TransferFile)?,
+        )) {
+            return Err(Error::TransferDestinationExists);
+        }
+    } else {
+        rustix::fs::renameat_with(
+            &parent,
+            export
+                .directory
+                .path
+                .file_name()
+                .ok_or(Error::TransferFile)?,
+            &parent,
+            plan.file.path.file_name().ok_or(Error::TransferFile)?,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|_| Error::TransferDestinationExists)?;
+    }
+    parent.sync_all().map_err(|_| Error::TransferFile)?;
+
+    Ok(())
+}
+pub(crate) fn verify_published(
+    plan: &Plan,
+    format: OvfPackageFormat,
+    cancel: &AtomicBool,
+) -> Result<(), Error> {
+    let export = plan.ovf_export.as_ref().ok_or(Error::TransferConflict)?;
+    if format == OvfPackageFormat::Ova {
+        files::prepare_publication(plan)?.verify_existing()?;
+    } else {
+        let final_dir = File::from(
+            rustix::fs::open(
+                &plan.file.path,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|_| Error::TransferFile)?,
+        );
+        if !export.directory.identity.same_inode(&files::Identity::from(
+            &final_dir.metadata().map_err(|_| Error::TransferFile)?,
+        )) {
+            return Err(Error::TransferFileChanged);
+        }
+        for (index, step) in export.steps.iter().enumerate() {
+            hash_file(
+                &final_dir,
+                &format!("disk-{index}.vhd"),
+                step.stream
+                    .stream_receipt
+                    .as_ref()
+                    .ok_or(Error::TransferFile)?,
+                cancel,
+            )?;
+        }
+    }
+    let selected = if format == OvfPackageFormat::Ova {
+        super::package::select_ova(&plan.file.path, cancel)?
+    } else {
+        super::package::select_cancel(&plan.file.path.join("guest.ovf"), cancel)?
+    };
+    if selected.ovf().is_none_or(|v| *v != export.captured.summary) {
+        return Err(Error::TransferConflict);
+    }
+    Ok(())
 }

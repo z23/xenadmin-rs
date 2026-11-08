@@ -406,6 +406,11 @@ fn apply(s: &mut State) {
     {
         return;
     }
+    let permission = session_permissions_view::assess(s, &action.permission_requirements());
+    if permission.decision().is_denied() {
+        s.transfers.error = Some(permission.explanation());
+        return;
+    }
     let result = s
         .connection
         .as_ref()
@@ -524,7 +529,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 card =
                     card.child(caption(format!("Retained network UUID: {id}"), k).wrap_anywhere())
             }
-            if !r.state.terminal() {
+            if let Some(parent) = r.batch_parent {
+                card = card.child(caption(format!("Controlled by batch {parent}. Recheck, stop or acknowledge the batch in pool operation history."), k).wrap_anywhere());
+            }
+            if r.batch_parent.is_none() && !r.state.terminal() {
                 card = card.child(
                     row()
                         .gap(8.0)
@@ -558,7 +566,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             for step in &r.steps {
                 card = card.child(caption(format!("{} · {:?}", step.label, step.state), k).wrap());
             }
-            if r.state == OperationState::OutcomeUnknown {
+            if r.batch_parent.is_none() && r.state == OperationState::OutcomeUnknown {
                 card=card.child(caption("Stopping the stream does not prove server cleanup. Recheck reads existing evidence and never sends archive bytes again.",k).wrap());
                 if p.acknowledge == Some(id) {
                     card=card.child(caption("Acknowledge only after inspecting the pool and any retained resources. This releases the local reservation while leaving the transfer outcome unverified; it does not delete resources or cancel server work.",k).wrap()).child(Button::new("Release reservation").variant(ButtonVariant::Danger).disabled(!allowed).on_press(move|s:&mut State|control(s,id,OperationControl::AcknowledgeUnknown)).build(k).key(format!("transfer-release-{id}")));
@@ -914,7 +922,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             body = body.child(caption(a.explanation(), k).wrap());
         }
         if p.review {
-            body=body.child(caption(if exporting(p) { "This review uses the captured source and new destination. Interrupted exports retain their evidence in history. Transfers reserve pool changes until the outcome is resolved." } else { "This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain in history. Transfers reserve pool changes until the outcome is resolved." },k).wrap()).child(Button::new("Begin transfer").disabled(s.resource_operations.len()>=64||s.demo||!current(s,p)||!available.is_some_and(|a|a.is_available())||p.file.is_none()||(!exporting(p)&&!s.can_mutate())).on_press(apply).build(k).key("transfer-apply"));
+            let permission = action(p)
+                .map(|a| session_permissions_view::assess(s, &a.permission_requirements()));
+            if let Some(assessment) = &permission {
+                body = body.child(session_permissions_view::review_notice(assessment, k));
+            }
+            body=body.child(caption(if exporting(p) { "This review uses the captured source and new destination. Interrupted exports retain their evidence in history. Transfers reserve pool changes until the outcome is resolved." } else { "This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain in history. Transfers reserve pool changes until the outcome is resolved." },k).wrap()).child(Button::new("Begin transfer").disabled(s.resource_operations.len()>=64||permission.as_ref().is_some_and(|p|p.decision().is_denied())||s.demo||!current(s,p)||!available.is_some_and(|a|a.is_available())||p.file.is_none()||(!exporting(p)&&!s.can_mutate())).on_press(apply).build(k).key("transfer-apply"));
         } else {
             body = body.child(
                 Button::new("Review transfer")

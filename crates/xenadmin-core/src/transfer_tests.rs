@@ -1,3 +1,5 @@
+#[path = "transfer_batch_tests.rs"]
+mod batch_tests;
 #[path = "transfer_checkpoint_tests.rs"]
 mod checkpoint_tests;
 #[path = "transfer_compression_tests.rs"]
@@ -525,6 +527,8 @@ impl Fixture {
                                         10
                                     };
                                     checkpoint_tests::archive(2, memory, preserve)
+                                } else if data.contains_key("fixture:batch_export") {
+                                    archive(uuid::Uuid::parse_str(&q["uuid"]).unwrap().as_u128())
                                 } else if fault == Fault::Snapshot {
                                     // XAPI normal export omits snapshot lineage; metadata-export is a distinct endpoint.
                                     let mut v = data["OpaqueRef:VM:source"].clone();
@@ -652,6 +656,10 @@ impl Fixture {
                                 == Some(&json!(true))
                                 && method == "task.get_record"
                                 && c.lock().unwrap().iter().any(|v| v == "PUT /import");
+                            pause_response |= data.get("fixture:batch_task_gate")
+                                == Some(&json!(true))
+                                && method == "task.get_record"
+                                && c.lock().unwrap().iter().any(|v| v == "GET /export");
                             pause_response |= data.get("fixture:checkpoint_identity_gate")
                                 == Some(&json!(true))
                                 && method == "SR.get_record"

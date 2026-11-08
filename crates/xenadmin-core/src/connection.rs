@@ -753,6 +753,38 @@ impl Connection {
             .map_err(|_| Error::Busy)?;
         Ok(operation)
     }
+    pub fn submit_vm_workflow_batch(
+        &self,
+        id: crate::OperationId,
+        pool: crate::ObservedResource,
+        selection: crate::VmWorkflowBatch,
+        outputs: Vec<(crate::VmId, crate::TransferFile)>,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only && !selection.is_export() {
+            return Err(Error::ReadOnly);
+        }
+        if self.latest().observe_resource(pool.target)? != pool {
+            return Err(Error::Stale);
+        }
+        selection.validate(pool.target)?;
+        let outputs = crate::vm_workflow_export::bind(&selection, outputs)?;
+        let (handle, mut request) = crate::resources::channel(
+            id,
+            pool,
+            crate::ResourceAction::VmWorkflowBatch(selection),
+            self.runtime.clone(),
+        );
+        request
+            .record
+            .workflow_batch_plan
+            .as_mut()
+            .ok_or(Error::Journal)?
+            .outputs = outputs;
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn upload_snapshot_preview(
         &self,
         id: crate::OperationId,
@@ -1480,7 +1512,8 @@ async fn run(
                         Some(request)=requests.recv()=>{
                             match request {
                                 Request::ResourceSubmit(request)=>{
-                                    if options.read_only && !request.record.action.read_only_export() {request.reject(Error::ReadOnly);}
+                                    if operations::Journal::open(&directory).and_then(|j|j.workflow_owner(request.record.id)).map_or(true,|p|p.is_some()) {request.reject(Error::OperationConflict);}
+                                    else if options.read_only && !request.record.action.read_only_export() {request.reject(Error::ReadOnly);}
                                     else if matches!(request.record.action,crate::ResourceAction::RootPassword(_)) && credentials.username != "root" {request.reject(Error::HostPrerequisite("Reconnect as local root before changing the pool root password"));}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.record.pool) {request.reject(Error::Stale);}
                                     else if journal_error.is_some() {request.reject(Error::Journal);}
@@ -1757,7 +1790,8 @@ async fn run(
                                     match recovery {
                                         Ok(rows) => {
                                             for record in rows {
-                                                if !record.state.terminal()
+                                                if record.batch_parent.is_none()
+                                                    && !record.state.terminal()
                                                     && !matches!(
                                                         record.action,
                                                         crate::ResourceAction::CrossPoolVm(_)
