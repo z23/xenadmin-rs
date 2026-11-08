@@ -56,7 +56,7 @@ fn pending() -> (
 async fn run(f: &Fixture, dir: &Path, request: ResourceRequest) {
     let (tx, _rx) = mpsc::channel(512);
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
         request.run(
             Arc::new(f.session().await),
             dir.into(),
@@ -192,24 +192,19 @@ async fn cloud_init_late_attachment_evidence_preserves_recovered_and_acknowledge
         let (observed, request, _) = pending();
         let execute = run(&f, d.path(), request);
         let recover = async {
-            for _ in 0..500 {
-                if f.count("VBD.create") > 0 {
-                    let j = Journal::open(d.path()).unwrap();
-                    let rows = j.resource_recover(uuid(1).into()).unwrap();
-                    assert_eq!(rows.len(), 1);
-                    if acknowledge {
-                        j.resource_control(
-                            uuid(1).into(),
-                            rows[0].id,
-                            crate::OperationControl::AcknowledgeUnknown,
-                        )
-                        .unwrap();
-                    }
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            f.response_gate.wait().await;
+            let j = Journal::open(d.path()).unwrap();
+            let rows = j.resource_recover(uuid(1).into()).unwrap();
+            assert_eq!(rows.len(), 1);
+            if acknowledge {
+                j.resource_control(
+                    uuid(1).into(),
+                    rows[0].id,
+                    crate::OperationControl::AcknowledgeUnknown,
+                )
+                .unwrap();
             }
-            panic!("attachment not dispatched");
+            f.response_gate.resume();
         };
         tokio::join!(execute, recover);
         let r = observed.latest();
@@ -262,24 +257,31 @@ async fn cloud_init_recovered_upload_never_attaches_and_recheck_reports_retained
         let (observed, request, _) = pending();
         let execute = run(&f, d.path(), request);
         let recover = async {
-            for _ in 0..500 {
-                if f.count("PUT /import_raw_vdi") > 0 {
-                    let journal = Journal::open(d.path()).unwrap();
-                    let rows = journal.resource_recover(uuid(1).into()).unwrap();
-                    if acknowledge {
-                        journal
-                            .resource_control(
-                                uuid(1).into(),
-                                rows[0].id,
-                                crate::OperationControl::AcknowledgeUnknown,
-                            )
-                            .unwrap();
-                    }
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            f.response_gate.wait().await;
+            let journal = Journal::open(d.path()).unwrap();
+            let before = journal
+                .resource_load(observed.latest().id)
+                .unwrap()
+                .unwrap();
+            assert!(
+                before
+                    .transfer_plan
+                    .as_ref()
+                    .unwrap()
+                    .stream_receipt
+                    .is_some()
+            );
+            let rows = journal.resource_recover(uuid(1).into()).unwrap();
+            if acknowledge {
+                journal
+                    .resource_control(
+                        uuid(1).into(),
+                        rows[0].id,
+                        crate::OperationControl::AcknowledgeUnknown,
+                    )
+                    .unwrap();
             }
-            panic!("upload not dispatched");
+            f.response_gate.resume();
         };
         tokio::join!(execute, recover);
         let r = (*observed.latest()).clone();
@@ -587,4 +589,39 @@ async fn cloud_init_journal_accepts_rejection_before_media_preparation_only() {
         j.resource_admit(&mut unsupported),
         Err(Error::Journal)
     ));
+}
+
+#[tokio::test]
+async fn cloud_init_acknowledgement_before_http_receipt_never_claims_upload_or_attaches() {
+    let f = Fixture::new(Fault::CloudInterruptedUpload).await;
+    cloud_setup(&f);
+    let d = tempfile::tempdir().unwrap();
+    let (observed, request, _) = pending();
+    let execute = run(&f, d.path(), request);
+    let recover = async {
+        f.response_gate.wait().await;
+        let journal = Journal::open(d.path()).unwrap();
+        let rows = journal.resource_recover(uuid(1).into()).unwrap();
+        assert_eq!(rows.len(), 1);
+        journal
+            .resource_control(
+                uuid(1).into(),
+                rows[0].id,
+                crate::OperationControl::AcknowledgeUnknown,
+            )
+            .unwrap();
+        // Keep the response blocked until the HTTP driver's progress callback observes recovery.
+    };
+    tokio::join!(execute, recover);
+    let r = (*observed.latest()).clone();
+    assert_eq!(r.state, OperationState::AcknowledgedUnknown, "{}", r.detail);
+    assert!(r.transfer_plan.as_ref().unwrap().stream_receipt.is_none());
+    assert!(!r.cloud_init_plan.as_ref().unwrap().upload_verified);
+    assert_eq!(f.count("VBD.create"), 0);
+    f.response_gate.resume();
+    let r = recheck(&f, d.path(), r).await;
+    assert_eq!(r.state, OperationState::AcknowledgedUnknown, "{}", r.detail);
+    assert_eq!(f.count("PUT /import_raw_vdi"), 1);
+    assert_eq!(f.count("VBD.create"), 0);
+    cleanup(&r);
 }

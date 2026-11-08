@@ -93,8 +93,40 @@ enum Fault {
     CloudDelayedAttach,
     CloudChangedVmAfterUpload,
     CloudDelayedUpload,
+    CloudInterruptedUpload,
+}
+struct ResponseGate {
+    entered: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+    used: std::sync::atomic::AtomicBool,
+}
+impl ResponseGate {
+    fn new() -> Self {
+        Self {
+            entered: tokio::sync::Semaphore::new(0),
+            release: tokio::sync::Semaphore::new(0),
+            used: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    async fn wait(&self) {
+        tokio::time::timeout(std::time::Duration::from_secs(20), self.entered.acquire())
+            .await
+            .expect("response gate was not reached")
+            .unwrap()
+            .forget();
+    }
+    fn resume(&self) {
+        self.release.add_permits(1);
+    }
+    async fn pause(&self) {
+        if !self.used.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            self.entered.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+        }
+    }
 }
 struct Fixture {
+    response_gate: Arc<ResponseGate>,
     fault: Fault,
     options: ConnectionOptions,
     server: tokio::task::JoinHandle<()>,
@@ -185,12 +217,15 @@ impl Fixture {
         let calls = Arc::new(Mutex::new(vec![]));
         let r = records.clone();
         let c = calls.clone();
+        let response_gate = Arc::new(ResponseGate::new());
+        let gate = response_gate.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let r = r.clone();
                 let c = c.clone();
                 let acceptor = acceptor.clone();
+                let gate = gate.clone();
                 tokio::spawn(async move {
                     let stream: Box<dyn FixtureStream> = if let Some(acceptor) = acceptor {
                         let Ok(stream) = acceptor.accept(stream).await else {
@@ -238,6 +273,7 @@ impl Fixture {
                     let mut extra = String::new();
                     let mut declared = None;
                     let mut delay_create = false;
+                    let mut pause_response = false;
                     let body = if request.starts_with("GET /host_backup?")
                         || request.starts_with("GET /system-status?")
                         || request.starts_with("PUT /host_restore?")
@@ -347,7 +383,7 @@ impl Fixture {
                             "OpaqueRef:VDI:new"
                         })));
                         if put {
-                            delay_create = fault == Fault::CloudDelayedUpload;
+                            pause_response = fault == Fault::CloudInterruptedUpload;
                             if data.get("fixture:cloud").is_some() {
                                 assert_eq!(input.len(), crate::cloud_init::MEDIA_BYTES);
                                 assert_eq!(&input[43..54], b"CIDATA     ");
@@ -495,7 +531,7 @@ impl Fixture {
                             if fault == Fault::CloudLostAttach {
                                 return;
                             }
-                            delay_create = fault == Fault::CloudDelayedAttach;
+                            pause_response = fault == Fault::CloudDelayedAttach;
                             json!({"result":"OpaqueRef:VBD:cloud"})
                         } else if method == "VDI.create" {
                             delay_create = fault == Fault::DelayedDiskCreate;
@@ -523,6 +559,9 @@ impl Fixture {
                             data.remove("OpaqueRef:task:t");
                             json!({"result":null})
                         } else if method.ends_with(".get_record") {
+                            pause_response = fault == Fault::CloudDelayedUpload
+                                && method == "task.get_record"
+                                && c.lock().unwrap().iter().any(|v| v == "PUT /import_raw_vdi");
                             if fault == Fault::TaskGone
                                 && method == "task.get_record"
                                 && c.lock()
@@ -543,6 +582,9 @@ impl Fixture {
                         response["jsonrpc"] = json!("2.0");
                         serde_json::to_vec(&response).unwrap()
                     };
+                    if pause_response {
+                        gate.pause().await;
+                    }
                     if delay_create {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                     }
@@ -557,6 +599,7 @@ impl Fixture {
             }
         });
         Self {
+            response_gate,
             fault,
             options,
             server,
