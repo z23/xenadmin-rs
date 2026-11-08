@@ -71,7 +71,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                     .unwrap()
                     .retain(|e| e["class"] == "VM");
                 let mut map = records.lock().unwrap();
-                for (key, record) in map.iter() {
+                for (key, record) in map.iter().filter(|(key, _)| key.as_str() != "task-result") {
                     let class = key.split('-').next().unwrap();
                     initial["events"].as_array_mut().unwrap().push(json!({"class":class,"operation":"add","ref":format!("OpaqueRef:{key}"),"snapshot":record}));
                 }
@@ -174,6 +174,18 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                         pif["physical"] = json!(false);
                         map.insert("PIF-bond".into(), pif);
                         map.insert("task-result".into(), json!("OpaqueRef:Bond"));
+                    }
+                    "Async.VLAN.destroy" => {
+                        assert_eq!(request["params"][1], "OpaqueRef:VLAN");
+                        map.remove("VLAN");
+                        map.remove("PIF-child");
+                        map.get_mut("network").unwrap()["PIFs"] = json!([]);
+                    }
+                    "Async.Bond.destroy" => {
+                        assert_eq!(request["params"][1], "OpaqueRef:Bond");
+                        map.remove("Bond");
+                        map.remove("PIF-bond");
+                        map.get_mut("network").unwrap()["PIFs"] = json!([]);
                     }
                     "Async.PIF.reconfigure_ip" => {
                         let pif = map.get_mut("PIF").unwrap();
@@ -511,4 +523,43 @@ async fn ipv4_mtu_and_igmp_edits_verify_actual_settings() {
         },
     );
     assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+}
+
+#[tokio::test]
+async fn vlan_deletion_rechecks_vm_consumers_and_preserves_network_record() {
+    let (mock, records) = fixture(Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let op = submit(&c, network(), vlan(&c));
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    c.disconnect();
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let c = connect(&mock, &backend, false).await;
+    let target = ResourceTarget::Vlan(xenadmin_core::VlanId::parse(VLAN).unwrap());
+    let operation = NetworkOperation::DeleteVlan {
+        parent: PifId::parse(PIF).unwrap(),
+        child: PifId::parse(CHILD).unwrap(),
+        network: NetworkId::parse(NET).unwrap(),
+        tag: 100,
+    };
+    records.lock().unwrap().get_mut("network").unwrap()["VIFs"] = json!(["OpaqueRef:vm-nic"]);
+    assert_eq!(
+        finish(&submit(&c, target, operation.clone())).await.state,
+        OperationState::Rejected
+    );
+    assert!(
+        !mock
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m == "Async.VLAN.destroy")
+    );
+    records.lock().unwrap().get_mut("network").unwrap()["VIFs"] = json!([]);
+    assert_eq!(
+        finish(&submit(&c, target, operation)).await.state,
+        OperationState::Succeeded
+    );
+    assert!(records.lock().unwrap().contains_key("network"));
 }

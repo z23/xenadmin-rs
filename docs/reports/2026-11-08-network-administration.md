@@ -33,10 +33,10 @@ remain in the retained ledger. These are not implicitly marked complete by this 
 
 ## Verification
 
-Nine direct-connection protocol tests cover VLAN and LACP dispatch/result identities,
+Ten direct-connection protocol tests cover VLAN and LACP dispatch/result identities,
 changed interface identity, missing membership, old or wrong creation results, task-read
 and post-write verification errors, lost replies/no replay, read-only refusal, IPv4/MTU/IGMP
-and configuration-key preservation. Two core validation tests cover contiguous IPv4 masks,
+configuration-key preservation, and refusing VLAN deletion when a VM is newly attached. Two core validation tests cover contiguous IPv4 masks,
 address modes and management guards. Two Rune interaction tests cover compact/wide reviews,
 captured prior values, reachable controls and refusal to submit synthetic previews.
 Workspace strict Clippy passed. The compact synthetic VLAN dialog was rendered and visually
