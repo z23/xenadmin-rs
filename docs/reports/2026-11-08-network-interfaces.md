@@ -11,6 +11,7 @@ gateway. DNS is shared with the interface's IPv4 configuration and the review sa
 The backend requires a freshly observed IPv6-enabled management PIF on the same host:
 it never attempts to enable IPv6 on an installation configured without it. It rejects
 unmanaged PIFs, bond members, changed identities and changed pre-edit settings.
+The XAPI empty-address sentinel in newly created VLAN PIFs is normalized at the adapter boundary.
 Address-set comparison accepts equivalent IPv6 notation; the desired static address must
 be present on verification. The existing IPv4 configuration is left intact.
 

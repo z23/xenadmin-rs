@@ -92,6 +92,7 @@ fn ipv6_addresses(value: &Value) -> Option<BTreeSet<(std::net::Ipv6Addr, u8)>> {
         .as_array()
         .filter(|v| v.len() <= 64)?
         .iter()
+        .filter(|v| v.as_str() != Some(""))
         .map(|v| crate::network_types::ipv6_cidr(v.as_str()?))
         .collect()
 }

@@ -45,7 +45,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         ),
         (
             "PIF".into(),
-            json!({"uuid":PIF,"host":"OpaqueRef:host","network":"OpaqueRef:network-underlay","device":"eth0","MAC":"02:00:00:00:00:01","MTU":"1500","VLAN":"-1","management":false,"physical":true,"managed":true,"currently_attached":true,"bond_slave_of":"OpaqueRef:NULL","bond_master_of":[],"VLAN_slave_of":[],"ip_configuration_mode":"None","IP":"","netmask":"","gateway":"","DNS":"","ipv6_configuration_mode":"None","IPv6":[],"ipv6_gateway":"","disallow_unplug":false,"primary_address_type":"IPv4","other_config":{"unrelated":"preserve"}}),
+            json!({"uuid":PIF,"host":"OpaqueRef:host","network":"OpaqueRef:network-underlay","device":"eth0","MAC":"02:00:00:00:00:01","MTU":"1500","VLAN":"-1","management":false,"physical":true,"managed":true,"currently_attached":true,"bond_slave_of":"OpaqueRef:NULL","bond_master_of":[],"VLAN_slave_of":[],"ip_configuration_mode":"None","IP":"","netmask":"","gateway":"","DNS":"","ipv6_configuration_mode":"None","IPv6":[""],"ipv6_gateway":"","disallow_unplug":false,"primary_address_type":"IPv4","other_config":{"unrelated":"preserve"}}),
         ),
     ])));
     if fault == Fault::OldVlan {

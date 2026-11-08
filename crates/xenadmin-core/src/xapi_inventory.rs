@@ -385,7 +385,11 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 netmask: string(record, "netmask"),
                 gateway: string(record, "gateway"),
                 dns: string(record, "DNS"),
-                ipv6: strings(&record["IPv6"]).unwrap_or_default(),
+                ipv6: strings(&record["IPv6"])
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|address| !address.is_empty())
+                    .collect(),
                 ipv6_configuration_mode: string(record, "ipv6_configuration_mode"),
                 ipv6_gateway: string(record, "ipv6_gateway"),
             },
