@@ -644,6 +644,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .is_some_and(|i| i.pool_id == editor.pool);
         body = body
             .child(
+                Button::new("Pool information")
+                    .disabled(!same_pool)
+                    .on_press(inventory_information::open_pool)
+                    .build(k)
+                    .key("pool-information"),
+            )
+            .child(
                 Button::new("Pool policies, HA and membership…")
                     .disabled(!same_pool)
                     .on_press(crate::pool_view::open)

@@ -503,6 +503,8 @@ pub(super) fn scene(s: &mut State) {
             i.details.pifs.insert(
                 p,
                 xenadmin_core::PhysicalInterface {
+                    metrics: None,
+                    capabilities: None,
                     managed: Some(true),
                     disallow_unplug: Some(false),
                     management_purpose: None,

@@ -124,3 +124,6 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/network-ipv6-compact.png --tree artifacts/network-ipv6-compact.json --scene network-ipv6 --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/metric-presets.png --tree artifacts/metric-presets.json --scene metric-presets --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/metric-presets-compact.png --tree artifacts/metric-presets-compact.json --scene metric-presets --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/general-information.png --tree artifacts/general-information.json --scene general-information --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/general-information-compact.png --tree artifacts/general-information-compact.json --scene general-information --theme dark --size 513x652 --scale 1 --at 1

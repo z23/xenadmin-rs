@@ -10,6 +10,7 @@ mod dev_inspection;
 mod host_admin;
 mod host_console;
 mod host_power_view;
+mod inventory_information;
 mod inventory_menu;
 mod metrics_view;
 mod network_admin;
@@ -154,6 +155,7 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    information: Option<inventory_information::Panel>,
     application_panel: Option<settings::Panel>,
     bulk_power: Option<bulk_power::Editor>,
     row_menu: Option<inventory_menu::Context>,
@@ -309,6 +311,7 @@ fn init() -> State {
         operation_rows: Vec::new(),
         unknown_review: None,
         force_action: None,
+        information: None,
         application_panel: None,
         console_ui: Default::default(),
         console: None,
@@ -1475,6 +1478,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         root
     };
     let root = inventory_menu::overlay(s, &k, root);
+    let root = if s.information.is_some() {
+        rune_kit::root(root, [inventory_information::dialog(s, &k)])
+    } else {
+        root
+    };
     let root = if s.application_panel.is_some() {
         rune_kit::root(root, [settings::dialog(s, &k)])
     } else {
@@ -1572,6 +1580,14 @@ fn details(s: &State, k: &Kit) -> El {
                 &selected.description
             },
         ));
+    if selected.vm.is_some() || s.page == Page::Hosts || console_view::host(s).is_some() {
+        detail = detail.child(
+            Button::new("General information")
+                .on_press(inventory_information::open)
+                .build(k)
+                .key("information-open"),
+        );
+    }
     if selected.vm.is_some() {
         detail = detail
             .child(field("Static memory maximum", &selected.memory))
@@ -2105,6 +2121,7 @@ fn main() {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("general-information", inventory_information::scene),
             ("options", settings::open),
             ("help", settings::help),
             ("console-details", |s| {

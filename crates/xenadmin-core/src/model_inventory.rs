@@ -12,6 +12,7 @@ identity!(VlanId);
 identity!(GuestMetricsId);
 identity!(VmMetricsId);
 identity!(HostMetricsId);
+identity!(PifMetricsId);
 identity!(TaskId);
 identity!(MessageId);
 identity!(ApplianceId);
@@ -161,6 +162,14 @@ impl VmDetails {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HostDetails {
     #[serde(default)]
+    pub bios_strings: BTreeMap<String, String>,
+    #[serde(default)]
+    pub chipset_info: BTreeMap<String, String>,
+    #[serde(default)]
+    pub external_auth_type: Option<String>,
+    #[serde(default)]
+    pub external_auth_service_name: Option<String>,
+    #[serde(default)]
     pub allowed_operations: Option<Vec<String>>,
     #[serde(default)]
     pub current_operations: Option<Vec<RunningOperation>>,
@@ -282,6 +291,10 @@ pub struct VirtualInterface {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PhysicalInterface {
     #[serde(default)]
+    pub metrics: Option<PifMetricsId>,
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
+    #[serde(default)]
     pub managed: Option<bool>,
     #[serde(default)]
     pub disallow_unplug: Option<bool>,
@@ -367,10 +380,34 @@ pub struct GuestMetrics {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VmMetrics {
+    #[serde(default)]
+    pub install_time: Option<String>,
+    #[serde(default)]
+    pub last_updated: Option<String>,
+    #[serde(default)]
+    pub state: Vec<String>,
+    #[serde(default)]
+    pub current_domain_type: Option<String>,
     pub id: VmMetricsId,
     pub memory_actual: Option<u64>,
     pub vcpus_number: Option<u64>,
     pub start_time: Option<String>,
+}
+impl VmMetrics {
+    /// Elapsed wall time since reported boot, using the caller's observation clock.
+    /// This is not guest-measured uptime and can include paused time.
+    pub fn elapsed_since_boot(&self, observed_at: std::time::SystemTime) -> Option<u64> {
+        let start =
+            crate::snapshot_policy_support::clock_seconds(self.start_time.as_deref()?).ok()?;
+        if start <= 0 {
+            return None;
+        }
+        observed_at
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs()
+            .checked_sub(start as u64)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -379,6 +416,20 @@ pub struct HostMetrics {
     pub live: Option<bool>,
     pub memory_total: Option<u64>,
     pub memory_free: Option<u64>,
+    pub last_updated: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PifMetrics {
+    pub id: PifMetricsId,
+    pub carrier: Option<bool>,
+    pub speed_mbps: Option<u64>,
+    pub full_duplex: Option<bool>,
+    pub vendor_id: String,
+    pub vendor_name: String,
+    pub device_id: String,
+    pub device_name: String,
+    pub pci_bus_path: String,
     pub last_updated: Option<String>,
 }
 
@@ -483,6 +534,8 @@ pub struct PoolDetails {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct InventoryDetails {
+    #[serde(default)]
+    pub pif_metrics: BTreeMap<PifMetricsId, PifMetrics>,
     #[serde(default)]
     pub organization: crate::OrganizationInventory,
     #[serde(default)]

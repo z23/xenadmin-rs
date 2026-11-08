@@ -30,6 +30,7 @@ const OPTIONAL_CLASSES: &[&str] = &[
     "VBD",
     "VIF",
     "PIF",
+    "PIF_metrics",
     "PBD",
     "Bond",
     "VLAN",

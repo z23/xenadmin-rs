@@ -360,6 +360,13 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             PhysicalInterface {
+                metrics: refs.link("pif_metrics", &record["metrics"]),
+                capabilities: strings(&record["capabilities"]).filter(|values| {
+                    values.len() <= 64
+                        && values
+                            .iter()
+                            .all(|v| v.len() <= 128 && !v.chars().any(char::is_control))
+                }),
                 managed: boolean(record, "managed")?,
                 disallow_unplug: boolean(record, "disallow_unplug")?,
                 management_purpose: record["other_config"]["management_purpose"]
@@ -415,6 +422,24 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             },
         ))
     });
+    result.pif_metrics = records(store, "pif_metrics", &mut result.classes, |record| {
+        let id = id(record)?;
+        Ok((
+            id,
+            PifMetrics {
+                id,
+                carrier: boolean(record, "carrier")?,
+                speed_mbps: size(record, "speed", "PIF_metrics.speed")?.filter(|v| *v > 0),
+                full_duplex: boolean(record, "duplex")?,
+                vendor_id: string(record, "vendor_id"),
+                vendor_name: string(record, "vendor_name"),
+                device_id: string(record, "device_id"),
+                device_name: string(record, "device_name"),
+                pci_bus_path: string(record, "pci_bus_path"),
+                last_updated: text_option(record, "last_updated"),
+            },
+        ))
+    });
     result.bonds = records(store, "bond", &mut result.classes, |record| {
         let id = id(record)?;
         Ok((
@@ -466,6 +491,10 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             VmMetrics {
+                install_time: text_option(record, "install_time"),
+                last_updated: text_option(record, "last_updated"),
+                state: strings(&record["state"]).unwrap_or_default(),
+                current_domain_type: text_option(record, "current_domain_type"),
                 id,
                 memory_actual: size(record, "memory_actual", "VM_metrics.memory_actual")?,
                 vcpus_number: size(record, "VCPUs_number", "VM_metrics.VCPUs_number")?,
@@ -646,6 +675,10 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             result.hosts.insert(
                 id,
                 HostDetails {
+                    bios_strings: string_map(&record["bios_strings"]),
+                    chipset_info: string_map(&record["chipset_info"]),
+                    external_auth_type: text_option(record, "external_auth_type"),
+                    external_auth_service_name: text_option(record, "external_auth_service_name"),
                     allowed_operations: strings(&record["allowed_operations"]),
                     current_operations: record["current_operations"].as_object().map(|ops| {
                         ops.iter()
@@ -1236,5 +1269,84 @@ mod tests {
             ClassAvailability::Available
         );
         assert_eq!(inventory.details.vdis.len(), 1);
+    }
+    #[test]
+    fn link_metrics_are_scoped_and_unavailable_values_do_not_invent_link_health() {
+        let mut events = initial();
+        events.push(event(
+            "PIF",
+            "nic",
+            json!({"uuid":uuid(30),"device":"eth0","metrics":"OpaqueRef:link","capabilities":[]}),
+        ));
+        events.push(event("PIF_metrics","link",json!({"uuid":uuid(31),"carrier":false,"speed":"-1","duplex":true,"vendor_name":"Fixture vendor","device_name":"Fixture NIC","pci_bus_path":"0000:01:00.0"})));
+        let mut store = Store::default();
+        let i = store.apply(&batch(events)).unwrap();
+        let p = &i.details.pifs[&PifId::from(uuid(30))];
+        assert_eq!(p.capabilities, Some(vec![]));
+        let m = &i.details.pif_metrics[&p.metrics.unwrap()];
+        assert_eq!(m.carrier, Some(false));
+        assert_eq!(m.speed_mbps, None);
+        assert_eq!(m.vendor_name, "Fixture vendor");
+        let i = store
+            .apply(&batch(vec![event(
+                "PIF_metrics",
+                "link",
+                json!({"uuid":uuid(31),"speed":"100000","carrier":true}),
+            )]))
+            .unwrap();
+        assert_eq!(
+            i.details.pif_metrics[&PifMetricsId::from(uuid(31))].speed_mbps,
+            Some(100000)
+        );
+        let i = store
+            .apply(&batch(vec![event(
+                "PIF_metrics",
+                "link",
+                json!({"uuid":uuid(31),"speed":"invalid"}),
+            )]))
+            .unwrap();
+        assert!(i.details.pif_metrics.is_empty());
+        assert_eq!(
+            i.details.classes["pif_metrics"],
+            ClassAvailability::InvalidData
+        );
+        assert!(i.details.pifs.contains_key(&PifId::from(uuid(30))));
+        assert_eq!(i.guests().count(), 1);
+        let i = store
+            .apply(&batch(vec![event("PIF", "nic", json!({"uuid":uuid(30)}))]))
+            .unwrap();
+        assert!(
+            i.details.pifs[&PifId::from(uuid(30))]
+                .capabilities
+                .is_none()
+        );
+    }
+    #[test]
+    fn runtime_projection_keeps_reported_values_and_rejects_future_or_sentinel_boot_times() {
+        let mut events = initial();
+        let mut v = vm(2);
+        v["metrics"] = json!("OpaqueRef:runtime");
+        events.push(event("VM", "vm", v));
+        events.push(event("VM_metrics","runtime",json!({"uuid":uuid(32),"memory_actual":"1073741824","VCPUs_number":"3","start_time":"20260101T00:00:00Z","install_time":"2025-01-01T00:00:00Z","last_updated":"2026-01-01T01:00:00Z","state":["running"],"current_domain_type":"hvm"})));
+        let i = Store::default().apply(&batch(events)).unwrap();
+        let d = &i.details.vms[&VmId::from(uuid(2))];
+        let mut m = i.details.vm_metrics[&d.metrics.unwrap()].clone();
+        assert_eq!(m.memory_actual, Some(1 << 30));
+        assert_eq!(m.vcpus_number, Some(3));
+        assert_eq!(m.state, vec!["running"]);
+        assert_eq!(m.current_domain_type.as_deref(), Some("hvm"));
+        let start =
+            crate::snapshot_policy_support::clock_seconds("20260101T00:00:00Z").unwrap() as u64;
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(start + 3600);
+        assert_eq!(m.elapsed_since_boot(now), Some(3600));
+        for invalid in [
+            "19700101T00:00:00Z",
+            "20270101T00:00:00Z",
+            "20260230T00:00:00Z",
+            "",
+        ] {
+            m.start_time = Some(invalid.into());
+            assert!(m.elapsed_since_boot(now).is_none());
+        }
     }
 }

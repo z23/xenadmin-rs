@@ -993,6 +993,8 @@ pub(super) fn scene(s: &mut State) {
         inventory.details.pifs.insert(
             id,
             xenadmin_core::PhysicalInterface {
+                metrics: None,
+                capabilities: None,
                 managed: Some(true),
                 disallow_unplug: Some(false),
                 management_purpose: None,

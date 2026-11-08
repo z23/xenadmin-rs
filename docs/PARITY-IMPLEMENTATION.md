@@ -54,10 +54,10 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P02-02 | Network and SR tables | Typed SR/network metadata and device-related detail views added; full dedicated administration views remain queued |
 | P02-03 | Search by name/UUID/host; sort and virtualized rows | Existing workflow; qualification open |
 | P02-04 | Persist sidebar/table column widths | Existing workflow; qualification open |
-| P02-05 | Full VM general information | Guest OS/tools/addresses and VM resource metadata added; full runtime/uptime presentation remains partial |
-| P02-06 | Full host/pool properties | Host software/CPU metadata, metrics and attachment details displayed; full pool properties remain queued |
+| P02-05 | Full VM general information | Captured General information view includes guest OS/tools/addresses, configured resources, runtime memory/vCPUs/flags, host UTC timestamps and clock-qualified elapsed boot time; fixture/native synthetic verified, live qualification open ([report](reports/2026-11-08-general-information.md)) |
+| P02-06 | Full host/pool properties | Captured host hardware/software/runtime/authentication summaries and pool membership/storage/HA/network/security-policy summaries implemented; unreadable/stale data stays explicit, fixture verified; live qualification open ([report](reports/2026-11-08-general-information.md)) |
 | P02-07 | VM disk/NIC and host/storage attachment graph | Typed VDI/VBD/VIF/PIF/PBD graph and VM devices view implemented; broader host/SR views and lab qualification remain open |
-| P02-08 | Physical NIC/link/bond/VLAN inspection | Host/network details display PIF addressing, management/physical flags, VLAN, MTU and bond members/mode/link count; link-speed/path inspection remains partial |
+| P02-08 | Physical NIC/link/bond/VLAN inspection | Host/network details include PIF addressing/topology plus separately negotiated carrier, speed, duplex, NIC vendor/device/PCI path and advertised capabilities; missing/invalid values remain unknown, fixture verified; live qualification open |
 | P02-09 | SR attachment/path and disk inspection | SR details display host attachments, disk capacity/flags, VM/snapshot consumers and bounded per-PBD multipath/path observations; fixture verified, actual path health and live qualification remain open |
 | P02-10 | Live inventory/stale-state handling | Optional-class negotiation, isolated decode failures and bounded resync implemented; live compatibility/scale qualification open |
 | P02-11 | Filtered/grouped/saved/cross-pool searches | Typed cross-pool text/type/power/host/pool/tag/folder/custom-field filters, grouped ordering and saved definitions implemented and fixture verified; [search report](reports/2026-11-08-cross-pool-search.md); live qualification open |
@@ -232,7 +232,7 @@ Implementation and qualification evidence: [host administration report](reports/
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P12-01 | Host hardware/software properties | Host software/CPU metadata, live memory, attachments, maintenance, multipathing, logging and power-on mode displayed; broader hardware fields and live qualification remain open |
+| P12-01 | Host hardware/software properties | Host General information adds BIOS/chipset, authentication and boot/toolstack elapsed observations to software/CPU/memory and attachment details; fixture/native synthetic verified, live qualification open |
 | P12-02 | Rename/description | Reviewed host metadata editing implemented with fresh conflict checks and explicit partial outcomes; lab qualification open |
 | P12-03 | Enable/disable scheduling; enter/exit maintenance | Reviewed disable/evacuate/maintenance marker and enable/exit workflows implemented with exact guest review and per-step outcomes; fixture-verified, lab open |
 | P12-04 | Evacuate host with destination checks | Reviewed guest UUID set, fresh blockers/possible-host checks and authoritative assert_can_evacuate before disable and evacuation; no automatic HA reduction or guest shutdown; fixture-verified, lab open |

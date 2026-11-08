@@ -120,6 +120,58 @@ fn pif(mut view: El, inventory: &Inventory, interface: &PhysicalInterface, k: &K
     if !interface.ipv6_gateway.is_empty() {
         view = view.child(field("IPv6 gateway", &interface.ipv6_gateway, k));
     }
+    view = class_notice(view, inventory, "PIF_metrics", k);
+    if let Some(metrics) = interface
+        .metrics
+        .and_then(|id| inventory.details.pif_metrics.get(&id))
+    {
+        view = view
+            .child(field("Link carrier", known(metrics.carrier), k))
+            .child(field(
+                "Link speed",
+                metrics
+                    .speed_mbps
+                    .map(|v| format!("{v} Mbit/s"))
+                    .unwrap_or_else(|| "Not reported".into()),
+                k,
+            ))
+            .child(field("Full duplex", known(metrics.full_duplex), k))
+            .child(field(
+                "NIC vendor / device",
+                format!(
+                    "{} ({}) / {} ({})",
+                    supplied(&metrics.vendor_name),
+                    supplied(&metrics.vendor_id),
+                    supplied(&metrics.device_name),
+                    supplied(&metrics.device_id)
+                ),
+                k,
+            ))
+            .child(field("PCI bus path", supplied(&metrics.pci_bus_path), k))
+            .child(field(
+                "Link metrics updated",
+                metrics.last_updated.as_deref().unwrap_or("Unknown"),
+                k,
+            ));
+    } else {
+        view =
+            view.child(caption("No link metrics record is available for this interface", k).wrap());
+    }
+    view = view.child(field(
+        "Interface capabilities",
+        interface
+            .capabilities
+            .as_ref()
+            .map(|v| {
+                if v.is_empty() {
+                    "None advertised".into()
+                } else {
+                    v.join(", ")
+                }
+            })
+            .unwrap_or_else(|| "Unknown".into()),
+        k,
+    ));
     if let Some(network) = interface.network {
         let name = inventory
             .networks
