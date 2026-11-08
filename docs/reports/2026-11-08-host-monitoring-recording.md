@@ -86,3 +86,10 @@ inspection confirms reachable headings, controls and scrollable content. The
 final synthetic scene refinements were followed by the three Rune tests and
 strict Clippy again. These checks do not establish real-host or assistive-technology
 qualification. No production host was contacted or mutated.
+
+## Integrated verification
+
+After merging this increment onto the 0.14 source checkpoint and advancing development to
+0.15.0, the combined workspace passed **1,148 tests**: 505 core unit, 311 direct protocol,
+319 Rune/desktop and 13 profile/TLS/probe cases. Strict workspace/all-target Clippy passed.
+This integration does not change the live-host and desktop qualification limits above.
