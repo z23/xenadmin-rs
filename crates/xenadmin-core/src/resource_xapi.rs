@@ -125,6 +125,7 @@ pub(super) async fn prepare(
         ResourceAction::Pool(_) => unreachable!(),
         ResourceAction::Host(_) => return Err(Error::InvalidResourceCommand),
         ResourceAction::Network(_) => return super::network::prepare(session, record).await,
+        ResourceAction::Transfer(_) => return Err(Error::TransferConflict),
         ResourceAction::CancelTask => {
             cancellable_task(&fresh)?;
             steps.push(Step {
@@ -401,6 +402,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         ResourceAction::Pool(_) => vec![Check::Pool],
         ResourceAction::Host(_) => Vec::new(),
         ResourceAction::Network(_) => vec![Check::Network],
+        ResourceAction::Transfer(_) => vec![],
         ResourceAction::CancelTask => vec![Check::TaskCancellation],
         ResourceAction::DismissMessage { .. } => vec![Check::MessageDeleted],
         ResourceAction::Storage(_) => vec![Check::Storage],

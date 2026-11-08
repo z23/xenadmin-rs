@@ -50,6 +50,11 @@ mod vm_lifecycle_backend;
 pub use vm_lifecycle::{
     GuestFirmware, SnapshotDeletionSelection, VmCopyMode, VmLifecycleOperation,
 };
+mod transfer;
+pub use transfer::{
+    ArchiveGuest, ArchiveSummary, ExportSource, TransferAction, TransferCreated, TransferFile,
+    TransferProgress, TransferRequest,
+};
 mod trust;
 mod xapi;
 
@@ -70,6 +75,29 @@ pub use trust::{CertificateFingerprint, ConnectionOptions, Credentials, Endpoint
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Choose a regular local file and an existing destination directory")]
+    TransferFile,
+    #[error("The selected local file or directory changed since review")]
+    TransferFileChanged,
+    #[error("The destination already exists; choose a new filename")]
+    TransferDestinationExists,
+    #[error("The transfer exceeds the supported size or time limit")]
+    TransferLimit,
+    #[error(
+        "This archive is malformed or uses a format/configuration not supported by this importer"
+    )]
+    TransferArchive,
+    #[error(
+        "The transfer redirect is outside the authenticated pool or changes the requested operation"
+    )]
+    TransferEndpoint,
+    #[error(
+        "The transfer session expired; reconnect and inspect its outcome before starting another transfer"
+    )]
+    TransferExpired,
+    #[error("The transfer resource identities or provenance could not be verified")]
+    TransferConflict,
+
     #[error("Choose up to 32 distinct metric source names")]
     InvalidMetricsOptions,
     #[error("The metrics endpoint or redirect is outside the verified pool")]

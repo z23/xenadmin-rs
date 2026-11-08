@@ -357,6 +357,7 @@ fn operation_value(record: &crate::OperationRecord) -> Value {
 fn resource_operation_value(record: &crate::ResourceOperationRecord) -> Value {
     json!({"id":record.id,"pool":record.pool,"target":record.target,"action":record.action.label(),"state":record.state,
         "progress":record.progress,"created_at_ms":record.created_at_ms,"created":record.created,
+        "transfer":record.transfer,"transfer_created":record.transfer_created,
         "detail":bounded(&record.detail),"local_error":record.local_error.as_deref().map(bounded),
         "can_cancel":record.can_cancel,"cancel_requested":record.cancel_requested,
         "steps":record.steps.iter().take(64).map(|step|json!({"label":bounded(&step.label),"state":step.state,"detail":bounded(&step.detail)})).collect::<Vec<_>>()})

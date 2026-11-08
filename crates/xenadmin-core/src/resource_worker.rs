@@ -1,5 +1,7 @@
 #[path = "host_worker.rs"]
 mod host;
+#[path = "transfer_worker.rs"]
+mod transfer_worker;
 use super::{ResourceOperationRecord, xapi};
 use crate::{
     Error, OperationId, OperationState, OperationStep, StepState,
@@ -144,6 +146,9 @@ impl ResourceRequest {
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
             return self.execute_host(journal, session, cancel).await;
         }
+        if matches!(self.record.action, super::ResourceAction::Transfer(_)) {
+            return self.execute_transfer(journal, session, cancel).await;
+        }
         self.record.detail = "Checking fresh resource state".into();
         self.save(journal).await?;
         let steps = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=xapi::prepare(session,&mut self.record)=>result?};
@@ -237,6 +242,9 @@ impl ResourceRequest {
         }
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
             return self.reconcile_host(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::Transfer(_)) {
+            return self.recheck_transfer(journal, session, cancel).await;
         }
         if self.record.action == super::ResourceAction::CancelTask {
             if self.record.steps.len() != 1 || self.record.steps[0].state == StepState::Pending {

@@ -372,6 +372,18 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .child(Button::new("Create VM").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, false)).build(k).key("clone-snapshot-vm"))
             .child(Button::new("Create template").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, true)).build(k).key("clone-snapshot-template"))
             .child(Button::new("Delete snapshot").variant(ButtonVariant::Danger).disabled(selected.is_none() || (!s.demo && !can_delete)).on_press(begin_delete).build(k).key("delete-snapshot")));
+    if let Some(snapshot) = selected
+        && let Some(parent) = snapshot.vm
+    {
+        content = content.child(transfers::export_button(
+            s,
+            xenadmin_core::ExportSource::Snapshot {
+                snapshot: snapshot.id,
+                parent,
+            },
+            k,
+        ));
+    }
     if s.demo {
         content = content.child(
             caption(

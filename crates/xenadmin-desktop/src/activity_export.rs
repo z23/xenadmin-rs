@@ -140,6 +140,18 @@ impl Entry {
                     uuid: target.uuid(),
                 })
                 .into_iter()
+                .chain(record.transfer_created.vms.iter().map(|id| Created {
+                    kind: "VM".into(),
+                    uuid: id.uuid(),
+                }))
+                .chain(record.transfer_created.disks.iter().map(|id| Created {
+                    kind: "Disk".into(),
+                    uuid: id.uuid(),
+                }))
+                .chain(record.transfer_created.networks.iter().map(|id| Created {
+                    kind: "Network".into(),
+                    uuid: id.uuid(),
+                }))
                 .collect(),
         }
     }

@@ -12,6 +12,7 @@ mod profiles_view;
 mod resource_admin;
 mod resource_details;
 mod storage_view;
+mod transfers;
 mod vm_devices;
 mod vm_lifecycle;
 mod vm_migration;
@@ -155,6 +156,7 @@ struct State {
     devices: Option<vm_devices::DeviceView>,
     vm_lifecycle: Option<vm_lifecycle::Panel>,
     vm_migration: Option<Box<vm_migration::Editor>>,
+    transfers: transfers::Panel,
     workspace: profiles_view::Workspace,
     diagnostic_results: Vec<String>,
     diagnostics: Option<ActionDiagnostics>,
@@ -254,6 +256,7 @@ fn init() -> State {
         devices: None,
         vm_lifecycle: None,
         vm_migration: None,
+        transfers: Default::default(),
         workspace: profiles_view::Workspace::load(preferences.last_profile, instance.is_some()),
         diagnostic_results: Vec::new(),
         diagnostics: None,
@@ -725,6 +728,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= resource_admin::poll(s);
     changed |= storage_view::poll(s);
+    changed |= transfers::poll(s);
     changed |= console_view::poll_export(s);
     changed |= metrics_view::poll(s);
     dev_inspection::refresh(s);
@@ -1175,6 +1179,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
+        Button::new("Archives")
+            .on_press(transfers::open)
+            .build(&k)
+            .key("archives-open"),
+    );
+    controls = controls.child(
         Button::new("Activity")
             .on_press(activity::open)
             .build(&k)
@@ -1272,6 +1282,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [pool_view::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
+    } else if s.transfers.show {
+        rune_kit::root(base, [transfers::dialog(s, &k)])
     } else if s.vm_migration.is_some() {
         rune_kit::root(base, [vm_migration::dialog(s, &k)])
     } else if s.vm_lifecycle.is_some() {
@@ -1426,7 +1438,8 @@ fn details(s: &State, k: &Kit) -> El {
     if let Some(vm) = selected.vm {
         detail = detail
             .child(vm_lifecycle::controls(s, vm, k))
-            .child(vm_migration::button(s, vm, k));
+            .child(vm_migration::button(s, vm, k))
+            .child(transfers::button(s, vm, k));
     }
     detail = detail.child(metrics_view::button(s, k));
     if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
@@ -1930,6 +1943,7 @@ fn main() {
             }),
             ("vm-create", vm_lifecycle::scene),
             ("vm-migration", vm_migration::scene),
+            ("archive-export", transfers::scene),
             ("snapshots", |s| {
                 demo(s);
                 let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();

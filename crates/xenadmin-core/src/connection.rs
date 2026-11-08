@@ -435,12 +435,43 @@ impl Connection {
             .map_err(|_| Error::Busy)?;
         Ok(operation)
     }
+    /// Transfer only a selected local XVA file through the fixed authenticated endpoints.
+    pub fn transfer(
+        &self,
+        id: crate::OperationId,
+        pool: crate::ObservedResource,
+        request: crate::TransferRequest,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only && !request.action.is_export() {
+            return Err(Error::ReadOnly);
+        }
+        if self.latest().observe_resource(pool.target)? != pool {
+            return Err(Error::Stale);
+        }
+        if !matches!(pool.target, crate::ResourceTarget::Pool(_)) {
+            return Err(Error::TransferConflict);
+        }
+        if request.action.is_export() != request.file.identity.is_none() {
+            return Err(Error::TransferFile);
+        }
+        let (operation, pending) =
+            crate::resources::transfer_channel(id, pool, request, self.runtime.clone());
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(pending)))
+            .map_err(|_| Error::Busy)?;
+        Ok(operation)
+    }
     pub fn control_resource(
         &self,
         id: crate::OperationId,
         control: crate::OperationControl,
     ) -> Result<(), Error> {
-        if self.read_only {
+        if self.read_only
+            && !self
+                .resource_history()
+                .iter()
+                .any(|r| r.id == id && r.action.read_only_export())
+        {
             return Err(Error::ReadOnly);
         }
         if !self.latest().is_current() {
@@ -788,7 +819,7 @@ async fn run(
                         Some(request)=requests.recv()=>{
                             match request {
                                 Request::ResourceSubmit(request)=>{
-                                    if options.read_only {request.reject(Error::ReadOnly);}
+                                    if options.read_only && !request.record.action.read_only_export() {request.reject(Error::ReadOnly);}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.record.pool) {request.reject(Error::Stale);}
                                     else if journal_error.is_some() {request.reject(Error::Journal);}
                                     else if resource_workers.len()>=8 {request.reject(Error::Busy);}
@@ -796,10 +827,10 @@ async fn run(
                                 }
                                 Request::ResourceControl(id,control)=>{
                                     let result=(|| {
-                                        if options.read_only {return Err(Error::ReadOnly);}
                                         let pool=last_inventory.as_ref().filter(|_|!token.is_empty()).ok_or(Error::Stale)?.pool_id;
                                         if !resource_counts.contains_key(&id)&&resource_workers.len()>=8 {return Err(Error::Busy);}
                                         let journal=operations::Journal::open(&directory)?;
+                                        if options.read_only && !journal.resource_load(id)?.is_some_and(|r|r.pool==pool&&r.action.read_only_export()){return Err(Error::ReadOnly)}
                                         let record=journal.resource_control(pool,id,control)?;
                                         if !record.state.terminal() {
                                             if !resource_counts.contains_key(&id) {start_resource(crate::resources::ResourceRequest::tracking(record.clone()),&mut resource_workers,&mut resource_counts);}
@@ -939,28 +970,37 @@ async fn run(
                                     Ok(None) => {}
                                     Err(error) => break Some(error),
                                 }
-                                if !recovered && !options.read_only {
-                                    match operations::recover(&directory, inventory.pool_id) {
-                                        Ok(rows) => {
-                                            for record in rows {
-                                                if !record.state.terminal() && record.has_task() {
-                                                    start_worker(
-                                                        MutationRequest::tracking(record.clone()),
-                                                        None,
-                                                        &mut workers,
-                                                        &mut worker_counts,
-                                                    );
+                                if !recovered {
+                                    if !options.read_only {
+                                        match operations::recover(&directory, inventory.pool_id) {
+                                            Ok(rows) => {
+                                                for record in rows {
+                                                    if !record.state.terminal() && record.has_task()
+                                                    {
+                                                        start_worker(
+                                                            MutationRequest::tracking(
+                                                                record.clone(),
+                                                            ),
+                                                            None,
+                                                            &mut workers,
+                                                            &mut worker_counts,
+                                                        );
+                                                    }
+                                                    merge_record(&mut records, record);
                                                 }
-                                                merge_record(&mut records, record);
+                                                publish_history(&history, &mut records);
                                             }
-                                            publish_history(&history, &mut records);
+                                            Err(error) => journal_error = Some(error.to_string()),
                                         }
-                                        Err(error) => journal_error = Some(error.to_string()),
                                     }
                                     let recovery = if directory.join("operations.sqlite3").exists()
                                     {
                                         operations::Journal::open(&directory).and_then(|journal| {
-                                            journal.resource_recover(inventory.pool_id)
+                                            if options.read_only {
+                                                journal.resource_recover_exports(inventory.pool_id)
+                                            } else {
+                                                journal.resource_recover(inventory.pool_id)
+                                            }
                                         })
                                     } else {
                                         Ok(Vec::new())

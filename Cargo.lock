@@ -4853,10 +4853,12 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 name = "xenadmin-core"
 version = "0.6.0"
 dependencies = [
+ "flate2",
  "rcgen",
  "reqwest",
  "roxmltree",
  "rusqlite",
+ "rustix 1.1.6",
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",
@@ -4884,6 +4886,7 @@ dependencies = [
  "rune-kit",
  "serde",
  "serde_json",
+ "tempfile",
  "uuid",
  "xenadmin-core",
 ]

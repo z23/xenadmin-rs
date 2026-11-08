@@ -215,12 +215,14 @@ See the [same-pool migration increment](reports/2026-11-08-migration.md) for the
 | P11-03 | Storage live migration | Ordinary exclusive non-CBT disk relocation and NIC mapping implemented with replacement UUID verification; snapshot/shared-disk topologies and live qualification open |
 | P11-04 | Cross-pool migration/move/copy | Queued |
 | P11-05 | Transfer-network choice and console relocation | Explicit IP-configured destination transfer network and one-shot console follow after verified local same-pool migration implemented; external/cross-pool/IPv6-only paths and live qualification open |
-| P11-06 | XVA VM/template import/export | Queued |
-| P11-07 | Snapshot export | Queued |
+| P11-06 | XVA VM/template import/export | Native reviewed plain/gzip ordinary-guest import and halted VM/custom-template export implemented; bounded identity/provenance fixtures verified; zstd, broader archive shapes and live qualification open |
+| P11-07 | Snapshot export | Halted disk-snapshot XVA export implemented with parent/source identity and normalized archive verification; memory checkpoints, snapshot chains and live qualification open |
 | P11-08 | OVF/OVA appliance import/export | Queued |
 | P11-09 | Standalone disk-image import | Queued |
 | P11-10 | Conversion manager | Capability review and implementation queued |
-| P11-11 | Transfer cancellation/expiry/partial-result recovery | Queued |
+| P11-11 | Transfer cancellation/expiry/partial-result recovery | XVA stream/task progress, explicit cancellation, expiry and no-replay recovery implemented; failed imports retain unknown guard and known resource UUIDs; other formats and live qualification open |
+
+See the [XVA transfer increment](reports/2026-11-08-xva-transfers.md) for format limits, trust and unresolved import cleanup.
 
 ## 12. Host administration
 

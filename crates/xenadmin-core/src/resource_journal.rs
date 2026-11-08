@@ -35,9 +35,17 @@ impl Journal {
                 .filter(|v| !v.is_null())
                 .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
                 .transpose()?;
+            let transfer_plan = payload
+                .get("transfer_plan")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let mut record: ResourceOperationRecord =
                 serde_json::from_value(payload).map_err(|_| Error::Journal)?;
             record.host_plan = host_plan;
+            record.transfer_plan = transfer_plan;
             record.task = task;
             record.result_reference = result_reference;
             record.revision = revision;
@@ -50,6 +58,9 @@ impl Journal {
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
                 return Err(Error::OperationConflict);
+            }
+            if !crate::transfer::valid_update(&old, record) {
+                return Err(Error::JournalChanged);
             }
             if (old.state.terminal() && old.state != record.state)
                 || (old.task.is_some() && old.task != record.task)
@@ -85,6 +96,12 @@ impl Journal {
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
             );
         }
+        if let Some(plan) = &record.transfer_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "transfer_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         let payload = serde_json::to_string(&payload).map_err(|_| Error::Journal)?;
         let changed=self.0.execute("INSERT INTO resource_operations(id,pool,payload,task,result_reference,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,result_reference=excluded.result_reference,terminal=excluded.terminal,revision=excluded.revision WHERE resource_operations.revision=?7 AND (resource_operations.terminal=0 OR excluded.terminal=1)",params![record.id.to_string(),record.pool.to_string(),payload,record.task,record.result_reference,record.state.terminal(),record.revision]).map_err(|_|Error::Journal)?;
         if changed != 1 {
@@ -108,6 +125,8 @@ impl Journal {
                 if old.pool != record.pool
                     || old.target != record.target
                     || old.action != record.action
+                    || old.transfer_plan.as_ref().map(|p| &p.file)
+                        != record.transfer_plan.as_ref().map(|p| &p.file)
                 {
                     return Err(Error::OperationConflict);
                 }
@@ -301,7 +320,23 @@ impl Journal {
         &self,
         pool: PoolId,
     ) -> Result<Vec<ResourceOperationRecord>, Error> {
+        self.resource_recover_filtered(pool, false)
+    }
+    pub(crate) fn resource_recover_exports(
+        &self,
+        pool: PoolId,
+    ) -> Result<Vec<ResourceOperationRecord>, Error> {
+        self.resource_recover_filtered(pool, true)
+    }
+    fn resource_recover_filtered(
+        &self,
+        pool: PoolId,
+        exports_only: bool,
+    ) -> Result<Vec<ResourceOperationRecord>, Error> {
         let mut rows = self.resource_history(pool)?;
+        if exports_only {
+            rows.retain(|r| r.action.read_only_export())
+        }
         for record in &mut rows {
             if record.state.terminal() {
                 continue;

@@ -141,6 +141,7 @@ pub enum ResourceCommand {
 pub enum ResourceAction {
     Pool(crate::PoolOperation),
     Host(crate::HostOperation),
+    Transfer(crate::TransferAction),
     Network(NetworkOperation),
     CancelTask,
     DismissMessage {
@@ -176,11 +177,15 @@ pub enum ResourceAction {
     },
 }
 impl ResourceAction {
+    pub(crate) fn read_only_export(&self) -> bool {
+        matches!(self, Self::Transfer(action) if action.is_export())
+    }
     pub fn label(&self) -> &'static str {
         match self {
             Self::Pool(operation) => operation.label(),
             Self::Host(operation) => operation.label(),
             Self::Network(operation) => operation.label(),
+            Self::Transfer(action) => action.label(),
             Self::CancelTask => "Request task cancellation",
             Self::DismissMessage { .. } => "Dismiss server message",
             Self::Storage(operation) => operation.label(),
@@ -206,6 +211,7 @@ impl ResourceAction {
             Self::Pool(operation) => return operation.validate(target),
             Self::Host(operation) => return operation.validate(target),
             Self::Network(operation) => return operation.validate(target),
+            Self::Transfer(_) => matches!(target, ResourceTarget::Pool(_)),
             Self::CancelTask => matches!(target, ResourceTarget::Task(_)),
             Self::DismissMessage { .. } => matches!(target, ResourceTarget::Message(_)),
             Self::Storage(operation) => return operation.validate(target),
@@ -362,6 +368,12 @@ pub struct ResourceOperationRecord {
     pub cancel_requested: bool,
     pub steps: Vec<OperationStep>,
     pub created: Option<ResourceTarget>,
+    #[serde(default)]
+    pub transfer: Option<crate::TransferProgress>,
+    #[serde(default)]
+    pub transfer_created: crate::TransferCreated,
+    #[serde(skip)]
+    pub(crate) transfer_plan: Option<Box<crate::transfer::Plan>>,
     #[serde(skip)]
     pub local_error: Option<String>,
     #[serde(skip)]
@@ -443,6 +455,9 @@ pub(crate) fn channel(
         cancel_requested: false,
         steps: Vec::new(),
         created: None,
+        transfer: None,
+        transfer_created: Default::default(),
+        transfer_plan: None,
         local_error: None,
         revision: 0,
         task: None,
@@ -460,4 +475,21 @@ pub(crate) fn channel(
         ResourceOperation { receiver, runtime },
         ResourceRequest::new(target.generation, record, sender),
     )
+}
+
+pub(crate) fn transfer_channel(
+    id: OperationId,
+    target: ObservedResource,
+    request: crate::TransferRequest,
+    runtime: tokio::runtime::Handle,
+) -> (ResourceOperation, ResourceRequest) {
+    let (operation, mut pending) = channel(
+        id,
+        target,
+        ResourceAction::Transfer(request.action),
+        runtime,
+    );
+    pending.record.transfer = Some(Default::default());
+    pending.record.transfer_plan = Some(Box::new(crate::transfer::Plan::new(request.file)));
+    (operation, pending)
 }
