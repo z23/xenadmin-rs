@@ -15,6 +15,7 @@ mod host_admin;
 mod host_console;
 mod host_power_view;
 mod host_support_view;
+mod instance_launch;
 mod inventory_information;
 mod inventory_menu;
 mod metrics_view;
@@ -233,7 +234,6 @@ struct State {
     console_buttons: u8,
     console_keys: Vec<(rune::PhysicalKeyCode, u32)>,
     backend: Result<Backend, String>,
-    _instance: Option<preferences::InstanceGuard>,
     connection: Option<Connection>,
     snapshot: Option<Arc<ConnectionSnapshot>>,
     inventory: Option<Arc<Inventory>>,
@@ -258,6 +258,7 @@ struct State {
     show_connect: bool,
     error: Option<String>,
     preferences: Preferences,
+    _instance: Option<xenadmin_core::DesktopInstance>,
 }
 fn secure_field() -> TextEdit {
     let mut edit = TextEdit::new("");
@@ -265,21 +266,23 @@ fn secure_field() -> TextEdit {
     edit
 }
 fn init() -> State {
-    init_mode(!cfg!(test))
+    let mut state = init_with_instance(None);
+    if rune::extra_args().iter().any(|a| a == "--demo") {
+        demo(&mut state);
+    }
+    state
 }
-fn init_mode(live_state: bool) -> State {
+fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State {
+    let live_state = instance.is_some();
     let preferences = if live_state {
         Preferences::load()
     } else {
         Preferences::default()
     };
-    let (instance, backend) = if live_state {
-        match preferences::InstanceGuard::acquire() {
-            Ok(guard) => (Some(guard), Backend::start().map_err(|e| e.to_string())),
-            Err(error) => (None, Err(error)),
-        }
+    let backend = if live_state {
+        Backend::start().map_err(|e| e.to_string())
     } else {
-        (None, Err("UI fixtures cannot connect to hosts".into()))
+        Err("UI fixtures cannot connect to hosts".into())
     };
     let mut table = TableState::new().key("inventory-table").multi_select(true);
     for (name, width) in &preferences.columns {
@@ -383,9 +386,6 @@ fn init_mode(live_state: bool) -> State {
         preferences,
     };
     profiles_view::apply_initial(&mut s);
-    if live_state && rune::extra_args().iter().any(|a| a == "--demo") {
-        demo(&mut s);
-    }
     s
 }
 impl State {
@@ -2230,7 +2230,15 @@ fn demo(s: &mut State) {
     s.page = Page::Guests;
     s.rebuild();
 }
-fn main() {
+fn main() -> std::process::ExitCode {
+    let launch = match instance_launch::prepare() {
+        Ok(instance_launch::Launch::Forwarded) => return std::process::ExitCode::SUCCESS,
+        Ok(launch) => launch,
+        Err(error) => {
+            eprintln!("{error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let spec = AppSpec {
         setup: Some(setup),
         poll: Some(poll),
@@ -2379,7 +2387,19 @@ fn main() {
             profiles_view::disconnect_all(s);
         });
     console_windows::register(&mut app);
+    let app = match launch {
+        instance_launch::Launch::Owner(owner) => match instance_launch::attach(owner, app.handle())
+        {
+            Ok(owner) => app.init(move || init_with_instance(Some(owner))),
+            Err(error) => {
+                eprintln!("{error}");
+                return std::process::ExitCode::FAILURE;
+            }
+        },
+        _ => app,
+    };
     app.run();
+    std::process::ExitCode::SUCCESS
 }
 #[cfg(test)]
 mod tests {

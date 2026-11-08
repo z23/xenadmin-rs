@@ -39,7 +39,7 @@ struct Payload {
     demo_inventory: Option<Arc<Inventory>>,
 }
 fn empty() -> State {
-    init_mode(false)
+    init_with_instance(None)
 }
 fn setup(s: &mut State, waker: Waker) {
     s.waker = Some(waker);

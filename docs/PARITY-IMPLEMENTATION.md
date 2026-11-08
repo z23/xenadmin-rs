@@ -311,7 +311,7 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | P18-08 | General/confirmation/console/display options | Persistent system/light/dark appearance, reduced motion, optional routine-power review and new-console fit/reconnect defaults implemented alongside per-profile options; compact/wide Rune fixtures and native synthetic renders verified, real desktop qualification open ([evidence](reports/2026-11-08-desktop-options.md)) |
 | P18-09 | External tools/plugins | Capability review and implementation queued |
 | P18-10 | Localization/integrated help | Offline contextual-topic Help implemented for connections, recovery, consoles, storage and private diagnostics; translation catalogs/localization remain queued ([evidence](reports/2026-11-08-desktop-options.md)) |
-| P18-11 | Multiple client instances/shared-pool ownership | Authenticated pool alias ownership and exclusive desktop state-directory lock implemented; cross-process IPC/focus handoff remains queued |
+| P18-11 | Multiple client instances/shared-pool ownership | Authenticated pool alias ownership, exclusive state-directory process ownership and private same-user activation handoff with Wayland/X11 tokens implemented; startup isolation and cross-process fixtures verified, compositor focus qualification remains open ([report](reports/2026-11-08-desktop-activation.md)) |
 
 ## 19. Qualification gaps
 

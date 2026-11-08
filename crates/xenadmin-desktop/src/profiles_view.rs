@@ -1173,7 +1173,7 @@ pub(super) fn restore_sessions(s: &mut State) {
     pump_loads(s);
 }
 
-fn preview_arguments(arguments: impl Iterator<Item = String>) -> bool {
+pub(super) fn preview_arguments(arguments: impl Iterator<Item = String>) -> bool {
     arguments.into_iter().any(|argument| {
         ["--demo", "--scene", "--snap", "--tree"]
             .into_iter()
