@@ -151,6 +151,7 @@ pub(crate) async fn prepare(
         }
     }
     Ok(http::Prepared {
+        peer_identity: None,
         kind: http::Kind::Archive,
         endpoint,
         known_hosts,
@@ -356,6 +357,7 @@ pub(crate) async fn storage_route(
         endpoint = Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint)?;
     }
     Ok(http::Prepared {
+        peer_identity: None,
         kind: http::Kind::Disk,
         endpoint,
         known_hosts,

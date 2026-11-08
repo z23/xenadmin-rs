@@ -94,6 +94,7 @@ pub(crate) fn select_source(path: &Path) -> Result<TransferFile, Error> {
         disk: None,
         range: None,
         ovf: None,
+        host_backup: None,
     })
 }
 pub(crate) fn select_destination(path: &Path) -> Result<TransferFile, Error> {
@@ -109,6 +110,7 @@ pub(crate) fn select_destination(path: &Path) -> Result<TransferFile, Error> {
         disk: None,
         range: None,
         ovf: None,
+        host_backup: None,
     })
 }
 pub(crate) fn parent_handle(file: &TransferFile) -> Result<File, Error> {
@@ -420,6 +422,7 @@ pub(crate) fn select_disk_source(
         disk: Some(disk),
         range: None,
         ovf: None,
+        host_backup: None,
     })
 }
 
@@ -469,5 +472,6 @@ pub(crate) fn select_plain(path: &Path) -> Result<TransferFile, Error> {
         disk: None,
         range: None,
         ovf: None,
+        host_backup: None,
     })
 }

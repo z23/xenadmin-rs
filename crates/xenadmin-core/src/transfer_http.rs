@@ -20,10 +20,14 @@ pub(crate) enum Kind {
     Disk,
     HostBackup,
     HostSupport,
+    HostRestore,
 }
 impl Kind {
     fn is_host(self) -> bool {
-        matches!(self, Self::HostBackup | Self::HostSupport)
+        matches!(
+            self,
+            Self::HostBackup | Self::HostSupport | Self::HostRestore
+        )
     }
     fn maximum_bytes(self) -> u64 {
         if self.is_host() {
@@ -36,6 +40,7 @@ impl Kind {
         match (self, upload) {
             (Self::HostBackup, _) => "/host_backup",
             (Self::HostSupport, _) => "/system-status",
+            (Self::HostRestore, _) => "/host_restore",
             (Self::Archive, true) => "/import",
             (Self::Archive, false) => "/export",
             (Self::Disk, true) => "/import_raw_vdi",
@@ -45,6 +50,7 @@ impl Kind {
 }
 pub(crate) struct Prepared {
     pub kind: Kind,
+    pub peer_identity: Option<crate::CertificateFingerprint>,
     pub endpoint: Endpoint,
     pub known_hosts: BTreeSet<String>,
     pub query: Vec<(String, String)>,
@@ -70,6 +76,7 @@ impl Meter {
 struct Reader {
     file: tokio::io::Take<tokio::fs::File>,
     meter: Arc<Meter>,
+    digest: Option<Arc<std::sync::Mutex<Sha256>>>,
 }
 impl AsyncRead for Reader {
     fn poll_read(
@@ -84,6 +91,12 @@ impl AsyncRead for Reader {
         let before = buffer.filled().len();
         let result = Pin::new(&mut this.file).poll_read(cx, buffer);
         if let Poll::Ready(Ok(())) = result {
+            if let Some(digest) = &this.digest {
+                digest
+                    .lock()
+                    .expect("private stream digest")
+                    .update(&buffer.filled()[before..]);
+            }
             this.meter
                 .bytes
                 .fetch_add((buffer.filled().len() - before) as u64, Ordering::Relaxed);
@@ -154,10 +167,14 @@ fn redirected(
     // Some hosts retain no query in Location. Reconstruct our original fixed query below.
     Endpoint::parse(&target[..url::Position::BeforePath]).map_err(|_| Error::TransferEndpoint)
 }
-fn client(session: &Session, endpoint: Endpoint) -> Result<reqwest::Client, Error> {
+fn client(
+    session: &Session,
+    endpoint: Endpoint,
+    identity: Option<&crate::CertificateFingerprint>,
+) -> Result<reqwest::Client, Error> {
     let mut options = session.options().for_endpoint(endpoint);
     options.request_timeout = Duration::from_secs(24 * 60 * 60);
-    options.client()
+    options.client_with_peer_identity(identity)
 }
 fn error(error: reqwest::Error) -> Error {
     crate::xapi::transport_error(error.without_url())
@@ -183,7 +200,7 @@ async fn export_response(
             return Err(Error::TransferEndpoint);
         }
         let target = url(&endpoint, false, prepared.kind, &prepared.query)?;
-        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,endpoint.clone())?.get(target.clone()).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::ACCEPT,"application/octet-stream").send()=>result.map_err(error)?};
+        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,endpoint.clone(),prepared.peer_identity.as_ref())?.get(target.clone()).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::ACCEPT,"application/octet-stream").send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             let location = response
                 .headers()
@@ -206,13 +223,20 @@ pub(crate) async fn run(
     if prepared.upload {
         let input = files::source(&plan.file)?;
         let verifier = input.try_clone().map_err(|_| Error::TransferFile)?;
-        let bytes = plan.file.size().ok_or(Error::TransferFile)?;
+        let bytes = plan
+            .file
+            .size()
+            .filter(|n| *n > 0 && *n <= prepared.kind.maximum_bytes())
+            .ok_or(Error::TransferFile)?;
         meter.total.store(bytes, Ordering::Relaxed);
+        let digest = matches!(prepared.kind, Kind::HostRestore)
+            .then(|| Arc::new(std::sync::Mutex::new(Sha256::new())));
         let reader = Reader {
+            digest: digest.clone(),
             file: tokio::fs::File::from_std(input).take(bytes),
             meter: meter.clone(),
         };
-        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone())?.put(url(&prepared.endpoint,true,prepared.kind,&prepared.query)?).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
+        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone(),prepared.peer_identity.as_ref())?.put(url(&prepared.endpoint,true,prepared.kind,&prepared.query)?).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             return Err(Error::TransferEndpoint);
         }
@@ -231,7 +255,16 @@ pub(crate) async fn run(
         }
         files::source_unchanged(&plan.file, &verifier)?;
         // This receipt records selected file identity and sent byte count; it does not claim a server-side disk digest.
-        files::source_receipt(&plan.file, &verifier, bytes)
+        let mut receipt = files::source_receipt(&plan.file, &verifier, bytes)?;
+        if let Some(digest) = digest {
+            receipt.sha256 = digest
+                .lock()
+                .map_err(|_| Error::TransferConflict)?
+                .clone()
+                .finalize()
+                .into();
+        }
+        Ok(receipt)
     } else {
         let output = files::output(&plan)?;
         let verifier = output.try_clone().map_err(|_| Error::TransferFile)?;
@@ -305,6 +338,7 @@ mod tests {
             ConnectionOptions::new(Endpoint::parse("https://coordinator.example").unwrap());
         let prepared = Prepared {
             kind: Kind::Archive,
+            peer_identity: None,
             endpoint: options.endpoint.clone(),
             known_hosts: BTreeSet::from(["member.example".into()]),
             query: vec![

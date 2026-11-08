@@ -7,11 +7,15 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "host_archive.rs"]
 pub(crate) mod archive;
+#[path = "host_restore.rs"]
+pub(crate) mod restore;
+pub use restore::HostBackupSummary;
 pub const MAX_HOST_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HostArchiveOperation {
     Backup,
+    StageRestore { archive: HostBackupSummary },
     Support { entries: Vec<String> },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,6 +302,20 @@ pub(crate) async fn prepare(
     }
     let (kind, query) = match operation {
         HostArchiveOperation::Backup => (crate::transfer::http::Kind::HostBackup, vec![]),
+        HostArchiveOperation::StageRestore { archive } => {
+            if s.options().read_only {
+                return Err(Error::ReadOnly);
+            }
+            if archive.host != host
+                || archive.version != expected_version
+                || record["current_operations"]
+                    .as_object()
+                    .is_none_or(|m| !m.is_empty())
+            {
+                return Err(Error::TransferConflict);
+            }
+            (crate::transfer::http::Kind::HostRestore, vec![])
+        }
         HostArchiveOperation::Support { entries } => {
             let current = advertised(s, &reference).await?;
             if entries.iter().any(|e| !current.iter().any(|c| &c.key == e)) {
@@ -312,11 +330,56 @@ pub(crate) async fn prepare(
             )
         }
     };
+    if !endpoint.as_str().starts_with("https://") {
+        return Err(Error::Protocol(
+            "Host archives require HTTPS with exact host identity",
+        ));
+    }
+    let peer_identity = unique_certificate(s, host).await?;
+    let (_, current) = host_record(s, pool, host).await?;
+    if current["address"] != record["address"]
+        || version(&current)? != expected_version
+        || (matches!(operation, HostArchiveOperation::StageRestore { .. })
+            && current["current_operations"]
+                .as_object()
+                .is_none_or(|m| !m.is_empty()))
+    {
+        return Err(Error::TransferConflict);
+    }
     Ok(crate::transfer::http::Prepared {
         kind,
+        peer_identity: Some(peer_identity),
         endpoint,
         known_hosts: BTreeSet::new(),
         query,
-        upload: false,
+        upload: matches!(operation, HostArchiveOperation::StageRestore { .. }),
     })
+}
+
+async fn unique_certificate(
+    s: &Session,
+    host: HostId,
+) -> Result<crate::CertificateFingerprint, Error> {
+    let hosts = crate::security_discovery::records(s, "host", 128).await?;
+    let ids = hosts
+        .values()
+        .map(|r| {
+            r["uuid"]
+                .as_str()
+                .and_then(|v| HostId::parse(v).ok())
+                .ok_or(Error::TransferConflict)
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if ids.len() != hosts.len() || !ids.contains(&host) {
+        return Err(Error::TransferConflict);
+    }
+    let certificate = crate::security_discovery::certificate(s, host).await?;
+    for other in ids.into_iter().filter(|id| *id != host) {
+        if crate::security_discovery::certificate(s, other).await? == certificate {
+            return Err(Error::Protocol(
+                "Host certificates are shared; archive endpoint cannot be attributed to the selected host",
+            ));
+        }
+    }
+    Ok(certificate)
 }

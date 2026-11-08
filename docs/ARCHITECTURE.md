@@ -679,3 +679,16 @@ receipts; public step status is validated against that evidence. Recovery is rea
 Separate restoration requires a positive original setter receipt, an unsubmitted original
 restore and an unused source claim. See the [recovery report](reports/2026-11-08-vm-recovery.md).
 Automatic management addressing adds a typed DHCP/IPv6 autoconfiguration intent with a reviewed recovery IP. The recovery IP is not sent as static configuration: XAPI receives blank address/gateway arguments for automatic modes. Completion requires the observed mode, actual assigned IP, unchanged secondary-family settings, exact host address and the existing host-bound authenticated recovery route. Dynamic assignments that differ from review remain unresolved; no discovery scan, DNS update or configuration replay is implied. See the [address transition report](reports/2026-11-08-management-address-transitions.md).
+
+Host recovery staging uses the existing pool-scoped transfer reservation and owned server task.
+The selected gzip-tar archive is inspected without extraction, bound to exact host UUID, product
+version, file identity and compressed SHA-256, then revalidated before task creation. The archive
+inventory must contain only known literal assignments because the target restore script sources
+it; the complete path/link graph and post-extraction marker are checked before upload. This is
+structural validation of a trusted backup, not proof that arbitrary archived system files are safe.
+Host archive HTTP composes a fresh, unique pool-host certificate identity with the existing
+CA/pin/skip and proxy policy, rejects redirects, and sends the session only as a cookie. Staging
+reformats the live host's configured backup partition; the API does not expose its device path.
+A complete stream receipt with matching digest and owned-task success establishes staging only.
+Lost/failing/cancelled uploads remain uncertain and are never replayed. Recovery and acknowledgement
+are preserved when late stream evidence arrives; explicit recheck reads the saved task only.

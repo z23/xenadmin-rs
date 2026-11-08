@@ -214,6 +214,7 @@ impl Journal {
             super::management::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
+            crate::host_support::restore::validate_record(&record)?;
             Ok(record)
         })
         .transpose()
@@ -235,6 +236,7 @@ impl Journal {
         crate::root_password::validate_record(record)?;
         crate::storage_auth::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
+        crate::host_support::restore::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
             if old.root_password_plan.as_ref().is_some_and(|p| {
                 record
@@ -435,6 +437,7 @@ impl Journal {
         record: &mut ResourceOperationRecord,
     ) -> Result<bool, Error> {
         crate::cloud_init::validate_record(record)?;
+        crate::host_support::restore::validate_record(record)?;
         self.0
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::Journal)?;

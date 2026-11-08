@@ -851,6 +851,19 @@ impl Connection {
             return Err(Error::TransferFile);
         }
         match &request.action {
+            crate::TransferAction::Host {
+                host,
+                expected_version,
+                operation: crate::HostArchiveOperation::StageRestore { archive },
+            } if request.file.host_backup.as_ref() != Some(archive)
+                || archive.host != *host
+                || archive.version != *expected_version
+                || request.file.manifest.is_some()
+                || request.file.disk.is_some()
+                || request.file.ovf.is_some() =>
+            {
+                return Err(Error::TransferFile);
+            }
             crate::TransferAction::ImportOvf { networks, .. }
                 if request.file.ovf.as_ref().is_none_or(|o| {
                     o.summary

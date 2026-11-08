@@ -50,19 +50,30 @@ pub enum TransferAction {
     },
 }
 impl TransferAction {
-    pub fn is_export(&self) -> bool {
+    pub fn is_host_restore(&self) -> bool {
         matches!(
             self,
-            Self::ExportXva { .. }
-                | Self::ExportDisk { .. }
-                | Self::ExportOvf { .. }
-                | Self::Host { .. }
+            Self::Host {
+                operation: crate::HostArchiveOperation::StageRestore { .. },
+                ..
+            }
         )
+    }
+    pub fn is_export(&self) -> bool {
+        !self.is_host_restore()
+            && matches!(
+                self,
+                Self::ExportXva { .. }
+                    | Self::ExportDisk { .. }
+                    | Self::ExportOvf { .. }
+                    | Self::Host { .. }
+            )
     }
     pub fn label(&self) -> &'static str {
         match self {
             Self::Host { operation, .. } => match operation {
                 crate::HostArchiveOperation::Backup => "Back up host filesystem",
+                crate::HostArchiveOperation::StageRestore { .. } => "Stage host recovery archive",
                 crate::HostArchiveOperation::Support { .. } => "Download host support bundle",
             },
             Self::ExportXva { .. } => "Export XVA",
@@ -96,6 +107,14 @@ impl TransferAction {
             } => {
                 if crate::host_support::validate_operation(operation).is_err() {
                     return no("Choose one or more distinct advertised support categories");
+                }
+                if let crate::HostArchiveOperation::StageRestore { archive } = operation
+                    && (archive.host != *host
+                        || archive.version != *expected_version
+                        || archive.entries == 0
+                        || archive.logical_bytes > 256 * 1024 * 1024 * 1024)
+                {
+                    return no("The recovery archive does not match the reviewed host and version");
                 }
                 if expected_version.is_empty()
                     || expected_version.len() > 64
@@ -204,8 +223,22 @@ pub struct TransferFile {
     pub(crate) range: Option<files::FileRange>,
     #[serde(default)]
     pub(crate) ovf: Option<Box<crate::ovf::Selection>>,
+    #[serde(default)]
+    pub(crate) host_backup: Option<crate::HostBackupSummary>,
 }
 impl TransferFile {
+    pub fn host_backup_source(
+        path: impl AsRef<Path>,
+        host: crate::HostId,
+        version: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Error> {
+        crate::host_support::restore::select(path.as_ref(), host, version, cancel)
+    }
+    pub fn host_backup(&self) -> Option<&crate::HostBackupSummary> {
+        self.host_backup.as_ref()
+    }
+
     pub fn ovf_source(path: impl AsRef<Path>) -> Result<Self, Error> {
         crate::ovf::select(path.as_ref())
     }

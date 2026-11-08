@@ -2278,6 +2278,7 @@ fn main() {
             ("management-dhcp", network_admin::management_dynamic_scene),
             ("host-administration", host_admin::scene),
             ("host-support", host_support_view::scene),
+            ("host-restore", host_support_view::restore_scene),
             ("host-power-settings", host_power_view::scene),
             ("snapshot-schedules", snapshot_policy_view::scene),
             ("network-create", |s| resource_admin::scene(s, false)),

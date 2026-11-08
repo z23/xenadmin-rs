@@ -106,12 +106,41 @@ impl Drop for Fixture {
         self.server.abort();
     }
 }
+trait FixtureStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> FixtureStream for T {}
 impl Fixture {
     async fn new(fault: Fault) -> Self {
+        Self::transport(fault, false).await
+    }
+    async fn transport(fault: Fault, tls: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let options = ConnectionOptions::new(
-            Endpoint::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap(),
+        let mut options = ConnectionOptions::new(
+            Endpoint::parse(&format!(
+                "{}://{}",
+                if tls { "https" } else { "http" },
+                listener.local_addr().unwrap()
+            ))
+            .unwrap(),
         );
+        let (acceptor, pem) = if tls {
+            let rcgen::CertifiedKey { cert, key_pair } =
+                rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![cert.der().clone()],
+                    rustls::pki_types::PrivatePkcs8KeyDer::from(key_pair.serialize_der()).into(),
+                )
+                .unwrap();
+            options.accept_invalid_certificates = true;
+            (
+                Some(tokio_rustls::TlsAcceptor::from(Arc::new(config))),
+                cert.pem(),
+            )
+        } else {
+            (None, String::new())
+        };
         let records: Arc<Mutex<BTreeMap<String, Value>>> = Arc::new(Mutex::new(BTreeMap::from([
             (
                 "OpaqueRef:pool:p".into(),
@@ -119,7 +148,7 @@ impl Fixture {
             ),
             (
                 "OpaqueRef:host:h".into(),
-                json!({"uuid":uuid(3),"address":"127.0.0.1","enabled":true}),
+                json!({"uuid":uuid(3),"address":"127.0.0.1","enabled":true,"current_operations":{}}),
             ),
             (
                 "OpaqueRef:SR:s".into(),
@@ -134,6 +163,10 @@ impl Fixture {
                 json!({"uuid":uuid(2),"is_a_template":false,"is_a_snapshot":false,"is_control_domain":false,"power_state":"Halted","current_operations":{},"blocked_operations":{},"allowed_operations":["export"]}),
             ),
         ])));
+        records
+            .lock()
+            .unwrap()
+            .insert("fixture:hostcertificate".into(), json!(pem));
         if fault == Fault::Snapshot {
             let mut r = records.lock().unwrap();
             let parent = r["OpaqueRef:VM:source"].clone();
@@ -157,7 +190,16 @@ impl Fixture {
                 let (stream, _) = listener.accept().await.unwrap();
                 let r = r.clone();
                 let c = c.clone();
+                let acceptor = acceptor.clone();
                 tokio::spawn(async move {
+                    let stream: Box<dyn FixtureStream> = if let Some(acceptor) = acceptor {
+                        let Ok(stream) = acceptor.accept(stream).await else {
+                            return;
+                        };
+                        Box::new(stream)
+                    } else {
+                        Box::new(stream)
+                    };
                     let mut reader = BufReader::new(stream);
                     let mut line = String::new();
                     reader.read_line(&mut line).await.unwrap();
@@ -184,6 +226,9 @@ impl Fixture {
                             }
                         }
                     }
+                    if request.starts_with("PUT /host_restore?") {
+                        c.lock().unwrap().push("HEADERS /host_restore".into());
+                    }
                     assert!(len < 16_000_000);
                     let mut input = vec![0; len];
                     if reader.read_exact(&mut input).await.is_err() {
@@ -195,12 +240,16 @@ impl Fixture {
                     let mut delay_create = false;
                     let body = if request.starts_with("GET /host_backup?")
                         || request.starts_with("GET /system-status?")
+                        || request.starts_with("PUT /host_restore?")
                     {
                         assert_eq!(cookie, "session_id=OpaqueRef:synthetic-secret");
                         assert!(!request.contains("synthetic-secret"));
-                        let backup = request.starts_with("GET /host_backup?");
+                        let restore = request.starts_with("PUT /host_restore?");
+                        let backup = request.starts_with("GET /host_backup?") || restore;
                         c.lock().unwrap().push(
-                            if backup {
+                            if restore {
+                                "PUT /host_restore"
+                            } else if backup {
                                 "GET /host_backup"
                             } else {
                                 "GET /system-status"
@@ -232,6 +281,7 @@ impl Fixture {
                             } else {
                                 "success"
                             });
+                        delay_create = fault == "delayed-restore";
                         if fault == "lost" {
                             return;
                         }
@@ -249,7 +299,12 @@ impl Fixture {
                         if fault == "truncated" {
                             declared = Some(bytes.len() + 100);
                         }
-                        bytes
+                        if restore {
+                            assert_eq!(input, host_support_tests::body(true, 3));
+                            Vec::new()
+                        } else {
+                            bytes
+                        }
                     } else if request.starts_with("GET /export_raw_vdi?")
                         || request.starts_with("PUT /import_raw_vdi?")
                     {
@@ -410,6 +465,8 @@ impl Fixture {
                             json!({"result":null})
                         } else if method == "event.from" {
                             json!({"result":{"token":"transfer-fixture-token","events":if p[2]=="" {data.iter().map(|(reference,snapshot)|json!({"class":reference.split(':').nth(1).unwrap().to_ascii_lowercase(),"operation":"add","ref":reference,"snapshot":snapshot})).collect::<Vec<_>>()}else{vec![]}}})
+                        } else if method == "host.get_server_certificate" {
+                            json!({"result":data["fixture:hostcertificate"]})
                         } else if let Some(class) = method.strip_suffix(".get_all_records") {
                             json!({"result":data.iter().filter(|(k,_)|k.starts_with(&format!("OpaqueRef:{class}:"))).collect::<BTreeMap<_,_>>()})
                         } else if let Some(class) = method.strip_suffix(".get_by_uuid") {

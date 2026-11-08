@@ -1,22 +1,46 @@
 use super::*;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     io::{Read, Seek},
     rc::Rc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 const MAX_DECODED: u64 = 256 * 1024 * 1024 * 1024;
 const MAX_METADATA: u64 = 1024 * 1024;
-struct Limited<R> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Backup,
+    Support,
+    Restore,
+}
+struct Stop<'a> {
+    connection: Option<&'a CancellationToken>,
+    selection: Option<&'a AtomicBool>,
+    deadline: std::time::Instant,
+}
+impl Stop<'_> {
+    fn check(&self) -> Result<(), Error> {
+        if self.connection.is_some_and(CancellationToken::is_cancelled)
+            || self.selection.is_some_and(|c| c.load(Ordering::Relaxed))
+        {
+            return Err(Error::Closed);
+        }
+        if std::time::Instant::now() >= self.deadline {
+            return Err(Error::Timeout);
+        }
+        Ok(())
+    }
+}
+struct Limited<'a, R> {
     inner: R,
     total: u64,
     allowance: Rc<Cell<u64>>,
-    cancel: CancellationToken,
-    deadline: std::time::Instant,
+    stop: &'a Stop<'a>,
 }
-impl<R: Read> Read for Limited<R> {
+impl<R: Read> Read for Limited<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if self.cancel.is_cancelled() || std::time::Instant::now() >= self.deadline {
+        if self.stop.check().is_err() {
             return Err(std::io::ErrorKind::Interrupted.into());
         }
         if buffer.is_empty() {
@@ -98,54 +122,90 @@ pub(crate) fn inspect(
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
     file.rewind().map_err(|_| Error::TransferFile)?;
-    let compressed = matches!(operation, HostArchiveOperation::Backup);
-    let reader: Box<dyn Read + '_> = if compressed {
+    let backup = matches!(operation, HostArchiveOperation::Backup);
+    let reader: Box<dyn Read + '_> = if backup {
         Box::new(flate2::read::MultiGzDecoder::new(file))
     } else {
         Box::new(file)
     };
-    scan_cancel(reader, host, expected_version, compressed, cancel)
+    scan_cancel(reader, host, expected_version, backup, cancel)
+}
+struct Hashed<R> {
+    inner: R,
+    hash: Rc<RefCell<sha2::Sha256>>,
+}
+impl<R: Read> Read for Hashed<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use sha2::Digest;
+        let n = self.inner.read(buffer)?;
+        self.hash.borrow_mut().update(&buffer[..n]);
+        Ok(n)
+    }
+}
+pub(crate) fn inspect_restore(
+    file: &mut std::fs::File,
+    host: HostId,
+    version: &str,
+    connection: Option<&CancellationToken>,
+    selection: Option<&AtomicBool>,
+) -> Result<super::HostBackupSummary, Error> {
+    use sha2::Digest;
+    file.rewind().map_err(|_| Error::TransferFile)?;
+    let hash = Rc::new(RefCell::new(sha2::Sha256::new()));
+    let reader = flate2::read::MultiGzDecoder::new(Hashed {
+        inner: file,
+        hash: hash.clone(),
+    });
+    let stop = Stop {
+        connection,
+        selection,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
+    };
+    let result = scan_inner(reader, host, version, Mode::Restore, &stop);
+    stop.check()?;
+    let (entries, logical_bytes) = result?;
+    let sha256 = hash.borrow().clone().finalize().into();
+    Ok(super::HostBackupSummary {
+        host,
+        version: version.into(),
+        entries,
+        logical_bytes,
+        sha256,
+    })
 }
 #[cfg(test)]
-fn scan(
-    reader: impl Read,
-    host: HostId,
-    expected_version: &str,
-    backup: bool,
-) -> Result<(), Error> {
-    scan_cancel(
-        reader,
-        host,
-        expected_version,
-        backup,
-        &CancellationToken::new(),
-    )
+fn scan(reader: impl Read, host: HostId, version: &str, backup: bool) -> Result<(), Error> {
+    scan_cancel(reader, host, version, backup, &CancellationToken::new())
 }
 fn scan_cancel(
     reader: impl Read,
     host: HostId,
-    expected_version: &str,
+    version: &str,
     backup: bool,
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
-    let result = scan_inner(reader, host, expected_version, backup, cancel, deadline);
-    if cancel.is_cancelled() {
-        Err(Error::Closed)
-    } else if std::time::Instant::now() >= deadline {
-        Err(Error::Timeout)
-    } else {
-        result
-    }
+    let stop = Stop {
+        connection: Some(cancel),
+        selection: None,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
+    };
+    let result = scan_inner(
+        reader,
+        host,
+        version,
+        if backup { Mode::Backup } else { Mode::Support },
+        &stop,
+    );
+    stop.check()?;
+    result.map(|_| ())
 }
 fn scan_inner(
     reader: impl Read,
     host: HostId,
     expected_version: &str,
-    backup: bool,
-    cancel: &CancellationToken,
-    deadline: std::time::Instant,
-) -> Result<(), Error> {
+    mode: Mode,
+    stop: &Stop<'_>,
+) -> Result<(u32, u64), Error> {
     // tar's long-name/PAX handling reads extension bodies into memory. Bound each next()
     // independently; drain ordinary file bodies separately with a fixed-size buffer.
     let allowance = Rc::new(Cell::new(MAX_METADATA));
@@ -153,8 +213,7 @@ fn scan_inner(
         inner: reader,
         total: 0,
         allowance: allowance.clone(),
-        cancel: cancel.clone(),
-        deadline,
+        stop,
     });
     let mut entries = archive.entries().map_err(|_| Error::TransferArchive)?;
     let mut count = 0;
@@ -162,6 +221,7 @@ fn scan_inner(
     let mut identity_found = false;
     let mut names = BTreeSet::new();
     let mut name_bytes = 0usize;
+    let mut graph = super::restore::Graph::default();
     loop {
         allowance.set(MAX_METADATA);
         let Some(entry) = entries.next() else { break };
@@ -169,6 +229,33 @@ fn scan_inner(
         count += 1;
         if count > 500_000 {
             return Err(Error::TransferLimit);
+        }
+        if mode == Mode::Restore
+            && let Some(attributes) = entry.pax_extensions().map_err(|_| Error::TransferArchive)?
+        {
+            let mut seen = BTreeSet::new();
+            for attribute in attributes {
+                let attribute = attribute.map_err(|_| Error::TransferArchive)?;
+                let key = attribute.key().map_err(|_| Error::TransferArchive)?;
+                if !matches!(
+                    key,
+                    "path"
+                        | "linkpath"
+                        | "size"
+                        | "uid"
+                        | "gid"
+                        | "uname"
+                        | "gname"
+                        | "mtime"
+                        | "atime"
+                        | "ctime"
+                ) || !seen.insert(key.to_owned())
+                {
+                    return Err(Error::Protocol(
+                        "Recovery archive has unsupported or ambiguous PAX metadata",
+                    ));
+                }
+            }
         }
         let name = path(&entry.path_bytes())?;
         if !names.insert(name.clone()) && !entry.header().entry_type().is_dir() {
@@ -178,13 +265,20 @@ fn scan_inner(
             .checked_add(name.len())
             .filter(|n| *n <= 16 * 1024 * 1024)
             .ok_or(Error::TransferLimit)?;
+        if mode == Mode::Restore {
+            graph.insert(
+                &name,
+                entry.header().entry_type(),
+                entry.link_name_bytes().as_deref(),
+            )?;
+        }
         let size = entry.size();
         logical = logical
             .checked_add(size)
             .filter(|n| *n <= MAX_DECODED)
             .ok_or(Error::TransferLimit)?;
         allowance.set(size.saturating_add(MAX_METADATA));
-        let metadata = if backup {
+        let metadata = if mode != Mode::Support {
             name == "etc/xensource-inventory"
         } else {
             name.ends_with("/inventory.xml") || name == "inventory.xml"
@@ -197,8 +291,11 @@ fn scan_inner(
             entry
                 .read_to_end(&mut bytes)
                 .map_err(|_| Error::TransferArchive)?;
-            if backup {
+            if mode != Mode::Support {
                 inventory(&bytes, host, expected_version)?;
+                if mode == Mode::Restore {
+                    super::restore::literal_inventory(&bytes)?;
+                }
             } else {
                 let xml = std::str::from_utf8(&bytes).map_err(|_| Error::TransferArchive)?;
                 let doc = roxmltree::Document::parse(xml).map_err(|_| Error::TransferArchive)?;
@@ -210,12 +307,7 @@ fn scan_inner(
         } else {
             let mut buffer = [0; 65536];
             loop {
-                if cancel.is_cancelled() {
-                    return Err(Error::Closed);
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Err(Error::Timeout);
-                }
+                stop.check()?;
                 if entry
                     .read(&mut buffer)
                     .map_err(|_| Error::TransferArchive)?
@@ -241,7 +333,10 @@ fn scan_inner(
     if !identity_found {
         return Err(Error::TransferArchive);
     }
-    Ok(())
+    if mode == Mode::Restore {
+        graph.validate()?;
+    }
+    Ok((count, logical))
 }
 
 #[cfg(test)]
@@ -296,12 +391,16 @@ mod tests {
             scan_cancel(&b""[..], host, "8.3.0", false, &cancel),
             Err(Error::Closed)
         ));
+        let stop = Stop {
+            connection: None,
+            selection: None,
+            deadline: std::time::Instant::now(),
+        };
         let mut r = Limited {
             inner: &b"abc"[..],
             total: 0,
             allowance: Rc::new(Cell::new(100)),
-            cancel: CancellationToken::new(),
-            deadline: std::time::Instant::now(),
+            stop: &stop,
         };
         assert!(r.read(&mut [0; 1]).is_err());
     }

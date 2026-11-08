@@ -5,6 +5,12 @@ use xenadmin_core::{
     OperationId, ResourceTarget, TransferAction, TransferFile, TransferRequest,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Backup,
+    Support,
+    Restore,
+}
 pub(super) struct Panel {
     nonce: OperationId,
     epoch: u64,
@@ -15,13 +21,27 @@ pub(super) struct Panel {
     pool: Option<ObservedResource>,
     query: Option<HostSupportQuery>,
     overview: Option<HostSupportOverview>,
-    support: bool,
+    mode: Mode,
+    confirmation: TextEdit,
+    inspection_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     selected: BTreeSet<String>,
     pending: bool,
     result: Option<std::sync::mpsc::Receiver<Result<TransferFile, String>>>,
     file: Option<TransferFile>,
     review: Option<TransferAction>,
     error: Option<String>,
+}
+impl Drop for Panel {
+    fn drop(&mut self) {
+        if let Some(c) = &self.inspection_cancel {
+            c.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+fn cancel_inspection(p: &mut Panel) {
+    if let Some(c) = p.inspection_cancel.take() {
+        c.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
     if s.page != Page::Hosts && console_view::host(s).is_none() {
@@ -58,7 +78,9 @@ fn open(s: &mut State) {
         pool,
         query: None,
         overview: None,
-        support: false,
+        mode: Mode::Backup,
+        confirmation: TextEdit::new(""),
+        inspection_cancel: None,
         selected: BTreeSet::new(),
         pending: false,
         result: None,
@@ -70,6 +92,8 @@ fn open(s: &mut State) {
 }
 fn refresh(s: &mut State) {
     let Some(p) = &mut s.host_support else { return };
+    cancel_inspection(p);
+    p.confirmation = TextEdit::new("");
     p.epoch += 1;
     p.file = None;
     p.review = None;
@@ -155,7 +179,11 @@ pub(super) fn poll(s: &mut State) -> bool {
     changed
 }
 fn action(p: &Panel) -> Option<TransferAction> {
-    let operation = if p.support {
+    let operation = if p.mode == Mode::Restore {
+        HostArchiveOperation::StageRestore {
+            archive: p.file.as_ref()?.host_backup()?.clone(),
+        }
+    } else if p.mode == Mode::Support {
         let overview = p.overview.as_ref()?;
         if overview.capabilities_error.is_some()
             || p.selected.is_empty()
@@ -177,9 +205,11 @@ fn action(p: &Panel) -> Option<TransferAction> {
         operation,
     })
 }
-fn mode(s: &mut State, support: bool) {
+fn mode(s: &mut State, mode: Mode) {
     if let Some(p) = &mut s.host_support {
-        p.support = support;
+        cancel_inspection(p);
+        p.mode = mode;
+        p.confirmation = TextEdit::new("");
         p.epoch += 1;
         p.pending = false;
         p.result = None;
@@ -193,27 +223,21 @@ fn choose(s: &mut State, tx: &mut Tx) {
     if p.pending {
         return;
     }
+    cancel_inspection(p);
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    p.inspection_cancel = Some(cancel.clone());
     let nonce = p.nonce;
     let epoch = p.epoch;
-    let support = p.support;
+    let mode = p.mode;
+    let host = p.host;
+    let version = p.version.clone();
     p.pending = true;
     p.file = None;
     p.review = None;
     p.error = None;
-    tx.save_file(
-        rune::FileDialogOptions {
-            title: "Save a new private host archive".into(),
-            file_name: Some(
-                if support {
-                    "host-support.tar"
-                } else {
-                    "host-backup.tar.gz"
-                }
-                .into(),
-            ),
-            ..Default::default()
-        },
-        move |s: &mut State, result, _| {
+    p.confirmation = TextEdit::new("");
+    let callback =
+        move |s: &mut State, result: Result<Option<std::path::PathBuf>, String>, _: &mut Tx| {
             let Some(p) = s
                 .host_support
                 .as_mut()
@@ -228,8 +252,12 @@ fn choose(s: &mut State, tx: &mut Tx) {
                     if std::thread::Builder::new()
                         .name("host-archive-file".into())
                         .spawn(move || {
-                            let _ = sender
-                                .send(TransferFile::destination(path).map_err(|e| e.to_string()));
+                            let result = if mode == Mode::Restore {
+                                TransferFile::host_backup_source(path, host, &version, &cancel)
+                            } else {
+                                TransferFile::destination(path)
+                            };
+                            let _ = sender.send(result.map_err(|e| e.to_string()));
                             if let Some(w) = wake {
                                 w();
                             }
@@ -239,17 +267,42 @@ fn choose(s: &mut State, tx: &mut Tx) {
                         p.result = Some(receiver);
                     } else {
                         p.pending = false;
-                        p.error = Some("Cannot inspect the destination".into());
+                        p.error = Some("Cannot inspect the archive file".into());
                     }
                 }
                 Ok(None) => p.pending = false,
                 Err(e) => {
                     p.pending = false;
-                    p.error = Some(e.to_string());
+                    p.error = Some(e);
                 }
             }
-        },
-    );
+        };
+    if mode == Mode::Restore {
+        tx.open_file(
+            rune::FileDialogOptions {
+                title: "Select a trusted backup from this host and version".into(),
+                ..Default::default()
+            }
+            .filter("Host filesystem backup", &["gz", "tgz"]),
+            move |s: &mut State, r, tx| callback(s, r.map_err(|e| e.to_string()), tx),
+        );
+    } else {
+        tx.save_file(
+            rune::FileDialogOptions {
+                title: "Save a new private host archive".into(),
+                file_name: Some(
+                    if mode == Mode::Support {
+                        "host-support.tar"
+                    } else {
+                        "host-backup.tar.gz"
+                    }
+                    .into(),
+                ),
+                ..Default::default()
+            },
+            move |s: &mut State, r, tx| callback(s, r.map_err(|e| e.to_string()), tx),
+        );
+    }
 }
 fn review(s: &mut State) {
     let valid = s.host_support.as_ref().is_some_and(|p| current(s, p));
@@ -271,6 +324,11 @@ fn submit(s: &mut State) {
             .clone()
             .filter(|a| Some(a.clone()) == action(p))
             .ok_or(xenadmin_core::Error::Stale)?;
+        if action.is_host_restore()
+            && (!s.can_mutate() || p.confirmation.text.as_ref() != p.host.to_string())
+        {
+            return Err(xenadmin_core::Error::ReadOnly);
+        }
         s.connection
             .as_ref()
             .ok_or(xenadmin_core::Error::Closed)?
@@ -308,10 +366,65 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .child(heading("Host backup and support", k))
         .child(caption(format!("{} · {}\nHost {}", p.name, p.version, p.host), k).wrap_anywhere());
     if !current(s, p) {
-        body=body.child(caption("The captured connection or host version changed. Close and reopen before downloading.",k).color(k.c.danger.icon).wrap());
+        body=body.child(caption("The captured connection or host version changed. Close and reopen before transferring.",k).color(k.c.danger.icon).wrap());
     }
     if let Some(review) = &p.review {
-        body=body.child(heading(review.label(),k)).child(caption(format!("Save as {}",p.file.as_ref().map(TransferFile::name).unwrap_or_default()),k).wrap_anywhere()).child(caption("Creates a new private file (0600). An existing file is never overwritten. The selected host's task and archive format are verified before the file is published.",k).wrap());
+        body = body.child(heading(review.label(), k)).child(
+            caption(
+                format!(
+                    "{}: {}",
+                    if p.mode == Mode::Restore {
+                        "Source archive"
+                    } else {
+                        "Save as"
+                    },
+                    p.file.as_ref().map(TransferFile::name).unwrap_or_default()
+                ),
+                k,
+            )
+            .wrap_anywhere(),
+        );
+        if p.mode == Mode::Restore {
+            body=body.child(caption("This reformats the host's configured BACKUP_PARTITION and replaces its contents with the selected filesystem backup. The API selects that partition; its current device path is not available to this client. Running host configuration is not restored, and no reboot or pool database restoration is performed.",k).wrap()).child(caption("Use only a backup you trust. Identity, checksum and archive structure checks do not establish that arbitrary system files are authentic or safe to install.",k).wrap());
+            if let TransferAction::Host {
+                operation: HostArchiveOperation::StageRestore { archive: a },
+                ..
+            } = review
+            {
+                body = body.child(
+                    caption(
+                        format!(
+                            "{} entries · {} logical contents\nSHA-256 {}",
+                            a.entries,
+                            bytes(a.logical_bytes),
+                            a.sha256
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect::<String>()
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
+            body = body
+                .child(
+                    caption(
+                        "Type the host UUID to confirm backup partition replacement",
+                        k,
+                    )
+                    .wrap(),
+                )
+                .child(
+                    TextInput::new(&p.confirmation)
+                        .label("Type the host UUID to confirm backup partition replacement")
+                        .on_edit(|s: &mut State| &mut s.host_support.as_mut().unwrap().confirmation)
+                        .build(k)
+                        .key("host-restore-confirmation"),
+                );
+        } else {
+            body=body.child(caption("Creates a new private file (0600). An existing file is never overwritten. The selected host's task and archive format are verified before the file is published.",k).wrap());
+        }
         if let TransferAction::Host {
             operation: HostArchiveOperation::Support { entries },
             ..
@@ -328,20 +441,27 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .flex_wrap()
                 .child(
                     Button::new("Filesystem backup")
-                        .disabled(!p.support)
-                        .on_press(|s: &mut State| mode(s, false))
+                        .disabled(p.mode == Mode::Backup)
+                        .on_press(|s: &mut State| mode(s, Mode::Backup))
                         .build(k)
                         .key("host-support-backup"),
                 )
                 .child(
                     Button::new("Support bundle")
-                        .disabled(p.support)
-                        .on_press(|s: &mut State| mode(s, true))
+                        .disabled(p.mode == Mode::Support)
+                        .on_press(|s: &mut State| mode(s, Mode::Support))
                         .build(k)
                         .key("host-support-bundle"),
+                )
+                .child(
+                    Button::new("Stage recovery…")
+                        .disabled(p.mode == Mode::Restore || !s.demo && !s.can_mutate())
+                        .on_press(|s: &mut State| mode(s, Mode::Restore))
+                        .build(k)
+                        .key("host-support-restore"),
                 ),
         );
-        if p.support {
+        if p.mode == Mode::Support {
             body=body.child(caption("Support bundles contain selected diagnostics and may include private names, addresses and logs. They are saved locally; nothing is uploaded to a support service.",k).wrap());
             if p.query.is_some() {
                 body = body.child(caption("Reading advertised diagnostic categories…", k));
@@ -411,12 +531,16 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     }
                 }
             }
+        } else if p.mode == Mode::Restore {
+            body=body.child(caption("Select a trusted gzip-tar filesystem backup from this exact host and product version. The archive is inspected without extraction. Staging will replace the configured backup partition for later installer-assisted recovery; it does not restore the running host.",k).wrap());
         } else {
             body=body.child(caption("Downloads the host's dom0 root filesystem, including sensitive system files and a fresh pool database copy. VM disks are not included. This archive is intended for installer-assisted recovery; it is not a running-host configuration restore.",k).wrap());
         }
         body = body.child(
             Button::new(if p.pending {
-                "Selecting destination…"
+                "Inspecting archive file…"
+            } else if p.mode == Mode::Restore {
+                "Choose trusted backup…"
             } else {
                 "Choose new archive file…"
             })
@@ -426,7 +550,21 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .key("host-support-file"),
         );
         if let Some(f) = &p.file {
-            body = body.child(caption(format!("Destination: {}", f.name()), k).wrap_anywhere());
+            body = body.child(
+                caption(
+                    format!(
+                        "{}: {}",
+                        if p.mode == Mode::Restore {
+                            "Source"
+                        } else {
+                            "Destination"
+                        },
+                        f.name()
+                    ),
+                    k,
+                )
+                .wrap_anywhere(),
+            );
         }
     }
     if let Some(e) = &p.error {
@@ -453,17 +591,35 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .build(k),
         )
         .child(if p.review.is_some() {
-            Button::new("Download private archive")
-                .disabled(s.demo || !current(s, p))
-                .on_press(submit)
-                .build(k)
-                .key("host-support-submit")
+            Button::new(if p.mode == Mode::Restore {
+                "Replace backup partition"
+            } else {
+                "Download private archive"
+            })
+            .variant(if p.mode == Mode::Restore {
+                ButtonVariant::Danger
+            } else {
+                ButtonVariant::Outline
+            })
+            .disabled(
+                s.demo
+                    || !current(s, p)
+                    || p.mode == Mode::Restore
+                        && (!s.can_mutate() || p.confirmation.text.as_ref() != p.host.to_string()),
+            )
+            .on_press(submit)
+            .build(k)
+            .key("host-support-submit")
         } else {
-            Button::new("Review download")
-                .disabled(!current(s, p) || p.file.is_none() || action(p).is_none())
-                .on_press(review)
-                .build(k)
-                .key("host-support-review")
+            Button::new(if p.mode == Mode::Restore {
+                "Review recovery staging"
+            } else {
+                "Review download"
+            })
+            .disabled(!current(s, p) || p.file.is_none() || action(p).is_none())
+            .on_press(review)
+            .build(k)
+            .key("host-support-review")
         });
     el().w_full()
         .h_full()
@@ -495,7 +651,7 @@ pub(super) fn scene(s: &mut State) {
     s.table.select(host.to_string());
     open(s);
     if let Some(p) = &mut s.host_support {
-        p.support = true;
+        p.mode = Mode::Support;
         p.selected.insert("host-crashdump-logs".into());
         p.overview = Some(HostSupportOverview {
             host: p.host,
@@ -511,6 +667,27 @@ pub(super) fn scene(s: &mut State) {
             capabilities_error: None,
             crashdumps: vec![],
             crashdumps_error: None,
+        });
+    }
+}
+
+pub(super) fn restore_scene(s: &mut State) {
+    scene(s);
+    mode(s, Mode::Restore);
+    if let Some(p) = &mut s.host_support {
+        let archive = xenadmin_core::HostBackupSummary {
+            host: p.host,
+            version: p.version.clone(),
+            entries: 12042,
+            logical_bytes: 3 * 1024 * 1024 * 1024,
+            sha256: [0x42; 32],
+        };
+        p.file =
+            TransferFile::destination(std::env::temp_dir().join("example-host-backup.tar.gz")).ok();
+        p.review = Some(TransferAction::Host {
+            host: p.host,
+            expected_version: p.version.clone(),
+            operation: HostArchiveOperation::StageRestore { archive },
         });
     }
 }
@@ -551,7 +728,14 @@ mod tests {
     }
     fn select_file(r: &mut rune::Runtime<State>, path: std::path::PathBuf) {
         click(r, "host-support-file");
-        assert_eq!(r.file_dialog().unwrap().0, rune::FileDialogKind::Save);
+        assert_eq!(
+            r.file_dialog().unwrap().0,
+            if r.state.host_support.as_ref().unwrap().mode == Mode::Restore {
+                rune::FileDialogKind::Open
+            } else {
+                rune::FileDialogKind::Save
+            }
+        );
         r.resolve_file_dialog(Some(path)).unwrap();
         for _ in 0..100 {
             r.update(|s, _| {
@@ -635,8 +819,86 @@ mod tests {
                 .get_mut(&host)
                 .unwrap()
                 .version = "changed".into();
-            mode(s, false);
+            mode(s, Mode::Backup);
         });
         assert!(!current(&r.state, r.state.host_support.as_ref().unwrap()));
+    }
+    fn backup(path: &std::path::Path, host: HostId, version: &str) {
+        use std::io::Write;
+        let mut archive = tar::Builder::new(Vec::new());
+        let data = format!("INSTALLATION_UUID='{host}'\nPRODUCT_VERSION='{version}'\n");
+        let mut h = tar::Header::new_gnu();
+        h.set_size(data.len() as u64);
+        h.set_mode(0o600);
+        h.set_cksum();
+        archive
+            .append_data(&mut h, "etc/xensource-inventory", data.as_bytes())
+            .unwrap();
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gzip.write_all(&archive.into_inner().unwrap()).unwrap();
+        std::fs::write(path, gzip.finish().unwrap()).unwrap();
+    }
+    #[test]
+    fn restore_native_open_inspects_captured_host_and_requires_exact_confirmation() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut r = runtime(size);
+            click(&mut r, "host-support-restore");
+            let p = r.state.host_support.as_ref().unwrap();
+            let host = p.host;
+            let version = p.version.clone();
+            let d = tempfile::tempdir().unwrap();
+            let source = d.path().join("trusted.tar.gz");
+            backup(&source, host, &version);
+            select_file(&mut r, source.clone());
+            let p = r.state.host_support.as_ref().unwrap();
+            assert!(p.error.is_none(), "{:?}", p.error);
+            assert_eq!(p.file.as_ref().unwrap().host_backup().unwrap().host, host);
+            click(&mut r, "host-support-review");
+            assert!(
+                matches!(&r.state.host_support.as_ref().unwrap().review,Some(TransferAction::Host{operation:HostArchiveOperation::StageRestore{archive},..}) if archive.host==host)
+            );
+            click(&mut r, "host-support-submit");
+            assert!(r.state.resource_operations.is_empty());
+            r.update(|s, _| {
+                s.host_support.as_mut().unwrap().confirmation = TextEdit::new(host.to_string())
+            });
+            click(&mut r, "host-support-submit");
+            assert!(
+                r.state.resource_operations.is_empty(),
+                "synthetic review never submits"
+            );
+            assert!(source.exists());
+            click(&mut r, "host-support-close");
+        }
+    }
+    #[test]
+    fn restore_rejects_wrong_host_and_cancels_obsolete_inspections() {
+        let mut r = runtime((513.0, 652.0));
+        click(&mut r, "host-support-restore");
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("wrong.tar.gz");
+        backup(&path, HostId::from(uuid::Uuid::from_u128(999)), "8.3.0");
+        select_file(&mut r, path.clone());
+        let p = r.state.host_support.as_ref().unwrap();
+        assert!(p.error.is_some());
+        assert!(p.file.is_none());
+        assert!(action(p).is_none());
+        click(&mut r, "host-support-file");
+        let cancel = r
+            .state
+            .host_support
+            .as_ref()
+            .unwrap()
+            .inspection_cancel
+            .clone()
+            .unwrap();
+        r.update(|s, _| mode(s, Mode::Backup));
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        r.resolve_file_dialog(Some(path)).unwrap();
+        settle(&mut r);
+        let p = r.state.host_support.as_ref().unwrap();
+        assert!(p.file.is_none());
+        assert!(!p.pending);
+        assert_eq!(p.mode, Mode::Backup);
     }
 }

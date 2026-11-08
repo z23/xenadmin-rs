@@ -21,6 +21,65 @@ impl ResourceRequest {
         Ok(())
     }
 
+    async fn save_host_restore_stream(
+        &mut self,
+        journal: &mut Journal,
+        outcome: Result<files::Receipt, Error>,
+        mut progress: crate::TransferProgress,
+    ) -> Result<bool, Error> {
+        progress.stream_complete = outcome.is_ok();
+        progress.phase = if outcome.is_ok() {
+            "Upload stream complete; checking staged recovery"
+        } else {
+            "Upload stopped; backup partition outcome is uncertain"
+        }
+        .into();
+        for _ in 0..16 {
+            self.reload(journal)?;
+            let expected = self
+                .transfer_plan()?
+                .file
+                .host_backup
+                .as_ref()
+                .ok_or(Error::TransferConflict)?
+                .sha256;
+            match &outcome {
+                Ok(receipt) => {
+                    let p = self.transfer_plan_mut()?;
+                    if p.stream_receipt.as_ref().is_some_and(|old| old != receipt) {
+                        return Err(Error::TransferConflict);
+                    }
+                    p.stream_invalid |=
+                        receipt.sha256 != expected || Some(receipt.bytes) != p.file.size();
+                    p.stream_receipt = Some(receipt.clone());
+                    if let Some(step) = self.record.steps.first_mut() {
+                        step.state = StepState::Verified;
+                        step.detail="Complete upload receipt saved; host staging still requires task verification".into();
+                    }
+                }
+                Err(error) => {
+                    if matches!(
+                        error,
+                        Error::TransferFileChanged | Error::TransferLimit | Error::TransferArchive
+                    ) {
+                        self.transfer_plan_mut()?.stream_invalid = true;
+                    }
+                    if let Some(step) = self.record.steps.first_mut() {
+                        step.state = StepState::OutcomeUnknown;
+                        step.detail = error.to_string();
+                    }
+                }
+            }
+            self.record.transfer = Some(progress.clone());
+            match self.save(journal).await {
+                Err(Error::JournalChanged) => continue,
+                Err(e) => return Err(e),
+                Ok(()) => return Ok(!self.stopped_after_recovery()),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
+
     pub(super) fn transfer_plan(&self) -> Result<&Plan, Error> {
         self.record
             .transfer_plan
@@ -69,6 +128,20 @@ impl ResourceRequest {
             Some(self.transfer_plan()?),
         )
         .await?;
+        if let TransferAction::Host {
+            operation: crate::HostArchiveOperation::StageRestore { archive },
+            ..
+        } = &action
+        {
+            let file = self.transfer_plan()?.file.clone();
+            let archive = archive.clone();
+            let validation_cancel = cancel.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::host_support::restore::revalidate(&file, &archive, &validation_cancel)
+            })
+            .await
+            .map_err(|_| Error::TransferFile)??;
+        }
         let previous_tasks = crate::device_lifecycle::baseline(session, "task").await?;
         let mut plan = self.transfer_plan()?.clone();
         if action.is_export() {
@@ -97,7 +170,12 @@ impl ResourceRequest {
         self.record.transfer_plan = Some(Box::new(plan));
         self.record.steps = vec![
             OperationStep {
-                label: "Transfer image".into(),
+                label: if matches!(action, TransferAction::Host { .. }) {
+                    "Transfer archive"
+                } else {
+                    "Transfer image"
+                }
+                .into(),
                 state: StepState::Pending,
                 detail: String::new(),
             },
@@ -199,13 +277,23 @@ impl ResourceRequest {
                     Ok(()) | Err(Error::JournalChanged) => {}
                     Err(error) => return Err(error),
                 }
-                Ok(!self.record.cancel_requested)
+                Ok(!self.record.cancel_requested
+                    && !(action.is_host_restore() && self.stopped_after_recovery()))
             },
         )
         .await;
         if matches!(self.record.action, ResourceAction::CloudInit(_)) {
             if self
                 .save_cloud_stream_evidence(journal, outcome, meter.progress())
+                .await?
+            {
+                return self.recheck_transfer(journal, session, cancel).await;
+            }
+            return Ok(());
+        }
+        if action.is_host_restore() {
+            if self
+                .save_host_restore_stream(journal, outcome, meter.progress())
                 .await?
             {
                 return self.recheck_transfer(journal, session, cancel).await;
@@ -369,7 +457,8 @@ impl ResourceRequest {
                 .is_some_and(|a| a.iter().any(|v| v == "cancel"));
             match value["status"].as_str() {
                 Some("success") => {
-                    let imported = !self.transfer_action()?.is_export();
+                    let imported = !self.transfer_action()?.is_export()
+                        && !self.transfer_action()?.is_host_restore();
                     let result = if imported {
                         Some(
                             if matches!(self.transfer_action()?, TransferAction::ImportDisk { .. })
@@ -506,6 +595,15 @@ impl ResourceRequest {
                     }
                     .into();
             }
+        } else if success && self.transfer_action()?.is_host_restore() {
+            self.record.state = if self.transfer_plan()?.stream_receipt.is_some()
+                && !self.transfer_plan()?.stream_invalid
+            {
+                OperationState::Succeeded
+            } else {
+                OperationState::OutcomeUnknown
+            };
+            self.record.detail=if self.record.state==OperationState::Succeeded {"Host task confirmed staging the reviewed archive on its configured backup partition. Running configuration was not restored; installer-assisted recovery and pool database restoration remain separate operator actions."}else{"Host staging task completed, but complete unchanged input evidence is unavailable. Inspect the backup partition; upload will not be repeated."}.into();
         } else if success && matches!(self.record.action, ResourceAction::CloudInit(_)) {
             return self.complete_cloud_upload(journal, session, cancel).await;
         } else if success {
@@ -518,6 +616,9 @@ impl ResourceRequest {
         } else if matches!(self.transfer_action()?, TransferAction::ImportDisk { .. }) {
             self.record.state = OperationState::PartiallyCompleted;
             self.record.detail="Disk transfer did not complete. The new unattached disk is retained with partial or unknown contents; no existing disk was overwritten.".into();
+        } else if self.transfer_action()?.is_host_restore() {
+            self.record.state = OperationState::OutcomeUnknown;
+            self.record.detail="Host recovery staging did not complete successfully. The configured backup partition may have been reformatted or partially populated. Inspect it before acknowledging; upload is never repeated.".into();
         } else if !self.transfer_action()?.is_export() {
             // VM/network creation precedes import_task tagging in XAPI. A failed task
             // cannot prove that every partially created resource was identified or removed.
