@@ -17,6 +17,8 @@ mod worker;
 #[path = "resource_xapi.rs"]
 mod xapi;
 pub(crate) use worker::ResourceRequest;
+#[path = "organization_operations.rs"]
+mod organization;
 #[path = "pool_operations.rs"]
 mod pool;
 #[path = "storage_operations.rs"]
@@ -86,6 +88,10 @@ pub enum ResourceCommand {
         target: ObservedResource,
         operation: crate::HostOperation,
     },
+    Organization {
+        pool: ObservedResource,
+        patch: crate::OrganizationPatch,
+    },
     Network {
         target: ObservedResource,
         operation: NetworkOperation,
@@ -142,6 +148,7 @@ pub enum ResourceAction {
     Pool(crate::PoolOperation),
     Host(crate::HostOperation),
     Transfer(crate::TransferAction),
+    Organization(crate::OrganizationPatch),
     Network(NetworkOperation),
     CancelTask,
     DismissMessage {
@@ -184,6 +191,7 @@ impl ResourceAction {
         match self {
             Self::Pool(operation) => operation.label(),
             Self::Host(operation) => operation.label(),
+            Self::Organization(_) => "Edit organization metadata",
             Self::Network(operation) => operation.label(),
             Self::Transfer(action) => action.label(),
             Self::CancelTask => "Request task cancellation",
@@ -210,6 +218,12 @@ impl ResourceAction {
         let valid = match self {
             Self::Pool(operation) => return operation.validate(target),
             Self::Host(operation) => return operation.validate(target),
+            Self::Organization(patch) => {
+                if !matches!(target, ResourceTarget::Pool(_)) {
+                    return Err(Error::InvalidResourceCommand);
+                }
+                return patch.validate();
+            }
             Self::Network(operation) => return operation.validate(target),
             Self::Transfer(_) => matches!(target, ResourceTarget::Pool(_)),
             Self::CancelTask => matches!(target, ResourceTarget::Task(_)),
@@ -277,6 +291,7 @@ impl ResourceCommand {
         match self {
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
             Self::Host { target, operation } => (target, ResourceAction::Host(operation)),
+            Self::Organization { pool, patch } => (pool, ResourceAction::Organization(patch)),
             Self::Network { target, operation } => (target, ResourceAction::Network(operation)),
             Self::CancelTask { task } => (task, ResourceAction::CancelTask),
             Self::DismissMessage {

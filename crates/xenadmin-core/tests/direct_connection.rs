@@ -1971,3 +1971,5 @@ mod pool_administration;
 
 #[path = "fixtures/host_administration.rs"]
 mod host_administration;
+#[path = "fixtures/organization.rs"]
+mod organization;

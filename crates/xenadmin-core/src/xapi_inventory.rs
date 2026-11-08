@@ -211,6 +211,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             default_sr_known: record["default_SR"] == "OpaqueRef:NULL" || default_sr.is_some(),
         })
     });
+    decode_organization(store, &mut result);
     for class in OPTIONAL_CLASSES {
         result
             .classes
@@ -736,6 +737,68 @@ fn pool_administration(
         tls_verification_enabled: record["tls_verification_enabled"].as_bool(),
         secret_rotation_pending: record["is_psr_pending"].as_bool(),
     }
+}
+
+fn decode_organization(store: &Store, result: &mut InventoryDetails) {
+    use crate::{OrganizationObjectId as Id, organization};
+    result.organization.complete =
+        matches!(store.classes.get("vdi"), Some(ClassAvailability::Available));
+    for class in ["pool", "host", "vm", "sr", "network", "vdi"] {
+        if store.class(class).count() > 50_000 {
+            result.organization.complete = false;
+        }
+        for (_, record) in store.class(class).take(50_000) {
+            let Some(uuid) = record["uuid"].as_str() else {
+                continue;
+            };
+            let id = match class {
+                "pool" => PoolId::parse(uuid).ok().map(Id::Pool),
+                "host" => HostId::parse(uuid).ok().map(Id::Host),
+                "vm" if record["is_control_domain"] == false && record["is_a_snapshot"] == true => {
+                    SnapshotId::parse(uuid).ok().map(Id::Snapshot)
+                }
+                "vm" if record["is_control_domain"] == false
+                    && record["is_a_snapshot"] == false =>
+                {
+                    VmId::parse(uuid).ok().map(Id::Vm)
+                }
+                "sr" => SrId::parse(uuid).ok().map(Id::Storage),
+                "network" => NetworkId::parse(uuid).ok().map(Id::Network),
+                "vdi" => VdiId::parse(uuid).ok().map(Id::Disk),
+                _ => None,
+            };
+            if id.is_none() && !(class == "vm" && record["is_control_domain"] == true) {
+                result.organization.complete = false;
+            }
+            if let Some(id) = id {
+                result
+                    .organization
+                    .objects
+                    .push(organization::object(id, record));
+            }
+            if class == "pool" {
+                result.organization.empty_folders =
+                    record["other_config"]
+                        .as_object()
+                        .and_then(|m| match m.get("EMPTY_FOLDERS") {
+                            None => organization::folders(None),
+                            Some(v) => organization::folders(Some(v.as_str()?)),
+                        });
+                result.organization.definitions = record["gui_config"].as_object().and_then(|m| {
+                    match m.get(organization::FIELD_KEY) {
+                        None => organization::definitions(None),
+                        Some(v) => organization::definitions(Some(v.as_str()?)),
+                    }
+                });
+            }
+        }
+    }
+    result.organization.objects.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 #[cfg(test)]

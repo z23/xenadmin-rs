@@ -6,6 +6,7 @@ pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
 pub(super) enum Check {
     Pool,
+    Organization(crate::OrganizationEdit),
     Network,
     Field(&'static str, Value),
     DefaultSr(SrId),
@@ -124,6 +125,9 @@ pub(super) async fn prepare(
     match &record.action {
         ResourceAction::Pool(_) => unreachable!(),
         ResourceAction::Host(_) => return Err(Error::InvalidResourceCommand),
+        ResourceAction::Organization(_) => {
+            return super::organization::prepare(session, record).await;
+        }
         ResourceAction::Network(_) => return super::network::prepare(session, record).await,
         ResourceAction::Transfer(_) => return Err(Error::TransferConflict),
         ResourceAction::CancelTask => {
@@ -309,6 +313,7 @@ pub(super) async fn arguments(
     let (reference, fresh) = read(session, record.target).await?;
     match &step.check {
         Check::Pool => super::pool::arguments(session, record).await,
+        Check::Organization(edit) => super::organization::arguments(session, record, edit).await,
         Check::Network => super::network::arguments(session, record).await,
         Check::TaskCancellation => {
             cancellable_task(&fresh)?;
@@ -401,6 +406,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
     match &record.action {
         ResourceAction::Pool(_) => vec![Check::Pool],
         ResourceAction::Host(_) => Vec::new(),
+        ResourceAction::Organization(_) => super::organization::checks(record),
         ResourceAction::Network(_) => vec![Check::Network],
         ResourceAction::Transfer(_) => vec![],
         ResourceAction::CancelTask => vec![Check::TaskCancellation],
@@ -440,6 +446,9 @@ pub(super) async fn verify(
 ) -> Result<Option<ResourceTarget>, Error> {
     if matches!(check, Check::Pool) {
         return super::pool::verify(session, record).await;
+    }
+    if let Check::Organization(edit) = check {
+        return super::organization::verify(session, edit).await;
     }
     if matches!(check, Check::Network) {
         return super::network::verify(session, record).await;

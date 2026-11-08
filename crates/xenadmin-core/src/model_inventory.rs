@@ -450,6 +450,8 @@ pub struct PoolDetails {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct InventoryDetails {
     #[serde(default)]
+    pub organization: crate::OrganizationInventory,
+    #[serde(default)]
     pub pool: Option<PoolDetails>,
     pub classes: BTreeMap<String, ClassAvailability>,
     pub vms: BTreeMap<VmId, VmDetails>,

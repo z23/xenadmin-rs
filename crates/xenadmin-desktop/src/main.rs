@@ -6,6 +6,7 @@ mod dev_inspection;
 mod host_admin;
 mod metrics_view;
 mod network_admin;
+mod organization_view;
 mod pool_view;
 mod preferences;
 mod profiles_view;
@@ -161,6 +162,7 @@ struct State {
     diagnostic_results: Vec<String>,
     diagnostics: Option<ActionDiagnostics>,
     properties: Option<vm_properties::Editor>,
+    organization: Option<organization_view::Workspace>,
     snapshot_view: Option<VmId>,
     snapshot_rows: Vec<xenadmin_core::Snapshot>,
     snapshot_table: TableState,
@@ -261,6 +263,7 @@ fn init() -> State {
         diagnostic_results: Vec::new(),
         diagnostics: None,
         properties: None,
+        organization: None,
         snapshot_view: None,
         snapshot_rows: Vec::new(),
         snapshot_table: TableState::new().key("snapshots-table"),
@@ -1185,6 +1188,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .key("archives-open"),
     );
     controls = controls.child(
+        Button::new("Organize")
+            .disabled(s.inventory.is_none())
+            .on_press(organization_view::open)
+            .build(&k)
+            .key("organization-open"),
+    );
+    controls = controls.child(
         Button::new("Activity")
             .on_press(activity::open)
             .build(&k)
@@ -1274,6 +1284,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [host_admin::dialog(s, &k)])
     } else if s.network_workspace.is_some() {
         rune_kit::root(base, [network_admin::dialog(s, &k)])
+    } else if s.organization.is_some() {
+        rune_kit::root(base, [organization_view::dialog(s, &k)])
     } else if s.activity.show {
         rune_kit::root(base, [activity::dialog(s, &k)])
     } else if s.storage_editor.is_some() {
@@ -1797,6 +1809,7 @@ fn demo(s: &mut State) {
     s.operation_rows.clear();
     s.operations.clear();
     s.properties = None;
+    s.organization = None;
     s.placement = None;
     s.diagnostics = None;
     s.diagnostic_results.clear();
@@ -1970,6 +1983,7 @@ fn main() {
             ("host-administration", host_admin::scene),
             ("network-create", |s| resource_admin::scene(s, false)),
             ("activity", activity::scene),
+            ("organization", organization_view::scene),
             ("storage-create", |s| storage_view::scene(s, false)),
             ("storage-review", |s| storage_view::scene(s, true)),
             ("pool-policies", |s| pool_view::scene(s, false)),

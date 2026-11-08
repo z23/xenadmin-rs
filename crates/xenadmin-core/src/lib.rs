@@ -27,6 +27,12 @@ pub use network_types::{
 };
 mod pool_admin;
 pub use pool_admin::{HaRestartPriority, PoolAdministration, PoolOperation};
+mod organization;
+pub use organization::{
+    CustomFieldDefinition, CustomFieldType, OrganizationChange, OrganizationEdit,
+    OrganizationInventory, OrganizationObject, OrganizationObjectId, OrganizationPatch,
+    valid_folder,
+};
 mod resources;
 mod storage;
 mod storage_discovery;
