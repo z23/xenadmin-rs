@@ -67,3 +67,7 @@ production host. The inspector's Unix-socket tests cover private ownership and m
 protocol bounds, rejection of unsupported requests, socket lifecycle, and the public data
 projection. Headless UI captures contain synthetic data only. Infrastructure-changing
 qualification belongs in the explicitly designated [disposable lab](../lab/README.md).
+
+The development and inspection launchers use Cargo to select the current build executable.
+They honor `CARGO_TARGET_DIR` and target-specific output paths; inspection builds the local
+probe when necessary without starting a second host session.

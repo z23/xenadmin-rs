@@ -8,7 +8,7 @@ import shutil
 from install import regular
 
 
-def stage(messages, destination, arch):
+def executables(messages, arch):
     required = {'xenadmin-rs', 'host-probe'}
     found = {}
     for line in messages.read_text().splitlines():
@@ -33,6 +33,11 @@ def stage(messages, destination, arch):
             header = stream.read(20)
         if len(header) != 20 or header[:6] != b'\x7fELF\x02\x01' or int.from_bytes(header[18:20], 'little') != machine:
             raise ValueError('Cargo target executable does not match the native Linux package architecture')
+    return {name: Path(path) for name, path in found.items()}
+
+
+def stage(messages, destination, arch):
+    found = executables(messages, arch)
     destination.mkdir(parents=True, exist_ok=True)
     for name, path in found.items():
         shutil.copyfile(path, destination / name)
@@ -42,6 +47,14 @@ def stage(messages, destination, arch):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('messages', type=Path)
-    parser.add_argument('destination', type=Path)
+    parser.add_argument('destination', type=Path, nargs='?')
+    parser.add_argument('--print-path', choices=('xenadmin-rs', 'host-probe'))
     args = parser.parse_args()
-    stage(args.messages, args.destination, os.uname().machine)
+    if args.print_path:
+        if args.destination is not None:
+            parser.error('Choose a destination or --print-path')
+        print(executables(args.messages, os.uname().machine)[args.print_path])
+    elif args.destination is not None:
+        stage(args.messages, args.destination, os.uname().machine)
+    else:
+        parser.error('Provide a destination or --print-path')

@@ -10,9 +10,9 @@ cargo test --workspace --locked
 cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
 python3 -m unittest discover -s lab -p test_manage.py
 python3 -m unittest discover -s packaging -p 'test_*.py'
-cargo build --workspace --locked
+cargo build --workspace --locked --message-format=json-render-diagnostics > "$check_state_dir/build.jsonl"
 mkdir -p artifacts
-check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/xenadmin-rs")')"
+check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --print-path xenadmin-rs)"
 "$check_binary" --snap artifacts/demo.png --tree artifacts/demo.json --scene demo --theme dark --size 1440x900 --scale 1
 "$check_binary" --snap artifacts/connect.png --tree artifacts/connect.json --scene connect --theme dark --size 1440x900 --scale 1
 "$check_binary" --snap artifacts/compact.png --tree artifacts/compact.json --scene demo --theme dark --size 513x652 --scale 1 --at 1
