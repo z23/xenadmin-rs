@@ -333,7 +333,11 @@ async fn external_cancellation_keeps_local_task_owner_reconciling_its_original_o
         .unwrap();
     assert_eq!(finish(&cancellation).await.state, OperationState::Succeeded);
     tokio::time::timeout(Duration::from_secs(4), async {
-        while !original.latest().state.terminal() {
+        while !original.latest().state.terminal()
+            || !c.operation_history().iter().any(|record| {
+                record.id == original.latest().id && record.state == OperationState::Cancelled
+            })
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
