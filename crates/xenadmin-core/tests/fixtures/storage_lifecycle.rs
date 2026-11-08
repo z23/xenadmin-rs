@@ -30,6 +30,10 @@ enum Fault {
     HbaExisting,
     HbaBadProbe,
     WrongAllocation,
+    LocalExisting,
+    LocalChanged,
+    LocalWrongShared,
+    LocalMalformed,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn nfs() -> StorageLocation {
@@ -93,6 +97,11 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             return Some(RpcReply::Json(json!({"result":records.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
         }
         if method=="SR.probe" {
+            if ["ext","lvm"].contains(&params[3].as_str().unwrap_or("")) {
+                let known=fault==Fault::LocalExisting || (fault==Fault::LocalChanged && failures.fetch_add(1,Ordering::SeqCst)>=2);
+                let xml=if fault==Fault::LocalMalformed {"<unknown/>".into()} else if known && params[3]=="lvm" {format!("<SRlist><SR><UUID>{CREATED}</UUID><Devlist>/dev/disk/by-id/ata-FIXTURE</Devlist><size>4096</size></SR></SRlist>")} else {"<SRlist/>".into()};
+                return Some(RpcReply::Json(json!({"result":xml})));
+            }
             if params[3] == "lvmohba" {
                 if params[2].get("SCSIid").is_none() {
                     let size=if fault==Fault::HbaChanged { "8192" } else { "4096" };
@@ -124,12 +133,12 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                 "PBD.destroy"=>{map.remove("PBD");},
                 "SR.forget"|"SR.destroy"=>{map.remove("SR");},
                 "SR.create"=>{
-                    let created=json!({"uuid":CREATED,"name_label":params[4],"name_description":params[5],"type":params[6],"sm_config":{"allocation":if fault==Fault::WrongAllocation { json!("thick") } else { params[2].get("allocation").cloned().unwrap_or(json!("thick")) }},"content_type":params[7],"shared":params[8],"PBDs":["OpaqueRef:PBD-created"],"VDIs":[],"current_operations":{},"allowed_operations":[]});
+                    let created=json!({"uuid":CREATED,"name_label":params[4],"name_description":params[5],"type":params[6],"sm_config":{"allocation":if fault==Fault::WrongAllocation { json!("thick") } else { params[2].get("allocation").cloned().unwrap_or(json!("thick")) }},"content_type":params[7],"shared":if fault==Fault::LocalWrongShared {json!(true)} else {params[8].clone()},"PBDs":["OpaqueRef:PBD-created"],"VDIs":[],"current_operations":{},"allowed_operations":[]});
                     map.insert("SR-created".into(),created);map.insert("PBD-created".into(),json!({"uuid":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","host":params[1],"SR":"OpaqueRef:SR-created","currently_attached":true,"device_config":params[2]}));
                     *result_ref.lock().unwrap()=Some(if fault==Fault::WrongResult{"OpaqueRef:SR"}else{"OpaqueRef:SR-created"}.into());
                 }
                 "SR.introduce"=>{map.insert("SR-created".into(),json!({"uuid":params[1],"name_label":params[2],"name_description":params[3],"type":params[4],"content_type":params[5],"shared":params[6],"PBDs":[],"VDIs":[]}));*result_ref.lock().unwrap()=Some("OpaqueRef:SR-created".into());},
-                "PBD.create"=>{let mut pbd=params[1].clone();pbd["other_config"]=json!({});pbd["uuid"]=json!(CREATED);pbd["currently_attached"]=json!(false);map.insert("PBD-created".into(),pbd);*result_ref.lock().unwrap()=Some("OpaqueRef:PBD-created".into());},
+                "PBD.create"=>{let mut pbd=params[1].clone();pbd["other_config"]=json!({});pbd["uuid"]=json!(CREATED);pbd["currently_attached"]=json!(false);let sr_key=pbd["SR"].as_str().unwrap().strip_prefix("OpaqueRef:").unwrap().to_owned();map.get_mut(&sr_key).unwrap()["PBDs"].as_array_mut().unwrap().push(json!("OpaqueRef:PBD-created"));map.insert("PBD-created".into(),pbd);*result_ref.lock().unwrap()=Some("OpaqueRef:PBD-created".into());},
                 _=>panic!("unexpected storage mutation {method}"),
             }
             return Some(if fault==Fault::DropReply{RpcReply::Drop}else{RpcReply::Json(json!({"result":"OpaqueRef:storage-task"}))});
@@ -185,6 +194,7 @@ fn pbd() -> ResourceTarget {
 fn create() -> StorageOperation {
     StorageOperation::Create {
         hba_device: None,
+        local_device: None,
         host: HostId::parse(HOST).unwrap(),
         name: "New storage".into(),
         description: "Synthetic".into(),
@@ -566,6 +576,7 @@ async fn typed_iso_and_iscsi_creation_and_existing_sr_introduction_use_exact_bac
             pool(),
             StorageOperation::Create {
                 hba_device: None,
+                local_device: None,
                 host: HostId::parse(HOST).unwrap(),
                 name: "New storage".into(),
                 description: "".into(),
@@ -878,6 +889,7 @@ fn hba_create(allocation: xenadmin_core::StorageAllocation) -> StorageOperation 
             scsi_id: "3600fixturehba".into(),
             allocation,
         },
+        local_device: None,
         hba_device: Some(xenadmin_core::DiscoveredHbaDevice {
             scsi_id: "3600fixturehba".into(),
             size_bytes: 4096,
@@ -1069,3 +1081,6 @@ async fn storage_hba_lost_or_failed_creation_keeps_unknown_and_never_reformats_o
         c.close().await;
     }
 }
+
+#[path = "storage_local.rs"]
+mod local;

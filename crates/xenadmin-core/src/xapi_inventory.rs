@@ -435,7 +435,12 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             id,
             StorageAttachment {
                 id,
-                location: crate::storage::safe_location_from_config(&record["device_config"]),
+                location: crate::storage::safe_location_for_kind(
+                    &record["device_config"],
+                    record["SR"].as_str().and_then(|reference| {
+                        store.records.get("sr")?.get(reference)?["type"].as_str()
+                    }),
+                ),
                 requires_credentials: crate::storage::requires_credentials(
                     &record["device_config"],
                 ),

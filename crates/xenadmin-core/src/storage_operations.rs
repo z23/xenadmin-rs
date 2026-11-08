@@ -283,6 +283,7 @@ pub(super) async fn arguments(
             description,
             location,
             hba_device,
+            ..
         } => {
             capability(session, location.kind(), "").await?;
             crate::storage_provisioning::allocation_capability(session, location).await?;
@@ -294,6 +295,9 @@ pub(super) async fn arguments(
                 )
                 .await?;
             }
+            if matches!(location, crate::StorageLocation::Local { .. }) {
+                crate::storage_local::preflight(session, *host, location).await?;
+            }
             Ok(vec![
                 json!(host_ref),
                 location.device_config(),
@@ -302,7 +306,7 @@ pub(super) async fn arguments(
                 json!(description),
                 json!(location.kind()),
                 json!(location.content_type()),
-                json!(true),
+                json!(location.shared()),
                 json!({}),
             ])
         }
@@ -324,12 +328,14 @@ pub(super) async fn arguments(
                 json!(description),
                 json!(location.kind()),
                 json!(location.content_type()),
-                json!(true),
+                json!(location.shared()),
                 json!({}),
             ])
         }
         StorageOperation::CreateAttachment { host, location } => {
-            if fresh["type"] != location.kind() || fresh["content_type"] != location.content_type()
+            if fresh["type"] != location.kind()
+                || fresh["content_type"] != location.content_type()
+                || fresh["shared"] != location.shared()
             {
                 return Err(Error::ResourceConflict);
             }
@@ -338,6 +344,14 @@ pub(super) async fn arguments(
             allowed(&fresh, "pbd_create")?;
             empty_current(&fresh)?;
             let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
+            if !location.shared() && !array(&fresh, "PBDs")?.is_empty() {
+                return Err(Error::Protocol(
+                    "Local storage already has a host attachment; repair that attachment instead",
+                ));
+            }
+            if !location.shared() {
+                crate::storage_local::no_attachments(session, &reference).await?;
+            }
             for pbd in array(&fresh, "PBDs")? {
                 let attachment = by_ref(session, "PBD", pbd).await?;
                 if attachment["host"] == host_ref {
@@ -350,7 +364,11 @@ pub(super) async fn arguments(
                         "This attachment requires fresh storage credentials",
                     ));
                 }
-                if crate::storage::safe_location_from_config(&attachment["device_config"]).as_ref()
+                if crate::storage::safe_location_for_kind(
+                    &attachment["device_config"],
+                    fresh["type"].as_str(),
+                )
+                .as_ref()
                     != Some(location)
                 {
                     return Err(Error::ResourceConflict);
@@ -367,6 +385,9 @@ pub(super) async fn arguments(
             attached,
         } => {
             let (_, sr_record) = attachment_identity(session, &fresh, *sr, *host).await?;
+            if *attached {
+                crate::storage_local::attachment_graph(&sr_record, &reference)?;
+            }
             if fresh["currently_attached"] != *expected_attached {
                 return Err(Error::ResourceConflict);
             }
@@ -461,7 +482,7 @@ pub(super) async fn verify(
                 || fresh["name_description"] != *description
                 || fresh["type"] != location.kind()
                 || fresh["content_type"] != location.content_type()
-                || fresh["shared"] != true
+                || fresh["shared"] != location.shared()
             {
                 return Err(Error::ResourceConflict);
             }
@@ -474,6 +495,9 @@ pub(super) async fn verify(
                 crate::storage_provisioning::verify_allocation(&fresh, location)?;
                 let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
                 let mut found = false;
+                if !location.shared() && array(&fresh, "PBDs")?.len() != 1 {
+                    return Err(Error::ResourceConflict);
+                }
                 for pbd in array(&fresh, "PBDs")? {
                     let pbd = by_ref(session, "PBD", pbd).await?;
                     let id = pbd["uuid"]
@@ -516,7 +540,13 @@ pub(super) async fn verify(
             let ResourceTarget::Storage(sr) = record.target else {
                 return Err(Error::InvalidResourceCommand);
             };
-            attachment_identity(session, &fresh, sr, *host).await?;
+            let (_, sr_record) = attachment_identity(session, &fresh, sr, *host).await?;
+            if !location.shared() {
+                if sr_record["shared"] != false {
+                    return Err(Error::ResourceConflict);
+                }
+                crate::storage_local::attachment_graph(&sr_record, reference)?;
+            }
             if fresh["currently_attached"] != false
                 || baseline.pbds.contains(&id)
                 || !config_matches(&fresh["device_config"], &location.device_config())

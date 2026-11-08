@@ -1062,6 +1062,7 @@ fn authenticated_resource(pool: PoolId) -> ResourceOperationRecord {
     r.target = ResourceTarget::Pool(pool);
     let operation = StorageOperation::Create {
         hba_device: None,
+        local_device: None,
         host: crate::HostId::from(uuid::Uuid::new_v4()),
         name: "Fixture".into(),
         description: String::new(),

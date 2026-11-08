@@ -211,6 +211,7 @@ fn command(auth: StorageAuthentication, attachment: bool) -> StorageOperation {
     } else {
         StorageOperation::Create {
             hba_device: None,
+            local_device: None,
             host: HostId::parse(HOST).unwrap(),
             name: "Authenticated fixture".into(),
             description: "".into(),

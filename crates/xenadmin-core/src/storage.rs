@@ -48,6 +48,10 @@ impl StorageAllocation {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StorageLocation {
+    Local {
+        kind: crate::LocalStorageKind,
+        device: String,
+    },
     IsoSmb {
         server: String,
         share: String,
@@ -105,6 +109,9 @@ pub(crate) fn storage_token(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"-_.:".contains(&c))
 }
 impl StorageLocation {
+    pub fn shared(&self) -> bool {
+        !matches!(self, Self::Local { .. })
+    }
     pub fn allocation(&self) -> StorageAllocation {
         match self {
             Self::Iscsi { allocation, .. } | Self::Hba { allocation, .. } => *allocation,
@@ -114,6 +121,7 @@ impl StorageLocation {
 
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::Local { kind, .. } => kind.kind(),
             Self::Nfs { .. } => "nfs",
             Self::IsoNfs { .. } | Self::IsoSmb { .. } => "iso",
             Self::Iscsi { .. } => "lvmoiscsi",
@@ -133,6 +141,7 @@ impl StorageLocation {
             |s: &str| s.starts_with('/') && s.len() <= 4096 && !s.chars().any(char::is_control);
         let token = storage_token;
         match self {
+            Self::Local { device, .. } => crate::storage_local::valid_path(device),
             Self::Hba { scsi_id, .. } => token(scsi_id),
             Self::IsoSmb {
                 server,
@@ -181,6 +190,7 @@ impl StorageLocation {
     pub(crate) fn device_config(&self) -> serde_json::Value {
         use serde_json::json;
         let mut config = match self {
+            Self::Local { device, .. } => json!({"device":device}),
             Self::Hba { scsi_id, .. } => json!({"SCSIid":scsi_id}),
             Self::IsoSmb {
                 server,
@@ -227,6 +237,8 @@ pub enum StorageOperation {
         location: StorageLocation,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hba_device: Option<crate::DiscoveredHbaDevice>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        local_device: Option<crate::LocalDeviceDeclaration>,
     },
     Introduce {
         uuid: SrId,
@@ -363,7 +375,20 @@ impl StorageOperation {
             }
             _ => true,
         };
-        if valid && hba_valid {
+        let local_valid = match self {
+            Self::Create {
+                location: StorageLocation::Local { .. },
+                local_device: Some(declaration),
+                ..
+            } => declaration.valid(),
+            Self::Create {
+                location: StorageLocation::Local { .. },
+                ..
+            } => false,
+            Self::Create { local_device, .. } => local_device.is_none(),
+            _ => true,
+        };
+        if valid && hba_valid && local_valid {
             Ok(())
         } else {
             Err(Error::InvalidResourceCommand)
@@ -393,6 +418,22 @@ pub(crate) fn requires_credentials(config: &serde_json::Value) -> bool {
                 || k == "username"
         })
     })
+}
+pub(crate) fn safe_location_for_kind(
+    config: &serde_json::Value,
+    kind: Option<&str>,
+) -> Option<StorageLocation> {
+    let kind = match kind {
+        Some("ext") => Some(crate::LocalStorageKind::Ext),
+        Some("lvm") => Some(crate::LocalStorageKind::Lvm),
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        let device = config["device"].as_str()?.to_owned();
+        return crate::storage_local::valid_path(&device)
+            .then_some(StorageLocation::Local { kind, device });
+    }
+    safe_location_from_config(config)
 }
 pub(crate) fn safe_location_from_config(config: &serde_json::Value) -> Option<StorageLocation> {
     let mut public = config.clone();
@@ -514,6 +555,7 @@ mod tests {
                 allocation: StorageAllocation::Thin,
             },
             hba_device: None,
+            local_device: None,
         };
         assert!(operation.validate(pool).is_err());
         if let StorageOperation::Create { hba_device, .. } = &mut operation {

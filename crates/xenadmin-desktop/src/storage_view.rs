@@ -1,3 +1,11 @@
+#[path = "storage_local_view.rs"]
+mod local;
+pub(super) fn local_scene(s: &mut State) {
+    local::scene(s, false);
+}
+pub(super) fn local_review_scene(s: &mut State) {
+    local::scene(s, true);
+}
 #[path = "storage_maintenance_view.rs"]
 mod maintenance;
 pub(super) fn maintenance_scene(s: &mut State) {
@@ -54,6 +62,9 @@ pub(super) struct Editor {
     kind: u8,
     allocation: StorageAllocation,
     hba_device: Option<(HostId, DiscoveredHbaDevice)>,
+    declaration: TextEdit,
+    local_acknowledged: bool,
+    local_probe: Option<(HostId, String, bool)>,
     version: NfsVersion,
     host: Option<HostId>,
     review: Option<(Option<ObservedResource>, ResourceTarget, StorageOperation)>,
@@ -127,6 +138,9 @@ fn open(s: &mut State, sr: Option<SrId>) {
         kind: 0,
         allocation: StorageAllocation::DriverDefault,
         hba_device: None,
+        declaration: TextEdit::new(""),
+        local_acknowledged: false,
+        local_probe: None,
         version: NfsVersion::Automatic,
         host: inventory.hosts.keys().next().copied(),
         review: None,
@@ -147,6 +161,14 @@ fn location(editor: &Editor) -> StorageLocation {
         editor.allocation
     };
     match editor.kind {
+        5 | 6 => StorageLocation::Local {
+            kind: if editor.kind == 5 {
+                xenadmin_core::LocalStorageKind::Ext
+            } else {
+                xenadmin_core::LocalStorageKind::Lvm
+            },
+            device: editor.path.text.trim().into(),
+        },
         4 => StorageLocation::Hba {
             scsi_id: editor.scsi.text.trim().into(),
             allocation,
@@ -219,6 +241,11 @@ fn results_current(s: &State, e: &Editor) -> bool {
             }))
 }
 fn query(s: &mut State, step: u8) {
+    if step == 6
+        && let Some(e) = &mut s.storage_editor
+    {
+        e.local_probe = None;
+    }
     let result = (|| {
         let e = s.storage_editor.as_ref().ok_or("Storage view is closed")?;
         let snapshot = s.snapshot.as_ref().ok_or("Connect to discover storage")?;
@@ -234,6 +261,10 @@ fn query(s: &mut State, step: u8) {
         let query = match step {
             0 => StorageQuery::Backends,
             5 => StorageQuery::HbaDevices { host },
+            6 => StorageQuery::LocalDevice {
+                host,
+                device: e.path.text.trim().into(),
+            },
             1 => StorageQuery::Probe {
                 host,
                 location: location(e),
@@ -308,6 +339,11 @@ pub(super) fn poll(s: &mut State) -> bool {
     match result {
         Ok(StorageDiscoveryResult::Backends(backends)) => e.backends = backends,
         Ok(result) => {
+            if let StorageDiscoveryResult::LocalRepositories(rows) = &result {
+                e.local_probe = e
+                    .host
+                    .map(|host| (host, e.path.text.trim().into(), rows.is_empty()));
+            }
             e.discovered = Some(result);
             e.error = None;
         }
@@ -330,6 +366,17 @@ fn select_result(s: &mut State, index: usize) {
     }
     let e = s.storage_editor.as_mut().unwrap();
     match &e.discovered {
+        Some(StorageDiscoveryResult::LocalRepositories(rows)) => {
+            if let Some(row) = rows.get(index) {
+                e.kind = if row.kind == xenadmin_core::LocalStorageKind::Ext {
+                    5
+                } else {
+                    6
+                };
+                e.uuid = TextEdit::new(row.repository.uuid.to_string());
+                e.mode = Mode::Introduce;
+            }
+        }
         Some(StorageDiscoveryResult::HbaDevices(rows)) => {
             if let (Some(row), Some(host)) = (rows.get(index), e.host) {
                 e.scsi = TextEdit::new(&row.scsi_id);
@@ -385,6 +432,19 @@ fn discovery_results(s: &State, e: &Editor, k: &Kit) -> El {
         .wrap();
     }
     let (title, rows) = match result {
+        StorageDiscoveryResult::LocalRepositories(rows) => (
+            "Known local repositories",
+            rows.iter()
+                .map(|r| {
+                    format!(
+                        "{} · {}\n{}",
+                        r.kind.label(),
+                        r.repository.name,
+                        r.repository.uuid
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
         StorageDiscoveryResult::HbaDevices(rows) => (
             "Available HBA devices",
             rows.iter()
@@ -445,7 +505,7 @@ fn discovery_results(s: &State, e: &Editor, k: &Kit) -> El {
         .wrap(),
     );
     if rows.is_empty() {
-        body=body.child(caption(if editor_hba(result) {"The backend reported no eligible HBA devices. Check zoning, host visibility and existing storage use, then discover again."} else {"The backend reported no matching results. You can enter a known location manually."},k).wrap());
+        body=body.child(caption(if matches!(result,StorageDiscoveryResult::LocalRepositories(_)) {"Neither EXT nor LVM reported a known repository. This is NOT proof that the device is valid, blank or unused. Return to the form to review your device declaration."} else if editor_hba(result) {"The backend reported no eligible HBA devices. Check zoning, host visibility and existing storage use, then discover again."} else {"The backend reported no matching results. You can enter a known location manually."},k).wrap());
     }
     for (index, text) in rows.iter().enumerate().skip(e.result_page * 20).take(20) {
         body = body.child(caption(text, k).wrap_anywhere()).child(
@@ -547,9 +607,11 @@ fn review(s: &mut State) {
         {
             return Err("The selected driver has not advertised allocation choices. Refresh driver discovery or choose its default.".into());
         }
+        let local_device = local::capture(editor)?;
         let operation = match editor.mode {
             Mode::Create => StorageOperation::Create {
                 hba_device,
+                local_device,
                 host: editor.host.ok_or("Choose a host")?,
                 name: editor.name.text.trim().into(),
                 description: editor.description.text.clone(),
@@ -738,6 +800,14 @@ fn apply(s: &mut State) {
         {
             return Err(xenadmin_core::Error::InvalidResourceCommand);
         }
+        if let StorageOperation::Create {
+            location: StorageLocation::Local { device, .. },
+            ..
+        } = operation
+            && editor.confirmation.text != *device
+        {
+            return Err(xenadmin_core::Error::InvalidResourceCommand);
+        }
         let operation = operation.clone();
         let connection = s.connection.as_ref().ok_or(xenadmin_core::Error::Closed)?;
         let credentials = s.storage_editor.as_mut().unwrap().review_credentials.take();
@@ -870,6 +940,14 @@ fn new_attachment(s: &mut State) {
         });
         editor.allocation = template.allocation();
         match template {
+            StorageLocation::Local { kind, device } => {
+                editor.kind = if kind == xenadmin_core::LocalStorageKind::Ext {
+                    5
+                } else {
+                    6
+                };
+                editor.path = TextEdit::new(device);
+            }
             StorageLocation::Hba { scsi_id, .. } => {
                 editor.kind = 4;
                 editor.scsi = TextEdit::new(scsi_id);
@@ -936,6 +1014,11 @@ pub(super) fn button(s: &State, k: &Kit) -> El {
 }
 fn location_lines(location: &StorageLocation) -> Vec<String> {
     match location {
+        StorageLocation::Local { kind, device } => vec![
+            format!("Backend: {}", kind.label()),
+            format!("Operator-selected device path: {device}"),
+            "Local repository; not shared across hosts".into(),
+        ],
         StorageLocation::Hba {
             scsi_id,
             allocation,
@@ -995,10 +1078,11 @@ fn describe(operation: &StorageOperation) -> Vec<String> {
     let mut lines = vec![operation.label().into()];
     match operation {
         StorageOperation::Trim {host,..} => lines.extend([format!("Attached host: {host}"),"Asks the host storage driver to reclaim unused blocks. Completion depends on the backend and storage array; reported capacity may not change immediately.".into()]),
-        StorageOperation::Create {host,name,description,location,hba_device} => {
+        StorageOperation::Create {host,name,description,location,hba_device,local_device} => {
             lines.extend([format!("Name: {name}"),format!("Description: {description}"),format!("Host: {host}")]);
             lines.extend(location_lines(location));
-            lines.push("Creates a shared repository. The server may create pool attachments. Review attached hosts after completion.".into());
+            lines.push(if location.shared() {"Creates a shared repository. The server may create pool attachments. Review attached hosts after completion."} else {"Creates a local repository on this host only. PERMANENTLY ERASES existing data on the selected device."}.into());
+            if let Some(declaration)=local_device {lines.extend([format!("Operator identity declaration (not verified by the server): {}",declaration.identity_statement),"The API does not fully verify device identity, capacity, partitions, signatures or use. Empty probes and unmatched aliases do not prove the disk is safe to format. The host driver may refuse the operation; partial formatting may remain after failure.".into(),"Known EXT/LVM repositories and known current attachments are refused. No existing repository is automatically forgotten or destroyed.".into()]);}
             if matches!(location,StorageLocation::Iscsi { .. } | StorageLocation::Hba {..}) {lines.push("Creating LVM storage initializes the selected LUN and can permanently erase existing data. Confirm that no other pool or system uses it. Discovery cannot establish external ownership.".into());}
             if let Some(device) = hba_device { lines.extend([format!("Reviewed device: {} · {} · serial {}",bytes(device.size_bytes),device.vendor,device.serial), "The host will rediscover this exact device and refuse known existing repositories. No existing storage is automatically forgotten or destroyed.".into()]); }
             if location.allocation() == StorageAllocation::Thin { lines.push("Thin allocation grows VHD disks as they are written; raw disks remain fully allocated. Monitor free space: exhausting the repository can interrupt VMs. This does not convert existing repositories.".into()); }
@@ -1059,6 +1143,32 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         }
         if let Some(label) = &editor.review_auth_label {
             body=body.child(caption(label,k).wrap()).child(caption("Credentials are sent through temporary server Secret objects and cleared from this form after submission. Verified provisioning removes unused temporary Secrets; uncertain outcomes retain their identities for explicit cleanup.",k).wrap());
+        }
+        if let StorageOperation::Create {
+            location: StorageLocation::Local { device, .. },
+            ..
+        } = operation
+        {
+            body = body
+                .child(
+                    caption(
+                        format!(
+                            "Type the complete device path to confirm permanent data loss: {device}"
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                )
+                .child(
+                    TextInput::new(&editor.confirmation)
+                        .label("Device path to confirm permanent data loss")
+                        .on_edit(|s: &mut State| {
+                            &mut s.storage_editor.as_mut().unwrap().confirmation
+                        })
+                        .build(k)
+                        .w_full()
+                        .key("storage-confirm-device"),
+                );
         }
         if let StorageOperation::Create {
             location: StorageLocation::Hba { scsi_id, .. },
@@ -1238,7 +1348,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 caption(
                     format!(
                         "{} · host {}",
-                        if editor.kind == 4 {
+                        if local::is_local(editor) {
+                            "Local device repository probe".into()
+                        } else if editor.kind == 4 {
                             "HBA discovery".into()
                         } else {
                             format!("Discovered through {}", editor.server.text)
@@ -1307,6 +1419,8 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             (2, "LVM over iSCSI"),
             (3, "ISO library over SMB 3.0"),
             (4, "LVM over HBA / Fibre Channel"),
+            (5, "Local EXT"),
+            (6, "Local LVM"),
         ] {
             body = body.child(
                 Button::new(format!(
@@ -1317,6 +1431,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .on_press(move |s: &mut State| {
                     let e = s.storage_editor.as_mut().unwrap();
                     if e.kind != kind {
+                        if matches!(kind, 5 | 6) && !local::is_local(e) {
+                            e.path = TextEdit::new("");
+                        }
+                        e.local_probe = None;
+                        e.local_acknowledged = false;
                         e.kind = kind;
                         e.hba_device = None;
                         e.scsi = TextEdit::new("");
@@ -1327,7 +1446,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .key(format!("storage-kind-{kind}")),
             );
         }
-        if editor.kind != 4 {
+        if !matches!(editor.kind, 4..=6) {
             body = body
                 .child(caption("Server hostname or IP address", k).wrap())
                 .child(
@@ -1338,7 +1457,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .key("storage-server"),
                 );
         }
-        if editor.kind == 4 {
+        if local::is_local(editor) {
+            body = body.child(local::fields(s, k));
+        } else if editor.kind == 4 {
             body = body.child(
                 caption(
                     if editor.scsi.text.is_empty() {
@@ -1585,6 +1706,8 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         let e = s.storage_editor.as_mut().unwrap();
                         if e.host != Some(id) {
                             e.host = Some(id);
+                            e.local_probe = None;
+                            e.local_acknowledged = false;
                             e.hba_device = None;
                             if e.kind == 4 {
                                 e.scsi = TextEdit::new("");
@@ -1596,10 +1719,23 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             }
         }
         body = body.child(
-            Button::new("Probe selected location for existing repositories")
-                .disabled(editor.discovery.is_some() || s.demo)
-                .on_press(|s: &mut State| query(s, 1))
-                .build(k),
+            Button::new(if local::is_local(editor) {
+                "Probe this device for EXT and LVM repositories"
+            } else {
+                "Probe selected location for existing repositories"
+            })
+            .disabled(editor.discovery.is_some() || s.demo)
+            .on_press(|s: &mut State| {
+                query(
+                    s,
+                    if s.storage_editor.as_ref().is_some_and(local::is_local) {
+                        6
+                    } else {
+                        1
+                    },
+                )
+            })
+            .build(k),
         );
         let mut scan=col().gap(8.0).child(caption("Discovery asks the selected host to contact storage. The backend can temporarily mount an export or open an iSCSI session; no repository is created.",k).wrap());
         for (step, label) in if editor.kind == 2 {
@@ -1609,7 +1745,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             ]
         } else if editor.kind == 4 {
             vec![(5, "Discover HBA devices")]
-        } else if editor.kind == 3 {
+        } else if matches!(editor.kind, 3 | 5 | 6) {
             vec![]
         } else {
             vec![(2, "Discover NFS exports")]
@@ -1759,7 +1895,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             StorageOperation::Forget { .. }
                 | StorageOperation::Destroy { .. }
                 | StorageOperation::Create {
-                    location: StorageLocation::Hba { .. },
+                    location: StorageLocation::Hba { .. } | StorageLocation::Local { .. },
                     ..
                 }
         );
@@ -1768,6 +1904,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 location: StorageLocation::Hba { scsi_id, .. },
                 ..
             } => scsi_id.clone(),
+            StorageOperation::Create {
+                location: StorageLocation::Local { device, .. },
+                ..
+            } => device.clone(),
             _ => editor.target.uuid().to_string(),
         };
         let too_many = matches!(operation,StorageOperation::Forget{expected_disks,..}|StorageOperation::Destroy{expected_disks,..} if expected_disks.len()>100);

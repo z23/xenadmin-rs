@@ -25,6 +25,7 @@ pub struct DiscoveredRepository {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StorageDiscoveryResult {
+    LocalRepositories(Vec<crate::DiscoveredLocalRepository>),
     Backends(Vec<StorageBackend>),
     Repositories(Vec<DiscoveredRepository>),
     NfsExports(Vec<DiscoveredNfsExport>),
@@ -34,6 +35,10 @@ pub enum StorageDiscoveryResult {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StorageQuery {
+    LocalDevice {
+        host: HostId,
+        device: String,
+    },
     HbaDevices {
         host: HostId,
     },
@@ -62,6 +67,7 @@ pub enum StorageQuery {
 impl StorageQuery {
     pub(crate) fn validate(&self) -> Result<(), Error> {
         let valid = match self {
+            Self::LocalDevice { device, .. } => crate::storage_local::valid_path(device),
             Self::Backends | Self::HbaDevices { .. } => true,
             Self::Probe { location, .. } => location.validate(),
             Self::NfsExports { server, .. } => crate::storage::storage_server(server),
@@ -171,6 +177,11 @@ impl DiscoveryRequest {
     }
     async fn query(&self, session: &Session) -> Result<StorageDiscoveryResult, Error> {
         match &self.query {
+            StorageQuery::LocalDevice { host, device } => {
+                crate::storage_local::probe(session, *host, device)
+                    .await
+                    .map(StorageDiscoveryResult::LocalRepositories)
+            }
             StorageQuery::Backends => {
                 decode_backends(&session.call("SM.get_all_records", vec![]).await?)
                     .map(StorageDiscoveryResult::Backends)
@@ -214,7 +225,7 @@ impl DiscoveryRequest {
                     StorageQuery::Probe { host, location } => {
                         (*host, location.kind(), location.device_config(), &[][..])
                     }
-                    StorageQuery::Backends => unreachable!(),
+                    StorageQuery::Backends | StorageQuery::LocalDevice { .. } => unreachable!(),
                 };
                 if let Some(credentials) = &self.credentials {
                     validate_credentials(query, credentials)?;

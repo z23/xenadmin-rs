@@ -761,3 +761,11 @@ IP addresses are not authenticated identities; the chosen client's own host-key/
 policy still applies. Local spawn/exit status does not establish a successful guest login.
 The existing private atomic preferences file stores declarations, never guest passwords.
 Management bond guest-impact review is a bounded, generation-scoped read-only query. Typed immutable consumer rows capture authoritative VM locality and exact NIC/network settings; dispatch reproduces the complete set, and completion verifies expected network destinations while preserving guest/NIC identities. Unknown locality is never treated as empty eligibility. Policy fingerprints and explicit default locking mode cover network-default NIC behavior. The existing single bond task, pool reservation and no-replay recovery remain unchanged; see the [guest migration report](reports/2026-11-08-management-bond-guests.md).
+
+Local EXT/LVM storage uses `StorageLocation::Local` and an explicit `LocalDeviceDeclaration`
+for formatting. The declaration is operator testimony, not authenticated device evidence.
+Fresh dual-driver probing and known PBD/SR use checks refuse observed conflicts without
+inferring safety from an empty result or unknown aliases. Local creation verifies nonshared
+state and a single exact host attachment; existing local attachment creation also scans PBDs
+independently of reverse SR lists. Legacy create actions omit the new optional declaration.
+See the [local storage report](reports/2026-11-08-storage-local.md) for the direct-API limits.

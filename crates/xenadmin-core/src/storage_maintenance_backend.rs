@@ -77,7 +77,8 @@ async fn attachment(
     if v["SR"] != sr_ref
         || v["host"] != host_ref
         || v["currently_attached"] != attached
-        || crate::storage::safe_location_from_config(&v["device_config"]) != p.location
+        || crate::storage::safe_location_for_kind(&v["device_config"], sr["type"].as_str())
+            != p.location
         || crate::storage::requires_credentials(&v["device_config"]) != p.requires_credentials
         || !sr["PBDs"]
             .as_array()
@@ -85,6 +86,7 @@ async fn attachment(
     {
         return conflict();
     }
+    crate::storage_local::attachment_graph(sr, &reference)?;
     let fingerprint = config(&v)?;
     if expected.is_some_and(|v| v != fingerprint) {
         return conflict();

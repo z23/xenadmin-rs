@@ -84,4 +84,8 @@ dumps, and direct raw-dump download remains unavailable for the target API. See 
 
 The [HBA/allocation increment](reports/2026-11-08-storage-provisioning.md) adds discovered
 HBA/Fibre Channel LUN creation and driver-advertised thick/thin allocation for new iSCSI/HBA
-repositories. Local EXT/LVM device creation and additional backend wizards remain retained.
+repositories. The [local storage increment](reports/2026-11-08-storage-local.md) adds reviewed
+EXT/LVM creation from an operator-declared persistent device path, with a dual repository
+probe and explicit data-loss confirmation. It does not claim automatic physical device
+discovery or fully verified capacity, signatures and ownership; additional backend wizards
+remain retained.

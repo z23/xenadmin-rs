@@ -108,11 +108,13 @@ pub use organization::{
 mod resources;
 mod storage;
 mod storage_discovery;
+mod storage_local;
 mod storage_provisioning;
 pub use resources::{
     ObservedResource, ResourceAction, ResourceCommand, ResourceOperation, ResourceOperationRecord,
     ResourceTarget,
 };
+pub use storage_local::{DiscoveredLocalRepository, LocalDeviceDeclaration, LocalStorageKind};
 mod cross_pool;
 mod cross_pool_backend;
 pub use cross_pool::{CrossPoolMode, CrossPoolVmOperation, CrossPoolVmSelection};
