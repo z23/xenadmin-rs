@@ -156,6 +156,14 @@ pub(super) fn populate(inventory: &mut Inventory) {
     inventory.details.vbds.insert(
         disk_attachment,
         VirtualBlockDevice {
+            qos: Some(xenadmin_core::DeviceQos {
+                algorithm: "ionice".into(),
+                parameters: std::collections::BTreeMap::from([
+                    ("class".into(), "4".into()),
+                    ("sched".into(), "be".into()),
+                ]),
+            }),
+            qos_supported_algorithms: Some(vec!["ionice".into()]),
             id: disk_attachment,
             vm: Some(vm.id),
             snapshot: None,
@@ -174,6 +182,14 @@ pub(super) fn populate(inventory: &mut Inventory) {
     inventory.details.vbds.insert(
         cd_attachment,
         VirtualBlockDevice {
+            qos: Some(xenadmin_core::DeviceQos {
+                algorithm: "ionice".into(),
+                parameters: std::collections::BTreeMap::from([
+                    ("class".into(), "4".into()),
+                    ("sched".into(), "be".into()),
+                ]),
+            }),
+            qos_supported_algorithms: Some(vec!["ionice".into()]),
             id: cd_attachment,
             vm: Some(vm.id),
             snapshot: None,
@@ -192,6 +208,8 @@ pub(super) fn populate(inventory: &mut Inventory) {
     inventory.details.vifs.insert(
         nic,
         VirtualInterface {
+            qos_known: true,
+            qos_supported_algorithms: Some(vec!["ratelimit".into()]),
             id: nic,
             vm: Some(vm.id),
             network,

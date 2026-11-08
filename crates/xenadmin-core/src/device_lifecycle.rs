@@ -1,3 +1,5 @@
+#[path = "device_property_operations.rs"]
+mod properties;
 use crate::{
     ActionAvailability, ClassAvailability, DeviceOperation, Error, Inventory, NetworkId,
     OperationId, PowerState, SrId, VbdId, VdiId, VifId, VmId, xapi::Session,
@@ -50,6 +52,7 @@ fn mac(value: &str) -> bool {
 pub(crate) fn validate(operation: &DeviceOperation) -> Result<(), Error> {
     use DeviceOperation::*;
     let valid = match operation {
+        Property { change } => return change.validate(),
         CreateDisk {
             name, size, device, ..
         } => {
@@ -89,6 +92,9 @@ pub(crate) fn availability(
     let Some(guest) = inventory.vms.get(&vm) else {
         return ActionAvailability::Stale;
     };
+    if let Property { change } = operation {
+        return properties::availability(change, inventory, vm);
+    }
     if guest.power_state != PowerState::Halted {
         return ActionAvailability::Prerequisite {
             reason: "Shut down the VM before changing its device configuration".into(),
@@ -295,6 +301,7 @@ impl NicSettings {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Step {
+    Property(properties::PropertyStep),
     CreateDisk {
         sr: SrId,
         name: String,
@@ -337,6 +344,7 @@ pub(crate) enum Step {
 impl Step {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Property(step) => step.change.label(),
             Self::CreateDisk { .. } => "Create disk",
             Self::Attach { cd: true, .. } => "Create CD drive",
             Self::Attach { .. } => "Create disk attachment",
@@ -494,6 +502,9 @@ pub(crate) async fn plan(
 ) -> Result<Plan, Error> {
     use DeviceOperation::*;
     validate(operation)?;
+    if let Property { change } = operation {
+        return properties::plan(session, vm, change).await;
+    }
     let vm_ref = guest(session, vm, true).await?;
     let steps = match operation {
         CreateDisk {
@@ -717,8 +728,12 @@ pub(crate) async fn prepare_step(
     plan: &Plan,
     index: usize,
 ) -> Result<Prepared, Error> {
+    if let Step::Property(step) = &plan.steps[index] {
+        return properties::prepare(session, vm, step).await;
+    }
     let vm_ref = guest(session, vm, true).await?;
     let prepared = match &plan.steps[index] {
+        Step::Property(_) => unreachable!(),
         Step::CreateDisk { sr, name, size } => {
             let (sr_ref, record) = fresh(session, "SR", sr.uuid()).await?;
             if record["content_type"] == "iso" {
@@ -939,6 +954,9 @@ pub(crate) async fn verify_step(
     plan: &mut Plan,
     index: usize,
 ) -> Result<bool, Error> {
+    if let Step::Property(step) = &plan.steps[index] {
+        return properties::verify(session, vm, step).await;
+    }
     if let Some(class) = plan.steps[index].creation_class() {
         let evidence = plan.evidence[index].clone().ok_or(Error::DeviceConflict)?;
         let (reference, record) = if let Some(reference) = evidence.result_reference {

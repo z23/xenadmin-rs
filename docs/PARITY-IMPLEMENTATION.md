@@ -120,7 +120,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P06-02 | Startup/max/live vCPU counts | Halted startup/max vCPU editing and reviewed live vCPU increases within the existing maximum implemented; exact host capability and current limit checks fixture verified, live qualification open |
 | P06-03 | CPU topology and scheduling weight | Halted cores-per-socket topology and CPU scheduling weight editors implemented; unrelated platform/CPU keys preserved, live qualification open |
 | P06-04 | Static/dynamic memory limits, ballooning/live changes | Halted static/dynamic limits and reviewed running-VM dynamic ranges implemented with fresh static-bound checks; fixture verified, live ballooning qualification open |
-| P06-05 | Boot order, bootable devices, autostart | Boot-order and autostart editors implemented; bootable-device management remains queued |
+| P06-05 | Boot order, bootable devices, autostart | Boot-order/autostart editors and reviewed halted-VM bootable disk-attachment flags implemented; fixture verified, live qualification open |
 | P06-06 | Home server/host affinity | Queued |
 | P06-07 | VM HA restart priority/protection | Queued |
 | P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Queued |
@@ -129,6 +129,8 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P06-11 | Guest tools status/installation media | Guest-reported tools/OS/address display implemented; tools-install media workflow remains queued |
 
 ## 7. VM disks, removable media and NICs
+
+Property editor evidence is in the [device property report](reports/2026-11-08-device-properties.md).
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
@@ -139,15 +141,15 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P07-05 | Activate/deactivate disk attachment | Reviewed existing disk attachment plug/unplug implemented with fresh ownership checks; lab qualification open |
 | P07-06 | Resize disk | Halted VM grow-only disk workflow implemented with size/consumer checks; other resize modes remain queued |
 | P07-07 | Delete disk | Reviewed halted-VM deletion of an exclusively owned, non-shared user disk implemented with current consumer checks and separate journaled attachment/data deletion; fixture verified, lab qualification open |
-| P07-08 | Disk name/description, access mode, I/O priority and device position | Queued |
+| P07-08 | Disk name/description, access mode, I/O priority and device position | Reviewed exclusive-disk metadata, halted access/position and advertised best-effort I/O priority implemented; per-setter recovery and map preservation fixture verified, live qualification open |
 | P07-09 | Move/copy/migrate disk to another SR | Selected disks can relocate via reviewed same-pool VM migration, including current-host selection; standalone copy and broader disk topologies remain queued |
 | P07-10 | Add CD drive; mount/change/eject ISO | Reviewed halted-VM empty CD-drive creation and existing-drive insert/eject implemented; replacement uses explicit eject then insert; fixture verified, lab qualification open |
-| P07-11 | Disable disk changed-block tracking | Queued |
+| P07-11 | Disable disk changed-block tracking | Reviewed halted exclusive-disk disablement with exact disk confirmation and backup-chain warning implemented; lost-reply reconciliation fixture verified, live qualification open |
 | P07-12 | List NICs/MACs/networks/attachment state | VM NIC/MAC/network/attachment view implemented; live network qualification open |
 | P07-13 | Add/delete VM NIC | Reviewed halted-VM addition/deletion implemented with a chosen network, device slot and optional generated MAC; fixture verified, lab qualification open |
 | P07-14 | Connect/disconnect VM NIC | Reviewed NIC plug/unplug implemented with fresh ownership/state checks; lab qualification open |
 | P07-15 | Change NIC network/MAC | Reviewed halted-VM network move and MAC replacement implemented; supported MTU/QoS/locking/IP restrictions retained, unsupported extra configuration refused; fixture verified, lab qualification open |
-| P07-16 | NIC rate limiting/QoS | Queued |
+| P07-16 | NIC rate limiting/QoS | Reviewed halted NIC ratelimit policy in KB/s implemented when advertised by the host; unrelated parameters retained, fixture verified, live throughput qualification open |
 
 ## 8. Creation, templates, clones and deletion
 

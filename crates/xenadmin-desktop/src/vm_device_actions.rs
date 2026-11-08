@@ -61,6 +61,7 @@ fn open(
         error: None,
     };
     if let Some(view) = &mut s.devices {
+        view.properties = None;
         view.lifecycle = None;
         view.form = Some(form);
     }

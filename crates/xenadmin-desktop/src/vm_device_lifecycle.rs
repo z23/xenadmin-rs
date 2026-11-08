@@ -118,6 +118,7 @@ fn open(s: &mut State, kind: Kind) {
         form.review = Some(review_for(operation.clone(), inventory));
     }
     if let Some(view) = &mut s.devices {
+        view.properties = None;
         view.form = None;
         view.lifecycle = Some(form);
     }

@@ -233,6 +233,10 @@ pub struct VirtualDisk {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VirtualBlockDevice {
+    #[serde(default)]
+    pub qos: Option<crate::DeviceQos>,
+    #[serde(default)]
+    pub qos_supported_algorithms: Option<Vec<String>>,
     pub id: VbdId,
     pub vm: Option<VmId>,
     pub snapshot: Option<SnapshotId>,
@@ -251,6 +255,10 @@ pub struct VirtualBlockDevice {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VirtualInterface {
+    #[serde(default)]
+    pub qos_known: bool,
+    #[serde(default)]
+    pub qos_supported_algorithms: Option<Vec<String>>,
     pub id: VifId,
     pub vm: Option<VmId>,
     pub network: Option<NetworkId>,

@@ -24,6 +24,9 @@ enum Fault {
     MisboundDiskCreate,
     UnexpectedAttachmentOwner,
     ReorderedNicConfig,
+    LostProperty,
+    RefuseSecondProperty,
+    ChangePropertyAlgorithm,
 }
 fn normal_disk(n: u128) -> Value {
     json!({"uuid":uuid(n),"SR":"OpaqueRef:SR:base","name_label":"Existing disk","virtual_size":"1073741824","type":"user","read_only":false,"sharable":false,"managed":true,"missing":false,"is_a_snapshot":false,"VBDs":[],"current_operations":{},"allowed_operations":["destroy"],"other_config":{}})
@@ -90,7 +93,16 @@ async fn fixture(fault: Fault) -> (Fixture, Records, Calls) {
             records.insert(reference.clone(),record);
             return if (fault==Fault::LostDiskCreate&&class=="VDI")||(fault==Fault::LostAttachmentCreate&&class=="VBD")||(fault==Fault::LostNicCreate&&class=="VIF"){json!({"_fixture_close_without_reply":true})}else{json!({"result":reference})};
         }
+        if let Some((class,field))=method.split_once(".set_") {
+            assert!(["VDI","VBD","VIF"].contains(&class));
+            let setters=calls.lock().unwrap().iter().filter(|r|r["method"].as_str().unwrap().contains(".set_")).count();
+            if fault==Fault::RefuseSecondProperty && setters==2 {return json!({"error":{"message":"RBAC_PERMISSION_DENIED"}});}
+            records.get_mut(request["params"][1].as_str().unwrap()).unwrap()[field]=request["params"][2].clone();
+            if fault==Fault::ChangePropertyAlgorithm && field=="qos_algorithm_params" { records.get_mut(request["params"][1].as_str().unwrap()).unwrap()["qos_algorithm_type"]=json!(""); }
+            return if fault==Fault::LostProperty{json!({"_fixture_close_without_reply":true})}else{json!({"result":null})};
+        }
         match method{
+            "VDI.disable_cbt"=>{records.get_mut(request["params"][1].as_str().unwrap()).unwrap()["cbt_enabled"]=json!(false);if fault==Fault::LostProperty{json!({"_fixture_close_without_reply":true})}else{json!({"result":null})}},
             "VBD.destroy"=>{
                 let reference=request["params"][1].as_str().unwrap();
                 let record=records.remove(reference).unwrap();
@@ -640,3 +652,6 @@ async fn nic_ip_sets_and_mac_case_have_semantic_comparison() {
     assert_eq!(count(&calls, "VIF.destroy"), 0);
     assert_eq!(count(&calls, "VIF.move"), 1);
 }
+
+#[path = "device_property_tests.rs"]
+mod properties;

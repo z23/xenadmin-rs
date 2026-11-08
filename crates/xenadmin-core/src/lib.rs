@@ -1,3 +1,5 @@
+mod device_properties;
+pub use device_properties::{DeviceProperty, DeviceQos, DiskAccess};
 mod appliances;
 pub use appliances::{ApplianceMember, ApplianceOperation, ApplianceOrder, AppliancePower};
 mod connection;

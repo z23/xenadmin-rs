@@ -1981,6 +1981,7 @@ fn main() {
                 vm_properties::open(s);
             }),
             ("vm-create", vm_lifecycle::scene),
+            ("device-properties", vm_devices::properties_scene),
             ("vm-migration", vm_migration::scene),
             ("archive-export", transfers::scene),
             ("disk-export", transfers::disk_scene),

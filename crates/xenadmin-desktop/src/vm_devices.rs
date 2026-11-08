@@ -2,6 +2,8 @@
 mod actions;
 #[path = "vm_device_lifecycle.rs"]
 mod lifecycle;
+#[path = "vm_device_properties.rs"]
+mod properties;
 use super::{State, caption, console_view, heading, storage_bytes};
 use rune::{El, ScrollSpec, col, row};
 use rune_kit::{Button, ButtonVariant, Kit};
@@ -15,6 +17,7 @@ pub(super) struct DeviceView {
     pub name: String,
     form: Option<actions::Form>,
     lifecycle: Option<lifecycle::Form>,
+    properties: Option<properties::Form>,
 }
 
 pub(super) fn open(s: &mut State) {
@@ -34,6 +37,7 @@ pub(super) fn open(s: &mut State) {
         name: guest.name.clone(),
         form: None,
         lifecycle: None,
+        properties: None,
     };
     console_view::release(s);
     s.console = None;
@@ -134,7 +138,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .child(lifecycle::operation_history(s, inventory, target.vm, k))
         .child(guest_tools(inventory, target.vm, k));
     page = page.child(content);
-    if let Some(dialog) = lifecycle::dialog(s, k).or_else(|| actions::dialog(s, k)) {
+    if let Some(dialog) = properties::dialog(s, k)
+        .or_else(|| lifecycle::dialog(s, k))
+        .or_else(|| actions::dialog(s, k))
+    {
         page = page.child(dialog);
     }
     page
@@ -321,6 +328,7 @@ fn disk_card(
     view.child(field("Attachment UUID", attachment.id.to_string(), k))
         .child(actions::disk_buttons(s, inventory, vm, attachment, k))
         .child(lifecycle::disk_controls(s, inventory, vm, attachment, k))
+        .child(properties::disk_control(s, attachment, k))
 }
 fn interface_card(s: &State, inventory: &Inventory, interface: &VirtualInterface, k: &Kit) -> El {
     let network = interface.network.and_then(|id| {
@@ -408,6 +416,11 @@ fn interface_card(s: &State, inventory: &Inventory, interface: &VirtualInterface
     view.child(field("Interface UUID", interface.id.to_string(), k))
         .child(actions::nic_buttons(s, inventory, interface, k))
         .child(lifecycle::nic_controls(s, inventory, interface, k))
+        .child(properties::nic_control(s, interface, k))
+}
+
+pub(super) fn properties_scene(s: &mut State) {
+    properties::scene(s);
 }
 fn guest_tools(inventory: &Inventory, vm: VmId, k: &Kit) -> El {
     let mut section = section("Guest tools and reported addresses", k);

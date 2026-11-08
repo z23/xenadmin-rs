@@ -89,7 +89,8 @@ impl MutationRequest {
             let response = match result {
                 Ok(response) => response,
                 Err(error) => {
-                    let refused = matches!(error, Error::Api(_) | Error::Coordinator(_));
+                    let refused = !matches!(plan.steps[index], device_lifecycle::Step::Property(_))
+                        && matches!(error, Error::Api(_) | Error::Coordinator(_));
                     self.record.steps[index].state = if refused {
                         StepState::Failed
                     } else {

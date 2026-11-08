@@ -15,6 +15,9 @@ pub struct DeviceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "device_action", rename_all = "snake_case")]
 pub enum DeviceOperation {
+    Property {
+        change: crate::DeviceProperty,
+    },
     CreateDisk {
         sr: SrId,
         name: String,
@@ -81,6 +84,7 @@ pub enum DeviceOperation {
 impl DeviceOperation {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Property { change } => change.label(),
             Self::CreateDisk { .. } => "Create and attach disk",
             Self::AttachDisk { .. } => "Attach existing disk",
             Self::DetachDisk { .. } => "Detach disk",
@@ -101,6 +105,7 @@ impl DeviceOperation {
 
     pub(crate) fn resources(&self) -> Vec<String> {
         match self {
+            Self::Property { change } => change.resources(),
             Self::CreateDisk { sr, .. } => vec![format!("sr:{sr}")],
             Self::AttachDisk { vdi, .. } => vec![format!("vdi:{vdi}")],
             Self::DetachDisk { vbd, vdi } | Self::DeleteDisk { vbd, vdi } => {
@@ -287,7 +292,8 @@ impl DeviceOperation {
     pub(crate) fn is_lifecycle(&self) -> bool {
         matches!(
             self,
-            Self::CreateDisk { .. }
+            Self::Property { .. }
+                | Self::CreateDisk { .. }
                 | Self::AttachDisk { .. }
                 | Self::DetachDisk { .. }
                 | Self::DeleteDisk { .. }

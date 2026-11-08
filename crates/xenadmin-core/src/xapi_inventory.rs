@@ -315,6 +315,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             VirtualBlockDevice {
+                qos: crate::DeviceQos::from_record(record),
+                qos_supported_algorithms: strings(&record["qos_supported_algorithms"]),
                 id,
                 vm: refs.vm(&record["VM"]),
                 snapshot: refs.snapshot(&record["VM"]),
@@ -338,6 +340,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             VirtualInterface {
+                qos_known: crate::DeviceQos::from_record(record).is_some(),
+                qos_supported_algorithms: strings(&record["qos_supported_algorithms"]),
                 id,
                 vm: refs.vm(&record["VM"]),
                 network: refs.link("network", &record["network"]),
