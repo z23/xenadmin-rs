@@ -21,6 +21,8 @@ enum Fault {
     TaskRead,
     VerifyRead,
     MissingMembers,
+    TaskFailed,
+    TaskCancelled,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 async fn fixture(fault: Fault) -> (Mock, Records) {
@@ -111,6 +113,12 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                 }));
             }
             if method == "task.get_record" {
+                if matches!(fault, Fault::TaskFailed | Fault::TaskCancelled) {
+                    return Some(RpcReply::Json(
+                        json!({"result":{"status":if fault==Fault::TaskFailed{"failure"}else{"cancelled"},"error_info":[],"allowed_operations":[]}}),
+                    ));
+                }
+
                 if fault == Fault::TaskRead {
                     return Some(RpcReply::Json(
                         json!({"error":{"code":1,"message":"HANDLE_INVALID","data":[]}}),
@@ -562,4 +570,43 @@ async fn vlan_deletion_rechecks_vm_consumers_and_preserves_network_record() {
         OperationState::Succeeded
     );
     assert!(records.lock().unwrap().contains_key("network"));
+}
+
+#[tokio::test]
+async fn failed_or_cancelled_vlan_creation_retains_partial_object_and_pool_reservation() {
+    for fault in [Fault::TaskFailed, Fault::TaskCancelled] {
+        let (mock, records) = fixture(fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let result = finish(&submit(&c, network(), vlan(&c))).await;
+        assert_eq!(result.state, OperationState::OutcomeUnknown);
+        assert!(records.lock().unwrap().contains_key("VLAN"));
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "task.destroy" || m == "Async.VLAN.destroy")
+        );
+        let another = submit(
+            &c,
+            network(),
+            NetworkOperation::SetMtu {
+                expected: 1500,
+                mtu: 9000,
+                pifs: vec![],
+            },
+        );
+        assert_eq!(finish(&another).await.state, OperationState::Rejected);
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "Async.network.set_MTU")
+        );
+    }
 }

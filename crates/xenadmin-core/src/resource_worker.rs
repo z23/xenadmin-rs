@@ -403,10 +403,15 @@ impl ResourceRequest {
                     .map(crate::xapi::safe_error_code);
                 self.record.state = OperationState::OutcomeUnknown;
                 self.record.can_cancel = false;
-                self.record.detail = match code {
-                    Some(code) => format!("Storage provisioning task failed: {code}. Partial resources may remain; inspect before acknowledging the unknown outcome"),
-                    None => "Storage provisioning task was cancelled. Partial resources may remain; inspect before acknowledging the unknown outcome".into(),
+                let outcome = if task["status"] == "failure" {
+                    "failed"
+                } else {
+                    "was cancelled"
                 };
+                self.record.detail = format!(
+                    "Creation task {outcome}{}. Partial resources may remain; inspect before acknowledging the unknown outcome",
+                    code.map(|code| format!(": {code}")).unwrap_or_default()
+                );
                 for step in &mut self.record.steps {
                     step.state = StepState::OutcomeUnknown;
                     step.detail = self.record.detail.clone();
