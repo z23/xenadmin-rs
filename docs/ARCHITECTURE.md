@@ -543,3 +543,15 @@ bootstrap Secrets after verified task completion and a fresh bounded PBD/SR cons
 Uncertain provisioning retains evidence; explicit cleanup requires source-row provenance and
 proof that provisioning cannot still be running. Recovery reads existing evidence and never
 continues pending provisioning or deletion. See the [verification report](reports/2026-11-08-authenticated-storage.md).
+
+## Secondary network interfaces
+
+Typed network commands add IPv6 configuration, secondary-interface purpose labels and
+unplug protection. Each command captures PIF UUID, host/network identity and prior settings;
+fresh reads refuse changed identities, unmanaged interfaces and bond members. IPv6 changes
+also require an already enabled management IPv6 mode on that host, preserving the installed
+address family. Shared DNS behavior is explicit in the review. Purpose changes merge one
+key into the current map; protection remains a separate intention. These commands use the
+existing asynchronous task journal and never replay a lost submission. Management interface
+handover and topology migration remain separate pending workflows. See the
+[verification report](reports/2026-11-08-network-interfaces.md).

@@ -196,12 +196,12 @@ Implementation boundaries and evidence: [storage lifecycle report](reports/2026-
 | P10-01 | Network names/bridges | Existing workflow; qualification open |
 | P10-02 | Create/delete internal network | Reviewed creation and unused internal-network deletion implemented; identity provenance, lost replies and fresh interface checks fixture verified; lab qualification open |
 | P10-03 | Create/edit/remove external/VLAN network | Per-host VLAN creation/deletion on reviewed networks implemented; fresh topology and new-identity verification fixture tested. Pool-wide orchestration and VLAN retagging remain queued |
-| P10-04 | Name/description, MTU and automatic attachment | Names/descriptions, non-management attached-network MTU and automatic new-VM attachment settings implemented with fresh checks; management-network MTU workflow remains queued |
+| P10-04 | Name/description, MTU and automatic attachment | Names/descriptions, non-management attached-network MTU and automatic new-VM attachment settings implemented with fresh checks; nonstandard management MTU is unsupported by XCP-ng and explicitly refused |
 | P10-05 | Create/destroy bond; change mode/hash settings | Create/destroy unused non-management bonds and mode/hash changes implemented with exact member review; management/VLAN/IP migration during bond creation remains queued |
 | P10-06 | Scan/inspect physical NICs | Physical NIC inspection and asynchronous host rescan implemented; fixture verified, live qualification open |
-| P10-07 | Plug/unplug host interfaces | Reviewed plug/unplug with fresh host/interface identity and management-unplug refusal implemented; fixture verified, live qualification open |
-| P10-08 | Change management interface and IP/netmask/gateway/DNS | Non-management IPv4 mode/IP/netmask/gateway/DNS editing implemented; management interface handover, recovery endpoints and IPv6 editing remain queued |
-| P10-09 | Additional management/storage interfaces and purposes | Queued |
+| P10-07 | Plug/unplug host interfaces | Reviewed plug/unplug with fresh host/interface identity and management/protected-interface unplug refusal implemented; fixture verified, live qualification open |
+| P10-08 | Change management interface and IP/netmask/gateway/DNS | Non-management IPv4/IPv6 mode/address/gateway/DNS editing implemented; IPv6 requires an already enabled host address family. Management handover/recovery endpoints remain queued; fixture verification only |
+| P10-09 | Additional management/storage interfaces and purposes | Secondary-interface IP configuration, purpose labels and explicit unplug protection implemented; management topology handover remains queued |
 | P10-10 | Pool multicast/IGMP snooping | Reviewed pool IGMP snooping setting implemented and fixture verified; live qualification open |
 | P10-11 | SR-IOV networks | Queued |
 | P10-12 | Cross-host internal networking | Capability review and implementation queued |

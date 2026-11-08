@@ -37,7 +37,8 @@ mod network_types;
 mod operations;
 mod profiles;
 pub use network_types::{
-    BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity,
+    BondHash, BondMode, Ipv4Configuration, Ipv4Mode, Ipv6Configuration, Ipv6Mode, NetworkOperation,
+    PifIdentity,
 };
 mod security_discovery;
 pub use security_discovery::{

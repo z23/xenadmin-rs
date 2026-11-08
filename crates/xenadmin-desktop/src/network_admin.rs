@@ -1,3 +1,5 @@
+#[path = "network_interfaces.rs"]
+mod interfaces;
 use super::*;
 use xenadmin_core::{
     BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkId, NetworkOperation, ObservedResource,
@@ -11,6 +13,7 @@ struct Review {
     lines: Vec<String>,
 }
 enum Form {
+    Interface(Box<interfaces::Editor>),
     Browse,
     Vlan {
         parent: Option<PifId>,
@@ -319,6 +322,7 @@ fn form_review(s: &mut State) {
                     lines,
                 )
             }
+            Form::Interface(editor) => interfaces::review(editor, i)?,
             Form::Browse => return Err("Choose a change to review".into()),
         })
     })();
@@ -540,7 +544,7 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
                 .wrap_anywhere(),
             );
         if p.management == Some(true) {
-            card=card.child(caption("Host management interface. Address and bond changes require a recovery workflow that is still in development.",k).wrap());
+            card=card.child(caption("Host management interface. XCP-ng requires the standard 1500-byte MTU. Address and bond changes require a recovery workflow that is still in development.",k).wrap());
         }
         if let (Some(expected), Some(attached)) =
             (PifIdentity::from_inventory(p), p.currently_attached)
@@ -562,10 +566,13 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
                     format!("Attached: {attached} → {}", !attached),
                     "Unplugging interrupts VM and storage traffic on this interface.".into(),
                 ],
-                enabled && (!attached || p.management == Some(false)),
+                enabled
+                    && (!attached
+                        || (p.management == Some(false) && p.disallow_unplug != Some(true))),
                 k,
             ));
         }
+        card = card.child(interfaces::controls(i, p, enabled, k));
         let id = p.id;
         card = card.child(
             Button::new("IPv4 configuration…")
@@ -646,6 +653,7 @@ fn form(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
         );
     }
     match &w.form {
+        Form::Interface(editor) => body = body.child(interfaces::form(editor, i, k)),
         Form::Browse => return browse(s, w, i, k),
         Form::Vlan { parent, tag } => {
             body = body
@@ -985,6 +993,10 @@ pub(super) fn scene(s: &mut State) {
         inventory.details.pifs.insert(
             id,
             xenadmin_core::PhysicalInterface {
+                managed: Some(true),
+                disallow_unplug: Some(false),
+                management_purpose: None,
+                primary_address_type: Some("IPv4".into()),
                 id,
                 host: Some(host),
                 network: Some(NetworkId::from(underlay)),
@@ -1026,6 +1038,10 @@ pub(super) fn scene(s: &mut State) {
     });
 }
 
+pub(super) fn ipv6_scene(s: &mut State) {
+    scene(s);
+    interfaces::scene(s);
+}
 #[cfg(test)]
 mod tests {
     use super::*;

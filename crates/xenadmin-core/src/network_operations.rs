@@ -87,6 +87,54 @@ async fn pif_references(session: &Session, ids: &[PifId]) -> Result<BTreeSet<Str
     }
     Ok(result)
 }
+fn ipv6_addresses(value: &Value) -> Option<BTreeSet<(std::net::Ipv6Addr, u8)>> {
+    value
+        .as_array()
+        .filter(|v| v.len() <= 64)?
+        .iter()
+        .map(|v| crate::network_types::ipv6_cidr(v.as_str()?))
+        .collect()
+}
+fn unchanged_ipv6(fresh: &Value, before: &crate::Ipv6Configuration) -> bool {
+    fresh["ipv6_configuration_mode"] == before.mode.as_str()
+        && ipv6_addresses(&fresh["IPv6"])
+            == Some(
+                before
+                    .addresses
+                    .iter()
+                    .filter_map(|v| crate::network_types::ipv6_cidr(v))
+                    .collect(),
+            )
+        && fresh["ipv6_gateway"] == before.gateway
+        && fresh["DNS"] == before.dns
+}
+async fn configured_ipv6_host(session: &Session, fresh: &Value) -> Result<(), Error> {
+    let interfaces = all(session, "PIF").await?;
+    let management = interfaces
+        .values()
+        .filter(|v| v["host"] == fresh["host"] && v["management"].as_bool() == Some(true))
+        .collect::<Vec<_>>();
+    if management.len() != 1
+        || !matches!(
+            management[0]["ipv6_configuration_mode"].as_str(),
+            Some("DHCP" | "Autoconf" | "Static")
+        )
+    {
+        return Err(Error::Protocol(
+            "IPv6 must already be enabled on the host management interface; changing the installed address family is unsupported",
+        ));
+    }
+    Ok(())
+}
+fn configurable_pif(fresh: &Value) -> Result<(), Error> {
+    nonmanagement(fresh)?;
+    if fresh["managed"].as_bool() != Some(true)
+        || fresh["bond_slave_of"].as_str() != Some("OpaqueRef:NULL")
+    {
+        return Err(Error::UnavailableAction);
+    }
+    Ok(())
+}
 fn unchanged_ipv4(fresh: &Value, before: &crate::Ipv4Configuration) -> bool {
     fresh["ip_configuration_mode"] == before.mode.as_str()
         && fresh["IP"] == before.address
@@ -121,6 +169,9 @@ pub(super) async fn arguments(
             }
             if !attached {
                 nonmanagement(&fresh)?;
+                if fresh["disallow_unplug"].as_bool() == Some(true) {
+                    return Err(Error::Protocol("Interface unplug protection is enabled"));
+                }
             }
         }
         NetworkOperation::CreateVlan {
@@ -247,6 +298,60 @@ pub(super) async fn arguments(
             nonmanagement(&related(session, "PIF", &fresh["master"]).await?)?;
             args.extend([json!("hashing_algorithm"), json!(hash.as_str())]);
         }
+        NetworkOperation::ConfigureIpv6 {
+            expected,
+            before,
+            configuration,
+        } => {
+            pif_identity(session, &fresh, expected).await?;
+            configurable_pif(&fresh)?;
+            configured_ipv6_host(session, &fresh).await?;
+            if !unchanged_ipv6(&fresh, before) {
+                return Err(Error::ResourceConflict);
+            }
+            args.extend([
+                json!(configuration.mode.as_str()),
+                json!(
+                    configuration
+                        .addresses
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("")
+                ),
+                json!(configuration.gateway),
+                json!(configuration.dns),
+            ]);
+        }
+        NetworkOperation::SetInterfacePurpose {
+            expected,
+            before,
+            purpose,
+        } => {
+            pif_identity(session, &fresh, expected).await?;
+            configurable_pif(&fresh)?;
+            let mut map = string_map(&fresh["other_config"])?;
+            if map.get("management_purpose").and_then(Value::as_str) != before.as_deref() {
+                return Err(Error::ResourceConflict);
+            }
+            if let Some(purpose) = purpose {
+                map.insert("management_purpose".into(), json!(purpose));
+            } else {
+                map.remove("management_purpose");
+            }
+            args.push(json!(map));
+        }
+        NetworkOperation::SetUnplugProtection {
+            expected,
+            before,
+            enabled,
+        } => {
+            pif_identity(session, &fresh, expected).await?;
+            configurable_pif(&fresh)?;
+            if fresh["disallow_unplug"].as_bool() != Some(*before) {
+                return Err(Error::ResourceConflict);
+            }
+            args.push(json!(enabled));
+        }
         NetworkOperation::SetAutomaticAttachment { expected, enabled } => {
             let mut map = string_map(&fresh["other_config"])?;
             if map.get("automatic").and_then(Value::as_str) != expected.as_deref() {
@@ -299,6 +404,9 @@ pub(super) async fn arguments(
 }
 fn method(op: &NetworkOperation) -> &'static str {
     match op {
+        NetworkOperation::ConfigureIpv6 { .. } => "Async.PIF.reconfigure_ipv6",
+        NetworkOperation::SetInterfacePurpose { .. } => "Async.PIF.set_other_config",
+        NetworkOperation::SetUnplugProtection { .. } => "Async.PIF.set_disallow_unplug",
         NetworkOperation::ScanInterfaces => "Async.PIF.scan",
         NetworkOperation::SetAttached { attached: true, .. } => "Async.PIF.plug",
         NetworkOperation::SetAttached {
@@ -379,6 +487,35 @@ pub(super) async fn verify(
     }
     let (_, fresh) = xapi::read(session, record.target).await?;
     let matches = match op {
+        NetworkOperation::ConfigureIpv6 {
+            expected,
+            configuration,
+            ..
+        } => {
+            pif_identity(session, &fresh, expected).await?;
+            fresh["ipv6_configuration_mode"] == configuration.mode.as_str()
+                && (configuration.mode != crate::Ipv6Mode::Static
+                    || (ipv6_addresses(&fresh["IPv6"]).is_some_and(|addresses| {
+                        configuration.addresses.iter().all(|v| {
+                            crate::network_types::ipv6_cidr(v)
+                                .is_some_and(|v| addresses.contains(&v))
+                        })
+                    }) && fresh["ipv6_gateway"] == configuration.gateway))
+                && (configuration.dns.is_empty() || fresh["DNS"] == configuration.dns)
+        }
+        NetworkOperation::SetInterfacePurpose {
+            expected, purpose, ..
+        } => {
+            pif_identity(session, &fresh, expected).await?;
+            fresh["other_config"].is_object()
+                && fresh["other_config"]["management_purpose"].as_str() == purpose.as_deref()
+        }
+        NetworkOperation::SetUnplugProtection {
+            expected, enabled, ..
+        } => {
+            pif_identity(session, &fresh, expected).await?;
+            fresh["disallow_unplug"].as_bool() == Some(*enabled)
+        }
         NetworkOperation::ScanInterfaces => true,
         NetworkOperation::SetAttached {
             expected, attached, ..

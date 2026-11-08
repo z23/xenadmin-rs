@@ -503,6 +503,10 @@ pub(super) fn scene(s: &mut State) {
             i.details.pifs.insert(
                 p,
                 xenadmin_core::PhysicalInterface {
+                    managed: Some(true),
+                    disallow_unplug: Some(false),
+                    management_purpose: None,
+                    primary_address_type: Some("IPv4".into()),
                     id: p,
                     host: Some(*host),
                     network: Some(NetworkId::from(n.uuid)),

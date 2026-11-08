@@ -2131,6 +2131,7 @@ fn main() {
             ("snapshot-edit", vm_snapshots::edit_scene),
             ("connections", |s| profiles_view::scene(s, false)),
             ("network-interfaces", network_admin::scene),
+            ("network-ipv6", network_admin::ipv6_scene),
             ("host-administration", host_admin::scene),
             ("snapshot-schedules", snapshot_policy_view::scene),
             ("network-create", |s| resource_admin::scene(s, false)),

@@ -279,6 +279,14 @@ pub struct VirtualInterface {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PhysicalInterface {
+    #[serde(default)]
+    pub managed: Option<bool>,
+    #[serde(default)]
+    pub disallow_unplug: Option<bool>,
+    #[serde(default)]
+    pub management_purpose: Option<String>,
+    #[serde(default)]
+    pub primary_address_type: Option<String>,
     pub id: PifId,
     pub host: Option<HostId>,
     pub network: Option<NetworkId>,

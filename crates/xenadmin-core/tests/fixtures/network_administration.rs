@@ -45,7 +45,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         ),
         (
             "PIF".into(),
-            json!({"uuid":PIF,"host":"OpaqueRef:host","network":"OpaqueRef:network-underlay","device":"eth0","MAC":"02:00:00:00:00:01","MTU":"1500","VLAN":"-1","management":false,"physical":true,"managed":true,"currently_attached":true,"bond_slave_of":"OpaqueRef:NULL","bond_master_of":[],"VLAN_slave_of":[],"ip_configuration_mode":"None","IP":"","netmask":"","gateway":"","DNS":"","ipv6_configuration_mode":"None"}),
+            json!({"uuid":PIF,"host":"OpaqueRef:host","network":"OpaqueRef:network-underlay","device":"eth0","MAC":"02:00:00:00:00:01","MTU":"1500","VLAN":"-1","management":false,"physical":true,"managed":true,"currently_attached":true,"bond_slave_of":"OpaqueRef:NULL","bond_master_of":[],"VLAN_slave_of":[],"ip_configuration_mode":"None","IP":"","netmask":"","gateway":"","DNS":"","ipv6_configuration_mode":"None","IPv6":[],"ipv6_gateway":"","disallow_unplug":false,"primary_address_type":"IPv4","other_config":{"unrelated":"preserve"}}),
         ),
     ])));
     if fault == Fault::OldVlan {
@@ -194,6 +194,24 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                         map.remove("Bond");
                         map.remove("PIF-bond");
                         map.get_mut("network").unwrap()["PIFs"] = json!([]);
+                    }
+                    "Async.PIF.reconfigure_ipv6" => {
+                        let pif = map.get_mut("PIF").unwrap();
+                        pif["ipv6_configuration_mode"] = request["params"][2].clone();
+                        pif["IPv6"] = if request["params"][3] == "" {
+                            json!([])
+                        } else {
+                            json!([request["params"][3].clone()])
+                        };
+                        pif["ipv6_gateway"] = request["params"][4].clone();
+                        pif["DNS"] = request["params"][5].clone();
+                    }
+                    "Async.PIF.set_other_config" => {
+                        map.get_mut("PIF").unwrap()["other_config"] = request["params"][2].clone()
+                    }
+                    "Async.PIF.set_disallow_unplug" => {
+                        map.get_mut("PIF").unwrap()["disallow_unplug"] =
+                            request["params"][2].clone()
                     }
                     "Async.PIF.reconfigure_ip" => {
                         let pif = map.get_mut("PIF").unwrap();
@@ -607,6 +625,199 @@ async fn failed_or_cancelled_vlan_creation_retains_partial_object_and_pool_reser
                 .unwrap()
                 .iter()
                 .any(|m| m == "Async.network.set_MTU")
+        );
+    }
+}
+
+fn ipv6_operation(c: &xenadmin_core::Connection) -> NetworkOperation {
+    NetworkOperation::ConfigureIpv6 {
+        expected: xenadmin_core::PifIdentity::from_inventory(
+            &c.latest().inventory().unwrap().details.pifs[&PifId::parse(PIF).unwrap()],
+        )
+        .unwrap(),
+        before: xenadmin_core::Ipv6Configuration {
+            mode: xenadmin_core::Ipv6Mode::None,
+            addresses: vec![],
+            gateway: String::new(),
+            dns: String::new(),
+        },
+        configuration: xenadmin_core::Ipv6Configuration {
+            mode: xenadmin_core::Ipv6Mode::Static,
+            addresses: vec!["2001:db8::20/64".into()],
+            gateway: "2001:db8::1".into(),
+            dns: "2001:db8::53".into(),
+        },
+    }
+}
+fn enable_ipv6(records: &Records) {
+    let mut map = records.lock().unwrap();
+    let mut management = map["PIF"].clone();
+    management["uuid"] = json!("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+    management["management"] = json!(true);
+    management["device"] = json!("eth2");
+    management["ipv6_configuration_mode"] = json!("Static");
+    management["IPv6"] = json!(["2001:db8::10/64"]);
+    map.insert("PIF-management".into(), management);
+}
+#[tokio::test]
+async fn ipv6_edits_preserve_ipv4_and_purpose_merges_preserve_other_keys() {
+    let (mock, records) = fixture(Fault::None).await;
+    enable_ipv6(&records);
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let target = ResourceTarget::Pif(PifId::parse(PIF).unwrap());
+    let op = submit(&c, target, ipv6_operation(&c));
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    {
+        let map = records.lock().unwrap();
+        assert_eq!(map["PIF"]["IPv6"], json!(["2001:db8::20/64"]));
+        assert_eq!(map["PIF"]["ip_configuration_mode"], "None");
+        assert_eq!(map["PIF"]["IP"], "");
+    }
+    let expected = xenadmin_core::PifIdentity::from_inventory(
+        &c.latest().inventory().unwrap().details.pifs[&PifId::parse(PIF).unwrap()],
+    )
+    .unwrap();
+    let op = submit(
+        &c,
+        target,
+        NetworkOperation::SetInterfacePurpose {
+            expected: expected.clone(),
+            before: None,
+            purpose: Some("Storage fabric".into()),
+        },
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    assert_eq!(
+        records.lock().unwrap()["PIF"]["other_config"],
+        json!({"unrelated":"preserve","management_purpose":"Storage fabric"})
+    );
+    let op = submit(
+        &c,
+        target,
+        NetworkOperation::SetUnplugProtection {
+            expected: expected.clone(),
+            before: false,
+            enabled: true,
+        },
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    assert_eq!(records.lock().unwrap()["PIF"]["disallow_unplug"], true);
+    let op = submit(
+        &c,
+        target,
+        NetworkOperation::SetInterfacePurpose {
+            expected,
+            before: Some("Storage fabric".into()),
+            purpose: None,
+        },
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    assert_eq!(
+        records.lock().unwrap()["PIF"]["other_config"],
+        json!({"unrelated":"preserve"})
+    );
+}
+#[tokio::test]
+async fn ipv6_refuses_disabled_host_changed_address_and_bond_members_without_dispatch() {
+    for fault in [0, 1, 2] {
+        let (mock, records) = fixture(Fault::None).await;
+        if fault != 0 {
+            enable_ipv6(&records);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let operation = ipv6_operation(&c);
+        if fault == 1 {
+            records.lock().unwrap().get_mut("PIF").unwrap()["IPv6"] = json!(["2001:db8::99/64"]);
+        }
+        if fault == 2 {
+            records.lock().unwrap().get_mut("PIF").unwrap()["bond_slave_of"] =
+                json!("OpaqueRef:bond");
+        }
+        let op = submit(
+            &c,
+            ResourceTarget::Pif(PifId::parse(PIF).unwrap()),
+            operation,
+        );
+        assert_eq!(finish(&op).await.state, OperationState::Rejected);
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.starts_with("Async."))
+        );
+    }
+}
+#[tokio::test]
+async fn ipv6_lost_reply_stays_unknown_and_recheck_does_not_repeat_write() {
+    let (mock, records) = fixture(Fault::DropReply).await;
+    enable_ipv6(&records);
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let op = submit(
+        &c,
+        ResourceTarget::Pif(PifId::parse(PIF).unwrap()),
+        ipv6_operation(&c),
+    );
+    let record = finish(&op).await;
+    assert_eq!(record.state, OperationState::OutcomeUnknown);
+    c.control_resource(record.id, xenadmin_core::OperationControl::Recheck)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        mock.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.as_str() == "Async.PIF.reconfigure_ipv6")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn changed_purpose_and_unplug_protection_refuse_stale_or_protected_writes() {
+    for purpose_change in [false, true] {
+        let (mock, records) = fixture(Fault::None).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let pif = PifId::parse(PIF).unwrap();
+        let expected = xenadmin_core::PifIdentity::from_inventory(
+            &c.latest().inventory().unwrap().details.pifs[&pif],
+        )
+        .unwrap();
+        let operation = if purpose_change {
+            records.lock().unwrap().get_mut("PIF").unwrap()["other_config"]["management_purpose"] =
+                json!("Concurrent edit");
+            NetworkOperation::SetInterfacePurpose {
+                expected,
+                before: None,
+                purpose: Some("Storage".into()),
+            }
+        } else {
+            records.lock().unwrap().get_mut("PIF").unwrap()["disallow_unplug"] = json!(true);
+            NetworkOperation::SetAttached {
+                expected,
+                expected_attached: true,
+                attached: false,
+            }
+        };
+        let op = submit(&c, ResourceTarget::Pif(pif), operation);
+        assert_eq!(finish(&op).await.state, OperationState::Rejected);
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.starts_with("Async."))
         );
     }
 }

@@ -360,6 +360,16 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             PhysicalInterface {
+                managed: boolean(record, "managed")?,
+                disallow_unplug: boolean(record, "disallow_unplug")?,
+                management_purpose: record["other_config"]["management_purpose"]
+                    .as_str()
+                    .filter(|v| v.len() <= 256 && !v.chars().any(char::is_control))
+                    .map(str::to_owned),
+                primary_address_type: record["primary_address_type"]
+                    .as_str()
+                    .filter(|v| ["IPv4", "IPv6"].contains(v))
+                    .map(str::to_owned),
                 id,
                 host: refs.link("host", &record["host"]),
                 network: refs.link("network", &record["network"]),

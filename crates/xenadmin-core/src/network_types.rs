@@ -2,7 +2,7 @@ use crate::{BondId, Error, HostId, NetworkId, PifId, ResourceTarget};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    net::{IpAddr, Ipv4Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,8 +102,80 @@ impl Ipv4Configuration {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Ipv6Mode {
+    None,
+    Dhcp,
+    Autoconf,
+    Static,
+}
+impl Ipv6Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Dhcp => "DHCP",
+            Self::Autoconf => "Autoconf",
+            Self::Static => "Static",
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ipv6Configuration {
+    pub mode: Ipv6Mode,
+    pub addresses: Vec<String>,
+    pub gateway: String,
+    pub dns: String,
+}
+impl Ipv6Configuration {
+    pub fn valid(&self) -> bool {
+        self.addresses.len() <= 1
+            && self.addresses.iter().all(|v| ipv6_cidr(v).is_some())
+            && (self.gateway.is_empty() || self.gateway.parse::<Ipv6Addr>().is_ok())
+            && self.dns.len() <= 2048
+            && self
+                .dns
+                .split(',')
+                .filter(|v| !v.is_empty())
+                .all(|v| v.parse::<IpAddr>().is_ok())
+            && match self.mode {
+                Ipv6Mode::Static => self.addresses.len() == 1,
+                _ => self.addresses.is_empty() && self.gateway.is_empty(),
+            }
+    }
+    pub(crate) fn observed_valid(&self) -> bool {
+        self.addresses.len() <= 64
+            && self.addresses.iter().all(|v| ipv6_cidr(v).is_some())
+            && self.gateway.len() <= 128
+            && self.dns.len() <= 2048
+    }
+}
+pub(crate) fn ipv6_cidr(value: &str) -> Option<(Ipv6Addr, u8)> {
+    let (ip, prefix) = value.split_once('/')?;
+    let prefix = prefix.parse::<u8>().ok().filter(|p| *p <= 128)?;
+    Some((ip.parse().ok()?, prefix))
+}
+fn purpose_valid(value: &Option<String>) -> bool {
+    value
+        .as_ref()
+        .is_none_or(|v| !v.is_empty() && v.len() <= 256 && !v.chars().any(char::is_control))
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkOperation {
+    ConfigureIpv6 {
+        expected: PifIdentity,
+        before: Ipv6Configuration,
+        configuration: Ipv6Configuration,
+    },
+    SetInterfacePurpose {
+        expected: PifIdentity,
+        before: Option<String>,
+        purpose: Option<String>,
+    },
+    SetUnplugProtection {
+        expected: PifIdentity,
+        before: bool,
+        enabled: bool,
+    },
     ScanInterfaces,
     SetAttached {
         expected: PifIdentity,
@@ -161,6 +233,9 @@ pub enum NetworkOperation {
 impl NetworkOperation {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::ConfigureIpv6 { .. } => "Configure host IPv6 interface",
+            Self::SetInterfacePurpose { .. } => "Set interface purpose",
+            Self::SetUnplugProtection { .. } => "Set interface unplug protection",
             Self::ScanInterfaces => "Scan physical interfaces",
             Self::SetAttached { attached: true, .. } => "Plug host interface",
             Self::SetAttached {
@@ -186,6 +261,31 @@ impl NetworkOperation {
         let network = matches!(target, ResourceTarget::Network(_));
         let bond = matches!(target, ResourceTarget::Bond(_));
         let valid = match self {
+            Self::ConfigureIpv6 {
+                expected,
+                before,
+                configuration,
+            } => {
+                pif && !expected.management
+                    && before.observed_valid()
+                    && configuration.valid()
+                    && before != configuration
+            }
+            Self::SetInterfacePurpose {
+                expected,
+                before,
+                purpose,
+            } => {
+                pif && !expected.management
+                    && before != purpose
+                    && purpose_valid(before)
+                    && purpose_valid(purpose)
+            }
+            Self::SetUnplugProtection {
+                expected,
+                before,
+                enabled,
+            } => pif && !expected.management && before != enabled,
             Self::ScanInterfaces => matches!(target, ResourceTarget::Host(_)),
             Self::SetAttached {
                 expected,
