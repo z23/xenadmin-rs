@@ -87,7 +87,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P04-04 | Mouse wheel/middle button | Wheel and middle-button mapping implemented; real guest qualification open |
 | P04-05 | Extended QEMU keys, layouts and shortcut capture | QEMU physical-key extension implemented with fallback; non-US/shortcut-capture qualification remains open |
 | P04-06 | Controlled clipboard send/receive | Explicit guest clipboard send/receive with limits and protocol negotiation implemented; platform/guest qualification open |
-| P04-07 | Reopen after reboot/migration/session replacement | Explicit reconnect control implemented; automatic relocation/session-replacement recovery remains queued |
+| P04-07 | Reopen after reboot/migration/session replacement | Explicit reconnect and one-shot follow of verified local same-pool migrations implemented; external migration, reboot/session replacement and live qualification remain open |
 | P04-08 | Keep console target aligned with Details/actions | Console target pinned to pool/VM identity; selection changes no longer silently retarget input; lab qualification open |
 | P04-09 | Scaling, framebuffer resize and cursor behavior | Fit/actual-size/panning and cursor handling extended; live resize/display matrix remains open |
 | P04-10 | Full-screen, detached and multiple console windows | Fullscreen implemented; detached/multiple windows require further Rune integration |
@@ -140,7 +140,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P07-06 | Resize disk | Halted VM grow-only disk workflow implemented with size/consumer checks; other resize modes remain queued |
 | P07-07 | Delete disk | Reviewed halted-VM deletion of an exclusively owned, non-shared user disk implemented with current consumer checks and separate journaled attachment/data deletion; fixture verified, lab qualification open |
 | P07-08 | Disk name/description, access mode, I/O priority and device position | Queued |
-| P07-09 | Move/copy/migrate disk to another SR | Queued |
+| P07-09 | Move/copy/migrate disk to another SR | Selected disks can relocate via reviewed same-pool VM migration, including current-host selection; standalone copy and broader disk topologies remain queued |
 | P07-10 | Add CD drive; mount/change/eject ISO | Reviewed halted-VM empty CD-drive creation and existing-drive insert/eject implemented; replacement uses explicit eject then insert; fixture verified, lab qualification open |
 | P07-11 | Disable disk changed-block tracking | Queued |
 | P07-12 | List NICs/MACs/networks/attachment state | VM NIC/MAC/network/attachment view implemented; live network qualification open |
@@ -204,13 +204,15 @@ Implementation and verification details are in the [VM lifecycle report](reports
 
 ## 11. Migration and transfers
 
+See the [same-pool migration increment](reports/2026-11-08-migration.md) for the supported topology, identity verification and recovery limits.
+
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P11-01 | Same-pool live migration | Queued |
-| P11-02 | Move halted VM/change storage placement | Queued |
-| P11-03 | Storage live migration | Queued |
+| P11-01 | Same-pool live migration | Reviewed running-VM host moves implemented and fixture-tested with fresh compatibility/topology checks; live qualification open |
+| P11-02 | Move halted VM/change storage placement | Reviewed same-pool move and separately verified home host implemented with partial/unknown recovery; snapshot chains and live qualification open |
+| P11-03 | Storage live migration | Ordinary exclusive non-CBT disk relocation and NIC mapping implemented with replacement UUID verification; snapshot/shared-disk topologies and live qualification open |
 | P11-04 | Cross-pool migration/move/copy | Queued |
-| P11-05 | Transfer-network choice and console relocation | Queued |
+| P11-05 | Transfer-network choice and console relocation | Explicit IP-configured destination transfer network and one-shot console follow after verified local same-pool migration implemented; external/cross-pool/IPv6-only paths and live qualification open |
 | P11-06 | XVA VM/template import/export | Queued |
 | P11-07 | Snapshot export | Queued |
 | P11-08 | OVF/OVA appliance import/export | Queued |

@@ -441,7 +441,8 @@ impl Store {
                     && value["is_a_snapshot"] != true
                     && match action {
                         crate::OperationAction::Power(action) => advertises(value, action.wire()),
-                        crate::OperationAction::Lifecycle(_)
+                        crate::OperationAction::Migration(_)
+                        | crate::OperationAction::Lifecycle(_)
                         | crate::OperationAction::Settings(_)
                         | crate::OperationAction::Device(_) => true,
                         crate::OperationAction::Snapshot(
@@ -796,7 +797,8 @@ pub(crate) async fn prepare_mutation(
             }
             Ok(reference)
         }
-        OperationAction::Lifecycle(_)
+        OperationAction::Migration(_)
+        | OperationAction::Lifecycle(_)
         | OperationAction::Placement(_)
         | OperationAction::Device(_) => Err(Error::UnavailableAction),
         OperationAction::Snapshot(SnapshotOperation::Clone { snapshot, name, .. }) => {

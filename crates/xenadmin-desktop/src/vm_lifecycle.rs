@@ -671,11 +671,13 @@ fn overlay(body: El, title: &str) -> El {
         .child(body)
 }
 pub(super) fn history_button(s: &State, k: &Kit) -> El {
-    if !s
-        .operation_rows
-        .iter()
-        .any(|record| matches!(record.action, xenadmin_core::OperationAction::Lifecycle(_)))
-    {
+    if !s.operation_rows.iter().any(|record| {
+        matches!(
+            record.action,
+            xenadmin_core::OperationAction::Lifecycle(_)
+                | xenadmin_core::OperationAction::Migration(_)
+        )
+    }) {
         return el();
     }
     Button::new("VM changes")
@@ -687,12 +689,13 @@ pub(super) fn history_button(s: &State, k: &Kit) -> El {
 fn history(s: &State, k: &Kit) -> El {
     let mut body=col().w((s.window_width-40.0).clamp(280.0,700.0)).max_h((s.window_height-60.0).clamp(280.0,800.0)).padding(22.0).gap(15.0).radius(10.0).fill(k.c.bg_base).scroll(rune::ScrollSpec{stick_bottom:false})
         .child(heading("VM changes",k)).child(caption("Completed steps and created resources remain recorded after partial failure. Rechecking reads the host without repeating writes or continuing unfinished steps. Other changes in a pool wait while creation or copying is active or its outcome is unknown; resolve or explicitly acknowledge that outcome to release the block.",k).wrap());
-    for record in s
-        .operation_rows
-        .iter()
-        .rev()
-        .filter(|record| matches!(record.action, xenadmin_core::OperationAction::Lifecycle(_)))
-    {
+    for record in s.operation_rows.iter().rev().filter(|record| {
+        matches!(
+            record.action,
+            xenadmin_core::OperationAction::Lifecycle(_)
+                | xenadmin_core::OperationAction::Migration(_)
+        )
+    }) {
         let can_control = s.can_mutate()
             && s.inventory
                 .as_ref()

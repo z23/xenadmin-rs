@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 #[path = "device_lifecycle_operations.rs"]
 mod device_lifecycle_operations;
+#[path = "migration_operations.rs"]
+mod migration_operations;
 #[path = "snapshot_operations.rs"]
 mod snapshot_operations;
 #[path = "vm_lifecycle_operations.rs"]
@@ -34,6 +36,10 @@ impl SnapshotName {
 }
 
 pub enum VmCommand {
+    Migrate {
+        vm: crate::ObservedVm,
+        operation: crate::VmMigration,
+    },
     Lifecycle {
         source: crate::ObservedVm,
         operation: crate::VmLifecycleOperation,
@@ -83,6 +89,7 @@ pub enum OperationAction {
     Placement(PlacementOperation),
     Device(crate::DeviceOperation),
     Lifecycle(crate::VmLifecycleOperation),
+    Migration(crate::VmMigration),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementOperation {
@@ -116,6 +123,7 @@ impl OperationAction {
         match self {
             Self::Power(action) => action.label(),
             Self::Lifecycle(operation) => operation.label(),
+            Self::Migration(operation) => operation.label(),
             Self::Settings(_) => "Edit VM properties",
             Self::Device(operation) => operation.label(),
             Self::Placement(p) => {
@@ -156,6 +164,9 @@ impl OperationAction {
         if let Self::Device(operation) = self {
             ids.extend(operation.resources());
         }
+        if let Self::Migration(operation) = self {
+            ids.extend(operation.resources());
+        }
         if let Self::Lifecycle(operation) = self {
             ids.extend(operation.resources());
         }
@@ -165,6 +176,7 @@ impl OperationAction {
 impl VmCommand {
     pub(crate) fn normalize(self) -> (crate::ObservedVm, OperationAction) {
         match self {
+            Self::Migrate { vm, operation } => (vm, OperationAction::Migration(operation)),
             Self::Lifecycle { source, operation } => {
                 (source, OperationAction::Lifecycle(operation))
             }
@@ -374,6 +386,8 @@ pub struct OperationRecord {
     #[serde(default)]
     lifecycle_plan: Option<Box<crate::vm_lifecycle_backend::Plan>>,
     #[serde(default)]
+    migration_plan: Option<Box<crate::migration_backend::Plan>>,
+    #[serde(default)]
     pub created_devices: Vec<crate::CreatedDevice>,
     #[serde(default)]
     pub steps: Vec<crate::OperationStep>,
@@ -408,7 +422,10 @@ impl OperationRecord {
     }
     pub fn can_recheck(&self) -> bool {
         self.has_task()
-            || matches!(&self.action, OperationAction::Lifecycle(_))
+            || matches!(
+                &self.action,
+                OperationAction::Lifecycle(_) | OperationAction::Migration(_)
+            )
             || matches!(&self.action,OperationAction::Device(operation) if operation.is_lifecycle())
             || matches!(
                 self.action,
@@ -480,6 +497,7 @@ impl DispatchPermit {
         let mut params = vec![json!(reference)];
         let method = match self.0 {
             OperationAction::Settings(_) => return Err(Error::InvalidSettings),
+            OperationAction::Migration(_) => return Err(Error::InvalidMigration),
             OperationAction::Lifecycle(_) => return Err(Error::InvalidVmLifecycle),
             OperationAction::Device(_) => {
                 return device
@@ -558,6 +576,7 @@ pub(crate) fn channel(
         snapshot_clone_baseline: None,
         device_plan: None,
         lifecycle_plan: None,
+        migration_plan: None,
         created_devices: Vec::new(),
         steps: Vec::new(),
     };
@@ -971,6 +990,10 @@ impl MutationRequest {
                 Ok(mut journal) if matches!(&self.record.action,OperationAction::Device(operation) if operation.is_lifecycle()) => {
                     self.recheck_device_lifecycle(&session, &mut journal).await
                 }
+                Ok(mut journal) if matches!(&self.record.action, OperationAction::Migration(_)) => {
+                    self.recheck_migration(&session, &mut journal, &connection_cancel)
+                        .await
+                }
                 Ok(mut journal) if matches!(&self.record.action, OperationAction::Lifecycle(_)) => {
                     self.recheck_vm_lifecycle(&session, &mut journal).await
                 }
@@ -1088,6 +1111,11 @@ impl MutationRequest {
         }
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
+        }
+        if matches!(&self.record.action, OperationAction::Migration(_)) {
+            return self
+                .execute_migration(session, &mut journal, connection_cancel)
+                .await;
         }
         if matches!(&self.record.action, OperationAction::Lifecycle(_)) {
             return self
@@ -1383,6 +1411,11 @@ impl MutationRequest {
             };
             match task["status"].as_str() {
                 Some("success") => {
+                    if matches!(&self.record.action, OperationAction::Migration(_)) {
+                        return self
+                            .complete_migration(session, journal, &task, allow_post_task_writes)
+                            .await;
+                    }
                     if matches!(
                         self.record.action,
                         OperationAction::Snapshot(SnapshotOperation::Clone { .. })
@@ -1462,6 +1495,9 @@ impl MutationRequest {
                     self.record.progress = Some(1.0);
                 }
                 Some("failure") => {
+                    if matches!(&self.record.action, OperationAction::Migration(_)) {
+                        return self.failed_migration(session, journal, &task, false).await;
+                    }
                     self.record.state = OperationState::Failed;
                     let code = task["error_info"]
                         .as_array()
@@ -1472,6 +1508,9 @@ impl MutationRequest {
                         format!("Host task failed: {}", crate::xapi::safe_error_code(code));
                 }
                 Some("cancelled") => {
+                    if matches!(&self.record.action, OperationAction::Migration(_)) {
+                        return self.failed_migration(session, journal, &task, true).await;
+                    }
                     self.record.state = OperationState::Cancelled;
                     self.record.detail = "Host confirmed task cancellation".into();
                 }
@@ -1586,6 +1625,7 @@ mod tests {
             snapshot_clone_baseline: None,
             device_plan: None,
             lifecycle_plan: None,
+            migration_plan: None,
             created_devices: Vec::new(),
             steps: Vec::new(),
             cancel_requested: false,

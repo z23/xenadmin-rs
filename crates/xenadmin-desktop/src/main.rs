@@ -11,6 +11,7 @@ mod resource_admin;
 mod resource_details;
 mod vm_devices;
 mod vm_lifecycle;
+mod vm_migration;
 mod vm_placement;
 mod vm_properties;
 mod vm_snapshots;
@@ -147,6 +148,7 @@ struct State {
     placement: Option<vm_placement::Placement>,
     devices: Option<vm_devices::DeviceView>,
     vm_lifecycle: Option<vm_lifecycle::Panel>,
+    vm_migration: Option<Box<vm_migration::Editor>>,
     workspace: profiles_view::Workspace,
     diagnostic_results: Vec<String>,
     diagnostics: Option<ActionDiagnostics>,
@@ -242,6 +244,7 @@ fn init() -> State {
         placement: None,
         devices: None,
         vm_lifecycle: None,
+        vm_migration: None,
         workspace: profiles_view::Workspace::load(preferences.last_profile, instance.is_some()),
         diagnostic_results: Vec::new(),
         diagnostics: None,
@@ -780,7 +783,9 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
         .as_ref()
         .is_some_and(|last| Arc::ptr_eq(last, &snapshot))
     {
-        return activity::poll(s) || changed;
+        changed |= activity::poll(s);
+        changed |= console_view::follow_migration(s);
+        return changed;
     }
     s.inventory = snapshot.inventory().cloned();
     s.snapshot = Some(snapshot);
@@ -793,6 +798,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     }
     s.rebuild();
     activity::poll(s);
+    console_view::follow_migration(s);
     true
 }
 fn bytes(value: u64) -> String {
@@ -1242,6 +1248,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [activity::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
+    } else if s.vm_migration.is_some() {
+        rune_kit::root(base, [vm_migration::dialog(s, &k)])
     } else if s.vm_lifecycle.is_some() {
         rune_kit::root(base, [vm_lifecycle::dialog(s, &k)])
     } else if s.placement.is_some() {
@@ -1392,7 +1400,9 @@ fn details(s: &State, k: &Kit) -> El {
             .child(field("Virtual CPUs", &selected.cpu));
     }
     if let Some(vm) = selected.vm {
-        detail = detail.child(vm_lifecycle::controls(s, vm, k));
+        detail = detail
+            .child(vm_lifecycle::controls(s, vm, k))
+            .child(vm_migration::button(s, vm, k));
     }
     detail = detail.child(metrics_view::button(s, k));
     if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
@@ -1742,6 +1752,7 @@ fn demo(s: &mut State) {
     s.activity = activity::Activity::default();
     s.devices = None;
     s.vm_lifecycle = None;
+    s.vm_migration = None;
     s.operation_rows.clear();
     s.operations.clear();
     s.properties = None;
@@ -1885,6 +1896,7 @@ fn main() {
                 vm_properties::open(s);
             }),
             ("vm-create", vm_lifecycle::scene),
+            ("vm-migration", vm_migration::scene),
             ("snapshots", |s| {
                 demo(s);
                 let id = VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();

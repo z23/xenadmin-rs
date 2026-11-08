@@ -348,3 +348,11 @@ whose private workflow plans can contain reconciliation references. Native Save 
 immutable selection; bounded serialization and private atomic writes run off the UI thread.
 Local hiding applies only to terminal history entries and never removes journal evidence.
 See the [activity verification report](reports/2026-11-08-activity.md).
+
+Same-pool migration captures an immutable VM/device placement review. A durable private plan
+stores the pre-dispatch graph and bounded VDI identity baseline; receiver session tokens stay
+only in transient dispatch memory. The shared task tracker records migration once and verifies
+VM/VBD/VIF continuity plus replacement disk UUIDs. A halted move journals home-host assignment
+as a separate step. Read-only recovery consumes persisted task completion without replaying
+migration or assignment. Console follow consumes verified local migration outcomes only after
+matching destination inventory arrives, scoped to the console's original pool/VM identity.

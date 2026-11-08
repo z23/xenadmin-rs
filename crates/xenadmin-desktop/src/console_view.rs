@@ -20,6 +20,7 @@ pub(super) struct ConsoleTarget {
 #[derive(Default)]
 pub(super) struct ConsoleUi {
     target: Option<ConsoleTarget>,
+    followed_migrations: std::collections::BTreeSet<xenadmin_core::OperationId>,
     serial: u64,
     actual_size: bool,
     pointer: [f32; 2],
@@ -36,11 +37,80 @@ pub(super) fn opened(s: &mut State, pool: PoolId, vm: VmId, name: String) {
     release(s);
     s.console_ui = ConsoleUi {
         target: Some(ConsoleTarget { pool, vm, name }),
+        followed_migrations: s
+            .operation_rows
+            .iter()
+            .filter(|r| r.pool == pool && r.vm == vm && r.state.terminal())
+            .map(|r| r.id)
+            .collect(),
         serial: next_serial(),
         ..Default::default()
     };
     s.console_pixels = rune::Pixels::new();
 }
+
+/// Consume each verified local migration once, after inventory observes its destination.
+/// Selection changes and late source-host events cannot redirect or reopen this console.
+pub(super) fn take_relocation(s: &mut State) -> bool {
+    let Some(target) = s.console_ui.target.as_ref() else {
+        return false;
+    };
+    let Some(inventory) = s.inventory.as_ref().filter(|i| i.pool_id == target.pool) else {
+        return false;
+    };
+    let Some(vm) = inventory
+        .vms
+        .get(&target.vm)
+        .filter(|v| v.power_state == xenadmin_core::PowerState::Running)
+    else {
+        return false;
+    };
+    if s.console_ui.followed_migrations.len() >= 512 {
+        return false;
+    }
+    let candidate = s.operation_rows.iter().rev().find(|record| {
+        record.pool == target.pool
+            && record.vm == target.vm
+            && !s.console_ui.followed_migrations.contains(&record.id)
+            && matches!(&record.action, xenadmin_core::OperationAction::Migration(_))
+    });
+    if let Some(record) = candidate
+        && record.state == xenadmin_core::OperationState::Succeeded
+        && matches!(&record.action,xenadmin_core::OperationAction::Migration(m) if m.live&&vm.host==Some(m.destination))
+    {
+        let cutoff = (record.created_at_ms, record.id);
+        for record in &s.operation_rows {
+            if record.pool == target.pool
+                && record.vm == target.vm
+                && (record.created_at_ms, record.id) <= cutoff
+                && matches!(&record.action, xenadmin_core::OperationAction::Migration(_))
+            {
+                s.console_ui.followed_migrations.insert(record.id);
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+pub(super) fn follow_migration(s: &mut State) -> bool {
+    let ready = s.connection.is_some()
+        && s.snapshot.as_ref().is_some_and(|snapshot| {
+            s.console_ui.target.as_ref().is_some_and(|target| {
+                snapshot
+                    .inventory()
+                    .is_some_and(|i| i.pool_id == target.pool)
+                    && snapshot.observe_vm(target.vm).is_ok()
+            })
+        });
+    if ready && take_relocation(s) {
+        s.reconnect_console();
+        true
+    } else {
+        false
+    }
+}
+
 fn next_serial() -> u64 {
     static SERIAL: AtomicU64 = AtomicU64::new(1);
     SERIAL.fetch_add(1, Ordering::Relaxed)

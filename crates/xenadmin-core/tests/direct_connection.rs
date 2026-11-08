@@ -1090,6 +1090,24 @@ async fn read_only_connections_do_not_open_the_journal_or_admit_mutations() {
         ),
         Err(xenadmin_core::Error::ReadOnly)
     ));
+    assert!(matches!(
+        connection.submit(
+            xenadmin_core::OperationId::new(),
+            xenadmin_core::VmCommand::Migrate {
+                vm: observed,
+                operation: xenadmin_core::VmMigration {
+                    destination: *inventory.hosts.keys().next().unwrap(),
+                    expected_host: None,
+                    expected_affinity: None,
+                    live: false,
+                    disks: vec![],
+                    networks: vec![],
+                    transfer_network: None
+                }
+            }
+        ),
+        Err(xenadmin_core::Error::ReadOnly)
+    ));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!directory.path().join("operations.sqlite3").exists());
     assert!(matches!(

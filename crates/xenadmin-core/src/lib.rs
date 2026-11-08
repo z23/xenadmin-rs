@@ -30,8 +30,11 @@ pub use resources::{
     ObservedResource, ResourceAction, ResourceCommand, ResourceOperation, ResourceOperationRecord,
     ResourceTarget,
 };
+mod migration;
+mod migration_backend;
 mod settings;
 mod snapshots;
+pub use migration::{DiskPlacement, NicPlacement, VmMigration};
 mod vm_lifecycle;
 mod vm_lifecycle_backend;
 pub use vm_lifecycle::{
@@ -61,6 +64,12 @@ pub enum Error {
     InvalidMetricsOptions,
     #[error("The metrics endpoint or redirect is outside the verified pool")]
     MetricsEndpoint,
+    #[error("Choose a valid migration destination and complete resource mappings")]
+    InvalidMigration,
+    #[error("The VM, host, storage or network changed; refresh and review the migration again")]
+    MigrationConflict,
+    #[error("This migration topology or resource configuration is not supported")]
+    UnsupportedMigration,
     #[error("Choose valid resource settings and a change to apply")]
     InvalidResourceCommand,
     #[error("The resource changed since review. Refresh it before retrying")]
