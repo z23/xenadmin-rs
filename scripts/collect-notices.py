@@ -37,7 +37,7 @@ def main():
         if package.get("license_file"):
             files.append(root / package["license_file"])
         # Workspace members, including Rune, may keep the notice at the repository root.
-        if not files:
+        if not files and not (package.get("source") or "").startswith("registry+"):
             for parent in list(root.parents)[:3]:
                 files = list(supplied_notices(parent))
                 if files:
@@ -52,12 +52,16 @@ def main():
             without_notices.append(f'{package["name"]} {package["version"]}')
             if (root / "README.md").is_file():
                 shutil.copyfile(root / "README.md", target / "README.md")
-        index.append({
+        declaration = {
             "name": package["name"], "version": package["version"],
             "license": package.get("license"), "source": package.get("source"),
             "repository": package.get("repository"), "notices": copied,
             "authors": package.get("authors", []),
-        })
+        }
+        # A registry crate may contain neither a separate notice nor a README.
+        # Keep its provenance as an owned file instead of emitting an empty directory.
+        (target / "package.json").write_text(json.dumps(declaration, indent=2) + "\n")
+        index.append(declaration)
         # Rune embeds these fonts; retain their notices alongside the crate notice.
         if package["name"] == "rune" and (root / "assets").is_dir():
             for notice in (root / "assets").glob("*-LICENSE.txt"):
