@@ -2,6 +2,7 @@ mod activity;
 mod activity_export;
 mod appliance_view;
 mod bulk_power;
+mod cloud_init_view;
 mod console_view;
 mod cross_pool_vm;
 mod demo_details;
@@ -172,6 +173,7 @@ struct State {
     vm_migration: Option<Box<vm_migration::Editor>>,
     cross_pool: cross_pool_vm::Panel,
     transfers: transfers::Panel,
+    cloud_init: cloud_init_view::Panel,
     workspace: profiles_view::Workspace,
     diagnostic_results: Vec<String>,
     diagnostics: Option<ActionDiagnostics>,
@@ -281,6 +283,7 @@ fn init() -> State {
         vm_migration: None,
         cross_pool: Default::default(),
         transfers: Default::default(),
+        cloud_init: Default::default(),
         workspace: profiles_view::Workspace::load(preferences.last_profile, instance.is_some()),
         diagnostic_results: Vec::new(),
         diagnostics: None,
@@ -767,6 +770,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= storage_view::poll(s);
     changed |= snapshot_policy_view::poll(s);
     changed |= transfers::poll(s);
+    changed |= cloud_init_view::poll(s);
     changed |= pool_security_view::poll(s);
     changed |= console_view::poll_export(s);
     changed |= metrics_view::poll(s);
@@ -1372,6 +1376,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [pool_view::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
+    } else if s.cloud_init.show {
+        rune_kit::root(base, [cloud_init_view::dialog(s, &k)])
     } else if s.transfers.show {
         rune_kit::root(base, [transfers::dialog(s, &k)])
     } else if s.cross_pool.show {
@@ -1551,7 +1557,8 @@ fn details(s: &State, k: &Kit) -> El {
             .child(vm_lifecycle::controls(s, vm, k))
             .child(vm_migration::button(s, vm, k))
             .child(cross_pool_vm::button(s, vm, k))
-            .child(transfers::button(s, vm, k));
+            .child(transfers::button(s, vm, k))
+            .child(cloud_init_view::button(s, vm, k));
     }
     detail = detail.child(metrics_view::button(s, k));
     if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
@@ -2076,6 +2083,8 @@ fn main() {
             ("vm-migration", vm_migration::scene),
             ("cross-pool", cross_pool_vm::scene),
             ("archive-export", transfers::scene),
+            ("cloud-init", cloud_init_view::scene),
+            ("cloud-init-review", cloud_init_view::review_scene),
             ("ovf-import", |s| transfers::ovf_scene(s, false)),
             ("ovf-export", |s| transfers::ovf_scene(s, true)),
             ("disk-export", transfers::disk_scene),

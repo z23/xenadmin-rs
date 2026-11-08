@@ -36,6 +36,8 @@ impl ResourceRequest {
     pub(super) fn transfer_action(&self) -> Result<TransferAction, Error> {
         if let ResourceAction::Transfer(a) = &self.record.action {
             Ok(a.clone())
+        } else if let ResourceAction::CloudInit(config) = &self.record.action {
+            Ok(config.transfer_action())
         } else {
             Err(Error::TransferConflict)
         }
@@ -201,6 +203,15 @@ impl ResourceRequest {
             },
         )
         .await;
+        if matches!(self.record.action, ResourceAction::CloudInit(_)) {
+            if self
+                .save_cloud_stream_evidence(journal, outcome, meter.progress())
+                .await?
+            {
+                return self.recheck_transfer(journal, session, cancel).await;
+            }
+            return Ok(());
+        }
         self.reload(journal)?;
         if self.record.state.terminal() {
             return Ok(());
@@ -474,6 +485,8 @@ impl ResourceRequest {
                 self.record.state = OperationState::Succeeded;
                 self.record.detail = "Export verified and saved as a private image".into();
             }
+        } else if success && matches!(self.record.action, ResourceAction::CloudInit(_)) {
+            return self.complete_cloud_upload(journal, session, cancel).await;
         } else if success {
             self.record.state = if self.transfer_plan()?.stream_invalid {
                 OperationState::PartiallyCompleted

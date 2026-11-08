@@ -2037,5 +2037,7 @@ mod pool_join;
 #[path = "fixtures/firmware_properties.rs"]
 mod firmware_properties;
 
+#[path = "fixtures/cloud_init.rs"]
+mod cloud_init;
 #[path = "fixtures/host_console.rs"]
 mod host_console;

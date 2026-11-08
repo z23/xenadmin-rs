@@ -125,7 +125,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P06-07 | VM HA restart priority/protection | Reviewed restart/best-effort/disabled priorities and server eligibility checks implemented; fixture verified, advanced HA policy and live qualification open ([report](reports/2026-11-08-pool-administration.md)) |
 | P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Reviewed creation modes, halted UEFI Secure Boot policy and read-only guest/pool readiness implemented; installed-image BIOS/UEFI switches refused, fixture verified, live enforcement qualification open ([evidence](reports/2026-11-08-firmware-templates.md)) |
 | P06-09 | HVM shadow-memory settings | Reviewed halted/live shadow-memory multiplier editing implemented with modern HVM identity and advertised capability checks; fixture verified, live qualification open |
-| P06-10 | Cloud-config parameters/config drive | Queued |
+| P06-10 | Cloud-config parameters/config drive | Reviewed halted-VM NoCloud FAT drive with private user-data/metadata/network-config, chosen SR/slot, direct upload and read-only attachment implemented; no automatic boot or guest execution claim. Local protocol/Rune fixtures verified; live guest qualification open. See [NoCloud report](reports/2026-11-08-cloud-init.md) |
 | P06-11 | Guest tools status/installation media | Guest-reported tools/OS/address display implemented; tools-install media workflow remains queued |
 
 ## 7. VM disks, removable media and NICs
@@ -159,7 +159,7 @@ Implementation and verification details are in the [VM lifecycle report](reports
 | --- | --- | --- |
 | P08-01 | Browse templates | Template inventory and lifecycle action entry points implemented; lab qualification open |
 | P08-02 | Create VM from template | Reviewed halted-VM wizard implemented with name/description, CPUs/memory, destination SR, network, optional disk/ISO and ordinary firmware choices; fixture verified, lab qualification open |
-| P08-03 | Installation source, copied BIOS and cloud-config options | ISO selection, inherited/BIOS/UEFI/Secure Boot modes and chosen-host BIOS identity copy with reviewed affinity side effect implemented for eligible templates; ordinary cloud-init configuration-drive/transfer workflow remains pending; legacy CoreOS plugin integration excluded |
+| P08-03 | Installation source, copied BIOS and cloud-config options | ISO selection, inherited/BIOS/UEFI/Secure Boot modes and chosen-host BIOS identity copy with reviewed affinity side effect implemented for eligible templates; ordinary cloud-init drive preparation is available as a separate halted-VM workflow after creation; inline creation-wizard cloud-config remains a follow-up; legacy CoreOS plugin integration excluded |
 | P08-04 | Instant/fast template creation | Fast clone to custom template implemented when the source/storage advertises support; fixture verified, lab qualification open |
 | P08-05 | Clone versus full-copy VM | Reviewed halted source clone versus full copy to selected SR implemented, with VM/template result choice; fixture verified, lab qualification open |
 | P08-06 | Convert VM to template | Reviewed halted ordinary-VM conversion implemented with fresh capability checks; fixture verified, lab qualification open |

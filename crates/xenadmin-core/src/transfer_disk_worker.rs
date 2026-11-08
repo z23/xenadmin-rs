@@ -28,7 +28,16 @@ impl ResourceRequest {
             .await
             .map_err(|_| Error::TransferFile)??;
         let baseline = crate::device_lifecycle::baseline(session, "VDI").await?;
-        let arguments = disk::creation_arguments(session, sr, &name, size, self.record.id).await?;
+        let mut arguments =
+            disk::creation_arguments(session, sr, &name, size, self.record.id).await?;
+        if let crate::ResourceAction::CloudInit(config) = &self.record.action {
+            self.cloud_target(session, true).await?;
+            arguments[0]["other_config"][crate::cloud_init::MARKER] =
+                json!(config.configuration_id);
+            arguments[0]["name_description"] = json!(
+                "Private NoCloud user-data; remove only after guest provisioning is complete"
+            );
+        }
         self.reload(journal)?;
         if self.stop_before_dispatch() {
             return self.save(journal).await;

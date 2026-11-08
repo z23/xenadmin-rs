@@ -32,6 +32,7 @@ mod storage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceTarget {
+    Vm(crate::VmId),
     SnapshotPolicy(crate::SnapshotPolicyId),
     Pool(PoolId),
     Host(HostId),
@@ -48,6 +49,7 @@ pub enum ResourceTarget {
 impl ResourceTarget {
     pub(crate) fn class(self) -> &'static str {
         match self {
+            Self::Vm(_) => "VM",
             Self::SnapshotPolicy(_) => "VMSS",
             Self::Pool(_) => "pool",
             Self::Host(_) => "host",
@@ -64,6 +66,7 @@ impl ResourceTarget {
     }
     pub fn uuid(self) -> uuid::Uuid {
         match self {
+            Self::Vm(id) => id.uuid(),
             Self::SnapshotPolicy(id) => id.uuid(),
             Self::Pool(id) => id.uuid(),
             Self::Host(id) => id.uuid(),
@@ -180,6 +183,7 @@ pub enum ResourceAction {
     Pool(crate::PoolOperation),
     Host(crate::HostOperation),
     Transfer(crate::TransferAction),
+    CloudInit(crate::CloudInitConfiguration),
     Organization(crate::OrganizationPatch),
     Network(NetworkOperation),
     CancelTask,
@@ -230,6 +234,7 @@ impl ResourceAction {
             Self::Organization(_) => "Edit organization metadata",
             Self::Network(operation) => operation.label(),
             Self::Transfer(action) => action.label(),
+            Self::CloudInit(_) => "Prepare cloud-init drive",
             Self::CancelTask => "Request task cancellation",
             Self::DismissMessage { .. } => "Dismiss server message",
             Self::Storage(operation) => operation.label(),
@@ -271,6 +276,7 @@ impl ResourceAction {
             }
             Self::Network(operation) => return operation.validate(target),
             Self::Transfer(_) => matches!(target, ResourceTarget::Pool(_)),
+            Self::CloudInit(config) => matches!(target, ResourceTarget::Vm(_)) && config.valid(),
             Self::CancelTask => matches!(target, ResourceTarget::Task(_)),
             Self::DismissMessage { .. } => matches!(target, ResourceTarget::Message(_)),
             Self::Storage(operation) => return operation.validate(target),
@@ -461,6 +467,8 @@ pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) transfer_plan: Option<Box<crate::transfer::Plan>>,
     #[serde(skip)]
+    pub(crate) cloud_init_plan: Option<crate::cloud_init::Plan>,
+    #[serde(skip)]
     pub local_error: Option<String>,
     #[serde(skip)]
     pub(crate) revision: u64,
@@ -577,6 +585,7 @@ pub(crate) fn channel(
         transfer: None,
         transfer_created: Default::default(),
         transfer_plan: None,
+        cloud_init_plan: None,
         local_error: None,
         revision: 0,
         task: None,

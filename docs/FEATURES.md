@@ -54,4 +54,6 @@ The [firmware/template increment](reports/2026-11-08-firmware-templates.md) adds
 BIOS/UEFI/Secure Boot provisioning, eligible chosen-host BIOS identity with explicit
 affinity, halted UEFI policy editing and read-only certificate readiness. Installed guest
 firmware switches remain refused. Custom-template properties have explicit kind and
-built-in-template guards. Ordinary cloud-init/config-drive work remains retained.
+built-in-template guards. The [NoCloud increment](reports/2026-11-08-cloud-init.md) adds
+private local FAT media, chosen-SR upload and reviewed read-only attachment to halted VMs.
+It requires guest cloud-init/NoCloud support and does not claim guest execution.

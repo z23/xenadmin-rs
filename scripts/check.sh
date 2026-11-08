@@ -48,6 +48,10 @@ check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import
 "$check_binary" --snap artifacts/organization-compact.png --tree artifacts/organization-compact.json --scene organization --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/pool-policies.png --tree artifacts/pool-policies.json --scene pool-policies --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/pool-policy-review.png --tree artifacts/pool-policy-review.json --scene pool-policy-review --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/cloud-init-review.png --tree artifacts/cloud-init-review.json --scene cloud-init-review --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/cloud-init-review-compact.png --tree artifacts/cloud-init-review-compact.json --scene cloud-init-review --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/cloud-init.png --tree artifacts/cloud-init.json --scene cloud-init --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/cloud-init-compact.png --tree artifacts/cloud-init-compact.json --scene cloud-init --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/archive-export.png --tree artifacts/archive-export.json --scene archive-export --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/archive-export-compact.png --tree artifacts/archive-export-compact.json --scene archive-export --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/appliances.png --tree artifacts/appliances.json --scene appliances --theme dark --size 1440x900 --scale 1 --at 1

@@ -27,6 +27,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         transfer: None,
         transfer_created: Default::default(),
         transfer_plan: None,
+        cloud_init_plan: None,
         local_error: None,
         revision: 0,
         task: None,

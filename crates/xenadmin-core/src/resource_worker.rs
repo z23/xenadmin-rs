@@ -1,3 +1,5 @@
+#[path = "cloud_init_worker.rs"]
+mod cloud_init_worker;
 #[path = "cross_pool_worker.rs"]
 mod cross_pool_worker;
 #[path = "host_worker.rs"]
@@ -27,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
     pub(crate) sensitive: Option<crate::pool_security::SensitiveInputs>,
+    pub(crate) cloud_media: Option<crate::CloudInitMedia>,
     pub generation: u64,
     pub join: Option<crate::pool_join::Inputs>,
     pub cross_pool: Option<crate::cross_pool::Inputs>,
@@ -43,6 +46,7 @@ impl ResourceRequest {
     ) -> Self {
         Self {
             sensitive: None,
+            cloud_media: None,
             generation,
             join: None,
             cross_pool: None,
@@ -56,6 +60,7 @@ impl ResourceRequest {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
             sensitive: None,
+            cloud_media: None,
             generation: 0,
             join: None,
             cross_pool: None,
@@ -112,7 +117,12 @@ impl ResourceRequest {
             self.reconcile(&mut journal, &session, &cancel).await
         } else {
             match journal.resource_admit(&mut self.record) {
-                Ok(true) => self.execute(&mut journal, &session, &cancel).await,
+                Ok(true) => {
+                    if let Some(media) = &mut self.cloud_media {
+                        media.retain();
+                    }
+                    self.execute(&mut journal, &session, &cancel).await
+                }
                 Ok(false) => self.observe(&mut journal, &cancel).await,
                 Err(error) => {
                     self.reject(error);
@@ -125,6 +135,17 @@ impl ResourceRequest {
         }
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             self.cleanup_power_batch(&session, &cancel).await;
+        }
+        if self.record.state == OperationState::Rejected
+            && self.record.cloud_init_plan.is_some()
+            && self
+                .record
+                .transfer_plan
+                .as_ref()
+                .is_some_and(|p| p.disk_creation.is_none())
+            && let Some(plan) = &self.record.transfer_plan
+        {
+            crate::cloud_init::remove_artifact(&plan.file);
         }
         self.announce().await;
         id
@@ -185,6 +206,9 @@ impl ResourceRequest {
         }
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
             return self.execute_host(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::CloudInit(_)) {
+            return self.execute_cloud_init(journal, session, cancel).await;
         }
         if matches!(self.record.action, super::ResourceAction::Transfer(_)) {
             return self.execute_transfer(journal, session, cancel).await;
@@ -314,6 +338,9 @@ impl ResourceRequest {
         }
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
             return self.reconcile_host(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::CloudInit(_)) {
+            return self.recheck_cloud_init(journal, session, cancel).await;
         }
         if matches!(self.record.action, super::ResourceAction::Transfer(_)) {
             return self.recheck_transfer(journal, session, cancel).await;

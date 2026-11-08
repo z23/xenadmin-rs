@@ -88,6 +88,11 @@ enum Fault {
     PendingDisk,
     ChangedInput,
     DelayedDiskCreate,
+    CloudLostAttach,
+    CloudWrongAttach,
+    CloudDelayedAttach,
+    CloudChangedVmAfterUpload,
+    CloudDelayedUpload,
 }
 struct Fixture {
     fault: Fault,
@@ -179,7 +184,7 @@ impl Fixture {
                             }
                         }
                     }
-                    assert!(len < 1_000_000);
+                    assert!(len < 16_000_000);
                     let mut input = vec![0; len];
                     if reader.read_exact(&mut input).await.is_err() {
                         return;
@@ -230,7 +235,17 @@ impl Fixture {
                             "OpaqueRef:VDI:new"
                         })));
                         if put {
-                            assert_eq!(input, bytes);
+                            delay_create = fault == Fault::CloudDelayedUpload;
+                            if data.get("fixture:cloud").is_some() {
+                                assert_eq!(input.len(), crate::cloud_init::MEDIA_BYTES);
+                                assert_eq!(&input[43..54], b"CIDATA     ");
+                                if fault == Fault::CloudChangedVmAfterUpload {
+                                    data.get_mut("OpaqueRef:VM:source").unwrap()["power_state"] =
+                                        json!("Running");
+                                }
+                            } else {
+                                assert_eq!(input, bytes);
+                            }
                             assert_eq!(q["vdi"], "OpaqueRef:VDI:new");
                             if fault == Fault::ChangedInput {
                                 let path = data["fixture:sourcepath"].as_str().unwrap();
@@ -348,6 +363,26 @@ impl Fixture {
                                 })
                                 .map(|(k, _)| json!({"result":k}))
                                 .unwrap_or(json!({"error":{"message":"UUID_INVALID"}}))
+                        } else if method == "VM.get_allowed_VBD_devices" {
+                            json!({"result":["1"]})
+                        } else if method == "VBD.create" {
+                            let mut v = p[1].clone();
+                            v["uuid"] = json!(uuid(31));
+                            v["currently_attached"] = json!(false);
+                            v["current_operations"] = json!({});
+                            if fault == Fault::CloudWrongAttach {
+                                v["VM"] = json!("OpaqueRef:VM:wrong");
+                            }
+                            data.insert("OpaqueRef:VBD:cloud".into(), v);
+                            data.get_mut("OpaqueRef:VM:source").unwrap()["VBDs"] =
+                                json!(["OpaqueRef:VBD:cloud"]);
+                            data.get_mut("OpaqueRef:VDI:new").unwrap()["VBDs"] =
+                                json!(["OpaqueRef:VBD:cloud"]);
+                            if fault == Fault::CloudLostAttach {
+                                return;
+                            }
+                            delay_create = fault == Fault::CloudDelayedAttach;
+                            json!({"result":"OpaqueRef:VBD:cloud"})
                         } else if method == "VDI.create" {
                             delay_create = fault == Fault::DelayedDiskCreate;
                             let mut v = disk_record(
@@ -938,3 +973,6 @@ mod disk_tests;
 
 #[path = "ovf_import_tests.rs"]
 mod ovf_import_tests;
+
+#[path = "cloud_init_protocol_tests.rs"]
+mod cloud_init_protocol_tests;

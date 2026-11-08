@@ -8,7 +8,9 @@ pub use search::{
 };
 mod appliances;
 pub use appliances::{ApplianceMember, ApplianceOperation, ApplianceOrder, AppliancePower};
+mod cloud_init;
 mod connection;
+pub use cloud_init::{CloudInitConfiguration, CloudInitInputs, CloudInitMedia};
 mod device_lifecycle;
 mod devices;
 pub use device_lifecycle::CreatedDevice;
@@ -119,6 +121,12 @@ pub use trust::{CertificateFingerprint, ConnectionOptions, Credentials, Endpoint
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error(
+        "Enter a valid hostname, user-data up to 2 MiB, and optional network-config up to 1 MiB; NUL bytes are not supported"
+    )]
+    InvalidCloudInit,
+    #[error("Could not prepare the private cloud-init media")]
+    CloudInitMedia,
     #[error("Choose a regular local file and an existing destination directory")]
     TransferFile,
     #[error("The selected local file or directory changed since review")]

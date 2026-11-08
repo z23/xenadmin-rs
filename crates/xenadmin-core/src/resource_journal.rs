@@ -79,6 +79,13 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let cloud_init_plan = payload
+                .get("cloud_init_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let mut record: ResourceOperationRecord =
                 serde_json::from_value(payload).map_err(|_| Error::Journal)?;
             if !record.state.terminal() {
@@ -95,6 +102,7 @@ impl Journal {
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
             record.cross_pool_plan = cross_pool_plan;
+            record.cloud_init_plan = cloud_init_plan;
             record.task = task;
             record.result_reference = result_reference;
             record.revision = revision;
@@ -116,6 +124,11 @@ impl Journal {
             crate::power_batch::validate_record(record)?;
         }
         crate::cross_pool_backend::validate_record(record)?;
+        if record.state == OperationState::OutcomeUnknown
+            && let Some(plan) = &mut record.cloud_init_plan
+        {
+            plan.interrupted = true;
+        }
         if let Some(old) = self.resource_load(record.id)? {
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
@@ -126,6 +139,14 @@ impl Journal {
                     .power_batch_plan
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
+            }
+            if old.cloud_init_plan.as_ref().is_some_and(|p| {
+                record
+                    .cloud_init_plan
+                    .as_ref()
+                    .is_none_or(|n| !p.accepts(n))
             }) {
                 return Err(Error::JournalChanged);
             }
@@ -214,6 +235,12 @@ impl Journal {
                 serde_json::to_value(e).map_err(|_| Error::Journal)?,
             );
         }
+        if let Some(plan) = &record.cloud_init_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "cloud_init_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         let payload = serde_json::to_string(&payload).map_err(|_| Error::Journal)?;
         let changed=self.0.execute("INSERT INTO resource_operations(id,pool,payload,task,result_reference,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,result_reference=excluded.result_reference,terminal=excluded.terminal,revision=excluded.revision WHERE resource_operations.revision=?7 AND (resource_operations.terminal=0 OR excluded.terminal=1)",params![record.id.to_string(),record.pool.to_string(),payload,record.task,record.result_reference,record.state.terminal(),record.revision]).map_err(|_|Error::Journal)?;
         if changed != 1 {
@@ -237,6 +264,8 @@ impl Journal {
                 if old.pool != record.pool
                     || old.target != record.target
                     || old.action != record.action
+                    || old.cloud_init_plan.as_ref().map(|p| p.sha256)
+                        != record.cloud_init_plan.as_ref().map(|p| p.sha256)
                     || old.transfer_plan.as_ref().map(|p| &p.file)
                         != record.transfer_plan.as_ref().map(|p| &p.file)
                 {

@@ -117,6 +117,7 @@ impl ConnectionSnapshot {
             .filter(|_| self.is_current())
             .ok_or(Error::Stale)?;
         let present = match target {
+            crate::ResourceTarget::Vm(id) => inventory.vms.contains_key(&id),
             crate::ResourceTarget::Pif(id) => inventory.details.pifs.contains_key(&id),
             crate::ResourceTarget::Vlan(id) => inventory.details.vlans.contains_key(&id),
             crate::ResourceTarget::Bond(id) => inventory.details.bonds.contains_key(&id),
@@ -504,6 +505,52 @@ impl Connection {
         Ok(operation)
     }
     /// Transfer a selected archive or disk image through fixed authenticated endpoints.
+    pub fn prepare_cloud_init(
+        &self,
+        id: crate::OperationId,
+        vm: ObservedVm,
+        sr: crate::SrId,
+        device: String,
+        media: crate::CloudInitMedia,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let latest = self.latest();
+        if latest.observe_vm(vm.id)? != vm || media.vm != vm.id {
+            return Err(Error::Stale);
+        }
+        let target = latest.observe_resource(crate::ResourceTarget::Vm(vm.id))?;
+        let config = crate::CloudInitConfiguration {
+            sr,
+            device,
+            configuration_id: media.id,
+        };
+        let inventory = latest.inventory.as_ref().ok_or(Error::Stale)?;
+        if !config.availability(inventory, vm.id).is_available() {
+            return Err(Error::UnavailableAction);
+        }
+        let (operation, mut pending) = crate::resources::channel(
+            id,
+            target,
+            crate::ResourceAction::CloudInit(config),
+            self.runtime.clone(),
+        );
+        pending.record.transfer = Some(Default::default());
+        pending.record.transfer_plan =
+            Some(Box::new(crate::transfer::Plan::new(media.file.clone())));
+        pending.record.cloud_init_plan = Some(crate::cloud_init::Plan {
+            sha256: media.sha256,
+            interrupted: false,
+            upload_verified: false,
+            attachment: None,
+        });
+        pending.cloud_media = Some(media);
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(pending)))
+            .map_err(|_| Error::Busy)?;
+        Ok(operation)
+    }
     pub fn transfer(
         &self,
         id: crate::OperationId,
