@@ -818,7 +818,7 @@ pub struct ResourceOperationRecord {
     #[serde(default)]
     pub(crate) baseline_networks: Option<Vec<NetworkId>>,
     #[serde(skip)]
-    pub(crate) network_fabric_plan: Option<network_fabric::Plan>,
+    pub(crate) network_fabric_plan: Option<Box<network_fabric::Plan>>,
     #[serde(default)]
     pub network_fabric_created: Option<crate::NetworkFabricEvidence>,
     #[serde(default)]

@@ -431,7 +431,7 @@ pub(super) async fn prepare(s: &Session, r: &mut Record) -> Result<(), Error> {
         }
         baseline.insert(c.to_ascii_lowercase(), ids);
     }
-    r.network_fabric_plan = Some(Plan {
+    r.network_fabric_plan = Some(Box::new(Plan {
         pool: r.pool,
         network: op.review.network,
         operation: op,
@@ -439,7 +439,7 @@ pub(super) async fn prepare(s: &Session, r: &mut Record) -> Result<(), Error> {
         task_uuid: None,
         completed: false,
         created: None,
-    });
+    }));
     Ok(())
 }
 pub(super) fn task_receipt(r: &mut Record, task: &Value) -> Result<(), Error> {
