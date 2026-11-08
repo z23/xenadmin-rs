@@ -301,9 +301,9 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P18-01 | Linux executable/desktop-entry archive | Existing workflow; qualification open |
+| P18-01 | Linux executable/desktop-entry archive | Manifest-verified portable archive, installer and pinned-runtime AppImage implemented; local synthetic native render/installation smoke passed, clean distribution qualification open ([evidence](reports/2026-11-08-linux-packaging.md)) |
 | P18-02 | Clean-system installation/offline cold start | Qualification open |
-| P18-03 | Portable/distro package, upgrade and uninstall | Versioned portable archive with desktop/icon metadata and dependency notices implemented; automated installation/upgrade/uninstall, AppImage/distro packaging and clean-system qualification remain open |
+| P18-03 | Portable/distro package, upgrade and uninstall | User-prefix installation, retained releases, atomic active-version selection and ownership-checked removal implemented; AppImage with source/notices and Ubuntu CI packaging added; local fixture/native package smoke passed, clean-system qualification open ([evidence](reports/2026-11-08-linux-packaging.md)) |
 | P18-04 | Native Wayland/X11/GPU compatibility | Existing subset; remaining work queued |
 | P18-05 | HiDPI/multimonitor/compact windows | Existing subset; remaining work queued |
 | P18-06 | Keyboard navigation/focus/Orca | Qualification open |

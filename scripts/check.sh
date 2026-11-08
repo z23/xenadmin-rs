@@ -9,6 +9,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
 python3 -m unittest discover -s lab -p test_manage.py
+python3 -m unittest discover -s packaging -p 'test_*.py'
 cargo build --workspace --locked
 mkdir -p artifacts
 check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"] + "/debug/xenadmin-rs")')"

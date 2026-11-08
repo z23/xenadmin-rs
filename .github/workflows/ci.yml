@@ -9,13 +9,13 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Linux build and render dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libfontconfig1-dev libvulkan1 mesa-vulkan-drivers
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libfontconfig1-dev libvulkan1 mesa-vulkan-drivers desktop-file-utils
       - name: Install the repository toolchain
         run: rustup show
       - name: Check, test, and render
@@ -29,3 +29,14 @@ jobs:
             artifacts/*.png
             artifacts/*.json
           if-no-files-found: ignore
+      - name: Build portable archive and AppImage
+        run: ./scripts/package.sh --appimage
+      - name: Keep versioned Linux packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-x86_64
+          path: |
+            artifacts/*.tar.gz
+            artifacts/*.AppImage
+            artifacts/*.sha256
+          if-no-files-found: error

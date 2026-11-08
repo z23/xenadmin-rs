@@ -5,5 +5,5 @@ Comment=Connect directly to XCP-ng hosts and pools
 Exec=xenadmin-rs
 Icon=xenadmin-rs
 Terminal=false
-Categories=System;RemoteAccess;
+Categories=System;Network;RemoteAccess;
 StartupNotify=true

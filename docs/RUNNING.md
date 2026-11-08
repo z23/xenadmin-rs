@@ -169,10 +169,9 @@ the same ignored directory.
 Archives also include declared dependency licenses, supplied notices, and embedded-font
 notices under `third-party/`.
 
-To run an extracted archive, execute `bin/xenadmin-rs` inside it. For optional desktop
-integration, copy the binaries into a directory on your PATH, the `.desktop` file into
-`~/.local/share/applications`, and the SVG into
-`~/.local/share/icons/hicolor/scalable/apps`. No host-side installation is required.
+To run an extracted archive, execute `bin/xenadmin-rs` inside it. Optional local
+installation, upgrades, retained versions, removal and AppImage use are described in
+[the installation guide](INSTALLATION.md). No host-side installation is required.
 
 
 ## Edit VM properties and devices
