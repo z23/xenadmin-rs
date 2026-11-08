@@ -30,6 +30,17 @@ pub enum NetworkTopologyOperation {
     },
 }
 impl NetworkTopologyOperation {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        let mut methods = vec!["VLAN.create"];
+        if let Self::RetagVlans { interfaces, .. } = self {
+            methods.push("VLAN.destroy");
+            if interfaces.iter().any(|i| !i.attached) {
+                methods.push("PIF.unplug");
+            }
+        }
+        crate::PermissionRequirements::writes(methods)
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::CreateVlans { .. } => "Create pool-wide VLAN interfaces",

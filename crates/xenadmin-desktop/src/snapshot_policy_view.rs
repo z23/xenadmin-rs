@@ -283,6 +283,16 @@ fn submit(s: &mut State) {
         if !current(s, w) {
             return Err(xenadmin_core::Error::Stale);
         }
+        let permission = session_permissions_view::assess(
+            s,
+            &w.review
+                .as_ref()
+                .ok_or(xenadmin_core::Error::Stale)?
+                .permission_requirements(),
+        );
+        if permission.decision().is_denied() {
+            return Err(xenadmin_core::Error::Api("RBAC_PERMISSION_DENIED".into()));
+        }
         s.connection
             .as_ref()
             .ok_or(xenadmin_core::Error::Closed)?
@@ -429,6 +439,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let Some(w) = &s.snapshot_policy_workspace else {
         return el();
     };
+    let permission = w
+        .review
+        .as_ref()
+        .map(|op| session_permissions_view::assess(s, &op.permission_requirements()));
+    let denied = permission
+        .as_ref()
+        .is_some_and(|p| p.decision().is_denied());
     let mut body = col().gap(10.0).child(heading(
         w.review
             .as_ref()
@@ -732,7 +749,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             controls.child(
                 Button::new("Confirm change")
                     .variant(ButtonVariant::Danger)
-                    .disabled(!current(s, w))
+                    .disabled(!current(s, w) || denied)
                     .on_press(submit)
                     .build(k)
                     .key("policy-confirm"),
@@ -765,7 +782,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(controls),
+                .child(session_permissions_view::footer(
+                    controls,
+                    permission.as_ref(),
+                    (s.window_width - 32.0).clamp(280.0, 720.0) - 36.0,
+                    k,
+                )),
         )
 }
 pub(super) fn scene(s: &mut State) {
@@ -784,6 +806,10 @@ pub(super) fn scene(s: &mut State) {
     }));
     edit(s, true);
     s.snapshot_policy_workspace.as_mut().unwrap().name = TextEdit::new("Daily recovery");
+}
+pub(super) fn review_scene(s: &mut State) {
+    scene(s);
+    review(s);
 }
 #[cfg(test)]
 mod tests {

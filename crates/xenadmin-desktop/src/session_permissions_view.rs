@@ -170,6 +170,12 @@ mod review_tests {
             crate::vm_lifecycle::review_scene,
             crate::vm_snapshots::restore_scene,
             crate::vm_snapshots::edit_scene,
+            crate::appliance_view::review_scene,
+            crate::snapshot_policy_view::review_scene,
+            crate::organization_view::review_scene,
+            crate::host_power_view::scene,
+            crate::cloud_init_view::review_scene,
+            crate::profiles_view::root_password_scene,
         ] {
             for size in [(1440.0, 900.0), (513.0, 652.0)] {
                 let mut s = init();
@@ -204,6 +210,12 @@ mod review_tests {
                     "host-confirm",
                     "apply-vm-lifecycle",
                     "confirm-snapshot",
+                    "appliance-apply",
+                    "policy-confirm",
+                    "organization-apply",
+                    "host-power-confirm",
+                    "cloud-init-apply",
+                    "root-password-submit",
                 ]
                 .into_iter()
                 .find(|key| runtime.find(key).is_some())

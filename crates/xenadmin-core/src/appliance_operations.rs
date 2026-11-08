@@ -193,6 +193,38 @@ pub(super) fn reconciliation_checks(record: &ResourceOperationRecord) -> Vec<Che
         .map(|op| checks(op).into_iter().map(Check::Appliance).collect())
         .unwrap_or_default()
 }
+fn method(op: &Op, check: &Verify) -> Result<String, Error> {
+    Ok(match check {
+        Verify::Field { vm, field, .. } => format!(
+            "{}.set_{field}",
+            if vm.is_some() { "VM" } else { "VM_appliance" }
+        ),
+        Verify::Membership => "VM.set_appliance".into(),
+        Verify::Async => format!(
+            "Async.VM_appliance.{}",
+            match op {
+                Op::Create { .. } => "create",
+                Op::DeleteEmpty { .. } => "destroy",
+                Op::Power { action, .. } => action.wire(),
+                _ => return Err(Error::InvalidResourceCommand),
+            }
+        ),
+    })
+}
+impl Op {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        let op = self;
+        let methods = checks(op)
+            .iter()
+            .map(|check| method(op, check))
+            .collect::<Result<Vec<_>, _>>();
+        match methods {
+            Ok(methods) => crate::PermissionRequirements::writes(methods),
+            Err(_) => crate::PermissionRequirements::writes(Vec::<String>::new())
+                .with_host_dependent_steps(),
+        }
+    }
+}
 pub(super) async fn prepare(
     session: &Session,
     record: &mut ResourceOperationRecord,
@@ -217,22 +249,7 @@ pub(super) async fn prepare(
     }
     let mut result = Vec::new();
     for check in checks(&op) {
-        let method = match &check {
-            Verify::Field { vm, field, .. } => format!(
-                "{}.set_{field}",
-                if vm.is_some() { "VM" } else { "VM_appliance" }
-            ),
-            Verify::Membership => "VM.set_appliance".into(),
-            Verify::Async => format!(
-                "Async.VM_appliance.{}",
-                match &op {
-                    Op::Create { .. } => "create",
-                    Op::DeleteEmpty { .. } => "destroy",
-                    Op::Power { action, .. } => action.wire(),
-                    _ => return Err(Error::InvalidResourceCommand),
-                }
-            ),
-        };
+        let method = method(&op, &check)?;
         arguments(session, record, &check).await?;
         result.push(step(method, check, op.label()));
     }

@@ -447,3 +447,6 @@ pub use host_monitoring::{
 };
 
 mod operation_permissions;
+
+#[cfg(test)]
+mod resource_permission_tests;

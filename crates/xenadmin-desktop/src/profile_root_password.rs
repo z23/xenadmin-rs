@@ -141,6 +141,17 @@ fn review(s: &mut State) {
         Err(error) => e.message = Some(error.into()),
     }
 }
+fn permission(s: &State, e: &Editor) -> xenadmin_core::PermissionAssessment {
+    xenadmin_core::ResourceAction::RootPassword(e.change.clone())
+        .permission_requirements(ResourceTarget::Pool(e.pool))
+        .assess(
+            &s.workspace
+                .active
+                .get(&e.profile.id)
+                .map(|c| c.latest().session_permissions())
+                .unwrap_or_default(),
+        )
+}
 fn submit(s: &mut State) {
     let result = (|| {
         let e = s
@@ -152,6 +163,10 @@ fn submit(s: &mut State) {
             return Err(
                 "Connection settings or pool identity changed; reopen the password change".into(),
             );
+        }
+        let permission = permission(s, e);
+        if permission.decision().is_denied() {
+            return Err(permission.explanation());
         }
         if e.confirmation.text.trim() != e.pool.to_string() {
             return Err("Enter the pool UUID exactly".into());
@@ -310,6 +325,10 @@ pub(super) fn poll(s: &mut State) -> bool {
 }
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let e = s.workspace.root_password.as_ref().unwrap();
+    let permission = (e.review && e.operation.is_none()).then(|| permission(s, e));
+    let denied = permission
+        .as_ref()
+        .is_some_and(|p| p.decision().is_denied());
     let mut body=col().gap(12.0).child(heading("Change pool root password",k))
         .child(caption(format!("{}\nPool: {}\nCoordinator: {}\n{} pool host(s) · local account: root",e.name,e.pool,e.change.coordinator,e.change.members.len()),k).wrap_anywhere())
         .child(caption("This changes the coordinator's local root password and requests synchronization to every pool member. Individual member failures are not reported by XCP-ng. A successful coordinator login does not verify the other hosts.",k).wrap())
@@ -379,7 +398,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(
                     Button::new("Change password")
                         .disabled(
-                            !current(s, e) || e.confirmation.text.trim() != e.pool.to_string(),
+                            !current(s, e)
+                                || denied
+                                || e.confirmation.text.trim() != e.pool.to_string(),
                         )
                         .on_press(submit)
                         .build(k)
@@ -414,7 +435,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(footer),
+                .child(session_permissions_view::footer(
+                    footer,
+                    permission.as_ref(),
+                    (s.window_width - 32.0).clamp(280.0, 700.0) - 40.0,
+                    k,
+                )),
         )
 }
 pub(super) fn scene(s: &mut State) {

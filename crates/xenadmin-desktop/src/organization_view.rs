@@ -409,6 +409,16 @@ fn submit(s: &mut State) {
         if !current(s, w) {
             return Err(xenadmin_core::Error::Stale);
         }
+        let permission = session_permissions_view::assess(
+            s,
+            &w.review
+                .as_ref()
+                .ok_or(xenadmin_core::Error::Stale)?
+                .permission_requirements(),
+        );
+        if permission.decision().is_denied() {
+            return Err(xenadmin_core::Error::Api("RBAC_PERMISSION_DENIED".into()));
+        }
         s.connection
             .as_ref()
             .ok_or(xenadmin_core::Error::Closed)?
@@ -490,6 +500,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let Some(w) = &s.organization else {
         return el();
     };
+    let permission = w
+        .review
+        .as_ref()
+        .map(|op| session_permissions_view::assess(s, &op.permission_requirements()));
+    let denied = permission
+        .as_ref()
+        .is_some_and(|p| p.decision().is_denied());
     let mut body = col()
         .w_full()
         .grow(1.0)
@@ -744,7 +761,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .child(
                 Button::new("Apply changes")
-                    .disabled(!current(s, w))
+                    .disabled(!current(s, w) || denied)
                     .on_press(submit)
                     .build(k)
                     .key("organization-apply"),
@@ -783,7 +800,15 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .radius(10.0)
                 .fill(k.c.bg_base)
                 .child(body)
-                .child(controls.padding(14.0)),
+                .child(
+                    session_permissions_view::footer(
+                        controls,
+                        permission.as_ref(),
+                        (s.window_width - 32.0).clamp(280.0, 1000.0) - 28.0,
+                        k,
+                    )
+                    .padding(14.0),
+                ),
         )
 }
 pub(super) fn scene(s: &mut State) {
@@ -814,6 +839,13 @@ pub(super) fn scene(s: &mut State) {
     open(s);
 }
 
+pub(super) fn review_scene(s: &mut State) {
+    scene(s);
+    let w = edit(s);
+    w.selected.insert(w.inventory.objects[0].id);
+    w.name = TextEdit::new("reviewed-tag");
+    w.review = Some(plan(w).unwrap());
+}
 #[cfg(test)]
 mod tests {
     use super::*;

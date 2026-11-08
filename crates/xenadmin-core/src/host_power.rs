@@ -58,6 +58,20 @@ pub enum HostPowerOperation {
     },
 }
 impl HostPowerOperation {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        use crate::PermissionRequirements as Required;
+        match self {
+            Self::CleanupSecret { .. } => Required::writes(["secret.destroy"]),
+            Self::Configure { settings, .. } => {
+                let mut methods = vec!["host.set_power_on_mode"];
+                if settings.needs_password() {
+                    methods.push("secret.create");
+                }
+                Required::writes(methods)
+            }
+        }
+    }
+
     pub(crate) fn valid(&self) -> bool {
         match self {
             Self::Configure { expected, settings } => {

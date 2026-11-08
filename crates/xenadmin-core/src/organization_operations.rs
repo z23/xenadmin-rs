@@ -119,6 +119,12 @@ fn step(edit: &OrganizationEdit) -> Step {
         check: Check::Organization(edit.clone()),
     }
 }
+impl crate::OrganizationPatch {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        let patch = self;
+        crate::PermissionRequirements::writes(patch.edits().iter().map(|edit| step(edit).method))
+    }
+}
 pub(super) async fn prepare(
     session: &Session,
     record: &ResourceOperationRecord,

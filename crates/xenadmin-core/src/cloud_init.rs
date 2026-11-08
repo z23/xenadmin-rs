@@ -316,6 +316,11 @@ pub struct CloudInitConfiguration {
     pub configuration_id: Uuid,
 }
 impl CloudInitConfiguration {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        crate::PermissionRequirements::writes(["VDI.create", "task.create", "VBD.create"])
+            .with_host_dependent_steps()
+    }
+
     pub(crate) fn valid(&self) -> bool {
         !self.configuration_id.is_nil()
             && self

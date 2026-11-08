@@ -249,6 +249,35 @@ pub(super) fn reconciliation_checks(r: &ResourceOperationRecord) -> Vec<Check> {
         })
         .unwrap_or_default()
 }
+fn method(op: &Op, check: &Verify) -> Result<String, Error> {
+    Ok(match check {
+        Verify::Field { field, .. } => format!("VMSS.set_{field}"),
+        Verify::Membership { .. } => "VM.set_snapshot_schedule".into(),
+        Verify::Async => format!(
+            "Async.VMSS.{}",
+            match op {
+                Op::Create { .. } => "create",
+                Op::DeleteEmpty { .. } => "destroy",
+                Op::RunNow { .. } => "snapshot_now",
+                _ => return Err(Error::InvalidResourceCommand),
+            }
+        ),
+    })
+}
+impl Op {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        let op = self;
+        let methods = checks(op)
+            .iter()
+            .map(|check| method(op, check))
+            .collect::<Result<Vec<_>, _>>();
+        match methods {
+            Ok(methods) => crate::PermissionRequirements::writes(methods),
+            Err(_) => crate::PermissionRequirements::writes(Vec::<String>::new())
+                .with_host_dependent_steps(),
+        }
+    }
+}
 pub(super) async fn prepare(
     session: &Session,
     r: &mut ResourceOperationRecord,
@@ -288,19 +317,7 @@ pub(super) async fn prepare(
     r.snapshot_policy_evidence = Some(evidence);
     let mut steps = Vec::new();
     for check in checks(&operation) {
-        let method = match &check {
-            Verify::Field { field, .. } => format!("VMSS.set_{field}"),
-            Verify::Membership { .. } => "VM.set_snapshot_schedule".into(),
-            Verify::Async => format!(
-                "Async.VMSS.{}",
-                match operation {
-                    Op::Create { .. } => "create",
-                    Op::DeleteEmpty { .. } => "destroy",
-                    Op::RunNow { .. } => "snapshot_now",
-                    _ => return Err(Error::InvalidResourceCommand),
-                }
-            ),
-        };
+        let method = method(&operation, &check)?;
         if steps.is_empty() {
             arguments(session, r, &check).await?;
         }

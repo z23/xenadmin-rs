@@ -335,6 +335,17 @@ impl ResourceAction {
         use crate::PermissionRequirements as Required;
         match self {
             Self::VmWorkflowBatch(selection) => selection.permission_requirements(),
+            Self::Appliance(op) => op.permission_requirements(),
+            Self::SnapshotPolicy(op) => op.permission_requirements(),
+            Self::Organization(patch) => patch.permission_requirements(),
+            Self::RootPassword(_) => Required::writes(["session.change_password"]),
+            Self::CleanupStorageCredentials { .. } => Required::writes(["secret.destroy"]),
+            Self::HostPower(op) => op.permission_requirements(),
+            Self::PowerBatch(selection) => {
+                Required::writes([format!("VM.{}", selection.action.wire())])
+            }
+            Self::NetworkTopology(op) => op.permission_requirements(),
+            Self::CloudInit(op) => op.permission_requirements(),
             Self::Alarm(op) => Required::writes([match op {
                 crate::AlarmOperation::Refresh { .. } => "host.call_plugin".into(),
                 _ => format!("{}.set_other_config", target.class()),
@@ -348,9 +359,9 @@ impl ResourceAction {
                 Required::writes(["VM.create_new_blob"]).with_host_dependent_steps()
             }
             Self::Storage(op) => op.permission_requirements(),
-            Self::AuthenticatedStorage { operation, .. } => operation
-                .permission_requirements()
-                .with_host_dependent_steps(),
+            Self::AuthenticatedStorage { operation, .. } => {
+                operation.authenticated_permission_requirements()
+            }
             Self::Network(op) => op.permission_requirements(),
             Self::ManagementIpv6Bond(op)
                 if op.purpose == crate::ManagementIpv6Next::LeavePartial =>

@@ -201,6 +201,11 @@ fn apply(s: &mut State) {
     let Some(config) = config(&s.cloud_init) else {
         return;
     };
+    let permission = session_permissions_view::assess(s, &config.permission_requirements());
+    if permission.decision().is_denied() {
+        s.cloud_init.error = Some(permission.explanation());
+        return;
+    }
     let Some(media) = s.cloud_init.media.take() else {
         return;
     };
@@ -296,6 +301,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         body = body.child(text(e.clone()).color(k.c.text_base).wrap());
     }
     if let Some(media) = &p.media {
+        let permission =
+            config(p).map(|c| session_permissions_view::assess(s, &c.permission_requirements()));
+        let denied = permission
+            .as_ref()
+            .is_some_and(|p| p.decision().is_denied());
+        if let Some(p) = &permission {
+            body = body.child(session_permissions_view::review_notice(p, k));
+        }
         let sr =
             p.sr.and_then(|id| {
                 s.inventory
@@ -311,7 +324,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .child(caption("The VM stays halted. Its guest must already support cloud-init with the NoCloud datasource. Preparing this drive does not prove the guest accepted or ran the configuration. A new instance ID may cause an existing cloud-init guest to run first-boot configuration again. External seed media can affect which configuration the guest selects.",k).wrap())
             .child(caption("Other changes in this pool wait while this operation is active or unresolved. Interrupted uploads or attachments are never retried automatically. Retained disk and attachment UUIDs appear in Activity; uncertain operations may retain a private local artifact.",k).wrap())
             .child(row().gap(8.0).flex_wrap().child(Button::new("Discard and edit").on_press(|s:&mut State|{s.cloud_init.media=None;s.cloud_init.user_data=TextEdit::new("#cloud-config\n");}).build(k).key("cloud-init-edit"))
-                .child(Button::new("Upload and attach drive").disabled(s.demo||!s.can_mutate()||!can_prepare(s)).on_press(apply).build(k).key("cloud-init-apply")));
+                .child(Button::new("Upload and attach drive").disabled(s.demo||!s.can_mutate()||!can_prepare(s)||denied).on_press(apply).build(k).key("cloud-init-apply")));
     } else if p.pending {
         body = body.child(caption("Preparing private local media…", k).wrap());
     } else {

@@ -740,6 +740,17 @@ fn apply_cleanup(s: &mut State) {
             .cleanup_review
             .as_ref()
             .ok_or(xenadmin_core::Error::InvalidResourceCommand)?;
+        let required = xenadmin_core::ResourceAction::CleanupStorageCredentials {
+            operation: *operation,
+            secrets: secrets.clone(),
+        }
+        .permission_requirements(pool.target());
+        if session_permissions_view::assess(s, &required)
+            .decision()
+            .is_denied()
+        {
+            return Err(xenadmin_core::Error::Api("RBAC_PERMISSION_DENIED".into()));
+        }
         s.connection
             .as_ref()
             .ok_or(xenadmin_core::Error::Closed)?
@@ -807,6 +818,17 @@ fn apply(s: &mut State) {
             && editor.confirmation.text != *device
         {
             return Err(xenadmin_core::Error::InvalidResourceCommand);
+        }
+        let requirements = if editor.review_auth_label.is_some() {
+            operation.authenticated_permission_requirements()
+        } else {
+            operation.permission_requirements()
+        };
+        if session_permissions_view::assess(s, &requirements)
+            .decision()
+            .is_denied()
+        {
+            return Err(xenadmin_core::Error::Api("RBAC_PERMISSION_DENIED".into()));
         }
         let operation = operation.clone();
         let connection = s.connection.as_ref().ok_or(xenadmin_core::Error::Closed)?;
@@ -1862,10 +1884,25 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .as_ref()
         .map(|op| crate::session_permissions_view::assess(s, &op.permission_requirements()))
         .or_else(|| {
+            editor
+                .cleanup_review
+                .as_ref()
+                .map(|(pool, operation, secrets)| {
+                    session_permissions_view::assess(
+                        s,
+                        &xenadmin_core::ResourceAction::CleanupStorageCredentials {
+                            operation: *operation,
+                            secrets: secrets.clone(),
+                        }
+                        .permission_requirements(pool.target()),
+                    )
+                })
+        })
+        .or_else(|| {
             editor.review.as_ref().map(|(_, _, operation)| {
                 let requirements = operation.permission_requirements();
                 let requirements = if editor.review_auth_label.is_some() {
-                    requirements.with_host_dependent_steps()
+                    operation.authenticated_permission_requirements()
                 } else {
                     requirements
                 };
@@ -1892,7 +1929,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .child(
                 Button::new("Delete unused temporary Secrets")
-                    .disabled(s.demo || !s.can_mutate())
+                    .disabled(
+                        s.demo
+                            || !s.can_mutate()
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied()),
+                    )
                     .on_press(apply_cleanup)
                     .build(k)
                     .key("storage-cleanup-apply"),

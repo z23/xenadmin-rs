@@ -862,3 +862,5 @@ resolves its extra memory-discard permission from a fresh plan; ordinary snapsho
 not require it. VM creation derives copy/NIC/CD requirements from the fresh source before its
 first copy. Unknown/protected or returned-object-dependent requirements remain explicit. See
 [VM workflow permissions](reports/2026-11-08-vm-workflow-permissions.md).
+
+Dedicated vApp, snapshot-policy and organization resource reviews derive permission requirements from the same immutable changed-field/step selectors used at dispatch. Credential provisioning includes known later configuration/temporary-Secret cleanup requirements before its first write. Pool-password review uses the captured connection profile's authority. Cloud-init RPC requirements do not imply HTTP authorization. See [resource workflow permissions](reports/2026-11-08-resource-workflow-permissions.md).

@@ -170,6 +170,16 @@ fn submit(s: &mut State) {
         if !current(s, e) {
             return Err(xenadmin_core::Error::Stale);
         }
+        let permission = session_permissions_view::assess(
+            s,
+            &e.review
+                .as_ref()
+                .ok_or(xenadmin_core::Error::Stale)?
+                .permission_requirements(),
+        );
+        if permission.decision().is_denied() {
+            return Err(xenadmin_core::Error::Api("RBAC_PERMISSION_DENIED".into()));
+        }
         let connection = s.connection.as_ref().ok_or(xenadmin_core::Error::Closed)?;
         let host = e.observed.ok_or(xenadmin_core::Error::Stale)?;
         match e.review.clone().ok_or(xenadmin_core::Error::Stale)? {
@@ -237,6 +247,13 @@ fn requested(settings: &HostPowerSettings) -> String {
 }
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let Some(e) = &s.host_power else { return el() };
+    let permission = e
+        .review
+        .as_ref()
+        .map(|op| session_permissions_view::assess(s, &op.permission_requirements()));
+    let denied = permission
+        .as_ref()
+        .is_some_and(|p| p.decision().is_denied());
     let label = if let ResourceTarget::Host(id) = e.target {
         e.initial
             .hosts
@@ -376,7 +393,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .child(
                 Button::new("Confirm host change")
                     .variant(ButtonVariant::Danger)
-                    .disabled(!current(s, e))
+                    .disabled(!current(s, e) || denied)
                     .on_press(submit)
                     .build(k)
                     .key("host-power-confirm"),
@@ -408,7 +425,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
                     stick_bottom: false,
                 }))
-                .child(footer),
+                .child(session_permissions_view::footer(
+                    footer,
+                    permission.as_ref(),
+                    (s.window_width - 32.0).clamp(280.0, 680.0) - 40.0,
+                    k,
+                )),
         )
 }
 pub(super) fn scene(s: &mut State) {

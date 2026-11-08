@@ -104,6 +104,7 @@ async fn fixture_delayed(
     let task_result = Arc::new(Mutex::new("OpaqueRef:SR-new".to_string()));
     let mock=mock_overridden(override_rpc(move|request|{let data=data.clone();let counter=counter.clone();let task_result=task_result.clone();let delay=delay.clone();let pbd_reads=pbd_reads.clone();async move{
         let method=request["method"].as_str().unwrap();let p=&request["params"];
+        if method=="session.get_record" && let Some(permissions)=data.lock().unwrap().get("fixture:permissions") { return Some(RpcReply::Json(json!({"result":permissions}))); }
         if method=="event.from"&&p[2]==""{
             let m=data.lock().unwrap();let mut b=batch("initial","Halted");
             for e in b["events"].as_array_mut().unwrap(){if let Some(r)=m.get(e["class"].as_str().unwrap()){e["snapshot"]=r.clone();}}
@@ -734,6 +735,41 @@ async fn authenticated_storage_thin_allocation_is_captured_without_persisting_cr
         );
         assert!(r.storage_secrets.iter().all(|s| s.cleaned));
         privacy(&r, dir.path());
+        c.close().await;
+    }
+}
+
+#[tokio::test]
+async fn storage_cleanup_permission_denial_prevents_temporary_secret_creation() {
+    for auth in [
+        StorageAuthentication::Chap,
+        StorageAuthentication::MutualChap,
+        StorageAuthentication::Smb,
+    ] {
+        let (mock, data) = fixture(auth, Fault::None).await;
+        data.lock().unwrap().insert(
+            "fixture:permissions".into(),
+            json!({"is_local_superuser":false,"rbac_permissions":["secret.create","sr.create"]}),
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let op = c
+            .submit_authenticated_storage(
+                OperationId::new(),
+                c.latest().observe_resource(pool()).unwrap(),
+                command(auth, false),
+                credentials(auth),
+            )
+            .unwrap();
+        let record = finished(&op).await;
+        assert_eq!(record.state, OperationState::Rejected, "{}", record.detail);
+        assert!(record.detail.contains("RBAC_PERMISSION_DENIED"));
+        assert!(!mock.methods.lock().unwrap().iter().any(|m| matches!(
+            m.as_str(),
+            "secret.create" | "Async.SR.create" | "secret.destroy"
+        )));
+        privacy(&record, directory.path());
         c.close().await;
     }
 }

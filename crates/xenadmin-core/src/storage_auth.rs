@@ -363,3 +363,14 @@ pub(crate) fn project(record: &mut crate::ResourceOperationRecord) {
         }
     }
 }
+
+impl StorageOperation {
+    pub fn authenticated_permission_requirements(&self) -> crate::PermissionRequirements {
+        crate::PermissionRequirements::writes(
+            self.permission_requirements()
+                .methods()
+                .map(str::to_owned)
+                .chain(["secret.create".into(), "secret.destroy".into()]),
+        )
+    }
+}

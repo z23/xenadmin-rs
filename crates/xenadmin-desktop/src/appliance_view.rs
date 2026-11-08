@@ -235,6 +235,10 @@ fn apply(s: &mut State) {
             return Err("Connection changed; reopen vApps".into());
         }
         let operation = w.review.clone().ok_or("Review a change first")?;
+        let permission = session_permissions_view::assess(s, &operation.permission_requirements());
+        if permission.decision().is_denied() {
+            return Err(permission.explanation());
+        }
         if confirmation(&operation).is_some_and(|v| v != w.confirmation.text) {
             return Err("Enter the exact requested vApp UUID".into());
         }
@@ -353,6 +357,13 @@ fn review(w: &Workspace, op: &Op, k: &Kit) -> El {
 }
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let Some(w) = &s.appliances else { return el() };
+    let permission = w
+        .review
+        .as_ref()
+        .map(|op| session_permissions_view::assess(s, &op.permission_requirements()));
+    let denied = permission
+        .as_ref()
+        .is_some_and(|p| p.decision().is_denied());
     let mut body = col()
         .w_full()
         .grow(1.0)
@@ -589,6 +600,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 Button::new("Apply reviewed change")
                     .disabled(
                         !current(s, w)
+                            || denied
                             || confirmation(op).is_some_and(|v| v != w.confirmation.text),
                     )
                     .on_press(apply)
@@ -613,7 +625,15 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .radius(10.0)
                 .fill(k.c.bg_base)
                 .child(body)
-                .child(controls.padding(14.0)),
+                .child(
+                    session_permissions_view::footer(
+                        controls,
+                        permission.as_ref(),
+                        (s.window_width - 32.0).clamp(280.0, 1000.0) - 28.0,
+                        k,
+                    )
+                    .padding(14.0),
+                ),
         )
 }
 pub(super) fn scene(s: &mut State) {
