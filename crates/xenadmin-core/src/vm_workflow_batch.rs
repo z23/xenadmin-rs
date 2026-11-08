@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VmWorkflow {
+    Move(crate::VmMigration),
     Delete {
         expected_template: bool,
         disks: Vec<VdiId>,
@@ -15,8 +16,15 @@ pub enum VmWorkflow {
     },
 }
 impl VmWorkflow {
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Delete { .. } => "Delete VM",
+            Self::Move(_) => "Move VM",
+        }
+    }
     pub(crate) fn action(&self) -> OperationAction {
         match self {
+            Self::Move(operation) => OperationAction::Migration(operation.clone()),
             Self::Delete {
                 expected_template,
                 disks,
@@ -47,18 +55,38 @@ impl VmWorkflowBatch {
         }
         for item in &self.items {
             if item.vm.uuid().is_nil()
-                || item.expected_state != PowerState::Halted
                 || !identities.insert(item.vm.uuid())
+                || std::mem::discriminant(&item.workflow)
+                    != std::mem::discriminant(&self.items[0].workflow)
             {
                 return Err(Error::InvalidResourceCommand);
             }
+            if let VmWorkflow::Move(operation) = &item.workflow {
+                operation.validate()?;
+                if item.expected_state
+                    != if operation.live {
+                        PowerState::Running
+                    } else {
+                        PowerState::Halted
+                    }
+                {
+                    return Err(Error::InvalidResourceCommand);
+                }
+                continue;
+            }
+            if item.expected_state != PowerState::Halted {
+                return Err(Error::InvalidResourceCommand);
+            }
             let OperationAction::Lifecycle(op) = item.workflow.action() else {
-                unreachable!()
+                return Err(Error::InvalidResourceCommand);
             };
             op.validate()?;
             let VmWorkflow::Delete {
                 disks, snapshots, ..
-            } = &item.workflow;
+            } = &item.workflow
+            else {
+                return Err(Error::InvalidResourceCommand);
+            };
             for id in disks
                 .iter()
                 .map(|id| id.uuid())
@@ -74,12 +102,23 @@ impl VmWorkflowBatch {
         Ok(())
     }
     pub fn permission_requirements(&self) -> crate::PermissionRequirements {
-        let mut writes = vec!["VM.destroy"];
+        let mut writes = Vec::new();
+        for item in &self.items {
+            match &item.workflow {
+                VmWorkflow::Move(operation) => writes.extend(
+                    operation
+                        .permission_requirements()
+                        .methods()
+                        .map(str::to_owned),
+                ),
+                VmWorkflow::Delete { .. } => writes.push("VM.destroy".to_owned()),
+            }
+        }
         if self.items.iter().any(|i| {
             matches!(&i.workflow, VmWorkflow::Delete { disks, snapshots, .. }
             if !disks.is_empty() || snapshots.iter().any(|s|!s.disks.is_empty()))
         }) {
-            writes.push("VDI.destroy");
+            writes.push("VDI.destroy".to_owned());
         }
         crate::PermissionRequirements::writes(writes)
     }
@@ -167,7 +206,7 @@ pub(crate) fn validate_record(r: &ResourceOperationRecord) -> Result<(), Error> 
             || result.child != *id
             || result.detail.len() > 4096
             || (index >= p.admitted) == result.state.is_some()
-            || r.steps[index].label != format!("Delete VM {}", item.vm)
+            || r.steps[index].label != format!("{} {}", item.workflow.label(), item.vm)
             || (r.steps[index].state == crate::StepState::Verified
                 && result.state != Some(OperationState::Succeeded))
             || (r.state == OperationState::Succeeded

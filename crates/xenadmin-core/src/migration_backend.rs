@@ -43,6 +43,103 @@ pub(crate) struct Plan {
     pub graph: Graph,
     pub baseline: Vec<Uuid>,
     pub completed: bool,
+    #[serde(default)]
+    pub interrupted: bool,
+    #[serde(default)]
+    pub outcome: Option<TaskOutcome>,
+    #[serde(default)]
+    pub affinity_received: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum TaskOutcome {
+    Success,
+    Failure(String),
+    Cancelled,
+}
+impl Plan {
+    pub(crate) fn extends(&self, old: &Self) -> bool {
+        self.vm == old.vm
+            && self.operation == old.operation
+            && self.graph == old.graph
+            && self.baseline == old.baseline
+            && (!old.completed || self.completed)
+            && (!old.interrupted || self.interrupted)
+            && (!old.affinity_received || self.affinity_received)
+            && old
+                .outcome
+                .as_ref()
+                .is_none_or(|outcome| self.outcome.as_ref() == Some(outcome))
+    }
+    pub(crate) fn valid(&self, record: &crate::OperationRecord) -> bool {
+        let valid_text = |s: &str| s.len() <= 1024 && !s.chars().any(char::is_control);
+        record.vm == self.vm
+            && record.action == crate::OperationAction::Migration(self.operation.clone())
+            && self.operation.validate().is_ok()
+            && self.graph.disks.len() <= 256
+            && self.graph.nics.len() <= 256
+            && self.graph.disks.windows(2).all(|w| w[0].id < w[1].id)
+            && self.graph.nics.windows(2).all(|w| w[0].id < w[1].id)
+            && matches_review(&self.graph, &self.operation)
+            && self.graph.disks.iter().all(|d| {
+                valid_text(&d.kind)
+                    && valid_text(&d.mode)
+                    && valid_text(&d.device)
+                    && d.disk.as_ref().is_none_or(|d| valid_text(&d.kind))
+            })
+            && self
+                .graph
+                .nics
+                .iter()
+                .all(|n| valid_text(&n.device) && valid_text(&n.mac))
+            && self.baseline.len() <= 10_000
+            && self.baseline.windows(2).all(|w| w[0] < w[1])
+            && (!self.operation.storage_changes()
+                || self
+                    .graph
+                    .disks
+                    .iter()
+                    .filter_map(|d| d.disk.as_ref())
+                    .all(|d| self.baseline.contains(&d.id.uuid())))
+            && self.outcome.as_ref().is_none_or(|outcome| match outcome {
+                TaskOutcome::Success => self.completed,
+                TaskOutcome::Failure(code) => {
+                    !self.completed && crate::xapi::safe_error_code(code) == *code
+                }
+                TaskOutcome::Cancelled => !self.completed,
+            })
+            && (!self.affinity_received || (!self.operation.live && self.completed))
+            && (record
+                .steps
+                .first()
+                .is_none_or(|step| step.state != crate::StepState::Verified)
+                || self.completed
+                || self.outcome.is_some())
+            && record.steps.len() == if self.operation.live { 1 } else { 2 }
+            && record.steps[0].label == "Migrate VM and reviewed devices"
+            && (self.operation.live || record.steps[1].label == "Set home host")
+            && (record.state != crate::OperationState::Succeeded
+                || self.completed
+                    && record
+                        .steps
+                        .iter()
+                        .all(|step| step.state == crate::StepState::Verified))
+    }
+}
+pub(crate) fn valid_record(record: &crate::OperationRecord, plan: Option<&Plan>) -> bool {
+    match plan {
+        Some(plan) => plan.valid(record),
+        None => {
+            !matches!(record.action, crate::OperationAction::Migration(_))
+                || record.steps.is_empty() && record.state != crate::OperationState::Succeeded
+        }
+    }
+}
+pub(crate) fn valid_receipts(record: &crate::OperationRecord, plan: Option<&Plan>) -> bool {
+    let Some(plan) = plan else {
+        return true;
+    };
+    (!(plan.completed||plan.outcome.is_some()||plan.affinity_received)||record.task.is_some())
+        && record.created_devices.iter().all(|created| matches!(created,crate::CreatedDevice::Disk(id) if plan.operation.storage_changes() && !plan.baseline.contains(&id.uuid())))
 }
 pub(crate) fn id<T: From<Uuid>>(r: &Value) -> Result<T, Error> {
     r["uuid"]
@@ -366,12 +463,24 @@ impl Prepared {
         session.call(self.method, self.args).await
     }
 }
-pub(crate) async fn prepare(
+pub(crate) struct Preflight {
+    plan: Plan,
+    vmref: String,
+    hostref: String,
+    disks: Value,
+    nics: Value,
+    transfer: Option<String>,
+}
+/// No receiver token is acquired while checking a whole selection.
+pub(crate) async fn preflight(
     session: &Session,
     vm: VmId,
     operation: &VmMigration,
-) -> Result<(Plan, Prepared), Error> {
+) -> Result<Preflight, Error> {
     operation.validate()?;
+    operation
+        .permission_requirements()
+        .guard(session.permissions())?;
     let mut plan = Plan {
         vm,
         operation: operation.clone(),
@@ -381,6 +490,9 @@ pub(crate) async fn prepare(
         },
         baseline: vec![],
         completed: false,
+        interrupted: false,
+        outcome: None,
+        affinity_received: false,
     };
     let (vmref, r) = guest(session, &plan, true).await?;
     plan.graph = graph(session, &vmref, &r).await?;
@@ -389,44 +501,16 @@ pub(crate) async fn prepare(
     }
     let hostref = host(session, operation.destination).await?;
     let (disks, nics) = validate_destinations(session, &plan, &hostref).await?;
-    let prepared = if operation.uses_storage_transport() {
-        let transfer = network_visible(
-            session,
-            operation.transfer_network.ok_or(Error::InvalidMigration)?,
-            &hostref,
-            true,
-        )
-        .await?;
-        let token = session
-            .call(
-                "host.migrate_receive",
-                vec![json!(&hostref), json!(transfer), json!({})],
+    let transfer = if operation.uses_storage_transport() {
+        Some(
+            network_visible(
+                session,
+                operation.transfer_network.ok_or(Error::InvalidMigration)?,
+                &hostref,
+                true,
             )
-            .await?;
-        let map = token
-            .as_object()
-            .filter(|m| {
-                m.len() <= 32
-                    && m.values()
-                        .all(|v| v.as_str().is_some_and(|s| s.len() <= 16384))
-            })
-            .ok_or(Error::Protocol("invalid migration receiver token"))?;
-        if map.get("host") != Some(&json!(&hostref)) {
-            return Err(Error::Protocol("migration receiver host mismatch"));
-        }
-        let args = vec![
-            json!(&vmref),
-            token,
-            json!(operation.live),
-            disks,
-            nics,
-            json!({"live":if operation.live{"true"}else{"false"}}),
-        ];
-        session.call("VM.assert_can_migrate", args.clone()).await?;
-        Prepared {
-            method: "Async.VM.migrate_send",
-            args,
-        }
+            .await?,
+        )
     } else {
         session
             .call(
@@ -434,24 +518,113 @@ pub(crate) async fn prepare(
                 vec![json!(&vmref), json!(&hostref)],
             )
             .await?;
-        Prepared {
-            method: "Async.VM.pool_migrate",
-            args: vec![json!(&vmref), json!(&hostref), json!({"live":"true"})],
-        }
+        None
     };
-    // Capture identities before the write, then repeat the reviewed graph and destination checks.
     if operation.storage_changes() {
         plan.baseline = crate::device_lifecycle::baseline(session, "VDI").await?;
     }
-    let (current, r) = guest(session, &plan, true).await?;
-    if current != vmref
-        || graph(session, &current, &r).await? != plan.graph
-        || host(session, operation.destination).await? != hostref
-    {
-        return Err(Error::MigrationConflict);
+    let preflight = Preflight {
+        plan,
+        vmref,
+        hostref,
+        disks,
+        nics,
+        transfer,
+    };
+    preflight.revalidate(session).await?;
+    Ok(preflight)
+}
+impl Preflight {
+    async fn revalidate(&self, session: &Session) -> Result<(), Error> {
+        self.plan
+            .operation
+            .permission_requirements()
+            .guard(session.permissions())?;
+        let (current, r) = guest(session, &self.plan, true).await?;
+        if current != self.vmref
+            || graph(session, &current, &r).await? != self.plan.graph
+            || host(session, self.plan.operation.destination).await? != self.hostref
+        {
+            return Err(Error::MigrationConflict);
+        }
+        let (disks, nics) = validate_destinations(session, &self.plan, &self.hostref).await?;
+        if disks != self.disks || nics != self.nics {
+            return Err(Error::MigrationConflict);
+        }
+        if let Some(expected) = &self.transfer
+            && network_visible(
+                session,
+                self.plan
+                    .operation
+                    .transfer_network
+                    .ok_or(Error::InvalidMigration)?,
+                &self.hostref,
+                true,
+            )
+            .await?
+                != *expected
+        {
+            return Err(Error::MigrationConflict);
+        }
+        Ok(())
     }
-    validate_destinations(session, &plan, &hostref).await?;
-    Ok((plan, prepared))
+    async fn prepare(self, session: &Session) -> Result<(Plan, Prepared), Error> {
+        self.revalidate(session).await?;
+        let operation = &self.plan.operation;
+        let prepared = if let Some(transfer) = &self.transfer {
+            let token = session
+                .call(
+                    "host.migrate_receive",
+                    vec![json!(&self.hostref), json!(transfer), json!({})],
+                )
+                .await?;
+            let map = token
+                .as_object()
+                .filter(|m| {
+                    m.len() <= 32
+                        && m.values()
+                            .all(|v| v.as_str().is_some_and(|s| s.len() <= 16384))
+                })
+                .ok_or(Error::Protocol("invalid migration receiver token"))?;
+            if map.get("host") != Some(&json!(&self.hostref)) {
+                return Err(Error::Protocol("migration receiver host mismatch"));
+            }
+            let args = vec![
+                json!(&self.vmref),
+                token,
+                json!(operation.live),
+                self.disks.clone(),
+                self.nics.clone(),
+                json!({"live":if operation.live{"true"}else{"false"}}),
+            ];
+            session.call("VM.assert_can_migrate", args.clone()).await?;
+            Prepared {
+                method: "Async.VM.migrate_send",
+                args,
+            }
+        } else {
+            Prepared {
+                method: "Async.VM.pool_migrate",
+                args: vec![
+                    json!(&self.vmref),
+                    json!(&self.hostref),
+                    json!({"live":"true"}),
+                ],
+            }
+        };
+        self.revalidate(session).await?;
+        Ok((self.plan, prepared))
+    }
+}
+pub(crate) async fn prepare(
+    session: &Session,
+    vm: VmId,
+    operation: &VmMigration,
+) -> Result<(Plan, Prepared), Error> {
+    preflight(session, vm, operation)
+        .await?
+        .prepare(session)
+        .await
 }
 pub(crate) async fn verify(
     session: &Session,
@@ -532,17 +705,17 @@ pub(crate) async fn affinity_matches(session: &Session, plan: &Plan) -> Result<b
     let (_, r) = guest(session, plan, false).await?;
     Ok(nullable_host(session, &r["affinity"]).await? == Some(plan.operation.destination))
 }
-pub(crate) async fn set_affinity(session: &Session, plan: &Plan) -> Result<(), Error> {
+pub(crate) async fn prepare_affinity(session: &Session, plan: &Plan) -> Result<Prepared, Error> {
     verify(session, plan, None).await?;
     let (vmref, r) = guest(session, plan, false).await?;
     if nullable_host(session, &r["affinity"]).await? != plan.operation.expected_affinity {
         return Err(Error::MigrationConflict);
     }
     let hostref = host(session, plan.operation.destination).await?;
-    session
-        .call("VM.set_affinity", vec![json!(vmref), json!(hostref)])
-        .await?;
-    Ok(())
+    Ok(Prepared {
+        method: "VM.set_affinity",
+        args: vec![json!(vmref), json!(hostref)],
+    })
 }
 /// Record individually verified replacement disks even when another part of migration failed.
 pub(crate) async fn observed_disks(session: &Session, plan: &Plan) -> Result<Vec<VdiId>, Error> {

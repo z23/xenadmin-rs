@@ -163,7 +163,7 @@ fn apply(s: &mut State) {
         return;
     };
     let Some(target) = f.target else { return };
-    let Some(o) = &f.review else { return };
+    let Some(o) = f.review.clone() else { return };
     if !s.can_mutate()
         || !current(s, f)
         || !s
@@ -173,26 +173,29 @@ fn apply(s: &mut State) {
     {
         return;
     }
+    if !session_permissions_view::check(s, &o.permission_requirements()) {
+        return;
+    }
     s.submit_command(xenadmin_core::VmCommand::Migrate {
         vm: target,
-        operation: o.clone(),
+        operation: o,
     });
     if s.error.is_none() {
         close(s);
     }
 }
-fn host_label(i: &Inventory, id: HostId) -> String {
+pub(super) fn host_label(i: &Inventory, id: HostId) -> String {
     i.hosts
         .get(&id)
         .map_or_else(|| id.to_string(), |h| format!("{} ({id})", h.name))
 }
-fn sr_label(i: &Inventory, id: SrId) -> String {
+pub(super) fn sr_label(i: &Inventory, id: SrId) -> String {
     i.storage
         .iter()
         .find(|d| d.uuid == id.uuid())
         .map_or_else(|| id.to_string(), |d| format!("{} ({id})", d.name))
 }
-fn net_label(i: &Inventory, id: NetworkId) -> String {
+pub(super) fn net_label(i: &Inventory, id: NetworkId) -> String {
     i.networks
         .iter()
         .find(|d| d.uuid == id.uuid())
@@ -203,6 +206,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         return el();
     };
     let is_current = current(s, f);
+    let permission = f
+        .review
+        .as_ref()
+        .map(|operation| session_permissions_view::assess(s, &operation.permission_requirements()));
     let mut body = col()
         .w((s.window_width - 36.0).clamp(270.0, 760.0))
         .max_h((s.window_height - 50.0).clamp(260.0, 920.0))
@@ -427,6 +434,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .disabled(
                     !s.can_mutate()
                         || !is_current
+                        || permission
+                            .as_ref()
+                            .is_some_and(|p| p.decision().is_denied())
                         || !f.review.as_ref().is_some_and(|o| {
                             s.inventory
                                 .as_ref()
@@ -450,6 +460,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .build(k)
             .key("migration-next"),
         );
+    }
+    if let Some(permission) = &permission {
+        body = body.child(session_permissions_view::review_notice(permission, k));
     }
     el().w_full()
         .h_full()

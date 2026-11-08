@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Mutex};
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 type Calls = Arc<Mutex<Vec<Value>>>;
+#[path = "migration_evidence_tests.rs"]
+mod evidence;
 fn uuid(n: u128) -> Uuid {
     Uuid::from_u128(n)
 }
@@ -48,7 +50,16 @@ enum Fault {
     WrongToken,
     Incompatible,
 }
+type Hook = Arc<dyn Fn(&Value) + Send + Sync>;
 async fn fixture(live: bool, storage: bool, fault: Fault) -> (Fixture, Records, Calls) {
+    fixture_hook(live, storage, fault, None).await
+}
+async fn fixture_hook(
+    live: bool,
+    storage: bool,
+    fault: Fault,
+    hook: Option<Hook>,
+) -> (Fixture, Records, Calls) {
     let data = BTreeMap::from([
         (
             "OpaqueRef:VM:source".into(),
@@ -122,6 +133,9 @@ async fn fixture(live: bool, storage: bool, fault: Fault) -> (Fixture, Records, 
         let calls = calls.clone();
         move |request: Value| {
             calls.lock().unwrap().push(request.clone());
+            if let Some(hook) = &hook {
+                hook(&request);
+            }
             let method = request["method"].as_str().unwrap();
             let p = &request["params"];
             let mut r = records.lock().unwrap();
@@ -240,8 +254,11 @@ async fn fixture(live: bool, storage: bool, fault: Fault) -> (Fixture, Records, 
     (Fixture::new(handler).await, records, calls)
 }
 async fn execute(f: &Fixture, dir: &Path, o: VmMigration) -> OperationRecord {
+    execute_id(f, dir, o, OperationId::new()).await
+}
+async fn execute_id(f: &Fixture, dir: &Path, o: VmMigration, id: OperationId) -> OperationRecord {
     let (op, request) = channel(
-        OperationId::new(),
+        id,
         uuid(1).into(),
         vm(),
         1,
@@ -532,7 +549,11 @@ async fn persisted_pool_migration_completion_reconciles_after_task_removal() {
     assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
     assert_eq!(count(&c, "task.get_record"), 1);
     assert_eq!(count(&c, "Async.VM.pool_migrate"), 1);
-    assert_eq!(count(&c, "task.destroy"), 1);
+    assert_eq!(
+        count(&c, "task.destroy"),
+        0,
+        "explicit recheck is read-only"
+    );
 }
 #[tokio::test]
 async fn unresolved_migration_reserves_vm_resources_and_composes_with_creation_guard() {

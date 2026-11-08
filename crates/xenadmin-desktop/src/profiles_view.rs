@@ -438,6 +438,7 @@ fn clear_view(s: &mut State) {
     s.bulk_power = None;
     s.bulk_properties = None;
     s.bulk_delete = None;
+    s.bulk_move = None;
     s.row_menu = None;
     for (name, width) in &s.preferences.columns {
         s.table.set_column_width(name, *width);

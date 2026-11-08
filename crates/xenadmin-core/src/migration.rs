@@ -29,6 +29,17 @@ pub struct VmMigration {
     pub transfer_network: Option<NetworkId>,
 }
 impl VmMigration {
+    pub fn permission_requirements(&self) -> crate::PermissionRequirements {
+        let mut methods = if self.uses_storage_transport() {
+            vec!["host.migrate_receive", "VM.migrate_send"]
+        } else {
+            vec!["VM.pool_migrate"]
+        };
+        if !self.live {
+            methods.push("VM.set_affinity");
+        }
+        crate::PermissionRequirements::writes(methods)
+    }
     pub fn storage_changes(&self) -> bool {
         self.disks.iter().any(|d| d.expected_sr != d.destination_sr)
     }

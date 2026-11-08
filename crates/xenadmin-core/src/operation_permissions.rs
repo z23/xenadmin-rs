@@ -17,9 +17,7 @@ impl OperationAction {
             Self::Device(op) => op.permission_requirements(),
             Self::Lifecycle(op) => op.permission_requirements(),
             Self::Snapshot(op) => op.permission_requirements(),
-            Self::Migration(_) => {
-                Required::writes(Vec::<String>::new()).with_host_dependent_steps()
-            }
+            Self::Migration(operation) => operation.permission_requirements(),
         }
     }
 }

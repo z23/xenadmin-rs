@@ -15,8 +15,12 @@ use uuid::Uuid;
 
 #[path = "device_lifecycle_operations.rs"]
 mod device_lifecycle_operations;
+#[path = "migration_evidence.rs"]
+mod migration_evidence;
 #[path = "migration_operations.rs"]
 mod migration_operations;
+#[path = "migration_tracking.rs"]
+mod migration_tracking;
 #[path = "snapshot_operations.rs"]
 mod snapshot_operations;
 #[path = "snapshot_workflow_operations.rs"]
@@ -830,7 +834,10 @@ impl Journal {
         Ok(Self(connection))
     }
     fn encode_record(record: &OperationRecord) -> Result<String, Error> {
-        if !record.valid_recovery_plan() {
+        if !record.valid_recovery_plan()
+            || !crate::migration_backend::valid_record(record, record.migration_plan.as_deref())
+            || !crate::migration_backend::valid_receipts(record, record.migration_plan.as_deref())
+        {
             return Err(Error::Journal);
         }
         let mut value = serde_json::to_value(record).map_err(|_| Error::Journal)?;
@@ -888,6 +895,14 @@ impl Journal {
         record.device_plan = device_plan;
         record.lifecycle_plan = lifecycle_plan;
         record.migration_plan = migration_plan;
+        if record.state == OperationState::OutcomeUnknown
+            && let Some(plan) = record.migration_plan.as_mut()
+        {
+            plan.interrupted = true;
+        }
+        if !crate::migration_backend::valid_record(&record, record.migration_plan.as_deref()) {
+            return Err(Error::Journal);
+        }
         Ok(record)
     }
     pub(crate) fn load(&self, id: OperationId) -> Result<Option<OperationRecord>, Error> {
@@ -905,6 +920,12 @@ impl Journal {
                 let mut record = Self::decode_record(&payload)?;
                 record.task = task;
                 record.revision = revision;
+                if !crate::migration_backend::valid_receipts(
+                    &record,
+                    record.migration_plan.as_deref(),
+                ) {
+                    return Err(Error::Journal);
+                }
                 self.workflow_validate_child(&record)?;
                 Ok(record)
             })
@@ -991,6 +1012,11 @@ impl Journal {
         self.save_validated(record)
     }
     fn save_validated(&self, record: &mut OperationRecord) -> Result<(), Error> {
+        if record.state == OperationState::OutcomeUnknown
+            && let Some(plan) = record.migration_plan.as_mut()
+        {
+            plan.interrupted = true;
+        }
         if let Some(previous) = self.load(record.id)? {
             if previous.batch_parent != record.batch_parent
                 || previous.pool != record.pool
@@ -1013,6 +1039,12 @@ impl Journal {
                         .lifecycle_plan
                         .as_ref()
                         .is_some_and(|new| new.extends(old))
+                })
+                || previous.migration_plan.as_ref().is_some_and(|old| {
+                    record
+                        .migration_plan
+                        .as_ref()
+                        .is_none_or(|new| !new.extends(old))
                 })
                 || previous.snapshot_workflow.as_ref().is_some_and(|old| {
                     !record
@@ -1145,6 +1177,10 @@ impl Journal {
             let mut record = Self::decode_record(&payload)?;
             record.task = task;
             record.revision = revision;
+            if !crate::migration_backend::valid_receipts(&record, record.migration_plan.as_deref())
+            {
+                return Err(Error::Journal);
+            }
             self.workflow_validate_child(&record)?;
             Ok(record)
         })
@@ -1167,7 +1203,18 @@ pub(crate) fn recover(directory: &Path, pool: PoolId) -> Result<Vec<OperationRec
             recovered.push(record);
             continue;
         }
-        if !record.state.terminal() && record.task.is_none() {
+        if !record.state.terminal() && record.migration_plan.is_some() {
+            record.state = OperationState::OutcomeUnknown;
+            record.can_cancel = false;
+            record.detail = "Interrupted migration; recovery reads saved evidence without new receiver tokens or remaining changes".into();
+            match journal.save(&mut record) {
+                Ok(()) => {}
+                Err(Error::JournalChanged) => {
+                    record = journal.load(record.id)?.ok_or(Error::Journal)?;
+                }
+                Err(error) => return Err(error),
+            }
+        } else if !record.state.terminal() && record.task.is_none() {
             record.state = if record.state == OperationState::Preparing
                 && record
                     .steps
@@ -1683,6 +1730,11 @@ impl MutationRequest {
         connection_cancel: &CancellationToken,
         allow_post_task_writes: bool,
     ) -> Result<(), Error> {
+        if matches!(self.record.action, OperationAction::Migration(_)) {
+            return self
+                .track_migration(session, journal, connection_cancel, !allow_post_task_writes)
+                .await;
+        }
         let reference = self
             .record
             .task
@@ -1740,11 +1792,6 @@ impl MutationRequest {
             };
             match task["status"].as_str() {
                 Some("success") => {
-                    if matches!(&self.record.action, OperationAction::Migration(_)) {
-                        return self
-                            .complete_migration(session, journal, &task, allow_post_task_writes)
-                            .await;
-                    }
                     if matches!(
                         self.record.action,
                         OperationAction::Snapshot(SnapshotOperation::Clone { .. })
@@ -1824,9 +1871,6 @@ impl MutationRequest {
                     self.record.progress = Some(1.0);
                 }
                 Some("failure") => {
-                    if matches!(&self.record.action, OperationAction::Migration(_)) {
-                        return self.failed_migration(session, journal, &task, false).await;
-                    }
                     self.record.state = OperationState::Failed;
                     let code = task["error_info"]
                         .as_array()
@@ -1837,9 +1881,6 @@ impl MutationRequest {
                         format!("Host task failed: {}", crate::xapi::safe_error_code(code));
                 }
                 Some("cancelled") => {
-                    if matches!(&self.record.action, OperationAction::Migration(_)) {
-                        return self.failed_migration(session, journal, &task, true).await;
-                    }
                     self.record.state = OperationState::Cancelled;
                     self.record.detail = "Host confirmed task cancellation".into();
                 }

@@ -231,3 +231,5 @@ done
 "$check_binary" --snap artifacts/lifecycle-permissions.png --tree artifacts/lifecycle-permissions.json --scene lifecycle-permissions --theme dark --size 1440x900 --scale 1 --at 1
 
 "$check_binary" --snap artifacts/lifecycle-permissions-compact.png --tree artifacts/lifecycle-permissions-compact.json --scene lifecycle-permissions --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/batch-move.png --tree artifacts/batch-move.json --scene batch-move --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/batch-move-compact.png --tree artifacts/batch-move-compact.json --scene batch-move --theme dark --size 513x652 --scale 1 --at 1

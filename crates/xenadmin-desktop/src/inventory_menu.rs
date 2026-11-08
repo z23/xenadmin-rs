@@ -213,6 +213,20 @@ pub(super) fn overlay(s: &State, k: &Kit, base: El) -> El {
             }),
         );
     }
+    if context.scope.page == Page::Guests {
+        menu = menu.item(
+            rune_kit::MenuItem::new("Move selection…")
+                .disabled(!current)
+                .on_select(|s: &mut State| {
+                    if let Some(context) = s.row_menu.take()
+                        && valid(s, &context)
+                        && selected(s) == context.selection
+                    {
+                        bulk_move::open(s);
+                    }
+                }),
+        );
+    }
     if matches!(context.scope.page, Page::Guests | Page::Templates) {
         menu = menu.item(
             rune_kit::MenuItem::new("Delete selection…")

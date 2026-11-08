@@ -1,7 +1,5 @@
 use super::*;
-use crate::{
-    CreatedDevice, HostId, SnapshotId, SrId, VdiId, VmCopyMode, VmLifecycleOperation, VmMigration,
-};
+use crate::{CreatedDevice, SnapshotId, SrId, VdiId, VmCopyMode, VmLifecycleOperation};
 fn fixture() -> OperationRecord {
     let mut r:OperationRecord=serde_json::from_value(json!({"id":OperationId::new(),"pool":Uuid::from_u128(1),"vm":Uuid::from_u128(2),"action":"Start","state":"OutcomeUnknown","progress":null,"detail":"Fixture interrupted operation"})).unwrap();
     let disk = VdiId::from(Uuid::from_u128(3));
@@ -57,24 +55,6 @@ fn fixture() -> OperationRecord {
         groups: vec![device],
         owned_disks: vec![disk],
         workflow_planned: true,
-    }));
-    r.migration_plan = Some(Box::new(crate::migration_backend::Plan {
-        vm: r.vm,
-        operation: VmMigration {
-            destination: HostId::from(Uuid::from_u128(9)),
-            expected_host: Some(HostId::from(Uuid::from_u128(10))),
-            expected_affinity: None,
-            live: false,
-            disks: vec![],
-            networks: vec![],
-            transfer_network: None,
-        },
-        graph: crate::migration_backend::Graph {
-            disks: vec![],
-            nics: vec![],
-        },
-        baseline: vec![disk.uuid()],
-        completed: false,
     }));
     r
 }

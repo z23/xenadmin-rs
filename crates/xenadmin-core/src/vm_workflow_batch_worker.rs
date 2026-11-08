@@ -14,7 +14,7 @@ impl ResourceRequest {
             .guard(s.permissions())?;
         self.record.can_cancel = true;
         self.record.detail =
-            "Checking every selected VM and explicit deletion before the first child".into();
+            "Checking every selected VM and reviewed workflow before the first child".into();
         self.save(j).await?;
         let plan = self
             .record
@@ -24,8 +24,11 @@ impl ResourceRequest {
         tokio::select! { _=c.cancelled()=>return Err(Error::Closed), value=async {
             crate::power_batch::pool(s, &self.record).await?;
             for item in &plan.selection.items {
-                let OperationAction::Lifecycle(op) = item.workflow.action() else { return Err(Error::InvalidResourceCommand) };
-                crate::vm_lifecycle_backend::plan(s,item.vm,&op).await?;
+                match item.workflow.action() {
+                    OperationAction::Lifecycle(op) => {crate::vm_lifecycle_backend::plan(s,item.vm,&op).await?;},
+                    OperationAction::Migration(op) => {crate::migration_backend::preflight(s,item.vm,&op).await?;},
+                    _=>return Err(Error::InvalidResourceCommand),
+                }
             }
             Ok::<_,Error>(())
         }=>value? }
@@ -202,7 +205,7 @@ impl ResourceRequest {
         self.record.can_cancel = false;
         self.record.progress = Some(succeeded as f64 / p.children.len() as f64);
         self.record.detail = format!(
-            "{succeeded} of {} VM deletions verified; {} not started. No rollback or automatic continuation.",
+            "{succeeded} of {} VM workflows verified; {} not started. No rollback or automatic continuation.",
             p.children.len(),
             p.children.len() - p.admitted
         );

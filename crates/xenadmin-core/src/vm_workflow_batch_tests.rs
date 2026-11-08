@@ -5,6 +5,8 @@ use crate::{
     VmWorkflowBatch,
 };
 use std::{collections::BTreeMap, sync::Mutex};
+#[path = "vm_workflow_move_tests.rs"]
+mod moves;
 
 fn pool() -> PoolId {
     Uuid::from_u128(1).into()

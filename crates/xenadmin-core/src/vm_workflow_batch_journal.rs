@@ -80,12 +80,12 @@ impl Journal {
         };
         self.workflow_validate_links(parent)?;
         for (index, id) in plan.children.iter().enumerate() {
-            let payload: Option<String> = self
+            let payload: Option<(String, Option<String>)> = self
                 .0
                 .query_row(
-                    "SELECT payload FROM operations WHERE id=?1",
+                    "SELECT payload,task FROM operations WHERE id=?1",
                     [id.to_string()],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .map_err(|_| Error::Journal)?;
@@ -95,7 +95,12 @@ impl Journal {
                 }
                 continue;
             }
-            let child = Self::decode_record(&payload.ok_or(Error::Journal)?)?;
+            let (payload, task) = payload.ok_or(Error::Journal)?;
+            let mut child = Self::decode_record(&payload)?;
+            child.task = task;
+            if !crate::migration_backend::valid_receipts(&child, child.migration_plan.as_deref()) {
+                return Err(Error::Journal);
+            }
             self.workflow_child_matches(&child, parent, index)?;
             if parent.state.terminal()
                 && (!child.state.terminal()

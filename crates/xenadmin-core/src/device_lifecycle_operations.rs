@@ -10,6 +10,10 @@ impl MutationRequest {
         let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
         if current.state.terminal()
             || current.state == OperationState::OutcomeUnknown
+            || current
+                .migration_plan
+                .as_ref()
+                .is_some_and(|p| p.interrupted)
             || journal.workflow_child_stopped(current.id)?
         {
             self.record = current;

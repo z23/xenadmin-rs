@@ -3,6 +3,7 @@ mod activity_export;
 mod alarms_view;
 mod appliance_view;
 mod bulk_delete;
+mod bulk_move;
 mod bulk_power;
 mod bulk_properties;
 mod cloud_init_view;
@@ -185,6 +186,7 @@ struct State {
     bulk_power: Option<bulk_power::Editor>,
     bulk_properties: Option<bulk_properties::Editor>,
     bulk_delete: Option<bulk_delete::Editor>,
+    bulk_move: Option<bulk_move::Editor>,
     row_menu: Option<inventory_menu::Context>,
     searches: Option<search_view::Workspace>,
     metrics: Option<metrics_view::MetricsUi>,
@@ -312,6 +314,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         bulk_power: None,
         bulk_properties: None,
         bulk_delete: None,
+        bulk_move: None,
         row_menu: None,
         searches: None,
         metrics: None,
@@ -1577,7 +1580,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
-    let root = if s.bulk_delete.is_some() {
+    let root = if s.bulk_move.is_some() {
+        rune_kit::root(root, [bulk_move::dialog(s, &k)])
+    } else if s.bulk_delete.is_some() {
         rune_kit::root(root, [bulk_delete::dialog(s, &k)])
     } else if s.bulk_power.is_some() {
         rune_kit::root(root, [bulk_power::dialog(s, &k)])
@@ -2324,6 +2329,7 @@ fn main() -> std::process::ExitCode {
             ("batch-properties", bulk_properties::scene),
             ("batch-delete", bulk_delete::scene),
             ("lifecycle-permissions", vm_lifecycle::review_scene),
+            ("batch-move", bulk_move::scene),
             ("console-recovery", console_view::recovery_scene),
             ("multiple-consoles", console_windows::multiple_scene),
             ("guest-connections", |s| external_tools::scene(s, false)),

@@ -428,7 +428,12 @@ impl ResourceAction {
             Self::SnapshotPreviewUpload(_) => "Attach snapshot preview",
             Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
-            Self::VmWorkflowBatch(_) => "Delete selected VMs",
+            Self::VmWorkflowBatch(selection) => {
+                match selection.items.first().map(|i| &i.workflow) {
+                    Some(crate::VmWorkflow::Move(_)) => "Move selected VMs",
+                    _ => "Delete selected VMs",
+                }
+            }
             Self::PowerBatch(_) => "Power actions on selected VMs",
             Self::PropertiesBatch(_) => "Edit selected VM properties",
             Self::CrossPoolVm(operation) => operation.mode.label(),
@@ -969,7 +974,7 @@ pub(crate) fn channel(
             .items
             .iter()
             .map(|item| OperationStep {
-                label: format!("Delete VM {}", item.vm),
+                label: format!("{} {}", item.workflow.label(), item.vm),
                 state: crate::StepState::Pending,
                 detail: "Not started".into(),
             })

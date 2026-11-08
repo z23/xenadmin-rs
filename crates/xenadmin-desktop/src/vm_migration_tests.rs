@@ -50,6 +50,10 @@ fn compact_and_wide_review_capture_exact_targets_and_remain_preview_only() {
         let text = r.accessibility_json().to_string();
         assert!(text.contains("3 of 3"));
         assert!(text.contains("partial placement"));
+        r.update(|_, tx| tx.scroll_into_view("review-permission-explanation"));
+        settle(&mut r);
+        let (_, notice_y) = r.find("review-permission-explanation").unwrap();
+        assert!((0.0..size.1).contains(&notice_y));
         click(&mut r, "migration-apply");
         assert!(r.state.operations.is_empty());
         assert_eq!(r.state.vm_migration.as_ref().unwrap().review, Some(o));
