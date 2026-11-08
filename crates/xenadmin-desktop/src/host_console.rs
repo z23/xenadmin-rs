@@ -101,7 +101,7 @@ pub(super) fn scene(s: &mut State) {
     s.page = Page::Hosts;
     s.filter_rows();
     s.table.select(host.id.to_string());
-    s.show_details = true;
+    s.show_details = false;
     s.console_snapshot = Some(Arc::new(xenadmin_core::ConsoleSnapshot {
         state: xenadmin_core::ConsoleState::Closed,
         frame: None,

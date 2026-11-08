@@ -308,9 +308,9 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | P18-05 | HiDPI/multimonitor/compact windows | Existing subset; remaining work queued |
 | P18-06 | Keyboard navigation/focus/Orca | Qualification open |
 | P18-07 | Native file selection/clipboard integration | Explicit console clipboard and native CA/screenshot/transfer/search/activity pickers implemented with cancelled/stale-callback fixtures; real portal/clipboard/desktop qualification remains open |
-| P18-08 | General/confirmation/console/display options | Connection-profile and console options extended; general options center remains partial |
+| P18-08 | General/confirmation/console/display options | Persistent system/light/dark appearance, reduced motion, optional routine-power review and new-console fit/reconnect defaults implemented alongside per-profile options; compact/wide Rune fixtures and native synthetic renders verified, real desktop qualification open ([evidence](reports/2026-11-08-desktop-options.md)) |
 | P18-09 | External tools/plugins | Capability review and implementation queued |
-| P18-10 | Localization/integrated help | Queued |
+| P18-10 | Localization/integrated help | Offline contextual-topic Help implemented for connections, recovery, consoles, storage and private diagnostics; translation catalogs/localization remain queued ([evidence](reports/2026-11-08-desktop-options.md)) |
 | P18-11 | Multiple client instances/shared-pool ownership | Authenticated pool alias ownership and exclusive desktop state-directory lock implemented; cross-process IPC/focus handoff remains queued |
 
 ## 19. Qualification gaps

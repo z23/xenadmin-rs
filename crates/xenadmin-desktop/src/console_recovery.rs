@@ -68,6 +68,12 @@ struct Decision {
     wake: Option<f64>,
 }
 impl Recovery {
+    pub(super) fn with_enabled(enabled: bool) -> Self {
+        Self {
+            enabled,
+            ..Default::default()
+        }
+    }
     fn advance(
         &mut self,
         observation: Result<Binding, Waiting>,

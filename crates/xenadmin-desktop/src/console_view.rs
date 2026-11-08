@@ -39,6 +39,7 @@ impl ConsoleUi {
 }
 pub(super) fn opened(s: &mut State, pool: PoolId, vm: VmId, name: String) {
     release(s);
+    s.show_details = false;
     s.console_ui = ConsoleUi {
         target: Some(ConsoleTarget {
             pool,
@@ -47,6 +48,8 @@ pub(super) fn opened(s: &mut State, pool: PoolId, vm: VmId, name: String) {
             host: None,
         }),
         serial: next_serial(),
+        actual_size: s.preferences.options.console_actual_size,
+        recovery: recovery::Recovery::with_enabled(s.preferences.options.console_reconnect),
         ..Default::default()
     };
     s.console_pixels = rune::Pixels::new();
@@ -742,6 +745,22 @@ fn keysym(key: &Key) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn console_defaults_apply_only_when_opening_a_new_target() {
+        let mut s = crate::init();
+        s.preferences.options.console_actual_size = true;
+        s.preferences.options.console_reconnect = false;
+        recovery_scene(&mut s);
+        assert!(s.console_ui.actual_size);
+        assert!(!s.console_ui.recovery.enabled);
+        s.preferences.options.console_actual_size = false;
+        s.preferences.options.console_reconnect = true;
+        assert!(s.console_ui.actual_size);
+        assert!(!s.console_ui.recovery.enabled);
+        recovery_scene(&mut s);
+        assert!(!s.console_ui.actual_size);
+        assert!(s.console_ui.recovery.enabled);
+    }
     #[test]
     fn pointer_matches_letterboxing_actual_size_and_resize() {
         let fit = Geometry::new([1000.0, 1000.0], 800, 600, false).unwrap();

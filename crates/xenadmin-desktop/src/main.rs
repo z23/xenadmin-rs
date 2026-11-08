@@ -20,6 +20,7 @@ mod profiles_view;
 mod resource_admin;
 mod resource_details;
 mod search_view;
+mod settings;
 mod snapshot_policy_view;
 mod storage_view;
 mod transfers;
@@ -152,6 +153,7 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    application_panel: Option<settings::Panel>,
     bulk_power: Option<bulk_power::Editor>,
     row_menu: Option<inventory_menu::Context>,
     searches: Option<search_view::Workspace>,
@@ -304,6 +306,7 @@ fn init() -> State {
         operation_rows: Vec::new(),
         unknown_review: None,
         force_action: None,
+        application_panel: None,
         console_ui: Default::default(),
         console: None,
         console_snapshot: None,
@@ -405,7 +408,7 @@ impl State {
                 self.error = Some(xenadmin_core::Error::Stale.to_string());
                 return;
             };
-            if action.is_force() {
+            if self.preferences.options.reviews(action) {
                 let name = self
                     .selected()
                     .map(|row| row.name.clone())
@@ -881,7 +884,8 @@ fn heading(value: impl Into<String>, k: &Kit) -> El {
     text(value).font(k.ty.ui_medium).color(k.c.text_base)
 }
 fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let k = Kit::neutral(cx.system_dark());
+    let k = Kit::neutral(s.preferences.options.appearance.dark(cx.system_dark()));
+    cx.reduced_motion(s.preferences.options.reduced_motion || cx.system_reduced_motion());
     let repository_label = "z23 / xenadmin-rs";
     let sidebar = col()
         .w_full()
@@ -1183,22 +1187,22 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.metrics.is_some() {
         content = metrics_view::view(s, &k);
     }
-    if s.show_details
-        && s.window_width < 1200.0
-        && s.console.is_none()
-        && !(s.demo && s.console_ui.target().is_some())
-    {
+    if s.show_details && s.window_width < 1200.0 {
         content = col()
             .w_full()
             .h_full()
             .min_h(0.0)
             .gap(8.0)
             .child(
-                Button::new(if s.snapshot_view.is_some() {
-                    "Back to snapshots"
-                } else {
-                    "Back to inventory"
-                })
+                Button::new(
+                    if s.console.is_some() || s.demo && s.console_ui.target().is_some() {
+                        "Back to console"
+                    } else if s.snapshot_view.is_some() {
+                        "Back to snapshots"
+                    } else {
+                        "Back to inventory"
+                    },
+                )
                 .variant(ButtonVariant::Ghost)
                 .on_press(|s: &mut State| s.show_details = false)
                 .build(&k)
@@ -1237,12 +1241,26 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .disabled(s.selected().is_none())
                 .on_press(|s: &mut State| {
                     s.metrics = None;
+                    console_view::release(s);
                     s.show_details = !s.show_details;
                 })
                 .build(&k)
                 .key("show-details"),
         );
     }
+    controls = controls
+        .child(
+            Button::new("Options")
+                .on_press(settings::open)
+                .build(&k)
+                .key("settings-open"),
+        )
+        .child(
+            Button::new("Help")
+                .on_press(settings::help)
+                .build(&k)
+                .key("help-open"),
+        );
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
         Button::new("Search pools")
@@ -1321,25 +1339,18 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(notice)
             .child(content.grow(1.0).min_h(0.0));
     }
-    let toolbar = if s.window_width < 800.0 {
-        controls = controls.flex_wrap();
-        content = col()
-            .w_full()
-            .h_full()
-            .min_h(0.0)
-            .child(controls.flex_wrap().padding(8.0))
-            .child(content.grow(1.0).min_h(0.0));
-        Toolbar::new().title("XenAdmin RS")
-    } else {
-        Toolbar::new()
-            .title(
-                s.inventory
-                    .as_ref()
-                    .map(|i| i.pool_name.as_str())
-                    .unwrap_or("Direct connections"),
-            )
-            .trailing(controls)
-    };
+    content = col()
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(controls.flex_wrap().padding(8.0))
+        .child(content.grow(1.0).min_h(0.0));
+    let toolbar = Toolbar::new().title(
+        s.inventory
+            .as_ref()
+            .map(|i| i.pool_name.as_str())
+            .unwrap_or("XenAdmin RS"),
+    );
     let mut shell = SplitView::new(content)
         .toolbar(toolbar)
         .titlebar_inset(cx.titlebar_inset());
@@ -1397,9 +1408,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         let dialog=col().w(460.0).padding(24.0).gap(16.0).radius(10.0).fill(k.c.bg_base)
             .child(heading(format!("{} this VM?",action.label()),&k))
             .child(caption(format!("Target: {name}\nUUID: {vm}"),&k).wrap_anywhere())
-            .child(caption("This interrupts the guest immediately and can lose unsaved data. A clean shutdown is safer when the guest responds.",&k).wrap())
+            .child(caption(if action.is_force() { "This interrupts the guest immediately and can lose unsaved data. A clean shutdown is safer when the guest responds." } else { "The selected power action will be sent to this VM. Current host permissions and power state are checked again before submission." },&k).wrap())
             .child(row().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.force_action=None).build(&k))
-                .child(Button::new(action.label()).variant(ButtonVariant::Danger).on_press(move|s:&mut State|s.submit_power(vm,action)).build(&k)));
+                .child(Button::new(action.label()).variant(if action.is_force() { ButtonVariant::Danger } else { ButtonVariant::Neutral }).on_press(move|s:&mut State|s.submit_power(vm,action)).build(&k)));
         rune_kit::root(
             base,
             [el()
@@ -1409,7 +1420,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .center()
                 .fill(rune::Color::BLACK.alpha(0.5))
                 .role("dialog")
-                .label("Confirm force operation")
+                .label(if action.is_force() {
+                    "Confirm force operation"
+                } else {
+                    "Confirm power operation"
+                })
                 .modal(false, |s: &mut State| s.force_action = None)
                 .child(dialog)],
         )
@@ -1455,6 +1470,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         root
     };
     let root = inventory_menu::overlay(s, &k, root);
+    let root = if s.application_panel.is_some() {
+        rune_kit::root(root, [settings::dialog(s, &k)])
+    } else {
+        root
+    };
     root.key("application")
         .on_layout_tx(|s: &mut State, rect, _| {
             if rect[2].is_finite() && rect[2] > 0.0 && (s.window_width - rect[2]).abs() > 0.5 {
@@ -2048,6 +2068,12 @@ fn main() {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("options", settings::open),
+            ("help", settings::help),
+            ("console-details", |s| {
+                console_view::recovery_scene(s);
+                s.show_details = true;
+            }),
             ("batch-power", bulk_power::scene),
             ("console-recovery", console_view::recovery_scene),
             ("host-console", host_console::scene),

@@ -102,3 +102,13 @@ check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import
 "$check_binary" --snap artifacts/host-console.png --tree artifacts/host-console.json --scene host-console --theme dark --size 1440x900 --scale 1 --at 1
 
 "$check_binary" --snap artifacts/host-console-compact.png --tree artifacts/host-console-compact.json --scene host-console --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/options.png --tree artifacts/options.json --scene options --theme dark --size 1440x900 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/options-compact.png --tree artifacts/options-compact.json --scene options --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/help.png --tree artifacts/help.json --scene help --theme dark --size 1440x900 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/help-compact.png --tree artifacts/help-compact.json --scene help --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/console-details-compact.png --tree artifacts/console-details-compact.json --scene console-details --theme dark --size 513x652 --scale 1 --at 1
