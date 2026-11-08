@@ -100,6 +100,8 @@ impl MutationRequest {
             return Err(Error::UnavailableAction);
         };
         let plan = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed), result=snapshots::deletion_plan(session,self.record.vm,snapshot,disks)=>result?};
+        SnapshotOperation::deletion_permission_requirements(disks, Some(plan.checkpoint))
+            .guard(session.permissions())?;
         let plan_steps = steps(&plan);
         self.record.snapshot_deletion = Some(plan.clone());
         self.record.steps = plan_steps

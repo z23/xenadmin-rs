@@ -167,6 +167,9 @@ mod review_tests {
             pool,
             resource,
             crate::host_admin::scene,
+            crate::vm_lifecycle::review_scene,
+            crate::vm_snapshots::restore_scene,
+            crate::vm_snapshots::edit_scene,
         ] {
             for size in [(1440.0, 900.0), (513.0, 652.0)] {
                 let mut s = init();
@@ -199,6 +202,8 @@ mod review_tests {
                     "pool-confirm",
                     "resource-confirm",
                     "host-confirm",
+                    "apply-vm-lifecycle",
+                    "confirm-snapshot",
                 ]
                 .into_iter()
                 .find(|key| runtime.find(key).is_some())
@@ -212,6 +217,7 @@ mod review_tests {
                 runtime.pointer_up(x, y);
                 runtime.frame(0.0);
                 assert!(runtime.state.resource_operations.is_empty());
+                assert!(runtime.state.operations.is_empty());
                 assert!(runtime.state.error.is_none());
             }
         }

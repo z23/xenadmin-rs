@@ -462,7 +462,60 @@ pub(crate) async fn plan(
             }
         }
     }
+    guard_creation_permissions(session, &plan, &record).await?;
     Ok(plan)
+}
+async fn guard_creation_permissions(
+    session: &Session,
+    plan: &Plan,
+    record: &Value,
+) -> Result<(), Error> {
+    let mut methods = plan
+        .operation
+        .permission_requirements()
+        .methods()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for step in &plan.steps {
+        if let Step::Copy { mode, .. } = step {
+            methods.push(
+                match mode {
+                    VmCopyMode::Fast => "VM.clone",
+                    VmCopyMode::Full { .. } => "VM.copy",
+                }
+                .into(),
+            );
+        }
+    }
+    if let VmLifecycleOperation::Create { network, iso, .. } = &plan.operation {
+        if record["other_config"].get("disks").is_some() {
+            methods.push("VM.remove_from_other_config".into());
+        }
+        let nics = refs(record, "VIFs")?;
+        if nics.is_empty() {
+            methods.push("VIF.create".into());
+        }
+        for nic in nics {
+            let vif = session.call("VIF.get_record", vec![json!(nic)]).await?;
+            let net = session
+                .call(
+                    "network.get_record",
+                    vec![json!(reference(&vif["network"])?)],
+                )
+                .await?;
+            if id::<crate::NetworkId>(&net)? != *network {
+                methods.push("VIF.move".into());
+            }
+        }
+        if iso.is_some() {
+            match first_cd(session, record).await? {
+                None => methods.push("VBD.create".into()),
+                Some((_, cd)) if cd["empty"] != true => methods.push("VBD.eject".into()),
+                _ => (),
+            }
+        }
+    }
+    crate::PermissionRequirements::writes(methods).guard(session.permissions())
 }
 async fn validate_source_devices(session: &Session, record: &Value) -> Result<(), Error> {
     for field in ["VGPUs", "VUSBs", "VTPMs", "attached_PCIs"] {
@@ -574,6 +627,7 @@ pub(crate) async fn prepare(
             permits(&current, cap)?;
             validate_source_devices(session, &current).await?;
             plan.source_graph = graph(session, &current).await?;
+            guard_creation_permissions(session, plan, &current).await?;
             if let VmLifecycleOperation::Create {
                 firmware,
                 bios_host,

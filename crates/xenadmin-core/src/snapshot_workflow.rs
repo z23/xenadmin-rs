@@ -25,6 +25,47 @@ pub enum SnapshotWorkflow {
     },
 }
 impl SnapshotWorkflow {
+    pub(crate) fn steps(&self) -> Vec<Step> {
+        match self {
+            SnapshotWorkflow::Create { .. } => vec![Step::Create, Step::Description],
+            SnapshotWorkflow::Edit {
+                name,
+                expected_name,
+                description,
+                expected_description,
+                ..
+            } => {
+                let mut steps = Vec::new();
+                if name != expected_name {
+                    steps.push(Step::Name)
+                }
+                if description != expected_description {
+                    steps.push(Step::Description)
+                }
+                steps
+            }
+            SnapshotWorkflow::Restore {
+                shutdown,
+                start_after,
+                checkpoint,
+                ..
+            } => {
+                let mut steps = Vec::new();
+                if *shutdown {
+                    steps.push(Step::Shutdown)
+                }
+                steps.push(Step::Revert);
+                if *start_after {
+                    steps.push(if *checkpoint {
+                        Step::Resume
+                    } else {
+                        Step::Start
+                    })
+                }
+                steps
+            }
+        }
+    }
     pub fn validate(&self) -> Result<(), Error> {
         match self {
             Self::Create {
@@ -147,6 +188,20 @@ pub(crate) enum Step {
     Resume,
 }
 impl Step {
+    pub(crate) fn method(&self, operation: &SnapshotWorkflow) -> &'static str {
+        match self {
+            Self::Create if matches!(operation, SnapshotWorkflow::Create { memory: true, .. }) => {
+                "Async.VM.checkpoint"
+            }
+            Self::Create => "Async.VM.snapshot",
+            Self::Name => "VM.set_name_label",
+            Self::Description => "VM.set_name_description",
+            Self::Shutdown => "Async.VM.clean_shutdown",
+            Self::Revert => "Async.VM.revert",
+            Self::Start => "Async.VM.start",
+            Self::Resume => "Async.VM.resume",
+        }
+    }
     pub fn label(&self) -> &'static str {
         match self {
             Self::Create => "Create snapshot",
@@ -234,45 +289,7 @@ pub(crate) async fn plan(
     if !operation.allows(&guest, source.as_ref()) {
         return Err(Error::UnavailableAction);
     }
-    let steps = match operation {
-        SnapshotWorkflow::Create { .. } => vec![Step::Create, Step::Description],
-        SnapshotWorkflow::Edit {
-            name,
-            expected_name,
-            description,
-            expected_description,
-            ..
-        } => {
-            let mut steps = Vec::new();
-            if name != expected_name {
-                steps.push(Step::Name)
-            }
-            if description != expected_description {
-                steps.push(Step::Description)
-            }
-            steps
-        }
-        SnapshotWorkflow::Restore {
-            shutdown,
-            start_after,
-            checkpoint,
-            ..
-        } => {
-            let mut steps = Vec::new();
-            if *shutdown {
-                steps.push(Step::Shutdown)
-            }
-            steps.push(Step::Revert);
-            if *start_after {
-                steps.push(if *checkpoint {
-                    Step::Resume
-                } else {
-                    Step::Start
-                })
-            }
-            steps
-        }
-    };
+    let steps = operation.steps();
     Ok(Plan {
         evidence: vec![Evidence::default(); steps.len()],
         steps,
@@ -332,11 +349,7 @@ pub(crate) async fn prepare(
             return Err(Error::UnavailableAction);
         }
         return Ok(Prepared {
-            method: if *memory {
-                "Async.VM.checkpoint"
-            } else {
-                "Async.VM.snapshot"
-            },
+            method: step.method(&plan.operation),
             args: vec![json!(parent_ref), json!(name)],
         });
     }
@@ -374,11 +387,7 @@ pub(crate) async fn prepare(
                 return Err(Error::SnapshotConflict);
             }
             Ok(Prepared {
-                method: if *step == Step::Name {
-                    "VM.set_name_label"
-                } else {
-                    "VM.set_name_description"
-                },
+                method: step.method(&plan.operation),
                 args: vec![
                     json!(snapshot_ref),
                     json!(if *step == Step::Name {
@@ -403,7 +412,7 @@ pub(crate) async fn prepare(
                 )
                 .await?;
             Ok(Prepared {
-                method: "Async.VM.clean_shutdown",
+                method: step.method(&plan.operation),
                 args: vec![json!(parent_ref)],
             })
         }
@@ -418,7 +427,7 @@ pub(crate) async fn prepare(
                 )
                 .await?;
             Ok(Prepared {
-                method: "Async.VM.revert",
+                method: step.method(&plan.operation),
                 args: vec![json!(snapshot_ref)],
             })
         }
@@ -441,11 +450,7 @@ pub(crate) async fn prepare(
                 )
                 .await?;
             Ok(Prepared {
-                method: if resume {
-                    "Async.VM.resume"
-                } else {
-                    "Async.VM.start"
-                },
+                method: step.method(&plan.operation),
                 args: vec![json!(parent_ref), json!(false), json!(false)],
             })
         }

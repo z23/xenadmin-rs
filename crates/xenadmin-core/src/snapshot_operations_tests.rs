@@ -30,6 +30,13 @@ enum Fault {
 }
 
 async fn fixture(checkpoint: bool, fault: Fault) -> (Fixture, Records, Calls) {
+    fixture_with_permissions(checkpoint, fault, json!({"is_local_superuser":true})).await
+}
+async fn fixture_with_permissions(
+    checkpoint: bool,
+    fault: Fault,
+    permissions: Value,
+) -> (Fixture, Records, Calls) {
     let mut values = BTreeMap::from([
         (
             "OpaqueRef:VM:parent".into(),
@@ -59,7 +66,7 @@ async fn fixture(checkpoint: bool, fault: Fault) -> (Fixture, Records, Calls) {
     }
     let records: Records = Arc::new(Mutex::new(values));
     let calls: Calls = Arc::new(Mutex::new(Vec::new()));
-    let fixture=Fixture::new({let records=records.clone();let calls=calls.clone();move |request|{
+    let fixture=Fixture::with_permissions({let records=records.clone();let calls=calls.clone();move |request|{
         let method=request["method"].as_str().unwrap();
         calls.lock().unwrap().push(request.clone());
         let mut records=records.lock().unwrap();
@@ -108,7 +115,7 @@ async fn fixture(checkpoint: bool, fault: Fault) -> (Fixture, Records, Calls) {
             "task.destroy"=>json!({"result":null}),
             _=>panic!("unexpected fixture request {method}"),
         }
-    }}).await;
+    }}, permissions).await;
     (fixture, records, calls)
 }
 
@@ -503,4 +510,59 @@ async fn oversized_clone_identity_baseline_refuses_before_dispatch() {
     let record = execute(&fixture, directory.path(), clone_action(false)).await;
     assert_eq!(record.state, OperationState::Rejected, "{}", record.detail);
     assert_eq!(count(&calls, "Async.VM.clone"), 0);
+}
+
+#[tokio::test]
+async fn checkpoint_discard_denial_is_resolved_before_deletion_and_plain_snapshots_do_not_require_it()
+ {
+    let action = || SnapshotOperation::Delete {
+        snapshot: snapshot(),
+        disks: vec![disk()],
+    };
+    let (f, _, calls) = fixture(true, Fault::None).await;
+    let d = tempfile::tempdir().unwrap();
+    assert_eq!(
+        execute(&f, d.path(), action()).await.state,
+        OperationState::Succeeded
+    );
+    let methods = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            r["method"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("Async.")
+                .to_ascii_lowercase()
+        })
+        .filter(|m| m != "vm.hard_shutdown")
+        .collect::<Vec<_>>();
+    for checkpoint in [false, true] {
+        let (f, records, calls) = fixture_with_permissions(
+            checkpoint,
+            Fault::None,
+            json!({"is_local_superuser":false,"rbac_permissions":methods}),
+        )
+        .await;
+        let d = tempfile::tempdir().unwrap();
+        let result = execute(&f, d.path(), action()).await;
+        if checkpoint {
+            assert!(
+                result.detail.contains("RBAC_PERMISSION_DENIED"),
+                "{}",
+                result.detail
+            );
+            assert_eq!(
+                records.lock().unwrap()["OpaqueRef:VM:snapshot"]["power_state"],
+                "Suspended"
+            );
+            assert!(!calls.lock().unwrap().iter().any(|r| matches!(
+                r["method"].as_str(),
+                Some("VM.destroy" | "VDI.destroy" | "VM.hard_shutdown")
+            )));
+        } else {
+            assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+        }
+    }
 }

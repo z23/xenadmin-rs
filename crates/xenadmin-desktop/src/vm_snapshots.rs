@@ -361,8 +361,84 @@ pub(super) fn begin_restore(s: &mut State) {
     })();
     s.error = result.err().map(|error| error.to_string());
 }
+fn review_requirements(s: &State) -> Option<xenadmin_core::PermissionRequirements> {
+    use xenadmin_core::SnapshotOperation as Op;
+    let operation = match s.snapshot_dialog.as_ref()? {
+        Dialog::Create { .. } => Op::Workflow {
+            operation: SnapshotWorkflow::Create {
+                name: s.snapshot_name.text.trim().into(),
+                description: s.snapshot_description.text.clone(),
+                memory: s.snapshot_memory,
+            },
+        },
+        Dialog::Restore {
+            snapshot_id,
+            expected_state,
+            checkpoint,
+            shutdown,
+            start_after,
+            ..
+        } => Op::Workflow {
+            operation: SnapshotWorkflow::Restore {
+                snapshot: *snapshot_id,
+                expected_state: expected_state.clone(),
+                checkpoint: *checkpoint,
+                shutdown: *shutdown,
+                start_after: *start_after,
+            },
+        },
+        Dialog::Edit { source } => Op::Workflow {
+            operation: SnapshotWorkflow::Edit {
+                snapshot: source.snapshot_id,
+                expected_name: source.snapshot.clone(),
+                expected_description: source.description.clone(),
+                name: s.snapshot_name.text.trim().into(),
+                description: s.snapshot_description.text.clone(),
+            },
+        },
+        Dialog::Clone {
+            source,
+            as_template,
+        } => Op::Clone {
+            snapshot: source.snapshot_id,
+            name: s.snapshot_name.text.trim().into(),
+            as_template: *as_template,
+        },
+        Dialog::Delete {
+            source,
+            disks,
+            delete_disks,
+            ..
+        } => Op::Delete {
+            snapshot: source.snapshot_id,
+            disks: if *delete_disks {
+                disks.iter().map(|d| d.id).collect()
+            } else {
+                Vec::new()
+            },
+        },
+    };
+    Some(
+        if let (
+            Some(Dialog::Delete {
+                memory_checkpoint, ..
+            }),
+            Op::Delete { disks, .. },
+        ) = (s.snapshot_dialog.as_ref(), &operation)
+        {
+            Op::deletion_permission_requirements(disks, Some(*memory_checkpoint))
+        } else {
+            operation.permission_requirements()
+        },
+    )
+}
 fn submit(s: &mut State) {
     if s.snapshot_capture.busy() {
+        return;
+    }
+    if let Some(requirements) = review_requirements(s)
+        && !session_permissions_view::check(s, &requirements)
+    {
         return;
     }
     let command = match &s.snapshot_dialog {
@@ -1103,6 +1179,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .role("alert"),
         );
     }
+    let permission = review_requirements(s).map(|r| session_permissions_view::assess(s, &r));
+    if let Some(permission) = &permission {
+        body = body.child(session_permissions_view::review_notice(permission, k));
+    }
     body = body.child(
         row()
             .gap(8.0)
@@ -1123,7 +1203,15 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                             ButtonVariant::Outline
                         },
                     )
-                    .disabled(!valid || !live || !current(s) || s.snapshot_capture.busy())
+                    .disabled(
+                        !valid
+                            || !live
+                            || !current(s)
+                            || s.snapshot_capture.busy()
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied()),
+                    )
                     .on_press(submit)
                     .build(k)
                     .key("confirm-snapshot"),

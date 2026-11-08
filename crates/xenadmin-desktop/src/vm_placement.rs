@@ -34,6 +34,16 @@ pub(super) fn open(s: &mut State) {
     })();
     s.error = result.err().map(|e| e.to_string());
 }
+fn requirements(placement: &Placement) -> Option<xenadmin_core::PermissionRequirements> {
+    let (host, _) = placement.host.as_ref()?;
+    Some(
+        xenadmin_core::OperationAction::Placement(xenadmin_core::PlacementOperation {
+            placement: placement.action,
+            host: *host,
+        })
+        .permission_requirements(),
+    )
+}
 fn submit(s: &mut State) {
     let Some(placement) = &s.placement else {
         return;
@@ -41,11 +51,18 @@ fn submit(s: &mut State) {
     let Some((host, _)) = &placement.host else {
         return;
     };
-    s.submit_command(xenadmin_core::VmCommand::PowerOnHost {
+    let command = xenadmin_core::VmCommand::PowerOnHost {
         vm: placement.target,
         action: placement.action,
         host: *host,
-    });
+    };
+    let Some(required) = requirements(placement) else {
+        return;
+    };
+    if !session_permissions_view::check(s, &required) {
+        return;
+    }
+    s.submit_command(command);
     if s.error.is_none() {
         s.placement = None;
     }
@@ -99,6 +116,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .color(k.c.danger.icon),
         );
     }
+    let permission = requirements(placement).map(|r| session_permissions_view::assess(s, &r));
+    if let Some(permission) = &permission {
+        body = body.child(session_permissions_view::review_notice(permission, k));
+    }
     let mut controls = row().gap(8.0).justify_end().child(
         Button::new("Cancel")
             .variant(ButtonVariant::Ghost)
@@ -122,6 +143,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .variant(ButtonVariant::Outline)
                     .disabled(
                         !s.can_mutate()
+                            || permission
+                                .as_ref()
+                                .is_some_and(|p| p.decision().is_denied())
                             || s.snapshot
                                 .as_ref()
                                 .and_then(|s| s.observe_vm(placement.vm).ok())

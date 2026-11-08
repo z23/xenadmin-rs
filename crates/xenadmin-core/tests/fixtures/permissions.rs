@@ -44,7 +44,7 @@ async fn known_session_denial_stops_power_before_dispatch_and_is_journaled() {
         PermissionDecision::Denied
     );
     let operation = start(&connection).await;
-    assert_eq!(finish(&operation).await, OperationState::Failed);
+    assert_eq!(finish(&operation).await, OperationState::Rejected);
     assert_eq!(server.mutations.load(Ordering::SeqCst), 0);
     assert!(operation.latest().detail.contains("RBAC_PERMISSION_DENIED"));
     assert!(!journal_text(directory.path()).contains("fixture-session"));

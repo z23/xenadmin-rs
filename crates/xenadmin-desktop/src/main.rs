@@ -2323,6 +2323,7 @@ fn main() -> std::process::ExitCode {
             ("batch-power", bulk_power::scene),
             ("batch-properties", bulk_properties::scene),
             ("batch-delete", bulk_delete::scene),
+            ("lifecycle-permissions", vm_lifecycle::review_scene),
             ("console-recovery", console_view::recovery_scene),
             ("multiple-consoles", console_windows::multiple_scene),
             ("guest-connections", |s| external_tools::scene(s, false)),

@@ -45,6 +45,13 @@ async fn fixture_with_recovery(
     fault: Fault,
     recovery: Option<(std::path::PathBuf, bool)>,
 ) -> (Fixture, Records, Calls) {
+    fixture_with_authority(fault, recovery, json!({"is_local_superuser":true})).await
+}
+async fn fixture_with_authority(
+    fault: Fault,
+    recovery: Option<(std::path::PathBuf, bool)>,
+    permissions: Value,
+) -> (Fixture, Records, Calls) {
     let mut source = guest(2, true);
     source["VBDs"] = json!(["OpaqueRef:VBD:source"]);
     source["VIFs"] = json!(["OpaqueRef:VIF:source"]);
@@ -388,7 +395,7 @@ async fn fixture_with_recovery(
             panic!("unexpected lifecycle fixture method {method}")
         }
     };
-    let fixture = Fixture::new(handler).await;
+    let fixture = Fixture::with_permissions(handler, permissions).await;
     (fixture, records, calls)
 }
 async fn execute(
@@ -1177,4 +1184,53 @@ async fn secure_boot_without_a_supported_readiness_api_is_refused_before_clone()
     let result = execute(&f, dir.path(), operation).await;
     assert_eq!(result.state, OperationState::Rejected);
     assert_eq!(count(&c, "Async.VM.copy"), 0);
+}
+
+#[tokio::test]
+async fn source_nic_requirements_are_checked_before_copy_without_denial_for_unchanged_network() {
+    let (f, _, calls) = fixture(Fault::None).await;
+    let d = tempfile::tempdir().unwrap();
+    assert_eq!(
+        execute(&f, d.path(), creating()).await.state,
+        OperationState::Succeeded
+    );
+    let methods = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            r["method"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("Async.")
+                .to_ascii_lowercase()
+        })
+        .filter(|m| m != "vif.move")
+        .collect::<Vec<_>>();
+    for unchanged in [false, true] {
+        let (f, _, calls) = fixture_with_authority(
+            Fault::None,
+            None,
+            json!({"is_local_superuser":false,"rbac_permissions":methods}),
+        )
+        .await;
+        let d = tempfile::tempdir().unwrap();
+        let mut operation = creating();
+        if unchanged && let VmLifecycleOperation::Create { network, .. } = &mut operation {
+            *network = uuid(6).into();
+        }
+        let result = execute(&f, d.path(), operation).await;
+        if unchanged {
+            assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+        } else {
+            assert!(
+                result.detail.contains("RBAC_PERMISSION_DENIED"),
+                "{}",
+                result.detail
+            );
+            assert_eq!(count(&calls, "Async.VM.copy"), 0);
+            assert_eq!(count(&calls, "Async.VM.clone"), 0);
+            assert!(result.created_vm.is_none());
+        }
+    }
 }

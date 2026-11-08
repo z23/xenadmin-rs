@@ -336,6 +336,14 @@ fn apply(s: &mut State) {
     {
         return;
     }
+    let requirements = review.operation.permission_requirements();
+    if session_permissions_view::assess(s, &requirements)
+        .decision()
+        .is_denied()
+    {
+        s.error = Some(session_permissions_view::assess(s, &requirements).explanation());
+        return;
+    }
     let command = xenadmin_core::VmCommand::Lifecycle {
         source: target,
         operation: review.operation.clone(),
@@ -606,6 +614,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .role("alert"),
         );
     }
+    let permission = form.review.as_ref().map(|review| {
+        session_permissions_view::assess(s, &review.operation.permission_requirements())
+    });
     let mut buttons = row().w_full().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Cancel")
             .variant(ButtonVariant::Ghost)
@@ -641,6 +652,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .disabled(
                 !s.can_mutate()
                     || !current
+                    || permission
+                        .as_ref()
+                        .is_some_and(|p| p.decision().is_denied())
                     || !available.is_some_and(|status| status.is_available()),
             )
             .on_press(apply)
@@ -697,7 +711,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .child(body.grow(1.0).min_h(0.0).scroll(rune::ScrollSpec {
             stick_bottom: false,
         }))
-        .child(buttons);
+        .child(session_permissions_view::footer(
+            buttons,
+            permission.as_ref(),
+            (s.window_width - 84.0).clamp(236.0, 656.0),
+            k,
+        ));
     overlay(card, title)
 }
 fn overlay(body: El, title: &str) -> El {
@@ -869,6 +888,11 @@ pub(super) fn scene(s: &mut State) {
         form.network = form.initial.details.networks.keys().next().copied();
         form.disk_size = TextEdit::new("16 GiB");
     }
+}
+
+pub(super) fn review_scene(s: &mut State) {
+    scene(s);
+    review(s);
 }
 
 #[cfg(test)]

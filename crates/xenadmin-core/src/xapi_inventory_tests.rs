@@ -17,6 +17,12 @@ impl Drop for Fixture {
 }
 impl Fixture {
     pub(crate) async fn new(handler: impl Fn(Value) -> Value + Send + Sync + 'static) -> Self {
+        Self::with_permissions(handler, json!({"is_local_superuser":true})).await
+    }
+    pub(crate) async fn with_permissions(
+        handler: impl Fn(Value) -> Value + Send + Sync + 'static,
+        permissions: Value,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let options = ConnectionOptions::new(
             crate::Endpoint::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap(),
@@ -26,6 +32,7 @@ impl Fixture {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let handler = handler.clone();
+                let permissions = permissions.clone();
                 tokio::spawn(async move {
                     let mut reader = BufReader::new(stream);
                     let mut length = 0;
@@ -54,7 +61,7 @@ impl Fixture {
                     let mut response = if request["method"] == "session.login_with_password" {
                         json!({"result":"OpaqueRef:fixture-session"})
                     } else if request["method"] == "session.get_record" {
-                        json!({"result":{"is_local_superuser":true}})
+                        json!({"result":permissions})
                     } else {
                         handler(request.clone())
                     };

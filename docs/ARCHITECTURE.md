@@ -850,3 +850,10 @@ source metadata plus observed enabled state. Dispatch checks fresh host/source i
 method permission; positive synchronous completion is persisted before readback. Forget-history
 verification permits automatic source reappearance but never substitutes matching state for a lost
 receipt. Public state and private receipts remain separate. [Evidence](reports/2026-11-08-host-monitoring-recording.md).
+
+Dedicated VM operation admission assesses immutable write requirements before entering a worker.
+Snapshot workflow step selection/methods are shared with permission review. Checkpoint deletion
+resolves its extra memory-discard permission from a fresh plan; ordinary snapshot deletion does
+not require it. VM creation derives copy/NIC/CD requirements from the fresh source before its
+first copy. Unknown/protected or returned-object-dependent requirements remain explicit. See
+[VM workflow permissions](reports/2026-11-08-vm-workflow-permissions.md).

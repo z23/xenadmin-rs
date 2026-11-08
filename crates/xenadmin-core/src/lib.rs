@@ -445,3 +445,5 @@ mod host_monitoring;
 pub use host_monitoring::{
     HostDataSource, HostDataSourceQuery, HostDataSources, HostRecordingAction,
 };
+
+mod operation_permissions;
