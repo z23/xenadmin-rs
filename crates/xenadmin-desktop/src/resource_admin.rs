@@ -93,6 +93,9 @@ fn metadata(inventory: &Inventory, target: ResourceTarget) -> Option<(String, St
 }
 fn target_label(target: ResourceTarget) -> String {
     match target {
+        ResourceTarget::Pif(id) => format!("Interface {id}"),
+        ResourceTarget::Vlan(id) => format!("VLAN {id}"),
+        ResourceTarget::Bond(id) => format!("Bond {id}"),
         ResourceTarget::Pool(id) => format!("Pool {id}"),
         ResourceTarget::Host(id) => format!("Host {id}"),
         ResourceTarget::Storage(id) => format!("Storage {id}"),

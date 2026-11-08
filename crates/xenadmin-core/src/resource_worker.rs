@@ -170,7 +170,7 @@ impl ResourceRequest {
             self.record.detail = format!("Submitting {}", step.label);
             self.save(journal).await?;
             let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call(&step.method,arguments)=>result?};
-            if matches!(step.check, xapi::Check::Scan) {
+            if matches!(step.check, xapi::Check::Scan | xapi::Check::Network) {
                 self.record.task = Some(xapi::reply_reference(&value)?);
                 self.record = journal.resource_evidence(&self.record)?;
                 self.announce().await;
@@ -217,9 +217,12 @@ impl ResourceRequest {
         if self.record.task.is_some() {
             return self.track(journal, session, cancel).await;
         }
-        if matches!(self.record.action, super::ResourceAction::ScanStorage) {
+        if matches!(
+            self.record.action,
+            super::ResourceAction::ScanStorage | super::ResourceAction::Network(_)
+        ) {
             return Err(Error::Protocol(
-                "storage scan task identity is unavailable; outcome cannot be verified",
+                "host task identity is unavailable; outcome cannot be verified",
             ));
         }
         let checks = xapi::reconciliation_steps(&self.record);
@@ -277,7 +280,7 @@ impl ResourceRequest {
             if self.record.state.terminal() {
                 return Ok(());
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&reference)])=>result};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
             let task = match task {
                 Ok(task) => {
                     backoff = 1;
@@ -300,9 +303,26 @@ impl ResourceRequest {
                 .is_some_and(|ops| ops.iter().any(|op| op == "cancel"));
             match task["status"].as_str() {
                 Some("success") => {
+                    if let super::ResourceAction::Network(op) = &self.record.action {
+                        if op.creates() && self.record.result_reference.is_none() {
+                            self.record.result_reference =
+                                Some(crate::xapi::snapshot_task_result(&task)?);
+                            self.record = journal.resource_evidence(&self.record)?;
+                            if self.record.state.terminal() {
+                                return Ok(());
+                            }
+                        }
+                        let created = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=super::network::verify(session,&self.record)=>result? };
+                        self.reload(journal)?;
+                        if self.record.state.terminal() {
+                            return Ok(());
+                        }
+                        self.record.created = created;
+                    }
                     self.record.state = OperationState::Succeeded;
                     self.record.progress = Some(1.0);
-                    self.record.detail = "Host confirmed storage scan completion".into();
+                    self.record.detail =
+                        "Host confirmed task completion and requested state".into();
                     for step in &mut self.record.steps {
                         step.state = StepState::Verified;
                         step.detail = "Host task completed".into();

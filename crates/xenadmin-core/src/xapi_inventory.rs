@@ -180,6 +180,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     result.pool = store.class("pool").next().and_then(|(_, record)| {
         let default_sr = refs.link("sr", &record["default_SR"]);
         Some(PoolDetails {
+            igmp_snooping_enabled: record["igmp_snooping_enabled"].as_bool(),
             id: id(record).ok()?,
             description: string(record, "name_description"),
             default_sr,
@@ -212,6 +213,12 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             NetworkDetails {
+                automatic: record["other_config"]["automatic"]
+                    .as_str()
+                    .map(str::to_owned),
+                automatic_known: record["other_config"]
+                    .as_object()
+                    .is_some_and(|m| m.get("automatic").is_none_or(Value::is_string)),
                 id,
                 description: string(record, "name_description"),
                 mtu: size(record, "MTU", "network.MTU")?,
@@ -358,6 +365,13 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             NetworkBond {
+                primary_slave: refs.link("pif", &record["primary_slave"]),
+                hashing_algorithm: record["properties"]["hashing_algorithm"]
+                    .as_str()
+                    .map(str::to_owned),
+                hashing_algorithm_known: record["properties"]
+                    .as_object()
+                    .is_some_and(|m| m.get("hashing_algorithm").is_none_or(Value::is_string)),
                 id,
                 master: refs.link("pif", &record["master"]),
                 slaves: refs.links("pif", &record["slaves"]),

@@ -2,6 +2,7 @@ mod console_view;
 mod demo_details;
 mod dev_inspection;
 mod metrics_view;
+mod network_admin;
 mod preferences;
 mod profiles_view;
 mod resource_admin;
@@ -136,6 +137,7 @@ impl ActionDiagnostics {
 struct State {
     metrics: Option<metrics_view::MetricsUi>,
     resource_editor: Option<resource_admin::Editor>,
+    network_workspace: Option<network_admin::Workspace>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
     resource_rows: Vec<xenadmin_core::ResourceOperationRecord>,
     dev_inspection: Option<xenadmin_core::DevInspection>,
@@ -229,6 +231,7 @@ fn init() -> State {
     let mut s = State {
         metrics: None,
         resource_editor: None,
+        network_workspace: None,
         resource_operations: Vec::new(),
         resource_rows: Vec::new(),
         dev_inspection,
@@ -1222,6 +1225,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let base = shell.build(&k);
     let root = if s.show_connect {
         rune_kit::root(base, [connection_dialog(s, &k)])
+    } else if s.network_workspace.is_some() {
+        rune_kit::root(base, [network_admin::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
     } else if s.vm_lifecycle.is_some() {
@@ -1381,7 +1386,9 @@ fn details(s: &State, k: &Kit) -> El {
         return resource_details::append(
             s,
             &selected,
-            detail.child(resource_admin::buttons(s, k)),
+            detail
+                .child(resource_admin::buttons(s, k))
+                .child(network_admin::button(s, k)),
             k,
         );
     }
@@ -1716,6 +1723,7 @@ fn demo(s: &mut State) {
     s.metrics = None;
     console_view::release(s);
     s.resource_editor = None;
+    s.network_workspace = None;
     s.resource_operations.clear();
     s.resource_rows.clear();
     s.devices = None;
@@ -1885,6 +1893,7 @@ fn main() {
                 vm_snapshots::begin_restore(s);
             }),
             ("connections", |s| profiles_view::scene(s, false)),
+            ("network-interfaces", network_admin::scene),
             ("network-create", |s| resource_admin::scene(s, false)),
             ("pool-administration", |s| resource_admin::scene(s, true)),
             ("connection-settings", |s| profiles_view::scene(s, true)),

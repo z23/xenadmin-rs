@@ -200,3 +200,13 @@ input are supported. Rune's current secondary-click API lacks a release callback
 **Hold right button** and **Release input** for right-button dragging. Focus loss releases
 held input. Reconnect keeps the original VM target even if table selection changes.
 Separate console windows and broader native keyboard/layout qualification remain open.
+
+## Host networking
+
+Choose **Host networking…** in host or network Details. Select an existing network to add a
+VLAN interface or unused-NIC bond. The dialog also offers physical NIC scans, interface
+attachment, IPv4 settings, MTU, automatic new-VM attachment and pool IGMP snooping. Changes
+show a separate review and use the pool operation history. Network changes can interrupt
+traffic; the current implementation excludes management-interface reconfiguration and
+requires VLAN/IP/VM users to be moved before creating or destroying bonds. See the
+[network increment report](reports/2026-11-08-network-administration.md) for exact limits.

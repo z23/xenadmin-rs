@@ -109,6 +109,9 @@ impl ConnectionSnapshot {
             .filter(|_| self.is_current())
             .ok_or(Error::Stale)?;
         let present = match target {
+            crate::ResourceTarget::Pif(id) => inventory.details.pifs.contains_key(&id),
+            crate::ResourceTarget::Vlan(id) => inventory.details.vlans.contains_key(&id),
+            crate::ResourceTarget::Bond(id) => inventory.details.bonds.contains_key(&id),
             crate::ResourceTarget::Pool(id) => id == inventory.pool_id,
             crate::ResourceTarget::Host(id) => inventory.hosts.contains_key(&id),
             crate::ResourceTarget::Storage(id) => {

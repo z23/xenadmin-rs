@@ -1,10 +1,15 @@
-use crate::{Error, HostId, NetworkId, OperationId, OperationState, OperationStep, PoolId, SrId};
+use crate::{
+    BondId, Error, HostId, NetworkId, NetworkOperation, OperationId, OperationState, OperationStep,
+    PifId, PoolId, SrId, VlanId,
+};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::SystemTime};
 use tokio::sync::watch;
 
 #[path = "resource_journal.rs"]
 pub(crate) mod journal;
+#[path = "network_operations.rs"]
+mod network;
 #[path = "resource_worker.rs"]
 mod worker;
 #[path = "resource_xapi.rs"]
@@ -17,6 +22,9 @@ pub enum ResourceTarget {
     Host(HostId),
     Storage(SrId),
     Network(NetworkId),
+    Pif(PifId),
+    Vlan(VlanId),
+    Bond(BondId),
 }
 impl ResourceTarget {
     pub(crate) fn class(self) -> &'static str {
@@ -25,6 +33,9 @@ impl ResourceTarget {
             Self::Host(_) => "host",
             Self::Storage(_) => "SR",
             Self::Network(_) => "network",
+            Self::Pif(_) => "PIF",
+            Self::Vlan(_) => "VLAN",
+            Self::Bond(_) => "Bond",
         }
     }
     pub fn uuid(self) -> uuid::Uuid {
@@ -33,6 +44,9 @@ impl ResourceTarget {
             Self::Host(id) => id.uuid(),
             Self::Storage(id) => id.uuid(),
             Self::Network(id) => id.uuid(),
+            Self::Pif(id) => id.uuid(),
+            Self::Vlan(id) => id.uuid(),
+            Self::Bond(id) => id.uuid(),
         }
     }
 }
@@ -49,6 +63,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    Network {
+        target: ObservedResource,
+        operation: NetworkOperation,
+    },
     RenameMetadata {
         target: ObservedResource,
         expected_name: String,
@@ -87,6 +105,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    Network(NetworkOperation),
     RenameMetadata {
         expected_name: String,
         expected_description: String,
@@ -118,6 +137,7 @@ pub enum ResourceAction {
 impl ResourceAction {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Network(operation) => operation.label(),
             Self::RenameMetadata { .. } => "Edit name and description",
             Self::CreateInternalNetwork { .. } => "Create internal network",
             Self::ConfigureInternalNetwork { .. } => "Set internal network MTU",
@@ -137,13 +157,20 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::Network(operation) => return operation.validate(target),
             Self::RenameMetadata {
                 expected_name,
                 expected_description,
                 name: value,
                 description: desc,
             } => {
-                name(value)
+                matches!(
+                    target,
+                    ResourceTarget::Pool(_)
+                        | ResourceTarget::Host(_)
+                        | ResourceTarget::Storage(_)
+                        | ResourceTarget::Network(_)
+                ) && name(value)
                     && description(desc)
                     && description(expected_name)
                     && description(expected_description)
@@ -191,6 +218,7 @@ impl ResourceAction {
 impl ResourceCommand {
     pub(crate) fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
+            Self::Network { target, operation } => (target, ResourceAction::Network(operation)),
             Self::RenameMetadata {
                 target,
                 expected_name,
@@ -287,6 +315,8 @@ pub struct ResourceOperationRecord {
     pub(crate) cancel_dispatched: bool,
     #[serde(default)]
     pub(crate) baseline_networks: Option<Vec<NetworkId>>,
+    #[serde(default)]
+    pub(crate) network_baseline: Option<crate::network_types::NetworkCreationBaseline>,
 }
 impl ResourceOperationRecord {
     pub fn revision(&self) -> u64 {
@@ -352,6 +382,7 @@ pub(crate) fn channel(
         result_reference: None,
         cancel_dispatched: false,
         baseline_networks: None,
+        network_baseline: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (

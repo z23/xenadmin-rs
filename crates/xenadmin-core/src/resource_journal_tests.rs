@@ -30,6 +30,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         result_reference: None,
         cancel_dispatched: false,
         baseline_networks: None,
+        network_baseline: None,
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {

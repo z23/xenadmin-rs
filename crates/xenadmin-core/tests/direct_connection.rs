@@ -1933,3 +1933,6 @@ async fn settings_read_errors_do_not_report_an_applied_mutation_as_failed() {
 
 #[path = "fixtures/resource_administration.rs"]
 mod resource_administration;
+
+#[path = "fixtures/network_administration.rs"]
+mod network_administration;

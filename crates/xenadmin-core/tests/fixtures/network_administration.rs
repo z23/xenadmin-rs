@@ -1,0 +1,514 @@
+use super::*;
+use std::collections::BTreeMap;
+use xenadmin_core::{
+    HostId, NetworkId, NetworkOperation, OperationId, OperationState, PifId, ResourceCommand,
+    ResourceTarget,
+};
+const POOL: &str = "11111111-1111-1111-1111-111111111111";
+const HOST: &str = "22222222-2222-2222-2222-222222222222";
+const NET: &str = "55555555-5555-5555-5555-555555555555";
+const UNDERLAY: &str = "66666666-6666-6666-6666-666666666666";
+const PIF: &str = "77777777-7777-7777-7777-777777777777";
+const VLAN: &str = "88888888-8888-8888-8888-888888888888";
+const CHILD: &str = "99999999-9999-9999-9999-999999999999";
+#[derive(Clone, Copy, PartialEq)]
+enum Fault {
+    None,
+    DropReply,
+    ChangedIdentity,
+    WrongVlan,
+    OldVlan,
+    TaskRead,
+    VerifyRead,
+    MissingMembers,
+}
+type Records = Arc<Mutex<BTreeMap<String, Value>>>;
+async fn fixture(fault: Fault) -> (Mock, Records) {
+    let records: Records = Arc::new(Mutex::new(BTreeMap::from([
+        (
+            "pool".into(),
+            json!({"uuid":POOL,"name_label":"Network fixture","master":"OpaqueRef:host","igmp_snooping_enabled":false}),
+        ),
+        (
+            "host".into(),
+            json!({"uuid":HOST,"name_label":"Fixture host","enabled":true,"address":"192.0.2.10"}),
+        ),
+        (
+            "network".into(),
+            json!({"uuid":NET,"name_label":"VLAN target","bridge":"xapi0","MTU":"1500","PIFs":[],"VIFs":[],"other_config":{"unrelated":"preserve"}}),
+        ),
+        (
+            "network-underlay".into(),
+            json!({"uuid":UNDERLAY,"name_label":"Underlay","bridge":"xenbr0","MTU":"1500","PIFs":["OpaqueRef:PIF"],"VIFs":[],"other_config":{}}),
+        ),
+        (
+            "PIF".into(),
+            json!({"uuid":PIF,"host":"OpaqueRef:host","network":"OpaqueRef:network-underlay","device":"eth0","MAC":"02:00:00:00:00:01","MTU":"1500","VLAN":"-1","management":false,"physical":true,"managed":true,"currently_attached":true,"bond_slave_of":"OpaqueRef:NULL","bond_master_of":[],"VLAN_slave_of":[],"ip_configuration_mode":"None","IP":"","netmask":"","gateway":"","DNS":"","ipv6_configuration_mode":"None"}),
+        ),
+    ])));
+    if fault == Fault::OldVlan {
+        records.lock().unwrap().insert("VLAN".into(),json!({"uuid":VLAN,"tagged_PIF":"OpaqueRef:PIF","untagged_PIF":"OpaqueRef:PIF-child","tag":"999"}));
+    }
+    let mut second = records.lock().unwrap()["PIF"].clone();
+    second["uuid"] = json!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    second["device"] = json!("eth1");
+    second["MAC"] = json!("02:00:00:00:00:02");
+    records.lock().unwrap().insert("PIF-second".into(), second);
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let source = records.clone();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let callback = move |request: Value| {
+        let records = source.clone();
+        let calls = calls.clone();
+        let writes = writes.clone();
+        async move {
+            let method = request["method"].as_str().unwrap();
+            calls.lock().unwrap().push(request.clone());
+            if method == "event.from" && request["params"][2] == "" {
+                let mut initial = batch("initial", "Halted");
+                initial["events"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|e| e["class"] == "VM");
+                let mut map = records.lock().unwrap();
+                for (key, record) in map.iter() {
+                    let class = key.split('-').next().unwrap();
+                    initial["events"].as_array_mut().unwrap().push(json!({"class":class,"operation":"add","ref":format!("OpaqueRef:{key}"),"snapshot":record}));
+                }
+                if fault == Fault::ChangedIdentity {
+                    map.get_mut("PIF").unwrap()["MAC"] = json!("02:00:00:00:00:ff");
+                }
+                if fault == Fault::MissingMembers {
+                    map.get_mut("network")
+                        .unwrap()
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("PIFs");
+                }
+                return Some(RpcReply::Json(json!({"result":initial})));
+            }
+            if let Some(class) = method.strip_suffix(".get_all_records")
+                && ["pool", "host", "network", "PIF", "VLAN", "Bond"].contains(&class)
+            {
+                let map = records.lock().unwrap();
+                let values = map
+                    .iter()
+                    .filter(|(key, _)| key.split('-').next() == Some(class))
+                    .map(|(key, value)| (format!("OpaqueRef:{key}"), value.clone()))
+                    .collect::<serde_json::Map<_, _>>();
+                return Some(RpcReply::Json(json!({"result":values})));
+            }
+            if let Some(class) = method.strip_suffix(".get_by_uuid")
+                && ["pool", "host", "network", "PIF", "VLAN", "Bond"].contains(&class)
+            {
+                let map = records.lock().unwrap();
+                let found = map.iter().find(|(key, v)| {
+                    key.split('-').next() == Some(class) && v["uuid"] == request["params"][1]
+                });
+                return Some(RpcReply::Json(match found {
+                    Some((key, _)) => json!({"result":format!("OpaqueRef:{key}")}),
+                    None => json!({"error":{"code":1,"message":"UUID_INVALID","data":[]}}),
+                }));
+            }
+            if method == "task.get_record" {
+                if fault == Fault::TaskRead {
+                    return Some(RpcReply::Json(
+                        json!({"error":{"code":1,"message":"HANDLE_INVALID","data":[]}}),
+                    ));
+                }
+                return Some(RpcReply::Json(
+                    json!({"result":{"status":"success","progress":1.0,"result":format!("<value><string>{}</string></value>",records.lock().unwrap().get("task-result").and_then(Value::as_str).unwrap_or("OpaqueRef:VLAN")),"allowed_operations":[]}}),
+                ));
+            }
+            if let Some(class) = method.strip_suffix(".get_record")
+                && ["pool", "host", "network", "PIF", "VLAN", "Bond"].contains(&class)
+            {
+                if fault == Fault::VerifyRead && writes.load(Ordering::SeqCst) > 0 {
+                    return Some(RpcReply::Json(
+                        json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}}),
+                    ));
+                }
+                let key = request["params"][1]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("OpaqueRef:")
+                    .unwrap();
+                return Some(RpcReply::Json(match records.lock().unwrap().get(key) {
+                    Some(v) => json!({"result":v}),
+                    None => json!({"error":{"code":1,"message":"HANDLE_INVALID","data":[]}}),
+                }));
+            }
+            if method.starts_with("Async.") {
+                let mut map = records.lock().unwrap();
+                match method {
+                    "Async.VLAN.create" => {
+                        assert_eq!(request["params"][1], "OpaqueRef:PIF");
+                        assert_eq!(request["params"][2], "100");
+                        assert_eq!(request["params"][3], "OpaqueRef:network");
+                        map.insert("VLAN".into(),json!({"uuid":VLAN,"tagged_PIF":"OpaqueRef:PIF","untagged_PIF":"OpaqueRef:PIF-child","tag":if fault==Fault::WrongVlan{"101"}else{"100"}}));
+                        let mut child = map["PIF"].clone();
+                        child["uuid"] = json!(CHILD);
+                        child["network"] = json!("OpaqueRef:network");
+                        child["VLAN"] = json!("100");
+                        child["physical"] = json!(false);
+                        map.insert("PIF-child".into(), child);
+                        map.get_mut("network").unwrap()["PIFs"] = json!(["OpaqueRef:PIF-child"]);
+                    }
+                    "Async.Bond.create" => {
+                        assert_eq!(request["params"][1], "OpaqueRef:network");
+                        assert_eq!(
+                            request["params"][2],
+                            json!(["OpaqueRef:PIF", "OpaqueRef:PIF-second"])
+                        );
+                        assert_eq!(request["params"][3], "");
+                        assert_eq!(request["params"][4], "lacp");
+                        assert_eq!(
+                            request["params"][5],
+                            json!({"hashing_algorithm":"tcpudp_ports"})
+                        );
+                        map.insert("Bond".into(),json!({"uuid":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","master":"OpaqueRef:PIF-bond","slaves":["OpaqueRef:PIF","OpaqueRef:PIF-second"],"primary_slave":"OpaqueRef:PIF","mode":"lacp","properties":{"hashing_algorithm":"tcpudp_ports"}}));
+                        let mut pif = map["PIF"].clone();
+                        pif["uuid"] = json!("cccccccc-cccc-cccc-cccc-cccccccccccc");
+                        pif["network"] = json!("OpaqueRef:network");
+                        pif["device"] = json!("bond0");
+                        pif["physical"] = json!(false);
+                        map.insert("PIF-bond".into(), pif);
+                        map.insert("task-result".into(), json!("OpaqueRef:Bond"));
+                    }
+                    "Async.PIF.reconfigure_ip" => {
+                        let pif = map.get_mut("PIF").unwrap();
+                        for (field, index) in [
+                            ("ip_configuration_mode", 2),
+                            ("IP", 3),
+                            ("netmask", 4),
+                            ("gateway", 5),
+                            ("DNS", 6),
+                        ] {
+                            pif[field] = request["params"][index].clone();
+                        }
+                    }
+                    "Async.network.set_MTU" => {
+                        map.get_mut("network").unwrap()["MTU"] = request["params"][2].clone();
+                    }
+                    "Async.network.set_other_config" => {
+                        map.get_mut("network").unwrap()["other_config"] =
+                            request["params"][2].clone()
+                    }
+                    "Async.PIF.unplug" => {
+                        map.get_mut("PIF").unwrap()["currently_attached"] = json!(false)
+                    }
+                    "Async.PIF.scan" => assert_eq!(request["params"][1], "OpaqueRef:host"),
+                    "Async.pool.set_igmp_snooping_enabled" => {
+                        map.get_mut("pool").unwrap()["igmp_snooping_enabled"] =
+                            request["params"][2].clone()
+                    }
+                    _ => return None,
+                }
+                writes.fetch_add(1, Ordering::SeqCst);
+                return Some(if fault == Fault::DropReply {
+                    RpcReply::Drop
+                } else {
+                    RpcReply::Json(json!({"result":"OpaqueRef:network-task"}))
+                });
+            }
+            None
+        }
+    };
+    (mock_overridden(override_rpc(callback)).await, records)
+}
+async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_core::Connection {
+    let mut options = ConnectionOptions::new(mock.endpoint.clone());
+    options.read_only = readonly;
+    let connection = backend.connect(
+        options,
+        Credentials::new("root".into(), "fixture-password".into()),
+    );
+    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    connection
+}
+fn network() -> ResourceTarget {
+    ResourceTarget::Network(NetworkId::parse(NET).unwrap())
+}
+fn vlan(connection: &xenadmin_core::Connection) -> NetworkOperation {
+    let pif = PifId::parse(PIF).unwrap();
+    let snapshot = connection.latest();
+    let i = snapshot.inventory().unwrap();
+    NetworkOperation::CreateVlan {
+        parent: pif,
+        expected: xenadmin_core::PifIdentity::from_inventory(&i.details.pifs[&pif]).unwrap(),
+        tag: 100,
+    }
+}
+async fn finish(
+    operation: &xenadmin_core::ResourceOperation,
+) -> Arc<xenadmin_core::ResourceOperationRecord> {
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            let r = operation.latest();
+            if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
+                return r;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+fn submit(
+    connection: &xenadmin_core::Connection,
+    target: ResourceTarget,
+    operation: NetworkOperation,
+) -> xenadmin_core::ResourceOperation {
+    connection
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::Network {
+                target: connection.latest().observe_resource(target).unwrap(),
+                operation,
+            },
+        )
+        .unwrap()
+}
+#[tokio::test]
+async fn vlan_creation_verifies_new_graph_and_result_without_leaking_references() {
+    let (mock, _) = fixture(Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let op = submit(&c, network(), vlan(&c));
+    let r = finish(&op).await;
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    assert_eq!(
+        r.created,
+        Some(ResourceTarget::Vlan(
+            xenadmin_core::VlanId::parse(VLAN).unwrap()
+        ))
+    );
+    assert!(!serde_json::to_string(&*r).unwrap().contains("OpaqueRef:"));
+    assert_eq!(
+        mock.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == "Async.VLAN.create")
+            .count(),
+        1
+    );
+}
+#[tokio::test]
+async fn vlan_preflight_rejects_changed_identity_and_missing_membership_before_dispatch() {
+    for fault in [Fault::ChangedIdentity, Fault::MissingMembers] {
+        let (mock, _) = fixture(fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let op = submit(&c, network(), vlan(&c));
+        let r = finish(&op).await;
+        assert_eq!(r.state, OperationState::Rejected, "{}", r.detail);
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "Async.VLAN.create")
+        );
+    }
+}
+#[tokio::test]
+async fn task_success_does_not_accept_wrong_or_preexisting_created_objects() {
+    for fault in [Fault::WrongVlan, Fault::OldVlan] {
+        let (mock, _) = fixture(fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let op = submit(&c, network(), vlan(&c));
+        let r = finish(&op).await;
+        assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+        assert!(r.created.is_none());
+    }
+}
+#[tokio::test]
+async fn lost_dispatch_response_is_not_inferred_from_matching_topology_or_replayed() {
+    let (mock, _) = fixture(Fault::DropReply).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let op = submit(&c, network(), vlan(&c));
+    let r = finish(&op).await;
+    assert_eq!(r.state, OperationState::OutcomeUnknown);
+    c.control_resource(r.id, xenadmin_core::OperationControl::Recheck)
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        mock.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == "Async.VLAN.create")
+            .count(),
+        1
+    );
+    assert!(
+        c.resource_history()
+            .iter()
+            .any(|r| r.state == OperationState::OutcomeUnknown)
+    );
+}
+#[tokio::test]
+async fn task_read_and_verification_errors_preserve_unknown_not_rejection() {
+    for fault in [Fault::TaskRead, Fault::VerifyRead] {
+        let (mock, _) = fixture(fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let op = submit(&c, network(), vlan(&c));
+        let r = finish(&op).await;
+        assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "task.destroy")
+        );
+    }
+}
+#[tokio::test]
+async fn automatic_attachment_preserves_unrelated_configuration_and_scan_is_task_backed() {
+    let (mock, records) = fixture(Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let op = submit(
+        &c,
+        network(),
+        NetworkOperation::SetAutomaticAttachment {
+            expected: None,
+            enabled: false,
+        },
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    assert_eq!(
+        records.lock().unwrap()["network"]["other_config"],
+        json!({"automatic":"false","unrelated":"preserve"})
+    );
+    let op = submit(
+        &c,
+        ResourceTarget::Host(HostId::parse(HOST).unwrap()),
+        NetworkOperation::ScanInterfaces,
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+}
+#[tokio::test]
+async fn readonly_connections_refuse_network_mutations() {
+    let (mock, _) = fixture(Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, true).await;
+    let result = c.submit_resource(
+        OperationId::new(),
+        ResourceCommand::Network {
+            target: c.latest().observe_resource(network()).unwrap(),
+            operation: vlan(&c),
+        },
+    );
+    assert!(result.is_err());
+    assert!(
+        !mock
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m.starts_with("Async."))
+    );
+}
+
+#[tokio::test]
+async fn lacp_creation_sends_reviewed_members_and_hash_and_verifies_new_master() {
+    let (mock, _) = fixture(Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let snap = c.latest();
+    let i = snap.inventory().unwrap();
+    let members = [PIF, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"]
+        .iter()
+        .map(|id| {
+            let id = PifId::parse(id).unwrap();
+            (
+                id,
+                xenadmin_core::PifIdentity::from_inventory(&i.details.pifs[&id]).unwrap(),
+            )
+        })
+        .collect();
+    let op = submit(
+        &c,
+        network(),
+        NetworkOperation::CreateBond {
+            members,
+            mode: xenadmin_core::BondMode::Lacp,
+            hash: xenadmin_core::BondHash::TcpUdpPorts,
+        },
+    );
+    let result = finish(&op).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert!(matches!(result.created, Some(ResourceTarget::Bond(_))));
+}
+#[tokio::test]
+async fn ipv4_mtu_and_igmp_edits_verify_actual_settings() {
+    let (mock, records) = fixture(Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let id = PifId::parse(PIF).unwrap();
+    let snap = c.latest();
+    let expected =
+        xenadmin_core::PifIdentity::from_inventory(&snap.inventory().unwrap().details.pifs[&id])
+            .unwrap();
+    let before = xenadmin_core::Ipv4Configuration {
+        mode: xenadmin_core::Ipv4Mode::None,
+        address: String::new(),
+        netmask: String::new(),
+        gateway: String::new(),
+        dns: String::new(),
+    };
+    let configuration = xenadmin_core::Ipv4Configuration {
+        mode: xenadmin_core::Ipv4Mode::Static,
+        address: "192.0.2.30".into(),
+        netmask: "255.255.255.0".into(),
+        gateway: String::new(),
+        dns: "192.0.2.53".into(),
+    };
+    let op = submit(
+        &c,
+        ResourceTarget::Pif(id),
+        NetworkOperation::ConfigureIpv4 {
+            expected,
+            before,
+            configuration,
+        },
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    assert_eq!(records.lock().unwrap()["PIF"]["IP"], "192.0.2.30");
+    let op = submit(
+        &c,
+        network(),
+        NetworkOperation::SetMtu {
+            expected: 1500,
+            mtu: 9000,
+            pifs: vec![],
+        },
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+    let op = submit(
+        &c,
+        ResourceTarget::Pool(xenadmin_core::PoolId::parse(POOL).unwrap()),
+        NetworkOperation::SetIgmpSnooping {
+            expected: false,
+            enabled: true,
+        },
+    );
+    assert_eq!(finish(&op).await.state, OperationState::Succeeded);
+}

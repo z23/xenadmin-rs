@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
 pub(super) enum Check {
+    Network,
     Field(&'static str, Value),
     DefaultSr(SrId),
     CreatedNetwork,
@@ -105,9 +106,13 @@ pub(super) async fn prepare(
     session: &Session,
     record: &mut ResourceOperationRecord,
 ) -> Result<Vec<Step>, Error> {
+    if matches!(record.action, ResourceAction::Network(_)) {
+        return super::network::prepare(session, record).await;
+    }
     let (_, fresh) = read(session, record.target).await?;
     let mut steps = Vec::new();
     match &record.action {
+        ResourceAction::Network(_) => return super::network::prepare(session, record).await,
         ResourceAction::RenameMetadata {
             expected_name,
             expected_description,
@@ -256,8 +261,12 @@ pub(super) async fn arguments(
     record: &ResourceOperationRecord,
     step: &Step,
 ) -> Result<Vec<Value>, Error> {
+    if matches!(step.check, Check::Network) {
+        return super::network::arguments(session, record).await;
+    }
     let (reference, fresh) = read(session, record.target).await?;
     match &step.check {
+        Check::Network => super::network::arguments(session, record).await,
         Check::CreatedNetwork => {
             let ResourceAction::CreateInternalNetwork {
                 name,
@@ -323,6 +332,7 @@ pub(super) fn reply_reference(value: &Value) -> Result<String, Error> {
 }
 pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Check> {
     match &record.action {
+        ResourceAction::Network(_) => vec![Check::Network],
         ResourceAction::RenameMetadata {
             expected_name,
             expected_description,
@@ -355,6 +365,9 @@ pub(super) async fn verify(
     record: &ResourceOperationRecord,
     check: &Check,
 ) -> Result<Option<ResourceTarget>, Error> {
+    if matches!(check, Check::Network) {
+        return super::network::verify(session, record).await;
+    }
     if matches!(check, Check::CreatedNetwork) {
         return verify_created(session, record).await.map(Some);
     }

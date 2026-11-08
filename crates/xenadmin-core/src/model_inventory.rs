@@ -161,6 +161,10 @@ pub struct StorageDetails {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NetworkDetails {
+    #[serde(default)]
+    pub automatic: Option<String>,
+    #[serde(default)]
+    pub automatic_known: bool,
     pub id: NetworkId,
     pub description: String,
     pub mtu: Option<u64>,
@@ -253,6 +257,12 @@ pub struct StorageAttachment {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NetworkBond {
+    #[serde(default)]
+    pub primary_slave: Option<PifId>,
+    #[serde(default)]
+    pub hashing_algorithm: Option<String>,
+    #[serde(default)]
+    pub hashing_algorithm_known: bool,
     pub id: BondId,
     pub master: Option<PifId>,
     pub slaves: Vec<PifId>,
@@ -351,6 +361,8 @@ pub struct StorageManager {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolDetails {
+    #[serde(default)]
+    pub igmp_snooping_enabled: Option<bool>,
     pub id: PoolId,
     pub description: String,
     pub default_sr: Option<SrId>,

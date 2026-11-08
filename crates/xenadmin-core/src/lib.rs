@@ -19,8 +19,12 @@ pub use metrics::{
     MetricCategory, MetricSample, MetricSeries, MetricSource, MetricTarget, Metrics,
     MetricsOptions, MetricsSnapshot, MetricsState, MetricsWindow, ObservedMetrics,
 };
+mod network_types;
 mod operations;
 mod profiles;
+pub use network_types::{
+    BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity,
+};
 mod resources;
 pub use resources::{
     ObservedResource, ResourceAction, ResourceCommand, ResourceOperation, ResourceOperationRecord,

@@ -9,6 +9,7 @@ use xenadmin_core::{
 
 pub(super) fn populate(inventory: &mut Inventory) {
     inventory.details.pool = Some(xenadmin_core::PoolDetails {
+        igmp_snooping_enabled: Some(false),
         id: inventory.pool_id,
         description: "Synthetic pool for isolated UI tests".into(),
         default_sr: inventory.storage.first().map(|sr| SrId::from(sr.uuid)),
@@ -85,6 +86,8 @@ pub(super) fn populate(inventory: &mut Inventory) {
         inventory.details.networks.insert(
             id,
             NetworkDetails {
+                automatic: None,
+                automatic_known: true,
                 id,
                 description: "Synthetic internal guest network for UI previews.".into(),
                 mtu: Some(1500),

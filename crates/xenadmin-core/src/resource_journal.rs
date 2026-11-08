@@ -31,6 +31,8 @@ impl Journal {
                 || (old.created.is_some() && old.created != record.created)
                 || (old.cancel_requested && !record.cancel_requested)
                 || (old.cancel_dispatched && !record.cancel_dispatched)
+                || (old.network_baseline.is_some()
+                    && old.network_baseline != record.network_baseline)
                 || (old.baseline_networks.is_some()
                     && old.baseline_networks != record.baseline_networks)
             {
