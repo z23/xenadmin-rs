@@ -6,6 +6,8 @@ mod ovf_export_worker;
 mod ovf_worker;
 #[path = "pool_join_worker.rs"]
 mod pool_join_worker;
+#[path = "power_batch_worker.rs"]
+mod power_batch_worker;
 #[path = "transfer_disk_worker.rs"]
 mod transfer_disk_worker;
 #[path = "transfer_worker.rs"]
@@ -161,6 +163,9 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
+            return self.execute_power_batch(journal, session, cancel).await;
+        }
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.execute_join(journal, session, cancel).await;
         }
@@ -280,6 +285,9 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
+            return self.reconcile_power_batch(journal, session, cancel).await;
+        }
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.reconcile_join(journal, session, cancel).await;
         }
@@ -732,7 +740,8 @@ impl ResourceRequest {
         );
         let explicit_rejection = !matches!(
             self.record.action,
-            super::ResourceAction::Pool(_)
+            super::ResourceAction::PowerBatch(_)
+                | super::ResourceAction::Pool(_)
                 | super::ResourceAction::Appliance(_)
                 | super::ResourceAction::SnapshotPolicy(_)
         ) && self.record.state == OperationState::Dispatching

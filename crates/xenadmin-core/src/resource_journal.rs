@@ -21,8 +21,18 @@ impl Journal {
             .map_err(|_| Error::Journal)?
             .map(|row| {
                 let (stored_pool, payload) = row.map_err(|_| Error::Journal)?;
-                let record: ResourceOperationRecord =
+                let value: serde_json::Value =
                     serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+                let mut record: ResourceOperationRecord =
+                    serde_json::from_value(value.clone()).map_err(|_| Error::Journal)?;
+                record.power_batch_plan = value
+                    .get("power_batch_plan")
+                    .filter(|v| !v.is_null())
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::Journal)?;
+                crate::power_batch::validate_record(&record)?;
                 if record.pool.to_string() != stored_pool || record.state.terminal() {
                     return Err(Error::Journal);
                 }
@@ -52,6 +62,13 @@ impl Journal {
         data.map(|(payload, task, result_reference, revision)| {
             let payload: serde_json::Value =
                 serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+            let power_batch_plan = payload
+                .get("power_batch_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let host_plan = payload
                 .get("host_plan")
                 .filter(|v| !v.is_null())
@@ -82,6 +99,11 @@ impl Journal {
                     return Err(Error::Journal);
                 }
             }
+            record.power_batch_plan = power_batch_plan;
+            // Terminal rejection before preparation may legitimately have no plan.
+            if !record.state.terminal() || record.power_batch_plan.is_some() {
+                crate::power_batch::validate_record(&record)?;
+            }
             record.host_plan = host_plan;
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
@@ -93,10 +115,21 @@ impl Journal {
         .transpose()
     }
     pub(crate) fn resource_save(&self, record: &mut ResourceOperationRecord) -> Result<(), Error> {
+        if !record.state.terminal() || record.power_batch_plan.is_some() {
+            crate::power_batch::validate_record(record)?;
+        }
         if let Some(old) = self.resource_load(record.id)? {
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
                 return Err(Error::OperationConflict);
+            }
+            if old.power_batch_plan.as_ref().is_some_and(|p| {
+                record
+                    .power_batch_plan
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
             }
             if !crate::transfer::valid_update(&old, record) {
                 return Err(Error::JournalChanged);
@@ -143,6 +176,12 @@ impl Journal {
             return Err(Error::JournalChanged);
         }
         let mut payload = serde_json::to_value(&record).map_err(|_| Error::Journal)?;
+        if let Some(plan) = &record.power_batch_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "power_batch_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
         if let Some(plan) = &record.host_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "host_plan".into(),
@@ -376,7 +415,7 @@ impl Journal {
                 }
                 OperationControl::RequestCancellation => {
                     record.cancel_requested = true;
-                    record.detail = "Cancellation requested; server work may still continue".into();
+                    record.detail = if matches!(record.action, ResourceAction::PowerBatch(_)) { "Stop requested; the current VM task will finish before remaining VMs are skipped" } else { "Cancellation requested; server work may still continue" }.into();
                 }
             }
             match self.resource_save(&mut record) {

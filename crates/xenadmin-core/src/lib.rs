@@ -1,3 +1,5 @@
+mod power_batch;
+pub use power_batch::{BatchVmPower, VmPowerBatch};
 mod device_properties;
 mod search;
 pub use device_properties::{DeviceProperty, DeviceQos, DiskAccess};

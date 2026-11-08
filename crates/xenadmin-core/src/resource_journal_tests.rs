@@ -40,6 +40,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         appliance_completed: false,
         appliance_baseline: None,
         host_plan: None,
+        power_batch_plan: None,
         subject_baseline: None,
         snapshot_policy_evidence: None,
         join_baseline: None,

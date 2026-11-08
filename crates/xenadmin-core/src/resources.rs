@@ -92,6 +92,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    PowerBatch {
+        pool: ObservedResource,
+        selection: crate::VmPowerBatch,
+    },
     SnapshotPolicy {
         pool: ObservedResource,
         operation: crate::SnapshotPolicyOperation,
@@ -169,6 +173,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    PowerBatch(crate::VmPowerBatch),
     SnapshotPolicy(crate::SnapshotPolicyOperation),
     Appliance(crate::ApplianceOperation),
     Pool(crate::PoolOperation),
@@ -215,6 +220,7 @@ impl ResourceAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::PowerBatch(_) => "Power actions on selected VMs",
             Self::SnapshotPolicy(operation) => operation.label(),
             Self::Appliance(operation) => operation.label(),
             Self::Pool(operation) => operation.label(),
@@ -244,6 +250,7 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::PowerBatch(selection) => return selection.validate(target),
             Self::SnapshotPolicy(operation) => return operation.validate(target),
             Self::Appliance(operation) => return operation.validate(target),
             Self::Pool(operation) => return operation.validate(target),
@@ -337,6 +344,7 @@ impl ResourceCommand {
     }
     fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
+            Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
             Self::PoolSensitive { .. } => {
                 unreachable!("sensitive commands split before normalization")
             }
@@ -471,6 +479,8 @@ pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) host_plan: Option<host::Plan>,
     #[serde(skip)]
+    pub(crate) power_batch_plan: Option<crate::power_batch::Plan>,
+    #[serde(skip)]
     pub(crate) snapshot_policy_evidence: Option<snapshot_policy::Evidence>,
     #[serde(default)]
     pub(crate) subject_baseline: Option<Vec<crate::SubjectId>>,
@@ -566,6 +576,7 @@ pub(crate) fn channel(
         appliance_completed: false,
         appliance_baseline: None,
         host_plan: None,
+        power_batch_plan: None,
         snapshot_policy_evidence: None,
         subject_baseline: None,
         join_baseline: None,
