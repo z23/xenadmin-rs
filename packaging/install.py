@@ -305,9 +305,19 @@ class Installer:
         sync_dir(self.root)
 
 
+def default_prefix():
+    invoked = Path(sys.argv[0]).absolute()
+    if invoked.name == "xenadmin-rs-install" and invoked.parent.name == "bin" and invoked.is_symlink():
+        prefix = invoked.parent.parent
+        expected = prefix / "lib" / APP / "current" / "install.py"
+        if invoked.resolve() == expected.resolve():
+            return prefix
+    return Path.home() / ".local"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--prefix", type=Path, default=Path.home() / ".local")
+    parser.add_argument("--prefix", type=Path, default=default_prefix())
     sub = parser.add_subparsers(dest="command", required=True)
     install = sub.add_parser("install")
     install.add_argument("--source", type=Path, default=Path(__file__).resolve().parent)

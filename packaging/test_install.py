@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
 import unittest
 from install import Installer, exec_quote
 from manifest import generate
@@ -49,6 +50,20 @@ class Installation(unittest.TestCase):
             self.assertEqual(state.read_text(), "private operator history")
             i.uninstall()
             self.assertEqual(i.install(b), second)
+
+    def test_installed_management_launcher_keeps_its_custom_prefix(self):
+        source = self.package("1.0.0")
+        (source / "install.py").write_bytes((Path(__file__).parent / "install.py").read_bytes())
+        generate(source, "1.0.0", os.uname().machine)
+        with self.locked() as installer:
+            key = installer.install(source)
+        launcher = str(self.installer.prefix / "bin/xenadmin-rs-install")
+        result = subprocess.run([launcher, "status"], check=True, capture_output=True, text=True)
+        status = json.loads(result.stdout)
+        self.assertEqual(status["prefix"], str(self.installer.prefix))
+        self.assertEqual(status["active"], key)
+        subprocess.run([launcher, "uninstall"], check=True, capture_output=True, text=True)
+        self.assertFalse(os.path.lexists(launcher))
 
     def test_modified_installed_file_blocks_uninstall_before_removing_anything(self):
         source = self.package("1.0.0")
