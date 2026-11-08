@@ -307,6 +307,16 @@ Other operators can still race the XAPI setter; XAPI offers no compare-and-swap 
 for these map setters. Device and chosen-host commands reserve their explicitly selected
 resources, preflight fresh identities/ownership, then dispatch once through tracked tasks.
 
+Resource administration adds typed pool, host, SR and network observations and commands.
+Journal version 3 retains VM evidence and adds a revisioned resource-operation table in the
+same database. Transactional admission excludes overlapping VM and administration writes
+within a pool while an administration outcome is unresolved. Resource operations preserve
+their target identities, prior-value checks, ordered steps and created identities. A fresh
+read precedes each setter. Reconciliation inspects dispatched changes and never completes
+unsubmitted steps. Network creation uses an operation tag plus a bounded pre-existing UUID
+baseline; deletion and MTU changes require fresh empty PIF/VIF sets. Resource history is
+available from the pool dialog even after the target is removed, and from the private inspector.
+
 The [console adapter decision](decisions/0003-console-protocol-adapter.md) documents the
 vendored protocol fixes. Console target identity is independent of table selection. Clipboard
 requests are explicit and fenced by a console epoch, including reconnection; passwords and

@@ -174,10 +174,10 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P09-05 | Introduce/attach existing SR | Queued |
 | P09-06 | Detach/reattach SR | Queued |
 | P09-07 | Repair SR connectivity | Queued |
-| P09-08 | Rescan/refresh SR | Queued |
+| P09-08 | Rescan/refresh SR | Reviewed asynchronous rescan with durable task tracking, cancellation and reconnect recovery implemented; synthetic fixtures verified, lab qualification open |
 | P09-09 | Forget versus destroy SR | Queued |
-| P09-10 | Choose default SR | Queued |
-| P09-11 | SR name/description edits | Queued |
+| P09-10 | Choose default SR | Reviewed pool default SR selection with fresh prior-value and user-storage checks implemented; lab qualification open |
+| P09-11 | SR name/description edits | Reviewed metadata editing with fresh conflict checks and explicit partial outcomes implemented; lab qualification open |
 | P09-12 | Multipath settings/path inspection | Queued |
 | P09-13 | Trim/reclaim | Queued |
 | P09-14 | Read caching/provisioning options | Capability review and implementation queued |
@@ -188,9 +188,9 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P10-01 | Network names/bridges | Existing workflow; qualification open |
-| P10-02 | Create/delete internal network | Queued |
+| P10-02 | Create/delete internal network | Reviewed creation and unused internal-network deletion implemented; identity provenance, lost replies and fresh interface checks fixture verified; lab qualification open |
 | P10-03 | Create/edit/remove external/VLAN network | Queued |
-| P10-04 | Name/description, MTU and automatic attachment | Queued |
+| P10-04 | Name/description, MTU and automatic attachment | Reviewed name/description editing and unused internal-network MTU changes implemented; attached-network MTU and automatic attachment remain queued |
 | P10-05 | Create/destroy bond; change mode/hash settings | Queued |
 | P10-06 | Scan/inspect physical NICs | Queued |
 | P10-07 | Plug/unplug host interfaces | Queued |
@@ -221,8 +221,8 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P12-01 | Host hardware/software properties | Existing subset; remaining work queued |
-| P12-02 | Rename/description | Queued |
-| P12-03 | Enable/disable scheduling; enter/exit maintenance | Queued |
+| P12-02 | Rename/description | Reviewed host metadata editing implemented with fresh conflict checks and explicit partial outcomes; lab qualification open |
+| P12-03 | Enable/disable scheduling; enter/exit maintenance | Reviewed scheduling enable/disable implemented; evacuation and full maintenance orchestration remain queued |
 | P12-04 | Evacuate host with destination checks | Queued |
 | P12-05 | Shutdown/reboot host | Queued |
 | P12-06 | Restart toolstack | Queued |
@@ -241,7 +241,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | --- | --- | --- |
 | P13-01 | Create/dissolve pool | Queued |
 | P13-02 | Join/eject/remove pool member | Queued |
-| P13-03 | Pool name/description | Queued |
+| P13-03 | Pool name/description | Reviewed metadata editing with fresh conflict checks and explicit partial outcomes implemented; lab qualification open |
 | P13-04 | Planned coordinator handover during evacuation | Queued |
 | P13-05 | Enable/configure/disable HA; heartbeat SR selection | Queued |
 | P13-06 | HA status and VM restart priorities | Queued |

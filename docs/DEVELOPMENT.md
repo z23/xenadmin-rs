@@ -35,6 +35,9 @@ Power diagnosis reads the VM's current host record and
 asks whether each action is valid. A blocked operation remains blocked. History reports
 the local journal's outcomes, errors and individual step progress. These views help separate
 stale UI state, host restrictions and interrupted operations.
+Unfiltered history also includes `resource_operations` for pool, host, storage and network
+administration, including partial steps and newly created UUIDs. Private task references and
+creation baselines stay inside the backend.
 
 The wire protocol is versioned JSON over `dev-inspect.sock` in the application's state
 directory. The directory must be user-owned with mode `0700`; the socket has mode `0600`

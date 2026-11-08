@@ -3,6 +3,7 @@ mod demo_details;
 mod dev_inspection;
 mod preferences;
 mod profiles_view;
+mod resource_admin;
 mod resource_details;
 mod vm_devices;
 mod vm_placement;
@@ -131,6 +132,9 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    resource_editor: Option<resource_admin::Editor>,
+    resource_operations: Vec<xenadmin_core::ResourceOperation>,
+    resource_rows: Vec<xenadmin_core::ResourceOperationRecord>,
     dev_inspection: Option<xenadmin_core::DevInspection>,
     placement: Option<vm_placement::Placement>,
     devices: Option<vm_devices::DeviceView>,
@@ -219,6 +223,9 @@ fn init() -> State {
         .flatten()
         .or(inspection_error);
     let mut s = State {
+        resource_editor: None,
+        resource_operations: Vec::new(),
+        resource_rows: Vec::new(),
         dev_inspection,
         placement: None,
         devices: None,
@@ -662,6 +669,7 @@ fn setup(s: &mut State, waker: Waker) {
 }
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
+    changed |= resource_admin::poll(s);
     dev_inspection::refresh(s);
     let diagnostic_results = s
         .diagnostics
@@ -1111,12 +1119,41 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .build(&k)
             .key("disconnect"),
     );
+    if s.inventory.is_some() {
+        controls = controls.child(
+            Button::new("Pool")
+                .on_press(|s: &mut State| {
+                    resource_admin::open_pool(s, resource_admin::Kind::History)
+                })
+                .build(&k)
+                .key("manage-pool"),
+        );
+        if s.page == Page::Networks && s.console.is_none() {
+            controls = controls.child(
+                Button::new("New network")
+                    .disabled(!s.demo && !s.can_mutate())
+                    .on_press(|s: &mut State| {
+                        resource_admin::open_pool(s, resource_admin::Kind::CreateNetwork)
+                    })
+                    .build(&k)
+                    .key("create-network"),
+            );
+        }
+    }
+    if let Some(notice) = resource_admin::notice(s, &k) {
+        content = col()
+            .w_full()
+            .h_full()
+            .min_h(0.0)
+            .child(notice)
+            .child(content.grow(1.0).min_h(0.0));
+    }
     let toolbar = if s.window_width < 800.0 {
         content = col()
             .w_full()
             .h_full()
             .min_h(0.0)
-            .child(controls.padding(8.0))
+            .child(controls.flex_wrap().padding(8.0))
             .child(content.grow(1.0).min_h(0.0));
         Toolbar::new().title("XenAdmin RS")
     } else {
@@ -1145,6 +1182,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let base = shell.build(&k);
     let root = if s.show_connect {
         rune_kit::root(base, [connection_dialog(s, &k)])
+    } else if s.resource_editor.is_some() {
+        rune_kit::root(base, [resource_admin::dialog(s, &k)])
     } else if s.placement.is_some() {
         rune_kit::root(base, [vm_placement::dialog(s, &k)])
     } else if s.properties.is_some() {
@@ -1293,7 +1332,12 @@ fn details(s: &State, k: &Kit) -> El {
             .child(field("Virtual CPUs", &selected.cpu));
     }
     if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
-        return resource_details::append(s, &selected, detail, k);
+        return resource_details::append(
+            s,
+            &selected,
+            detail.child(resource_admin::buttons(s, k)),
+            k,
+        );
     }
     let mut actions = col().gap(8.0);
     if s.connection.as_ref().is_some_and(|c| c.is_read_only()) {
@@ -1782,6 +1826,8 @@ fn main() {
                 vm_snapshots::begin_restore(s);
             }),
             ("connections", |s| profiles_view::scene(s, false)),
+            ("network-create", |s| resource_admin::scene(s, false)),
+            ("pool-administration", |s| resource_admin::scene(s, true)),
             ("connection-settings", |s| profiles_view::scene(s, true)),
             ("connect", |s| s.show_connect = true),
             ("connect-insecure", |s| {

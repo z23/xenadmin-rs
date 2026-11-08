@@ -8,6 +8,12 @@ use xenadmin_core::{
 };
 
 pub(super) fn populate(inventory: &mut Inventory) {
+    inventory.details.pool = Some(xenadmin_core::PoolDetails {
+        id: inventory.pool_id,
+        description: "Synthetic pool for isolated UI tests".into(),
+        default_sr: inventory.storage.first().map(|sr| SrId::from(sr.uuid)),
+        default_sr_known: true,
+    });
     let representative = inventory
         .guests()
         .find(|vm| vm.power_state == PowerState::Halted)
