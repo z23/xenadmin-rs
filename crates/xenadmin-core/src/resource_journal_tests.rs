@@ -37,6 +37,8 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         storage_baseline: None,
         storage_trim_succeeded: false,
         pool_completed: false,
+        appliance_completed: false,
+        appliance_baseline: None,
         host_plan: None,
     }
 }
@@ -382,6 +384,39 @@ fn host_step_receipts_survive_cancellation_and_acknowledgement_without_resurrect
     rollback.host_plan.as_mut().unwrap().steps[0].task_succeeded = false;
     assert!(matches!(
         journal.resource_save(&mut rollback),
+        Err(Error::JournalChanged)
+    ));
+}
+
+#[test]
+fn appliance_creation_baseline_and_receipt_cannot_be_retracted_after_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let mut record = resource(PoolId::from(uuid::Uuid::new_v4()));
+    record.target = ResourceTarget::Pool(record.pool);
+    record.action = ResourceAction::Appliance(crate::ApplianceOperation::Create {
+        name: "Group".into(),
+        description: "".into(),
+    });
+    record.appliance_baseline = Some(vec![crate::ApplianceId::from(uuid::Uuid::new_v4())]);
+    journal.resource_admit(&mut record).unwrap();
+    record.appliance_completed = true;
+    journal.resource_evidence(&record).unwrap();
+    drop(journal);
+    let journal = Journal::open(dir.path()).unwrap();
+    let saved = journal.resource_load(record.id).unwrap().unwrap();
+    assert!(saved.appliance_completed);
+    assert_eq!(saved.appliance_baseline, record.appliance_baseline);
+    let mut modified = saved.clone();
+    modified.appliance_baseline = None;
+    assert!(matches!(
+        journal.resource_save(&mut modified),
+        Err(Error::JournalChanged)
+    ));
+    let mut modified = saved;
+    modified.appliance_completed = false;
+    assert!(matches!(
+        journal.resource_save(&mut modified),
         Err(Error::JournalChanged)
     ));
 }

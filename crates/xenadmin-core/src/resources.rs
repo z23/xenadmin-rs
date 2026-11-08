@@ -17,6 +17,8 @@ mod worker;
 #[path = "resource_xapi.rs"]
 mod xapi;
 pub(crate) use worker::ResourceRequest;
+#[path = "appliance_operations.rs"]
+mod appliance;
 #[path = "organization_operations.rs"]
 mod organization;
 #[path = "pool_operations.rs"]
@@ -36,6 +38,7 @@ pub enum ResourceTarget {
     Task(TaskId),
     Message(MessageId),
     Pbd(PbdId),
+    Appliance(crate::ApplianceId),
 }
 impl ResourceTarget {
     pub(crate) fn class(self) -> &'static str {
@@ -50,6 +53,7 @@ impl ResourceTarget {
             Self::Task(_) => "task",
             Self::Message(_) => "message",
             Self::Pbd(_) => "PBD",
+            Self::Appliance(_) => "VM_appliance",
         }
     }
     pub fn uuid(self) -> uuid::Uuid {
@@ -64,6 +68,7 @@ impl ResourceTarget {
             Self::Task(id) => id.uuid(),
             Self::Message(id) => id.uuid(),
             Self::Pbd(id) => id.uuid(),
+            Self::Appliance(id) => id.uuid(),
         }
     }
 }
@@ -80,6 +85,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    Appliance {
+        pool: ObservedResource,
+        operation: crate::ApplianceOperation,
+    },
     Pool {
         target: ObservedResource,
         operation: crate::PoolOperation,
@@ -145,6 +154,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    Appliance(crate::ApplianceOperation),
     Pool(crate::PoolOperation),
     Host(crate::HostOperation),
     Transfer(crate::TransferAction),
@@ -189,6 +199,7 @@ impl ResourceAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Appliance(operation) => operation.label(),
             Self::Pool(operation) => operation.label(),
             Self::Host(operation) => operation.label(),
             Self::Organization(_) => "Edit organization metadata",
@@ -216,6 +227,7 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::Appliance(operation) => return operation.validate(target),
             Self::Pool(operation) => return operation.validate(target),
             Self::Host(operation) => return operation.validate(target),
             Self::Organization(patch) => {
@@ -289,6 +301,7 @@ impl ResourceAction {
 impl ResourceCommand {
     pub(crate) fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
+            Self::Appliance { pool, operation } => (pool, ResourceAction::Appliance(operation)),
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
             Self::Host { target, operation } => (target, ResourceAction::Host(operation)),
             Self::Organization { pool, patch } => (pool, ResourceAction::Organization(patch)),
@@ -409,6 +422,10 @@ pub struct ResourceOperationRecord {
     pub(crate) storage_trim_succeeded: bool,
     #[serde(default)]
     pub(crate) pool_completed: bool,
+    #[serde(default)]
+    pub(crate) appliance_completed: bool,
+    #[serde(default)]
+    pub(crate) appliance_baseline: Option<Vec<crate::ApplianceId>>,
     #[serde(skip)]
     pub(crate) host_plan: Option<host::Plan>,
 }
@@ -483,6 +500,8 @@ pub(crate) fn channel(
         storage_baseline: None,
         storage_trim_succeeded: false,
         pool_completed: false,
+        appliance_completed: false,
+        appliance_baseline: None,
         host_plan: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));

@@ -290,8 +290,8 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | P15-01 | Tags: create/rename/delete/assign/remove/group/search | Reviewed tag assignment/removal and captured-pool rename/delete, tag group filters and metadata search implemented; synthetic fixtures verified, lab qualification open |
 | P15-02 | Folders: create/rename/delete/move/remove objects | Reviewed compatible folder registry, subtree rename/removal and selected object moves implemented; exact captured objects and per-step partial outcomes, lab qualification open |
 | P15-03 | Custom field definitions/values | Bounded compatible text/date definitions and selected values implemented; definition deletion reviews value cleanup and refuses unreviewed consumers; fixture verified, lab qualification open |
-| P15-04 | vApps: create/edit/delete/membership | Typed appliance inventory parsed; create/edit/delete/membership UI remains queued |
-| P15-05 | vApp ordered startup/shutdown and delays | Queued |
+| P15-04 | vApps: create/edit/delete/membership | Reviewed empty-group creation, metadata edits, per-VM membership and empty-group deletion implemented; fresh identity/graph and lost-reply fixtures verified, lab qualification open |
+| P15-05 | vApp ordered startup/shutdown and delays | Per-member order/delay edits and explicit ordered start, clean or force shutdown implemented; exact captured members, durable completion and partial-child fixtures verified, lab qualification open |
 | P15-06 | Bulk properties/delete/move/export | Queued |
 | P15-07 | Search definition import/export/resource export | Queued |
 

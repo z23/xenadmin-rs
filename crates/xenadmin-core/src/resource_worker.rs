@@ -180,7 +180,8 @@ impl ResourceRequest {
             self.record.detail = format!("Submitting {}", step.label);
             self.save(journal).await?;
             let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call(&step.method,arguments)=>result?};
-            if matches!(&self.record.action, super::ResourceAction::Pool(op) if op.asynchronous())
+            if matches!(&self.record.action, super::ResourceAction::Appliance(op) if op.asynchronous())
+                || matches!(&self.record.action, super::ResourceAction::Pool(op) if op.asynchronous())
                 || matches!(
                     step.check,
                     xapi::Check::Scan | xapi::Check::Network | xapi::Check::Storage
@@ -257,8 +258,16 @@ impl ResourceRequest {
         if self.record.task.is_some()
             && !self.record.storage_trim_succeeded
             && !self.record.pool_completed
+            && !self.record.appliance_completed
         {
             return self.track(journal, session, cancel).await;
+        }
+        if matches!(&self.record.action, super::ResourceAction::Appliance(op) if op.asynchronous())
+            && !self.record.appliance_completed
+        {
+            return Err(Error::Protocol(
+                "vApp task identity or completion receipt unavailable; no write will be replayed",
+            ));
         }
         if matches!(self.record.action, super::ResourceAction::Pool(_))
             && !self.record.pool_completed
@@ -402,7 +411,7 @@ impl ResourceRequest {
             if self.record.state.terminal() {
                 return Ok(());
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.appliance_completed { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
             let task = match task {
                 Ok(task) => {
                     backoff = 1;
@@ -425,7 +434,8 @@ impl ResourceRequest {
                 .is_some_and(|ops| ops.iter().any(|op| op == "cancel"));
             if (matches!(&self.record.action, super::ResourceAction::Storage(operation) if operation.creates_reference())
                 || matches!(&self.record.action,super::ResourceAction::Network(operation) if operation.creates())
-                || matches!(&self.record.action, super::ResourceAction::Pool(_)))
+                || matches!(&self.record.action, super::ResourceAction::Pool(_))
+                || matches!(&self.record.action, super::ResourceAction::Appliance(_)))
                 && matches!(task["status"].as_str(), Some("failure" | "cancelled"))
             {
                 let code = task["error_info"]
@@ -453,6 +463,25 @@ impl ResourceRequest {
             }
             match task["status"].as_str() {
                 Some("success") => {
+                    if let super::ResourceAction::Appliance(op) = &self.record.action {
+                        if matches!(op, crate::ApplianceOperation::Create { .. })
+                            && self.record.result_reference.is_none()
+                        {
+                            self.record.result_reference =
+                                Some(crate::xapi::snapshot_task_result(&task)?);
+                        }
+                        self.record.appliance_completed = true;
+                        self.record = journal.resource_evidence(&self.record)?;
+                        if self.record.state.terminal() {
+                            return Ok(());
+                        }
+                        let created = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=super::appliance::verify(session,&self.record,&super::appliance::Verify::Async)=>result? };
+                        self.reload(journal)?;
+                        if self.record.state.terminal() {
+                            return Ok(());
+                        }
+                        self.record.created = created;
+                    }
                     if matches!(self.record.action, super::ResourceAction::Pool(_)) {
                         self.record.pool_completed = true;
                         self.record = journal.resource_evidence(&self.record)?;
@@ -608,8 +637,10 @@ impl ResourceRequest {
                 | OperationState::CancellationRequested
                 | OperationState::OutcomeUnknown
         );
-        let explicit_rejection = !matches!(self.record.action, super::ResourceAction::Pool(_))
-            && self.record.state == OperationState::Dispatching
+        let explicit_rejection = !matches!(
+            self.record.action,
+            super::ResourceAction::Pool(_) | super::ResourceAction::Appliance(_)
+        ) && self.record.state == OperationState::Dispatching
             && matches!(error, Error::Api(_) | Error::Coordinator(_));
         let partial = self
             .record

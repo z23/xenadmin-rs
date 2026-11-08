@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
 pub(super) enum Check {
+    Appliance(super::appliance::Verify),
     Pool,
     Organization(crate::OrganizationEdit),
     Network,
@@ -111,6 +112,9 @@ pub(super) async fn prepare(
     session: &Session,
     record: &mut ResourceOperationRecord,
 ) -> Result<Vec<Step>, Error> {
+    if matches!(record.action, ResourceAction::Appliance(_)) {
+        return super::appliance::prepare(session, record).await;
+    }
     if matches!(record.action, ResourceAction::Pool(_)) {
         return super::pool::prepare(session, record).await;
     }
@@ -123,6 +127,7 @@ pub(super) async fn prepare(
     let (_, fresh) = read(session, record.target).await?;
     let mut steps = Vec::new();
     match &record.action {
+        ResourceAction::Appliance(_) => unreachable!(),
         ResourceAction::Pool(_) => unreachable!(),
         ResourceAction::Host(_) => return Err(Error::InvalidResourceCommand),
         ResourceAction::Organization(_) => {
@@ -301,6 +306,9 @@ pub(super) async fn arguments(
     record: &ResourceOperationRecord,
     step: &Step,
 ) -> Result<Vec<Value>, Error> {
+    if let Check::Appliance(check) = &step.check {
+        return super::appliance::arguments(session, record, check).await;
+    }
     if matches!(step.check, Check::Pool) {
         return super::pool::arguments(session, record).await;
     }
@@ -312,6 +320,7 @@ pub(super) async fn arguments(
     }
     let (reference, fresh) = read(session, record.target).await?;
     match &step.check {
+        Check::Appliance(_) => unreachable!(),
         Check::Pool => super::pool::arguments(session, record).await,
         Check::Organization(edit) => super::organization::arguments(session, record, edit).await,
         Check::Network => super::network::arguments(session, record).await,
@@ -404,6 +413,7 @@ fn cancellable_task(record: &Value) -> Result<(), Error> {
 }
 pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Check> {
     match &record.action {
+        ResourceAction::Appliance(_) => super::appliance::reconciliation_checks(record),
         ResourceAction::Pool(_) => vec![Check::Pool],
         ResourceAction::Host(_) => Vec::new(),
         ResourceAction::Organization(_) => super::organization::checks(record),
@@ -444,6 +454,9 @@ pub(super) async fn verify(
     record: &ResourceOperationRecord,
     check: &Check,
 ) -> Result<Option<ResourceTarget>, Error> {
+    if let Check::Appliance(check) = check {
+        return super::appliance::verify(session, record, check).await;
+    }
     if matches!(check, Check::Pool) {
         return super::pool::verify(session, record).await;
     }

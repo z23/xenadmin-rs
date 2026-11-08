@@ -477,6 +477,9 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             VmAppliance {
+                vms_known: record["VMs"]
+                    .as_array()
+                    .is_some_and(|v| v.iter().all(|r| refs.vm(r).is_some())),
                 id,
                 name: label(record),
                 description: string(record, "name_description"),
@@ -590,6 +593,20 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     metrics: refs.link("vm_metrics", &record["metrics"]),
                     suspend_vdi: refs.link("vdi", &record["suspend_VDI"]),
                     appliance: refs.link("vm_appliance", &record["appliance"]),
+                    appliance_known: record["appliance"] == "OpaqueRef:NULL"
+                        || refs
+                            .link::<ApplianceId>("vm_appliance", &record["appliance"])
+                            .is_some(),
+                    appliance_order: (|| {
+                        Some(crate::ApplianceOrder {
+                            order: record["order"]
+                                .as_i64()
+                                .or_else(|| record["order"].as_str()?.parse().ok())?,
+                            start_delay: size(record, "start_delay", "VM.start_delay").ok()??,
+                            shutdown_delay: size(record, "shutdown_delay", "VM.shutdown_delay")
+                                .ok()??,
+                        })
+                    })(),
                     snapshot_policy: refs.link("vmss", &record["snapshot_schedule"]),
                     tags: strings(&record["tags"]).unwrap_or_default(),
                     ha_restart_priority: record["ha_restart_priority"].as_str().map(str::to_owned),

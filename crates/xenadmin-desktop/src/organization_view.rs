@@ -530,6 +530,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
     } else {
+        body = body.child(
+            Button::new("vApps · ordered VM groups")
+                .on_press(appliance_view::open)
+                .build(k),
+        );
         body=body.child(caption("Filter by name, UUID or metadata. Use tag:production, folder:/Services or kind:host to group objects. Reviews use this captured inventory; refresh to include later changes.",k).wrap())
             .child(TextInput::new(&w.query).label("Filter organization objects").placeholder("Search or tag:… / folder:… / kind:…").on_edit(|s:&mut State|&mut edit(s).query).build(k));
         let mut groups = row().gap(4.0).flex_wrap();

@@ -113,6 +113,10 @@ pub struct VmDetails {
     pub metrics: Option<VmMetricsId>,
     pub suspend_vdi: Option<VdiId>,
     pub appliance: Option<ApplianceId>,
+    #[serde(default)]
+    pub appliance_known: bool,
+    #[serde(default)]
+    pub appliance_order: Option<crate::ApplianceOrder>,
     pub snapshot_policy: Option<SnapshotPolicyId>,
     pub tags: Vec<String>,
     pub ha_restart_priority: Option<String>,
@@ -404,6 +408,8 @@ impl ServerMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VmAppliance {
+    #[serde(default)]
+    pub vms_known: bool,
     pub id: ApplianceId,
     pub name: String,
     pub description: String,

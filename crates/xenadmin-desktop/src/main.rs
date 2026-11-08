@@ -1,5 +1,6 @@
 mod activity;
 mod activity_export;
+mod appliance_view;
 mod console_view;
 mod demo_details;
 mod dev_inspection;
@@ -163,6 +164,7 @@ struct State {
     diagnostics: Option<ActionDiagnostics>,
     properties: Option<vm_properties::Editor>,
     organization: Option<organization_view::Workspace>,
+    appliances: Option<appliance_view::Workspace>,
     snapshot_view: Option<VmId>,
     snapshot_rows: Vec<xenadmin_core::Snapshot>,
     snapshot_table: TableState,
@@ -264,6 +266,7 @@ fn init() -> State {
         diagnostics: None,
         properties: None,
         organization: None,
+        appliances: None,
         snapshot_view: None,
         snapshot_rows: Vec::new(),
         snapshot_table: TableState::new().key("snapshots-table"),
@@ -1284,6 +1287,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [host_admin::dialog(s, &k)])
     } else if s.network_workspace.is_some() {
         rune_kit::root(base, [network_admin::dialog(s, &k)])
+    } else if s.appliances.is_some() {
+        rune_kit::root(base, [appliance_view::dialog(s, &k)])
     } else if s.organization.is_some() {
         rune_kit::root(base, [organization_view::dialog(s, &k)])
     } else if s.activity.show {
@@ -1810,6 +1815,7 @@ fn demo(s: &mut State) {
     s.operations.clear();
     s.properties = None;
     s.organization = None;
+    s.appliances = None;
     s.placement = None;
     s.diagnostics = None;
     s.diagnostic_results.clear();
@@ -1984,6 +1990,8 @@ fn main() {
             ("network-create", |s| resource_admin::scene(s, false)),
             ("activity", activity::scene),
             ("organization", organization_view::scene),
+            ("appliances", appliance_view::scene),
+            ("appliance-review", appliance_view::review_scene),
             ("storage-create", |s| storage_view::scene(s, false)),
             ("storage-review", |s| storage_view::scene(s, true)),
             ("pool-policies", |s| pool_view::scene(s, false)),

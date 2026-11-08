@@ -1,3 +1,5 @@
+mod appliances;
+pub use appliances::{ApplianceMember, ApplianceOperation, ApplianceOrder, AppliancePower};
 mod connection;
 mod device_lifecycle;
 mod devices;

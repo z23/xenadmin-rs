@@ -103,6 +103,7 @@ fn target_label(target: ResourceTarget) -> String {
         ResourceTarget::Task(id) => format!("Task {id}"),
         ResourceTarget::Message(id) => format!("Message {id}"),
         ResourceTarget::Pbd(id) => format!("Storage attachment {id}"),
+        ResourceTarget::Appliance(id) => format!("vApp {id}"),
     }
 }
 fn display_name(inventory: &Inventory, target: ResourceTarget) -> Option<String> {

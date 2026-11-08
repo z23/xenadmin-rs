@@ -410,3 +410,10 @@ these fields under their existing flat payload keys; its separate task column re
 authoritative. Loading, history, recovery and admission share this decoder, and malformed
 private evidence fails closed rather than being silently discarded. Public created-object
 UUIDs and operation outcomes remain available to consumers.
+
+The vApp manager submits typed pool-scoped resource commands. Group power reviews capture exact
+member UUIDs, state, order and delays; fresh backend checks bind each VM to the group before
+submitting one server-side operation. Creation baselines and asynchronous completion receipts
+are monotonic journal evidence. Failed/cancelled group tasks and mismatched child outcomes keep
+the pool reserved for inspection; recovery never repeats the power action. Membership removal
+and empty-group deletion preserve VMs and disks. See the [vApp report](reports/2026-11-08-vapps.md).
