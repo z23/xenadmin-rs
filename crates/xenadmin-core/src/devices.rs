@@ -1,6 +1,6 @@
 use crate::{
-    ActionAvailability, Error, Inventory, ObservedVm, OperationAction, OperationRecord, PowerState,
-    VbdId, VdiId, VifId, VmId, xapi::Session,
+    ActionAvailability, Error, Inventory, NetworkId, ObservedVm, OperationAction, OperationRecord,
+    PowerState, SrId, VbdId, VdiId, VifId, VmId, xapi::Session,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,6 +15,43 @@ pub struct DeviceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "device_action", rename_all = "snake_case")]
 pub enum DeviceOperation {
+    CreateDisk {
+        sr: SrId,
+        name: String,
+        size: u64,
+        device: String,
+    },
+    AttachDisk {
+        vdi: VdiId,
+        device: String,
+        read_only: bool,
+    },
+    DetachDisk {
+        vbd: VbdId,
+        vdi: VdiId,
+    },
+    DeleteDisk {
+        vbd: VbdId,
+        vdi: VdiId,
+    },
+    AddCdDrive {
+        device: String,
+    },
+    AddNic {
+        network: NetworkId,
+        device: String,
+        mac: Option<String>,
+    },
+    DeleteNic {
+        vif: VifId,
+    },
+    EditNic {
+        vif: VifId,
+        expected_network: NetworkId,
+        expected_mac: String,
+        network: NetworkId,
+        mac: String,
+    },
     InsertCd {
         vbd: VbdId,
         image: VdiId,
@@ -44,6 +81,14 @@ pub enum DeviceOperation {
 impl DeviceOperation {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::CreateDisk { .. } => "Create and attach disk",
+            Self::AttachDisk { .. } => "Attach existing disk",
+            Self::DetachDisk { .. } => "Detach disk",
+            Self::DeleteDisk { .. } => "Delete disk and attachment",
+            Self::AddCdDrive { .. } => "Add CD drive",
+            Self::AddNic { .. } => "Add network interface",
+            Self::DeleteNic { .. } => "Delete network interface",
+            Self::EditNic { .. } => "Edit network interface",
             Self::InsertCd { .. } => "Insert ISO",
             Self::EjectCd { .. } => "Eject ISO",
             Self::PlugDisk { .. } => "Activate disk attachment",
@@ -56,6 +101,17 @@ impl DeviceOperation {
 
     pub(crate) fn resources(&self) -> Vec<String> {
         match self {
+            Self::CreateDisk { sr, .. } => vec![format!("sr:{sr}")],
+            Self::AttachDisk { vdi, .. } => vec![format!("vdi:{vdi}")],
+            Self::DetachDisk { vbd, vdi } | Self::DeleteDisk { vbd, vdi } => {
+                vec![format!("vbd:{vbd}"), format!("vdi:{vdi}")]
+            }
+            Self::AddCdDrive { .. } => vec![],
+            Self::AddNic { network, .. } => vec![format!("network:{network}")],
+            Self::DeleteNic { vif } => vec![format!("vif:{vif}")],
+            Self::EditNic { vif, network, .. } => {
+                vec![format!("vif:{vif}"), format!("network:{network}")]
+            }
             Self::InsertCd { vbd, image } => vec![format!("vbd:{vbd}"), format!("vdi:{image}")],
             Self::EjectCd { vbd } | Self::PlugDisk { vbd } | Self::UnplugDisk { vbd } => {
                 vec![format!("vbd:{vbd}")]
@@ -66,6 +122,7 @@ impl DeviceOperation {
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::device_lifecycle::validate(self)?;
         if let Self::GrowDisk {
             expected_size,
             new_size,
@@ -90,6 +147,9 @@ impl DeviceOperation {
             return ActionAvailability::Unavailable;
         }
         let details = &inventory.details;
+        if self.is_lifecycle() {
+            return crate::device_lifecycle::availability(self, inventory, vm);
+        }
         match self {
             Self::InsertCd { vbd, image } => {
                 let Some(cd) = details.vbds.get(vbd) else {
@@ -220,7 +280,22 @@ impl DeviceOperation {
                 }
                 advertised(disk.allowed_operations.as_deref(), "resize")
             }
+            _ => ActionAvailability::Unavailable,
         }
+    }
+
+    pub(crate) fn is_lifecycle(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateDisk { .. }
+                | Self::AttachDisk { .. }
+                | Self::DetachDisk { .. }
+                | Self::DeleteDisk { .. }
+                | Self::AddCdDrive { .. }
+                | Self::AddNic { .. }
+                | Self::DeleteNic { .. }
+                | Self::EditNic { .. }
+        )
     }
 }
 
@@ -452,6 +527,7 @@ async fn prepare_operation(
                 parameters: vec![json!(disk_reference), json!(new_size.to_string())],
             }
         }
+        _ => return Err(Error::InvalidDeviceOperation),
     };
     Ok(result)
 }

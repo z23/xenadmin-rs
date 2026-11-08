@@ -348,6 +348,7 @@ fn context(id: ProfileId, connection: &Connection, snapshot: &crate::ConnectionS
 fn operation_value(record: &crate::OperationRecord) -> Value {
     json!({"id": record.id, "vm": record.vm, "action": record.action.label(), "state": record.state,
         "progress": record.progress, "created_at_ms": record.created_at_ms,
+        "created_devices": record.created_devices.iter().take(64).collect::<Vec<_>>(),
         "detail": bounded(&record.detail), "local_error": record.local_error.as_deref().map(bounded),
         "steps": record.steps.iter().take(64).map(|step| json!({"label":bounded(&step.label),"state":step.state,"detail":bounded(&step.detail)})).collect::<Vec<_>>(),
         "has_local_error": record.local_error.is_some(), "can_cancel": record.can_cancel})

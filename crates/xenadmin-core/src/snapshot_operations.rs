@@ -114,31 +114,12 @@ impl MutationRequest {
         self.record.can_cancel = true;
         self.persist_steps(journal).await?;
         for (index, step) in plan_steps.into_iter().enumerate() {
-            let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
-            self.record.revision = current.revision;
-            self.record.cancel_requested |= current.cancel_requested;
-            if self.record.cancel_requested {
-                self.record.state = if index == 0 {
-                    OperationState::Cancelled
-                } else {
-                    OperationState::PartiallyCompleted
-                };
-                self.record.detail="Stopped before the next deletion step; already deleted resources remain deleted".into();
-                self.record.can_cancel = false;
-                return self.persist_steps(journal).await;
-            }
             if cancel.is_cancelled() {
                 return Err(Error::Closed);
             }
-            self.record.state = OperationState::Dispatching;
-            self.record.steps[index].state = StepState::Dispatching;
-            self.record.detail = format!(
-                "{} ({}/{})",
-                step.label(),
-                index + 1,
-                self.record.steps.len()
-            );
-            self.persist_steps(journal).await?;
+            if !self.begin_step(journal, index).await? {
+                return Ok(());
+            }
             let result = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed), result=step.send(session,self.record.vm,&plan)=>result};
             if let Err(error) = result {
                 let refused = matches!(

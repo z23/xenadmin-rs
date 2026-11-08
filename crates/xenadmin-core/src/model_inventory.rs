@@ -42,6 +42,7 @@ pub enum ActionAvailability {
     PermissionDenied,
     Unsupported,
     Rejected { code: String },
+    Prerequisite { reason: String },
     Stale,
     Unknown,
     Unavailable,
@@ -68,6 +69,7 @@ impl ActionAvailability {
             Self::PermissionDenied => "Your account is not permitted to perform this action".into(),
             Self::Unsupported => "This action is not supported by this host".into(),
             Self::Rejected { code } => format!("The host rejected this action: {code}"),
+            Self::Prerequisite { reason } => reason.clone(),
             Self::Stale => {
                 "Reconnect or wait for current inventory before using this action".into()
             }

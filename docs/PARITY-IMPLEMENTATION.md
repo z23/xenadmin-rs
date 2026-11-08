@@ -21,6 +21,10 @@ supporting type or method exists. Local automated checks do not establish live q
 The [nested lab harness](../lab/README.md) creates isolated, owned local resources; no
 live-host qualification has yet been established by this change.
 
+The [device lifecycle increment](reports/2026-11-08-device-lifecycle.md) adds the reviewed
+halted-VM disk, CD-drive and NIC workflows recorded in section 7. It retains explicit
+partial/unknown outcomes and does not establish live-host compatibility.
+
 ## 1. Connections, credentials and trust
 
 | ID | Workflow | Delivery state |
@@ -129,20 +133,20 @@ live-host qualification has yet been established by this change.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P07-01 | List disks/attachments/device positions | VM disk/attachment/device-position view implemented; live storage qualification open |
-| P07-02 | Create disk on selected SR | Queued |
-| P07-03 | Attach existing disk | Queued |
-| P07-04 | Detach disk without deleting data | Queued |
+| P07-02 | Create disk on selected SR | Reviewed halted-VM creation and attachment on a chosen eligible SR implemented; created disk UUID survives partial failure; fixture verified, lab qualification open |
+| P07-03 | Attach existing disk | Reviewed halted-VM attachment of an unattached managed, non-shared user disk implemented, with explicit access mode and no ownership claim; fixture verified, lab qualification open |
+| P07-04 | Detach disk without deleting data | Reviewed halted-VM detachment implemented; backing disk and data remain; fixture verified, lab qualification open |
 | P07-05 | Activate/deactivate disk attachment | Reviewed existing disk attachment plug/unplug implemented with fresh ownership checks; lab qualification open |
 | P07-06 | Resize disk | Halted VM grow-only disk workflow implemented with size/consumer checks; other resize modes remain queued |
-| P07-07 | Delete disk | Queued |
+| P07-07 | Delete disk | Reviewed halted-VM deletion of an exclusively owned, non-shared user disk implemented with current consumer checks and separate journaled attachment/data deletion; fixture verified, lab qualification open |
 | P07-08 | Disk name/description, access mode, I/O priority and device position | Queued |
 | P07-09 | Move/copy/migrate disk to another SR | Queued |
-| P07-10 | Add CD drive; mount/change/eject ISO | Existing CD drive insert/eject implemented; replacement uses explicit eject then insert; adding CD drives remains queued |
+| P07-10 | Add CD drive; mount/change/eject ISO | Reviewed halted-VM empty CD-drive creation and existing-drive insert/eject implemented; replacement uses explicit eject then insert; fixture verified, lab qualification open |
 | P07-11 | Disable disk changed-block tracking | Queued |
 | P07-12 | List NICs/MACs/networks/attachment state | VM NIC/MAC/network/attachment view implemented; live network qualification open |
-| P07-13 | Add/delete VM NIC | Queued |
+| P07-13 | Add/delete VM NIC | Reviewed halted-VM addition/deletion implemented with a chosen network, device slot and optional generated MAC; fixture verified, lab qualification open |
 | P07-14 | Connect/disconnect VM NIC | Reviewed NIC plug/unplug implemented with fresh ownership/state checks; lab qualification open |
-| P07-15 | Change NIC network/MAC | Queued |
+| P07-15 | Change NIC network/MAC | Reviewed halted-VM network move and MAC replacement implemented; supported MTU/QoS/locking/IP restrictions retained, unsupported extra configuration refused; fixture verified, lab qualification open |
 | P07-16 | NIC rate limiting/QoS | Queued |
 
 ## 8. Creation, templates, clones and deletion

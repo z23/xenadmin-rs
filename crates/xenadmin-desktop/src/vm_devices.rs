@@ -1,5 +1,7 @@
 #[path = "vm_device_actions.rs"]
 mod actions;
+#[path = "vm_device_lifecycle.rs"]
+mod lifecycle;
 use super::{State, caption, console_view, heading, storage_bytes};
 use rune::{El, ScrollSpec, col, row};
 use rune_kit::{Button, ButtonVariant, Kit};
@@ -12,6 +14,7 @@ pub(super) struct DeviceView {
     pub vm: VmId,
     pub name: String,
     form: Option<actions::Form>,
+    lifecycle: Option<lifecycle::Form>,
 }
 
 pub(super) fn open(s: &mut State) {
@@ -29,6 +32,7 @@ pub(super) fn open(s: &mut State) {
         vm,
         name: guest.name.clone(),
         form: None,
+        lifecycle: None,
     };
     console_view::release(s);
     s.console = None;
@@ -90,7 +94,9 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         });
-    let mut disks = section("Disks and CD/DVD drives", k);
+    let mut disks = section("Disks and CD/DVD drives", k).child(lifecycle::disk_creation_controls(
+        s, inventory, target.vm, k,
+    ));
     if let Some(reason) = unavailable(inventory, "VBD", "Disk attachments") {
         disks = disks.child(caption(reason, k).wrap());
     } else {
@@ -106,7 +112,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         }
     }
     content = content.child(disks);
-    let mut interfaces = section("Network interfaces", k);
+    let mut interfaces = section("Network interfaces", k)
+        .child(lifecycle::nic_creation_control(s, inventory, target.vm, k));
     if let Some(reason) = unavailable(inventory, "VIF", "Network interfaces") {
         interfaces = interfaces.child(caption(reason, k).wrap());
     } else {
@@ -123,9 +130,10 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
     content = content
         .child(interfaces)
+        .child(lifecycle::operation_history(s, inventory, target.vm, k))
         .child(guest_tools(inventory, target.vm, k));
     page = page.child(content);
-    if let Some(dialog) = actions::dialog(s, k) {
+    if let Some(dialog) = lifecycle::dialog(s, k).or_else(|| actions::dialog(s, k)) {
         page = page.child(dialog);
     }
     page
@@ -170,7 +178,10 @@ fn nonempty(value: &str) -> &str {
     }
 }
 fn unavailable(inventory: &Inventory, class: &str, label: &str) -> Option<String> {
-    class_message(inventory.details.classes.get(class), label)
+    class_message(
+        inventory.details.classes.get(&class.to_ascii_lowercase()),
+        label,
+    )
 }
 fn class_message(availability: Option<&ClassAvailability>, label: &str) -> Option<String> {
     Some(match availability {
@@ -305,6 +316,7 @@ fn disk_card(
     }
     view.child(field("Attachment UUID", attachment.id.to_string(), k))
         .child(actions::disk_buttons(s, inventory, vm, attachment, k))
+        .child(lifecycle::disk_controls(s, inventory, vm, attachment, k))
 }
 fn interface_card(s: &State, inventory: &Inventory, interface: &VirtualInterface, k: &Kit) -> El {
     let network = interface.network.and_then(|id| {
@@ -391,6 +403,7 @@ fn interface_card(s: &State, inventory: &Inventory, interface: &VirtualInterface
     }
     view.child(field("Interface UUID", interface.id.to_string(), k))
         .child(actions::nic_buttons(s, inventory, interface, k))
+        .child(lifecycle::nic_controls(s, inventory, interface, k))
 }
 fn guest_tools(inventory: &Inventory, vm: VmId, k: &Kit) -> El {
     let mut section = section("Guest tools and reported addresses", k);

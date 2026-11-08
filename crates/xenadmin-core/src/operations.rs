@@ -11,6 +11,8 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[path = "device_lifecycle_operations.rs"]
+mod device_lifecycle_operations;
 #[path = "snapshot_operations.rs"]
 mod snapshot_operations;
 
@@ -354,6 +356,10 @@ pub struct OperationRecord {
     #[serde(default)]
     snapshot_clone_baseline: Option<Vec<VmId>>,
     #[serde(default)]
+    device_plan: Option<crate::device_lifecycle::Plan>,
+    #[serde(default)]
+    pub created_devices: Vec<crate::CreatedDevice>,
+    #[serde(default)]
     pub steps: Vec<crate::OperationStep>,
 }
 impl OperationRecord {
@@ -362,6 +368,7 @@ impl OperationRecord {
     }
     pub fn can_recheck(&self) -> bool {
         self.has_task()
+            || matches!(&self.action,OperationAction::Device(operation) if operation.is_lifecycle())
             || matches!(
                 self.action,
                 OperationAction::Settings(_)
@@ -506,6 +513,8 @@ pub(crate) fn channel(
         created_vm: None,
         snapshot_deletion: None,
         snapshot_clone_baseline: None,
+        device_plan: None,
+        created_devices: Vec::new(),
         steps: Vec::new(),
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
@@ -697,6 +706,9 @@ impl Journal {
                     && previous.snapshot_deletion != record.snapshot_deletion)
                 || (previous.snapshot_clone_baseline.is_some()
                     && previous.snapshot_clone_baseline != record.snapshot_clone_baseline)
+                || !record
+                    .created_devices
+                    .starts_with(&previous.created_devices)
             {
                 return Err(Error::JournalChanged);
             }
@@ -777,7 +789,7 @@ impl Journal {
                     return Err(Error::UnavailableAction);
                 }
                 record.cancel_requested = true;
-                record.detail = "Cancellation requested; waiting for the host task".into();
+                record.detail = if record.task.is_none() {"Cancellation requested; remaining steps will stop after the in-flight step resolves"} else {"Cancellation requested; waiting for the host task"}.into();
             }
             match self.save(&mut record) {
                 Ok(()) => return Ok(record),
@@ -907,6 +919,9 @@ impl MutationRequest {
                 {
                     self.recheck_snapshot_delete(&session, &mut journal).await
                 }
+                Ok(mut journal) if matches!(&self.record.action,OperationAction::Device(operation) if operation.is_lifecycle()) => {
+                    self.recheck_device_lifecycle(&session, &mut journal).await
+                }
                 Ok(mut journal) => {
                     self.track(&session, &mut journal, &connection_cancel, false)
                         .await
@@ -1030,6 +1045,12 @@ impl MutationRequest {
                 .execute_snapshot_delete(session, &mut journal, connection_cancel)
                 .await;
         }
+        if matches!(&self.record.action,OperationAction::Device(operation) if operation.is_lifecycle())
+        {
+            return self
+                .execute_device_lifecycle(session, &mut journal, connection_cancel)
+                .await;
+        }
         let device = if matches!(self.record.action, OperationAction::Device(_)) {
             Some(
                 tokio::select! {_=connection_cancel.cancelled()=>return Err(Error::Closed),result=crate::devices::prepare(session,&self.record)=>result?},
@@ -1130,21 +1151,6 @@ impl MutationRequest {
         self.record.state = OperationState::Preparing;
         self.persist_steps(journal).await?;
         for (index, step) in steps.iter().enumerate() {
-            let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
-            self.record.cancel_requested |= current.cancel_requested;
-            self.record.revision = current.revision;
-            if self.record.cancel_requested {
-                self.record.state = if index == 0 {
-                    OperationState::Cancelled
-                } else {
-                    OperationState::PartiallyCompleted
-                };
-                self.record.detail =
-                    "Stopped before the next property change; verified changes remain applied"
-                        .into();
-                self.record.can_cancel = false;
-                return self.persist_steps(journal).await;
-            }
             if cancel.is_cancelled() {
                 return Err(Error::Closed);
             }
@@ -1166,10 +1172,9 @@ impl MutationRequest {
                 self.record.can_cancel = false;
                 return self.persist_steps(journal).await;
             }
-            self.record.state = OperationState::Dispatching;
-            self.record.steps[index].state = crate::StepState::Dispatching;
-            self.record.detail = format!("Applying {} ({}/{})", step.label, index + 1, steps.len());
-            self.persist_steps(journal).await?;
+            if !self.begin_step(journal, index).await? {
+                return Ok(());
+            }
             let result = tokio::select! { _=cancel.cancelled()=>Err(Error::Closed), r=step.send(session,reference,&before)=>r };
             if let Err(error) = result {
                 if let Error::Coordinator(endpoint) = &error
@@ -1522,6 +1527,8 @@ mod tests {
             created_vm: None,
             snapshot_deletion: None,
             snapshot_clone_baseline: None,
+            device_plan: None,
+            created_devices: Vec::new(),
             steps: Vec::new(),
             cancel_requested: false,
             cancel_dispatched: false,

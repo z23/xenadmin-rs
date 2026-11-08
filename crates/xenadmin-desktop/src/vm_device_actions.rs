@@ -61,6 +61,7 @@ fn open(
         error: None,
     };
     if let Some(view) = &mut s.devices {
+        view.lifecycle = None;
         view.form = Some(form);
     }
 }
@@ -233,7 +234,7 @@ fn media_choices(inventory: &Inventory, vm: VmId, vbd: VbdId) -> Vec<(VdiId, Str
     choices.sort_by_cached_key(|choice| choice.1.to_lowercase());
     choices
 }
-fn parse_size(text: &str) -> Result<u64, String> {
+pub(super) fn parse_size(text: &str) -> Result<u64, String> {
     let compact = text.split_whitespace().collect::<String>();
     let (number, factor) = if let Some(value) = compact.strip_suffix("GiB") {
         (value, 1u64 << 30)
@@ -358,6 +359,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
                 } => format!(
                     "Grow disk {vdi} from {expected_size} bytes to {new_size} bytes. This cannot be undone by shrinking the disk. Extend partitions/filesystems inside the guest separately."
                 ),
+                operation => operation.label().into(),
             };
             body = body.child(caption(summary, k).wrap_anywhere());
         }

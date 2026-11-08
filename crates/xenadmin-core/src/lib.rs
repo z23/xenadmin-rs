@@ -1,5 +1,7 @@
 mod connection;
+mod device_lifecycle;
 mod devices;
+pub use device_lifecycle::CreatedDevice;
 pub use devices::{DeviceCommand, DeviceOperation};
 mod credentials;
 pub use credentials::{
@@ -44,6 +46,14 @@ pub enum Error {
     DeviceRequiresHaltedVm,
     #[error("This disk is shared, attached elsewhere, or unsuitable for this operation")]
     DeviceInUse,
+    #[error("Shut down the VM before changing its device configuration")]
+    DeviceLifecycleRequiresHaltedVm,
+    #[error("Enter a valid device slot, disk size/name, or unicast MAC address")]
+    InvalidDeviceConfiguration,
+    #[error(
+        "This NIC has additional configuration that this editor cannot safely preserve during replacement"
+    )]
+    UnsupportedNicConfiguration,
     #[error("This clipboard text encoding is not supported by the console")]
     ConsoleClipboardUnsupported,
     #[error("Clipboard text exceeds the console size limit")]
