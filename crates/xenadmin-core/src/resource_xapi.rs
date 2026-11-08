@@ -136,6 +136,7 @@ pub(super) async fn prepare(
         ResourceAction::Pool(_) => unreachable!(),
         ResourceAction::AuthenticatedStorage { .. }
         | ResourceAction::CleanupStorageCredentials { .. }
+        | ResourceAction::RootPassword(_)
         | ResourceAction::HostPower(_)
         | ResourceAction::Host(_)
         | ResourceAction::NetworkTopology(_)
@@ -436,6 +437,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         ResourceAction::Pool(_) => vec![Check::Pool],
         ResourceAction::AuthenticatedStorage { .. }
         | ResourceAction::CleanupStorageCredentials { .. }
+        | ResourceAction::RootPassword(_)
         | ResourceAction::HostPower(_)
         | ResourceAction::Host(_)
         | ResourceAction::NetworkTopology(_)

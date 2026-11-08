@@ -596,3 +596,21 @@ matching fields alone, and an interrupted original worker cannot continue after 
 Explicit cleanup requires original-operation provenance, no unresolved setter and fresh host/
 storage consumer checks. See the [host power credential report](reports/2026-11-08-host-power-credentials.md)
 for the XCP-ng package evidence, source semantics and validation limits.
+
+### Pool root password changes
+
+A root-password action captures the pool coordinator and complete member UUID set. Its
+password is transient and zeroizing; the journal retains only dispatch, completion,
+coordinator-login and reconnect-credential evidence. XCP-ng changes local root on the
+coordinator and requests best-effort member synchronization, so multi-member results
+remain partial with the other member UUIDs explicitly unverified. A missing completion
+receipt never triggers another password change or an assumed credential replacement.
+
+After a recorded change and an exact-endpoint coordinator login, the connection actor
+validates the generation and journal proof under a SQLite immediate transaction, rekeys
+its pool-owner authority and replaces its in-memory reconnect credential. Old-password
+aliases are cancelled, without cancelling the canonical connection. Recovery and
+acknowledgement cannot enter between the durable proof check and local replacement.
+The desktop can update an existing saved root password only after positive, uninterrupted
+completion, with an unchanged captured profile and explicit opt-in. Unknown/acknowledged
+results, stale profiles, closed views and keyring failures never assume or replay a save.

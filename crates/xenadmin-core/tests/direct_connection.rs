@@ -2051,3 +2051,6 @@ mod storage_authentication;
 mod host_power;
 #[path = "fixtures/network_topology.rs"]
 mod network_topology;
+
+#[path = "fixtures/root_password.rs"]
+mod root_password;

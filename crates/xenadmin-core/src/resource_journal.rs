@@ -60,6 +60,11 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let root_password_plan = payload
+                .get("root_password_plan")
+                .filter(|v| !v.is_null())
+                .map(|v| serde_json::from_value(v.clone()).map_err(|_| Error::Journal))
+                .transpose()?;
             let host_power_plan = payload
                 .get("host_power_plan")
                 .filter(|v| !v.is_null())
@@ -131,6 +136,7 @@ impl Journal {
             record.storage_secret_cleanup = storage_secret_cleanup;
             record.host_plan = host_plan;
             record.host_power_plan = host_power_plan;
+            record.root_password_plan = root_password_plan;
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
             record.cross_pool_plan = cross_pool_plan;
@@ -150,6 +156,7 @@ impl Journal {
             crate::cross_pool_backend::validate_record(&record)?;
             crate::host_power::validate_record(&record)?;
             super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
+            crate::root_password::validate_record(&record)?;
             crate::storage_auth::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
             Ok(record)
@@ -169,10 +176,16 @@ impl Journal {
             plan.interrupted = true;
         }
         crate::host_power::validate_record(record)?;
+        crate::root_password::validate_record(record)?;
         crate::storage_auth::validate_record(record)?;
         crate::cloud_init::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
-            if old.host_power_plan.as_ref().is_some_and(|p| {
+            if old.root_password_plan.as_ref().is_some_and(|p| {
+                record
+                    .root_password_plan
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) || old.host_power_plan.as_ref().is_some_and(|p| {
                 record
                     .host_power_plan
                     .as_ref()
@@ -287,6 +300,10 @@ impl Journal {
             );
         }
         for (key, value) in [
+            (
+                "root_password_plan",
+                serde_json::to_value(&record.root_password_plan),
+            ),
             (
                 "host_power_plan",
                 serde_json::to_value(&record.host_power_plan),

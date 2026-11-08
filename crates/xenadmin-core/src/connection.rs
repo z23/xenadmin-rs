@@ -282,22 +282,80 @@ struct OwnerRoute {
     requests: mpsc::Sender<Request>,
 }
 struct PoolOwner {
+    aliases: Vec<Weak<ConnectionLease>>,
     authority: [u8; 32],
     lease: Weak<ConnectionLease>,
     route: OwnerRoute,
 }
 struct OwnerContext {
+    authority_salt: [u8; 16],
     directory: PathBuf,
     registry: Arc<Mutex<BTreeMap<crate::PoolId, PoolOwner>>>,
     authority: [u8; 32],
     lease: Weak<ConnectionLease>,
     route: OwnerRoute,
 }
+pub(crate) struct RootCredentialUpdate {
+    pub operation: crate::OperationId,
+    pub pool: crate::PoolId,
+    pub generation: u64,
+    pub credentials: Credentials,
+    pub reply: tokio::sync::oneshot::Sender<Result<(), Error>>,
+}
 struct AliasTarget {
     lease: Arc<ConnectionLease>,
     route: OwnerRoute,
 }
 impl OwnerContext {
+    fn rotate_root_credentials(
+        &mut self,
+        directory: &std::path::Path,
+        generation: u64,
+        options: &ConnectionOptions,
+        credentials: &mut Credentials,
+        update: &RootCredentialUpdate,
+    ) -> Result<(), Error> {
+        let snapshot = self.route.receiver.borrow();
+        let owner_lease = self
+            .lease
+            .upgrade()
+            .filter(|lease| !lease.cancel.is_cancelled())
+            .ok_or(Error::Closed)?;
+        if generation != update.generation
+            || !snapshot.is_current()
+            || snapshot
+                .inventory()
+                .is_none_or(|i| i.pool_id != update.pool)
+            || credentials.username != "root"
+            || update.credentials.username != "root"
+        {
+            return Err(Error::Stale);
+        }
+        let authority = options.authority_key(&update.credentials, &self.authority_salt);
+        operations::Journal::open(directory)?.root_password_credential_guard(
+            update.operation,
+            update.pool,
+            || {
+                let mut owners = self.registry.lock().unwrap_or_else(|p| p.into_inner());
+                let owner = owners
+                    .get_mut(&update.pool)
+                    .filter(|o| Weak::ptr_eq(&o.lease, &self.lease))
+                    .ok_or(Error::Stale)?;
+                if owner.authority != self.authority || owner_lease.cancel.is_cancelled() {
+                    return Err(Error::Stale);
+                }
+                for alias in owner.aliases.drain(..).filter_map(|alias| alias.upgrade()) {
+                    alias.cancel.cancel();
+                }
+                *credentials =
+                    Credentials::new("root".into(), update.credentials.password.to_string());
+                owner.authority = authority;
+                self.authority = authority;
+                Ok(())
+            },
+        )
+    }
+
     fn claim(&self, pool: crate::PoolId) -> Result<Option<AliasTarget>, Error> {
         let mut owners = self.registry.lock().unwrap_or_else(|p| p.into_inner());
         owners.retain(|_, owner| {
@@ -310,13 +368,21 @@ impl OwnerContext {
                     ConnectionState::Failed | ConnectionState::Disconnected
                 )
         });
-        if let Some(owner) = owners.get(&pool) {
+        if let Some(owner) = owners.get_mut(&pool) {
             if Weak::ptr_eq(&owner.lease, &self.lease) {
                 return Ok(None);
             }
             if let Some(lease) = owner.lease.upgrade() {
                 if owner.authority != self.authority {
                     return Err(Error::Connection("This pool is already connected with different credentials, trust or access settings. Disconnect it before reconnecting with the new settings.".into()));
+                }
+                owner.aliases.retain(|alias| alias.strong_count() > 0);
+                if !owner
+                    .aliases
+                    .iter()
+                    .any(|alias| Weak::ptr_eq(alias, &self.lease))
+                {
+                    owner.aliases.push(self.lease.clone());
                 }
                 return Ok(Some(AliasTarget {
                     lease,
@@ -327,6 +393,7 @@ impl OwnerContext {
         owners.insert(
             pool,
             PoolOwner {
+                aliases: Vec::new(),
                 authority: self.authority,
                 lease: self.lease.clone(),
                 route: self.route.clone(),
@@ -392,6 +459,7 @@ impl Backend {
             cancel.clone(),
             receiver_requests,
             OwnerContext {
+                authority_salt: self.authority_salt,
                 directory: self.state_directory.clone(),
                 registry: self.registry.clone(),
                 authority,
@@ -571,6 +639,29 @@ impl Connection {
             .try_send(Request::ResourceSubmit(Box::new(request)))
             .map_err(|_| Error::Busy)?;
         Ok(operation)
+    }
+    pub fn change_pool_root_password(
+        &self,
+        id: crate::OperationId,
+        pool: crate::ObservedResource,
+        expected: crate::PoolRootPasswordChange,
+        password: crate::RootPassword,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if self.latest().observe_resource(pool.target)? != pool {
+            return Err(Error::Stale);
+        }
+        let action = crate::ResourceAction::RootPassword(expected);
+        action.validate(pool.target)?;
+        let (handle, mut request) =
+            crate::resources::channel(id, pool, action, self.runtime.clone());
+        request.root_password = Some(password);
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
     }
     pub fn configure_host_power(
         &self,
@@ -992,11 +1083,11 @@ type HistorySenders = (
 
 async fn run(
     mut options: ConnectionOptions,
-    credentials: Credentials,
+    mut credentials: Credentials,
     sender: watch::Sender<Arc<ConnectionSnapshot>>,
     cancel: CancellationToken,
     mut requests: mpsc::Receiver<Request>,
-    context: OwnerContext,
+    mut context: OwnerContext,
     histories: HistorySenders,
 ) {
     let (history, resource_history) = histories;
@@ -1130,6 +1221,10 @@ async fn run(
                         }
                         Some(update)=operation_updates.recv()=>{
                             match update {
+                                OperationUpdate::RootCredentials(update)=>{
+                                    let result=context.rotate_root_credentials(&directory,generation,&options,&mut credentials,&update);
+                                    let _=update.reply.send(result);
+                                },
                                 OperationUpdate::Coordinator(endpoint)=>break Some(Error::Coordinator(endpoint)),
                                 OperationUpdate::Resource(record)=>{merge_resource_record(&mut resource_records,*record);publish_resource_history(&resource_history,&mut resource_records);},
                                 OperationUpdate::Record(record)=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
@@ -1168,6 +1263,7 @@ async fn run(
                             match request {
                                 Request::ResourceSubmit(request)=>{
                                     if options.read_only && !request.record.action.read_only_export() {request.reject(Error::ReadOnly);}
+                                    else if matches!(request.record.action,crate::ResourceAction::RootPassword(_)) && credentials.username != "root" {request.reject(Error::HostPrerequisite("Reconnect as local root before changing the pool root password"));}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.record.pool) {request.reject(Error::Stale);}
                                     else if journal_error.is_some() {request.reject(Error::Journal);}
                                     else if matches!(request.record.action,crate::ResourceAction::CrossPoolVm(_)) && request.record.revision()>0 && resource_counts.contains_key(&request.record.id) {
@@ -1392,6 +1488,9 @@ async fn run(
                                                         record.action,
                                                         crate::ResourceAction::CrossPoolVm(_)
                                                             | crate::ResourceAction::HostPower(_)
+                                                            | crate::ResourceAction::RootPassword(
+                                                                _
+                                                            )
                                                     )
                                                     && resource_workers.len() < 8
                                                 {
@@ -1462,6 +1561,7 @@ async fn run(
                         Some(update)=operation_updates.recv()=>{match update {
                             OperationUpdate::Record(record)=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
                             OperationUpdate::Resource(record)=>{merge_resource_record(&mut resource_records,*record);publish_resource_history(&resource_history,&mut resource_records);},
+                            OperationUpdate::RootCredentials(update)=>{let _=update.reply.send(Err(Error::Closed));},
                             OperationUpdate::Coordinator(_)=>{},
                         }},
                         _=&mut cleanup=>{workers.abort_all();resource_workers.abort_all();metrics.abort_all();break;},
@@ -1550,6 +1650,7 @@ async fn forward_alias(
     history.send_replace(target.route.history.borrow().clone());
     loop {
         tokio::select! {
+            biased;
             _ = cancel.cancelled() => break,
             result = target.route.receiver.changed() => {
                 sender.send_replace(target.route.receiver.borrow().clone());
@@ -1565,6 +1666,7 @@ async fn forward_alias(
             }
             request = requests.recv() => {
                 let Some(request) = request else { break; };
+                if cancel.is_cancelled() { break; }
                 if let Err(error) = target.route.requests.try_send(request) {
                     match error.into_inner() {
                         Request::Submit(request) => request.reject(Error::Busy),

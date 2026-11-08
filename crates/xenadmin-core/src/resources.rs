@@ -2,6 +2,8 @@
 mod host_power_backend;
 #[path = "host_power_journal.rs"]
 mod host_power_journal;
+#[path = "root_password_journal.rs"]
+mod root_password_journal;
 #[path = "storage_auth_backend.rs"]
 mod storage_auth_backend;
 #[path = "storage_auth_journal.rs"]
@@ -199,6 +201,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    RootPassword(crate::PoolRootPasswordChange),
     HostPower(crate::HostPowerOperation),
     NetworkTopology(crate::NetworkTopologyOperation),
     PowerBatch(crate::VmPowerBatch),
@@ -258,6 +261,7 @@ impl ResourceAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
             Self::PowerBatch(_) => "Power actions on selected VMs",
             Self::CrossPoolVm(operation) => operation.mode.label(),
@@ -294,6 +298,9 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::RootPassword(change) => {
+                matches!(target, ResourceTarget::Pool(_)) && change.valid()
+            }
             Self::HostPower(operation) => {
                 matches!(target, ResourceTarget::Host(_)) && operation.valid()
             }
@@ -571,6 +578,10 @@ pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) host_plan: Option<host::Plan>,
     #[serde(skip)]
+    pub(crate) root_password_plan: Option<crate::root_password::Plan>,
+    #[serde(default)]
+    pub root_password: Option<crate::RootPasswordEvidence>,
+    #[serde(skip)]
     pub(crate) host_power_plan: Option<crate::host_power::Plan>,
     #[serde(default)]
     pub host_power_secret: Option<crate::HostPowerSecretEvidence>,
@@ -592,6 +603,9 @@ pub struct ResourceOperationRecord {
     pub(crate) cross_pool_plan: Option<Box<crate::cross_pool_backend::Plan>>,
 }
 impl ResourceOperationRecord {
+    pub fn was_interrupted(&self) -> bool {
+        self.interrupted
+    }
     pub fn applies_to_pool(&self, pool: PoolId) -> bool {
         self.pool == pool || self.peer_pool() == Some(pool)
     }
@@ -688,6 +702,8 @@ pub(crate) fn channel(
         appliance_completed: false,
         appliance_baseline: None,
         host_plan: None,
+        root_password_plan: None,
+        root_password: None,
         host_power_plan: None,
         host_power_secret: None,
         power_batch_plan: None,

@@ -2232,6 +2232,7 @@ fn main() {
             ("pool-security", |s| pool_security_view::scene(s, false)),
             #[cfg(debug_assertions)]
             ("pool-join", profiles_view::join_scene),
+            ("root-password", profiles_view::root_password_scene),
             ("pool-security-review", |s| {
                 pool_security_view::scene(s, true)
             }),

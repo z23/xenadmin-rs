@@ -74,6 +74,8 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/device-properties-compact.png --tree artifacts/device-properties-compact.json --scene device-properties --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/home-host.png --tree artifacts/home-host.json --scene home-host --theme dark --size 513x652 --scale 1 --at 1
 
+"$check_binary" --snap artifacts/root-password.png --tree artifacts/root-password.json --scene root-password --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/root-password-compact.png --tree artifacts/root-password-compact.json --scene root-password --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/pool-join.png --tree artifacts/pool-join.json --scene pool-join --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/pool-join-compact.png --tree artifacts/pool-join-compact.json --scene pool-join --theme dark --size 513x652 --scale 1 --at 1
 

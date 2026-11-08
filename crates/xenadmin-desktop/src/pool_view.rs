@@ -256,6 +256,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .build(k)
                     .key("pool-security-open"),
             )
+            .child(
+                Button::new("Change pool root password…")
+                    .disabled(!s.can_mutate())
+                    .on_press(profiles_view::change_root_password)
+                    .build(k)
+                    .key("pool-root-password"),
+            )
             .child(heading("Pool policies", k));
         if let Some(expected) = admin.migration_compression {
             body = body.child(action(

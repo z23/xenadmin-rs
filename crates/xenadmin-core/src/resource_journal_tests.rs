@@ -45,6 +45,8 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         appliance_baseline: None,
         host_plan: None,
         host_power_plan: None,
+        root_password_plan: None,
+        root_password: None,
         host_power_secret: None,
         power_batch_plan: None,
         storage_auth_plan: None,
@@ -54,6 +56,151 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         snapshot_policy_evidence: None,
         join_baseline: None,
         cross_pool_plan: None,
+    }
+}
+
+#[test]
+fn root_password_journal_rejects_changed_scope_and_retains_late_completion_after_ack() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let host = crate::HostId::from(uuid::Uuid::new_v4());
+    let change = crate::PoolRootPasswordChange {
+        coordinator: host,
+        members: vec![host],
+    };
+    let mut row = resource(pool);
+    row.target = ResourceTarget::Pool(pool);
+    row.action = ResourceAction::RootPassword(change.clone());
+    row.steps = (0..3)
+        .map(|i| OperationStep {
+            label: format!("Step {i}"),
+            state: StepState::Pending,
+            detail: String::new(),
+        })
+        .collect();
+    row.root_password_plan = Some(crate::root_password::Plan {
+        expected: change,
+        sent: false,
+        completed: false,
+        login_verified: false,
+        credentials_updated: false,
+    });
+    crate::root_password::project(&mut row);
+    journal.resource_admit(&mut row).unwrap();
+    let mut bad = row.clone();
+    bad.root_password_plan
+        .as_mut()
+        .unwrap()
+        .expected
+        .members
+        .push(crate::HostId::from(uuid::Uuid::new_v4()));
+    assert!(journal.resource_save(&mut bad).is_err());
+    row.root_password_plan.as_mut().unwrap().sent = true;
+    row.state = OperationState::Dispatching;
+    row.steps[0].state = StepState::Dispatching;
+    journal.resource_save(&mut row).unwrap();
+    let mut late = row.clone();
+    row.state = OperationState::OutcomeUnknown;
+    journal.resource_save(&mut row).unwrap();
+    row = journal
+        .resource_control(pool, row.id, crate::OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    late.root_password_plan.as_mut().unwrap().completed = true;
+    late.state = OperationState::Verifying;
+    late.steps[0].state = StepState::Verified;
+    let merged = journal.root_password_evidence(&late).unwrap();
+    assert_eq!(merged.state, row.state);
+    assert!(merged.root_password.as_ref().unwrap().coordinator_changed);
+    assert!(
+        !merged
+            .root_password
+            .as_ref()
+            .unwrap()
+            .reconnect_credentials_updated
+    );
+    let mut cleared = merged.clone();
+    cleared.root_password_plan.as_mut().unwrap().completed = false;
+    crate::root_password::project(&mut cleared);
+    assert!(journal.resource_save(&mut cleared).is_err());
+    let public = serde_json::to_string(&merged).unwrap();
+    assert!(!public.contains("root_password_plan"));
+    let bad_payload = serde_json::json!({"unexpected":true});
+    journal.0.execute("UPDATE resource_operations SET payload=json_set(payload,'$.root_password_plan',json(?1)) WHERE id=?2",rusqlite::params![bad_payload.to_string(),row.id.to_string()]).unwrap();
+    assert!(journal.resource_load(row.id).is_err());
+}
+
+#[test]
+fn root_password_rekey_guard_serializes_recovery_and_refuses_unknown_or_acknowledged_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let host = crate::HostId::from(uuid::Uuid::new_v4());
+    let change = crate::PoolRootPasswordChange {
+        coordinator: host,
+        members: vec![host],
+    };
+    let mut row = resource(pool);
+    row.target = ResourceTarget::Pool(pool);
+    row.action = ResourceAction::RootPassword(change.clone());
+    row.steps = (0..3)
+        .map(|i| OperationStep {
+            label: format!("Step {i}"),
+            state: StepState::Pending,
+            detail: String::new(),
+        })
+        .collect();
+    row.root_password_plan = Some(crate::root_password::Plan {
+        expected: change,
+        sent: false,
+        completed: false,
+        login_verified: false,
+        credentials_updated: false,
+    });
+    crate::root_password::project(&mut row);
+    journal.resource_admit(&mut row).unwrap();
+    row.state = OperationState::Verifying;
+    let p = row.root_password_plan.as_mut().unwrap();
+    p.sent = true;
+    p.completed = true;
+    p.login_verified = true;
+    crate::root_password::project(&mut row);
+    journal.resource_save(&mut row).unwrap();
+    let other = Journal::open(dir.path()).unwrap();
+    other.0.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let mut replaced = false;
+    journal
+        .root_password_credential_guard(row.id, pool, || {
+            // Recovery cannot enter the validated-row/local-rekey window on another connection.
+            let mut stale = other.resource_load(row.id)?.unwrap();
+            stale.state = OperationState::OutcomeUnknown;
+            assert!(other.resource_save(&mut stale).is_err());
+            replaced = true;
+            Ok(())
+        })
+        .unwrap();
+    assert!(replaced);
+    row.state = OperationState::OutcomeUnknown;
+    journal.resource_save(&mut row).unwrap();
+    for acknowledge in [false, true] {
+        if acknowledge {
+            journal
+                .resource_control(pool, row.id, crate::OperationControl::AcknowledgeUnknown)
+                .unwrap();
+        }
+        let mut replaced = false;
+        assert!(
+            journal
+                .root_password_credential_guard(row.id, pool, || {
+                    replaced = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(
+            !replaced,
+            "Recovery/ack must prevent the subsequent local credential replacement"
+        );
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {

@@ -9,6 +9,8 @@ mod credentials;
 mod pool_join;
 #[path = "profile_reconnect.rs"]
 mod reconnect;
+#[path = "profile_root_password.rs"]
+mod root_password;
 #[path = "profile_trust.rs"]
 mod trust;
 use credentials::CredentialJob;
@@ -42,6 +44,7 @@ pub(super) fn inspection_connections(
 }
 
 pub(super) struct Workspace {
+    root_password: Option<root_password::Editor>,
     trust: trust::Panel,
     proxy_sessions: BTreeMap<
         ProfileId,
@@ -90,6 +93,7 @@ impl Workspace {
             Err("Another XenAdmin RS window owns this state directory. Close it before changing connections here.".into())
         };
         Self {
+            root_password: None,
             trust: Default::default(),
             proxy_sessions: BTreeMap::new(),
             reconnect: None,
@@ -547,6 +551,7 @@ pub(super) fn refresh(s: &mut State) -> bool {
     let mut changed = refresh_credentials(s);
     changed |= trust::poll(s);
     changed |= pool_join::poll(s);
+    changed |= root_password::poll(s);
     for (id, connection) in &s.workspace.active {
         let snapshot = connection.latest();
         if s.workspace
@@ -824,6 +829,9 @@ fn choose_ca(s: &mut State, tx: &mut Tx) {
 }
 
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
+    if s.workspace.root_password.is_some() {
+        return root_password::dialog(s, k);
+    }
     if s.workspace.join.is_some() {
         return pool_join::dialog(s, k);
     }
@@ -1761,4 +1769,12 @@ pub(super) fn select_transfer_destination(
     s.rebuild();
     s.table.select(vm.to_string());
     true
+}
+
+pub(super) fn change_root_password(s: &mut State) {
+    root_password::open(s);
+}
+#[cfg(debug_assertions)]
+pub(super) fn root_password_scene(s: &mut State) {
+    root_password::scene(s);
 }

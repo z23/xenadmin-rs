@@ -503,6 +503,7 @@ pub(crate) struct MutationRequest {
     updates: Option<mpsc::Sender<OperationUpdate>>,
 }
 pub(crate) enum OperationUpdate {
+    RootCredentials(Box<crate::connection::RootCredentialUpdate>),
     Record(Box<OperationRecord>),
     Resource(Box<crate::ResourceOperationRecord>),
     Coordinator(crate::Endpoint),

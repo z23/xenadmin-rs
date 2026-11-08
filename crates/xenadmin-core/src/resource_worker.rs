@@ -16,6 +16,8 @@ mod ovf_worker;
 mod pool_join_worker;
 #[path = "power_batch_worker.rs"]
 mod power_batch_worker;
+#[path = "root_password_worker.rs"]
+mod root_password_worker;
 #[path = "storage_auth_worker.rs"]
 mod storage_auth_worker;
 #[path = "transfer_disk_worker.rs"]
@@ -35,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
     pub(crate) storage_credentials: Option<crate::StorageCredentials>,
+    pub(crate) root_password: Option<crate::RootPassword>,
     pub(crate) host_power_password: Option<crate::HostPowerPassword>,
     pub(crate) sensitive: Option<crate::pool_security::SensitiveInputs>,
     pub(crate) cloud_media: Option<crate::CloudInitMedia>,
@@ -56,6 +59,7 @@ impl ResourceRequest {
             sensitive: None,
             cloud_media: None,
             storage_credentials: None,
+            root_password: None,
             host_power_password: None,
             generation,
             join: None,
@@ -72,6 +76,7 @@ impl ResourceRequest {
             sensitive: None,
             cloud_media: None,
             storage_credentials: None,
+            root_password: None,
             host_power_password: None,
             generation: 0,
             join: None,
@@ -244,6 +249,9 @@ impl ResourceRequest {
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.execute_join(journal, session, cancel).await;
         }
+        if matches!(self.record.action, super::ResourceAction::RootPassword(_)) {
+            return self.execute_root_password(journal, session, cancel).await;
+        }
         if matches!(self.record.action, super::ResourceAction::HostPower(_)) {
             return self.execute_host_power(journal, session, cancel).await;
         }
@@ -391,6 +399,9 @@ impl ResourceRequest {
         self.reload(journal)?;
         if self.stopped_after_recovery() {
             return Ok(());
+        }
+        if matches!(self.record.action, super::ResourceAction::RootPassword(_)) {
+            return self.reconcile_root_password(journal).await;
         }
         if matches!(self.record.action, super::ResourceAction::HostPower(_)) {
             return self.reconcile_host_power(journal, session, cancel).await;
@@ -849,6 +860,7 @@ impl ResourceRequest {
         let explicit_rejection = !matches!(
             self.record.action,
             super::ResourceAction::PowerBatch(_)
+                | super::ResourceAction::RootPassword(_)
                 | super::ResourceAction::HostPower(_)
                 | super::ResourceAction::AuthenticatedStorage { .. }
                 | super::ResourceAction::CleanupStorageCredentials { .. }
