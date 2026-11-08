@@ -154,6 +154,10 @@ pub enum ResourceCommand {
         target: ObservedResource,
         operation: crate::NetworkTopologyOperation,
     },
+    PropertiesBatch {
+        pool: ObservedResource,
+        selection: crate::VmPropertiesBatch,
+    },
     PowerBatch {
         pool: ObservedResource,
         selection: crate::VmPowerBatch,
@@ -250,6 +254,7 @@ pub enum ResourceAction {
     HostPower(crate::HostPowerOperation),
     NetworkTopology(crate::NetworkTopologyOperation),
     PowerBatch(crate::VmPowerBatch),
+    PropertiesBatch(crate::VmPropertiesBatch),
     CrossPoolVm(crate::CrossPoolVmOperation),
     AuthenticatedStorage {
         operation: StorageOperation,
@@ -311,6 +316,7 @@ impl ResourceAction {
             Self::DeleteHostCrashdump(_) => Required::writes(["host_crashdump.destroy"]),
             Self::StorageMaintenance(op) => op.permission_requirements(),
             Self::Disk(op) => op.permission_requirements(),
+            Self::PropertiesBatch(selection) => selection.permission_requirements(),
             Self::SnapshotPreviewUpload(_) => {
                 Required::writes(["VM.create_new_blob"]).with_host_dependent_steps()
             }
@@ -381,6 +387,7 @@ impl ResourceAction {
             Self::RootPassword(_) => "Change pool root password",
             Self::HostPower(operation) => operation.label(),
             Self::PowerBatch(_) => "Power actions on selected VMs",
+            Self::PropertiesBatch(_) => "Edit selected VM properties",
             Self::CrossPoolVm(operation) => operation.mode.label(),
             Self::AuthenticatedStorage { operation, .. } => operation.label(),
             Self::CleanupStorageCredentials { .. } => "Clean up retained storage credentials",
@@ -428,6 +435,7 @@ impl ResourceAction {
                 matches!(target, ResourceTarget::Host(_)) && operation.valid()
             }
             Self::PowerBatch(selection) => return selection.validate(target),
+            Self::PropertiesBatch(selection) => return selection.validate(target),
             Self::CrossPoolVm(operation) => {
                 let ResourceTarget::Pool(pool) = target else {
                     return Err(Error::InvalidResourceCommand);
@@ -557,6 +565,9 @@ impl ResourceCommand {
             Self::Disk { target, operation } => (target, ResourceAction::Disk(operation)),
             Self::HostPower { host, operation } => (host, ResourceAction::HostPower(operation)),
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
+            Self::PropertiesBatch { pool, selection } => {
+                (pool, ResourceAction::PropertiesBatch(selection))
+            }
             Self::CleanupStorageCredentials {
                 pool,
                 operation,
@@ -739,6 +750,8 @@ pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) power_batch_plan: Option<crate::power_batch::Plan>,
     #[serde(skip)]
+    pub(crate) properties_batch_plan: Option<crate::properties_batch::Plan>,
+    #[serde(skip)]
     pub(crate) storage_auth_plan: Option<crate::storage_auth::Plan>,
     #[serde(skip)]
     pub(crate) storage_secret_cleanup: Option<crate::storage_auth::CleanupPlan>,
@@ -866,6 +879,7 @@ pub(crate) fn channel(
         host_power_plan: None,
         host_power_secret: None,
         power_batch_plan: None,
+        properties_batch_plan: None,
         storage_auth_plan: None,
         storage_secret_cleanup: None,
         storage_secrets: Vec::new(),

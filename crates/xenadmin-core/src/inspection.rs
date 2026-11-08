@@ -359,6 +359,7 @@ fn resource_operation_value(record: &crate::ResourceOperationRecord) -> Value {
         "progress":record.progress,"created_at_ms":record.created_at_ms,"created":record.created,
         "transfer":record.transfer,"transfer_created":record.transfer_created,"disk_size":record.disk_size,
         "power_batch":match &record.action {crate::ResourceAction::PowerBatch(selection)=>Some(json!({"action":selection.action,"vms":selection.vms.iter().take(32).map(|item|json!({"vm":item.vm,"expected_state":bounded(&item.expected_state.to_string())})).collect::<Vec<_>>()})),_=>None},
+        "properties_batch":match &record.action {crate::ResourceAction::PropertiesBatch(selection)=>Some(json!({"vms":selection.vms.iter().take(32).map(|item|json!({"vm":item.vm,"expected_state":bounded(&item.expected_state.to_string()),"template":item.patch.is_template(),"setters":item.patch.steps().len()})).collect::<Vec<_>>()})),_=>None},
         "storage_secrets":record.storage_secrets,
         "host_power_secret":record.host_power_secret,
         "root_password":record.root_password,
@@ -622,7 +623,7 @@ async fn dispatch(registry: &Registry, request: InspectionRequest) -> Result<Val
                 .collect::<Vec<_>>();
             Ok(
                 json!({"connection": context(id,&connection,&connection.latest()), "operations": rows,
-                 "resource_operations": connection.resource_history().iter().rev().filter(|record| vm.is_none_or(|id|matches!(&record.action,crate::ResourceAction::PowerBatch(selection) if selection.vms.iter().any(|item|item.vm==id)))).take(limit).map(resource_operation_value).collect::<Vec<_>>()}),
+                 "resource_operations": connection.resource_history().iter().rev().filter(|record| vm.is_none_or(|id| match &record.action {crate::ResourceAction::PowerBatch(selection)=>selection.vms.iter().any(|item|item.vm==id),crate::ResourceAction::PropertiesBatch(selection)=>selection.vms.iter().any(|item|item.vm==id),_=>false})).take(limit).map(resource_operation_value).collect::<Vec<_>>()}),
             )
         }
         InspectionRequest::DiagnosePower { connection, vm } => {

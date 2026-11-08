@@ -20,6 +20,8 @@ mod ovf_worker;
 mod pool_join_worker;
 #[path = "power_batch_worker.rs"]
 mod power_batch_worker;
+#[path = "properties_batch_worker.rs"]
+mod properties_batch_worker;
 #[path = "root_password_worker.rs"]
 mod root_password_worker;
 #[path = "snapshot_capture_worker.rs"]
@@ -271,6 +273,14 @@ impl ResourceRequest {
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.execute_power_batch(journal, session, cancel).await;
         }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::PropertiesBatch(_)
+        ) {
+            return self
+                .execute_properties_batch(journal, session, cancel)
+                .await;
+        }
         if matches!(self.record.action, super::ResourceAction::CrossPoolVm(_)) {
             return self.execute_cross_pool(journal, session, cancel).await;
         }
@@ -483,6 +493,14 @@ impl ResourceRequest {
         }
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.reconcile_power_batch(journal, session, cancel).await;
+        }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::PropertiesBatch(_)
+        ) {
+            return self
+                .reconcile_properties_batch(journal, session, cancel)
+                .await;
         }
         if matches!(self.record.action, super::ResourceAction::CrossPoolVm(_)) {
             return self.recheck_cross_pool(journal, session, cancel).await;
@@ -975,6 +993,7 @@ impl ResourceRequest {
         let explicit_rejection = !matches!(
             self.record.action,
             super::ResourceAction::PowerBatch(_)
+                | super::ResourceAction::PropertiesBatch(_)
                 | super::ResourceAction::DeleteHostCrashdump(_)
                 | super::ResourceAction::SnapshotPreviewUpload(_)
                 | super::ResourceAction::RootPassword(_)

@@ -684,12 +684,12 @@ impl SettingsStep {
             .is_none_or(|g| g.preflight(record).is_ok()))
             && self.values(record) == self.value
     }
-    pub(crate) async fn send(
+    pub(crate) async fn prepare_call(
         &self,
         session: &Session,
         reference: &str,
         before: &Value,
-    ) -> Result<(), Error> {
+    ) -> Result<(String, Vec<Value>), Error> {
         if matches!(self.guard, Some(SettingsGuard::SecureBoot)) && self.value[0] == "true" {
             crate::guest_boot::require_policy_support(session, reference).await?;
         }
@@ -729,7 +729,16 @@ impl SettingsStep {
         } else {
             params.extend(self.value.iter().cloned());
         }
-        session.call(&self.method, params).await?;
+        Ok((self.method.clone(), params))
+    }
+    pub(crate) async fn send(
+        &self,
+        session: &Session,
+        reference: &str,
+        before: &Value,
+    ) -> Result<(), Error> {
+        let (method, params) = self.prepare_call(session, reference, before).await?;
+        session.call(&method, params).await?;
         Ok(())
     }
 }

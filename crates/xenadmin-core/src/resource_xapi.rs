@@ -151,6 +151,7 @@ pub(super) async fn prepare(
         | ResourceAction::Disk(_)
         | ResourceAction::NetworkTopology(_)
         | ResourceAction::ManagementNetwork(_)
+        | ResourceAction::PropertiesBatch(_)
         | ResourceAction::PowerBatch(_) => return Err(Error::InvalidResourceCommand),
         ResourceAction::Alarm(_) => return super::alarms::prepare(session, record).await,
         ResourceAction::Organization(_) => {
@@ -465,6 +466,7 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         | ResourceAction::Disk(_)
         | ResourceAction::NetworkTopology(_)
         | ResourceAction::ManagementNetwork(_)
+        | ResourceAction::PropertiesBatch(_)
         | ResourceAction::PowerBatch(_) => Vec::new(),
         ResourceAction::Alarm(_) => super::alarms::checks(record),
         ResourceAction::Organization(_) => super::organization::checks(record),

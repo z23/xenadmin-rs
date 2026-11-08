@@ -127,6 +127,13 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let properties_batch_plan = payload
+                .get("properties_batch_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let crashdump_deletion = payload
                 .get("crashdump_deletion")
                 .filter(|v| !v.is_null())
@@ -213,6 +220,7 @@ impl Journal {
             record.disk_plan = disk_plan;
             record.network_topology_plan = network_topology_plan;
             record.power_batch_plan = power_batch_plan;
+            record.properties_batch_plan = properties_batch_plan;
             record.storage_auth_plan = storage_auth_plan;
             record.storage_secret_cleanup = storage_secret_cleanup;
             record.crashdump_deletion = crashdump_deletion;
@@ -232,6 +240,7 @@ impl Journal {
             if !record.state.terminal() || record.power_batch_plan.is_some() {
                 crate::power_batch::validate_record(&record)?;
             }
+            crate::properties_batch::validate_record(&record)?;
 
             if record.id != id {
                 return Err(Error::Journal);
@@ -259,6 +268,7 @@ impl Journal {
         if !record.state.terminal() || record.power_batch_plan.is_some() {
             crate::power_batch::validate_record(record)?;
         }
+        crate::properties_batch::validate_record(record)?;
         crate::cross_pool_backend::validate_record(record)?;
         super::topology::validate_record(record).map_err(|_| Error::Journal)?;
         super::management::validate_record(record).map_err(|_| Error::Journal)?;
@@ -360,6 +370,14 @@ impl Journal {
             }) {
                 return Err(Error::JournalChanged);
             }
+            if old.properties_batch_plan.as_ref().is_some_and(|p| {
+                record
+                    .properties_batch_plan
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
+            }
             if old.cloud_init_plan.as_ref().is_some_and(|p| {
                 record
                     .cloud_init_plan
@@ -431,6 +449,12 @@ impl Journal {
         if let Some(plan) = &record.power_batch_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "power_batch_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
+        if let Some(plan) = &record.properties_batch_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "properties_batch_plan".into(),
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
             );
         }
@@ -810,7 +834,7 @@ impl Journal {
                 }
                 OperationControl::RequestCancellation => {
                     record.cancel_requested = true;
-                    record.detail = if matches!(record.action, ResourceAction::PowerBatch(_)) { "Stop requested; the current VM task will finish before remaining VMs are skipped" } else { "Cancellation requested; server work may still continue" }.into();
+                    record.detail = if matches!(record.action, ResourceAction::PowerBatch(_)) { "Stop requested; the current VM task will finish before remaining VMs are skipped" } else if matches!(record.action, ResourceAction::PropertiesBatch(_)) { "Stop requested; remaining property changes will not be submitted after the current setter" } else { "Cancellation requested; server work may still continue" }.into();
                 }
             }
             match self.resource_save(&mut record) {

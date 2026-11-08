@@ -318,6 +318,22 @@ fn resource_history_projection_excludes_private_rpc_evidence_and_intent() {
     assert_eq!(value["power_batch"]["action"], "Start");
     assert!(!value.to_string().contains("batch-private-task"));
     assert!(!value.to_string().contains("power_batch_plan"));
+    record.power_batch_plan = None;
+    record.action = crate::ResourceAction::PropertiesBatch(crate::VmPropertiesBatch {
+        vms: vec![crate::BatchVmProperties {
+            vm,
+            expected_state: crate::PowerState::Halted,
+            patch: crate::VmSettingsPatch::new(vec![crate::VmSettingEdit::Description {
+                previous: "private-description".into(),
+                value: "another-private-description".into(),
+            }])
+            .unwrap(),
+        }],
+    });
+    let value = resource_operation_value(&record);
+    assert_eq!(value["properties_batch"]["vms"][0]["vm"], vm.to_string());
+    assert_eq!(value["properties_batch"]["vms"][0]["setters"], 1);
+    assert!(!value.to_string().contains("properties_batch_plan"));
     for forbidden in [
         "private-name",
         "private-description",

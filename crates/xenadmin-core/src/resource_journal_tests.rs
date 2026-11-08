@@ -57,6 +57,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         root_password: None,
         host_power_secret: None,
         power_batch_plan: None,
+        properties_batch_plan: None,
         storage_auth_plan: None,
         storage_secret_cleanup: None,
         storage_secrets: Vec::new(),
