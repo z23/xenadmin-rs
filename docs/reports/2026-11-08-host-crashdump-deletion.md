@@ -52,3 +52,11 @@ at 1440×900 and 513×652 were visually inspected using synthetic data. The cata
 fixture reaches record 65; private evidence tests reject fabricated completion and preserve
 late receipts after recovery/acknowledgement. Independent source review found no remaining
 backend blocker. UI review prompted the active-operation cap and access to every captured dump.
+
+## Integrated verification
+
+At combined source `56c789b`, all **921 workspace tests** passed: 412 core unit,
+256 direct protocol, 240 Rune/desktop, five profile, four TLS and four probe cases.
+Strict workspace/all-target Clippy passed. This includes existing management-topology,
+alarm, crashdump, disk and deterministic cloud-upload recovery fixtures. No live host
+changes were performed; disposable-lab qualification remains deferred.

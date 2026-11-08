@@ -32,3 +32,11 @@ The separate cloud fixture correction (`e8cf5eb`) replaces timing assumptions wi
 ## Remaining boundaries
 
 Live XCP-ng/SR-driver compatibility and guest data integrity remain deferred to the disposable lab. Online resizing of attached disks, shrinking, suspended/paused/template/snapshot consumers, CBT/shared/special-purpose disks and unproven orphan provenance are not supported by this workspace. Existing reviewed VM migration remains the path for supported disk relocation; standalone copy does not detach or delete the source. Cleanup discovery uses the locally available operation history; losing that history does not grant authority to delete an untracked disk.
+
+## Integrated verification
+
+At combined source `56c789b`, all **921 workspace tests** passed: 412 core unit,
+256 direct protocol, 240 Rune/desktop, five profile, four TLS and four probe cases.
+Strict workspace/all-target Clippy passed. This includes existing management-topology,
+alarm, crashdump, disk and deterministic cloud-upload recovery fixtures. No live host
+changes were performed; disposable-lab qualification remains deferred.
