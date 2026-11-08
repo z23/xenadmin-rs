@@ -837,6 +837,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= search_view::poll(s);
     changed |= resource_admin::poll(s);
     changed |= storage_view::poll(s);
+    changed |= network_admin::poll(s);
     changed |= snapshot_policy_view::poll(s);
     changed |= transfers::poll(s);
     changed |= host_support_view::poll(s);
@@ -2340,6 +2341,10 @@ fn main() -> std::process::ExitCode {
             ("management-dhcp", network_admin::management_dynamic_scene),
             ("management-vlan", network_admin::management_topology_scene),
             ("management-bond", network_admin::management_bond_scene),
+            (
+                "management-bond-guests",
+                network_admin::management_bond_consumer_scene,
+            ),
             (
                 "management-vlan-bond",
                 network_admin::management_vlan_bond_scene,

@@ -45,6 +45,7 @@ fn open(s: &mut State, id: PifId) {
 }
 fn operation(v: &Editor) -> Result<Operation, String> {
     Ok(Operation::Bond {
+        consumers: None,
         source: v.source.clone(),
         operation: Bond::Create {
             members: v.members.clone(),
@@ -102,7 +103,10 @@ fn lines(op: &Operation, i: &Inventory) -> Vec<String> {
             }
         }
     }
-    if let Operation::Bond { source, operation } = op {
+    if let Operation::Bond {
+        source, operation, ..
+    } = op
+    {
         let components = match operation {
             Bond::Create { members, .. } => members
                 .iter()
@@ -119,10 +123,48 @@ fn lines(op: &Operation, i: &Inventory) -> Vec<String> {
             }
         }
     }
-    lines.extend(["Traffic and the management connection can be interrupted. Configure the connected switch for the reviewed bond mode first and keep an independent recovery path available.".into(),format!("Recovery endpoint: {} using HTTPS on the current connection port. Success requires the same host certificate, exact resulting topology and address; existing trust settings still apply.",op.recovery_address().map(|v|v.to_string()).unwrap_or_default()),"Lost replies remain unresolved. Recheck reads existing task and topology evidence; no write, rollback or duplicate creation is sent. New bond/master UUIDs are retained when positively identified.".into(),"This workflow supports static IPv4 management and reviewed VLANs with unique tags. VLAN metadata/properties must be empty because the host recreates those objects. Guest-interface, clustering, storage-purpose, tunnel and SR-IOV dependencies require separate review.".into()]);
+    if let Operation::Bond {
+        consumers: Some(consumers),
+        ..
+    } = op
+    {
+        lines.push(format!("Guest interface impact: {} reviewed interfaces. VM power state and NIC identity, MAC, attachment and settings are preserved.",consumers.interfaces.len()));
+        lines.push("NICs using network_default inherit their destination network’s default locking policy.".into());
+        for (id, n) in &consumers.networks {
+            lines.push(format!(
+                "Network {} ({id}) · MTU {} · default locking policy {}.",
+                n.name,
+                n.mtu,
+                n.default_locking_mode
+                    .as_deref()
+                    .unwrap_or("unavailable (no guest consumers)")
+            ));
+        }
+        for v in consumers.interfaces.values() {
+            let locality = match &v.locality {
+                xenadmin_core::ManagementVmLocality::Resident(host) => {
+                    format!("resident on {host}")
+                }
+                xenadmin_core::ManagementVmLocality::PossibleHosts(hosts) if hosts.is_empty() => {
+                    "no eligible host (authoritative server response; treated as local)".into()
+                }
+                xenadmin_core::ManagementVmLocality::PossibleHosts(hosts) => format!(
+                    "eligible hosts: {}",
+                    hosts
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            lines.push(format!("{}: {} ({}) · {}{}{} · NIC {} ({}) · MAC {} · attached {} · {} ({}) → {} ({}) · {locality}",v.change.label(),v.vm_name,v.vm,v.power_state,if v.template {" template"}else{""},if v.snapshot {" snapshot"}else{""},v.device,v.interface,v.mac,v.attached,name(i,v.network),v.network,name(i,v.destination),v.destination));
+        }
+        lines.push("The host moves the reviewed local NICs inside the bond task. Guest traffic may be interrupted. Remote and otherwise eligible guests retain their network. Changes to the consumer set, guest placement or NIC settings require a new review.".into());
+    }
+    lines.extend(["Traffic and the management connection can be interrupted. Configure the connected switch for the reviewed bond mode first and keep an independent recovery path available.".into(),format!("Recovery endpoint: {} using HTTPS on the current connection port. Success requires the same host certificate, exact resulting topology and address; existing trust settings still apply.",op.recovery_address().map(|v|v.to_string()).unwrap_or_default()),"Lost replies remain unresolved. Recheck reads existing task and topology evidence; no write, rollback or duplicate creation is sent. New bond/master UUIDs are retained when positively identified.".into(),"This workflow supports static IPv4 management and reviewed VLANs with unique tags. VLAN metadata/properties must be empty because the host recreates those objects. Guest interfaces require the captured impact review. Clustering, storage-purpose, tunnel and SR-IOV dependencies require separate workflows.".into()]);
     lines
 }
-fn review(s: &mut State, op: Operation) {
+fn finish_review(s: &mut State, op: Operation) {
     let Some(i) = s.inventory.as_ref().filter(|i| {
         s.network_workspace
             .as_ref()
@@ -143,6 +185,97 @@ fn review(s: &mut State, op: Operation) {
         xenadmin_core::ResourceAction::ManagementNetwork(Box::new(op)),
         text,
     );
+}
+pub(super) struct Pending {
+    query: xenadmin_core::ManagementBondReviewQuery,
+    observed: ObservedResource,
+    operation: Operation,
+}
+fn review(s: &mut State, op: Operation) {
+    if s.demo {
+        finish_review(s, op);
+        return;
+    }
+    let result = (|| {
+        let observed = s
+            .snapshot
+            .as_ref()
+            .ok_or("Connect before reviewing guest interfaces")?
+            .observe_resource(ResourceTarget::Host(op.source().identity.host))
+            .map_err(|e| e.to_string())?;
+        let query = s
+            .connection
+            .as_ref()
+            .ok_or("Connect before reviewing guest interfaces")?
+            .review_management_bond(observed, op.clone())
+            .map_err(|e| e.to_string())?;
+        if let Some(waker) = &s.waker {
+            query.notify_on_change(waker.clone());
+        }
+        Ok::<_, String>(Pending {
+            query,
+            observed,
+            operation: op,
+        })
+    })();
+    match result {
+        Ok(pending) => {
+            let w = edit(s);
+            w.bond_review = Some(pending);
+            w.review = None;
+            w.error = None;
+        }
+        Err(e) => edit(s).error = Some(e),
+    }
+}
+pub(super) fn poll(s: &mut State) -> bool {
+    let Some(result) = s
+        .network_workspace
+        .as_ref()
+        .and_then(|w| w.bond_review.as_ref())
+        .and_then(|p| p.query.latest())
+    else {
+        return false;
+    };
+    let pending = edit(s).bond_review.take().unwrap();
+    let current = inputs_current(s, &pending.operation)
+        && s.snapshot
+            .as_ref()
+            .and_then(|v| v.observe_resource(pending.observed.target()).ok())
+            == Some(pending.observed);
+    if !current {
+        edit(s).error =
+            Some("The bond inputs or connection changed. Review guest interfaces again.".into());
+        return true;
+    }
+    match result {
+        Ok(op) => finish_review(s, op),
+        Err(e) => edit(s).error = Some(e),
+    }
+    true
+}
+fn inputs_current(s: &State, requested: &Operation) -> bool {
+    let Some(w) = s.network_workspace.as_ref() else {
+        return false;
+    };
+    s.inventory.as_ref().is_some_and(|i| i.pool_id == w.pool)
+        && match (requested, &w.form) {
+            (
+                Operation::Bond {
+                    operation: Bond::Create { .. },
+                    ..
+                },
+                Form::ManagementBond(v),
+            ) => operation(v).is_ok_and(|v| &v == requested),
+            (
+                Operation::Bond {
+                    operation: Bond::Destroy { .. },
+                    ..
+                },
+                Form::Browse,
+            ) => true,
+            _ => false,
+        }
 }
 pub(super) fn prepare(s: &mut State) {
     let result = operation(editor(s));
@@ -173,6 +306,7 @@ fn remove(s: &mut State, id: PifId) {
     review(
         s,
         Operation::Bond {
+            consumers: None,
             source,
             operation: Bond::Destroy { bond, primary },
         },
@@ -409,9 +543,216 @@ pub(super) fn vlan_scene(s: &mut State) {
     editor(s).network = Some(target);
     prepare(s);
 }
+pub(super) fn consumer_scene(s: &mut State) {
+    scene(s);
+    let mut op = operation(editor(s)).unwrap();
+    let host = op.source().identity.host;
+    let source = op.source().identity.network;
+    let target = editor(s).network.unwrap();
+    let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+    let guests = i.vms.keys().copied().take(3).collect::<Vec<_>>();
+    let other = *i.hosts.keys().find(|id| **id != host).unwrap();
+    let mut consumers = xenadmin_core::ManagementBondConsumers::default();
+    for (index, vm) in guests.into_iter().enumerate() {
+        let id = xenadmin_core::VifId::from(uuid::Uuid::from_u128(0xc000 + index as u128));
+        let guest = i.vms.get_mut(&vm).unwrap();
+        guest.power_state = if index == 2 {
+            PowerState::Halted
+        } else {
+            PowerState::Running
+        };
+        guest.host = if index == 2 {
+            None
+        } else if index == 1 {
+            Some(other)
+        } else {
+            Some(host)
+        };
+        let locality = guest
+            .host
+            .map(xenadmin_core::ManagementVmLocality::Resident)
+            .unwrap_or(xenadmin_core::ManagementVmLocality::PossibleHosts(vec![]));
+        let destination = if index == 1 { source } else { target };
+        i.details.vifs.insert(
+            id,
+            xenadmin_core::VirtualInterface {
+                qos_known: true,
+                qos_supported_algorithms: Some(vec!["ratelimit".into()]),
+                id,
+                vm: Some(vm),
+                network: Some(source),
+                device: "0".into(),
+                mac: "02:00:00:00:00:01".into(),
+                mtu: Some(1500),
+                currently_attached: Some(index != 2),
+                qos_algorithm: "ratelimit".into(),
+                qos_parameters: std::collections::BTreeMap::from([("kbps".into(), "4096".into())]),
+                allowed_operations: Some(vec![]),
+            },
+        );
+        consumers.interfaces.insert(
+            id,
+            xenadmin_core::ManagementBondConsumer {
+                interface: id,
+                vm,
+                vm_name: guest.name.clone(),
+                power_state: guest.power_state.to_string(),
+                template: false,
+                snapshot: false,
+                locality,
+                network: source,
+                destination,
+                change: if index == 1 {
+                    xenadmin_core::ManagementVifChange::Retain
+                } else {
+                    xenadmin_core::ManagementVifChange::Move
+                },
+                device: "0".into(),
+                mac: "02:00:00:00:00:01".into(),
+                mtu: 1500,
+                attached: index != 2,
+                settings_fingerprint: [1; 32],
+            },
+        );
+    }
+    if let Operation::Bond {
+        operation: Bond::Create {
+            members, network, ..
+        },
+        ..
+    } = &op
+    {
+        for id in members
+            .iter()
+            .map(|m| m.identity.network)
+            .chain(std::iter::once(*network))
+        {
+            consumers.networks.insert(
+                id,
+                xenadmin_core::ManagementBondNetwork {
+                    name: name(i, id),
+                    mtu: 1500,
+                    default_locking_mode: Some("unlocked".into()),
+                    settings_fingerprint: [2; 32],
+                },
+            );
+        }
+    }
+    if let Operation::Bond {
+        consumers: impact, ..
+    } = &mut op
+    {
+        *impact = Some(Box::new(consumers));
+    }
+    finish_review(s, op);
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn management_guest_query_result_is_fenced_to_exact_form_and_pool() {
+        let mut s = crate::init();
+        scene(&mut s);
+        let requested = operation(editor(&mut s)).unwrap();
+        assert!(inputs_current(&s, &requested));
+        editor(&mut s).mode = BondMode::Lacp;
+        assert!(!inputs_current(&s, &requested));
+        editor(&mut s).mode = BondMode::ActiveBackup;
+        assert!(inputs_current(&s, &requested));
+        Arc::make_mut(s.inventory.as_mut().unwrap()).pool_id = uuid::Uuid::new_v4().into();
+        assert!(!inputs_current(&s, &requested));
+        s.network_workspace = None;
+        assert!(!inputs_current(&s, &requested));
+    }
+    #[test]
+    fn management_guest_impact_review_lists_moved_retained_and_no_eligible_guests() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut s = crate::init();
+            consumer_scene(&mut s);
+            let w = s.network_workspace.as_ref().unwrap();
+            let review = w.review.as_ref().unwrap();
+            assert!(review.lines.iter().any(|v| v.contains("Move network:")));
+            assert!(review.lines.iter().any(|v| v.contains("Retain network:")));
+            assert!(
+                review
+                    .lines
+                    .iter()
+                    .any(|v| v.contains("no eligible host (authoritative server response"))
+            );
+            assert!(
+                review
+                    .lines
+                    .iter()
+                    .any(|v| v.contains("3 reviewed interfaces"))
+            );
+            let first_guest = review
+                .lines
+                .iter()
+                .position(|v| v.starts_with("Move network:"))
+                .unwrap();
+            let mut rt = rune::Runtime::new(
+                s,
+                crate::view,
+                size,
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            for _ in 0..30 {
+                rt.frame(1.0 / 60.0);
+            }
+            let key = format!("network-review-line-{first_guest}");
+            let mut visible = false;
+            for _ in 0..40 {
+                if rt
+                    .find(&key)
+                    .is_some_and(|(_, y)| y > 100.0 && y < size.1 - 150.0)
+                {
+                    visible = true;
+                    break;
+                }
+                rt.wheel(size.0 / 2.0, size.1 / 2.0, -100.0);
+                for _ in 0..10 {
+                    rt.frame(1.0 / 60.0);
+                }
+            }
+            assert!(
+                visible,
+                "guest interface review must be reachable by scrolling"
+            );
+            let (x, y) = rt.find("network-confirm").unwrap();
+            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+            rt.frame(0.0);
+            assert!(rt.state.resource_operations.is_empty());
+        }
+    }
+    #[test]
+    fn management_guest_impact_becomes_stale_when_consumers_or_guest_placement_change() {
+        for change in 0..3 {
+            let mut s = crate::init();
+            consumer_scene(&mut s);
+            let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+            let (id, v) = i
+                .details
+                .vifs
+                .first_key_value()
+                .map(|(id, v)| (*id, v.clone()))
+                .unwrap();
+            match change {
+                0 => {
+                    i.details.vifs.remove(&id);
+                }
+                1 => i.details.vifs.get_mut(&id).unwrap().mac = "02:00:00:00:00:ff".into(),
+                _ => i.vms.get_mut(&v.vm.unwrap()).unwrap().power_state = PowerState::Paused,
+            }
+            assert!(
+                management::review_unavailable(&s, s.network_workspace.as_ref().unwrap()).is_some()
+            );
+        }
+    }
     #[test]
     fn management_bond_review_has_exact_members_and_recovery_at_both_widths() {
         for size in [(513.0, 652.0), (1440.0, 900.0)] {

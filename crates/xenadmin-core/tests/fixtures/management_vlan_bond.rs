@@ -7,7 +7,7 @@ fn clear(p: &mut Value) {
     p["ip_configuration_mode"] = json!("None");
     p["management"] = json!(false);
 }
-fn install(c: &mut Control, destroy: bool) {
+pub(super) fn install(c: &mut Control, destroy: bool) {
     bond_changes::install(c, false);
     for (child, vlan, tag) in [(90, 95, 17), (91, 96, 18)] {
         let mut p = c.rows[&reference("PIF", 13)].clone();
@@ -106,12 +106,13 @@ pub(super) fn migrate(c: &mut Control, create: bool) {
         v["VLAN_slave_of"].as_array_mut().unwrap().dedup();
     }
 }
-fn reviewed(c: &xenadmin_core::Connection, destroy: bool) -> ManagementNetworkOperation {
+pub(super) fn reviewed(c: &xenadmin_core::Connection, destroy: bool) -> ManagementNetworkOperation {
     let view = c.latest();
     let i = view.inventory().unwrap();
     let source =
         ManagementInterface::capture(i, id(if destroy { 190 } else { 90 }).into()).unwrap();
     ManagementNetworkOperation::Bond {
+        consumers: None,
         source,
         operation: if destroy {
             Bond::Destroy {

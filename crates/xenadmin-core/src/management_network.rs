@@ -214,6 +214,8 @@ fn usable_address(ip: &IpAddr) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManagementNetworkOperation {
     Bond {
+        #[serde(default)]
+        consumers: Option<Box<crate::ManagementBondConsumers>>,
         source: ManagementInterface,
         operation: crate::ManagementBondOperation,
     },
@@ -283,7 +285,16 @@ impl ManagementNetworkOperation {
             && source.attached
             && self.recovery_address().is_some()
             && match self {
-                Self::Bond { operation, .. } => operation.valid(source),
+                Self::Bond {
+                    operation,
+                    consumers,
+                    ..
+                } => {
+                    operation.valid(source)
+                        && consumers
+                            .as_ref()
+                            .is_none_or(|v| v.valid(source, operation))
+                }
                 Self::Move { destination, .. } => {
                     destination.valid()
                         && !destination.identity.management
@@ -368,8 +379,13 @@ impl ManagementNetworkOperation {
                 reason: "Disable HA before changing host management networking".into(),
             };
         }
-        if let Self::Bond { source, operation } = self {
-            let availability = operation.availability(source, i);
+        if let Self::Bond {
+            source,
+            operation,
+            consumers,
+        } = self
+        {
+            let availability = operation.availability(source, i, consumers.as_deref());
             if !availability.is_available() {
                 return availability;
             }

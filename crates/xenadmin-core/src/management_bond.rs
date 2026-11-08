@@ -181,6 +181,7 @@ impl ManagementBondOperation {
         &self,
         source: &ManagementInterface,
         i: &crate::Inventory,
+        consumers: Option<&crate::ManagementBondConsumers>,
     ) -> crate::ActionAvailability {
         use crate::{ActionAvailability as A, ClassAvailability as C};
         if ["pif", "bond", "vlan", "vif"]
@@ -228,12 +229,63 @@ impl ManagementBondOperation {
             .iter()
             .filter_map(|id| i.details.pifs.get(id)?.network)
             .collect::<BTreeSet<_>>();
-        if i.details
-            .vifs
-            .values()
-            .any(|v| v.network.is_some_and(|n| networks.contains(&n)))
+        if consumers.is_none()
+            && i.details
+                .vifs
+                .values()
+                .any(|v| v.network.is_some_and(|n| networks.contains(&n)))
         {
-            return A::Prerequisite { reason: "This management bond workflow requires networks without VM interfaces; migration of guest consumers remains separate".into() };
+            return A::Prerequisite {
+                reason: "Read and review the guest interface migration before changing this bond"
+                    .into(),
+            };
+        }
+        if let Some(consumers) = consumers {
+            let Some((networks, _, _)) = crate::management_bond_consumers::scope(source, self)
+            else {
+                return A::Unknown;
+            };
+            let actual = i
+                .details
+                .vifs
+                .values()
+                .filter(|v| v.network.is_some_and(|n| networks.contains(&n)))
+                .collect::<Vec<_>>();
+            if actual.len() != consumers.interfaces.len()
+                || actual.iter().any(|v| {
+                    consumers.interfaces.get(&v.id).is_none_or(|old| {
+                        old.vm != v.vm.unwrap_or(crate::VmId::from(uuid::Uuid::nil()))
+                            || Some(old.network) != v.network
+                            || old.device != v.device
+                            || !old.mac.eq_ignore_ascii_case(&v.mac)
+                            || Some(old.mtu) != v.mtu
+                            || Some(old.attached) != v.currently_attached
+                    })
+                })
+            {
+                return A::Stale;
+            }
+            for (id, expected) in &consumers.networks {
+                if i.details
+                    .networks
+                    .get(id)
+                    .and_then(|n| n.default_locking_mode.as_ref())
+                    .is_some_and(|mode| Some(mode) != expected.default_locking_mode.as_ref())
+                {
+                    return A::Stale;
+                }
+            }
+            for old in consumers.interfaces.values() {
+                if let Some(vm) = i.vms.get(&old.vm) {
+                    let resident = match old.locality {
+                        crate::ManagementVmLocality::Resident(host) => Some(host),
+                        _ => None,
+                    };
+                    if vm.power_state.to_string() != old.power_state || vm.host != resident {
+                        return A::Stale;
+                    }
+                }
+            }
         }
         A::Available
     }

@@ -7,6 +7,7 @@ use crate::{
     management_network::{Plan, canonical_ipv6},
     xapi::Session,
 };
+pub(crate) use bond::review as review_bond;
 pub(super) use bond::{created as created_bond, replacements as bond_replacements};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -48,9 +49,12 @@ pub(crate) fn validate_record(r: &ResourceOperationRecord) -> Result<(), Error> 
     p.operation.validate(r.target)?;
     require(
         match (&p.operation, &p.bond) {
-            (ManagementNetworkOperation::Bond { source, operation }, Some(b)) => {
-                b.valid_for(source, operation)
-            }
+            (
+                ManagementNetworkOperation::Bond {
+                    source, operation, ..
+                },
+                Some(b),
+            ) => b.valid_for(source, operation),
             (ManagementNetworkOperation::Bond { .. }, None) | (_, Some(_)) => false,
             (_, None) => true,
         },
@@ -62,8 +66,12 @@ pub(crate) fn validate_record(r: &ResourceOperationRecord) -> Result<(), Error> 
             "Management bond created identity lacks completion evidence",
         )?;
     }
-    if let (ManagementNetworkOperation::Bond { source, operation }, Some(b)) =
-        (&p.operation, &p.bond)
+    if let (
+        ManagementNetworkOperation::Bond {
+            source, operation, ..
+        },
+        Some(b),
+    ) = (&p.operation, &p.bond)
     {
         require(
             b.replacements.is_empty()

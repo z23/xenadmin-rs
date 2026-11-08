@@ -1571,6 +1571,7 @@ fn management_bond_record(pool: PoolId) -> ResourceOperationRecord {
     let members = vec![source.clone(), other];
     let pifs = members.iter().map(|p| p.pif).collect();
     let operation = crate::ManagementNetworkOperation::Bond {
+        consumers: None,
         source,
         operation: crate::ManagementBondOperation::Create {
             members,
@@ -1692,6 +1693,7 @@ fn management_vlan_bond_record(pool: PoolId) -> ResourceOperationRecord {
     let crate::ManagementNetworkOperation::Bond {
         source,
         operation: crate::ManagementBondOperation::Create { members, .. },
+        ..
     } = &mut plan.operation
     else {
         panic!()
@@ -1777,7 +1779,10 @@ fn management_vlan_replacement_receipts_are_scope_bound_private_and_monotonic() 
     p.completed = true;
     p.ended = true;
     p.task_uuid = Some(uuid::Uuid::new_v4().into());
-    let crate::ManagementNetworkOperation::Bond { source, operation } = &p.operation else {
+    let crate::ManagementNetworkOperation::Bond {
+        source, operation, ..
+    } = &p.operation
+    else {
         panic!()
     };
     let expected = operation.captured_vlans(source).unwrap();
@@ -1851,5 +1856,103 @@ fn management_vlan_replacement_receipts_are_scope_bound_private_and_monotonic() 
             rusqlite::params![raw, current.id.to_string()],
         )
         .unwrap();
+    }
+}
+
+#[test]
+fn management_guest_review_is_durable_immutable_and_rejects_unbound_destinations() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = Journal::open(dir.path()).unwrap();
+    let mut r = management_bond_record(uuid::Uuid::new_v4().into());
+    let p = r.management_network_plan.as_mut().unwrap();
+    let crate::ManagementNetworkOperation::Bond {
+        source,
+        operation,
+        consumers,
+    } = &mut p.operation
+    else {
+        panic!()
+    };
+    let (networks, moves, _) = crate::management_bond_consumers::scope(source, operation).unwrap();
+    let mut review = crate::ManagementBondConsumers::default();
+    for id in networks {
+        review.networks.insert(
+            id,
+            crate::ManagementBondNetwork {
+                name: "Reviewed network".into(),
+                mtu: 1500,
+                default_locking_mode: Some("unlocked".into()),
+                settings_fingerprint: [1; 32],
+            },
+        );
+    }
+    let id = crate::VifId::from(uuid::Uuid::new_v4());
+    review.interfaces.insert(
+        id,
+        crate::ManagementBondConsumer {
+            interface: id,
+            vm: uuid::Uuid::new_v4().into(),
+            vm_name: "Reviewed guest".into(),
+            power_state: "Halted".into(),
+            template: false,
+            snapshot: false,
+            locality: crate::ManagementVmLocality::PossibleHosts(vec![]),
+            network: source.identity.network,
+            destination: moves[&source.identity.network],
+            change: crate::ManagementVifChange::Move,
+            device: "0".into(),
+            mac: "02:00:00:00:00:01".into(),
+            mtu: 1500,
+            attached: false,
+            settings_fingerprint: [2; 32],
+        },
+    );
+    *consumers = Some(Box::new(review));
+    r.action = ResourceAction::ManagementNetwork(Box::new(p.operation.clone()));
+    j.resource_admit(&mut r).unwrap();
+    let loaded = j.resource_load(r.id).unwrap().unwrap();
+    assert_eq!(loaded.action, r.action);
+    let mut changed = loaded.clone();
+    let crate::ManagementNetworkOperation::Bond {
+        consumers: Some(v), ..
+    } = &mut changed.management_network_plan.as_mut().unwrap().operation
+    else {
+        panic!()
+    };
+    v.interfaces.get_mut(&id).unwrap().settings_fingerprint = [3; 32];
+    assert!(j.resource_save(&mut changed).is_err());
+    let raw: String =
+        j.0.query_row(
+            "SELECT payload FROM resource_operations WHERE id=?1",
+            [r.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for corrupt in ["destination", "locality", "network_policy"] {
+        let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for path in ["action", "management_network_plan"] {
+            let operation = if path == "action" {
+                &mut v[path]["ManagementNetwork"]["Bond"]
+            } else {
+                &mut v[path]["operation"]["Bond"]
+            };
+            match corrupt {
+                "destination" => {
+                    operation["consumers"]["interfaces"][id.to_string()]["destination"] =
+                        json!(uuid::Uuid::new_v4())
+                }
+                "locality" => {
+                    operation["consumers"]["interfaces"][id.to_string()]["locality"] =
+                        json!({"PossibleHosts":[uuid::Uuid::new_v4()]})
+                }
+                _ => operation["consumers"]["networks"] = json!({}),
+            }
+        }
+        j.0.execute(
+            "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+            rusqlite::params![v.to_string(), r.id.to_string()],
+        )
+        .unwrap();
+        assert!(j.resource_load(r.id).is_err(), "{corrupt}");
     }
 }

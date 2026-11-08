@@ -199,8 +199,9 @@ impl ResourceRequest {
                 return Ok(());
             }
         }
-        if let crate::ManagementNetworkOperation::Bond { source, operation } =
-            &self.management_plan()?.operation
+        if let crate::ManagementNetworkOperation::Bond {
+            source, operation, ..
+        } = &self.management_plan()?.operation
         {
             let count = operation
                 .captured_vlans(source)

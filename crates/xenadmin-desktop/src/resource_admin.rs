@@ -568,6 +568,29 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
         if let Some(error) = &record.local_error {
             view = view.child(caption(error, k).wrap().color(k.c.danger.icon));
         }
+        if let xenadmin_core::ResourceAction::ManagementNetwork(op) = &record.action
+            && let xenadmin_core::ManagementNetworkOperation::Bond {
+                consumers: Some(consumers),
+                ..
+            } = op.as_ref()
+        {
+            for v in consumers.interfaces.values() {
+                view = view.child(
+                    caption(
+                        format!(
+                            "Reviewed NIC {} · VM {} · {} · {} → {}",
+                            v.interface,
+                            v.vm,
+                            v.change.label(),
+                            v.network,
+                            v.destination
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
+        }
         if let Some(evidence) = &record.management_network {
             for moved in &evidence.moved_vlans {
                 view = view.child(

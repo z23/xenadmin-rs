@@ -5,9 +5,16 @@ pub use desktop_instance::{DesktopInstance, activate_desktop};
 mod disk_administration;
 pub use disk_administration::{DiskConsumer, DiskOperation, OwnedDiskSource, ReviewedDisk};
 mod management_bond;
+mod management_bond_consumers;
+pub use management_bond_consumers::{
+    ManagementBondConsumer, ManagementBondConsumers, ManagementBondNetwork, ManagementVifChange,
+    ManagementVmLocality,
+};
+mod management_bond_review;
 pub use management_bond::{
     ManagementBondCreated, ManagementBondOperation, ManagementVlanReplacement,
 };
+pub use management_bond_review::ManagementBondReviewQuery;
 mod management_network;
 mod management_topology;
 pub use management_network::{

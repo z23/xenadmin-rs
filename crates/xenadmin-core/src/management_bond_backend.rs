@@ -1,3 +1,5 @@
+#[path = "management_bond_consumer_backend.rs"]
+mod consumers;
 #[path = "management_bond_vlans.rs"]
 mod vlans;
 use super::*;
@@ -9,7 +11,9 @@ use std::collections::BTreeMap;
 pub(in crate::resources) use vlans::replacements;
 fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, &Op), Error> {
     match operation(r)? {
-        ManagementNetworkOperation::Bond { source, operation } => Ok((source, operation)),
+        ManagementNetworkOperation::Bond {
+            source, operation, ..
+        } => Ok((source, operation)),
         _ => Err(Error::InvalidResourceCommand),
     }
 }
@@ -64,7 +68,7 @@ async fn environment(
     s: &Session,
     r: &ResourceOperationRecord,
     t: &Records,
-    networks: &BTreeSet<String>,
+    _networks: &BTreeSet<String>,
     management: &str,
 ) -> Result<(), Error> {
     let (_, pool) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
@@ -104,15 +108,6 @@ async fn environment(
                 "Management address is duplicated on another pool interface",
             )?;
         }
-    }
-    for v in network::all(s, "VIF").await?.values() {
-        let n = v["network"]
-            .as_str()
-            .ok_or(Error::Protocol("VM network graph unavailable"))?;
-        require(
-            !networks.contains(n),
-            "Management bond networks have VM consumers; review their migration separately",
-        )?;
     }
     // Clustering can move its protected interface during Bond.create/destroy. Never infer absence.
     let clusters = match network::all(s, "Cluster_host").await {
@@ -256,6 +251,7 @@ pub(super) async fn before(
             args = vec![json!(bond_ref)];
         }
     }
+    consumers::before(s, operation(r)?).await?;
     environment(s, r, &t, &nets, t.pif(source.pif)?.0).await?;
     Ok((baseline(&t, props)?, args))
 }
@@ -493,8 +489,52 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
         );
     }
     nets.insert(net_ref.into());
+    consumers::verify(s, operation(r)?).await?;
     environment(s, r, &t, &nets, receiver_ref).await
 }
 fn receiver_host(t: &Records, id: PifId) -> Result<&str, Error> {
     t.pif(id)?.1["host"].as_str().ok_or(Error::ResourceConflict)
+}
+
+pub(crate) async fn review(
+    s: &Session,
+    observed: crate::ObservedResource,
+    mut operation: ManagementNetworkOperation,
+) -> Result<ManagementNetworkOperation, Error> {
+    operation.validate(observed.target())?;
+    xapi::read(s, ResourceTarget::Pool(observed.pool)).await?;
+    xapi::read(s, observed.target()).await?;
+    let ManagementNetworkOperation::Bond {
+        source,
+        operation: op,
+        consumers: impact,
+    } = &mut operation
+    else {
+        return Err(Error::InvalidResourceCommand);
+    };
+    let t = Records::read(s).await?;
+    pif(s, source, None, Some(&t)).await?;
+    let component = t.topology(source.pif)?;
+    require(
+        source.topology.as_deref().map_or(
+            component.vlans.is_empty() && component.bonds.is_empty(),
+            |v| v == &component,
+        ),
+        "Management topology changed while preparing guest interface review",
+    )?;
+    if let Op::Create { members, .. } = op {
+        for member in members {
+            pif(s, member, None, Some(&t)).await?;
+            let component = t.topology(member.pif)?;
+            require(
+                member.topology.as_deref().map_or(
+                    component.vlans.is_empty() && component.bonds.is_empty(),
+                    |v| v == &component,
+                ),
+                "Member topology changed while preparing guest interface review",
+            )?;
+        }
+    }
+    *impact = Some(Box::new(consumers::capture(s, source, op).await?));
+    Ok(operation)
 }

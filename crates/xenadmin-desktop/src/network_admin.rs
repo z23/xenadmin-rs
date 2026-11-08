@@ -53,6 +53,7 @@ pub(super) struct Workspace {
     host: Option<HostId>,
     form: Form,
     review: Option<Review>,
+    bond_review: Option<management_bond::Pending>,
     error: Option<String>,
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
@@ -84,6 +85,7 @@ pub(super) fn open(s: &mut State) {
         host,
         form: Form::Browse,
         review: None,
+        bond_review: None,
         error: None,
     });
 }
@@ -121,6 +123,7 @@ fn set_form(s: &mut State, form: Form) {
     let w = edit(s);
     w.form = form;
     w.review = None;
+    w.bond_review = None;
     w.error = None;
 }
 fn prepare(s: &mut State, target: ResourceTarget, operation: NetworkOperation, lines: Vec<String>) {
@@ -943,6 +946,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     };
     let current = s.inventory.as_ref().filter(|i| i.pool_id == w.pool);
     let mut body = col().gap(12.0).child(heading("Host networking", k));
+    if w.bond_review.is_some() {
+        body = body.child(caption("Reading the exact guest interface impact…", k).wrap());
+    }
     if let Some(review) = &w.review {
         body = body.child(heading(review.operation.label(), k)).child(
             caption(
@@ -951,8 +957,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .wrap_anywhere(),
         );
-        for line in &review.lines {
-            body = body.child(caption(line, k).wrap_anywhere());
+        for (index, line) in review.lines.iter().enumerate() {
+            body = body.child(
+                caption(line, k)
+                    .wrap_anywhere()
+                    .key(format!("network-review-line-{index}")),
+            );
         }
     } else if let Some(i) = current {
         body = body.child(form(s, w, i, k));
@@ -1048,6 +1058,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .child(
                 Button::new("Review network change")
+                    .disabled(w.bond_review.is_some())
                     .on_press(form_review)
                     .build(k)
                     .key("network-review"),
@@ -1141,6 +1152,7 @@ pub(super) fn scene(s: &mut State) {
             tag: TextEdit::new("100"),
         },
         review: None,
+        bond_review: None,
         error: None,
     });
 }
@@ -1169,6 +1181,15 @@ pub(super) fn management_vlan_bond_scene(s: &mut State) {
 pub(super) fn management_bond_scene(s: &mut State) {
     management_bond::scene(s);
 }
+
+pub(super) fn poll(s: &mut State) -> bool {
+    management_bond::poll(s)
+}
+
+pub(super) fn management_bond_consumer_scene(s: &mut State) {
+    management_bond::consumer_scene(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

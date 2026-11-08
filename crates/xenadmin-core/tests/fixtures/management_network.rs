@@ -31,6 +31,10 @@ enum Fault {
     BondChangedAfterWrite,
     VlanChangedAfterWrite,
     VlanIncompleteAfterWrite,
+    VifIgnored,
+    VifSettingsChanged,
+    VifRebound,
+    NetworkPolicyChanged,
 }
 struct Control {
     rows: BTreeMap<String, Value>,
@@ -41,6 +45,7 @@ struct Control {
     requests: Vec<Value>,
     wrong_certificate: Arc<std::sync::atomic::AtomicBool>,
     delay: bool,
+    review_delay: bool,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
 }
@@ -273,33 +278,35 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
         requests: Vec::new(),
         wrong_certificate: wrong_certificate.clone(),
         delay: false,
+        review_delay: false,
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
     }));
     let captured = control.clone();
     let mock=mock_overridden(override_rpc(move|request:Value|{let control=captured.clone();async move {
         let method=request["method"].as_str().unwrap();
-        let gate=if method.starts_with("Async.") {let mut c=control.lock().unwrap();std::mem::take(&mut c.delay).then(||(c.entered.clone(),c.release.clone()))}else{None};
+        let gate=if method.starts_with("Async.") {let mut c=control.lock().unwrap();std::mem::take(&mut c.delay).then(||(c.entered.clone(),c.release.clone()))}else if method=="VM.get_possible_hosts" {let mut c=control.lock().unwrap();std::mem::take(&mut c.review_delay).then(||(c.entered.clone(),c.release.clone()))}else{None};
         if let Some((entered,release))=gate {entered.notify_one();release.notified().await;}
         let mut c=control.lock().unwrap();
         if method=="host.get_server_certificate" && c.writes>0 && c.fault==Fault::RebindForCleanup {c.rows.get_mut(&reference("task",51)).unwrap()["uuid"]=json!(id(99));}
-        if method=="host.get_server_certificate" {return Some(RpcReply::Json(json!({"result":if request["params"][1]==reference("host",9) && c.fault==Fault::Redirect {&c.coordinator_certificate}else{&c.certificate}})));}
+        if method=="host.get_server_certificate" {return Some(RpcReply::Json(json!({"result":if request["params"][1]==reference("host",9) && (c.fault==Fault::Redirect || c.rows.get(&reference("host",9)).is_some_and(|v|v["fixture_distinct_certificate"]==true)) {&c.coordinator_certificate}else{&c.certificate}})));}
         if method=="event.from" && request["params"][2]=="" {
             let mut batch=batch("initial","Halted");batch["events"].as_array_mut().unwrap().retain(|v|v["class"]=="VM");
             for (reference,record) in &c.rows {batch["events"].as_array_mut().unwrap().push(json!({"class":reference.split(':').nth(1).unwrap(),"operation":"add","ref":reference,"snapshot":record}));}
             return Some(RpcReply::Json(json!({"result":batch})));
         }
-        if let Some(class)=method.strip_suffix(".get_all_records") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","Cluster_host"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_all_records") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","VM","Cluster_host"].contains(&class) {
             if class=="PIF" && c.writes>0 && c.fault==Fault::TopologyReadAfterCompletion {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})));}
             let rows=c.rows.iter().filter(|(r,_)|r.split(':').nth(1)==Some(class)).map(|(r,v)|(r.clone(),v.clone())).collect::<serde_json::Map<_,_>>();return Some(RpcReply::Json(json!({"result":rows})));
         }
-        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","Cluster_host"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_by_uuid") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","VM","Cluster_host"].contains(&class) {
             let row=c.rows.iter().find(|(r,v)|r.split(':').nth(1)==Some(class) && v["uuid"]==request["params"][1]);return Some(RpcReply::Json(match row {Some((r,_))=>json!({"result":r}),_=>json!({"error":{"code":1,"message":"UUID_INVALID","data":[]}})}));
         }
-        if let Some(class)=method.strip_suffix(".get_record") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","Cluster_host"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_record") && ["host","pool","PIF","network","task","Bond","VLAN","VIF","VM","Cluster_host"].contains(&class) {
             if c.writes>0 && class=="PIF" && c.fault==Fault::ReadAfterCompletion {return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})));}
             return Some(RpcReply::Json(match c.rows.get(request["params"][1].as_str().unwrap()) {Some(v)=>json!({"result":v}),_=>json!({"error":{"code":1,"message":"HANDLE_INVALID","data":[]}})}));
         }
+        if method=="VM.get_possible_hosts" {return Some(RpcReply::Json(match c.rows.get(request["params"][1].as_str().unwrap()).and_then(|v|v.get("fixture_possible_hosts")).filter(|v|v.is_array()) {Some(v)=>json!({"result":v}),None=>json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})}));}
         if method=="task.destroy" {c.rows.remove(request["params"][1].as_str().unwrap());return Some(RpcReply::Json(json!({"result":null})));}
         if method.starts_with("Async.") {
             c.requests.push(request.clone());c.writes+=1;let pif=request["params"][1].as_str().unwrap().to_owned();
@@ -1077,3 +1084,6 @@ mod bond_changes;
 
 #[path = "management_vlan_bond.rs"]
 mod vlan_bond_changes;
+
+#[path = "management_bond_vifs.rs"]
+mod vif_bond_changes;

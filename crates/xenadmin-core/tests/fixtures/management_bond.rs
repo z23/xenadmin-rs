@@ -19,6 +19,7 @@ pub(super) fn install(c: &mut Control, destroy: bool) {
     }
 }
 pub(super) fn change(c: &mut Control, r: &Value) {
+    super::vif_bond_changes::migrate(c, r);
     if r["method"] == "Async.Bond.create" {
         let mut master = c.rows[&reference("PIF", 13)].clone();
         master["uuid"] = json!(id(81));
@@ -53,11 +54,12 @@ pub(super) fn change(c: &mut Control, r: &Value) {
     super::vlan_bond_changes::migrate(c, r["method"] == "Async.Bond.create");
 }
 
-fn reviewed(c: &xenadmin_core::Connection, destroy: bool) -> ManagementNetworkOperation {
+pub(super) fn reviewed(c: &xenadmin_core::Connection, destroy: bool) -> ManagementNetworkOperation {
     let view = c.latest();
     let i = view.inventory().unwrap();
     let source = ManagementInterface::capture(i, id(if destroy { 81 } else { 13 }).into()).unwrap();
     ManagementNetworkOperation::Bond {
+        consumers: None,
         source,
         operation: if destroy {
             Bond::Destroy {
@@ -151,7 +153,7 @@ async fn failed_lost_or_unverified_management_bond_never_replays() {
         c.close().await;
     }
 }
-async fn rechecked(
+pub(super) async fn rechecked(
     c: &xenadmin_core::Connection,
     id: xenadmin_core::OperationId,
     revision: u64,
