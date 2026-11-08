@@ -22,6 +22,7 @@ mod profiles_view;
 mod resource_admin;
 mod resource_details;
 mod search_view;
+mod session_permissions_view;
 mod settings;
 mod snapshot_policy_view;
 mod storage_view;
@@ -405,6 +406,18 @@ impl State {
             .map(|error| error.to_string());
     }
     fn request_power(&mut self, action: xenadmin_core::PowerAction) {
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.power_permission(action).is_denied())
+        {
+            self.error = Some(
+                xenadmin_core::PermissionDecision::Denied
+                    .explanation()
+                    .into(),
+            );
+            return;
+        }
         if let Some(vm) = self.selected().and_then(|row| row.vm) {
             let Some(observed) = self
                 .snapshot
@@ -1678,24 +1691,35 @@ fn details(s: &State, k: &Kit) -> El {
         let diagnostics = s.diagnostics.as_ref().filter(|diagnostics| {
             diagnostics.context.vm == vm.id && diagnostics.is_current(s.snapshot.as_deref())
         });
+        if let Some(permission @ xenadmin_core::PermissionDecision::Unknown(_)) = s
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.power_permission(xenadmin_core::PowerAction::Start))
+        {
+            actions = actions.child(session_permissions_view::notice(permission, k));
+        }
         for action in xenadmin_core::PowerAction::ALL {
-            let enabled = s.can_mutate() && vm.allowed_actions.contains(&action);
-            actions = actions.child(
-                Button::new(action.label())
-                    .variant(if action.is_force() {
-                        ButtonVariant::Ghost
-                    } else {
-                        ButtonVariant::Outline
-                    })
-                    .disabled(!enabled)
-                    .on_press(move |s: &mut State| s.request_power(action))
-                    .build(k)
-                    .key(format!("power-{action:?}")),
-            );
+            let permission = s
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.power_permission(action));
+            let permission_denied = permission.is_some_and(|p| p.is_denied());
+            let enabled =
+                s.can_mutate() && vm.allowed_actions.contains(&action) && !permission_denied;
+            actions = actions.child(session_permissions_view::power_button(
+                action, enabled, permission, k,
+            ));
             let diagnostic = diagnostics
                 .and_then(|d| d.handles.iter().find(|(a, _)| *a == action))
                 .map(|(_, handle)| handle.latest());
-            let reason = match diagnostic {
+            let reason = if permission_denied {
+                Some(
+                    xenadmin_core::PermissionDecision::Denied
+                        .explanation()
+                        .into(),
+                )
+            } else {
+                match diagnostic {
                 Some(Some(Ok(xenadmin_core::ActionAvailability::Available)))
                     if !vm.allowed_actions.contains(&action) =>
                 {
@@ -1716,6 +1740,7 @@ fn details(s: &State, k: &Kit) -> El {
                         .explanation()
                     }),
                 None => None,
+            }
             };
             if let Some(reason) = reason {
                 actions = actions.child(caption(reason, k).wrap());

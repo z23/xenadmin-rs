@@ -76,6 +76,7 @@ pub struct ConnectionFailure {
 
 #[derive(Clone, Debug)]
 pub struct ConnectionSnapshot {
+    permissions: crate::SessionPermissions,
     generation: u64,
     state: ConnectionState,
     inventory: Option<Arc<Inventory>>,
@@ -105,6 +106,19 @@ impl std::fmt::Display for ObservedVm {
     }
 }
 impl ConnectionSnapshot {
+    pub fn session_permissions(&self) -> crate::SessionPermissions {
+        if self.is_current() {
+            self.permissions.clone()
+        } else {
+            crate::SessionPermissions::default()
+        }
+    }
+    pub fn method_permission(&self, method: &str) -> crate::PermissionDecision {
+        self.session_permissions().method(method)
+    }
+    pub fn power_permission(&self, action: crate::PowerAction) -> crate::PermissionDecision {
+        self.session_permissions().power(action)
+    }
     pub fn connection_route(&self) -> Option<&str> {
         self.route.as_deref()
     }
@@ -351,6 +365,7 @@ impl Backend {
         let read_only = options.read_only;
         let authority = options.authority_key(&credentials, &self.authority_salt);
         let (sender, receiver) = watch::channel(Arc::new(ConnectionSnapshot {
+            permissions: crate::SessionPermissions::default(),
             generation: 0,
             state: ConnectionState::Connecting,
             inventory: None,
@@ -1018,6 +1033,9 @@ async fn run(
             Ok(session) => {
                 failure_stage = ConnectionStage::Inventory;
                 let session = Arc::new(session);
+                let mut authenticated = (*sender.borrow().clone()).clone();
+                authenticated.permissions = session.permissions().clone();
+                sender.send_replace(Arc::new(authenticated));
                 let active = cancel.child_token();
                 publish(
                     &sender,
@@ -1481,6 +1499,7 @@ async fn run(
         }
         let previous = sender.borrow().clone();
         sender.send_replace(Arc::new(ConnectionSnapshot {
+            permissions: crate::SessionPermissions::default(),
             generation,
             state: if retry {
                 ConnectionState::Reconnecting
@@ -1629,6 +1648,11 @@ fn publish(
 ) {
     let previous = sender.borrow().clone();
     sender.send_replace(Arc::new(ConnectionSnapshot {
+        permissions: if generation == previous.generation {
+            previous.permissions.clone()
+        } else {
+            crate::SessionPermissions::default()
+        },
         generation,
         state,
         inventory: inventory.clone(),
@@ -1822,5 +1846,38 @@ impl Connection {
             .try_send(Request::ResourceSubmit(Box::new(request)))
             .map_err(|_| Error::Busy)?;
         Ok(handle)
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    #[test]
+    fn publication_discards_permissions_on_generation_change_or_stale_state() {
+        let permissions = crate::SessionPermissions::decode(
+            &serde_json::json!({"is_local_superuser":false,"rbac_permissions":[]}),
+        );
+        let (sender, _receiver) = watch::channel(Arc::new(ConnectionSnapshot {
+            permissions,
+            generation: 4,
+            state: ConnectionState::Reconnecting,
+            inventory: None,
+            error: None,
+            failure: None,
+            route: None,
+            updated_at: None,
+            endpoint: None,
+            verified_members: vec![],
+        }));
+        // A stale connection must not expose its previous session's denial.
+        assert!(matches!(
+            sender.borrow().power_permission(crate::PowerAction::Start),
+            crate::PermissionDecision::Unknown(_)
+        ));
+        publish(&sender, 5, ConnectionState::Connecting, &None, None, None);
+        assert_eq!(
+            sender.borrow().permissions,
+            crate::SessionPermissions::default()
+        );
     }
 }

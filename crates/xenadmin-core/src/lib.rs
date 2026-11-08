@@ -1,4 +1,6 @@
+mod permissions;
 mod power_batch;
+pub use permissions::{PermissionDecision, PermissionUnknown, SessionPermissions};
 pub use power_batch::{BatchVmPower, VmPowerBatch};
 mod host_power;
 pub use host_power::{

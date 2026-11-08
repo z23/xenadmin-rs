@@ -45,6 +45,7 @@ const OPTIONAL_CLASSES: &[&str] = &[
 ];
 
 pub(crate) struct Session {
+    permissions: crate::SessionPermissions,
     options: ConnectionOptions,
     commands: reqwest::Client,
     events: reqwest::Client,
@@ -54,6 +55,9 @@ pub(crate) struct Session {
 }
 
 impl Session {
+    pub(crate) fn permissions(&self) -> &crate::SessionPermissions {
+        &self.permissions
+    }
     pub(crate) fn options(&self) -> &ConnectionOptions {
         &self.options
     }
@@ -86,6 +90,7 @@ impl Session {
             let commands = target.client()?;
             let events = target.client()?;
             let mut session = Self {
+                permissions: crate::SessionPermissions::default(),
                 options: target.clone(),
                 commands,
                 events,
@@ -121,6 +126,51 @@ impl Session {
                 })
                 .ok_or(Error::Protocol("invalid session reference"))?;
             session.token = Zeroizing::new(token.into());
+            session.permissions = match session
+                .rpc(
+                    false,
+                    "session.get_record",
+                    vec![json!(&*session.token), json!(&*session.token)],
+                )
+                .await
+            {
+                Ok(record) => crate::SessionPermissions::decode(&record),
+                Err(Error::Api(code))
+                    if matches!(
+                        code.as_str(),
+                        "SESSION_INVALID"
+                            | "SESSION_AUTHENTICATION_FAILED"
+                            | "SESSION_AUTHORIZATION_FAILED"
+                    ) =>
+                {
+                    return Err(Error::Api(code));
+                }
+                Err(
+                    error @ (Error::Coordinator(_)
+                    | Error::Certificate
+                    | Error::EndpointCertificate(_)
+                    | Error::Closed),
+                ) => return Err(error),
+                Err(Error::Api(code))
+                    if matches!(
+                        code.as_str(),
+                        "MESSAGE_METHOD_UNKNOWN"
+                            | "MESSAGE_PARAMETER_COUNT_MISMATCH"
+                            | "NOT_IMPLEMENTED"
+                    ) =>
+                {
+                    crate::SessionPermissions::unknown(crate::PermissionUnknown::Unsupported)
+                }
+                Err(Error::Api(code))
+                    if matches!(
+                        code.as_str(),
+                        "RBAC_PERMISSION_DENIED" | "PERMISSION_DENIED"
+                    ) =>
+                {
+                    crate::SessionPermissions::unknown(crate::PermissionUnknown::DiscoveryDenied)
+                }
+                Err(_) => crate::SessionPermissions::unknown(crate::PermissionUnknown::Unavailable),
+            };
             return Ok(session);
         }
         Err(Error::Protocol("too many coordinator redirects"))
@@ -199,6 +249,7 @@ impl Session {
     }
 
     pub(crate) async fn call(&self, method: &str, parameters: Vec<Value>) -> Result<Value, Error> {
+        self.permissions.guard(method)?;
         let mut params = vec![json!(&*self.token)];
         params.extend(parameters);
         self.rpc(false, method, params).await

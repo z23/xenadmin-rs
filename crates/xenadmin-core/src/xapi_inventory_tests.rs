@@ -53,6 +53,8 @@ impl Fixture {
                     }
                     let mut response = if request["method"] == "session.login_with_password" {
                         json!({"result":"OpaqueRef:fixture-session"})
+                    } else if request["method"] == "session.get_record" {
+                        json!({"result":{"is_local_superuser":true}})
                     } else {
                         handler(request.clone())
                     };

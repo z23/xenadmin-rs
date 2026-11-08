@@ -285,6 +285,18 @@ are never saved with profiles or sent inside the host TLS tunnel. HTTP proxy aut
 itself is not protected by TLS to the proxy; the editor states that boundary. Certificate
 pins and host credentials remain scoped to the inner host endpoint.
 
+Each new XAPI session discovers its own local-superuser flag and bounded effective
+permission list. The session list is static server evidence; subject role names are display
+information and do not grant capabilities. The ordinary RPC boundary checks exact normalized
+method permission, removing the asynchronous prefix as XAPI does. A known missing permission
+prevents that RPC. Unsupported, denied or invalid discovery remains explicit unknown and
+defers authorization to the server. Protected map-key add/remove operations remain unknown
+without the server's full protected-key schema. Grants never bypass object-state checks or
+server rejection. Connection snapshots expose this evidence only while current and reset it
+on every generation, including renewal. No session reference enters the public projection.
+Direct HTTP authorization remains enforced by the host; advanced workflow reviews need
+complete typed method requirements before they can predict all later dispatch denials.
+
 Closing the desktop stops new admission, journals outstanding state, closes consoles, and
 performs bounded local cleanup and logout where safe. Explain that server tasks may continue.
 On restart, reconcile unfinished journal entries after fresh pool inventory is available.

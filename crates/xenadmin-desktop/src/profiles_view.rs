@@ -917,6 +917,21 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         {
             entry = entry.child(caption(format!("Last connection route: {route}"), k).wrap());
         }
+        if let Some(snapshot) = connection.map(|connection| connection.latest()) {
+            let permissions = snapshot.session_permissions();
+            let roles = permissions.roles().join(", ");
+            entry = entry.child(
+                caption(permissions.summary(), k)
+                    .wrap()
+                    .key(format!("profile-permissions-{id}")),
+            );
+            if !roles.is_empty() {
+                entry = entry.child(caption(format!("Session roles: {roles}"), k).wrap());
+            }
+            if snapshot.is_current() {
+                entry = entry.child(caption("Role changes require a new login. Reconnect as another user to use a different account; no roles are granted automatically.", k).wrap());
+            }
+        }
         if let Some(failure) = connection.and_then(|c| c.latest().failure().cloned()) {
             entry = entry
                 .child(caption(format!("Last failure stage: {}", failure.stage.label()), k).wrap());

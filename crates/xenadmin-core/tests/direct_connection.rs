@@ -1,4 +1,6 @@
 use serde_json::{Value, json};
+#[path = "fixtures/permissions.rs"]
+mod permissions;
 use std::{future::Future, pin::Pin};
 use std::{
     sync::{
@@ -134,6 +136,7 @@ async fn mock_with_overrides(
                         Some(RpcReply::Json(response)) => response,
                         Some(RpcReply::Drop) => return,
                         None => match method {
+                            "session.get_record" => json!({"result":{"is_local_superuser":true}}),
                             "session.login_with_password" => {
                                 logins.fetch_add(1, Ordering::SeqCst);
                                 if denied {

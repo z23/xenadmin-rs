@@ -190,6 +190,7 @@ fn respond(data: &mut Data, request: &Value) -> Option<Value> {
     let p = &request["params"];
     data.calls.push((method.into(), p.clone()));
     match method {
+        "session.get_record" => Some(json!({"is_local_superuser":true})),
         "session.login_with_password" => Some(json!("OpaqueRef:synthetic-secret-session")),
         "pool.get_by_uuid" => Some(json!("OpaqueRef:pool")),
         "pool.get_record" => {

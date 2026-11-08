@@ -79,7 +79,17 @@ fn unavailable(s: &State, e: &Editor, action: PowerAction) -> Vec<String> {
         .filter_map(|vm| {
             let inventory = s.inventory.as_ref().filter(|i| i.pool_id == e.pool);
             let now = inventory.and_then(|i| i.vms.get(&vm.id));
-            let explanation = if now.is_none_or(|v| {
+            let explanation = if s
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.power_permission(action).is_denied())
+            {
+                Some(
+                    xenadmin_core::PermissionDecision::Denied
+                        .explanation()
+                        .into(),
+                )
+            } else if now.is_none_or(|v| {
                 v.is_template || v.is_control_domain || v.power_state != vm.power_state
             }) {
                 Some("VM identity or power state changed; reopen the selection".into())
