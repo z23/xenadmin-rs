@@ -1713,64 +1713,67 @@ async fn lost_settings_response_reconciles_values_without_repeating_the_write() 
     use xenadmin_core::{
         OperationControl, OperationId, OperationState, VmCommand, VmSettingEdit, VmSettingsPatch,
     };
-    let (server, _) = settings_mock(false, true, None).await;
-    let directory = tempfile::tempdir().unwrap();
-    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
-    let connection = backend.connect(
-        ConnectionOptions::new(server.endpoint.clone()),
-        Credentials::new("root".into(), "fixture".into()),
-    );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
-    let vm = connection
-        .latest()
-        .observe_vm(inventory.guests().next().unwrap().id)
+    // Exercise Recheck at the outcome-publication/worker-exit boundary repeatedly.
+    for _ in 0..16 {
+        let (server, _) = settings_mock(false, true, None).await;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let connection = backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("root".into(), "fixture".into()),
+        );
+        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let vm = connection
+            .latest()
+            .observe_vm(inventory.guests().next().unwrap().id)
+            .unwrap();
+        let id = OperationId::new();
+        let operation = connection
+            .submit(
+                id,
+                VmCommand::Configure {
+                    vm,
+                    patch: VmSettingsPatch::new(vec![VmSettingEdit::Name {
+                        previous: "XO recovery guest".into(),
+                        value: "Renamed fixture".into(),
+                    }])
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while operation.latest().state != OperationState::OutcomeUnknown {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
         .unwrap();
-    let id = OperationId::new();
-    let operation = connection
-        .submit(
-            id,
-            VmCommand::Configure {
-                vm,
-                patch: VmSettingsPatch::new(vec![VmSettingEdit::Name {
-                    previous: "XO recovery guest".into(),
-                    value: "Renamed fixture".into(),
-                }])
-                .unwrap(),
-            },
-        )
+        connection
+            .control_operation(id, OperationControl::Recheck)
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !connection
+                .operation_history()
+                .iter()
+                .any(|r| r.id == id && r.state == OperationState::Succeeded)
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while operation.latest().state != OperationState::OutcomeUnknown {
-            tokio::time::sleep(Duration::from_millis(10)).await
-        }
-    })
-    .await
-    .unwrap();
-    connection
-        .control_operation(id, OperationControl::Recheck)
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while !connection
-            .operation_history()
-            .iter()
-            .any(|r| r.id == id && r.state == OperationState::Succeeded)
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        server
-            .methods
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|m| m.as_str() == "VM.set_name_label")
-            .count(),
-        1
-    );
-    connection.close().await;
+        assert_eq!(
+            server
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| m.as_str() == "VM.set_name_label")
+                .count(),
+            1
+        );
+        connection.close().await;
+    }
 }
 
 #[tokio::test]

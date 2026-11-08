@@ -1377,6 +1377,7 @@ async fn run(
                 let mut resource_workers = tokio::task::JoinSet::new();
                 let mut resource_counts = BTreeMap::<crate::OperationId, usize>::new();
                 let mut resource_rechecks = BTreeSet::new();
+                let mut vm_rechecks = BTreeSet::new();
                 let mut cross_pool_rechecks =
                     BTreeMap::<crate::OperationId, crate::resources::ResourceRequest>::new();
                 let worker_options = options.clone();
@@ -1463,7 +1464,16 @@ async fn run(
                         }
                         done=workers.join_next(), if !workers.is_empty()=>{
                             match done {
-                                Some(Ok(id))=>{if let Some(count)=worker_counts.get_mut(&id) { *count-=1; if *count==0 {worker_counts.remove(&id);} }},
+                                Some(Ok(id))=>{
+                                    if let Some(count)=worker_counts.get_mut(&id) { *count-=1; if *count==0 {worker_counts.remove(&id);} }
+                                    if !worker_counts.contains_key(&id) && vm_rechecks.remove(&id) {
+                                        match operations::Journal::open(&directory).and_then(|journal|journal.load(id)) {
+                                            Ok(Some(record)) if record.batch_parent.is_none() && !record.state.terminal() && record.can_recheck()=>start_worker(MutationRequest::tracking(record),None,&mut workers,&mut worker_counts),
+                                            Err(error)=>publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update),
+                                            _=>{},
+                                        }
+                                    }
+                                },
                                 Some(Err(_))=>break Some(Error::Connection("An operation worker stopped unexpectedly. Reconnect to reconcile its journal.".into())),
                                 None=>{},
                             }
@@ -1657,8 +1667,12 @@ async fn run(
                                             crate::OperationControl::AcknowledgeUnknown=>journal.control(pool,id,true)?,
                                             crate::OperationControl::Recheck=>journal.load(id)?.filter(|record|record.pool==pool && !record.state.terminal() && record.can_recheck()).ok_or(Error::UnavailableAction)?,
                                         };
-                                        if !record.state.terminal() && record.can_recheck() && !worker_counts.contains_key(&id) {
-                                            start_worker(MutationRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
+                                        if !record.state.terminal() && record.can_recheck() {
+                                            if !worker_counts.contains_key(&id) {
+                                                start_worker(MutationRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
+                                            } else if matches!(control,crate::OperationControl::Recheck) {
+                                                vm_rechecks.insert(id);
+                                            }
                                         }
                                         merge_record(&mut records,record);
                                         publish_history(&history,&mut records);
