@@ -662,7 +662,11 @@ async fn recheck_unknown(c: &xenadmin_core::Connection, record: &ResourceOperati
             if let Some(current) = c
                 .resource_history()
                 .iter()
-                .find(|r| r.id == record.id && r.revision() > record.revision())
+                .find(|r| {
+                    r.id == record.id
+                        && r.revision() > record.revision()
+                        && (r.state == OperationState::OutcomeUnknown || r.state.terminal())
+                })
             {
                 assert_eq!(current.state, OperationState::OutcomeUnknown);
                 break;
