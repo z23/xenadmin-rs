@@ -703,11 +703,11 @@ async fn creation_reconciliation_cannot_adopt_a_resource_from_the_preexisting_ba
         .unwrap();
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if let Some(record) = connection
-                .resource_history()
-                .iter()
-                .find(|r| r.id == id && r.revision() > initial.revision())
-            {
+            if let Some(record) = connection.resource_history().iter().find(|r| {
+                r.id == id
+                    && r.revision() > initial.revision()
+                    && (r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+            }) {
                 assert_eq!(record.state, OperationState::OutcomeUnknown);
                 assert!(record.created.is_none());
                 break;

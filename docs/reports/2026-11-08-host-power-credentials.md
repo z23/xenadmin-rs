@@ -63,9 +63,13 @@ Final validation on this branch:
   `recorded_completion_survives_removed_task_and_reconnect_without_a_second_transfer`: a
   higher-revision interrupted/unknown publication was observed before success. Evidence is
   retained in `/tmp/xenadmin-host-power-workspace.log`; it was reported to the transfer owner.
-- A subsequent run explicitly filtering only that named case passed 701 tests: 324 core unit,
-  196 protocol, five profile, four TLS, 172 desktop and four probe tests. This is not claimed
-  as an unfiltered full-suite pass.
+- The cross-pool owner fixed that progress-publication race in `f4fed28`. The next run exposed
+  an older resource-creation fixture that treated any newer revision (including `Verifying`)
+  as a final result. Its wait now requires a newer terminal/unknown result; its exact unknown,
+  no-created-resource and no-second-write assertions are unchanged.
+- The final unfiltered workspace run passed all 702 tests: 324 core unit, 197 protocol,
+  five profile, four TLS, 172 desktop and four probe tests. No tests were skipped.
+  Final log: `/tmp/xenadmin-host-power-workspace-final.log`.
 - Strict workspace/all-target Clippy, formatting and shell/diff checks pass.
 - Native Vulkan renders at 1440×900 and 513×652 were visually inspected; the review text wraps
   and the footer remains visible. Scenes use synthetic data and contain no real host content.
