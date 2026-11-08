@@ -73,3 +73,11 @@ retained work, not unsupported feature declarations.
 - [XCP-ng 8.3 xapi package specification](https://github.com/xcp-ng-rpms/xapi/blob/8.3/SPECS/xapi.spec)
   identifies the target upstream version. The local XenAdmin `CreateBondAction` and
   `DestroyBondAction` provide reference workflow context. No upstream source was copied.
+
+## Integrated verification
+
+At combined source `06549b4`, all **930 workspace tests** passed: 413 core unit,
+261 direct protocol, 243 Rune/desktop, five profile, four TLS and four probe cases.
+Strict workspace/all-target Clippy and all-target compilation passed. These checks
+include the previously integrated disk, crashdump, alarm and management-topology work.
+No live infrastructure operations were performed.
