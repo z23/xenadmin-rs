@@ -794,3 +794,9 @@ remaining setters. Public steps are bound to private labels and verification rec
 late evidence preserves recovery/acknowledgement fences. The Rune review names unchanged
 selected targets separately from its exact changed command. See the
 [bulk properties report](reports/2026-11-08-bulk-properties.md).
+
+HA startup and timeout policy edits reuse the single-step pool operation journal's positive
+completion receipt. Startup field intents bind VM and optional vApp identity; timeout defaults
+require disabled HA and reject higher-priority configuration overrides. Typed inventory retains
+unknown configuration separately from an absent override. See the
+[HA policy report](reports/2026-11-08-ha-policies.md).

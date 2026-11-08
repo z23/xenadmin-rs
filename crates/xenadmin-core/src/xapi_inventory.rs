@@ -860,6 +860,18 @@ fn pool_administration(
         ha_plan_exists_for: number("ha_plan_exists_for"),
         ha_overcommitted: record["ha_overcommitted"].as_bool(),
         ha_allow_overcommit: record["ha_allow_overcommit"].as_bool(),
+        ha_timeout_known: record["other_config"]
+            .as_object()
+            .is_some_and(|m| m.get("default_ha_timeout").is_none_or(Value::is_string))
+            && record["ha_configuration"]
+                .as_object()
+                .is_some_and(|m| m.get("timeout").is_none_or(Value::is_string)),
+        ha_timeout_override: record["other_config"]["default_ha_timeout"]
+            .as_str()
+            .map(str::to_owned),
+        ha_configuration_timeout: record["ha_configuration"]["timeout"]
+            .as_str()
+            .map(str::to_owned),
         heartbeat_srs_known: heartbeat_srs.is_some(),
         heartbeat_srs: heartbeat_srs
             .unwrap_or_default()

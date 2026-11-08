@@ -10,7 +10,7 @@ pub struct ApplianceOrder {
 }
 impl ApplianceOrder {
     pub fn validate(self) -> Result<(), Error> {
-        if self.start_delay <= 86_400 && self.shutdown_delay <= 86_400 {
+        if self.order >= 0 && self.start_delay <= 86_400 && self.shutdown_delay <= 86_400 {
             Ok(())
         } else {
             Err(Error::InvalidResourceCommand)

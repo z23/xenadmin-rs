@@ -228,6 +228,52 @@ pub(super) async fn arguments(
             }
             Ok(vec![json!(srs), json!({})])
         }
+        PoolOperation::SetHaAllowOvercommit { expected, enabled } => {
+            expect(&fresh, "ha_allow_overcommit", json!(expected))?;
+            Ok(vec![json!(pool_ref), json!(enabled)])
+        }
+        PoolOperation::SetHaTimeout { expected, seconds } => {
+            expect(&fresh, "ha_enabled", json!(false))?;
+            let config = fresh["ha_configuration"]
+                .as_object()
+                .ok_or(Error::ResourceConflict)?;
+            if config.contains_key("timeout") {
+                return Err(Error::UnavailableAction);
+            }
+            let mut map = fresh["other_config"]
+                .as_object()
+                .cloned()
+                .ok_or(Error::ResourceConflict)?;
+            if map.get("default_ha_timeout")
+                != expected.as_ref().map(|v| Value::String(v.clone())).as_ref()
+            {
+                return Err(Error::ResourceConflict);
+            }
+            match seconds {
+                Some(v) => {
+                    map.insert("default_ha_timeout".into(), json!(v.to_string()));
+                }
+                None => {
+                    map.remove("default_ha_timeout");
+                }
+            }
+            Ok(vec![json!(pool_ref), json!(map)])
+        }
+        PoolOperation::SetVmStartup {
+            vm,
+            appliance,
+            field,
+            expected,
+            value,
+        } => {
+            let (reference, vm) = vm_record(session, *vm).await?;
+            empty(&vm, "current_operations")?;
+            startup_appliance(session, &vm, *appliance).await?;
+            if number(&vm[field.field()]) != Some(*expected) {
+                return Err(Error::ResourceConflict);
+            }
+            Ok(vec![json!(reference), json!(value.to_string())])
+        }
         PoolOperation::DisableHa => {
             expect(&fresh, "ha_enabled", json!(true))?;
             permitted(&fresh, "ha_disable")?;
@@ -351,6 +397,31 @@ pub(super) async fn verify(
             }
             true
         }
+        PoolOperation::SetHaAllowOvercommit { enabled, .. } => {
+            fresh["ha_allow_overcommit"] == *enabled
+        }
+        PoolOperation::SetHaTimeout { seconds, .. } => {
+            let config = fresh["ha_configuration"]
+                .as_object()
+                .ok_or(Error::ResourceConflict)?;
+            let map = fresh["other_config"]
+                .as_object()
+                .ok_or(Error::ResourceConflict)?;
+            fresh["ha_enabled"] == false
+                && !config.contains_key("timeout")
+                && map.get("default_ha_timeout") == seconds.map(|v| json!(v.to_string())).as_ref()
+        }
+        PoolOperation::SetVmStartup {
+            vm,
+            appliance,
+            field,
+            value,
+            ..
+        } => {
+            let (_, vm) = vm_record(session, *vm).await?;
+            startup_appliance(session, &vm, *appliance).await?;
+            number(&vm[field.field()]) == Some(*value)
+        }
         PoolOperation::DisableHa => fresh["ha_enabled"] == false,
         PoolOperation::SetVmRestartPriority { vm, priority, .. } => {
             vm_record(session, *vm).await?.1["ha_restart_priority"] == priority.as_str()
@@ -370,5 +441,23 @@ pub(super) async fn verify(
         Ok(None)
     } else {
         Err(Error::ResourceConflict)
+    }
+}
+
+async fn startup_appliance(
+    session: &Session,
+    vm: &Value,
+    expected: Option<crate::ApplianceId>,
+) -> Result<(), Error> {
+    match expected {
+        None if vm["appliance"] == "OpaqueRef:NULL" => Ok(()),
+        Some(id) => {
+            let group = related(session, "VM_appliance", &vm["appliance"]).await?;
+            if group["uuid"] != id.to_string() {
+                return Err(Error::ResourceConflict);
+            }
+            empty(&group, "current_operations")
+        }
+        _ => Err(Error::ResourceConflict),
     }
 }

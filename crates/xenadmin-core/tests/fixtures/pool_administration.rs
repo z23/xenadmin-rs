@@ -23,7 +23,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
     let records: Records = Arc::new(Mutex::new(BTreeMap::from([
         (
             "pool".into(),
-            json!({"uuid":POOL,"name_label":"Fixture pool","master":"OpaqueRef:host","current_operations":{},"allowed_operations":["ha_enable","ha_disable","designate_new_master","tls_verification_enable"],"migration_compression":false,"https_only":false,"ha_enabled":false,"ha_host_failures_to_tolerate":"0","ha_plan_exists_for":"0","ha_overcommitted":false,"ha_allow_overcommit":false,"ha_statefiles":[],"tls_verification_enabled":false,"is_psr_pending":false}),
+            json!({"uuid":POOL,"name_label":"Fixture pool","master":"OpaqueRef:host","current_operations":{},"allowed_operations":["ha_enable","ha_disable","designate_new_master","tls_verification_enable"],"migration_compression":false,"https_only":false,"ha_enabled":false,"ha_host_failures_to_tolerate":"0","ha_plan_exists_for":"0","ha_overcommitted":false,"ha_allow_overcommit":false,"ha_statefiles":[],"ha_configuration":{},"other_config":{"keep":"preserve"},"tls_verification_enabled":false,"is_psr_pending":false}),
         ),
         (
             "host".into(),
@@ -36,7 +36,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         ("host_metrics".into(), json!({"live":true})),
         (
             "vm".into(),
-            json!({"uuid":VM,"name_label":"Fixture guest","is_control_domain":false,"is_a_template":false,"is_a_snapshot":false,"power_state":"Halted","resident_on":"OpaqueRef:NULL","scheduled_to_be_resident_on":"OpaqueRef:NULL","ha_restart_priority":"","current_operations":{},"VCPUs_at_startup":"2","memory_static_max":"2147483648","allowed_operations":["start"]}),
+            json!({"uuid":VM,"name_label":"Fixture guest","is_control_domain":false,"is_a_template":false,"is_a_snapshot":false,"power_state":"Halted","resident_on":"OpaqueRef:NULL","scheduled_to_be_resident_on":"OpaqueRef:NULL","ha_restart_priority":"","appliance":"OpaqueRef:NULL","order":"0","start_delay":"0","shutdown_delay":"0","current_operations":{},"VCPUs_at_startup":"2","memory_static_max":"2147483648","allowed_operations":["start"]}),
         ),
         (
             "SR".into(),
@@ -71,7 +71,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                 let records=map.lock().unwrap();let found=records.iter().find(|(_,r)|r["uuid"]==params[1]);
                 return Some(RpcReply::Json(match found {Some((key,_))=>json!({"result":format!("OpaqueRef:{key}")}),None=>json!({"error":{"message":"UUID_INVALID","data":[]}})}));
         }
-        if let Some(class)=method.strip_suffix(".get_record") && ["pool","host","VM","SR","PBD","VDI","host_metrics"].contains(&class) {
+        if let Some(class)=method.strip_suffix(".get_record") && ["pool","host","VM","SR","PBD","VDI","host_metrics","VM_appliance"].contains(&class) {
             if fault==Fault::VerifyFailure&&writes.load(Ordering::SeqCst)>0&&class=="pool"&&verify.fetch_add(1,Ordering::SeqCst)==0 {return Some(RpcReply::Json(json!({"error":{"message":"RBAC_PERMISSION_DENIED","data":["private-secret"]}})));}
             let key=params[1].as_str().unwrap().strip_prefix("OpaqueRef:").unwrap();
             return Some(RpcReply::Json(json!({"result":map.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
@@ -83,7 +83,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         }
         if ["SR.assert_can_host_ha_statefile","VM.assert_agile"].contains(&method) {return Some(RpcReply::Json(json!({"result":null})));}
         if method=="pool.ha_failover_plan_exists" {return Some(RpcReply::Json(json!({"result":true})));}
-        if method.starts_with("Async.pool.")||["pool.set_migration_compression","VM.set_ha_restart_priority","pool.enable_tls_verification"].contains(&method) {
+        if method.starts_with("Async.pool.")||["pool.set_migration_compression","VM.set_ha_restart_priority","pool.enable_tls_verification","pool.set_ha_allow_overcommit","pool.set_other_config","VM.set_order","VM.set_start_delay","VM.set_shutdown_delay"].contains(&method) {
             writes.fetch_add(1,Ordering::SeqCst);let mut records=map.lock().unwrap();
             match method {
                 "pool.set_migration_compression"=>records.get_mut("pool").unwrap()["migration_compression"]=params[2].clone(),
@@ -93,6 +93,11 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                 "Async.pool.enable_ha"=>{assert_eq!(params[1],json!(["OpaqueRef:SR"]));assert_eq!(params[2],json!({}));let p=records.get_mut("pool").unwrap();p["ha_enabled"]=json!(true);p["ha_statefiles"]=json!(["99999999-9999-9999-9999-999999999999"]);},
                 "Async.pool.disable_ha"=>records.get_mut("pool").unwrap()["ha_enabled"]=json!(false),
                 "VM.set_ha_restart_priority"=>records.get_mut("vm").unwrap()["ha_restart_priority"]=params[2].clone(),
+                "pool.set_ha_allow_overcommit"=>records.get_mut("pool").unwrap()["ha_allow_overcommit"]=params[2].clone(),
+                "pool.set_other_config"=>records.get_mut("pool").unwrap()["other_config"]=params[2].clone(),
+                "VM.set_order"=>records.get_mut("vm").unwrap()["order"]=params[2].clone(),
+                "VM.set_start_delay"=>records.get_mut("vm").unwrap()["start_delay"]=params[2].clone(),
+                "VM.set_shutdown_delay"=>records.get_mut("vm").unwrap()["shutdown_delay"]=params[2].clone(),
                 "Async.pool.eject"=>{assert_eq!(params[1],"OpaqueRef:host-other");records.remove("host-other");},
                 "pool.enable_tls_verification"=>records.get_mut("pool").unwrap()["tls_verification_enabled"]=json!(true),
                 "Async.pool.rotate_secret"=>{},
@@ -165,6 +170,11 @@ fn mutations(mock: &Mock) -> usize {
                     "pool.set_migration_compression",
                     "VM.set_ha_restart_priority",
                     "pool.enable_tls_verification",
+                    "pool.set_ha_allow_overcommit",
+                    "pool.set_other_config",
+                    "VM.set_order",
+                    "VM.set_start_delay",
+                    "VM.set_shutdown_delay",
                 ]
                 .contains(&m.as_str())
         })
@@ -403,3 +413,6 @@ async fn pool_readonly_rejects_mutation_and_empty_ha_priority_remains_known() {
     );
     assert_eq!(mutations(&mock), 0);
 }
+
+#[path = "pool_ha_policy.rs"]
+mod ha_policy;

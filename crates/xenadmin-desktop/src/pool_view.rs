@@ -1,3 +1,5 @@
+#[path = "ha_policy_view.rs"]
+mod ha_policy;
 use super::*;
 use std::collections::BTreeSet;
 use xenadmin_core::{
@@ -13,6 +15,8 @@ pub(super) struct Editor {
     heartbeat: BTreeSet<SrId>,
     failures: TextEdit,
     search: TextEdit,
+    timeout: TextEdit,
+    startup: [TextEdit; 3],
     vm: Option<VmId>,
     host: Option<HostId>,
     review: Option<PoolOperation>,
@@ -43,6 +47,15 @@ pub(super) fn open(s: &mut State) {
                 .to_string(),
         ),
         search: TextEdit::new(""),
+        timeout: TextEdit::new(
+            inventory
+                .details
+                .pool
+                .as_ref()
+                .and_then(|p| p.administration.ha_timeout_override.clone())
+                .unwrap_or_default(),
+        ),
+        startup: std::array::from_fn(|_| TextEdit::new("")),
         vm: None,
         host: None,
         review: None,
@@ -188,6 +201,9 @@ fn describe(editor: &Editor, op: &PoolOperation) -> Vec<String> {
             for id in heartbeat_srs {lines.push(format!("Heartbeat storage: {} ({id})",editor.inventory.storage.iter().find(|sr|sr.uuid==id.uuid()).map(|sr|sr.name.as_str()).unwrap_or("Unknown")));}
             lines
         },
+        PoolOperation::SetHaAllowOvercommit { expected, enabled } => vec![format!("Allow HA overcommit: {expected} → {enabled}"),"Allowing overcommit permits changes that can leave insufficient capacity to restart protected VMs. This does not add capacity or change configured failure tolerance. Disallowing it does not by itself resolve existing overcommit.".into()],
+        PoolOperation::SetHaTimeout { expected, seconds } => vec![format!("HA timeout default: {} → {}",expected.as_deref().unwrap_or("host default"),seconds.map(|v|format!("{v} seconds")).unwrap_or("host default".into())),"HA must be disabled. This sets the persistent default used at the next HA enable, and preserves other pool settings. Short timeouts increase fencing risk; long timeouts delay failure detection. No automatic enable or restart is performed.".into()],
+        PoolOperation::SetVmStartup { vm, appliance, field, expected, value } => vec![format!("VM: {} ({vm})",editor.inventory.vms.get(vm).map(|v|v.name.as_str()).unwrap_or("Unknown")),format!("{}: {expected} → {value}{}",field.label(),if *field==xenadmin_core::VmStartupField::Order{""}else{" seconds"}), format!("Captured vApp: {}",appliance.map(|id|id.to_string()).unwrap_or("none".into())), "Startup order is shared with vApp ordering and applies to protected VM HA restarts. Delays apply to VM start/shutdown processing. These settings do not start or stop the guest or guarantee application readiness.".into()],
         PoolOperation::DisableHa => vec!["Disables automatic HA recovery for the entire pool. Protected VMs will no longer be restarted automatically after host failure.".into()],
         PoolOperation::SetVmRestartPriority {vm,expected,priority} => vec![format!("VM: {} ({vm})",editor.inventory.vms.get(vm).map(|vm|vm.name.as_str()).unwrap_or("Unknown")),format!("HA priority: {} → {}",expected.label(),priority.label()),"Restart protection requires agile storage/network placement. This does not start or stop the VM.".into()],
         PoolOperation::EjectHost {host:target,..} => vec![format!("Host leaving the pool: {}",host(*target)),"The host will reboot and its pool configuration will be reset. Its local disks must be empty of guest data. Disable and evacuate this host first; HA must already be disabled. No guest shutdown or disk deletion is performed by this workflow.".into()],
@@ -339,6 +355,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .wrap(),
         );
+        body = body.child(ha_policy::pool_controls(editor, &admin, k));
         if admin.ha_enabled == Some(true) {
             if admin.heartbeat_srs_known {
                 for sr in &admin.heartbeat_srs {
@@ -503,7 +520,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     if editor.vm == Some(id) { "✓" } else { "○" },
                     vm.name
                 ))
-                .on_press(move |s: &mut State| s.pool_editor.as_mut().unwrap().vm = Some(id))
+                .on_press(move |s: &mut State| ha_policy::select_vm(s, id))
                 .build(k),
             );
         }
@@ -533,6 +550,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 ),
                 k,
             ));
+            body = body.child(ha_policy::vm_controls(editor, vm, k));
             for value in [
                 HaRestartPriority::Restart,
                 HaRestartPriority::BestEffort,
@@ -626,6 +644,10 @@ pub(super) fn scene(s: &mut State, review: bool) {
     if review {
         stage(s, PoolOperation::DisableHa);
     }
+}
+
+pub(super) fn ha_scene(s: &mut State) {
+    ha_policy::scene(s);
 }
 
 #[cfg(test)]

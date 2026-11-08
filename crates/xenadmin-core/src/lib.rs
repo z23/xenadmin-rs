@@ -100,7 +100,7 @@ pub use pool_security::{
     DirectoryHostState, PoolSecurityOperation, PoolSensitiveChange, ServerCertificate,
 };
 mod pool_admin;
-pub use pool_admin::{HaRestartPriority, PoolAdministration, PoolOperation};
+pub use pool_admin::{HaRestartPriority, PoolAdministration, PoolOperation, VmStartupField};
 mod organization;
 pub use organization::{
     CustomFieldDefinition, CustomFieldType, OrganizationChange, OrganizationEdit,

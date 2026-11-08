@@ -2319,6 +2319,7 @@ fn main() -> std::process::ExitCode {
             ("vm-recovery-force", vm_recovery_view::force_scene),
             ("cross-pool", cross_pool_vm::scene),
             ("archive-export", transfers::scene),
+            ("ha-policy", pool_view::ha_scene),
             ("checkpoint-export", transfers::checkpoint_scene),
             ("cloud-init", cloud_init_view::scene),
             ("cloud-init-review", cloud_init_view::review_scene),
