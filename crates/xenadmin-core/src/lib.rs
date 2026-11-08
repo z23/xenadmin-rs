@@ -455,5 +455,10 @@ pub use host_monitoring::{
 
 mod operation_permissions;
 
+mod local_conversion;
 #[cfg(test)]
 mod resource_permission_tests;
+pub use local_conversion::{
+    ConversionFormat, ConversionRequest, ConversionReview, ConversionState, ConversionSummary,
+    ConversionTools, LocalConversions,
+};

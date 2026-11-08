@@ -5087,6 +5087,7 @@ dependencies = [
  "uuid",
  "vnc-rs",
  "x509-parser",
+ "xenadmin-process",
  "xxhash-rust",
  "zbus 5.19.0",
  "zeroize",
@@ -5109,6 +5110,13 @@ dependencies = [
  "uuid",
  "xenadmin-core",
  "zeroize",
+]
+
+[[package]]
+name = "xenadmin-process"
+version = "0.16.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

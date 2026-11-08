@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/xenadmin-core", "crates/xenadmin-desktop", "tools/host-probe"]
+members = ["crates/xenadmin-core", "crates/xenadmin-desktop", "crates/xenadmin-process", "tools/host-probe"]
 resolver = "3"
 
 [workspace.package]

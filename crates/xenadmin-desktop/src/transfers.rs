@@ -122,6 +122,29 @@ pub(super) fn history(s: &mut State) {
 pub(super) fn open(s: &mut State) {
     begin(s, None);
 }
+pub(super) fn import_converted(s: &mut State, path: std::path::PathBuf, format: DiskImageFormat) {
+    begin(s, None);
+    s.transfers.format = Some(format);
+    s.transfers.disk_name = TextEdit::new("Converted disk");
+    s.transfers.pending = true;
+    let (sender, receiver) = mpsc::channel();
+    let wake = s.waker.clone();
+    match std::thread::Builder::new()
+        .name("converted-disk-review".into())
+        .spawn(move || {
+            let result = TransferFile::disk_source(path, format).map_err(|e| e.to_string());
+            let _ = sender.send(result);
+            if let Some(wake) = wake {
+                wake();
+            }
+        }) {
+        Ok(_) => s.transfers.result = Some(receiver),
+        Err(_) => {
+            s.transfers.pending = false;
+            s.transfers.error = Some("Cannot inspect converted disk".into());
+        }
+    }
+}
 fn current(s: &State, p: &Panel) -> bool {
     s.inventory
         .as_ref()

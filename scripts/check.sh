@@ -241,3 +241,8 @@ done
 
 "$check_binary" --snap artifacts/network-sriov.png --tree artifacts/network-sriov.json --scene network-sriov --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/network-sriov-compact.png --tree artifacts/network-sriov-compact.json --scene network-sriov --theme dark --size 513x652 --scale 1 --at 1
+for conversion_scene in local-conversion local-conversion-review; do
+  for conversion_size in 1440x900 513x652; do
+    "$check_binary" --snap "artifacts/${conversion_scene}-${conversion_size}.png" --tree "artifacts/${conversion_scene}-${conversion_size}.json" --scene "$conversion_scene" --theme dark --size "$conversion_size" --scale 1 --at 1
+  done
+done

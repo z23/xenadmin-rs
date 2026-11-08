@@ -24,6 +24,7 @@ mod host_support_view;
 mod instance_launch;
 mod inventory_information;
 mod inventory_menu;
+mod local_conversion_view;
 mod metrics_view;
 mod network_admin;
 mod organization_view;
@@ -200,6 +201,7 @@ struct State {
     storage_graph: Option<storage_graph_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
     host_monitoring: Option<host_monitoring_view::Panel>,
+    local_conversion: local_conversion_view::Workspace,
     host_support: Option<host_support_view::Panel>,
     host_power: Option<host_power_view::Editor>,
     snapshot_policy_workspace: Option<snapshot_policy_view::Workspace>,
@@ -328,6 +330,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         storage_graph: None,
         host_workspace: None,
         host_monitoring: None,
+        local_conversion: Default::default(),
         host_support: None,
         host_power: None,
         snapshot_policy_workspace: None,
@@ -860,6 +863,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     changed |= transfers::poll(s);
     changed |= host_support_view::poll(s);
     changed |= host_monitoring_view::poll(s);
+    changed |= local_conversion_view::poll(s);
     changed |= cloud_init_view::poll(s);
     changed |= pool_security_view::poll(s);
     changed |= console_view::poll_export(s);
@@ -1363,6 +1367,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .build(&k)
             .key("alarms-open"),
     );
+    controls = controls.child(
+        Button::new("Convert local disk…")
+            .on_press(local_conversion_view::open)
+            .build(&k)
+            .key("conversion-open"),
+    );
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
         Button::new("Search pools")
@@ -1479,6 +1489,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [host_support_view::dialog(s, &k)])
     } else if s.storage_graph.is_some() {
         rune_kit::root(base, [storage_graph_view::dialog(s, &k)])
+    } else if s.local_conversion.show {
+        rune_kit::root(base, [local_conversion_view::dialog(s, &k)])
     } else if s.host_monitoring.is_some() {
         rune_kit::root(base, [host_monitoring_view::dialog(s, &k)])
     } else if s.host_workspace.is_some() {
@@ -2428,6 +2440,11 @@ fn main() -> std::process::ExitCode {
             ),
             ("host-administration", host_admin::scene),
             ("host-monitoring", host_monitoring_view::scene),
+            ("local-conversion", local_conversion_view::scene),
+            (
+                "local-conversion-review",
+                local_conversion_view::review_scene,
+            ),
             (
                 "host-monitoring-catalog",
                 host_monitoring_view::catalog_scene,

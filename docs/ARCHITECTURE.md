@@ -864,3 +864,14 @@ first copy. Unknown/protected or returned-object-dependent requirements remain e
 [VM workflow permissions](reports/2026-11-08-vm-workflow-permissions.md).
 
 Dedicated vApp, snapshot-policy and organization resource reviews derive permission requirements from the same immutable changed-field/step selectors used at dispatch. Credential provisioning includes known later configuration/temporary-Secret cleanup requirements before its first write. Pool-password review uses the captured connection profile's authority. Cloud-init RPC requirements do not imply HTTP authorization. See [resource workflow permissions](reports/2026-11-08-resource-workflow-permissions.md).
+
+Local disk conversion has no connection or XAPI command. A process-wide file lock owns one
+private source copy/review/conversion at a time. Every parser, converter and comparison runs
+in the same fail-closed namespace/seccomp/resource-limit sandbox. The `xenadmin-process`
+platform adapter contains a narrowly documented child-only `pre_exec`/`close_range(CLOEXEC)`
+boundary; core keeps `unsafe_code = forbid`. No parent descriptor flags are changed. Staging
+uses a distinct inode, immutable source hashes and owned directory identities. Publication
+uses descriptor-relative no-replace rename after native format checks and full content
+comparison. Private local records never resume interrupted work; cleanup is limited to recorded
+temporary identities, and importing a successful output needs a separate captured transfer
+review. [Qualification and retained scope](reports/2026-11-08-local-conversion.md).
