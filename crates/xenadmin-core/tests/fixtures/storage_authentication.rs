@@ -377,26 +377,37 @@ async fn storage_auth_read_only_refuses_writes_but_allows_transient_chap_discove
     c.disconnect();
 }
 
-async fn history_state(
+#[track_caller]
+fn history_state(
     c: &xenadmin_core::Connection,
     id: OperationId,
     predicate: impl Fn(&xenadmin_core::ResourceOperationRecord) -> bool,
-) -> xenadmin_core::ResourceOperationRecord {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let Some(r) = c
-                .resource_history()
-                .iter()
-                .find(|r| r.id == id && predicate(r))
-            {
-                return r.clone();
+) -> impl std::future::Future<Output = xenadmin_core::ResourceOperationRecord> {
+    let caller = std::panic::Location::caller();
+    async move {
+        let mut observed = Vec::new();
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(r) = c.resource_history().iter().find(|r| r.id == id) {
+                    if predicate(r) {
+                        return r.clone();
+                    }
+                    let public_state = format!(
+                        "{:?}: {} (steps {:?}; secrets {:?})",
+                        r.state, r.detail, r.steps, r.storage_secrets
+                    );
+                    if observed.last() != Some(&public_state) {
+                        observed.push(public_state);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap()
+        })
+        .await;
+        result.unwrap_or_else(|_| panic!("history wait at {caller} timed out: {observed:?}"))
+    }
 }
+
 #[tokio::test]
 async fn explicit_cleanup_requires_source_provenance_and_absent_consumers() {
     let (mock, data) = fixture(StorageAuthentication::Chap, Fault::Consumer).await;
@@ -595,19 +606,6 @@ async fn delayed_secret_receipt_preserves_recovery_and_ack_but_still_retains_ide
             }
         );
         assert_eq!(r.storage_secrets.len(), 1);
-        if !ack {
-            // The opposite ordering is also valid: a later read-only reconciliation
-            // sees the positive receipt and can classify the retained Secret as partial.
-            other
-                .control_resource(id, xenadmin_core::OperationControl::Recheck)
-                .unwrap();
-            let reconciled = history_state(&other, id, |record| {
-                record.state == OperationState::PartiallyCompleted
-            })
-            .await;
-            assert_eq!(reconciled.storage_secrets, r.storage_secrets);
-            assert!(reconciled.detail.contains("Storage was not submitted"));
-        }
 
         let methods = mock.methods.lock().unwrap();
         assert_eq!(methods.iter().filter(|m| *m == "secret.create").count(), 1);

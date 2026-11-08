@@ -563,3 +563,7 @@ impl ResourceRequest {
         .await
     }
 }
+
+#[cfg(test)]
+#[path = "storage_auth_worker_tests.rs"]
+mod tests;
