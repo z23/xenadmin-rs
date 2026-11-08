@@ -570,7 +570,7 @@ impl ResourceRequest {
                             &validation_cancel,
                         )?,
                         TransferAction::ExportXva { source } => {
-                            files::validate_export(&plan, &source)?
+                            files::validate_export(&plan, &source, &validation_cancel)?
                         }
                         TransferAction::ExportDisk {
                             format,

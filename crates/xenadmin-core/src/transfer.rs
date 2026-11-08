@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 #[path = "transfer_archive.rs"]
 mod archive;
+#[path = "transfer_archive_stream.rs"]
+mod archive_stream;
 #[path = "transfer_files.rs"]
 pub(crate) mod files;
 #[path = "transfer_http.rs"]

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 fn uuid(n: u128) -> uuid::Uuid {
     uuid::Uuid::from_u128(n)
 }
-fn xml(v: &Value) -> String {
+pub(super) fn xml(v: &Value) -> String {
     fn escape(s: &str) -> String {
         s.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -50,8 +50,23 @@ fn archive(vm: u128) -> Vec<u8> {
     )
 }
 fn archive_record(record: Value) -> Vec<u8> {
-    let value = json!({"version":{},"objects":[{"class":"VM","id":"Ref:1","snapshot":record},{"class":"VDI","id":"Ref:2","snapshot":{"type":"user","virtual_size":"1073741824"}},{"class":"network","id":"Ref:3","snapshot":{}}]});
-    tar_xml(xml(&value).as_bytes())
+    let value = json!({"version":{},"objects":[{"class":"VM","id":"Ref:1","snapshot":record},{"class":"VDI","id":"Ref:2","snapshot":{"type":"user","virtual_size":"4096"}},{"class":"network","id":"Ref:3","snapshot":{}}]});
+    let mut output = tar::Builder::new(Vec::new());
+    for (name, bytes) in [
+        ("ova.xml", xml(&value).into_bytes()),
+        ("Ref:2/00000000", vec![0; 4096]),
+        (
+            "Ref:2/00000000.xxhash",
+            format!("{:016X}", xxhash_rust::xxh64::xxh64(&[0; 4096], 0)).into_bytes(),
+        ),
+    ] {
+        let mut h = tar::Header::new_ustar();
+        h.set_size(bytes.len() as u64);
+        h.set_mode(0o600);
+        h.set_cksum();
+        output.append_data(&mut h, name, bytes.as_slice()).unwrap();
+    }
+    output.into_inner().unwrap()
 }
 fn tar_xml(xml: &[u8]) -> Vec<u8> {
     let mut h = vec![0u8; 512];
@@ -73,6 +88,7 @@ enum Fault {
     ExpireExport,
     Truncated,
     WrongArchive,
+    BadChunkChecksum,
     TaskGone,
     ExistingGuest,
     Partial,
@@ -483,6 +499,20 @@ impl Fixture {
                                     declared = Some(archive.len());
                                     archive.truncate(800);
                                 }
+                                if fault == Fault::BadChunkChecksum {
+                                    let position = {
+                                        let mut entries = tar::Archive::new(archive.as_slice());
+                                        entries
+                                            .entries()
+                                            .unwrap()
+                                            .nth(1)
+                                            .unwrap()
+                                            .unwrap()
+                                            .raw_file_position()
+                                            as usize
+                                    };
+                                    archive[position] ^= 1;
+                                }
                                 archive
                             }
                         }
@@ -759,7 +789,12 @@ async fn upload_lost_reply_uses_task_and_provenance_without_replay() {
 }
 #[tokio::test]
 async fn incomplete_expired_or_wrong_export_never_publishes() {
-    for fault in [Fault::Truncated, Fault::ExpireExport, Fault::WrongArchive] {
+    for fault in [
+        Fault::Truncated,
+        Fault::ExpireExport,
+        Fault::WrongArchive,
+        Fault::BadChunkChecksum,
+    ] {
         let f = Fixture::new(fault).await;
         let d = tempfile::tempdir().unwrap();
         let r = execute(&f, d.path(), true).await;

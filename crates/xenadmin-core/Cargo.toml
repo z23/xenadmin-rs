@@ -23,6 +23,7 @@ hyper-util = { version = "=0.1.21", default-features = false, features = ["clien
 x509-parser = "=0.18.1"
 rustls-platform-verifier = "=0.7.1"
 sha1 = "=0.10.7"
+xxhash-rust = { version = "=0.8.15", features = ["xxh64"] }
 tokio-rustls.workspace = true
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"

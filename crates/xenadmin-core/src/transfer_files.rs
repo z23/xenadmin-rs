@@ -376,7 +376,11 @@ pub(crate) fn validate_host_export(
     Ok(())
 }
 
-pub(crate) fn validate_export(plan: &Plan, source: &ExportSource) -> Result<(), Error> {
+pub(crate) fn validate_export(
+    plan: &Plan,
+    source: &ExportSource,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(), Error> {
     let receipt = plan.stream_receipt.as_ref().ok_or(Error::TransferFile)?;
     let path = if plan.file.path.symlink_metadata().is_ok()
         && matches_receipt(&plan.file.path, receipt)?
@@ -400,6 +404,7 @@ pub(crate) fn validate_export(plan: &Plan, source: &ExportSource) -> Result<(), 
     if summary.guests.len() != 1 || summary.guests[0].uuid != expected {
         return Err(Error::TransferConflict);
     }
+    super::archive_stream::verify(&mut file, &summary.metadata_digest, cancel)?;
     Ok(())
 }
 
