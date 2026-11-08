@@ -67,3 +67,7 @@ Primary evidence:
   selects [v10.10.38.xcpng.4 inventory generation](https://github.com/xcp-ng/host-installer/blob/v10.10.38.xcpng.4/backend.py).
 - [XAPI inventory fields](https://github.com/xapi-project/xen-api/blob/v26.1.21/ocaml/libs/xapi-inventory/lib/inventory.ml)
   supplies the remaining known optional assignments.
+
+## Integrated 0.12 verification
+
+After integration with VM recovery, guest tools, creation cloud-init and automatic management addressing at `b5d88d4`, the default-concurrency workspace suite passed 869 tests (389 core unit, 240 direct-protocol, 227 Rune, 5 profile, 4 TLS and 4 probe). Strict workspace/all-target Clippy, formatting and diff checks passed. This successful run does not remove the separately recorded brittle cloud-fixture ordering; that deterministic-test follow-up remains tracked.
