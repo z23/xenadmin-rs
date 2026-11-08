@@ -12,6 +12,7 @@ install -m644 packaging/xenadmin-rs.desktop "$stage_dir/$package_name/share/appl
 install -m644 packaging/xenadmin-rs.svg "$stage_dir/$package_name/share/icons/hicolor/scalable/apps/"
 install -m644 LICENSE "$stage_dir/$package_name/"
 install -m644 docs/RUNNING.md "$stage_dir/$package_name/README.md"
+install -m644 docs/CONNECTIONS.md "$stage_dir/$package_name/CONNECTIONS.md"
 python3 scripts/collect-notices.py "$stage_dir/$package_name/third-party"
 tar -czf "artifacts/$package_name.tar.gz" -C "$stage_dir" "$package_name"
 sha256sum "artifacts/$package_name.tar.gz" | tee "artifacts/$package_name.tar.gz.sha256"

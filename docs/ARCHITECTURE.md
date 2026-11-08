@@ -263,3 +263,40 @@ performs bounded local cleanup and logout where safe. Explain that server tasks 
 On restart, reconcile unfinished journal entries after fresh pool inventory is available.
 The first release accepts that a desktop crash also stops local polling. A separate service
 can be reconsidered if persistent unattended operation becomes a requirement.
+
+
+## Implemented parity foundations
+
+Saved profiles live in a versioned private `profiles.json`. The migration from the original
+single-endpoint preferences runs once and stores no passwords. Secret Service items bind to
+profile UUID, endpoint and username; session-only credentials remain the default. A retained
+OS file lock gives one mutating desktop ownership of a state directory. A second desktop
+cannot migrate/write profiles, preferences or the operation journal.
+
+Each Backend authenticates an incoming profile before resolving its pool. An in-memory pool
+registry then compares credentials, access mode and trust policy. Equivalent profiles share
+the canonical inventory generation, request path and operation history. Different authority
+contexts require an explicit disconnect/reconnect. Dropping one Connection handle does not
+disconnect other handles; explicit disconnect closes the logical pool connection. Profiles
+persist discovered member endpoints with the expected pool UUID, which is checked before
+publishing Ready after fallback. Concurrent pools have independent owners.
+
+Optional inventory classes carry explicit unavailable/permission/invalid states. Missing
+metrics never become zero-valued samples. Typed UUID relationships join VDI/VBD, VIF/network,
+PIF/bond/VLAN and PBD/SR/host records without exposing opaque session references to Rune.
+A bounded diagnostic request reads current VM state and asks XAPI to validate a power action;
+this is advisory and never substitutes for server enforcement during the actual action.
+
+The journal's version 2 migration retains legacy operations and task references and refuses
+future versions. Settings edits persist Preparing, Dispatching and Verifying boundaries plus
+per-field results. A lost write response or failed post-write verification remains unresolved;
+a failure before a later write records partial completion. Rechecking reads desired values
+and never repeats a setter. Shared maps merge one reviewed key into the freshly read map.
+Other operators can still race the XAPI setter; XAPI offers no compare-and-swap transaction
+for these map setters. Device and chosen-host commands reserve their explicitly selected
+resources, preflight fresh identities/ownership, then dispatch once through tracked tasks.
+
+The [console adapter decision](decisions/0003-console-protocol-adapter.md) documents the
+vendored protocol fixes. Console target identity is independent of table selection. Clipboard
+requests are explicit and fenced by a console epoch, including reconnection; passwords and
+clipboard content are never part of the operation journal.

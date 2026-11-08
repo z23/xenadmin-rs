@@ -15,9 +15,32 @@ use crate::{
     Storage, Vm, VmId,
 };
 
+#[path = "xapi_inventory.rs"]
+mod inventory;
+#[cfg(test)]
+#[path = "xapi_inventory_tests.rs"]
+pub(crate) mod inventory_tests;
+
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_OBJECTS: usize = 100_000;
 pub(crate) const CLASSES: &[&str] = &["pool", "host", "VM", "SR", "network"];
+const OPTIONAL_CLASSES: &[&str] = &[
+    "VDI",
+    "VBD",
+    "VIF",
+    "PIF",
+    "PBD",
+    "Bond",
+    "VLAN",
+    "VM_guest_metrics",
+    "VM_metrics",
+    "host_metrics",
+    "task",
+    "message",
+    "VM_appliance",
+    "VMSS",
+    "SM",
+];
 
 pub(crate) struct Session {
     options: ConnectionOptions,
@@ -25,6 +48,7 @@ pub(crate) struct Session {
     events: reqwest::Client,
     token: Zeroizing<String>,
     next_id: Arc<AtomicU64>,
+    inventory_classes: std::sync::Mutex<BTreeMap<String, crate::model::ClassAvailability>>,
 }
 
 impl Session {
@@ -52,6 +76,7 @@ impl Session {
                 events,
                 token: Zeroizing::new(String::new()),
                 next_id: Arc::new(AtomicU64::new(1)),
+                inventory_classes: std::sync::Mutex::new(BTreeMap::new()),
             };
             let result = session
                 .rpc(
@@ -149,13 +174,80 @@ impl Session {
     }
 
     pub(crate) async fn events(&self, token: &str) -> Result<EventBatch, Error> {
+        use crate::model::ClassAvailability;
+        let mut states = self
+            .inventory_classes
+            .lock()
+            .map_err(|_| Error::Protocol("inventory capability state unavailable"))?
+            .clone();
+        for class in OPTIONAL_CLASSES {
+            states
+                .entry(class.to_ascii_lowercase())
+                .or_insert(ClassAvailability::Available);
+        }
+        let requested = || {
+            CLASSES
+                .iter()
+                .copied()
+                .chain(OPTIONAL_CLASSES.iter().copied().filter(|class| {
+                    matches!(
+                        states.get(&class.to_ascii_lowercase()),
+                        Some(ClassAvailability::Available)
+                    )
+                }))
+                .collect::<Vec<_>>()
+        };
+        let mut batch = match self.read_events(token, &requested()).await {
+            Ok(batch) => batch,
+            Err(Error::Api(code))
+                if optional_class_error(&code).is_some()
+                    && states
+                        .values()
+                        .any(|state| matches!(state, ClassAvailability::Available)) =>
+            {
+                for class in OPTIONAL_CLASSES {
+                    let state = match self.call(&format!("{class}.get_all_records"), vec![]).await {
+                        Ok(records) if records.is_object() => ClassAvailability::Available,
+                        Ok(_) => ClassAvailability::InvalidData,
+                        Err(Error::Api(code)) => {
+                            optional_class_error(&code).unwrap_or(ClassAvailability::Unknown)
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    states.insert(class.to_ascii_lowercase(), state);
+                }
+                let classes: Vec<_> = CLASSES
+                    .iter()
+                    .copied()
+                    .chain(OPTIONAL_CLASSES.iter().copied().filter(|class| {
+                        matches!(
+                            states.get(&class.to_ascii_lowercase()),
+                            Some(ClassAvailability::Available)
+                        )
+                    }))
+                    .collect();
+                let mut batch = self.read_events("", &classes).await?;
+                batch.reset = true;
+                batch
+            }
+            Err(error) => return Err(error),
+        };
+        batch.classes = states.clone();
+        *self
+            .inventory_classes
+            .lock()
+            .map_err(|_| Error::Protocol("inventory capability state unavailable"))? = states;
+        Ok(batch)
+    }
+
+    async fn read_events(&self, token: &str, classes: &[&str]) -> Result<EventBatch, Error> {
         let value = self
             .rpc(
                 true,
                 "event.from",
                 vec![
                     json!(&*self.token),
-                    json!(CLASSES),
+                    json!(classes),
                     json!(token),
                     json!(25.0),
                 ],
@@ -166,6 +258,120 @@ impl Session {
 
     pub(crate) async fn logout(&self) {
         let _ = self.call("session.logout", vec![]).await;
+    }
+
+    pub(crate) async fn diagnose_power(
+        &self,
+        vm: VmId,
+        action: crate::PowerAction,
+    ) -> Result<crate::ActionAvailability, Error> {
+        use crate::ActionAvailability;
+        let reference = self
+            .call("VM.get_by_uuid", vec![json!(vm.to_string())])
+            .await?;
+        let reference = opaque_reference(&reference)?;
+        let record = self.call("VM.get_record", vec![json!(&reference)]).await?;
+        if record["uuid"].as_str() != Some(vm.to_string().as_str())
+            || record["is_a_snapshot"] != false
+            || record["is_a_template"] != false
+            || record["is_control_domain"] != false
+        {
+            return Err(Error::Stale);
+        }
+        let advertised = inventory::power_availability(&record, action);
+        if matches!(advertised, ActionAvailability::Blocked { .. }) {
+            return Ok(advertised);
+        }
+        match self
+            .call(
+                "VM.assert_operation_valid",
+                vec![json!(reference), json!(action.wire())],
+            )
+            .await
+        {
+            Ok(_) => Ok(ActionAvailability::Available),
+            Err(Error::Api(code)) => Ok(match code.as_str() {
+                "RBAC_PERMISSION_DENIED" | "PERMISSION_DENIED" => {
+                    ActionAvailability::PermissionDenied
+                }
+                "MESSAGE_METHOD_UNKNOWN" | "MESSAGE_METHOD_UNAVAILABLE" => {
+                    ActionAvailability::Unknown
+                }
+                "VM_BAD_POWER_STATE" => ActionAvailability::Unavailable,
+                "OTHER_OPERATION_IN_PROGRESS"
+                    if matches!(advertised, ActionAvailability::Busy { .. }) =>
+                {
+                    advertised
+                }
+                _ => ActionAvailability::Rejected { code },
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) async fn prepare_placement(
+        &self,
+        vm: VmId,
+        host: HostId,
+        action: crate::PowerAction,
+    ) -> Result<(String, String), Error> {
+        let (operation, required_state) = match action {
+            crate::PowerAction::Start => ("start_on", "Halted"),
+            crate::PowerAction::Resume => ("resume_on", "Suspended"),
+            _ => return Err(Error::UnavailableAction),
+        };
+        let reference = self
+            .call("VM.get_by_uuid", vec![json!(vm.to_string())])
+            .await?;
+        let reference = opaque_reference(&reference)?;
+        let record = self.call("VM.get_record", vec![json!(&reference)]).await?;
+        if record["uuid"].as_str() != Some(vm.to_string().as_str())
+            || record["is_a_snapshot"] != false
+            || record["is_a_template"] != false
+            || record["is_control_domain"] != false
+        {
+            return Err(Error::Stale);
+        }
+        if record["power_state"] != required_state || !advertises(&record, operation) {
+            return Err(Error::UnavailableAction);
+        }
+        let destination = self
+            .call("host.get_by_uuid", vec![json!(host.to_string())])
+            .await?;
+        let destination = opaque_reference(&destination)?;
+        let destination_record = self
+            .call("host.get_record", vec![json!(&destination)])
+            .await?;
+        if destination_record["uuid"].as_str() != Some(host.to_string().as_str()) {
+            return Err(Error::Stale);
+        }
+        if destination_record["enabled"] != true {
+            return Err(Error::UnavailableAction);
+        }
+        self.call(
+            "VM.assert_operation_valid",
+            vec![json!(&reference), json!(operation)],
+        )
+        .await?;
+        self.call(
+            "VM.assert_can_boot_here",
+            vec![json!(&reference), json!(&destination)],
+        )
+        .await?;
+        Ok((reference, destination))
+    }
+}
+
+fn optional_class_error(code: &str) -> Option<crate::model::ClassAvailability> {
+    use crate::model::ClassAvailability;
+    match code {
+        "RBAC_PERMISSION_DENIED" | "PERMISSION_DENIED" => Some(ClassAvailability::PermissionDenied),
+        "MESSAGE_METHOD_UNKNOWN"
+        | "MESSAGE_METHOD_UNAVAILABLE"
+        | "NOT_IMPLEMENTED"
+        | "EVENT_SUBSCRIPTION_PARSE_FAILURE"
+        | "EVENT_CLASS_INVALID" => Some(ClassAvailability::Unsupported),
+        _ => None,
     }
 }
 
@@ -199,6 +405,10 @@ fn transport_error(error: reqwest::Error) -> Error {
 pub(crate) struct EventBatch {
     pub(crate) token: String,
     pub(crate) events: Vec<Event>,
+    #[serde(skip)]
+    reset: bool,
+    #[serde(skip)]
+    classes: BTreeMap<String, crate::model::ClassAvailability>,
 }
 
 #[derive(Deserialize)]
@@ -216,6 +426,7 @@ pub(crate) struct Event {
 pub(crate) struct Store {
     records: BTreeMap<String, BTreeMap<String, Value>>,
     revision: u64,
+    classes: BTreeMap<String, crate::model::ClassAvailability>,
 }
 
 impl Store {
@@ -228,6 +439,23 @@ impl Store {
                     && value["is_a_snapshot"] != true
                     && match action {
                         crate::OperationAction::Power(action) => advertises(value, action.wire()),
+                        crate::OperationAction::Settings(_) | crate::OperationAction::Device(_) => {
+                            true
+                        }
+                        crate::OperationAction::Snapshot(
+                            crate::SnapshotOperation::Checkpoint { .. },
+                        ) => advertises(value, "checkpoint"),
+                        crate::OperationAction::Placement(p) => {
+                            value["allowed_operations"].as_array().is_some_and(|ops| {
+                                ops.iter().any(|op| {
+                                    op == match p.placement {
+                                        crate::PowerAction::Start => "start_on",
+                                        crate::PowerAction::Resume => "resume_on",
+                                        _ => "",
+                                    }
+                                })
+                            })
+                        }
                         crate::OperationAction::Snapshot(crate::SnapshotOperation::Create {
                             ..
                         }) => advertises(value, "snapshot"),
@@ -255,21 +483,62 @@ impl Store {
     }
     pub(crate) fn apply(&mut self, batch: &EventBatch) -> Result<Inventory, Error> {
         let mut next = self.clone();
+        if batch.reset {
+            next.records.clear();
+        }
+        next.classes.extend(batch.classes.clone());
+        for (name, state) in &batch.classes {
+            if matches!(
+                state,
+                crate::model::ClassAvailability::Unsupported
+                    | crate::model::ClassAvailability::PermissionDenied
+            ) {
+                next.records.remove(name);
+            }
+        }
         for event in &batch.events {
             let class_name = event.class_name.to_ascii_lowercase();
-            if !["pool", "host", "vm", "sr", "network"].contains(&class_name.as_str()) {
+            let optional = OPTIONAL_CLASSES
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&class_name));
+            if !CLASSES
+                .iter()
+                .chain(OPTIONAL_CLASSES)
+                .any(|name| name.eq_ignore_ascii_case(&class_name))
+            {
+                continue;
+            }
+            if optional
+                && matches!(
+                    next.classes.get(&class_name),
+                    Some(
+                        crate::ClassAvailability::PermissionDenied
+                            | crate::ClassAvailability::Unsupported
+                    )
+                )
+            {
                 continue;
             }
             let records = next.records.entry(class_name).or_default();
             match event.operation.as_str() {
                 "add" | "mod" => {
-                    if !event.reference.starts_with("OpaqueRef:") || !event.snapshot.is_object() {
+                    if opaque_reference(&json!(&event.reference)).is_err()
+                        || !event.snapshot.is_object()
+                    {
+                        if optional {
+                            // Retain invalidity until this object is corrected/deleted or the store is resynchronized.
+                            records.insert(event.reference.clone(), Value::Null);
+                            continue;
+                        }
                         return Err(Error::Protocol("invalid inventory event"));
                     }
                     records.insert(event.reference.clone(), event.snapshot.clone());
                 }
                 "del" => {
                     records.remove(&event.reference);
+                }
+                _ if optional => {
+                    records.insert(event.reference.clone(), Value::Null);
                 }
                 _ => return Err(Error::Protocol("unknown inventory event operation")),
             }
@@ -440,6 +709,7 @@ impl Store {
             snapshots,
             storage,
             networks,
+            details: inventory::decode(self),
             revision: self.revision,
         })
     }
@@ -469,6 +739,20 @@ pub(crate) async fn prepare_mutation(
         return Err(Error::Stale);
     }
     match &operation.action {
+        OperationAction::Settings(patch) => {
+            patch.validate()?;
+            for step in patch.steps() {
+                step.preflight(&record)?;
+            }
+            Ok(parent)
+        }
+        OperationAction::Snapshot(SnapshotOperation::Checkpoint { name }) => {
+            crate::SnapshotName::new(name)?;
+            if !advertises(&record, "checkpoint") {
+                return Err(Error::UnavailableAction);
+            }
+            Ok(parent)
+        }
         OperationAction::Snapshot(SnapshotOperation::Create { name }) => {
             crate::SnapshotName::new(name)?;
             if !advertises(&record, "snapshot") {
@@ -499,6 +783,7 @@ pub(crate) async fn prepare_mutation(
             }
             Ok(reference)
         }
+        OperationAction::Placement(_) | OperationAction::Device(_) => Err(Error::UnavailableAction),
         OperationAction::Power(_) => unreachable!(),
     }
 }

@@ -109,3 +109,16 @@ numbers are not project results. Establish budgets only after the first represen
 Check formatting, Clippy, unit/protocol tests, deterministic UI fixtures, and release builds
 once the workspace exists. Release reports link the actual CI run and lab evidence.
 Do not add empty CI jobs or placeholder tests that claim these checks already pass.
+
+
+## Expanded parity qualification
+
+The retained workflow checklist is [PARITY-IMPLEMENTATION.md](PARITY-IMPLEMENTATION.md).
+The [disposable nested KVM harness](../lab/README.md) prepares isolated resources and has
+an offline ownership/XML test suite. Running that suite does not create an XCP-ng lab or
+qualify a host workflow. Real tests require a designated disposable environment and record
+exact host versions and permitted actions. Never substitute a production pool for this gate.
+
+The ordinary check script also runs the vendored RFB wire tests and isolated fake Secret
+Service fixtures. It renders only synthetic scenes. User-provided screenshots and private
+inventories must not appear in artifacts, fixtures, reports or releases.

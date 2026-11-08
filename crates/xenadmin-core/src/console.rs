@@ -1,6 +1,6 @@
 use crate::{Error, Inventory, xapi::Session};
 use serde_json::json;
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -8,6 +8,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use vnc::{VncConnector, VncEncoding, VncEvent, X11Event};
+
+#[path = "console_clipboard.rs"]
+mod clipboard;
 
 const MAX_PIXELS: usize = 8_294_400;
 
@@ -25,14 +28,39 @@ pub struct ConsoleFrame {
     pub rgba: Arc<[u8]>,
 }
 #[derive(Clone)]
+pub struct ConsoleCursor {
+    pub width: u16,
+    pub height: u16,
+    pub hotspot: [u16; 2],
+    pub rgba: Arc<[u8]>,
+}
+#[derive(Clone)]
 pub struct ConsoleSnapshot {
     pub state: ConsoleState,
     pub frame: Option<Arc<ConsoleFrame>>,
+    pub cursor: Option<Arc<ConsoleCursor>>,
+    pub guest_clipboard: Option<Arc<str>>,
+    pub clipboard_utf8: bool,
+    pub extended_keys: bool,
 }
 #[derive(Clone, Debug)]
 pub enum ConsoleInput {
-    Key { keysym: u32, down: bool },
-    Pointer { x: u16, y: u16, buttons: u8 },
+    Key {
+        keysym: u32,
+        down: bool,
+    },
+    PhysicalKey {
+        keysym: u32,
+        keycode: u32,
+        down: bool,
+    },
+    KeyChord(Vec<u32>),
+    Clipboard(String),
+    Pointer {
+        x: u16,
+        y: u16,
+        buttons: u8,
+    },
     ReleaseAll,
 }
 
@@ -47,6 +75,14 @@ impl Console {
         self.receiver.borrow().clone()
     }
     pub fn input(&self, event: ConsoleInput) -> Result<(), Error> {
+        if let ConsoleInput::Clipboard(text) = &event {
+            clipboard::validate(text, self.latest().clipboard_utf8)?;
+        }
+        if let ConsoleInput::KeyChord(keys) = &event
+            && keys.len() > 16
+        {
+            return Err(Error::ConsoleProtocol);
+        }
         self.input.try_send(event).map_err(|_| {
             self.cancel.cancel();
             Error::Busy
@@ -86,6 +122,10 @@ pub(crate) fn channel(
     let (sender, receiver) = watch::channel(Arc::new(ConsoleSnapshot {
         state: ConsoleState::Connecting,
         frame: None,
+        cursor: None,
+        guest_clipboard: None,
+        clipboard_utf8: false,
+        extended_keys: false,
     }));
     let (input, inputs) = mpsc::channel(128);
     (
@@ -109,6 +149,10 @@ impl ConsoleRequest {
         self.sender.send_replace(Arc::new(ConsoleSnapshot {
             state: ConsoleState::Failed(error.to_string()),
             frame: None,
+            cursor: None,
+            guest_clipboard: None,
+            clipboard_utf8: false,
+            extended_keys: false,
         }));
     }
     pub(crate) async fn run(
@@ -125,13 +169,13 @@ impl ConsoleRequest {
         });
         let result = self.stream(&session, &reference, &inventory).await;
         observer.abort();
-        let last_frame = self.sender.borrow().frame.clone();
+        let previous = self.sender.borrow().as_ref().clone();
         self.sender.send_replace(Arc::new(ConsoleSnapshot {
             state: match result {
                 Ok(()) => ConsoleState::Closed,
                 Err(error) => ConsoleState::Failed(error.to_string()),
             },
-            frame: last_frame,
+            ..previous
         }));
     }
 
@@ -171,6 +215,10 @@ impl ConsoleRequest {
                 .add_encoding(VncEncoding::CopyRect)
                 .add_encoding(VncEncoding::Raw)
                 .add_encoding(VncEncoding::DesktopSizePseudo)
+                .add_encoding(VncEncoding::ExtendedDesktopSizePseudo)
+                .add_encoding(VncEncoding::CursorPseudo)
+                .add_encoding(VncEncoding::QemuExtendedKeyEvent)
+                .add_encoding(VncEncoding::ExtendedClipboard)
                 .build()?
                 .try_start()
                 .await?
@@ -180,7 +228,9 @@ impl ConsoleRequest {
         .map_err(|_| Error::Timeout)?
         .map_err(|_| Error::ConsoleProtocol)?;
         let mut buffer = Framebuffer::default();
-        let mut held = BTreeSet::new();
+        let mut held = BTreeMap::new();
+        let mut clipboard = clipboard::Clipboard::default();
+        let mut snapshot = self.sender.borrow().as_ref().clone();
         let mut refresh = tokio::time::interval(Duration::from_millis(33));
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let result = 'running: loop {
@@ -190,12 +240,27 @@ impl ConsoleRequest {
                     let Some(input) = input else { break Ok(()); };
                     let result = match input {
                         ConsoleInput::Key {keysym, down} => {
-                            if down { held.insert(keysym); } else { held.remove(&keysym); }
-                            client.input(X11Event::KeyEvent((keysym, down).into())).await
+                            if down { held.insert(u64::from(keysym), (keysym, None)); } else { held.remove(&u64::from(keysym)); }
+                            client.input(key_event(keysym, None, down)).await
                         }
+                        ConsoleInput::PhysicalKey {keysym, keycode, down} => {
+                            let code = if snapshot.extended_keys { Some(keycode) } else { None };
+                            let identity = (1u64 << 32) | u64::from(keycode);
+                            let key = held.get(&identity).copied().unwrap_or((keysym, code));
+                            if down { held.insert(identity, key); } else { held.remove(&identity); }
+                            client.input(key_event(key.0, key.1, down)).await
+                        }
+                        ConsoleInput::KeyChord(keys) => {
+                            for (_, (symbol, code)) in std::mem::take(&mut held) { let _ = client.input(key_event(symbol, code, false)).await; }
+                            let mut result = Ok(());
+                            for symbol in &keys { if let Err(error) = client.input(key_event(*symbol, None, true)).await { result = Err(error); break; } held.insert(u64::from(*symbol), (*symbol, None)); }
+                            for symbol in keys.iter().rev() { let _ = client.input(key_event(*symbol, None, false)).await; held.remove(&u64::from(*symbol)); }
+                            result
+                        }
+                        ConsoleInput::Clipboard(text) => clipboard.send(&client, text).await,
                         ConsoleInput::Pointer {x,y,buttons} => client.input(X11Event::PointerEvent((x,y,buttons).into())).await,
                         ConsoleInput::ReleaseAll => {
-                            for key in std::mem::take(&mut held) { let _ = client.input(X11Event::KeyEvent((key, false).into())).await; }
+                            for (_, (symbol, code)) in std::mem::take(&mut held) { let _ = client.input(key_event(symbol, code, false)).await; }
                             client.input(X11Event::PointerEvent((0,0,0).into())).await
                         }
                     };
@@ -204,11 +269,22 @@ impl ConsoleRequest {
                 _ = refresh.tick() => {
                     let mut changed = false;
                     let mut failed = false;
+                    let mut metadata_changed = false;
                     for _ in 0..256 {
                         match client.poll_event().await {
                             Ok(Some(VncEvent::SetResolution(screen))) => { if let Err(error)=buffer.resize(screen.width, screen.height){break 'running Err(error);} changed = true; }
                             Ok(Some(VncEvent::RawImage(rect, data))) => { if let Err(error)=buffer.draw(rect, &data){break 'running Err(error);} changed = true; }
                             Ok(Some(VncEvent::Copy(dst, src))) => { if let Err(error)=buffer.copy(dst, src){break 'running Err(error);} changed = true; }
+                            Ok(Some(VncEvent::DesktopUpdate(update))) => {
+                                if let Some(layout) = update.layout && (buffer.width, buffer.height) != (layout.width, layout.height) { if let Err(error) = buffer.resize(layout.width, layout.height) { break 'running Err(error); } changed = true; }
+                            }
+                            Ok(Some(VncEvent::QemuExtendedKeyEvent)) => { snapshot.extended_keys = true; metadata_changed = true; }
+                            Ok(Some(VncEvent::SetCursor(rect, rgba))) => {
+                                if rgba.len() != usize::from(rect.width) * usize::from(rect.height) * 4 || rect.width > 256 || rect.height > 256 { break 'running Err(Error::ConsoleProtocol); }
+                                snapshot.cursor = Some(Arc::new(ConsoleCursor { width: rect.width, height: rect.height, hotspot: [rect.x.min(rect.width.saturating_sub(1)), rect.y.min(rect.height.saturating_sub(1))], rgba: rgba.into() })); metadata_changed = true;
+                            }
+                            Ok(Some(VncEvent::Text(text))) => { if text.len() > clipboard::MAX_TEXT { break 'running Err(Error::ConsoleProtocol); } clipboard.guest = Some(text); metadata_changed = true; }
+                            Ok(Some(VncEvent::Clipboard(message))) => { if clipboard.receive(&client, message).await.is_err() { break 'running Err(Error::ConsoleProtocol); } metadata_changed = true; }
                             Ok(Some(VncEvent::Error(_))) | Err(_) => { failed = true; break; }
                             Ok(None) => break,
                             _ => {},
@@ -217,21 +293,37 @@ impl ConsoleRequest {
                     if failed { break Err(Error::ConsoleProtocol); }
                     if changed && buffer.width > 0 {
                         let frame = Arc::new(ConsoleFrame { width: buffer.width, height: buffer.height, rgba: buffer.rgba.clone().into() });
-                        self.sender.send_replace(Arc::new(ConsoleSnapshot { state: ConsoleState::Connected, frame: Some(frame) }));
+                        snapshot.state = ConsoleState::Connected; snapshot.frame = Some(frame);
+                    }
+                    if changed || metadata_changed {
+                        snapshot.guest_clipboard = clipboard.guest.as_deref().map(Arc::from);
+                        snapshot.clipboard_utf8 = clipboard.utf8();
+                        self.sender.send_replace(Arc::new(snapshot.clone()));
                     }
                     if client.input(X11Event::Refresh).await.is_err() { break Err(Error::ConsoleProtocol); }
                 }
             }
         };
         let _ = tokio::time::timeout(Duration::from_secs(1), async {
-            for key in held {
-                let _ = client.input(X11Event::KeyEvent((key, false).into())).await;
+            for (_, (symbol, code)) in held {
+                let _ = client.input(key_event(symbol, code, false)).await;
             }
             let _ = client.input(X11Event::PointerEvent((0, 0, 0).into())).await;
             let _ = client.close().await;
         })
         .await;
         result
+    }
+}
+
+fn key_event(keysym: u32, keycode: Option<u32>, down: bool) -> X11Event {
+    match keycode {
+        Some(keycode) => X11Event::ExtendedKeyEvent {
+            keysym,
+            keycode,
+            down,
+        },
+        None => X11Event::KeyEvent((keysym, down).into()),
     }
 }
 

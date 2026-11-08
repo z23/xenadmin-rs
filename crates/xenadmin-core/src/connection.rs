@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, SystemTime},
@@ -23,8 +23,10 @@ use crate::{
 
 enum Request {
     Console(ConsoleRequest),
-    Submit(MutationRequest),
+    Diagnose(crate::diagnostics::DiagnosticRequest),
+    Submit(Box<MutationRequest>),
     Control(crate::OperationId, crate::OperationControl),
+    RememberMembers(Vec<crate::Endpoint>),
 }
 
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -46,14 +48,16 @@ pub struct ConnectionSnapshot {
     inventory: Option<Arc<Inventory>>,
     error: Option<String>,
     updated_at: Option<SystemTime>,
+    endpoint: Option<crate::Endpoint>,
+    verified_members: Vec<crate::Endpoint>,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ObservedVm {
     pub(crate) pool: crate::PoolId,
     pub(crate) generation: u64,
     pub(crate) id: crate::VmId,
 }
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ObservedSnapshot {
     pub(crate) pool: crate::PoolId,
     pub(crate) generation: u64,
@@ -115,14 +119,105 @@ impl ConnectionSnapshot {
     pub fn updated_at(&self) -> Option<SystemTime> {
         self.updated_at
     }
+    pub fn active_endpoint(&self) -> Option<&crate::Endpoint> {
+        self.endpoint.as_ref()
+    }
+    pub fn verified_members(&self) -> &[crate::Endpoint] {
+        &self.verified_members
+    }
     pub fn is_current(&self) -> bool {
         self.state == ConnectionState::Ready
+    }
+}
+
+struct ConnectionLease {
+    cancel: CancellationToken,
+    canonical_cancel: Mutex<Option<CancellationToken>>,
+}
+impl ConnectionLease {
+    fn disconnect(&self) {
+        if let Some(cancel) = self
+            .canonical_cancel
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            cancel.cancel();
+        }
+        self.cancel.cancel();
+    }
+}
+impl Drop for ConnectionLease {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+#[derive(Clone)]
+struct OwnerRoute {
+    receiver: watch::Receiver<Arc<ConnectionSnapshot>>,
+    history: watch::Receiver<Arc<Vec<OperationRecord>>>,
+    requests: mpsc::Sender<Request>,
+}
+struct PoolOwner {
+    authority: [u8; 32],
+    lease: Weak<ConnectionLease>,
+    route: OwnerRoute,
+}
+struct OwnerContext {
+    directory: PathBuf,
+    registry: Arc<Mutex<BTreeMap<crate::PoolId, PoolOwner>>>,
+    authority: [u8; 32],
+    lease: Weak<ConnectionLease>,
+    route: OwnerRoute,
+}
+struct AliasTarget {
+    lease: Arc<ConnectionLease>,
+    route: OwnerRoute,
+}
+impl OwnerContext {
+    fn claim(&self, pool: crate::PoolId) -> Result<Option<AliasTarget>, Error> {
+        let mut owners = self.registry.lock().unwrap_or_else(|p| p.into_inner());
+        owners.retain(|_, owner| {
+            owner
+                .lease
+                .upgrade()
+                .is_some_and(|lease| !lease.cancel.is_cancelled())
+                && !matches!(
+                    owner.route.receiver.borrow().state(),
+                    ConnectionState::Failed | ConnectionState::Disconnected
+                )
+        });
+        if let Some(owner) = owners.get(&pool) {
+            if Weak::ptr_eq(&owner.lease, &self.lease) {
+                return Ok(None);
+            }
+            if let Some(lease) = owner.lease.upgrade() {
+                if owner.authority != self.authority {
+                    return Err(Error::Connection("This pool is already connected with different credentials, trust or access settings. Disconnect it before reconnecting with the new settings.".into()));
+                }
+                return Ok(Some(AliasTarget {
+                    lease,
+                    route: owner.route.clone(),
+                }));
+            }
+        }
+        owners.insert(
+            pool,
+            PoolOwner {
+                authority: self.authority,
+                lease: self.lease.clone(),
+                route: self.route.clone(),
+            },
+        );
+        Ok(None)
     }
 }
 
 pub struct Backend {
     runtime: Option<Runtime>,
     state_directory: PathBuf,
+    registry: Arc<Mutex<BTreeMap<crate::PoolId, PoolOwner>>>,
+    authority_salt: [u8; 16],
 }
 impl Backend {
     pub fn start() -> Result<Self, Error> {
@@ -138,19 +233,28 @@ impl Backend {
         Ok(Self {
             runtime: Some(runtime),
             state_directory,
+            registry: Arc::new(Mutex::new(BTreeMap::new())),
+            authority_salt: *uuid::Uuid::new_v4().as_bytes(),
         })
     }
 
     pub fn connect(&self, options: ConnectionOptions, credentials: Credentials) -> Connection {
         let read_only = options.read_only;
+        let authority = options.authority_key(&credentials, &self.authority_salt);
         let (sender, receiver) = watch::channel(Arc::new(ConnectionSnapshot {
             generation: 0,
             state: ConnectionState::Connecting,
             inventory: None,
             error: None,
             updated_at: None,
+            endpoint: None,
+            verified_members: Vec::new(),
         }));
         let cancel = CancellationToken::new();
+        let lease = Arc::new(ConnectionLease {
+            cancel: cancel.clone(),
+            canonical_cancel: Mutex::new(None),
+        });
         let runtime = self.runtime.as_ref().expect("runtime exists before drop");
         let (requests, receiver_requests) = mpsc::channel(32);
         let (history_sender, history) = watch::channel(Arc::new(Vec::new()));
@@ -160,10 +264,21 @@ impl Backend {
             sender,
             cancel.clone(),
             receiver_requests,
-            self.state_directory.clone(),
+            OwnerContext {
+                directory: self.state_directory.clone(),
+                registry: self.registry.clone(),
+                authority,
+                lease: Arc::downgrade(&lease),
+                route: OwnerRoute {
+                    receiver: receiver.clone(),
+                    history: history.clone(),
+                    requests: requests.clone(),
+                },
+            },
             history_sender,
         ));
         Connection {
+            lease,
             read_only,
             receiver,
             cancel,
@@ -181,7 +296,9 @@ impl Drop for Backend {
     }
 }
 
+#[derive(Clone)]
 pub struct Connection {
+    lease: Arc<ConnectionLease>,
     read_only: bool,
     receiver: watch::Receiver<Arc<ConnectionSnapshot>>,
     cancel: CancellationToken,
@@ -190,6 +307,29 @@ pub struct Connection {
     history: watch::Receiver<Arc<Vec<OperationRecord>>>,
 }
 impl Connection {
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+    pub fn diagnose_power(
+        &self,
+        target: ObservedVm,
+        action: crate::PowerAction,
+    ) -> Result<crate::ActionDiagnostic, Error> {
+        let snapshot = self.latest();
+        if !snapshot.is_current()
+            || snapshot.generation != target.generation
+            || snapshot
+                .inventory()
+                .is_none_or(|i| i.pool_id != target.pool)
+        {
+            return Err(Error::Stale);
+        }
+        let (handle, request) = crate::diagnostics::channel(target, action, self.runtime.clone());
+        self.requests
+            .try_send(Request::Diagnose(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn control_operation(
         &self,
         id: crate::OperationId,
@@ -238,7 +378,7 @@ impl Connection {
             self.runtime.clone(),
         );
         self.requests
-            .try_send(Request::Submit(request))
+            .try_send(Request::Submit(Box::new(request)))
             .map_err(|_| Error::Busy)?;
         Ok(operation)
     }
@@ -274,7 +414,7 @@ impl Connection {
         self.receiver.clone()
     }
     pub fn disconnect(&self) {
-        self.cancel.cancel();
+        self.lease.disconnect();
     }
     pub fn notify_on_change(&self, callback: Arc<dyn Fn() + Send + Sync>) {
         let mut receiver = self.receiver.clone();
@@ -319,7 +459,7 @@ impl Connection {
         .map_err(|_| Error::Timeout)?
     }
     pub async fn close(&self) {
-        self.cancel.cancel();
+        self.lease.disconnect();
         let mut receiver = self.receiver.clone();
         let _ = tokio::time::timeout(Duration::from_secs(4), async {
             while receiver.borrow_and_update().state != ConnectionState::Disconnected {
@@ -331,21 +471,18 @@ impl Connection {
         .await;
     }
 }
-impl Drop for Connection {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
 async fn run(
     mut options: ConnectionOptions,
     credentials: Credentials,
     sender: watch::Sender<Arc<ConnectionSnapshot>>,
     cancel: CancellationToken,
     mut requests: mpsc::Receiver<Request>,
-    directory: PathBuf,
+    context: OwnerContext,
     history: watch::Sender<Arc<Vec<OperationRecord>>>,
 ) {
+    let directory = context.directory.clone();
+    let mut expected_pool = options.expected_pool;
+    let mut protocol_failures = 0u8;
     let (updates, mut operation_updates) = mpsc::channel::<OperationUpdate>(128);
     let mut records = BTreeMap::new();
     let mut generation;
@@ -387,6 +524,7 @@ async fn run(
                 let mut recovered = false;
                 let mut journal_error = None;
                 let mut workers = tokio::task::JoinSet::new();
+                let mut diagnostics = tokio::task::JoinSet::new();
                 let mut worker_counts = BTreeMap::<crate::OperationId, usize>::new();
                 let start_worker =
                     |request: MutationRequest,
@@ -415,6 +553,7 @@ async fn run(
                 let error = loop {
                     let batch = tokio::select! {
                         _=cancel.cancelled()=>break None,
+                        _=diagnostics.join_next(), if !diagnostics.is_empty()=>{continue;}
                         done=workers.join_next(), if !workers.is_empty()=>{
                             match done {
                                 Some(Ok(id))=>{if let Some(count)=worker_counts.get_mut(&id) { *count-=1; if *count==0 {worker_counts.remove(&id);} }},
@@ -465,8 +604,13 @@ async fn run(
                                         && !operations::Journal::open(&directory).is_ok_and(|journal|journal.knows(&request.record)) {
                                         request.reject(Error::UnavailableAction);
                                     } else if let Some(reference)=store.vm_reference(request.record.vm) {
-                                        start_worker(request,Some(reference),&mut workers,&mut worker_counts);
+                                        start_worker(*request,Some(reference),&mut workers,&mut worker_counts);
                                     } else {request.reject(Error::Stale);}
+                                }
+                                Request::Diagnose(request)=>{
+                                    if request.target.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.target.pool) {request.fail(Error::Stale);}
+                                    else if diagnostics.len()>=16 {request.fail(Error::Busy);}
+                                    else { diagnostics.spawn(request.run(session.clone(),active.clone())); }
                                 }
                                 Request::Console(request)=>{
                                     if options.read_only {request.fail(Error::ReadOnly);}
@@ -476,6 +620,18 @@ async fn run(
                                         } else {request.fail(Error::Stale);}
                                     } else {request.fail(Error::Stale);}
                                 }
+                                Request::RememberMembers(endpoints)=>{
+                                    let mut snapshot = (*sender.borrow().clone()).clone();
+                                    for endpoint in endpoints.into_iter().take(128) {
+                                        if snapshot.verified_members.len() < 128 && !snapshot.verified_members.contains(&endpoint) {
+                                            snapshot.verified_members.push(endpoint.clone());
+                                        }
+                                        if options.fallback_endpoints.len() < 128 && !options.fallback_endpoints.contains(&endpoint) {
+                                            options.fallback_endpoints.push(endpoint);
+                                        }
+                                    }
+                                    sender.send_replace(Arc::new(snapshot));
+                                }
                                 Request::Control(id,control)=>{
                                     let result=(||{
                                         if options.read_only {return Err(Error::ReadOnly);}
@@ -484,9 +640,9 @@ async fn run(
                                         let record=match control {
                                             crate::OperationControl::RequestCancellation=>journal.control(pool,id,false)?,
                                             crate::OperationControl::AcknowledgeUnknown=>journal.control(pool,id,true)?,
-                                            crate::OperationControl::Recheck=>journal.load(id)?.filter(|record|record.pool==pool && !record.state.terminal() && record.has_task()).ok_or(Error::UnavailableAction)?,
+                                            crate::OperationControl::Recheck=>journal.load(id)?.filter(|record|record.pool==pool && !record.state.terminal() && record.can_recheck()).ok_or(Error::UnavailableAction)?,
                                         };
-                                        if !record.state.terminal() && record.has_task() && !worker_counts.contains_key(&id) {
+                                        if !record.state.terminal() && record.can_recheck() && !worker_counts.contains_key(&id) {
                                             start_worker(MutationRequest::tracking(record.clone()),None,&mut workers,&mut worker_counts);
                                         }
                                         merge_record(&mut records,record);
@@ -508,6 +664,51 @@ async fn run(
                     if !batch.events.is_empty() || token.is_empty() {
                         match store.apply(&batch) {
                             Ok(inventory) => {
+                                if expected_pool.is_some_and(|pool| pool != inventory.pool_id) {
+                                    break Some(Error::Connection("The endpoint now belongs to a different pool. Create a separate profile; this connection will not change its target pool.".into()));
+                                }
+                                expected_pool = Some(inventory.pool_id);
+                                {
+                                    let mut snapshot = (*sender.borrow().clone()).clone();
+                                    snapshot.endpoint = Some(session.options().endpoint.clone());
+                                    for endpoint in [&options.endpoint, &session.options().endpoint]
+                                    {
+                                        if !snapshot.verified_members.contains(endpoint) {
+                                            snapshot.verified_members.push(endpoint.clone());
+                                        }
+                                        if !options.fallback_endpoints.contains(endpoint) {
+                                            options.fallback_endpoints.push(endpoint.clone());
+                                        }
+                                    }
+                                    sender.send_replace(Arc::new(snapshot));
+                                }
+                                match context.claim(inventory.pool_id) {
+                                    Ok(Some(target)) => {
+                                        let endpoints = sender.borrow().verified_members.clone();
+                                        let _ = target
+                                            .route
+                                            .requests
+                                            .try_send(Request::RememberMembers(endpoints));
+                                        active.cancel();
+                                        let _ = tokio::time::timeout(
+                                            Duration::from_secs(3),
+                                            session.logout(),
+                                        )
+                                        .await;
+                                        if let Some(lease) = context.lease.upgrade() {
+                                            *lease
+                                                .canonical_cancel
+                                                .lock()
+                                                .unwrap_or_else(|p| p.into_inner()) =
+                                                Some(target.lease.cancel.clone());
+                                        }
+                                        forward_alias(target, sender, history, requests, cancel)
+                                            .await;
+                                        return;
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => break Some(error),
+                                }
                                 if !recovered && !options.read_only {
                                     match operations::recover(&directory, inventory.pool_id) {
                                         Ok(rows) => {
@@ -543,6 +744,9 @@ async fn run(
                             Err(error) => break Some(error),
                         }
                     }
+                    if !token.is_empty() {
+                        protocol_failures = 0;
+                    }
                     token = batch.token;
                     events.set(next_events(session.clone(), token.clone()));
                 };
@@ -564,9 +768,27 @@ async fn run(
             }
             Err(error) => error,
         };
-        let retry = error.retryable();
+        let protocol_fault = matches!(error, Error::Protocol(_) | Error::InventoryNumber { .. });
+        if protocol_fault {
+            protocol_failures = protocol_failures.saturating_add(1);
+        }
+        let retry = error.retryable() || (protocol_fault && protocol_failures <= 3);
         if let Error::Coordinator(endpoint) = &error {
             options = options.for_endpoint(endpoint.clone());
+        } else if matches!(
+            error,
+            Error::Transport | Error::Timeout | Error::Http(502..=504)
+        ) && expected_pool.is_some()
+            && !options.fallback_endpoints.is_empty()
+        {
+            let next = options
+                .fallback_endpoints
+                .iter()
+                .position(|endpoint| endpoint == &options.endpoint)
+                .map_or(0, |position| {
+                    (position + 1) % options.fallback_endpoints.len()
+                });
+            options = options.for_endpoint(options.fallback_endpoints[next].clone());
         }
         publish(
             &sender,
@@ -583,7 +805,7 @@ async fn run(
         if !retry {
             return;
         }
-        tokio::select! {_=cancel.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(backoff))=>{},}
+        tokio::select! {_=cancel.cancelled()=>break,_=tokio::time::sleep(Duration::from_secs(backoff) + Duration::from_millis((generation.wrapping_mul(137)) % 251))=>{},}
         backoff = (backoff * 2).min(30);
     }
     publish(
@@ -593,6 +815,55 @@ async fn run(
         &last_inventory,
         None,
         last_update,
+    );
+}
+
+async fn forward_alias(
+    mut target: AliasTarget,
+    sender: watch::Sender<Arc<ConnectionSnapshot>>,
+    history: watch::Sender<Arc<Vec<OperationRecord>>>,
+    mut requests: mpsc::Receiver<Request>,
+    cancel: CancellationToken,
+) {
+    sender.send_replace(target.route.receiver.borrow().clone());
+    history.send_replace(target.route.history.borrow().clone());
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            result = target.route.receiver.changed() => {
+                sender.send_replace(target.route.receiver.borrow().clone());
+                if result.is_err() { break; }
+            }
+            result = target.route.history.changed() => {
+                history.send_replace(target.route.history.borrow().clone());
+                if result.is_err() { break; }
+            }
+            request = requests.recv() => {
+                let Some(request) = request else { break; };
+                if let Err(error) = target.route.requests.try_send(request) {
+                    match error.into_inner() {
+                        Request::Submit(request) => request.reject(Error::Busy),
+                        Request::Console(request) => request.fail(Error::Busy),
+                        Request::Diagnose(request) => request.fail(Error::Busy),
+                        Request::RememberMembers(_) => {},
+                        Request::Control(_, _) => {
+                            let mut snapshot = (*sender.borrow().clone()).clone();
+                            snapshot.error = Some(Error::Busy.to_string());
+                            sender.send_replace(Arc::new(snapshot));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let previous = sender.borrow().clone();
+    publish(
+        &sender,
+        previous.generation,
+        ConnectionState::Disconnected,
+        &previous.inventory,
+        None,
+        previous.updated_at,
     );
 }
 
@@ -643,11 +914,14 @@ fn publish(
     error: Option<String>,
     updated_at: Option<SystemTime>,
 ) {
+    let previous = sender.borrow().clone();
     sender.send_replace(Arc::new(ConnectionSnapshot {
         generation,
         state,
         inventory: inventory.clone(),
         error,
         updated_at,
+        endpoint: previous.endpoint.clone(),
+        verified_members: previous.verified_members.clone(),
     }));
 }

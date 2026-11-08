@@ -1,6 +1,9 @@
 # Feature scope
 
-This table defines target workflow coverage. The [alpha report](reports/2026-11-07-alpha.md)
+The row-complete [retained parity ledger](PARITY-IMPLEMENTATION.md) defines the expanded
+scope and records each workflow separately. It excludes only Specialized hardware and
+guests, and DR, updates and legacy services. The table below describes the original
+vertical slices; it is not an additional scope restriction. The [alpha report](reports/2026-11-07-alpha.md)
 records the initial implemented subset and its limitations; the
 [snapshot report](reports/2026-11-07-snapshots.md) records the 0.2.0 extension. No complete milestone has passed its
 live-host acceptance gate. A milestone becomes complete only when its acceptance evidence

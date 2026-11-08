@@ -53,17 +53,22 @@ other GPUs, software rendering, and clean-distribution installation remain to be
 4. To bypass certificate validation, check **Disable certificate validation** once. This
    applies to the initial member, coordinator redirects, and consoles for that connection.
    HTTPS remains enabled, but certificate identity and validity checks are skipped. The
-   choice is remembered with the last endpoint and shown in the connection status.
+   choice is saved with that profile and shown in the connection status.
 5. With validation enabled, if other pool hosts use self-signed certificates, add their verified pins as
    `https://host=SHA256` entries, one per line. Coordinator redirects and console tunnels
    verify their destination independently.
 6. Click **Connect** and wait for current inventory.
 7. Select a VM. Use the available power controls or click **Open console**.
 
-The password stays in the running session. The current build remembers the last endpoint,
-username, accepted pins, sidebar width, and column widths. It does not save passwords or
-provide keyring integration yet. Host actions are enabled from the host's advertised
-capabilities, and XAPI checks authorization again.
+Passwords stay in the running session by default. **Remember password in desktop keyring**
+opts into Secret Service storage. Locked/unavailable keyrings leave a working manual-password
+path. **Connections** manages saved profiles and switches among concurrent pools; custom CA,
+read-only mode and timeout live under connection options. See [connection details](CONNECTIONS.md).
+
+Only one desktop can write a state directory. Close older application versions before
+starting this build. Host actions use advertised capabilities and fresh checks; XAPI enforces
+authorization again. **Check action availability** asks the current host for detailed reasons.
+**Start on host** and **Resume on host** review a chosen destination and recheck compatibility.
 
 Force operations require an explicit review. Closing an operation's observer does not
 cancel the host task. **Request cancellation** records the request durably, asks the host
@@ -72,7 +77,7 @@ operation after reconnect. The client retries transient task-read failures witho
 repeating the original mutation.
 
 An interrupted request can remain **OutcomeUnknown** and block another mutation on that VM.
-Use **Recheck host task** when a saved task is available. **Review unknown outcome** allows
+Use **Recheck outcome** when a saved task or property-change intent is available. **Review unknown outcome** allows
 an explicit acknowledgement after you inspect the host and stop other instances handling
 the operation. This releases the local block; the result remains unverified and any host
 task may still continue. Close older application versions before using the updated journal.
@@ -81,9 +86,11 @@ task may still continue. Close older application versions before using the updat
 
 Select a virtual machine and choose **Snapshots** in Details. The view lists snapshots
 from the same direct XAPI inventory, with their names, creation times and UUIDs.
-**Create snapshot** takes a name and captures disks/configuration without guest memory
-or application quiescing. Shut down the guest or quiesce its applications first if the
-workload requires application-consistent data. The host controls snapshot capability.
+**Create snapshot** captures disks/configuration. **Include guest memory** selects XAPI's
+checkpoint operation when advertised by the host. Neither mode adds application quiescing;
+quiesced/VSS snapshots were removed in XCP-ng 8.1. Shut down the guest or quiesce its
+applications first if the workload requires application-consistent data. The host controls
+availability, and confirmation checks the selected mode.
 
 To restore, shut down the VM, select a snapshot and choose **Restore snapshot**. Review
 both UUIDs before confirming: restoration replaces the configuration and disk contents,
@@ -94,9 +101,9 @@ the restored VM. Inspect its resulting state and use the appropriate power actio
 Snapshot actions share the operation history, cancellation and unknown-outcome handling
 above. A successful create is reported only after verifying the returned snapshot identity.
 A lost reply never causes automatic recreation. The demo previews both dialogs but cannot
-confirm host changes. Snapshot deletion, clone-to-VM, quiesced snapshots and memory-checkpoint
-creation are not included in this increment. Snapshot writes are fixture-verified; live
-qualification requires an explicitly designated disposable lab.
+confirm host changes. Snapshot deletion, clone-to-VM and automatic shutdown/restore/restart
+orchestration remain queued. Snapshot writes are fixture-verified; live qualification requires
+an explicitly designated disposable lab.
 
 ## Use the read-only host probe
 
@@ -139,3 +146,30 @@ To run an extracted archive, execute `bin/xenadmin-rs` inside it. For optional d
 integration, copy the binaries into a directory on your PATH, the `.desktop` file into
 `~/.local/share/applications`, and the SVG into
 `~/.local/share/icons/hicolor/scalable/apps`. No host-side installation is required.
+
+
+## Edit VM properties and devices
+
+**Properties** edits name, description and autostart; a halted VM also exposes available CPU,
+memory-limit and boot-order settings. Memory fields accept whole byte counts or KiB/MiB/GiB.
+Review old/new values before applying. Changes execute in order, verify their saved values,
+and stop on failure. The operation history distinguishes verified, failed, pending and
+unknown steps. Rechecking uncertain properties reads the host without repeating a setter.
+Pool-level autostart must also be enabled for a VM's autostart setting to take effect.
+
+**Disks and network interfaces** shows attachments, VDIs/SRs, ISO drives, NICs/uplinks and
+guest tools/addresses. The first device controls support ISO insert/eject, existing disk and
+NIC activation/deactivation, and growing an exclusive writable disk while its VM is halted.
+Growing a virtual disk does not resize guest partitions or filesystems. Every action reviews
+the captured VM/device and rechecks ownership and current host restrictions before dispatch.
+Creating/removing attachments and broader device properties remain in the parity backlog.
+
+## Console controls
+
+The toolbar provides special keys, explicit clipboard send/copy, fit/actual size, fullscreen,
+release input and reconnect. Clipboard transfers are bounded and use negotiated UTF-8 when
+available; legacy servers accept only representable Latin-1 text. Middle-button and wheel
+input are supported. Rune's current secondary-click API lacks a release callback, so use
+**Hold right button** and **Release input** for right-button dragging. Focus loss releases
+held input. Reconnect keeps the original VM target even if table selection changes.
+Separate console windows and broader native keyboard/layout qualification remain open.

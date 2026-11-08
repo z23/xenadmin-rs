@@ -1,0 +1,312 @@
+# Retained parity implementation ledger
+
+This ledger tracks every workflow in [PARITY.md](PARITY.md) sections 1–15 and 18,
+plus the qualification gates in section 19. Sections 16 (specialized hardware and guests)
+and 17 (disaster recovery, updates and legacy services) are excluded at the user's request.
+No other `Assess` row is silently removed: it needs a supported capability implementation
+or a documented unsupported result for the target XCP-ng version.
+
+The status below is conservative. Backend data models and preparatory helpers are
+foundations, not completed user workflows. A row becomes implemented only when the UI,
+typed command, fresh checks, outcome reporting and local verification exist. It becomes
+qualified only after a sanitized disposable-lab happy path and failure/interruption path.
+This is an implementation ledger; [the original audit](PARITY.md) remains the reference
+baseline and [PLAN.md](PLAN.md) provides the existing milestone gates.
+
+This change adds saved profiles/pool ownership, optional keyring credentials, event recovery,
+expanded device inventory and action diagnosis, console controls, VM property edits and
+durable steps, chosen-host placement, memory checkpoints and safe first device actions.
+Rows below record those concrete subsets; no broad row is complete merely because a
+supporting type or method exists. Local automated checks do not establish live qualification.
+The [nested lab harness](../lab/README.md) creates isolated, owned local resources; no
+live-host qualification has yet been established by this change.
+
+## 1. Connections, credentials and trust
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P01-01 | Direct host/pool login and logout without XO | Existing workflow; qualification open |
+| P01-02 | Connect through a non-coordinator member | Existing workflow; qualification open |
+| P01-03 | Session renewal and reconnect | Bounded reconnect/resync and jitter implemented; coordinator-outage qualification open |
+| P01-04 | Try remembered verified pool members after endpoint failure | Verified-member candidates persisted and retried; live failover qualification open |
+| P01-05 | Multiple saved connection profiles | Profile editor, persistence and legacy migration implemented; desktop/lab qualification open |
+| P01-06 | Simultaneous pools and unified inventory | Concurrent connections and pool switcher implemented; unified cross-pool views/search remain queued |
+| P01-07 | Deduplicate aliases/member endpoints for the same pool | Authenticated owner sharing, authority-mismatch rejection and exclusive desktop state-directory lock implemented; lab qualification open |
+| P01-08 | Connect/disconnect all; remove profiles; reconnect as another user | Profile edit/remove and per-connection controls implemented; bulk connect/disconnect workflows remain queued |
+| P01-09 | Session-only password | Existing workflow; qualification open |
+| P01-10 | Save/forget credentials and protected session restore | Opt-in Secret Service save/load/forget implemented; automatic protected session restore and desktop-service qualification remain open |
+| P01-11 | System CA/name verification and endpoint pins | Existing workflow; qualification open |
+| P01-12 | Desktop custom-CA file selection | Existing subset; remaining work queued |
+| P01-13 | Inspect and accept unknown certificates | Queued |
+| P01-14 | Review changed certificate and replace trust | Existing subset; remaining work queued |
+| P01-15 | Easy certificate-validation opt-out | Existing workflow; qualification open |
+| P01-16 | Proxy/timeout options and richer connection diagnostics | Request timeout and connection errors implemented; proxy configuration and richer diagnostics remain queued |
+
+## 2. Inventory, navigation and inspection
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P02-01 | Pool/host/VM tree; VM and template tables | Existing workflow; qualification open |
+| P02-02 | Network and SR tables | Typed SR/network metadata and device-related detail views added; full dedicated administration views remain queued |
+| P02-03 | Search by name/UUID/host; sort and virtualized rows | Existing workflow; qualification open |
+| P02-04 | Persist sidebar/table column widths | Existing workflow; qualification open |
+| P02-05 | Full VM general information | Guest OS/tools/addresses and VM resource metadata added; full runtime/uptime presentation remains partial |
+| P02-06 | Full host/pool properties | Expanded host metadata/metrics parsed; full host/pool property views remain queued |
+| P02-07 | VM disk/NIC and host/storage attachment graph | Typed VDI/VBD/VIF/PIF/PBD graph and VM devices view implemented; broader host/SR views and lab qualification remain open |
+| P02-08 | Physical NIC/link/bond/VLAN inspection | PIF/bond/VLAN graph parsed; VM network uplinks shown; full link-speed/bond inspection remains partial |
+| P02-09 | SR attachment/path and disk inspection | VDI/VBD/PBD/SR relationships parsed and VM disks shown; dedicated SR/path browser remains queued |
+| P02-10 | Live inventory/stale-state handling | Optional-class negotiation, isolated decode failures and bounded resync implemented; live compatibility/scale qualification open |
+| P02-11 | Filtered/grouped/saved/cross-pool searches | Queued |
+| P02-12 | Multi-object actions and context menus | Queued |
+
+## 3. VM power and recovery
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P03-01 | Start, clean shutdown and reboot | Existing workflow; qualification open |
+| P03-02 | Force shutdown/reboot | Existing subset; remaining work queued |
+| P03-03 | Pause/unpause and suspend/resume | Existing workflow; qualification open |
+| P03-04 | Start/resume on a chosen eligible host/home server | Chosen-host start/resume and fresh compatibility preflight implemented; live placement qualification open |
+| P03-05 | Explain unavailable actions | Typed availability reasons and fresh host validity diagnosis implemented; lab RBAC/state qualification open |
+| P03-06 | Show current tasks and administrative action blocks | Current operations, administrative blocks and typed server tasks parsed; per-action diagnosis implemented; full task center remains queued |
+| P03-07 | Reviewed force recovery with running tasks | Queued |
+| P03-08 | Recovery-mode boot | Queued |
+| P03-09 | Batch VM power actions | Queued |
+
+## 4. Consoles
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P04-01 | Embedded direct authenticated RFB console | Existing workflow; qualification open |
+| P04-02 | Keyboard and basic pointer input | Focus-aware keyboard/pointer controls extended; real guest input/layout matrix remains open |
+| P04-03 | Ctrl+Alt+Delete and deliberate special-key controls | Deliberate key-chord toolbar implemented; guest/platform qualification open |
+| P04-04 | Mouse wheel/middle button | Wheel and middle-button mapping implemented; real guest qualification open |
+| P04-05 | Extended QEMU keys, layouts and shortcut capture | QEMU physical-key extension implemented with fallback; non-US/shortcut-capture qualification remains open |
+| P04-06 | Controlled clipboard send/receive | Explicit guest clipboard send/receive with limits and protocol negotiation implemented; platform/guest qualification open |
+| P04-07 | Reopen after reboot/migration/session replacement | Explicit reconnect control implemented; automatic relocation/session-replacement recovery remains queued |
+| P04-08 | Keep console target aligned with Details/actions | Console target pinned to pool/VM identity; selection changes no longer silently retarget input; lab qualification open |
+| P04-09 | Scaling, framebuffer resize and cursor behavior | Fit/actual-size/panning and cursor handling extended; live resize/display matrix remains open |
+| P04-10 | Full-screen, detached and multiple console windows | Fullscreen implemented; detached/multiple windows require further Rune integration |
+| P04-11 | Save console screenshot | Queued |
+| P04-12 | Host text console; guest SSH/RDP/external viewer | Queued |
+
+## 5. Snapshots
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P05-01 | List per-VM snapshots and basic details | Existing workflow; qualification open |
+| P05-02 | Create named disk snapshot | Existing workflow; qualification open |
+| P05-03 | Restore to existing VM | Existing subset; remaining work queued |
+| P05-04 | Shutdown-before/boot-or-resume-after restore | Queued |
+| P05-05 | Disk-and-memory checkpoint creation | Named memory checkpoint command, confirmation and result verification implemented; data-integrity qualification open |
+| P05-06 | Guest-quiesced snapshot creation | Queued |
+| P05-07 | Snapshot description at creation; edit name/description | Queued |
+| P05-08 | Delete snapshots with owned-disk cleanup | Queued |
+| P05-09 | New VM from snapshot | Queued |
+| P05-10 | New template from snapshot | Queued |
+| P05-11 | Export snapshot as template/backup | Queued |
+| P05-12 | Ancestry tree, preview image, storage/size detail | Queued |
+| P05-13 | Scheduled-snapshot policies | Capability review and implementation queued |
+
+## 6. VM properties/resources
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P06-01 | Rename VM/template and description | Normal VM name/description editing implemented; template editing remains queued |
+| P06-02 | Startup/max/live vCPU counts | Halted VM startup/max vCPU editing with ordered steps implemented; live count changes remain queued |
+| P06-03 | CPU topology and scheduling weight | Queued |
+| P06-04 | Static/dynamic memory limits, ballooning/live changes | Halted VM static/dynamic limits editor implemented; live ballooning workflows remain queued |
+| P06-05 | Boot order, bootable devices, autostart | Boot-order and autostart editors implemented; bootable-device management remains queued |
+| P06-06 | Home server/host affinity | Queued |
+| P06-07 | VM HA restart priority/protection | Queued |
+| P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Queued |
+| P06-09 | HVM shadow-memory settings | Queued |
+| P06-10 | Cloud-config parameters/config drive | Queued |
+| P06-11 | Guest tools status/installation media | Guest-reported tools/OS/address display implemented; tools-install media workflow remains queued |
+
+## 7. VM disks, removable media and NICs
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P07-01 | List disks/attachments/device positions | VM disk/attachment/device-position view implemented; live storage qualification open |
+| P07-02 | Create disk on selected SR | Queued |
+| P07-03 | Attach existing disk | Queued |
+| P07-04 | Detach disk without deleting data | Queued |
+| P07-05 | Activate/deactivate disk attachment | Reviewed existing disk attachment plug/unplug implemented with fresh ownership checks; lab qualification open |
+| P07-06 | Resize disk | Halted VM grow-only disk workflow implemented with size/consumer checks; other resize modes remain queued |
+| P07-07 | Delete disk | Queued |
+| P07-08 | Disk name/description, access mode, I/O priority and device position | Queued |
+| P07-09 | Move/copy/migrate disk to another SR | Queued |
+| P07-10 | Add CD drive; mount/change/eject ISO | Existing CD drive insert/eject implemented; replacement uses explicit eject then insert; adding CD drives remains queued |
+| P07-11 | Disable disk changed-block tracking | Queued |
+| P07-12 | List NICs/MACs/networks/attachment state | VM NIC/MAC/network/attachment view implemented; live network qualification open |
+| P07-13 | Add/delete VM NIC | Queued |
+| P07-14 | Connect/disconnect VM NIC | Reviewed NIC plug/unplug implemented with fresh ownership/state checks; lab qualification open |
+| P07-15 | Change NIC network/MAC | Queued |
+| P07-16 | NIC rate limiting/QoS | Queued |
+
+## 8. Creation, templates, clones and deletion
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P08-01 | Browse templates | Existing subset; remaining work queued |
+| P08-02 | Create VM from template | Queued |
+| P08-03 | Installation source, copied BIOS and cloud-config options | Queued |
+| P08-04 | Instant/fast template creation | Queued |
+| P08-05 | Clone versus full-copy VM | Queued |
+| P08-06 | Convert VM to template | Queued |
+| P08-07 | Copy/edit/delete custom templates | Queued |
+| P08-08 | Delete VM record versus VM plus selected disks/snapshots | Queued |
+| P08-09 | Recover/cancel partial creation/deletion and clean owned resources | Queued |
+
+## 9. Storage repositories
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P09-01 | SR name/type/capacity/usage | Existing workflow; qualification open |
+| P09-02 | Probe/discover targets | Queued |
+| P09-03 | Create SR | Queued |
+| P09-04 | Add ISO library | Queued |
+| P09-05 | Introduce/attach existing SR | Queued |
+| P09-06 | Detach/reattach SR | Queued |
+| P09-07 | Repair SR connectivity | Queued |
+| P09-08 | Rescan/refresh SR | Queued |
+| P09-09 | Forget versus destroy SR | Queued |
+| P09-10 | Choose default SR | Queued |
+| P09-11 | SR name/description edits | Queued |
+| P09-12 | Multipath settings/path inspection | Queued |
+| P09-13 | Trim/reclaim | Queued |
+| P09-14 | Read caching/provisioning options | Capability review and implementation queued |
+| P09-15 | Backend-specific wizards | Capability review and implementation queued |
+
+## 10. Networks and host interfaces
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P10-01 | Network names/bridges | Existing workflow; qualification open |
+| P10-02 | Create/delete internal network | Queued |
+| P10-03 | Create/edit/remove external/VLAN network | Queued |
+| P10-04 | Name/description, MTU and automatic attachment | Queued |
+| P10-05 | Create/destroy bond; change mode/hash settings | Queued |
+| P10-06 | Scan/inspect physical NICs | Queued |
+| P10-07 | Plug/unplug host interfaces | Queued |
+| P10-08 | Change management interface and IP/netmask/gateway/DNS | Queued |
+| P10-09 | Additional management/storage interfaces and purposes | Queued |
+| P10-10 | Pool multicast/IGMP snooping | Queued |
+| P10-11 | SR-IOV networks | Queued |
+| P10-12 | Cross-host internal networking | Capability review and implementation queued |
+
+## 11. Migration and transfers
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P11-01 | Same-pool live migration | Queued |
+| P11-02 | Move halted VM/change storage placement | Queued |
+| P11-03 | Storage live migration | Queued |
+| P11-04 | Cross-pool migration/move/copy | Queued |
+| P11-05 | Transfer-network choice and console relocation | Queued |
+| P11-06 | XVA VM/template import/export | Queued |
+| P11-07 | Snapshot export | Queued |
+| P11-08 | OVF/OVA appliance import/export | Queued |
+| P11-09 | Standalone disk-image import | Queued |
+| P11-10 | Conversion manager | Capability review and implementation queued |
+| P11-11 | Transfer cancellation/expiry/partial-result recovery | Queued |
+
+## 12. Host administration
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P12-01 | Host hardware/software properties | Existing subset; remaining work queued |
+| P12-02 | Rename/description | Queued |
+| P12-03 | Enable/disable scheduling; enter/exit maintenance | Queued |
+| P12-04 | Evacuate host with destination checks | Queued |
+| P12-05 | Shutdown/reboot host | Queued |
+| P12-06 | Restart toolstack | Queued |
+| P12-07 | Host power-on/configuration | Queued |
+| P12-08 | dom0 memory | Queued |
+| P12-09 | Host autostart | Queued |
+| P12-10 | Change host/root password | Queued |
+| P12-11 | Forget/remove dead host | Queued |
+| P12-12 | Host configuration backup/restore | Queued |
+| P12-13 | Logging destination/monitoring settings | Queued |
+| P12-14 | Crash dumps and support bundles | Queued |
+
+## 13. Pools, HA, identity and server security
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P13-01 | Create/dissolve pool | Queued |
+| P13-02 | Join/eject/remove pool member | Queued |
+| P13-03 | Pool name/description | Queued |
+| P13-04 | Planned coordinator handover during evacuation | Queued |
+| P13-05 | Enable/configure/disable HA; heartbeat SR selection | Queued |
+| P13-06 | HA status and VM restart priorities | Queued |
+| P13-07 | Migration compression/GPU placement policy | Queued |
+| P13-08 | Pool clustering | Capability review and implementation queued |
+| P13-09 | Join/leave directory authentication | Capability review and implementation queued |
+| P13-10 | User/group membership and role assignment | Queued |
+| P13-11 | RBAC-aware eligibility and credential elevation/reconnect-as | Existing subset; remaining work queued |
+| P13-12 | Install/reset host certificate | Queued |
+| P13-13 | Enable pool TLS verification/rotate pool secret | Queued |
+| P13-14 | Legacy SSL mode | Capability review and implementation queued |
+
+## 14. Tasks, metrics, alerts and diagnostics
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P14-01 | Track local power/snapshot progress/completion | Durable task tracking extended to placement, checkpoints and device actions; lab qualification open |
+| P14-02 | Unknown outcomes, recheck/acknowledge and cancellation | Existing workflow; qualification open |
+| P14-03 | Contextual error explanations/remediation | Action diagnostics and specific device/property conflicts added; broader remediation catalogue remains queued |
+| P14-04 | Pool-wide tasks from other clients | Server task inventory and current-operation links parsed; pool-wide task workspace remains queued |
+| P14-05 | Search/filter/dismiss history and inspect full task details | Queued |
+| P14-06 | Multi-step progress/partial outcomes/owned cleanup | Durable ordered VM property steps and partial/unknown outcomes implemented; owned-resource cleanup/provisioning orchestration remains queued |
+| P14-07 | VM/host CPU/memory graphs | Queued |
+| P14-08 | Disk/network throughput/latency graphs | Queued |
+| P14-09 | Custom graphs/data-source selection/historical ranges | Queued |
+| P14-10 | Host/pool messages/alerts: list/filter/dismiss/export | Typed server messages parsed; list/filter/dismiss/export workspace remains queued |
+| P14-11 | Alarm thresholds/intervals/notification-email settings | Queued |
+| P14-12 | Resource reports/support-status export | Queued |
+
+## 15. Organization and grouped workflows
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P15-01 | Tags: create/rename/delete/assign/remove/group/search | Tags parsed in VM/host/SR/network metadata; editing/group/search workflows remain queued |
+| P15-02 | Folders: create/rename/delete/move/remove objects | Queued |
+| P15-03 | Custom field definitions/values | Queued |
+| P15-04 | vApps: create/edit/delete/membership | Typed appliance inventory parsed; create/edit/delete/membership UI remains queued |
+| P15-05 | vApp ordered startup/shutdown and delays | Queued |
+| P15-06 | Bulk properties/delete/move/export | Queued |
+| P15-07 | Search definition import/export/resource export | Queued |
+
+## 18. Linux desktop and extensibility
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P18-01 | Linux executable/desktop-entry archive | Existing workflow; qualification open |
+| P18-02 | Clean-system installation/offline cold start | Qualification open |
+| P18-03 | Portable/distro package, upgrade and uninstall | Queued |
+| P18-04 | Native Wayland/X11/GPU compatibility | Existing subset; remaining work queued |
+| P18-05 | HiDPI/multimonitor/compact windows | Existing subset; remaining work queued |
+| P18-06 | Keyboard navigation/focus/Orca | Qualification open |
+| P18-07 | Native file selection/clipboard integration | Explicit console clipboard integration added; native file-selection flows remain queued |
+| P18-08 | General/confirmation/console/display options | Connection-profile and console options extended; general options center remains partial |
+| P18-09 | External tools/plugins | Capability review and implementation queued |
+| P18-10 | Localization/integrated help | Queued |
+| P18-11 | Multiple client instances/shared-pool ownership | Authenticated pool alias ownership and exclusive desktop state-directory lock implemented; cross-process IPC/focus handoff remains queued |
+
+## 19. Qualification gaps
+
+| ID | Workflow | Delivery state |
+| --- | --- | --- |
+| P19-01 | Actual XCP-ng inventory/console | Lab qualification open |
+| P19-02 | XO-down recovery | Lab qualification open |
+| P19-03 | VM power correctness | Lab qualification open |
+| P19-04 | Snapshot data integrity | Lab qualification open |
+| P19-05 | Member/coordinator/TLS recovery | Lab qualification open |
+| P19-06 | Console input/relocation | Lab qualification open |
+| P19-07 | Host/version/storage/permission compatibility | Lab qualification open |
+| P19-08 | Scale/responsiveness/long-running use | Lab qualification open |
+
+This ledger contains 202 retained workflow/qualification rows. IDs are stable
+within the pinned audit and are intended for tests, lab evidence and follow-up changes.

@@ -27,9 +27,23 @@ impl SnapshotName {
 }
 
 pub enum VmCommand {
+    Device(crate::DeviceCommand),
+    PowerOnHost {
+        vm: crate::ObservedVm,
+        action: PowerAction,
+        host: crate::HostId,
+    },
+    Configure {
+        vm: crate::ObservedVm,
+        patch: crate::VmSettingsPatch,
+    },
     Power {
         vm: crate::ObservedVm,
         action: PowerAction,
+    },
+    CreateCheckpoint {
+        vm: crate::ObservedVm,
+        name: SnapshotName,
     },
     CreateSnapshot {
         vm: crate::ObservedVm,
@@ -45,10 +59,19 @@ pub enum VmCommand {
 pub enum OperationAction {
     Power(PowerAction),
     Snapshot(SnapshotOperation),
+    Settings(crate::VmSettingsPatch),
+    Placement(PlacementOperation),
+    Device(crate::DeviceOperation),
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementOperation {
+    pub placement: PowerAction,
+    pub host: crate::HostId,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum SnapshotOperation {
+    Checkpoint { name: String },
     Create { name: String },
     Revert { snapshot: crate::SnapshotId },
 }
@@ -56,7 +79,17 @@ impl OperationAction {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Power(action) => action.label(),
+            Self::Settings(_) => "Edit VM properties",
+            Self::Device(operation) => operation.label(),
+            Self::Placement(p) => {
+                if p.placement == PowerAction::Resume {
+                    "Resume on host"
+                } else {
+                    "Start on host"
+                }
+            }
             Self::Snapshot(SnapshotOperation::Create { .. }) => "Create snapshot",
+            Self::Snapshot(SnapshotOperation::Checkpoint { .. }) => "Create memory snapshot",
             Self::Snapshot(SnapshotOperation::Revert { .. }) => "Restore snapshot",
         }
     }
@@ -65,13 +98,32 @@ impl OperationAction {
         if let Self::Snapshot(SnapshotOperation::Revert { snapshot }) = self {
             ids.push(snapshot.to_string());
         }
+        if let Self::Placement(p) = self {
+            ids.push(format!("host:{}", p.host));
+        }
+        if let Self::Device(operation) = self {
+            ids.extend(operation.resources());
+        }
         ids
     }
 }
 impl VmCommand {
     pub(crate) fn normalize(self) -> (crate::ObservedVm, OperationAction) {
         match self {
+            Self::Device(command) => (command.vm, OperationAction::Device(command.operation)),
             Self::Power { vm, action } => (vm, OperationAction::Power(action)),
+            Self::PowerOnHost { vm, action, host } => (
+                vm,
+                OperationAction::Placement(PlacementOperation {
+                    placement: action,
+                    host,
+                }),
+            ),
+            Self::Configure { vm, patch } => (vm, OperationAction::Settings(patch)),
+            Self::CreateCheckpoint { vm, name } => (
+                vm,
+                OperationAction::Snapshot(SnapshotOperation::Checkpoint { name: name.0 }),
+            ),
             Self::CreateSnapshot { vm, name } => (
                 vm,
                 OperationAction::Snapshot(SnapshotOperation::Create { name: name.0 }),
@@ -165,11 +217,14 @@ impl PowerAction {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationState {
+    Preparing,
+    Verifying,
     Submitting,
     Dispatching,
     Tracking,
     CancellationRequested,
     Succeeded,
+    PartiallyCompleted,
     Failed,
     Cancelled,
     OutcomeUnknown,
@@ -181,6 +236,7 @@ impl OperationState {
         matches!(
             self,
             Self::Succeeded
+                | Self::PartiallyCompleted
                 | Self::Failed
                 | Self::Cancelled
                 | Self::Rejected
@@ -215,10 +271,15 @@ pub struct OperationRecord {
     result_reference: Option<String>,
     #[serde(default)]
     pub created_snapshot: Option<crate::SnapshotId>,
+    #[serde(default)]
+    pub steps: Vec<crate::OperationStep>,
 }
 impl OperationRecord {
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+    pub fn can_recheck(&self) -> bool {
+        self.has_task() || matches!(self.action, OperationAction::Settings(_))
     }
     pub fn has_task(&self) -> bool {
         self.task.is_some()
@@ -276,15 +337,40 @@ impl DispatchPermit {
         self,
         session: &Session,
         reference: String,
+        host_reference: Option<String>,
+        device: Option<crate::devices::PreparedDevice>,
         cancel: &CancellationToken,
     ) -> Result<serde_json::Value, Error> {
         let mut params = vec![json!(reference)];
         let method = match self.0 {
+            OperationAction::Settings(_) => return Err(Error::InvalidSettings),
+            OperationAction::Device(_) => {
+                return device
+                    .ok_or(Error::InvalidDeviceOperation)?
+                    .send(session, cancel)
+                    .await;
+            }
+            OperationAction::Placement(p) => {
+                params.extend([
+                    json!(host_reference.ok_or(Error::Stale)?),
+                    json!(false),
+                    json!(false),
+                ]);
+                match p.placement {
+                    PowerAction::Start => "Async.VM.start_on".into(),
+                    PowerAction::Resume => "Async.VM.resume_on".into(),
+                    _ => return Err(Error::UnavailableAction),
+                }
+            }
             OperationAction::Power(action) => {
                 if matches!(action, PowerAction::Start | PowerAction::Resume) {
                     params.extend([json!(false), json!(false)]);
                 }
                 format!("Async.VM.{}", action.wire())
+            }
+            OperationAction::Snapshot(SnapshotOperation::Checkpoint { name }) => {
+                params.push(json!(name));
+                "Async.VM.checkpoint".into()
             }
             OperationAction::Snapshot(SnapshotOperation::Create { name }) => {
                 params.push(json!(name));
@@ -323,6 +409,7 @@ pub(crate) fn channel(
         task: None,
         result_reference: None,
         created_snapshot: None,
+        steps: Vec::new(),
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (
@@ -377,11 +464,41 @@ impl Journal {
         connection
             .busy_timeout(Duration::from_secs(2))
             .map_err(|_| Error::Journal)?;
-        connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|_| Error::Journal)?;
-        let has_revision: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')", [], |row| row.get(0)).map_err(|_| Error::Journal)?;
-        if !has_revision
-            && connection.execute_batch("ALTER TABLE operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0").is_err()
-                && !connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')", [], |row| row.get::<_, bool>(0)).unwrap_or(false) { return Err(Error::Journal); }
+        let version: u64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .map_err(|_| Error::Journal)?;
+        if version > 2 {
+            return Err(Error::JournalVersion);
+        }
+        connection
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+            .map_err(|_| Error::Journal)?;
+        if version < 2 {
+            let transaction = rusqlite::Transaction::new_unchecked(
+                &connection,
+                rusqlite::TransactionBehavior::Immediate,
+            )
+            .map_err(|_| Error::Journal)?;
+            let locked_version: u64 = transaction
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .map_err(|_| Error::Journal)?;
+            if locked_version > 2 {
+                return Err(Error::JournalVersion);
+            }
+            transaction.execute_batch("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|_|Error::Journal)?;
+            let has_revision:bool=transaction.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')",[],|row|row.get(0)).map_err(|_|Error::Journal)?;
+            if !has_revision {
+                transaction
+                    .execute_batch(
+                        "ALTER TABLE operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;",
+                    )
+                    .map_err(|_| Error::Journal)?;
+            }
+            transaction
+                .execute_batch("PRAGMA user_version=2;")
+                .map_err(|_| Error::Journal)?;
+            transaction.commit().map_err(|_| Error::Journal)?;
+        }
         Ok(Self(connection))
     }
     pub(crate) fn load(&self, id: OperationId) -> Result<Option<OperationRecord>, Error> {
@@ -554,7 +671,7 @@ impl Journal {
                 record.can_cancel = false;
                 record.detail = "Outcome remains unverified. Operator acknowledged it and released the local VM reservation.".into();
             } else {
-                if record.state.terminal() || record.task.is_none() {
+                if record.state.terminal() || !record.can_recheck() {
                     return Err(Error::UnavailableAction);
                 }
                 record.cancel_requested = true;
@@ -606,7 +723,17 @@ pub(crate) fn recover(directory: &Path, pool: PoolId) -> Result<Vec<OperationRec
         .filter(|record| record.pool == pool)
     {
         if !record.state.terminal() && record.task.is_none() {
-            record.state = if record.state == OperationState::Submitting {
+            record.state = if record.state == OperationState::Preparing
+                && record
+                    .steps
+                    .iter()
+                    .any(|s| s.state == crate::StepState::Verified)
+            {
+                OperationState::PartiallyCompleted
+            } else if matches!(
+                record.state,
+                OperationState::Submitting | OperationState::Preparing
+            ) {
                 OperationState::Failed
             } else {
                 OperationState::OutcomeUnknown
@@ -667,6 +794,9 @@ impl MutationRequest {
                 .await
         } else {
             match Journal::open(&directory) {
+                Ok(mut journal) if matches!(self.record.action, OperationAction::Settings(_)) => {
+                    self.recheck_settings(&session, &mut journal).await
+                }
                 Ok(mut journal) => self.track(&session, &mut journal, &connection_cancel).await,
                 Err(error) => Err(error),
             }
@@ -697,7 +827,18 @@ impl MutationRequest {
                     return;
                 }
             }
-            self.record.state = if self.record.state == OperationState::Submitting {
+            self.record.state = if self.record.state == OperationState::Preparing
+                && self
+                    .record
+                    .steps
+                    .iter()
+                    .any(|s| s.state == crate::StepState::Verified)
+            {
+                OperationState::PartiallyCompleted
+            } else if matches!(
+                self.record.state,
+                OperationState::Submitting | OperationState::Preparing
+            ) {
                 OperationState::Rejected
             } else if self.record.state == OperationState::Dispatching
                 && matches!(error, Error::Api(_) | Error::Coordinator(_))
@@ -707,6 +848,14 @@ impl MutationRequest {
                 OperationState::OutcomeUnknown
             };
             self.record.detail = error.to_string();
+            if self.record.state == OperationState::OutcomeUnknown {
+                for step in &mut self.record.steps {
+                    if step.state == crate::StepState::Dispatching {
+                        step.state = crate::StepState::OutcomeUnknown;
+                        step.detail = error.to_string();
+                    }
+                }
+            }
             self.record.can_cancel = false;
             if let Ok(journal) = journal {
                 match journal.save(&mut self.record) {
@@ -760,16 +909,47 @@ impl MutationRequest {
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
         }
-        let reference = tokio::select! {
-            _=connection_cancel.cancelled()=>return Err(Error::Closed),
-            result=crate::xapi::prepare_mutation(session, &self.record, reference)=>result?,
+        let device = if matches!(self.record.action, OperationAction::Device(_)) {
+            Some(
+                tokio::select! {_=connection_cancel.cancelled()=>return Err(Error::Closed),result=crate::devices::prepare(session,&self.record)=>result?},
+            )
+        } else {
+            None
+        };
+        let (reference, host_reference) = if device.is_some() {
+            (reference, None)
+        } else if let OperationAction::Placement(placement) = &self.record.action {
+            let (vm, host) = tokio::select! {
+                _=connection_cancel.cancelled()=>return Err(Error::Closed),
+                result=session.prepare_placement(self.record.vm,placement.host,placement.placement)=>result?,
+            };
+            (vm, Some(host))
+        } else {
+            let reference = tokio::select! {
+                _=connection_cancel.cancelled()=>return Err(Error::Closed),
+                result=crate::xapi::prepare_mutation(session, &self.record, reference)=>result?,
+            };
+            (reference, None)
         };
         if connection_cancel.is_cancelled() {
             return Err(Error::Closed);
         }
+        if let OperationAction::Settings(patch) = self.record.action.clone() {
+            return self
+                .execute_settings(session, &reference, patch, &mut journal, connection_cancel)
+                .await;
+        }
         let permit = journal.mark_dispatching(&mut self.record)?;
         self.emit().await;
-        let task = permit.send(session, reference, connection_cancel).await?;
+        let task = permit
+            .send(
+                session,
+                reference,
+                host_reference,
+                device,
+                connection_cancel,
+            )
+            .await?;
         self.record.task = Some(
             task.as_str()
                 .filter(|task| task.starts_with("OpaqueRef:") && *task != "OpaqueRef:NULL")
@@ -779,6 +959,172 @@ impl MutationRequest {
         self.record = journal.attach_task(&self.record)?;
         self.emit().await;
         self.track(session, &mut journal, connection_cancel).await
+    }
+    async fn persist_steps(&mut self, journal: &mut Journal) -> Result<(), Error> {
+        for _ in 0..16 {
+            match self.publish(journal).await {
+                Ok(()) => return Ok(()),
+                Err(Error::JournalChanged) => {
+                    let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
+                    if current.state.terminal() {
+                        self.record = current;
+                        return Err(Error::JournalChanged);
+                    }
+                    self.record.revision = current.revision;
+                    self.record.cancel_requested |= current.cancel_requested;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
+    async fn execute_settings(
+        &mut self,
+        session: &Session,
+        reference: &str,
+        patch: crate::VmSettingsPatch,
+        journal: &mut Journal,
+        cancel: &CancellationToken,
+    ) -> Result<(), Error> {
+        let steps = patch.steps();
+        self.record.steps = steps
+            .iter()
+            .map(|s| crate::OperationStep {
+                label: s.label.clone(),
+                state: crate::StepState::Pending,
+                detail: String::new(),
+            })
+            .collect();
+        self.record.can_cancel = true;
+        self.record.state = OperationState::Preparing;
+        self.persist_steps(journal).await?;
+        for (index, step) in steps.iter().enumerate() {
+            let current = journal.load(self.record.id)?.ok_or(Error::Journal)?;
+            self.record.cancel_requested |= current.cancel_requested;
+            self.record.revision = current.revision;
+            if self.record.cancel_requested {
+                self.record.state = if index == 0 {
+                    OperationState::Cancelled
+                } else {
+                    OperationState::PartiallyCompleted
+                };
+                self.record.detail =
+                    "Stopped before the next property change; verified changes remain applied"
+                        .into();
+                self.record.can_cancel = false;
+                return self.persist_steps(journal).await;
+            }
+            if cancel.is_cancelled() {
+                return Err(Error::Closed);
+            }
+            let before = session
+                .call("VM.get_record", vec![json!(reference)])
+                .await?;
+            if before["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
+                return Err(Error::Stale);
+            }
+            if let Err(error) = step.preflight(&before) {
+                self.record.steps[index].state = crate::StepState::Failed;
+                self.record.steps[index].detail = error.to_string();
+                self.record.state = if index == 0 {
+                    OperationState::Rejected
+                } else {
+                    OperationState::PartiallyCompleted
+                };
+                self.record.detail = error.to_string();
+                self.record.can_cancel = false;
+                return self.persist_steps(journal).await;
+            }
+            self.record.state = OperationState::Dispatching;
+            self.record.steps[index].state = crate::StepState::Dispatching;
+            self.record.detail = format!("Applying {} ({}/{})", step.label, index + 1, steps.len());
+            self.persist_steps(journal).await?;
+            let result = tokio::select! { _=cancel.cancelled()=>Err(Error::Closed), r=step.send(session,reference,&before)=>r };
+            if let Err(error) = result {
+                if let Error::Coordinator(endpoint) = &error
+                    && let Some(updates) = &self.updates
+                {
+                    let _ = updates
+                        .send(OperationUpdate::Coordinator(endpoint.clone()))
+                        .await;
+                }
+                let refused = matches!(error, Error::Api(_) | Error::Coordinator(_));
+                self.record.steps[index].state = if refused {
+                    crate::StepState::Failed
+                } else {
+                    crate::StepState::OutcomeUnknown
+                };
+                self.record.steps[index].detail = error.to_string();
+                self.record.state = if !refused {
+                    OperationState::OutcomeUnknown
+                } else if index == 0 {
+                    OperationState::Failed
+                } else {
+                    OperationState::PartiallyCompleted
+                };
+                self.record.detail = error.to_string();
+                self.record.can_cancel = false;
+                self.persist_steps(journal).await?;
+                return Ok(());
+            }
+            self.record.state = OperationState::Verifying;
+            self.persist_steps(journal).await?;
+            let after = session
+                .call("VM.get_record", vec![json!(reference)])
+                .await?;
+            if after["uuid"].as_str() != Some(self.record.vm.to_string().as_str())
+                || !step.verified(&after)
+            {
+                return Err(Error::SettingsConflict);
+            }
+            self.record.steps[index].state = crate::StepState::Verified;
+            self.record.steps[index].detail = "Saved value verified on host".into();
+            self.record.state = OperationState::Preparing;
+            self.record.progress = Some((index + 1) as f64 / steps.len() as f64);
+            self.persist_steps(journal).await?;
+        }
+        self.record.state = OperationState::Succeeded;
+        self.record.detail = "VM properties saved and verified".into();
+        self.record.progress = Some(1.0);
+        self.record.can_cancel = false;
+        self.persist_steps(journal).await
+    }
+    async fn recheck_settings(
+        &mut self,
+        session: &Session,
+        journal: &mut Journal,
+    ) -> Result<(), Error> {
+        let OperationAction::Settings(patch) = &self.record.action else {
+            return Err(Error::InvalidSettings);
+        };
+        let steps = patch.steps();
+        let reference = session
+            .call("VM.get_by_uuid", vec![json!(self.record.vm.to_string())])
+            .await?;
+        let current = session.call("VM.get_record", vec![reference]).await?;
+        if current["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
+            return Err(Error::Stale);
+        };
+        let complete = steps.iter().all(|step| step.verified(&current));
+        if complete {
+            self.record.steps = steps
+                .iter()
+                .map(|s| crate::OperationStep {
+                    label: s.label.clone(),
+                    state: crate::StepState::Verified,
+                    detail: "Desired value observed during reconciliation".into(),
+                })
+                .collect();
+            self.record.state = OperationState::Succeeded;
+            self.record.progress = Some(1.0);
+            self.record.detail =
+                "All desired property values are present; no writes were repeated".into();
+        } else {
+            self.record.state = OperationState::OutcomeUnknown;
+            self.record.detail = "Some desired values are absent or changed. Inspect properties before acknowledging; no writes were repeated.".into();
+        }
+        self.record.can_cancel = false;
+        self.persist_steps(journal).await
     }
     async fn track(
         &mut self,
@@ -845,7 +1191,9 @@ impl MutationRequest {
                 Some("success") => {
                     if matches!(
                         self.record.action,
-                        OperationAction::Snapshot(SnapshotOperation::Create { .. })
+                        OperationAction::Snapshot(
+                            SnapshotOperation::Create { .. } | SnapshotOperation::Checkpoint { .. }
+                        )
                     ) {
                         if self.record.result_reference.is_none() {
                             self.record.result_reference =
@@ -882,7 +1230,7 @@ impl MutationRequest {
                     }
                     self.record.state = OperationState::Succeeded;
                     self.record.detail = match self.record.action {
-                        OperationAction::Snapshot(SnapshotOperation::Create { .. }) => "Snapshot created and identity verified".into(),
+                        OperationAction::Snapshot(SnapshotOperation::Create { .. } | SnapshotOperation::Checkpoint { .. }) => "Snapshot created and identity verified".into(),
                         OperationAction::Snapshot(SnapshotOperation::Revert { .. }) => "Snapshot restored. Inspect the VM state before starting or resuming it.".into(),
                         _=>"Host task completed".into(),
                     };
@@ -1008,6 +1356,7 @@ mod tests {
             task: None,
             result_reference: None,
             created_snapshot: None,
+            steps: Vec::new(),
             cancel_requested: false,
             cancel_dispatched: false,
             can_cancel: false,
@@ -1138,6 +1487,22 @@ mod tests {
         initial.task = None;
         initial.state = OperationState::Submitting;
         assert!(journal.admit(&mut initial).unwrap());
+    }
+    #[test]
+    fn future_journal_formats_are_rejected_without_downgrading() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = rusqlite::Connection::open(dir.path().join("operations.sqlite3")).unwrap();
+        database.execute_batch("PRAGMA user_version=100;").unwrap();
+        assert!(matches!(
+            Journal::open(dir.path()),
+            Err(Error::JournalVersion)
+        ));
+        assert_eq!(
+            database
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, u64>(0))
+                .unwrap(),
+            100
+        );
     }
     #[test]
     fn legacy_journal_migration_preserves_the_task_and_unresolved_reservation() {

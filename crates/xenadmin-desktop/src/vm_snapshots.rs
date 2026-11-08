@@ -38,16 +38,14 @@ pub(super) fn open(s: &mut State) {
         return;
     };
     s.console = None;
+    s.devices = None;
     s.snapshot_view = Some(vm);
     s.snapshot_table = TableState::new().key("snapshots-table");
     s.show_details = false;
     refresh(s);
 }
 fn current(s: &State) -> bool {
-    !s.demo
-        && s.snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.is_current())
+    s.can_mutate()
 }
 pub(super) fn begin_create(s: &mut State) {
     let result = (|| {
@@ -70,6 +68,12 @@ pub(super) fn begin_create(s: &mut State) {
             )
         };
         s.snapshot_name = TextEdit::new("");
+        s.snapshot_memory = !s
+            .inventory
+            .as_ref()
+            .and_then(|i| i.vms.get(&vm))
+            .is_some_and(|vm| vm.can_snapshot)
+            && memory_available(s, vm);
         s.snapshot_dialog = Some(Dialog::Create {
             target,
             vm: name,
@@ -120,7 +124,13 @@ fn submit(s: &mut State) {
             target: Target::Live(vm),
             ..
         }) => match SnapshotName::new(&s.snapshot_name.text) {
-            Ok(name) => VmCommand::CreateSnapshot { vm: *vm, name },
+            Ok(name) => {
+                if s.snapshot_memory {
+                    VmCommand::CreateCheckpoint { vm: *vm, name }
+                } else {
+                    VmCommand::CreateSnapshot { vm: *vm, name }
+                }
+            }
             Err(error) => {
                 s.error = Some(error.to_string());
                 return;
@@ -138,6 +148,7 @@ fn submit(s: &mut State) {
     if s.error.is_none() {
         s.snapshot_dialog = None;
         s.snapshot_name = TextEdit::new("");
+        s.snapshot_memory = false;
     }
 }
 
@@ -150,7 +161,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .selected()
         .next()
         .and_then(|id| s.snapshot_rows.iter().find(|r| r.id.to_string() == id));
-    let can_create = current(s) && vm.is_some_and(|vm| vm.can_snapshot);
+    let can_create =
+        current(s) && vm.is_some_and(|vm| vm.can_snapshot || memory_available(s, vm.id));
     let can_restore = current(s)
         && vm.is_some_and(|vm| vm.power_state == PowerState::Halted)
         && selected
@@ -158,7 +170,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let mut content = col().w_full().h_full().min_h(0.0).padding(20.0).gap(12.0)
         .child(row().w_full().justify_between().center_y().child(heading("Snapshots",k)).child(Button::new("Back to inventory").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.snapshot_view=None).build(k).key("back-from-snapshots")))
         .child(heading(vm.map(|vm|vm.name.as_str()).unwrap_or("VM unavailable"),k))
-        .child(caption("Disk snapshots capture VM configuration and virtual disks. Snapshot creation does not include guest memory or application quiescing.",k).wrap())
+        .child(caption("Disk snapshots capture VM configuration and virtual disks. Choose Include guest memory for a memory checkpoint when supported. Application quiescing is not available on XCP-ng 8.1 and later.",k).wrap())
         .child(row().gap(8.0)
             .child(Button::new("Create snapshot").variant(ButtonVariant::Outline).disabled(!s.demo && !can_create).on_press(begin_create).build(k).key("create-snapshot"))
             .child(Button::new("Restore snapshot").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_restore)).on_press(begin_restore).build(k).key("restore-snapshot")));
@@ -276,6 +288,13 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     content
 }
 
+fn memory_available(s: &State, id: VmId) -> bool {
+    s.inventory
+        .as_ref()
+        .and_then(|i| i.details.vms.get(&id))
+        .and_then(|v| v.allowed_operations.as_ref())
+        .is_some_and(|ops| ops.iter().any(|o| o == "checkpoint"))
+}
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let Some(dialog) = &s.snapshot_dialog else {
         return el();
@@ -292,11 +311,30 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .fill(k.c.bg_base);
     let (title, confirm, valid, live) = match dialog {
         Dialog::Create { target, vm, id } => {
-            body=body.child(heading("Create disk snapshot",k))
+            body=body.child(heading("Create snapshot",k))
                 .child(caption(format!("VM: {vm}\nUUID: {id}"),k).wrap_anywhere())
-                .child(caption("Guest memory is not included. For application-consistent data, quiesce applications or shut down the guest first.",k).wrap())
+                 .child(Checkbox::new(s.snapshot_memory).label("Include guest memory").disabled(!s.demo && !memory_available(s,*id)).on_toggle(|s:&mut State|s.snapshot_memory = !s.snapshot_memory).build(k))
+                .child(caption(if s.snapshot_memory {"Captures disks and guest memory. The VM may pause while memory is saved."}else{"Guest memory is not included. For application-consistent data, quiesce applications or shut down the guest first."},k).wrap())
                 .child(TextInput::new(&s.snapshot_name).label("Snapshot name").placeholder("Snapshot name").on_edit(|s:&mut State|&mut s.snapshot_name).build(k).key("snapshot-name"));
+            let selected_mode_available = if s.snapshot_memory {
+                memory_available(s, *id)
+            } else {
+                s.inventory
+                    .as_ref()
+                    .and_then(|i| i.vms.get(id))
+                    .is_some_and(|vm| vm.can_snapshot)
+            };
             let valid = SnapshotName::new(&s.snapshot_name.text).is_ok();
+            if !s.demo && !selected_mode_available {
+                body = body.child(
+                    caption(
+                        "The host does not currently allow the selected snapshot mode.",
+                        k,
+                    )
+                    .wrap()
+                    .role("status"),
+                );
+            }
             if !valid && !s.snapshot_name.text.is_empty() {
                 body = body.child(
                     caption(xenadmin_core::Error::InvalidSnapshotName.to_string(), k)
@@ -307,8 +345,8 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             (
                 "Create disk snapshot",
                 "Create snapshot",
-                valid,
-                matches!(target, Target::Live(_)),
+                valid && (s.demo || selected_mode_available),
+                matches!(target,Target::Live(observed) if s.snapshot.as_ref().and_then(|s|s.observe_vm(*id).ok())==Some(*observed)),
             )
         }
         Dialog::Restore {
@@ -324,8 +362,15 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             (
                 "Restore snapshot",
                 "Restore snapshot",
-                true,
-                matches!(target, Target::Live(_)),
+                s.inventory.as_ref().is_some_and(|i| {
+                    i.vms
+                        .get(id)
+                        .is_some_and(|vm| vm.power_state == PowerState::Halted)
+                        && i.snapshots.get(snapshot_id).is_some_and(|snap| {
+                            snap.allowed_actions.contains(&SnapshotAction::Revert)
+                        })
+                }),
+                matches!(target,Target::Live(observed) if s.snapshot.as_ref().and_then(|s|s.observe_snapshot(*id,*snapshot_id).ok())==Some(*observed)),
             )
         }
     };

@@ -1,26 +1,56 @@
 mod connection;
+mod devices;
+pub use devices::{DeviceCommand, DeviceOperation};
+mod credentials;
+pub use credentials::{
+    CredentialKey, CredentialMode, CredentialOutcome, CredentialStore, CredentialStoreError,
+    CredentialTask,
+};
+mod diagnostics;
+pub use diagnostics::ActionDiagnostic;
 mod console;
 mod model;
 mod operations;
+mod profiles;
+mod settings;
 mod trust;
 mod xapi;
 
 pub use connection::{
     Backend, Connection, ConnectionSnapshot, ConnectionState, ObservedSnapshot, ObservedVm,
 };
-pub use console::{Console, ConsoleFrame, ConsoleInput, ConsoleSnapshot, ConsoleState};
-pub use model::{
-    Host, HostId, Inventory, Network, PoolId, PowerState, Snapshot, SnapshotAction, SnapshotId,
-    SnapshotInventory, Storage, Vm, VmId,
+pub use console::{
+    Console, ConsoleCursor, ConsoleFrame, ConsoleInput, ConsoleSnapshot, ConsoleState,
 };
+pub use model::*;
 pub use operations::{
     Operation, OperationAction, OperationControl, OperationId, OperationRecord, OperationState,
-    PowerAction, SnapshotName, SnapshotOperation, VmCommand,
+    PlacementOperation, PowerAction, SnapshotName, SnapshotOperation, VmCommand,
 };
+pub use profiles::{ConnectionProfile, ProfileError, ProfileId, ProfileStore};
+pub use settings::{MemoryLimits, OperationStep, StepState, VmSettingEdit, VmSettingsPatch};
 pub use trust::{CertificateFingerprint, ConnectionOptions, Credentials, Endpoint};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Choose a valid device operation and a larger disk size")]
+    InvalidDeviceOperation,
+    #[error("The device changed since this view opened. Refresh before trying again")]
+    DeviceConflict,
+    #[error("Shut down the VM before growing its disk")]
+    DeviceRequiresHaltedVm,
+    #[error("This disk is shared, attached elsewhere, or unsuitable for this operation")]
+    DeviceInUse,
+    #[error("This clipboard text encoding is not supported by the console")]
+    ConsoleClipboardUnsupported,
+    #[error("Clipboard text exceeds the console size limit")]
+    ConsoleClipboardTooLarge,
+    #[error("Enter valid VM property values; CPU and memory limits must be ordered and positive")]
+    InvalidSettings,
+    #[error("Shut down the VM before changing CPU, boot or memory limits")]
+    SettingsRequiresHaltedVm,
+    #[error("VM properties changed since this editor opened. Reload them before saving")]
+    SettingsConflict,
     #[error("Enter a snapshot name of 1–255 characters without control characters")]
     InvalidSnapshotName,
     #[error("Shut down the VM before restoring a snapshot")]
@@ -80,6 +110,10 @@ pub enum Error {
         "Cannot read or save the operation journal. Further mutations are blocked until it is available"
     )]
     Journal,
+    #[error(
+        "The operation journal was written by a newer application. Use that version before submitting more changes"
+    )]
+    JournalVersion,
     #[error("The operation record changed while this worker was running")]
     JournalChanged,
     #[error(

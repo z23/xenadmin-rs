@@ -1,0 +1,377 @@
+use super::*;
+
+identity!(SrId);
+identity!(NetworkId);
+identity!(VdiId);
+identity!(VbdId);
+identity!(VifId);
+identity!(PifId);
+identity!(PbdId);
+identity!(BondId);
+identity!(VlanId);
+identity!(GuestMetricsId);
+identity!(VmMetricsId);
+identity!(HostMetricsId);
+identity!(TaskId);
+identity!(MessageId);
+identity!(ApplianceId);
+identity!(SnapshotPolicyId);
+identity!(StorageManagerId);
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClassAvailability {
+    #[default]
+    Unknown,
+    Available,
+    Unsupported,
+    PermissionDenied,
+    InvalidData,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunningOperation {
+    pub task: Option<TaskId>,
+    pub operation: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ActionAvailability {
+    Available,
+    Busy { operations: Vec<RunningOperation> },
+    Blocked { reason: String },
+    PermissionDenied,
+    Unsupported,
+    Rejected { code: String },
+    Stale,
+    Unknown,
+    Unavailable,
+}
+
+impl ActionAvailability {
+    pub fn is_available(&self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    pub fn explanation(&self) -> String {
+        match self {
+            Self::Available => "Available".into(),
+            Self::Busy { operations } => format!(
+                "The host reports {} running operation(s): {}",
+                operations.len(),
+                operations
+                    .iter()
+                    .map(|op| op.operation.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Blocked { reason } => format!("Administratively blocked: {reason}"),
+            Self::PermissionDenied => "Your account is not permitted to perform this action".into(),
+            Self::Unsupported => "This action is not supported by this host".into(),
+            Self::Rejected { code } => format!("The host rejected this action: {code}"),
+            Self::Stale => {
+                "Reconnect or wait for current inventory before using this action".into()
+            }
+            Self::Unknown => "Action availability was not provided or could not be decoded".into(),
+            Self::Unavailable => "The host does not currently allow this action".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct VmDetails {
+    pub allowed_operations: Option<Vec<String>>,
+    pub current_operations: Vec<RunningOperation>,
+    pub blocked_operations: BTreeMap<String, String>,
+    pub vcpus_max: Option<u64>,
+    pub vcpus_at_startup: Option<u64>,
+    pub memory_static_min: Option<u64>,
+    pub memory_static_max: Option<u64>,
+    pub memory_dynamic_min: Option<u64>,
+    pub memory_dynamic_max: Option<u64>,
+    pub memory_target: Option<u64>,
+    pub boot_order: Option<String>,
+    pub boot_policy: Option<String>,
+    pub firmware: Option<String>,
+    pub affinity: Option<HostId>,
+    pub guest_metrics: Option<GuestMetricsId>,
+    pub metrics: Option<VmMetricsId>,
+    pub suspend_vdi: Option<VdiId>,
+    pub appliance: Option<ApplianceId>,
+    pub snapshot_policy: Option<SnapshotPolicyId>,
+    pub tags: Vec<String>,
+    pub ha_restart_priority: Option<String>,
+    pub auto_power_on: Option<bool>,
+}
+
+impl VmDetails {
+    pub fn power_availability(
+        &self,
+        action: crate::PowerAction,
+        current: bool,
+    ) -> ActionAvailability {
+        if !current {
+            return ActionAvailability::Stale;
+        }
+        if let Some(reason) = self.blocked_operations.get(action.wire()) {
+            return ActionAvailability::Blocked {
+                reason: reason.clone(),
+            };
+        }
+        let Some(allowed) = &self.allowed_operations else {
+            return ActionAvailability::Unknown;
+        };
+        if allowed.iter().any(|operation| operation == action.wire()) {
+            return ActionAvailability::Available;
+        }
+        if !self.current_operations.is_empty() {
+            return ActionAvailability::Busy {
+                operations: self.current_operations.clone(),
+            };
+        }
+        ActionAvailability::Unavailable
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct HostDetails {
+    pub description: String,
+    pub hostname: String,
+    pub metrics: Option<HostMetricsId>,
+    pub software_version: BTreeMap<String, String>,
+    pub cpu_info: BTreeMap<String, String>,
+    pub capabilities: Vec<String>,
+    pub tags: Vec<String>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StorageDetails {
+    pub id: SrId,
+    pub description: String,
+    pub content_type: String,
+    pub shared: Option<bool>,
+    pub virtual_allocation: Option<u64>,
+    pub allowed_operations: Option<Vec<String>>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetworkDetails {
+    pub id: NetworkId,
+    pub description: String,
+    pub mtu: Option<u64>,
+    pub managed: Option<bool>,
+    pub default_locking_mode: Option<String>,
+    pub allowed_operations: Option<Vec<String>>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VirtualDisk {
+    pub id: VdiId,
+    pub name: String,
+    pub description: String,
+    pub sr: Option<SrId>,
+    pub virtual_size: Option<u64>,
+    pub physical_utilisation: Option<u64>,
+    pub kind: String,
+    pub read_only: Option<bool>,
+    pub sharable: Option<bool>,
+    pub managed: Option<bool>,
+    pub missing: Option<bool>,
+    pub is_snapshot: Option<bool>,
+    pub snapshot_of: Option<VdiId>,
+    pub cbt_enabled: Option<bool>,
+    pub allowed_operations: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VirtualBlockDevice {
+    pub id: VbdId,
+    pub vm: Option<VmId>,
+    pub snapshot: Option<SnapshotId>,
+    pub vdi: Option<VdiId>,
+    pub device: String,
+    pub userdevice: String,
+    pub kind: String,
+    pub mode: String,
+    pub currently_attached: Option<bool>,
+    pub bootable: Option<bool>,
+    pub empty: Option<bool>,
+    pub allowed_operations: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VirtualInterface {
+    pub id: VifId,
+    pub vm: Option<VmId>,
+    pub network: Option<NetworkId>,
+    pub device: String,
+    pub mac: String,
+    pub mtu: Option<u64>,
+    pub currently_attached: Option<bool>,
+    pub qos_algorithm: String,
+    pub qos_parameters: BTreeMap<String, String>,
+    pub allowed_operations: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PhysicalInterface {
+    pub id: PifId,
+    pub host: Option<HostId>,
+    pub network: Option<NetworkId>,
+    pub device: String,
+    pub mac: String,
+    pub mtu: Option<u64>,
+    pub vlan: Option<i64>,
+    pub management: Option<bool>,
+    pub physical: Option<bool>,
+    pub currently_attached: Option<bool>,
+    pub ip_configuration_mode: String,
+    pub ip: String,
+    pub netmask: String,
+    pub gateway: String,
+    pub dns: String,
+    pub ipv6: Vec<String>,
+    pub ipv6_configuration_mode: String,
+    pub ipv6_gateway: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StorageAttachment {
+    pub id: PbdId,
+    pub host: Option<HostId>,
+    pub sr: Option<SrId>,
+    pub currently_attached: Option<bool>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NetworkBond {
+    pub id: BondId,
+    pub master: Option<PifId>,
+    pub slaves: Vec<PifId>,
+    pub mode: String,
+    pub links_up: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Vlan {
+    pub id: VlanId,
+    pub tagged_pif: Option<PifId>,
+    pub untagged_pif: Option<PifId>,
+    pub tag: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GuestMetrics {
+    pub id: GuestMetricsId,
+    pub os_version: BTreeMap<String, String>,
+    pub tools_version: BTreeMap<String, String>,
+    pub networks: BTreeMap<String, String>,
+    pub live: Option<bool>,
+    pub last_updated: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VmMetrics {
+    pub id: VmMetricsId,
+    pub memory_actual: Option<u64>,
+    pub vcpus_number: Option<u64>,
+    pub start_time: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HostMetrics {
+    pub id: HostMetricsId,
+    pub live: Option<bool>,
+    pub memory_total: Option<u64>,
+    pub memory_free: Option<u64>,
+    pub last_updated: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ServerTask {
+    pub id: TaskId,
+    pub name: String,
+    pub description: String,
+    pub status: String,
+    pub progress: Option<f64>,
+    pub created: Option<String>,
+    pub finished: Option<String>,
+    pub error_code: Option<String>,
+    pub allowed_operations: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ServerMessage {
+    pub id: MessageId,
+    pub name: String,
+    pub priority: Option<i64>,
+    pub object_class: String,
+    pub object_uuid: Option<Uuid>,
+    pub timestamp: Option<String>,
+    pub body: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VmAppliance {
+    pub id: ApplianceId,
+    pub name: String,
+    pub description: String,
+    pub vms: Vec<VmId>,
+    pub allowed_operations: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SnapshotPolicy {
+    pub id: SnapshotPolicyId,
+    pub name: String,
+    pub description: String,
+    pub enabled: Option<bool>,
+    pub kind: String,
+    pub frequency: String,
+    pub retained_snapshots: Option<u64>,
+    pub schedule: BTreeMap<String, String>,
+    pub vms: Vec<VmId>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StorageManager {
+    pub id: StorageManagerId,
+    pub kind: String,
+    pub name: String,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct InventoryDetails {
+    pub classes: BTreeMap<String, ClassAvailability>,
+    pub vms: BTreeMap<VmId, VmDetails>,
+    pub hosts: BTreeMap<HostId, HostDetails>,
+    pub storage: BTreeMap<SrId, StorageDetails>,
+    pub networks: BTreeMap<NetworkId, NetworkDetails>,
+    pub vdis: BTreeMap<VdiId, VirtualDisk>,
+    pub vbds: BTreeMap<VbdId, VirtualBlockDevice>,
+    pub vifs: BTreeMap<VifId, VirtualInterface>,
+    pub pifs: BTreeMap<PifId, PhysicalInterface>,
+    pub pbds: BTreeMap<PbdId, StorageAttachment>,
+    pub bonds: BTreeMap<BondId, NetworkBond>,
+    pub vlans: BTreeMap<VlanId, Vlan>,
+    pub guest_metrics: BTreeMap<GuestMetricsId, GuestMetrics>,
+    pub vm_metrics: BTreeMap<VmMetricsId, VmMetrics>,
+    pub host_metrics: BTreeMap<HostMetricsId, HostMetrics>,
+    pub tasks: BTreeMap<TaskId, ServerTask>,
+    pub messages: BTreeMap<MessageId, ServerMessage>,
+    pub appliances: BTreeMap<ApplianceId, VmAppliance>,
+    pub snapshot_policies: BTreeMap<SnapshotPolicyId, SnapshotPolicy>,
+    pub storage_managers: BTreeMap<StorageManagerId, StorageManager>,
+    pub vm_disks: BTreeMap<VmId, Vec<VbdId>>,
+    pub snapshot_disks: BTreeMap<SnapshotId, Vec<VbdId>>,
+    pub vm_interfaces: BTreeMap<VmId, Vec<VifId>>,
+    pub sr_disks: BTreeMap<SrId, Vec<VdiId>>,
+    pub vdi_attachments: BTreeMap<VdiId, Vec<VbdId>>,
+    pub host_interfaces: BTreeMap<HostId, Vec<PifId>>,
+    pub network_interfaces: BTreeMap<NetworkId, Vec<VifId>>,
+    pub network_uplinks: BTreeMap<NetworkId, Vec<PifId>>,
+    pub sr_attachments: BTreeMap<SrId, Vec<PbdId>>,
+}

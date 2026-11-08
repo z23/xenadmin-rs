@@ -10,14 +10,16 @@ use zeroize::Zeroizing;
 
 use crate::Error;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Endpoint(Url);
 
 impl Endpoint {
     pub fn parse(input: &str) -> Result<Self, Error> {
         let input = input.trim();
-        let address = if input.contains("://") {
+        let address = if input.parse::<std::net::Ipv6Addr>().is_ok() {
+            format!("https://[{input}]")
+        } else if input.contains("://") {
             input.to_owned()
         } else {
             format!("https://{input}")
@@ -143,6 +145,8 @@ pub struct ConnectionOptions {
     pub accept_invalid_certificates: bool,
     pub read_only: bool,
     pub request_timeout: Duration,
+    pub expected_pool: Option<crate::PoolId>,
+    pub fallback_endpoints: Vec<Endpoint>,
     additional_pins: BTreeMap<String, CertificateFingerprint>,
 }
 impl ConnectionOptions {
@@ -154,6 +158,8 @@ impl ConnectionOptions {
             accept_invalid_certificates: false,
             read_only: false,
             request_timeout: Duration::from_secs(45),
+            expected_pool: None,
+            fallback_endpoints: Vec::new(),
             additional_pins: BTreeMap::new(),
         }
     }
@@ -181,6 +187,42 @@ impl ConnectionOptions {
         }
         Ok(())
     }
+    pub fn host_certificates(&self) -> BTreeMap<String, CertificateFingerprint> {
+        let mut pins = self.additional_pins.clone();
+        if let Some(pin) = &self.certificate_fingerprint {
+            pins.insert(self.endpoint.to_string(), pin.clone());
+        }
+        pins
+    }
+
+    pub(crate) fn authority_key(&self, credentials: &Credentials, salt: &[u8]) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        let mut field = |value: &[u8]| {
+            digest.update((value.len() as u64).to_be_bytes());
+            digest.update(value);
+        };
+        field(salt);
+        field(credentials.username.as_bytes());
+        field(credentials.password.as_bytes());
+        field(&[
+            u8::from(self.read_only),
+            u8::from(self.accept_invalid_certificates),
+        ]);
+        if !self.accept_invalid_certificates {
+            if let Some(path) = &self.ca_certificate {
+                field(path.as_os_str().as_encoded_bytes());
+                if let Ok(pem) = std::fs::read(path) {
+                    field(&pem);
+                }
+            }
+            for (endpoint, pin) in self.host_certificates() {
+                field(endpoint.as_bytes());
+                field(&pin.0);
+            }
+        }
+        digest.finalize().into()
+    }
+
     pub(crate) fn for_endpoint(&self, endpoint: Endpoint) -> Self {
         let mut options = self.clone();
         if let Some(fingerprint) = &self.certificate_fingerprint {

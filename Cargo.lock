@@ -1357,7 +1357,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "host-probe"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "clap",
  "rpassword",
@@ -3799,6 +3799,7 @@ dependencies = [
  "signal-hook-registry",
  "socket2",
  "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
 ]
 
@@ -4097,8 +4098,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vnc-rs"
 version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b757c55558e81e08e60f1a3153ba5bcffe7196719bc885e7e620400b0d81a4d"
 dependencies = [
  "async_io_stream",
  "flate2",
@@ -4852,7 +4851,7 @@ checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
 name = "xenadmin-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rcgen",
  "reqwest",
@@ -4872,12 +4871,13 @@ dependencies = [
  "url",
  "uuid",
  "vnc-rs",
+ "zbus 5.19.0",
  "zeroize",
 ]
 
 [[package]]
 name = "xenadmin-desktop"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "rune",
  "rune-kit",
@@ -4986,6 +4986,7 @@ dependencies = [
  "rustix 1.1.6",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",

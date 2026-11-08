@@ -23,8 +23,10 @@ rustls-pemfile = "2"
 vnc = { package = "vnc-rs", version = "=0.6.0" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 roxmltree = "=0.20.0"
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
+zbus = { version = "=5.19.0", default-features = false, features = ["tokio", "p2p"] }
 tempfile = "3"
 rcgen = "0.13"
 

@@ -1,5 +1,10 @@
 mod console_view;
+mod demo_details;
 mod preferences;
+mod profiles_view;
+mod vm_devices;
+mod vm_placement;
+mod vm_properties;
 mod vm_snapshots;
 
 use preferences::Preferences;
@@ -52,6 +57,7 @@ struct Node {
     host: Option<HostId>,
     vm: Option<VmId>,
 }
+#[derive(Clone)]
 struct DisplayRow {
     id: String,
     name: String,
@@ -62,13 +68,27 @@ struct DisplayRow {
     description: String,
     vm: Option<VmId>,
 }
+struct ActionDiagnostics {
+    pool: PoolId,
+    generation: u64,
+    vm: VmId,
+    handles: Vec<(xenadmin_core::PowerAction, xenadmin_core::ActionDiagnostic)>,
+}
 struct State {
+    placement: Option<vm_placement::Placement>,
+    devices: Option<vm_devices::DeviceView>,
+    workspace: profiles_view::Workspace,
+    diagnostic_results: Vec<String>,
+    diagnostics: Option<ActionDiagnostics>,
+    properties: Option<vm_properties::Editor>,
     snapshot_view: Option<VmId>,
     snapshot_rows: Vec<xenadmin_core::Snapshot>,
     snapshot_table: TableState,
     snapshot_dialog: Option<vm_snapshots::Dialog>,
     snapshot_name: TextEdit,
+    snapshot_memory: bool,
     window_width: f32,
+    window_height: f32,
     show_details: bool,
     operations: Vec<xenadmin_core::Operation>,
     operation_rows: Vec<xenadmin_core::OperationRecord>,
@@ -78,6 +98,7 @@ struct State {
         xenadmin_core::PowerAction,
         String,
     )>,
+    console_ui: console_view::ConsoleUi,
     console: Option<xenadmin_core::Console>,
     console_snapshot: Option<Arc<xenadmin_core::ConsoleSnapshot>>,
     console_pixels: rune::Pixels,
@@ -85,6 +106,7 @@ struct State {
     console_buttons: u8,
     console_keys: Vec<(rune::PhysicalKeyCode, u32)>,
     backend: Result<Backend, String>,
+    _instance: Option<preferences::InstanceGuard>,
     connection: Option<Connection>,
     snapshot: Option<Arc<ConnectionSnapshot>>,
     inventory: Option<Arc<Inventory>>,
@@ -116,30 +138,56 @@ fn secure_field() -> TextEdit {
     edit
 }
 fn init() -> State {
-    let preferences = Preferences::load();
+    let live_state = !cfg!(test);
+    let preferences = if live_state {
+        Preferences::load()
+    } else {
+        Preferences::default()
+    };
+    let (instance, backend) = if live_state {
+        match preferences::InstanceGuard::acquire() {
+            Ok(guard) => (Some(guard), Backend::start().map_err(|e| e.to_string())),
+            Err(error) => (None, Err(error)),
+        }
+    } else {
+        (None, Err("UI fixtures cannot connect to hosts".into()))
+    };
     let mut table = TableState::new().key("inventory-table");
     for (name, width) in &preferences.columns {
         table.set_column_width(name, *width);
     }
+    let startup_error = live_state
+        .then(|| backend.as_ref().err().cloned())
+        .flatten();
     let mut s = State {
+        placement: None,
+        devices: None,
+        workspace: profiles_view::Workspace::load(preferences.last_profile, instance.is_some()),
+        diagnostic_results: Vec::new(),
+        diagnostics: None,
+        properties: None,
         snapshot_view: None,
         snapshot_rows: Vec::new(),
         snapshot_table: TableState::new().key("snapshots-table"),
         snapshot_dialog: None,
         snapshot_name: TextEdit::new(""),
+        snapshot_memory: false,
         window_width: 1440.0,
+        window_height: 900.0,
         show_details: false,
         operations: Vec::new(),
         operation_rows: Vec::new(),
         unknown_review: None,
         force_action: None,
+        console_ui: Default::default(),
         console: None,
         console_snapshot: None,
         console_pixels: rune::Pixels::new(),
         console_bounds: [0.0; 2],
         console_buttons: 0,
         console_keys: Vec::new(),
-        backend: Backend::start().map_err(|e| e.to_string()),
+        backend,
+        _instance: instance,
         connection: None,
         snapshot: None,
         inventory: None,
@@ -162,15 +210,55 @@ fn init() -> State {
         active_insecure: false,
         show_certificate_details: false,
         show_connect: false,
-        error: None,
+        error: startup_error,
         preferences,
     };
+    profiles_view::apply_initial(&mut s);
     if rune::extra_args().iter().any(|a| a == "--demo") {
         demo(&mut s);
     }
     s
 }
 impl State {
+    fn can_mutate(&self) -> bool {
+        !self.demo
+            && self.connection.as_ref().is_some_and(|c| !c.is_read_only())
+            && self.snapshot.as_ref().is_some_and(|s| s.is_current())
+    }
+    fn diagnose_actions(&mut self) {
+        let result = (|| {
+            let vm = self
+                .selected()
+                .and_then(|r| r.vm)
+                .ok_or(xenadmin_core::Error::Stale)?;
+            let snapshot = self.snapshot.as_ref().ok_or(xenadmin_core::Error::Stale)?;
+            let observed = snapshot.observe_vm(vm)?;
+            let pool = snapshot
+                .inventory()
+                .ok_or(xenadmin_core::Error::Stale)?
+                .pool_id;
+            let connection = self
+                .connection
+                .as_ref()
+                .ok_or(xenadmin_core::Error::Closed)?;
+            let mut handles = Vec::new();
+            for action in xenadmin_core::PowerAction::ALL {
+                let handle = connection.diagnose_power(observed, action)?;
+                if let Some(waker) = &self.waker {
+                    handle.notify_on_change(waker.clone());
+                }
+                handles.push((action, handle));
+            }
+            self.diagnostics = Some(ActionDiagnostics {
+                pool,
+                generation: snapshot.generation(),
+                vm,
+                handles,
+            });
+            Ok::<(), xenadmin_core::Error>(())
+        })();
+        self.error = result.err().map(|error| error.to_string());
+    }
     fn control_operation(
         &mut self,
         id: xenadmin_core::OperationId,
@@ -252,6 +340,44 @@ impl State {
             if let Some(waker) = &self.waker {
                 console.notify_on_change(waker.clone());
             }
+            let inventory = self.inventory.as_ref().ok_or(xenadmin_core::Error::Stale)?;
+            let name = inventory
+                .vms
+                .get(&vm)
+                .ok_or(xenadmin_core::Error::Stale)?
+                .name
+                .clone();
+            console_view::opened(self, inventory.pool_id, vm, name);
+            self.devices = None;
+            self.console = Some(console);
+            self.console_snapshot = None;
+            Ok::<(), xenadmin_core::Error>(())
+        })();
+        self.error = result.err().map(|e| e.to_string());
+    }
+    fn reconnect_console(&mut self) {
+        let result = (|| {
+            let target = self
+                .console_ui
+                .target()
+                .ok_or(xenadmin_core::Error::NoConsole)?;
+            let snapshot = self.snapshot.as_ref().ok_or(xenadmin_core::Error::Stale)?;
+            if snapshot
+                .inventory()
+                .is_none_or(|i| i.pool_id != target.pool)
+            {
+                return Err(xenadmin_core::Error::Stale);
+            }
+            let observed = snapshot.observe_vm(target.vm)?;
+            let console = self
+                .connection
+                .as_ref()
+                .ok_or(xenadmin_core::Error::Closed)?
+                .open_console(observed)?;
+            if let Some(waker) = &self.waker {
+                console.notify_on_change(waker.clone());
+            }
+            console_view::reconnecting(self);
             self.console = Some(console);
             self.console_snapshot = None;
             Ok::<(), xenadmin_core::Error>(())
@@ -259,60 +385,12 @@ impl State {
         self.error = result.err().map(|e| e.to_string());
     }
     fn connect(&mut self) {
-        self.snapshot_view = None;
-        self.snapshot_dialog = None;
-        self.console = None;
-        self.force_action = None;
-        self.unknown_review = None;
-        let result = (|| {
-            let mut options = ConnectionOptions::new(
-                Endpoint::parse(&self.endpoint.text).map_err(|e| e.to_string())?,
-            );
-            options.accept_invalid_certificates = self.accept_invalid_certificates;
-            if !self.accept_invalid_certificates && !self.fingerprint.text.trim().is_empty() {
-                options.certificate_fingerprint = Some(
-                    self.fingerprint
-                        .text
-                        .parse()
-                        .map_err(|e: xenadmin_core::Error| e.to_string())?,
-                );
-            }
-            if !self.accept_invalid_certificates {
-                options
-                    .add_host_certificates(&self.host_certificates.text)
-                    .map_err(|error| error.to_string())?;
-            }
-            let backend = self.backend.as_ref().map_err(Clone::clone)?;
-            if self.username.text.trim().is_empty() || self.password.text.is_empty() {
-                return Err("Enter the host username and password.".into());
-            }
-            let connection = backend.connect(
-                options,
-                Credentials::new(self.username.text.trim().into(), self.password.text.clone()),
-            );
-            if let Some(waker) = &self.waker {
-                connection.notify_on_change(waker.clone());
-            }
-            self.connection = Some(connection);
-            self.active_insecure = self.accept_invalid_certificates;
-            self.snapshot = None;
-            self.inventory = None;
-            self.password = secure_field();
-            self.demo = false;
-            self.host_filter = None;
-            self.show_connect = false;
-            self.preferences.endpoint = self.endpoint.text.trim().into();
-            self.preferences.username = self.username.text.trim().into();
-            self.preferences.fingerprint = self.fingerprint.text.trim().into();
-            self.preferences.host_certificates = self.host_certificates.text.trim().into();
-            self.preferences.accept_invalid_certificates = self.accept_invalid_certificates;
-            self.rebuild();
-            self.save_preferences();
-            Ok::<(), String>(())
-        })();
-        self.error = result.err();
+        profiles_view::connect(self);
     }
     fn save_preferences(&mut self) {
+        if self._instance.is_none() {
+            return;
+        }
         self.preferences.sidebar_width = self.sidebar.width();
         for name in ["name", "state", "location", "cpu", "memory"] {
             if let Some(width) = self.table.column_width(name) {
@@ -492,16 +570,53 @@ impl State {
             })
         });
     }
-    fn selected(&self) -> Option<&DisplayRow> {
+    fn selected(&self) -> Option<Cow<'_, DisplayRow>> {
+        let target = if self.console.is_some() {
+            self.console_ui.target().map(|t| (t.pool, t.vm))
+        } else {
+            self.devices.as_ref().map(|t| (t.pool, t.vm))
+        };
+        if let Some((pool, vm)) = target {
+            let inventory = self.inventory.as_ref().filter(|i| i.pool_id == pool)?;
+            let vm = inventory.vms.get(&vm)?;
+            return Some(Cow::Owned(DisplayRow {
+                id: vm.id.to_string(),
+                name: vm.name.clone(),
+                state: vm.power_state.to_string(),
+                location: vm
+                    .host
+                    .and_then(|id| inventory.hosts.get(&id))
+                    .map(|h| h.name.clone())
+                    .unwrap_or_else(|| "—".into()),
+                cpu: vm.vcpus.to_string(),
+                memory: bytes(vm.memory_bytes),
+                description: vm.description.clone(),
+                vm: Some(vm.id),
+            }));
+        }
         let id = self.table.cursor()?;
-        self.rows.iter().find(|row| row.id == id)
+        self.rows.iter().find(|row| row.id == id).map(Cow::Borrowed)
     }
 }
 fn setup(s: &mut State, waker: Waker) {
     s.waker = Some(waker);
 }
 fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
-    let mut changed = false;
+    let mut changed = profiles_view::refresh(s);
+    let diagnostic_results = s
+        .diagnostics
+        .as_ref()
+        .map(|d| {
+            d.handles
+                .iter()
+                .map(|(_, h)| format!("{:?}", h.latest()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if diagnostic_results != s.diagnostic_results {
+        s.diagnostic_results = diagnostic_results;
+        changed = true;
+    }
     let mut rows: BTreeMap<_, _> = s
         .connection
         .as_ref()
@@ -535,7 +650,13 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
             .as_ref()
             .is_some_and(|old| Arc::ptr_eq(old, &snapshot))
         {
-            if let Some(frame) = &snapshot.frame {
+            if let Some(frame) = &snapshot.frame
+                && !s
+                    .console_snapshot
+                    .as_ref()
+                    .and_then(|old| old.frame.as_ref())
+                    .is_some_and(|old| Arc::ptr_eq(old, frame))
+            {
                 s.console_pixels.set(
                     u32::from(frame.width),
                     u32::from(frame.height),
@@ -599,6 +720,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 .child(heading("XenAdmin RS", &k)),
         )
         .child(caption("DIRECT HOST MANAGEMENT", &k))
+        .child(profiles_view::sidebar(s, &k))
         .child(
             Tree::new(
                 |s: &State| &s.tree,
@@ -615,6 +737,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 };
                 let (host, vm) = (node.host, node.vm);
                 s.snapshot_view = None;
+                s.devices = None;
                 s.host_filter = host;
                 s.page = Page::Guests;
                 s.filter_rows();
@@ -629,10 +752,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(
             Button::new("Add connection")
                 .variant(ButtonVariant::Outline)
-                .on_press(|s: &mut State| {
-                    s.show_connect = true;
-                    s.error = None;
-                })
+                .on_press(profiles_view::begin_new)
                 .build(&k)
                 .key("add-connection"),
         )
@@ -857,6 +977,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.snapshot_view.is_some() {
         content = vm_snapshots::view(s, &k);
     }
+    if s.devices.is_some() {
+        content = vm_devices::view(s, &k);
+    }
     if s.console.is_some() {
         content = console_view::view(s, &k);
     }
@@ -885,10 +1008,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(
                 Button::new("Connect")
                     .variant(ButtonVariant::Outline)
-                    .on_press(|s: &mut State| {
-                        s.show_connect = true;
-                        s.error = None;
-                    })
+                    .on_press(profiles_view::begin_new)
                     .build(&k)
                     .key("add-connection"),
             )
@@ -899,6 +1019,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                     .build(&k)
                     .key("demo"),
             );
+    }
+    if s.window_width < 800.0 {
+        controls = controls.child(
+            Button::new("Connections")
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut State| s.workspace.show_manager = true)
+                .build(&k),
+        );
     }
     if s.window_width < 1200.0 {
         controls = controls.child(
@@ -914,11 +1042,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         Button::new("Disconnect")
             .variant(ButtonVariant::Ghost)
             .disabled(s.connection.is_none())
-            .on_press(|s: &mut State| {
-                if let Some(connection) = &s.connection {
-                    connection.disconnect();
-                }
-            })
+            .on_press(profiles_view::disconnect_selected)
             .build(&k)
             .key("disconnect"),
     );
@@ -956,6 +1080,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let base = shell.build(&k);
     let root = if s.show_connect {
         rune_kit::root(base, [connection_dialog(s, &k)])
+    } else if s.placement.is_some() {
+        rune_kit::root(base, [vm_placement::dialog(s, &k)])
+    } else if s.properties.is_some() {
+        rune_kit::root(base, [vm_properties::dialog(s, &k)])
     } else if s.snapshot_dialog.is_some() {
         rune_kit::root(base, [vm_snapshots::dialog(s, &k)])
     } else if let Some((vm, action, name)) = &s.force_action {
@@ -1005,10 +1133,18 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         base
     };
+    let root = if s.workspace.show_manager {
+        rune_kit::root(root, [profiles_view::dialog(s, &k)])
+    } else {
+        root
+    };
     root.key("application")
         .on_layout_tx(|s: &mut State, rect, _| {
             if rect[2].is_finite() && rect[2] > 0.0 && (s.window_width - rect[2]).abs() > 0.5 {
                 s.window_width = rect[2];
+            }
+            if rect[3].is_finite() && rect[3] > 0.0 && (s.window_height - rect[3]).abs() > 0.5 {
+                s.window_height = rect[3];
             }
         })
 }
@@ -1051,7 +1187,21 @@ fn details(s: &State, k: &Kit) -> El {
             )
             .child(heading(&selected.name, k)),
     );
-    if s.page == Page::Guests && selected.vm.is_some() {
+    if (s.page == Page::Guests || s.console.is_some()) && selected.vm.is_some() {
+        detail = detail.child(
+            Button::new("Disks and network interfaces")
+                .variant(ButtonVariant::Outline)
+                .on_press(vm_devices::open)
+                .build(k),
+        );
+        detail = detail.child(
+            Button::new("Properties")
+                .variant(ButtonVariant::Outline)
+                .disabled(!s.demo && !s.can_mutate())
+                .on_press(vm_properties::open)
+                .build(k)
+                .key("open-properties"),
+        );
         detail = detail.child(
             Button::new("Snapshots")
                 .variant(ButtonVariant::Outline)
@@ -1077,14 +1227,36 @@ fn details(s: &State, k: &Kit) -> El {
             .child(field("Static memory maximum", &selected.memory))
             .child(field("Virtual CPUs", &selected.cpu));
     }
-    if s.page != Page::Guests || selected.vm.is_none() {
+    if (s.page != Page::Guests && s.console.is_none()) || selected.vm.is_none() {
         return detail;
     }
     let mut actions = col().gap(8.0);
+    if s.connection.as_ref().is_some_and(|c| c.is_read_only()) {
+        actions = actions.child(
+            caption(
+                "Read-only connection: changes and interactive consoles are disabled.",
+                k,
+            )
+            .wrap(),
+        );
+    }
     if let Some(vm) = selected
         .vm
         .and_then(|id| s.inventory.as_ref().and_then(|i| i.vms.get(&id)))
     {
+        if !s.demo && matches!(vm.power_state, PowerState::Halted | PowerState::Suspended) {
+            actions = actions.child(
+                Button::new(if vm.power_state == PowerState::Suspended {
+                    "Resume on host…"
+                } else {
+                    "Start on host…"
+                })
+                .variant(ButtonVariant::Outline)
+                .disabled(!s.snapshot.as_ref().is_some_and(|s| s.is_current()))
+                .on_press(vm_placement::open)
+                .build(k),
+            );
+        }
         if !s.demo && vm.allowed_actions.is_empty() {
             actions = actions.child(
                 caption(
@@ -1109,12 +1281,17 @@ fn details(s: &State, k: &Kit) -> El {
                     .key("power-actions-stale"),
             );
         }
+        if !s.demo {
+            actions = actions.child(
+                Button::new("Check action availability")
+                    .variant(ButtonVariant::Ghost)
+                    .disabled(!s.snapshot.as_ref().is_some_and(|s| s.is_current()))
+                    .on_press(State::diagnose_actions)
+                    .build(k),
+            );
+        }
         for action in xenadmin_core::PowerAction::ALL {
-            let enabled = !s.demo
-                && s.snapshot
-                    .as_ref()
-                    .is_some_and(|snapshot| snapshot.is_current())
-                && vm.allowed_actions.contains(&action);
+            let enabled = s.can_mutate() && vm.allowed_actions.contains(&action);
             actions = actions.child(
                 Button::new(action.label())
                     .variant(if action.is_force() {
@@ -1127,6 +1304,38 @@ fn details(s: &State, k: &Kit) -> El {
                     .build(k)
                     .key(format!("power-{action:?}")),
             );
+            let diagnostic = s
+                .diagnostics
+                .as_ref()
+                .filter(|d| {
+                    d.vm == vm.id
+                        && s.snapshot.as_ref().is_some_and(|snapshot| {
+                            snapshot.generation() == d.generation
+                                && snapshot.inventory().is_some_and(|i| i.pool_id == d.pool)
+                        })
+                })
+                .and_then(|d| d.handles.iter().find(|(a, _)| *a == action))
+                .map(|(_, handle)| handle.latest());
+            let reason = match diagnostic {
+                Some(Some(Ok(availability))) => Some(availability.explanation()),
+                Some(Some(Err(error))) => Some(error),
+                Some(None) => Some("Checking with the host…".into()),
+                None if !enabled && !s.demo => s
+                    .inventory
+                    .as_ref()
+                    .and_then(|i| i.details.vms.get(&vm.id))
+                    .map(|v| {
+                        v.power_availability(
+                            action,
+                            s.snapshot.as_ref().is_some_and(|s| s.is_current()),
+                        )
+                        .explanation()
+                    }),
+                None => None,
+            };
+            if let Some(reason) = reason {
+                actions = actions.child(caption(reason, k).wrap());
+            }
         }
     } else {
         actions = actions.child(
@@ -1164,6 +1373,15 @@ fn details(s: &State, k: &Kit) -> El {
                 ))
                 .child(caption(&record.detail, k).wrap()),
         );
+        for step in &record.steps {
+            actions = actions.child(
+                caption(
+                    format!("{} • {:?}: {}", step.label, step.state, step.detail),
+                    k,
+                )
+                .wrap(),
+            );
+        }
         if let Some(error) = &record.local_error {
             actions = actions.child(
                 caption(error, k)
@@ -1188,9 +1406,9 @@ fn details(s: &State, k: &Kit) -> El {
         }
         if record.state == xenadmin_core::OperationState::OutcomeUnknown {
             let id = record.id;
-            if record.has_task() {
+            if record.can_recheck() {
                 actions = actions.child(
-                    Button::new("Recheck host task")
+                    Button::new("Recheck outcome")
                         .variant(ButtonVariant::Outline)
                         .on_press(move |s: &mut State| {
                             s.control_operation(id, xenadmin_core::OperationControl::Recheck)
@@ -1212,14 +1430,7 @@ fn details(s: &State, k: &Kit) -> El {
         .child(
             Button::new("Open console")
                 .variant(ButtonVariant::Outline)
-                .disabled(
-                    s.demo
-                        || selected.vm.is_none()
-                        || !s
-                            .snapshot
-                            .as_ref()
-                            .is_some_and(|snapshot| snapshot.is_current()),
-                )
+                .disabled(!s.can_mutate() || selected.vm.is_none())
                 .on_press(State::open_console)
                 .build(k)
                 .key("open-console"),
@@ -1231,7 +1442,7 @@ fn details(s: &State, k: &Kit) -> El {
                 if s.demo {
                     "Demo mode cannot change infrastructure."
                 } else {
-                    "VM actions use XAPI tasks. Interrupted outcomes remain in the local operation history."
+                    "Actions and property changes are tracked in the operation history, including partial and uncertain outcomes."
                 },
                 k,
             )
@@ -1251,10 +1462,11 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
                 .build(k),
         )
     };
-    let mut dialog = col().w(480.0).max_h(620.0)
+    let mut dialog = col().w_full().grow(1.0).min_h(0.0)
         .scroll(rune::ScrollSpec { stick_bottom: false })
         .padding(24.0).gap(12.0).radius(12.0).fill(k.c.bg_base).border(1.0, k.c.border_weak)
         .child(heading("Connect to XCP-ng", k))
+        .child(profiles_view::form_fields(s,k))
         .child(caption("Use a host management address. Credentials go directly to that host over HTTPS.", k).wrap())
         .child(col().gap(6.0).child(caption("Host endpoint",k))
             .child(TextInput::new(&s.endpoint).label("Host endpoint").placeholder("https://xcp-host.example")
@@ -1262,7 +1474,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
                 .on_change(|s:&mut State,_|s.accept_invalid_certificates=false)
                 .build(k).key("host-endpoint")))
         .child(field("Username", &s.username, |s| &mut s.username, "root"))
-        .child(col().gap(6.0).child(caption("Password • this session only", k))
+        .child(col().gap(6.0).child(caption("Password • or load a saved password in connection options", k))
             .child(TextInput::new(&s.password).secure().label("Password").placeholder("Host password")
                 .on_edit(|s: &mut State| &mut s.password)
                 .on_submit(|s: &mut State, _| s.connect()).build(k).key("password")))
@@ -1289,37 +1501,43 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
                     .placeholder("One https://host=SHA256 entry per line")
                     .on_edit(|s: &mut State| &mut s.host_certificates).build(k).h(72.0)));
     }
-    dialog = dialog
-        .child(if let Some(error) = &s.error {
-            text(error.to_owned())
-                .font(k.ty.text_small)
-                .color(k.c.danger.icon)
-                .wrap()
-                .role("alert")
-        } else {
-            el()
-        })
+    dialog = dialog.child(if let Some(error) = &s.error {
+        text(error.to_owned())
+            .font(k.ty.text_small)
+            .color(k.c.danger.icon)
+            .wrap()
+            .role("alert")
+    } else {
+        el()
+    });
+    let controls = row()
+        .w_full()
+        .padding(16.0)
+        .justify_end()
+        .gap(8.0)
         .child(
-            row()
-                .justify_end()
-                .gap(8.0)
-                .child(
-                    Button::new("Cancel")
-                        .variant(ButtonVariant::Ghost)
-                        .on_press(|s: &mut State| {
-                            s.show_connect = false;
-                            s.password = secure_field();
-                        })
-                        .build(k)
-                        .key("cancel-connect"),
-                )
-                .child(
-                    Button::new("Connect")
-                        .on_press(State::connect)
-                        .build(k)
-                        .key("connect"),
-                ),
+            Button::new("Cancel")
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut State| {
+                    s.show_connect = false;
+                    s.password = secure_field();
+                })
+                .build(k)
+                .key("cancel-connect"),
+        )
+        .child(
+            Button::new("Connect")
+                .on_press(State::connect)
+                .build(k)
+                .key("connect"),
         );
+    let dialog = col()
+        .w((s.window_width - 32.0).clamp(280.0, 480.0))
+        .h((s.window_height - 48.0).clamp(280.0, 720.0))
+        .radius(12.0)
+        .fill(k.c.bg_base)
+        .child(dialog)
+        .child(controls);
     el().key("connect-dialog")
         .role("dialog")
         .label("Connect to XCP-ng")
@@ -1335,6 +1553,15 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .child(dialog)
 }
 fn demo(s: &mut State) {
+    console_view::release(s);
+    s.devices = None;
+    s.properties = None;
+    s.placement = None;
+    s.diagnostics = None;
+    s.diagnostic_results.clear();
+    s.console_snapshot = None;
+    s.console_ui = Default::default();
+    s.workspace.show_manager = false;
     s.snapshot_view = None;
     s.snapshot_dialog = None;
     s.console = None;
@@ -1436,7 +1663,11 @@ fn demo(s: &mut State) {
             bridge: "xenbr0".into(),
         }],
         revision: 1,
+        details: Default::default(),
     }));
+    if let Some(inventory) = &mut s.inventory {
+        demo_details::populate(Arc::make_mut(inventory));
+    }
     s.page = Page::Guests;
     s.rebuild();
 }
@@ -1452,6 +1683,16 @@ fn main() {
                 s.error = Some("Synthetic unavailable-action preview • no host connection".into());
                 s.table.select("30000000-0000-0000-0000-000000000001");
                 s.show_details = true;
+            }),
+            ("vm-devices", |s| {
+                demo(s);
+                s.table.select("30000000-0000-0000-0000-000000000000");
+                vm_devices::open(s);
+            }),
+            ("properties", |s| {
+                demo(s);
+                s.table.select("30000000-0000-0000-0000-000000000000");
+                vm_properties::open(s);
             }),
             ("snapshots", |s| {
                 demo(s);
@@ -1474,6 +1715,8 @@ fn main() {
                 s.snapshot_table.select(s.snapshot_rows[0].id.to_string());
                 vm_snapshots::begin_restore(s);
             }),
+            ("connections", |s| profiles_view::scene(s, false)),
+            ("connection-settings", |s| profiles_view::scene(s, true)),
             ("connect", |s| s.show_connect = true),
             ("connect-insecure", |s| {
                 s.show_connect = true;
@@ -1493,14 +1736,43 @@ fn main() {
         })
         .on_close(|s, _| {
             s.save_preferences();
-            if let Some(connection) = &s.connection {
-                connection.disconnect();
-            }
+            profiles_view::disconnect_all(s);
         })
         .run();
 }
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn devices_keep_their_target_and_leave_compact_details() {
+        let mut state = super::init();
+        super::demo(&mut state);
+        let original = super::VmId::parse("30000000-0000-0000-0000-000000000000").unwrap();
+        state.table.select(original.to_string());
+        state.show_details = true;
+        super::vm_devices::open(&mut state);
+        assert!(!state.show_details);
+        state.table.select("30000000-0000-0000-0000-000000000001");
+        assert_eq!(state.selected().and_then(|r| r.vm), Some(original));
+        let mut runtime = rune::Runtime::new(
+            state,
+            super::view,
+            (513.0, 652.0),
+            rune::Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        for _ in 0..30 {
+            runtime.frame(1.0 / 60.0);
+        }
+        assert!(runtime.find("close-vm-devices").is_some());
+        super::vm_properties::open(&mut runtime.state);
+        super::demo(&mut runtime.state);
+        assert!(runtime.state.devices.is_none());
+        assert!(runtime.state.properties.is_none());
+        assert!(runtime.state.placement.is_none());
+    }
     use super::*;
     #[test]
     fn editing_the_host_resets_a_remembered_certificate_bypass() {

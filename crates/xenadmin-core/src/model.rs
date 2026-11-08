@@ -16,6 +16,16 @@ macro_rules! identity {
             pub fn parse(value: &str) -> Result<Self, uuid::Error> {
                 Uuid::parse_str(value).map(Self)
             }
+
+            pub fn uuid(self) -> Uuid {
+                self.0
+            }
+        }
+
+        impl From<Uuid> for $name {
+            fn from(value: Uuid) -> Self {
+                Self(value)
+            }
         }
 
         impl fmt::Display for $name {
@@ -30,6 +40,10 @@ identity!(PoolId);
 identity!(HostId);
 identity!(VmId);
 identity!(SnapshotId);
+
+#[path = "model_inventory.rs"]
+mod inventory;
+pub use inventory::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PowerState {
@@ -184,6 +198,8 @@ pub struct Inventory {
     pub snapshots: SnapshotInventory,
     pub storage: Vec<Storage>,
     pub networks: Vec<Network>,
+    #[serde(default)]
+    pub details: InventoryDetails,
     pub revision: u64,
 }
 

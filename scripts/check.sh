@@ -7,6 +7,8 @@ export XENADMIN_STATE_DIR="$check_state_dir"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
+cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
+python3 -m unittest discover -s lab -p test_manage.py
 cargo build --workspace --locked
 mkdir -p artifacts
 target/debug/xenadmin-rs --snap artifacts/demo.png --tree artifacts/demo.json --scene demo --theme dark --size 1440x900 --scale 1
@@ -19,3 +21,8 @@ target/debug/xenadmin-rs --snap artifacts/snapshot-create.png --tree artifacts/s
 target/debug/xenadmin-rs --snap artifacts/snapshot-restore.png --tree artifacts/snapshot-restore.json --scene snapshot-restore --theme dark --size 1440x900 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/snapshots-compact.png --tree artifacts/snapshots-compact.json --scene snapshots --theme dark --size 513x652 --scale 1 --at 1
 target/debug/xenadmin-rs --snap artifacts/unavailable-actions.png --tree artifacts/unavailable-actions.json --scene unavailable-actions --theme dark --size 1440x1200 --scale 1 --at 1
+
+target/debug/xenadmin-rs --snap artifacts/properties.png --tree artifacts/properties.json --scene properties --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/connections.png --tree artifacts/connections.json --scene connections --theme dark --size 513x652 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/connection-settings.png --tree artifacts/connection-settings.json --scene connection-settings --theme dark --size 1440x900 --scale 1 --at 1
+target/debug/xenadmin-rs --snap artifacts/vm-devices.png --tree artifacts/vm-devices.json --scene vm-devices --theme dark --size 1440x900 --scale 1 --at 1

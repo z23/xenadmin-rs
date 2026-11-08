@@ -1127,7 +1127,7 @@ async fn snapshot_mock(faults: Arc<Mutex<SnapshotFaults>>, calls: Arc<Mutex<Vec<
                 let mut initial = batch("initial", "Halted");
                 let vm = &mut initial["events"][2]["snapshot"];
                 vm["is_a_snapshot"]=json!(false);vm["is_a_template"]=json!(false);vm["is_control_domain"]=json!(false);
-                vm["allowed_operations"]=json!(["snapshot","start"]);
+                vm["allowed_operations"]=json!(["snapshot","checkpoint","start"]);
                 // Deliberately publish the snapshot before its parent in this batch.
                 initial["events"].as_array_mut().unwrap().insert(0,json!({"class":"VM","operation":"add","ref":"OpaqueRef:snapshot","snapshot":snapshot_record(false)}));
                 return Some(RpcReply::Json(json!({"result":initial})));
@@ -1137,7 +1137,7 @@ async fn snapshot_mock(faults: Arc<Mutex<SnapshotFaults>>, calls: Arc<Mutex<Vec<
                 "VM.get_record" if request["params"][1] == "OpaqueRef:vm" => {
                     let mut vm=batch("unused","Halted")["events"][2]["snapshot"].clone();
                     vm["is_a_snapshot"]=json!(false);vm["is_a_template"]=json!(false);vm["is_control_domain"]=json!(false);
-                    vm["allowed_operations"]=json!(["snapshot","start"]);
+                    vm["allowed_operations"]=json!(["snapshot","checkpoint","start"]);
                     if state.running_on_preflight {vm["power_state"]=json!("Running");}
                     vm
                 }
@@ -1149,7 +1149,7 @@ async fn snapshot_mock(faults: Arc<Mutex<SnapshotFaults>>, calls: Arc<Mutex<Vec<
                     record
                 }
                 "VM.get_by_uuid" => if request["params"][1]==GUEST_UUID {json!("OpaqueRef:vm")} else {assert_eq!(request["params"][1],SNAPSHOT_UUID);json!("OpaqueRef:snapshot")},
-                "Async.VM.snapshot" => {
+                "Async.VM.snapshot" | "Async.VM.checkpoint" => {
                     state.created=true;
                     if state.drop_create_reply {return Some(RpcReply::Drop);}
                     json!("OpaqueRef:snapshot-task")
@@ -1447,6 +1447,7 @@ async fn snapshot_observations_are_connection_scoped_and_read_only_mode_cannot_m
             .observe_snapshot(vm, SnapshotId::parse(CREATED_UUID).unwrap())
             .is_err()
     );
+    first.close().await;
     let second = backend.connect(
         options.clone(),
         Credentials::new("root".into(), "fixture".into()),
@@ -1456,6 +1457,7 @@ async fn snapshot_observations_are_connection_scoped_and_read_only_mode_cannot_m
         second.submit(OperationId::new(), VmCommand::RevertSnapshot { snapshot }),
         Err(Error::Stale)
     ));
+    second.close().await;
     let mut options = options;
     options.read_only = true;
     let read_only = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
@@ -1487,4 +1489,444 @@ async fn snapshot_observations_are_connection_scoped_and_read_only_mode_cannot_m
     first.close().await;
     second.close().await;
     read_only.close().await;
+}
+
+async fn settings_mock(
+    fail_description: bool,
+    lose_name_reply: bool,
+    fail_read: Option<usize>,
+) -> (Mock, Arc<Mutex<Value>>) {
+    let mut initial = batch("initial", "Halted")["events"][2]["snapshot"].clone();
+    initial["is_a_snapshot"] = json!(false);
+    initial["is_a_template"] = json!(false);
+    initial["is_control_domain"] = json!(false);
+    initial["name_description"] = json!("Original description");
+    initial["other_config"] = json!({"auto_poweron":"false","preserve_this":"value"});
+    let record = Arc::new(Mutex::new(initial));
+    let captured = record.clone();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let server=mock_overridden(override_rpc(move|request|{
+        let record=captured.clone();
+        let reads=reads.clone();
+        async move {
+            let method=request["method"].as_str().unwrap();
+            let mut current=record.lock().unwrap();
+            let result=match method {
+                "event.from" if request["params"][2]=="" => {
+                    let mut initial=batch("initial","Halted");
+                    initial["events"][2]["snapshot"]=current.clone();
+                    initial
+                },
+                "VM.get_record"=>{
+                    let number=reads.fetch_add(1,Ordering::SeqCst)+1;
+                    if fail_read==Some(number){return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})))}
+                    current.clone()
+                },
+                "VM.get_by_uuid"=>json!("OpaqueRef:vm"),
+                "VM.set_name_label"=>{
+                    current["name_label"]=request["params"][2].clone();
+                    if lose_name_reply{return Some(RpcReply::Drop)}
+                    Value::Null
+                },
+                "VM.set_name_description"=>{
+                    if fail_description{return Some(RpcReply::Json(json!({"error":{"code":1,"message":"RBAC_PERMISSION_DENIED","data":[]}})))}
+                    current["name_description"]=request["params"][2].clone();Value::Null
+                },
+                "VM.set_other_config"=>{current["other_config"]=request["params"][2].clone();Value::Null},
+                _=>return None,
+            };
+            Some(RpcReply::Json(json!({"result":result})))
+        }
+    })).await;
+    (server, record)
+}
+
+#[tokio::test]
+async fn settings_changes_preserve_other_map_keys_and_record_verified_steps() {
+    use xenadmin_core::{
+        OperationId, OperationState, StepState, VmCommand, VmSettingEdit, VmSettingsPatch,
+    };
+    let (server, record) = settings_mock(false, false, None).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let operation = connection
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm,
+                patch: VmSettingsPatch::new(vec![
+                    VmSettingEdit::Name {
+                        previous: "XO recovery guest".into(),
+                        value: "Renamed fixture".into(),
+                    },
+                    VmSettingEdit::Autostart {
+                        previous: false,
+                        value: true,
+                    },
+                ])
+                .unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::Succeeded);
+    assert_eq!(
+        record.lock().unwrap()["other_config"],
+        json!({"auto_poweron":"true","preserve_this":"value"})
+    );
+    assert_eq!(operation.latest().steps.len(), 2);
+    assert!(
+        operation
+            .latest()
+            .steps
+            .iter()
+            .all(|s| s.state == StepState::Verified)
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn settings_failure_retains_applied_values_and_stops_later_steps() {
+    use xenadmin_core::{
+        OperationId, OperationState, StepState, VmCommand, VmSettingEdit, VmSettingsPatch,
+    };
+    let (server, record) = settings_mock(true, false, None).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let operation = connection
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm,
+                patch: VmSettingsPatch::new(vec![
+                    VmSettingEdit::Name {
+                        previous: "XO recovery guest".into(),
+                        value: "Renamed fixture".into(),
+                    },
+                    VmSettingEdit::Description {
+                        previous: "Original description".into(),
+                        value: "New description".into(),
+                    },
+                    VmSettingEdit::Autostart {
+                        previous: false,
+                        value: true,
+                    },
+                ])
+                .unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::PartiallyCompleted);
+    assert_eq!(record.lock().unwrap()["name_label"], "Renamed fixture");
+    assert_eq!(
+        record.lock().unwrap()["other_config"]["auto_poweron"],
+        "false"
+    );
+    assert_eq!(operation.latest().steps[0].state, StepState::Verified);
+    assert_eq!(operation.latest().steps[1].state, StepState::Failed);
+    assert_eq!(operation.latest().steps[2].state, StepState::Pending);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn lost_settings_response_reconciles_values_without_repeating_the_write() {
+    use xenadmin_core::{
+        OperationControl, OperationId, OperationState, VmCommand, VmSettingEdit, VmSettingsPatch,
+    };
+    let (server, _) = settings_mock(false, true, None).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let id = OperationId::new();
+    let operation = connection
+        .submit(
+            id,
+            VmCommand::Configure {
+                vm,
+                patch: VmSettingsPatch::new(vec![VmSettingEdit::Name {
+                    previous: "XO recovery guest".into(),
+                    value: "Renamed fixture".into(),
+                }])
+                .unwrap(),
+            },
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while operation.latest().state != OperationState::OutcomeUnknown {
+            tokio::time::sleep(Duration::from_millis(10)).await
+        }
+    })
+    .await
+    .unwrap();
+    connection
+        .control_operation(id, OperationControl::Recheck)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while !connection
+            .operation_history()
+            .iter()
+            .any(|r| r.id == id && r.state == OperationState::Succeeded)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        server
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.as_str() == "VM.set_name_label")
+            .count(),
+        1
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn chosen_host_start_checks_destination_before_dispatch_and_preserves_unknown_writes() {
+    use xenadmin_core::{HostId, OperationId, OperationState, PowerAction, VmCommand};
+    for lose_reply in [false, true] {
+        let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let capture = calls.clone();
+        let server = mock_overridden(override_rpc(move |request| {
+            let calls = capture.clone();
+            async move {
+                calls.lock().unwrap().push(request.clone());
+                let mut record = batch("initial", "Halted")["events"][2]["snapshot"].clone();
+                record["is_a_snapshot"] = json!(false);
+                record["is_a_template"] = json!(false);
+                record["is_control_domain"] = json!(false);
+                record["allowed_operations"] = json!(["start_on"]);
+                let result = match request["method"].as_str().unwrap() {
+                    "event.from" if request["params"][2] == "" => {
+                        let mut initial = batch("initial", "Halted");
+                        initial["events"][2]["snapshot"] = record;
+                        initial
+                    }
+                    "VM.get_by_uuid" => json!("OpaqueRef:vm"),
+                    "VM.get_record" => record,
+                    "host.get_by_uuid" => json!("OpaqueRef:host"),
+                    "host.get_record" => {
+                        json!({"uuid":"22222222-2222-2222-2222-222222222222","enabled":true})
+                    }
+                    "VM.assert_operation_valid" | "VM.assert_can_boot_here" => Value::Null,
+                    "Async.VM.start_on" => {
+                        assert_eq!(
+                            request["params"].as_array().unwrap()[1..],
+                            json!(["OpaqueRef:vm", "OpaqueRef:host", false, false])
+                                .as_array()
+                                .unwrap()[..]
+                        );
+                        if lose_reply {
+                            return Some(RpcReply::Drop);
+                        }
+                        json!("OpaqueRef:task")
+                    }
+                    _ => return None,
+                };
+                Some(RpcReply::Json(json!({"result":result})))
+            }
+        }))
+        .await;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let connection = backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("root".into(), "fixture".into()),
+        );
+        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let vm = connection
+            .latest()
+            .observe_vm(inventory.guests().next().unwrap().id)
+            .unwrap();
+        let operation = connection
+            .submit(
+                OperationId::new(),
+                VmCommand::PowerOnHost {
+                    vm,
+                    action: PowerAction::Start,
+                    host: HostId::parse("22222222-2222-2222-2222-222222222222").unwrap(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            finish(&operation).await,
+            if lose_reply {
+                OperationState::OutcomeUnknown
+            } else {
+                OperationState::Succeeded
+            }
+        );
+        let methods: Vec<_> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r["method"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            methods
+                .iter()
+                .position(|m| m == "VM.assert_can_boot_here")
+                .unwrap()
+                < methods
+                    .iter()
+                    .position(|m| m == "Async.VM.start_on")
+                    .unwrap()
+        );
+        assert_eq!(
+            methods.iter().filter(|m| *m == "Async.VM.start_on").count(),
+            1
+        );
+        connection.close().await;
+    }
+}
+
+#[tokio::test]
+async fn memory_snapshot_uses_checkpoint_and_verifies_the_result_without_starting_vm() {
+    use xenadmin_core::{OperationId, OperationState, SnapshotName, VmCommand};
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let server = snapshot_mock(Default::default(), calls.clone()).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("root".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let vm = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let operation = connection
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateCheckpoint {
+                vm,
+                name: SnapshotName::new("Memory fixture").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::Succeeded);
+    assert!(operation.latest().created_snapshot.is_some());
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["method"] == "Async.VM.checkpoint")
+            .count(),
+        1
+    );
+    assert!(
+        !calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["method"] == "Async.VM.snapshot" || r["method"] == "Async.VM.start")
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn settings_read_errors_do_not_report_an_applied_mutation_as_failed() {
+    use xenadmin_core::{
+        OperationId, OperationState, StepState, VmCommand, VmSettingEdit, VmSettingsPatch,
+    };
+    for (read, state) in [
+        (3, OperationState::OutcomeUnknown),
+        (4, OperationState::PartiallyCompleted),
+    ] {
+        let (server, record) = settings_mock(false, false, Some(read)).await;
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let connection = backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("root".into(), "fixture".into()),
+        );
+        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let vm = connection
+            .latest()
+            .observe_vm(inventory.guests().next().unwrap().id)
+            .unwrap();
+        let operation = connection
+            .submit(
+                OperationId::new(),
+                VmCommand::Configure {
+                    vm,
+                    patch: VmSettingsPatch::new(vec![
+                        VmSettingEdit::Name {
+                            previous: "XO recovery guest".into(),
+                            value: "Renamed fixture".into(),
+                        },
+                        VmSettingEdit::Description {
+                            previous: "Original description".into(),
+                            value: "New description".into(),
+                        },
+                    ])
+                    .unwrap(),
+                },
+            )
+            .unwrap();
+        assert_eq!(finish(&operation).await, state);
+        assert_eq!(record.lock().unwrap()["name_label"], "Renamed fixture");
+        assert_eq!(
+            record.lock().unwrap()["name_description"],
+            "Original description"
+        );
+        assert_eq!(
+            operation.latest().steps[0].state,
+            if read == 3 {
+                StepState::OutcomeUnknown
+            } else {
+                StepState::Verified
+            }
+        );
+        assert_eq!(
+            server
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|m| m.as_str() == "VM.set_name_label")
+                .count(),
+            1
+        );
+        assert!(
+            !server
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "VM.set_name_description")
+        );
+        connection.close().await;
+    }
 }

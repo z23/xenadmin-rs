@@ -10,6 +10,47 @@ This is an authorized reimplementation. The reference client supplies behavioral
 The new UI uses Rune and the backend uses Rust. [Feature scope](FEATURES.md) owns the
 workflow list. [Architecture](ARCHITECTURE.md) owns the implementation boundaries.
 
+## Retained parity delivery
+
+The expanded scope retains every workflow in [the implementation ledger](PARITY-IMPLEMENTATION.md)
+except the two excluded categories: Specialized hardware and guests; DR, updates and legacy
+services. Their exclusions apply throughout the other workflows too. The ledger maps all
+202 retained rows to their delivery status; a foundation is not a completed workflow.
+
+The following phases extend the initial M0–M6 roadmap below. They are ordered by shared
+backend dependencies, and each slice must leave the desktop usable.
+
+| Phase | Delivery |
+| --- | --- |
+| P0 | Row-complete scope ledger and ownership-checked disposable nested KVM lab tooling |
+| P1 | Saved/concurrent connections, one authenticated owner per pool, trust, credentials, failover and single instance |
+| P2 | Typed device/host/task graph, capability explanations, reviewed operations and durable partial/unknown outcomes |
+| P3 | Recovery controls, chosen-host power actions, reliable console input/clipboard/reconnect and independent console windows |
+| P4 | VM properties, disks, ISO drives and virtual network interfaces |
+| P5 | Snapshot modes, restore orchestration, deletion/clone/VMSS, VM creation/templates and ownership-aware deletion |
+| P6 | Storage and network lifecycle, physical interfaces, VLANs/bonds, multipath and management addressing |
+| P7 | Bounded import/export/conversion and same/cross-pool migrations |
+| P8 | Host/pool administration, maintenance, HA, auth/security and host configuration backup/restore |
+| P9 | Metrics, tasks, alerts, operation history and diagnostic reports |
+| P10 | Organization, saved searches, tags/folders, vApps, bulk actions, native extensions and translation catalogs |
+| P11 | AppImage/portable packaging and native Arch/Ubuntu 24.04 qualification under Wayland/X11 |
+
+Current implementation work delivers parts of P0–P5. P0's actual nested host deployment,
+full P1–P5 completion, and P6–P11 remain open. The per-row ledger and verification report
+are the completion authority. In particular, an API/data-model implementation does not
+establish a usable end-to-end workflow or live-host compatibility.
+
+Keep XCP-ng 8.3 as the primary host target; qualify 8.1+ explicitly, including XML-RPC
+where needed. Quiesced/VSS snapshot APIs removed in XCP-ng 8.1 are reported as unsupported,
+not emulated. VMSS schedules run on capable hosts, not in an unattended desktop scheduler.
+Native extensions use versioned trusted local subprocess/declarative UI integration;
+Windows plugin compatibility is excluded. English and translation catalogs are the initial
+localization target. Ordinary guest tools, firmware/boot, HA and host configuration recovery
+remain in scope.
+
+The [lab harness](../lab/README.md) can generate and manage only its explicitly owned,
+isolated resources. No production infrastructure test is implied by application development.
+
 ## Starting decisions
 
 - Repository: [z23/xenadmin-rs](https://github.com/z23/xenadmin-rs), initially private.
@@ -17,8 +58,8 @@ workflow list. [Architecture](ARCHITECTURE.md) owns the implementation boundarie
 - Initial host target: XCP-ng 8.3 LTS. Additional versions need their own compatibility evidence.
 - Initial desktop target: Linux x86-64, with real Wayland and X11 checks. Test Arch on the
   development workstation and Ubuntu 24.04 LTS as a distribution baseline.
-- Distribution: a local executable and desktop entry first. Choose the portable release
-  format in M3 after checking runtime dependencies and software-rendering behavior.
+- Distribution: AppImage and a portable archive for x86-64, with installed desktop metadata.
+  Qualify runtime dependencies and software rendering on both target distributions.
 - Original work: MIT license. Reused upstream code retains its notices.
 - Delivery: small commits that leave a working vertical slice. Later milestones extend that
   slice. Dates and effort estimates follow the M0 compatibility results.
@@ -176,11 +217,11 @@ Acceptance gate: transfer cancellation, truncated streams, disk exhaustion, cred
 and endpoint redirection produce attributable outcomes and no unowned cleanup. Large payloads
 stream with bounded buffers. Release notes state the tested combinations.
 
-## Work outside the initial roadmap
+## Outside retained scope
 
-XO backup scheduling and repository management, cloud orchestration, Windows ActiveX/RDP
-compatibility, host agents, forced pool recovery, and complete legacy XenServer parity are
-outside the first release. The client recovers access to XCP-ng management while XO is down.
+The two excluded parity categories, XO backup repository management, cloud orchestration,
+Windows ActiveX/plugin compatibility, host agents and legacy XenServer compatibility are
+outside the retained scope. The client recovers access to XCP-ng management while XO is down.
 It cannot operate XAPI when the host toolstack itself is unavailable.
 
 ## Next acceptance task

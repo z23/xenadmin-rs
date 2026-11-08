@@ -11,7 +11,9 @@ The client requires a reachable XAPI service and the user's host permissions.
 
 Development alpha. The Cargo workspace builds a Rune desktop application and a read-only
 host probe. It implements direct XAPI login, event inventory, VM power tasks, durable
-operation tracking, snapshot listing/creation/restore, and an embedded RFB console. No Xen Orchestra service is used.
+operation tracking, snapshot listing/creation/restore, VM properties and device controls,
+multiple saved connections, optional keyring credentials and an embedded RFB console.
+No Xen Orchestra service is used.
 
 Local protocol and TLS fixtures, Rune widget interactions, headless rendering, and a native
 window smoke test pass. **Successful live-host qualification is pending.**
@@ -27,6 +29,12 @@ Version 0.2.1 keeps unavailable power actions visible with an explanation; see t
 [UX verification](docs/reports/2026-11-08-operations-ux.md). The
 [full parity checklist](docs/PARITY.md) distinguishes implemented, partial, missing and
 unqualified workflows, with priorities and reference-source evidence.
+
+Version 0.3.0 adds connection/profile ownership, device inventory and actions, reviewed VM
+properties, chosen-host start/resume, memory checkpoints and console controls. See the
+[implementation and verification report](docs/reports/2026-11-08-parity-foundations.md)
+and [retained parity ledger](docs/PARITY-IMPLEMENTATION.md). The complete parity plan is
+still in progress.
 
 ## Run it
 
@@ -53,6 +61,8 @@ checks; `./scripts/package.sh` builds a release archive under `artifacts/`.
 ## Start here
 
 - [Implementation plan](docs/PLAN.md) defines the milestones and their acceptance gates.
+- [Retained parity ledger](docs/PARITY-IMPLEMENTATION.md) tracks all 202 retained rows.
+- [Disposable lab](lab/README.md) documents the isolated nested KVM harness.
 - [Architecture](docs/ARCHITECTURE.md) defines ownership, state, and the UI contract.
 - [Feature scope](docs/FEATURES.md) maps management workflows to milestones.
 - [Verification](docs/VERIFICATION.md) defines the evidence required to ship.
