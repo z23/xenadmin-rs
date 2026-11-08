@@ -201,6 +201,18 @@ pub(super) fn overlay(s: &State, k: &Kit, base: El) -> El {
                 ),
             );
     }
+    if current && matches!(context.scope.page, Page::Guests | Page::Templates) {
+        menu = menu.item(
+            rune_kit::MenuItem::new("Edit properties for selection…").on_select(|s: &mut State| {
+                if let Some(context) = s.row_menu.take()
+                    && valid(s, &context)
+                    && selected(s) == context.selection
+                {
+                    bulk_properties::open(s);
+                }
+            }),
+        );
+    }
     let root = menu.build(k, &mut layers);
     rune_kit::root(
         root,

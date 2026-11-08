@@ -3,6 +3,7 @@ mod activity_export;
 mod alarms_view;
 mod appliance_view;
 mod bulk_power;
+mod bulk_properties;
 mod cloud_init_view;
 mod console_view;
 mod console_windows;
@@ -177,6 +178,7 @@ struct State {
     snapshot_ancestry: Vec<xenadmin_core::SnapshotAncestryRow>,
     application_panel: Option<settings::Panel>,
     bulk_power: Option<bulk_power::Editor>,
+    bulk_properties: Option<bulk_properties::Editor>,
     row_menu: Option<inventory_menu::Context>,
     searches: Option<search_view::Workspace>,
     metrics: Option<metrics_view::MetricsUi>,
@@ -300,6 +302,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         console_windows: Default::default(),
         console_seat: None,
         bulk_power: None,
+        bulk_properties: None,
         row_menu: None,
         searches: None,
         metrics: None,
@@ -1181,6 +1184,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(tabs);
     if s.page == Page::Guests {
         content = content.child(bulk_power::selection_bar(s, &k));
+    } else if s.page == Page::Templates {
+        content = content.child(bulk_properties::selection_bar(s, &k));
     }
     if s.demo {
         content = content.child(
@@ -1556,6 +1561,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
     let root = if s.bulk_power.is_some() {
         rune_kit::root(root, [bulk_power::dialog(s, &k)])
+    } else {
+        root
+    };
+    let root = if s.bulk_properties.is_some() {
+        rune_kit::root(root, [bulk_properties::dialog(s, &k)])
     } else {
         root
     };
@@ -2266,6 +2276,7 @@ fn main() -> std::process::ExitCode {
                 s.show_details = true;
             }),
             ("batch-power", bulk_power::scene),
+            ("batch-properties", bulk_properties::scene),
             ("console-recovery", console_view::recovery_scene),
             ("multiple-consoles", console_windows::multiple_scene),
             ("guest-connections", |s| external_tools::scene(s, false)),

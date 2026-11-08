@@ -785,3 +785,12 @@ operation. The private transfer journal retains complete stream and owned-task r
 monotonic merges preserve proven UUIDs after recovery or acknowledgement without continuing the
 original worker. Recheck never uploads again or sends a previously unsent cancellation. See the
 [checkpoint report](reports/2026-11-08-checkpoint-archives.md) for endpoint and compatibility limits.
+
+Bulk VM properties use one pool-scoped immutable selection and flattened per-setter receipts.
+The shared settings adapter separates read-only argument preparation from mutation dispatch,
+so the final journal CAS immediately precedes the only setter call. Positive replies are
+persisted before value verification; recovery inspects only submitted work and never sends
+remaining setters. Public steps are bound to private labels and verification receipts, and
+late evidence preserves recovery/acknowledgement fences. The Rune review names unchanged
+selected targets separately from its exact changed command. See the
+[bulk properties report](reports/2026-11-08-bulk-properties.md).

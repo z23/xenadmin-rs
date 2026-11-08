@@ -169,6 +169,7 @@ pub(super) fn selection_bar(s: &State, k: &Kit) -> El {
     row()
         .gap(10.0)
         .center_y()
+        .flex_wrap()
         .child(
             caption(
                 if count > 32 {
@@ -181,6 +182,7 @@ pub(super) fn selection_bar(s: &State, k: &Kit) -> El {
             .wrap()
             .grow(1.0),
         )
+        .child(bulk_properties::selection_button(s, k))
         .child(
             Button::new("Power selection…")
                 .disabled(count == 0 || count > 32)

@@ -249,6 +249,94 @@ impl Editor {
         .map_err(|e| e.to_string())
     }
 }
+pub(super) fn describe(edit: &VmSettingEdit, hosts: &[(xenadmin_core::HostId, String)]) -> String {
+    match edit {
+        VmSettingEdit::Firmware { previous, value } => format!(
+            "Empty custom template firmware: {previous} → {value}. No disks may be attached. Installed guest images cannot change firmware mode."
+        ),
+        VmSettingEdit::SecureBoot { previous, value } => format!(
+            "Secure Boot policy: {previous} → {value}. Certificate state is preserved; this does not establish actual guest enforcement."
+        ),
+        VmSettingEdit::LiveCpus {
+            previous,
+            max,
+            value,
+        } => format!("Live vCPUs: {previous} → {value} (maximum {max})"),
+        VmSettingEdit::DynamicMemory { previous, min, max } => format!(
+            "Dynamic memory: {}–{} → {min}–{max} bytes; static limits unchanged",
+            previous.dynamic_min, previous.dynamic_max
+        ),
+        VmSettingEdit::CpuTopology {
+            previous,
+            cores_per_socket,
+        } => format!(
+            "Cores per socket: {} → {cores_per_socket}",
+            previous.as_deref().unwrap_or("default")
+        ),
+        VmSettingEdit::CpuWeight { previous, weight } => format!(
+            "CPU scheduling weight: {} → {weight}",
+            previous.as_deref().unwrap_or("default (256)")
+        ),
+        VmSettingEdit::ShadowMultiplier {
+            previous,
+            value,
+            live,
+        } => format!(
+            "Shadow memory multiplier: {previous} → {value}{}",
+            if *live { " (live)" } else { "" }
+        ),
+        VmSettingEdit::Name { previous, value } => format!("Name: {previous} → {value}"),
+        VmSettingEdit::Description { previous, value } => {
+            format!("Description: {previous} → {value}")
+        }
+        VmSettingEdit::Cpus {
+            previous_max,
+            previous_startup,
+            max,
+            startup,
+        } => {
+            format!("vCPUs: maximum {previous_max} → {max}; startup {previous_startup} → {startup}")
+        }
+        VmSettingEdit::Memory { previous, value } => format!(
+            "Memory (bytes):\nstatic minimum {} → {}\ndynamic minimum {} → {}\ndynamic maximum {} → {}\nstatic maximum {} → {}",
+            previous.static_min,
+            value.static_min,
+            previous.dynamic_min,
+            value.dynamic_min,
+            previous.dynamic_max,
+            value.dynamic_max,
+            previous.static_max,
+            value.static_max
+        ),
+        VmSettingEdit::BootOrder { previous, value } => {
+            format!("Boot order: {previous} → {value}")
+        }
+        VmSettingEdit::Autostart { previous, value } => {
+            format!("Autostart: {previous} → {value}")
+        }
+        VmSettingEdit::HomeHost { previous, value } => {
+            let name = |id: &Option<xenadmin_core::HostId>| {
+                id.map_or_else(
+                    || "No preference".into(),
+                    |id| {
+                        format!(
+                            "{} ({id})",
+                            hosts
+                                .iter()
+                                .find(|(host, _)| *host == id)
+                                .map_or("Unknown host", |(_, name)| name.as_str())
+                        )
+                    },
+                )
+            };
+            format!(
+                "Home host: {} → {}. This is a preference for future starts. It does not migrate the VM or guarantee placement.",
+                name(previous),
+                name(value)
+            )
+        }
+    }
+}
 fn memory_text(value: Option<u64>) -> String {
     value
         .map(|v| {
@@ -260,7 +348,7 @@ fn memory_text(value: Option<u64>) -> String {
         })
         .unwrap_or_default()
 }
-fn parse_memory(text: &str) -> Result<u64, String> {
+pub(super) fn parse_memory(text: &str) -> Result<u64, String> {
     let compact = text.split_whitespace().collect::<String>();
     let (number, multiplier) = if let Some(n) = compact.strip_suffix("GiB") {
         (n, 1_u64 << 30)
@@ -520,93 +608,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     );
     if let Some(patch) = &editor.review {
         for edit in patch.edits() {
-            let summary = match edit {
-                VmSettingEdit::Firmware { previous, value } => format!(
-                    "Empty custom template firmware: {previous} → {value}. No disks may be attached. Installed guest images cannot change firmware mode."
-                ),
-                VmSettingEdit::SecureBoot { previous, value } => format!(
-                    "Secure Boot policy: {previous} → {value}. Certificate state is preserved; this does not establish actual guest enforcement."
-                ),
-                VmSettingEdit::LiveCpus {
-                    previous,
-                    max,
-                    value,
-                } => format!("Live vCPUs: {previous} → {value} (maximum {max})"),
-                VmSettingEdit::DynamicMemory { previous, min, max } => format!(
-                    "Dynamic memory: {}–{} → {min}–{max} bytes; static limits unchanged",
-                    previous.dynamic_min, previous.dynamic_max
-                ),
-                VmSettingEdit::CpuTopology {
-                    previous,
-                    cores_per_socket,
-                } => format!(
-                    "Cores per socket: {} → {cores_per_socket}",
-                    previous.as_deref().unwrap_or("default")
-                ),
-                VmSettingEdit::CpuWeight { previous, weight } => format!(
-                    "CPU scheduling weight: {} → {weight}",
-                    previous.as_deref().unwrap_or("default (256)")
-                ),
-                VmSettingEdit::ShadowMultiplier {
-                    previous,
-                    value,
-                    live,
-                } => format!(
-                    "Shadow memory multiplier: {previous} → {value}{}",
-                    if *live { " (live)" } else { "" }
-                ),
-                VmSettingEdit::Name { previous, value } => format!("Name: {previous} → {value}"),
-                VmSettingEdit::Description { previous, value } => {
-                    format!("Description: {previous} → {value}")
-                }
-                VmSettingEdit::Cpus {
-                    previous_max,
-                    previous_startup,
-                    max,
-                    startup,
-                } => format!(
-                    "vCPUs: maximum {previous_max} → {max}; startup {previous_startup} → {startup}"
-                ),
-                VmSettingEdit::Memory { previous, value } => format!(
-                    "Memory (bytes):\nstatic minimum {} → {}\ndynamic minimum {} → {}\ndynamic maximum {} → {}\nstatic maximum {} → {}",
-                    previous.static_min,
-                    value.static_min,
-                    previous.dynamic_min,
-                    value.dynamic_min,
-                    previous.dynamic_max,
-                    value.dynamic_max,
-                    previous.static_max,
-                    value.static_max
-                ),
-                VmSettingEdit::BootOrder { previous, value } => {
-                    format!("Boot order: {previous} → {value}")
-                }
-                VmSettingEdit::Autostart { previous, value } => {
-                    format!("Autostart: {previous} → {value}")
-                }
-                VmSettingEdit::HomeHost { previous, value } => {
-                    let name = |id: &Option<xenadmin_core::HostId>| {
-                        id.map_or_else(
-                            || "No preference".into(),
-                            |id| {
-                                format!(
-                                    "{} ({id})",
-                                    editor
-                                        .hosts
-                                        .iter()
-                                        .find(|(host, _)| *host == id)
-                                        .map_or("Unknown host", |(_, name)| name.as_str())
-                                )
-                            },
-                        )
-                    };
-                    format!(
-                        "Home host: {} → {}. This is a preference for future starts. It does not migrate the VM or guarantee placement.",
-                        name(previous),
-                        name(value)
-                    )
-                }
-            };
+            let summary = describe(edit, &editor.hosts);
             body = body.child(caption(summary, k).wrap_anywhere());
         }
         body=body.child(caption("Changes apply in steps. A failure stops remaining steps; already saved values remain applied. Changed values are checked on the host before and after each step.",k).wrap());
