@@ -1,6 +1,9 @@
+#[path = "management_bond_topology.rs"]
+mod topology;
 use crate::{BondHash, BondId, BondMode, ManagementInterface, NetworkId, PifId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+pub(crate) use topology::CapturedVlan;
 
 /// A host-local management bond change. The host moves its existing static IPv4 settings.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,8 +24,19 @@ pub struct ManagementBondCreated {
     pub bond: BondId,
     pub master: PifId,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagementVlanReplacement {
+    pub old_vlan: crate::VlanId,
+    pub new_vlan: crate::VlanId,
+    pub old_interface: PifId,
+    pub new_interface: PifId,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Baseline {
+    #[serde(default)]
+    pub vlans: Option<BTreeSet<crate::VlanId>>,
+    #[serde(default)]
+    pub replacements: BTreeMap<crate::VlanId, ManagementVlanReplacement>,
     pub bonds: BTreeSet<BondId>,
     pub pifs: BTreeSet<PifId>,
     pub created: Option<ManagementBondCreated>,
@@ -30,17 +44,58 @@ pub(crate) struct Baseline {
 }
 impl Baseline {
     pub fn accepts(&self, next: &Self) -> bool {
-        self.bonds == next.bonds
+        self.vlans == next.vlans
+            && self
+                .replacements
+                .iter()
+                .all(|(id, v)| next.replacements.get(id) == Some(v))
+            && self.bonds == next.bonds
             && self.pifs == next.pifs
             && self.properties == next.properties
             && self.created.is_none_or(|v| next.created == Some(v))
+    }
+    pub fn merge(&mut self, other: &Self) -> Result<(), crate::Error> {
+        if self.bonds != other.bonds
+            || self.pifs != other.pifs
+            || self.vlans != other.vlans
+            || self.properties != other.properties
+            || self.created.zip(other.created).is_some_and(|(a, b)| a != b)
+            || other
+                .replacements
+                .iter()
+                .any(|(id, v)| self.replacements.get(id).is_some_and(|old| old != v))
+        {
+            return Err(crate::Error::JournalChanged);
+        }
+        if self.created.is_none() {
+            self.created = other.created;
+        }
+        self.replacements
+            .extend(other.replacements.iter().map(|(id, v)| (*id, *v)));
+        Ok(())
     }
     pub fn valid_for(
         &self,
         source: &ManagementInterface,
         operation: &ManagementBondOperation,
     ) -> bool {
+        let Some(expected) = operation.captured_vlans(source) else {
+            return false;
+        };
         self.valid()
+            && (expected.is_empty()
+                || self
+                    .vlans
+                    .as_ref()
+                    .is_some_and(|ids| expected.keys().all(|id| ids.contains(id))))
+            && expected
+                .values()
+                .all(|v| self.pifs.contains(&v.interface.id))
+            && self.replacements.iter().all(|(id, r)| {
+                expected
+                    .get(id)
+                    .is_some_and(|v| r.old_vlan == *id && r.old_interface == v.interface.id)
+            })
             && self.pifs.contains(&source.pif)
             && match operation {
                 ManagementBondOperation::Create { members, .. } => {
@@ -57,7 +112,38 @@ impl Baseline {
             }
     }
     pub fn valid(&self) -> bool {
-        self.properties.len() <= 64
+        self.vlans
+            .as_ref()
+            .is_none_or(|v| v.len() <= 10_000 && v.iter().all(|id| !id.uuid().is_nil()))
+            && self.replacements.len() <= 128
+            && self
+                .replacements
+                .values()
+                .map(|v| v.new_vlan)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == self.replacements.len()
+            && self
+                .replacements
+                .values()
+                .map(|v| v.new_interface)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == self.replacements.len()
+            && self.replacements.values().all(|v| {
+                !v.new_vlan.uuid().is_nil()
+                    && !v.new_interface.uuid().is_nil()
+                    && self
+                        .vlans
+                        .as_ref()
+                        .is_some_and(|ids| ids.contains(&v.old_vlan) && !ids.contains(&v.new_vlan))
+                    && self.pifs.contains(&v.old_interface)
+                    && !self.pifs.contains(&v.new_interface)
+                    && self
+                        .created
+                        .is_none_or(|parent| parent.master != v.new_interface)
+            })
+            && self.properties.len() <= 64
             && self
                 .properties
                 .iter()
@@ -89,67 +175,7 @@ impl ManagementBondOperation {
         {
             return false;
         }
-        match self {
-            Self::Create {
-                members,
-                network,
-                mode,
-                hash,
-            } => {
-                source.topology.is_none()
-                    && !network.uuid().is_nil()
-                    && (2..=4).contains(&members.len())
-                    && (*mode == BondMode::Lacp || hash.is_none())
-                    && members.iter().map(|p| p.pif).collect::<BTreeSet<_>>().len() == members.len()
-                    && members.iter().filter(|p| p.pif == source.pif).count() == 1
-                    && members.iter().all(|p| {
-                        p.bounded()
-                            && p.identity.host == source.identity.host
-                            && p.identity.network != *network
-                            && p.topology.is_none()
-                            && p.primary == source.primary
-                            && !p.protected
-                            && p.ipv6.mode == crate::Ipv6Mode::None
-                            && p.ipv6.addresses.is_empty()
-                            && p.ipv6.gateway.is_empty()
-                            && if p.pif == source.pif {
-                                p == source
-                            } else {
-                                !p.identity.management
-                                    && p.ipv4.mode == crate::Ipv4Mode::None
-                                    && p.ipv4.valid()
-                                    && p.ipv4.dns.is_empty()
-                            }
-                    })
-            }
-            Self::Destroy { bond, primary } => source.topology.as_ref().is_some_and(|t| {
-                t.valid(source.pif)
-                    && t.vlans.is_empty()
-                    && t.bonds.len() == 1
-                    && t.bonds.get(bond).is_some_and(|b| {
-                        b.master == Some(source.pif)
-                            && b.primary_slave == Some(*primary)
-                            && b.slaves.contains(primary)
-                            && (2..=16).contains(&b.slaves.len())
-                    })
-                    && t.pifs.iter().all(|(id, p)| {
-                        *id == source.pif || {
-                            p.physical == Some(true)
-                                && p.management_purpose.is_none()
-                                && p.disallow_unplug == Some(false)
-                                && p.management == Some(false)
-                                && p.ip_configuration_mode == "None"
-                                && p.ip.is_empty()
-                                && p.netmask.is_empty()
-                                && p.gateway.is_empty()
-                                && p.dns.is_empty()
-                                && p.ipv6_configuration_mode == "None"
-                                && p.ipv6.iter().all(String::is_empty)
-                                && p.ipv6_gateway.is_empty()
-                        }
-                    })
-            }),
-        }
+        self.topology_valid(source)
     }
     pub(crate) fn availability(
         &self,
@@ -179,7 +205,15 @@ impl ManagementBondOperation {
                                 .into(),
                     };
                 }
-                members.iter().map(|p| p.pif).collect::<BTreeSet<_>>()
+                members
+                    .iter()
+                    .flat_map(|m| {
+                        m.topology
+                            .as_ref()
+                            .map(|t| t.pifs.keys().copied().collect::<Vec<_>>())
+                            .unwrap_or(vec![m.pif])
+                    })
+                    .collect::<BTreeSet<_>>()
             }
             Self::Destroy { .. } => source
                 .topology

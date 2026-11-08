@@ -569,6 +569,21 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             view = view.child(caption(error, k).wrap().color(k.c.danger.icon));
         }
         if let Some(evidence) = &record.management_network {
+            for moved in &evidence.moved_vlans {
+                view = view.child(
+                    caption(
+                        format!(
+                            "Recreated VLAN {} → {} · interface {} → {}",
+                            moved.old_vlan,
+                            moved.new_vlan,
+                            moved.old_interface,
+                            moved.new_interface
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
             if let Some(created) = evidence.created_bond {
                 view = view.child(
                     caption(

@@ -1,9 +1,12 @@
+#[path = "management_bond_vlans.rs"]
+mod vlans;
 use super::*;
 use crate::{
     BondId, ManagementBondCreated, ManagementBondOperation as Op, PifId, management_bond::Baseline,
     xapi::ManagementTopologyRecords as Records,
 };
 use std::collections::BTreeMap;
+pub(in crate::resources) use vlans::replacements;
 fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, &Op), Error> {
     match operation(r)? {
         ManagementNetworkOperation::Bond { source, operation } => Ok((source, operation)),
@@ -36,6 +39,13 @@ fn lookup(records: &BTreeMap<String, Value>, id: uuid::Uuid) -> Result<(&str, &V
 }
 fn baseline(t: &Records, properties: BTreeMap<String, String>) -> Result<Baseline, Error> {
     Ok(Baseline {
+        vlans: Some(
+            t.records("vlan")
+                .values()
+                .map(|v| network::uuid(v).map(crate::VlanId::from))
+                .collect::<Result<_, _>>()?,
+        ),
+        replacements: BTreeMap::new(),
         bonds: t
             .records("bond")
             .values()
@@ -147,7 +157,6 @@ fn no_ip(p: &Value) -> bool {
 fn basic(p: &Value) -> bool {
     p["managed"] == true
         && network::number(&p["MTU"]) == Some(1500)
-        && network::number(&p["VLAN"]) == Some(-1)
         && p["disallow_unplug"] == false
         && p["other_config"]
             .as_object()
@@ -162,6 +171,11 @@ pub(super) async fn before(
     let mut nets;
     let args;
     let props;
+    let parent = Op::management_parent(source).ok_or(Error::InvalidResourceCommand)?;
+    let expected_vlans = op
+        .captured_vlans(source)
+        .ok_or(Error::InvalidResourceCommand)?;
+    vlans::before(&t, &expected_vlans)?;
     match op {
         Op::Create {
             members,
@@ -178,13 +192,18 @@ pub(super) async fn before(
                 t.pifs().values().all(|p| p["network"] != net_ref),
                 "Management bond destination network already has physical interfaces",
             )?;
-            props = properties(t.pif(source.pif)?.1)?;
+            props = properties(t.pif(parent)?.1)?;
             let mut refs = vec![];
             for m in members {
                 let component = t.topology(m.pif)?;
                 require(
-                    component.bonds.is_empty() && component.vlans.is_empty(),
-                    "Member acquired VLAN or bond dependencies since review",
+                    component.bonds.is_empty()
+                        && m.topology
+                            .as_deref()
+                            .map_or(component.vlans.is_empty(), |expected| {
+                                expected == &component
+                            }),
+                    "Member VLAN or bond dependencies changed since review",
                 )?;
                 refs.push(pif(s, m, None, Some(&t)).await?);
                 require(
@@ -192,7 +211,11 @@ pub(super) async fn before(
                     "Bond members have differing interface properties",
                 )?;
             }
-            nets = source_networks(&t, members.iter().map(|m| m.pif))?;
+            nets = source_networks(
+                &t,
+                op.all_interfaces(source)
+                    .ok_or(Error::InvalidResourceCommand)?,
+            )?;
             nets.insert(net_ref.into());
             args = vec![
                 json!(net_ref),
@@ -215,11 +238,15 @@ pub(super) async fn before(
             pif(s, source, None, Some(&t)).await?;
             let (bond_ref, b) = lookup(t.records("bond"), bond.uuid())?;
             require(
-                b["master"] == t.pif(source.pif)?.0,
+                b["master"] == t.pif(parent)?.0,
                 "Management bond identity changed",
             )?;
-            props = properties(t.pif(source.pif)?.1)?;
-            for id in captured.pifs.keys() {
+            props = properties(t.pif(parent)?.1)?;
+            for id in captured
+                .pifs
+                .keys()
+                .filter(|id| !expected_vlans.values().any(|v| v.interface.id == **id))
+            {
                 require(
                     properties(t.pif(*id)?.1)? == props,
                     "Bond member properties differ from the master",
@@ -278,7 +305,9 @@ fn created_from(t: &Records, r: &ResourceOperationRecord) -> Result<ManagementBo
             && plan.created.is_none_or(|id| id == pair)
             && p["host"] == host
             && p["network"] == target
-            && b["primary_slave"] == t.pif(source.pif)?.0
+            && b["primary_slave"]
+                == t.pif(Op::management_parent(source).ok_or(Error::InvalidResourceCommand)?)?
+                    .0
             && network::refs(&b["slaves"])?
                 .into_iter()
                 .collect::<BTreeSet<_>>()
@@ -295,12 +324,16 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
         .and_then(|p| p.bond.as_ref())
         .ok_or(Error::Journal)?;
     let t = Records::read(s).await?;
-    let (receiver, members, expected_network) = match op {
+    let old_parent = Op::management_parent(source).ok_or(Error::InvalidResourceCommand)?;
+    let expected_vlans = op
+        .captured_vlans(source)
+        .ok_or(Error::InvalidResourceCommand)?;
+    let (parent, members) = match op {
         Op::Create {
             members,
-            network,
             mode,
             hash,
+            ..
         } => {
             let made = b.created.ok_or(Error::Protocol(
                 "Created management bond identity is unavailable",
@@ -316,13 +349,13 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
                 .ok_or(Error::ResourceConflict)?;
             require(
                 component.bonds.len() == 1
-                    && component.vlans.is_empty()
-                    && component.pifs.len() == members.len() + 1
+                    && component.vlans.len() == expected_vlans.len()
+                    && component.pifs.len() == members.len() + 1 + expected_vlans.len()
                     && bond.mode == mode.as_str()
                     && hash.is_none_or(|h| bond.hashing_algorithm.as_deref() == Some(h.as_str())),
                 "Created management bond configuration differs from review",
             )?;
-            (made.master, members.clone(), *network)
+            (made.master, members.clone())
         }
         Op::Destroy { bond, primary } => {
             require(
@@ -332,26 +365,47 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
                     && !t
                         .pifs()
                         .values()
-                        .any(|v| network::uuid(v).ok() == Some(source.pif.uuid())),
+                        .any(|v| network::uuid(v).ok() == Some(old_parent.uuid())),
                 "Removed management bond or master is still present",
             )?;
             let captured = source.topology.as_ref().ok_or(Error::Journal)?;
-            let members = captured
-                .pifs
+            let bond = captured.bonds.get(bond).ok_or(Error::Journal)?;
+            let members = bond
+                .slaves
                 .iter()
-                .filter(|(id, _)| **id != source.pif)
-                .map(|(_, p)| ManagementInterface::from_inventory(p).ok_or(Error::Journal))
+                .map(|id| {
+                    ManagementInterface::from_inventory(&captured.pifs[id]).ok_or(Error::Journal)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
-            let network = members
-                .iter()
-                .find(|m| m.pif == *primary)
-                .ok_or(Error::Journal)?
-                .identity
-                .network;
-            (*primary, members, network)
+            (*primary, members)
         }
     };
+    vlans::verify(&t, r, parent, &expected_vlans)?;
+    let receiver = if old_parent == source.pif {
+        parent
+    } else {
+        b.replacements
+            .values()
+            .find(|v| v.old_interface == source.pif)
+            .ok_or(Error::Protocol("Management VLAN replacement is unverified"))?
+            .new_interface
+    };
     let (receiver_ref, p) = t.pif(receiver)?;
+    let expected_network = if old_parent != source.pif {
+        source.identity.network
+    } else {
+        match op {
+            Op::Create { network, .. } => *network,
+            Op::Destroy { primary, .. } => {
+                members
+                    .iter()
+                    .find(|m| m.pif == *primary)
+                    .ok_or(Error::Journal)?
+                    .identity
+                    .network
+            }
+        }
+    };
     let net_ref = lookup(t.records("network"), expected_network.uuid())?.0;
     require(
         basic(p)
@@ -366,20 +420,34 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
             && dns(p["DNS"].as_str().ok_or(Error::ResourceConflict)?)? == dns(&source.ipv4.dns)?
             && p["ipv6_configuration_mode"] == "None"
             && addresses(&p["IPv6"])?.is_empty()
-            && p["ipv6_gateway"] == ""
-            && properties(p)? == b.properties,
+            && p["ipv6_gateway"] == "",
         "Management bond receiver does not have the reviewed configuration",
     )?;
+    let (_, parent_record) = t.pif(parent)?;
+    require(
+        properties(parent_record)? == b.properties
+            && parent_record["currently_attached"] == true
+            && network::number(&parent_record["VLAN"]) == Some(-1)
+            && (receiver == parent
+                || (parent_record["management"] == false && no_ip(parent_record))),
+        "Bond parent properties or IP settings changed unexpectedly",
+    )?;
     if op.creates() {
+        let physical = members
+            .iter()
+            .find(|m| m.pif == old_parent)
+            .ok_or(Error::Journal)?;
         require(
-            p["MAC"] == source.identity.mac,
-            "Management bond did not retain the source MAC",
+            parent_record["MAC"] == physical.identity.mac,
+            "Management bond did not retain the primary physical MAC",
         )?;
     }
     for m in &members {
         let (_, p) = t.pif(m.pif)?;
         require(
             basic(p)
+                && p["physical"] == true
+                && network::number(&p["VLAN"]) == Some(-1)
                 && p["MAC"] == m.identity.mac
                 && p["device"] == m.identity.device
                 && p["host"] == receiver_host(&t, receiver)?
@@ -396,12 +464,34 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
         if !op.creates() {
             let component = t.topology(m.pif)?;
             require(
-                component.bonds.is_empty() && component.vlans.is_empty(),
+                component.bonds.is_empty()
+                    && component.vlans.len()
+                        == if m.pif == parent {
+                            expected_vlans.len()
+                        } else {
+                            0
+                        },
                 "Removed bond member acquired another topology",
             )?;
         }
     }
     let mut nets = source_networks(&t, members.iter().map(|m| m.pif))?;
+    nets.insert(
+        parent_record["network"]
+            .as_str()
+            .ok_or(Error::ResourceConflict)?
+            .into(),
+    );
+    for v in expected_vlans.values() {
+        nets.insert(
+            lookup(
+                t.records("network"),
+                v.interface.network.ok_or(Error::Journal)?.uuid(),
+            )?
+            .0
+            .into(),
+        );
+    }
     nets.insert(net_ref.into());
     environment(s, r, &t, &nets, receiver_ref).await
 }

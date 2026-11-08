@@ -7,7 +7,7 @@ use crate::{
     management_network::{Plan, canonical_ipv6},
     xapi::Session,
 };
-pub(super) use bond::created as created_bond;
+pub(super) use bond::{created as created_bond, replacements as bond_replacements};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 fn require(condition: bool, message: &'static str) -> Result<(), Error> {
@@ -60,6 +60,25 @@ pub(crate) fn validate_record(r: &ResourceOperationRecord) -> Result<(), Error> 
         require(
             p.completed && r.result_reference.is_some() && !created.master.uuid().is_nil(),
             "Management bond created identity lacks completion evidence",
+        )?;
+    }
+    if let (ManagementNetworkOperation::Bond { source, operation }, Some(b)) =
+        (&p.operation, &p.bond)
+    {
+        require(
+            b.replacements.is_empty()
+                || (p.completed && (!operation.creates() || b.created.is_some())),
+            "VLAN replacements lack successful task and parent identity proof",
+        )?;
+        require(
+            !p.configuration_observed
+                || ((!operation.creates() || b.created.is_some())
+                    && b.replacements.len()
+                        == operation
+                            .captured_vlans(source)
+                            .ok_or(Error::Journal)?
+                            .len()),
+            "Verified management topology lacks complete replacement identities",
         )?;
     }
     if r.result_reference.is_some() {

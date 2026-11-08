@@ -199,6 +199,37 @@ impl ResourceRequest {
                 return Ok(());
             }
         }
+        if let crate::ManagementNetworkOperation::Bond { source, operation } =
+            &self.management_plan()?.operation
+        {
+            let count = operation
+                .captured_vlans(source)
+                .ok_or(Error::Journal)?
+                .len();
+            if self
+                .management_plan()?
+                .bond
+                .as_ref()
+                .ok_or(Error::Journal)?
+                .replacements
+                .len()
+                < count
+            {
+                let replacements = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=management::bond_replacements(s,&self.record)=>v?};
+                self.management_plan_mut()?
+                    .bond
+                    .as_mut()
+                    .ok_or(Error::Journal)?
+                    .replacements
+                    .extend(replacements);
+                self.project_management()?;
+                self.record = j.resource_evidence(&self.record)?;
+                self.announce().await;
+                if self.stopped_after_recovery() {
+                    return Ok(());
+                }
+            }
+        }
         tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=management::verify(s,&self.record)=>v?};
         self.management_plan_mut()?.configuration_observed = true;
         self.project_management()?;

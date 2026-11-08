@@ -353,7 +353,7 @@ impl ManagementNetworkOperation {
             .is_err()
         {
             if matches!(self, Self::Bond { .. }) {
-                return ActionAvailability::Prerequisite { reason: "Management bond handover requires static IPv4 on an unprotected management interface, no IPv6 settings, and 2–4 plain physical members for creation. Only the management member may have IP settings. Removal requires the exact existing bond and primary member without VLAN dependencies.".into() };
+                return ActionAvailability::Prerequisite { reason: "Management bond handover requires static IPv4 on an unprotected management interface, no IPv6 settings, and 2–4 physical members for creation. Management VLANs need unique tags and complete reviewed topology; other VLANs may use static IPv4 or have no IP. Only the management endpoint may have the management role. Removal requires the exact bond and primary member.".into() };
             }
             return ActionAvailability::Prerequisite{reason:"Review a changed management configuration in the installed address family and a usable recovery IP. The current primary address must be unambiguous. Moving management requires a different, already statically configured and plugged interface with a distinct address.".into()};
         }
@@ -483,6 +483,8 @@ impl Plan {
 pub struct ManagementNetworkEvidence {
     #[serde(default)]
     pub created_bond: Option<crate::ManagementBondCreated>,
+    #[serde(default)]
+    pub moved_vlans: Vec<crate::ManagementVlanReplacement>,
     pub configuration_observed: bool,
     pub recovery_endpoint_verified: bool,
     pub recovery_endpoint: Option<Endpoint>,
@@ -496,6 +498,11 @@ impl Plan {
     pub fn evidence(&self) -> ManagementNetworkEvidence {
         ManagementNetworkEvidence {
             created_bond: self.bond.as_ref().and_then(|b| b.created),
+            moved_vlans: self
+                .bond
+                .as_ref()
+                .map(|b| b.replacements.values().copied().collect())
+                .unwrap_or_default(),
             configuration_observed: self.configuration_observed,
             recovery_endpoint_verified: self.route_verified,
             recovery_endpoint: Some(self.recovery.clone()),

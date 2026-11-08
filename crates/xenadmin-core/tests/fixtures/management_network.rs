@@ -29,6 +29,8 @@ enum Fault {
     TopologyChangedAfterWrite,
     BondWrongResult,
     BondChangedAfterWrite,
+    VlanChangedAfterWrite,
+    VlanIncompleteAfterWrite,
 }
 struct Control {
     rows: BTreeMap<String, Value>,
@@ -1072,3 +1074,6 @@ mod topology;
 
 #[path = "management_bond.rs"]
 mod bond_changes;
+
+#[path = "management_vlan_bond.rs"]
+mod vlan_bond_changes;

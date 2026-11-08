@@ -7,7 +7,7 @@ fn clear(p: &mut Value) {
     p["ip_configuration_mode"] = json!("None");
     p["management"] = json!(false);
 }
-fn install(c: &mut Control, destroy: bool) {
+pub(super) fn install(c: &mut Control, destroy: bool) {
     let p = c.rows.get_mut(&reference("PIF", 14)).unwrap();
     clear(p);
     c.rows.insert(reference("network",90),json!({"uuid":id(190),"name_label":"Management bond","managed":true,"MTU":1500,"PIFs":[],"VIFs":[]}));
@@ -26,6 +26,7 @@ pub(super) fn change(c: &mut Control, r: &Value) {
         master["device"] = json!("bond0");
         master["physical"] = json!(false);
         master["bond_master_of"] = json!([reference("Bond", 80)]);
+        master["VLAN_slave_of"] = json!([]);
         c.rows.insert(reference("PIF", 81), master);
         for n in [13, 14] {
             let p = c.rows.get_mut(&reference("PIF", n)).unwrap();
@@ -42,14 +43,16 @@ pub(super) fn change(c: &mut Control, r: &Value) {
         for key in ["IP", "netmask", "gateway", "DNS", "ip_configuration_mode"] {
             primary[key] = master[key].clone();
         }
-        primary["management"] = json!(true);
+        primary["management"] = master["management"].clone();
         for n in [13, 14] {
             c.rows.get_mut(&reference("PIF", n)).unwrap()["bond_slave_of"] =
                 json!("OpaqueRef:NULL");
         }
         c.rows.remove(&reference("Bond", 80));
     }
+    super::vlan_bond_changes::migrate(c, r["method"] == "Async.Bond.create");
 }
+
 fn reviewed(c: &xenadmin_core::Connection, destroy: bool) -> ManagementNetworkOperation {
     let view = c.latest();
     let i = view.inventory().unwrap();

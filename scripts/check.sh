@@ -191,3 +191,5 @@ done
 "$check_binary" --window console-1 --snap artifacts/console-window.png --tree artifacts/console-window.json --scene console-window --theme dark --size 1100x800 --scale 1 --at 1
 "$check_binary" --window console-1 --snap artifacts/console-window-compact.png --tree artifacts/console-window-compact.json --scene console-window --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/console-window-manager.png --tree artifacts/console-window-manager.json --scene multiple-consoles --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-vlan-bond.png --tree artifacts/management-vlan-bond.json --scene management-vlan-bond --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-vlan-bond-compact.png --tree artifacts/management-vlan-bond-compact.json --scene management-vlan-bond --theme dark --size 513x652 --scale 1 --at 1

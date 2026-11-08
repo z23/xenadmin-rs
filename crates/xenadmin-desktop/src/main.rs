@@ -2327,6 +2327,10 @@ fn main() -> std::process::ExitCode {
             ("management-dhcp", network_admin::management_dynamic_scene),
             ("management-vlan", network_admin::management_topology_scene),
             ("management-bond", network_admin::management_bond_scene),
+            (
+                "management-vlan-bond",
+                network_admin::management_vlan_bond_scene,
+            ),
             ("host-administration", host_admin::scene),
             ("host-support", host_support_view::scene),
             ("host-restore", host_support_view::restore_scene),

@@ -638,10 +638,7 @@ impl Journal {
                     current_plan.task_uuid = received.task_uuid;
                 }
                 match (&mut current_plan.bond, &received.bond) {
-                    (Some(current), Some(new)) if current.accepts(new) => {
-                        current.created = new.created
-                    }
-                    (Some(current), Some(new)) if new.accepts(current) => {}
+                    (Some(current), Some(new)) => current.merge(new)?,
                     (None, None) => {}
                     _ => return Err(Error::JournalChanged),
                 }

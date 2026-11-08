@@ -1583,6 +1583,8 @@ fn management_bond_record(pool: PoolId) -> ResourceOperationRecord {
     plan.operation = operation;
     plan.recovery = plan.operation.endpoint(&plan.original_endpoint).unwrap();
     plan.bond = Some(crate::management_bond::Baseline {
+        vlans: None,
+        replacements: Default::default(),
         pifs,
         bonds: Default::default(),
         created: None,
@@ -1681,4 +1683,171 @@ fn management_bond_baseline_is_private_scope_bound_and_created_evidence_is_monot
         .created = None;
     merged.management_network = Some(merged.management_network_plan.as_ref().unwrap().evidence());
     assert!(j.resource_save(&mut merged).is_err());
+}
+fn management_vlan_bond_record(pool: PoolId) -> ResourceOperationRecord {
+    let mut r = management_bond_record(pool);
+    let plan = r.management_network_plan.as_mut().unwrap();
+    let crate::ManagementNetworkOperation::Bond {
+        source,
+        operation: crate::ManagementBondOperation::Create { members, .. },
+    } = &mut plan.operation
+    else {
+        panic!()
+    };
+    let vlan = crate::VlanId::from(uuid::Uuid::new_v4());
+    let child = crate::PifId::from(uuid::Uuid::new_v4());
+    let parent = crate::PhysicalInterface {
+        metrics: None,
+        capabilities: None,
+        managed: Some(true),
+        disallow_unplug: Some(false),
+        management_purpose: None,
+        primary_address_type: Some("IPv4".into()),
+        id: source.pif,
+        host: Some(source.identity.host),
+        network: Some(source.identity.network),
+        device: source.identity.device.clone(),
+        mac: source.identity.mac.clone(),
+        mtu: Some(1500),
+        vlan: Some(-1),
+        management: Some(true),
+        physical: Some(true),
+        currently_attached: Some(true),
+        ip_configuration_mode: "Static".into(),
+        ip: source.ipv4.address.clone(),
+        netmask: source.ipv4.netmask.clone(),
+        gateway: source.ipv4.gateway.clone(),
+        dns: source.ipv4.dns.clone(),
+        ipv6: vec![],
+        ipv6_configuration_mode: "None".into(),
+        ipv6_gateway: String::new(),
+    };
+    let mut p = parent.clone();
+    p.id = child;
+    p.network = Some(uuid::Uuid::new_v4().into());
+    p.physical = Some(false);
+    p.vlan = Some(17);
+    p.mac = "fe:ff:ff:ff:ff:ff".into();
+    p.management = Some(false);
+    p.ip_configuration_mode = "None".into();
+    p.ip.clear();
+    p.netmask.clear();
+    p.gateway.clear();
+    p.dns.clear();
+    source.topology = Some(Box::new(crate::ManagementTopology {
+        pifs: std::collections::BTreeMap::from([(parent.id, parent), (child, p)]),
+        bonds: Default::default(),
+        vlans: std::collections::BTreeMap::from([(
+            vlan,
+            crate::Vlan {
+                id: vlan,
+                tagged_pif: Some(source.pif),
+                untagged_pif: Some(child),
+                tag: Some(17),
+            },
+        )]),
+    }));
+    members[0] = source.clone();
+    let baseline = plan.bond.as_mut().unwrap();
+    baseline.pifs.insert(child);
+    baseline.vlans = Some(std::collections::BTreeSet::from([vlan]));
+    r.action = ResourceAction::ManagementNetwork(Box::new(plan.operation.clone()));
+    r.management_network = Some(plan.evidence());
+    r
+}
+#[test]
+fn management_vlan_replacement_receipts_are_scope_bound_private_and_monotonic() {
+    let dir = tempfile::tempdir().unwrap();
+    let j = Journal::open(dir.path()).unwrap();
+    let mut r = management_vlan_bond_record(uuid::Uuid::new_v4().into());
+    j.resource_admit(&mut r).unwrap();
+    r.state = OperationState::Dispatching;
+    r.steps[0].state = StepState::Dispatching;
+    r.management_network_plan.as_mut().unwrap().registered = true;
+    r.management_network = Some(r.management_network_plan.as_ref().unwrap().evidence());
+    j.resource_save(&mut r).unwrap();
+    let mut late = r.clone();
+    r.state = OperationState::OutcomeUnknown;
+    j.resource_save(&mut r).unwrap();
+    late.task = Some("OpaqueRef:vlan-bond-task".into());
+    late.result_reference = Some("OpaqueRef:new-bond".into());
+    let p = late.management_network_plan.as_mut().unwrap();
+    p.completed = true;
+    p.ended = true;
+    p.task_uuid = Some(uuid::Uuid::new_v4().into());
+    let crate::ManagementNetworkOperation::Bond { source, operation } = &p.operation else {
+        panic!()
+    };
+    let expected = operation.captured_vlans(source).unwrap();
+    let (old, v) = expected.first_key_value().unwrap();
+    let receipt = crate::ManagementVlanReplacement {
+        old_vlan: *old,
+        old_interface: v.interface.id,
+        new_vlan: uuid::Uuid::new_v4().into(),
+        new_interface: uuid::Uuid::new_v4().into(),
+    };
+    p.bond.as_mut().unwrap().created = Some(crate::ManagementBondCreated {
+        bond: uuid::Uuid::new_v4().into(),
+        master: uuid::Uuid::new_v4().into(),
+    });
+    p.bond.as_mut().unwrap().replacements.insert(*old, receipt);
+    late.management_network = Some(p.evidence());
+    let current = j.resource_evidence(&late).unwrap();
+    assert_eq!(current.state, OperationState::OutcomeUnknown);
+    assert_eq!(
+        current.management_network.as_ref().unwrap().moved_vlans,
+        vec![receipt]
+    );
+    assert!(
+        !serde_json::to_string(&current)
+            .unwrap()
+            .contains("management_network_plan")
+    );
+    let mut rebound = current.clone();
+    rebound
+        .management_network_plan
+        .as_mut()
+        .unwrap()
+        .bond
+        .as_mut()
+        .unwrap()
+        .replacements
+        .get_mut(old)
+        .unwrap()
+        .new_interface = uuid::Uuid::new_v4().into();
+    rebound.management_network = Some(rebound.management_network_plan.as_ref().unwrap().evidence());
+    assert!(j.resource_evidence(&rebound).is_err());
+    for corrupt in ["baseline", "source", "existing"] {
+        let raw: String =
+            j.0.query_row(
+                "SELECT payload FROM resource_operations WHERE id=?1",
+                [current.id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut payload: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        match corrupt {
+            "baseline" => payload["management_network_plan"]["bond"]["vlans"] = json!([]),
+            "source" => {
+                payload["management_network_plan"]["bond"]["replacements"][old.to_string()]["old_interface"] =
+                    json!(uuid::Uuid::new_v4())
+            }
+            "existing" => {
+                payload["management_network_plan"]["bond"]["replacements"][old.to_string()]["new_interface"] =
+                    json!(receipt.old_interface)
+            }
+            _ => unreachable!(),
+        };
+        j.0.execute(
+            "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+            rusqlite::params![payload.to_string(), current.id.to_string()],
+        )
+        .unwrap();
+        assert!(j.resource_load(current.id).is_err(), "{corrupt}");
+        j.0.execute(
+            "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+            rusqlite::params![raw, current.id.to_string()],
+        )
+        .unwrap();
+    }
 }

@@ -24,10 +24,18 @@ fn open(s: &mut State, id: PifId) {
         edit(s).error = Some("Management interface information is incomplete".into());
         return;
     };
+    let Some(parent) = Bond::management_parent(&source).and_then(|id| {
+        s.inventory
+            .as_ref()
+            .and_then(|i| ManagementInterface::capture(i, id))
+    }) else {
+        edit(s).error = Some("Management VLAN parent is unavailable".into());
+        return;
+    };
     set_form(
         s,
         Form::ManagementBond(Box::new(Editor {
-            members: vec![source.clone()],
+            members: vec![parent],
             source,
             network: None,
             mode: BondMode::ActiveBackup,
@@ -86,15 +94,32 @@ fn lines(op: &Operation, i: &Inventory) -> Vec<String> {
                         name(i, m.identity.network)
                     ));
                 }
-                lines.push("The host creates a new bond and moves the current static IPv4 settings to it. The original management member supplies the bond MAC. Member IP settings are cleared by the host.".into());
+                lines.push("The host creates a bond using the reviewed primary physical member’s MAC. It transfers management and the listed VLANs, retaining their network and IPv4 settings. Recreated VLANs receive new interface and VLAN UUIDs.".into());
             }
             Bond::Destroy { bond, primary } => {
-                lines.push(format!("Remove bond {bond}; return management and its existing IPv4 settings to {} ({primary})",pif_name(i,*primary)));
+                lines.push(format!("Remove bond {bond}; return management or its VLAN to primary physical member {} ({primary})",pif_name(i,*primary)));
                 lines.push("The host removes the bond master and returns its members to their original networks. The network objects are retained.".into());
             }
         }
     }
-    lines.extend(["Traffic and the management connection can be interrupted. Configure the connected switch for the reviewed bond mode first and keep an independent recovery path available.".into(),format!("Recovery endpoint: {} using HTTPS on the current connection port. Success requires the same host certificate, exact resulting topology and address; existing trust settings still apply.",op.recovery_address().map(|v|v.to_string()).unwrap_or_default()),"Lost replies remain unresolved. Recheck reads existing task and topology evidence; no write, rollback or duplicate creation is sent. New bond/master UUIDs are retained when positively identified.".into(),"This workflow supports static IPv4 management without VLAN, guest-interface, clustering, storage-purpose, tunnel or SR-IOV dependencies. Those migrations require a separate reviewed workflow.".into()]);
+    if let Operation::Bond { source, operation } = op {
+        let components = match operation {
+            Bond::Create { members, .. } => members
+                .iter()
+                .filter_map(|m| m.topology.as_deref())
+                .collect::<Vec<_>>(),
+            Bond::Destroy { .. } => source.topology.as_deref().into_iter().collect(),
+        };
+        for t in components {
+            for v in t.vlans.values() {
+                let Some(p) = v.untagged_pif.and_then(|id| t.pifs.get(&id)) else {
+                    continue;
+                };
+                lines.push(format!("Recreate VLAN {} · tag {} · interface {} · network {} ({}) · {} {} / {} · gateway {} · DNS {} · attached {}",v.id,v.tag.unwrap_or_default(),p.id,p.network.map(|id|name(i,id)).unwrap_or_default(),p.network.map(|v|v.to_string()).unwrap_or_default(),p.ip_configuration_mode,p.ip,p.netmask,p.gateway,p.dns,p.currently_attached.unwrap_or(false)));
+            }
+        }
+    }
+    lines.extend(["Traffic and the management connection can be interrupted. Configure the connected switch for the reviewed bond mode first and keep an independent recovery path available.".into(),format!("Recovery endpoint: {} using HTTPS on the current connection port. Success requires the same host certificate, exact resulting topology and address; existing trust settings still apply.",op.recovery_address().map(|v|v.to_string()).unwrap_or_default()),"Lost replies remain unresolved. Recheck reads existing task and topology evidence; no write, rollback or duplicate creation is sent. New bond/master UUIDs are retained when positively identified.".into(),"This workflow supports static IPv4 management and reviewed VLANs with unique tags. VLAN metadata/properties must be empty because the host recreates those objects. Guest-interface, clustering, storage-purpose, tunnel and SR-IOV dependencies require separate review.".into()]);
     lines
 }
 fn review(s: &mut State, op: Operation) {
@@ -134,11 +159,11 @@ fn remove(s: &mut State, id: PifId) {
     else {
         return;
     };
-    let Some(b) = source
-        .topology
-        .as_ref()
-        .and_then(|t| t.bonds.values().find(|b| b.master == Some(id)))
-    else {
+    let Some(b) = source.topology.as_ref().and_then(|t| {
+        t.bonds
+            .values()
+            .find(|b| b.master == Bond::management_parent(&source))
+    }) else {
         return;
     };
     let Some(primary) = b.primary_slave else {
@@ -155,29 +180,28 @@ fn remove(s: &mut State, id: PifId) {
 }
 pub(super) fn buttons(
     id: PifId,
-    p: &xenadmin_core::PhysicalInterface,
+    _p: &xenadmin_core::PhysicalInterface,
+    i: &Inventory,
     enabled: bool,
     k: &Kit,
 ) -> El {
-    if p.vlan != Some(-1) {
-        return el();
-    }
-    row()
-        .gap(8.0)
-        .flex_wrap()
-        .child(if p.physical == Some(true) {
-            Button::new("Create management bond…")
-                .disabled(!enabled)
-                .on_press(move |s: &mut State| open(s, id))
-                .build(k)
-                .key("management-bond-create")
-        } else {
-            Button::new("Remove management bond…")
-                .disabled(!enabled || p.vlan != Some(-1))
-                .on_press(move |s: &mut State| remove(s, id))
-                .build(k)
-                .key("management-bond-remove")
-        })
+    let physical_parent = ManagementInterface::capture(i, id)
+        .and_then(|v| Bond::management_parent(&v))
+        .and_then(|id| i.details.pifs.get(&id))
+        .is_some_and(|p| p.physical == Some(true));
+    row().gap(8.0).flex_wrap().child(if physical_parent {
+        Button::new("Create management bond…")
+            .disabled(!enabled)
+            .on_press(move |s: &mut State| open(s, id))
+            .build(k)
+            .key("management-bond-create")
+    } else {
+        Button::new("Remove management bond…")
+            .disabled(!enabled)
+            .on_press(move |s: &mut State| remove(s, id))
+            .build(k)
+            .key("management-bond-remove")
+    })
 }
 pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
     let mut body = col()
@@ -186,7 +210,7 @@ pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
         .child(
             caption(
                 format!(
-                    "Management member: {} · {}",
+                    "Management endpoint: {} · {}",
                     pif_name(i, v.source.pif),
                     v.source.ipv4.address
                 ),
@@ -194,7 +218,7 @@ pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
             )
             .wrap(),
         );
-    body=body.child(caption("Choose 2–4 physical members on this host. Only the current management member may have IP settings.",k).wrap());
+    body=body.child(caption("Choose 2–4 physical members on this host. The management VLAN parent stays first. Reviewed VLANs retain their networks and static IPv4 settings.",k).wrap());
     for p in i.details.pifs.values().filter(|p| {
         p.host == Some(v.source.identity.host) && p.physical == Some(true) && p.vlan == Some(-1)
     }) {
@@ -210,7 +234,7 @@ pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
                 p.device,
                 p.mac
             ))
-            .disabled(id == v.source.pif)
+            .disabled(Some(id) == Bond::management_parent(&v.source))
             .on_press(move |s: &mut State| {
                 let v = editor(s);
                 if let Some(index) = v.members.iter().position(|m| m.pif == id) {
@@ -329,6 +353,62 @@ pub(super) fn scene(s: &mut State) {
     editor(s).network = Some(target);
     prepare(s);
 }
+pub(super) fn vlan_scene(s: &mut State) {
+    scene(s);
+    let original = editor(s).source.pif;
+    let target = editor(s).network.unwrap();
+    let second = editor(s).members[1].pif;
+    let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+    let base = i.details.pifs[&original].clone();
+    let source = uuid::Uuid::from_u128(0xb010).into();
+    for (n, tag) in [(0xb010, 17), (0xb011, 18)] {
+        let id = uuid::Uuid::from_u128(n).into();
+        let vlan = uuid::Uuid::from_u128(n + 100).into();
+        let network = NetworkId::from(uuid::Uuid::from_u128(n + 200));
+        let mut p = base.clone();
+        p.id = id;
+        p.network = Some(network);
+        p.physical = Some(false);
+        p.vlan = Some(tag);
+        p.mac = "fe:ff:ff:ff:ff:ff".into();
+        if id != source {
+            p.management = Some(false);
+            p.currently_attached = Some(false);
+            p.ip_configuration_mode = "None".into();
+            p.ip.clear();
+            p.netmask.clear();
+            p.gateway.clear();
+            p.dns.clear();
+        }
+        i.details.pifs.insert(id, p);
+        i.details.vlans.insert(
+            vlan,
+            xenadmin_core::Vlan {
+                id: vlan,
+                tagged_pif: Some(original),
+                untagged_pif: Some(id),
+                tag: Some(tag as u64),
+            },
+        );
+        i.networks.push(xenadmin_core::Network {
+            uuid: network.uuid(),
+            name: format!("Reviewed VLAN {tag}"),
+            bridge: format!("xapi-{tag}"),
+        });
+    }
+    let p = i.details.pifs.get_mut(&original).unwrap();
+    p.management = Some(false);
+    p.ip_configuration_mode = "None".into();
+    p.ip.clear();
+    p.netmask.clear();
+    p.gateway.clear();
+    p.dns.clear();
+    let member = ManagementInterface::capture(i, second).unwrap();
+    open(s, source);
+    editor(s).members.push(member);
+    editor(s).network = Some(target);
+    prepare(s);
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,6 +514,94 @@ mod tests {
         assert!(
             management::review_unavailable(&s, s.network_workspace.as_ref().unwrap()).is_some()
         );
+    }
+    #[test]
+    fn management_vlan_bond_review_lists_recreated_ids_and_captures_parent_at_both_widths() {
+        for remove_bond in [false, true] {
+            for size in [(513.0, 652.0), (1440.0, 900.0)] {
+                let mut s = crate::init();
+                vlan_scene(&mut s);
+                let source = editor(&mut s).source.clone();
+                let primary = editor(&mut s).members[0].pif;
+                if remove_bond {
+                    let members = editor(&mut s)
+                        .members
+                        .iter()
+                        .map(|m| m.pif)
+                        .collect::<Vec<_>>();
+                    let network = editor(&mut s).network.unwrap();
+                    let master = uuid::Uuid::from_u128(0xb050).into();
+                    let bond = uuid::Uuid::from_u128(0xb051).into();
+                    let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+                    let mut p = i.details.pifs[&primary].clone();
+                    p.id = master;
+                    p.network = Some(network);
+                    p.physical = Some(false);
+                    p.device = "bond0".into();
+                    i.details.pifs.insert(master, p);
+                    i.details.bonds.insert(
+                        bond,
+                        xenadmin_core::NetworkBond {
+                            id: bond,
+                            master: Some(master),
+                            slaves: members,
+                            primary_slave: Some(primary),
+                            mode: "active-backup".into(),
+                            hashing_algorithm: None,
+                            hashing_algorithm_known: true,
+                            links_up: Some(2),
+                        },
+                    );
+                    for v in i.details.vlans.values_mut() {
+                        v.tagged_pif = Some(master);
+                    }
+                    remove(&mut s, source.pif);
+                }
+                let r = s
+                    .network_workspace
+                    .as_ref()
+                    .unwrap()
+                    .review
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    r.lines
+                        .iter()
+                        .filter(|v| v.starts_with("Recreate VLAN"))
+                        .count(),
+                    2
+                );
+                assert!(r.lines.iter().any(|v| v.contains("tag 17")));
+                assert!(r.lines.iter().any(|v| v.contains("attached false")));
+                let xenadmin_core::ResourceAction::ManagementNetwork(op) = &r.operation else {
+                    panic!()
+                };
+                assert_eq!(op.source().pif, source.pif);
+                if !remove_bond {
+                    assert!(
+                        matches!(op.as_ref(),Operation::Bond{operation:Bond::Create{members,..},..} if members[0].pif==primary)
+                    );
+                }
+                let mut runtime = rune::Runtime::new(
+                    s,
+                    crate::view,
+                    size,
+                    rune::Env {
+                        system_dark: true,
+                        scale: 1.0,
+                    },
+                );
+                for _ in 0..30 {
+                    runtime.frame(1.0 / 60.0);
+                }
+                let (x, y) = runtime.find("network-confirm").unwrap();
+                assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+                runtime.pointer_down(x, y);
+                runtime.pointer_up(x, y);
+                runtime.frame(0.0);
+                assert!(runtime.state.resource_operations.is_empty());
+            }
+        }
     }
     #[test]
     fn changed_member_or_added_consumer_invalidates_captured_bond_review() {

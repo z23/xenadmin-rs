@@ -624,7 +624,7 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
                 .wrap_anywhere(),
             );
         if p.management == Some(true) {
-            card=card.child(caption("Host management interface. XCP-ng requires the standard 1500-byte MTU. Review recovery addressing before changing management access.",k).wrap()).child(management::buttons(p.id,enabled,k)).child(management_bond::buttons(p.id,p,enabled,k));
+            card=card.child(caption("Host management interface. XCP-ng requires the standard 1500-byte MTU. Review recovery addressing before changing management access.",k).wrap()).child(management::buttons(p.id,enabled,k)).child(management_bond::buttons(p.id,p,i,enabled,k));
         }
         if let (Some(expected), Some(attached)) =
             (PifIdentity::from_inventory(p), p.currently_attached)
@@ -1163,6 +1163,9 @@ pub(super) fn management_topology_scene(s: &mut State) {
     management::topology_scene(s);
 }
 
+pub(super) fn management_vlan_bond_scene(s: &mut State) {
+    management_bond::vlan_scene(s);
+}
 pub(super) fn management_bond_scene(s: &mut State) {
     management_bond::scene(s);
 }
