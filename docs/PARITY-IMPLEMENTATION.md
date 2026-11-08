@@ -245,20 +245,20 @@ See the [same-pool migration increment](reports/2026-11-08-migration.md) for the
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P13-01 | Create/dissolve pool | Queued |
-| P13-02 | Join/eject/remove pool member | Queued |
+| P13-01 | Create/dissolve pool | A standalone host is already a pool; naming and individually reviewed member ejection implemented. Joining members / coordinated dissolve remain queued ([report](reports/2026-11-08-pool-administration.md)) |
+| P13-02 | Join/eject/remove pool member | Reviewed ejection of disabled, evacuated non-coordinator members with empty local guest storage implemented; join and offline removal remain queued; live qualification open |
 | P13-03 | Pool name/description | Reviewed metadata editing with fresh conflict checks and explicit partial outcomes implemented; lab qualification open |
-| P13-04 | Planned coordinator handover during evacuation | Queued |
-| P13-05 | Enable/configure/disable HA; heartbeat SR selection | Queued |
-| P13-06 | HA status and VM restart priorities | Queued |
-| P13-07 | Migration compression/GPU placement policy | Queued |
-| P13-08 | Pool clustering | Capability review and implementation queued |
+| P13-04 | Planned coordinator handover during evacuation | Explicit reviewed handover to a live enabled member implemented; HA must already be disabled. Separate from evacuation; live qualification open |
+| P13-05 | Enable/configure/disable HA; heartbeat SR selection | Reviewed enable/disable, heartbeat SR selection and failure-tolerance setting implemented with fresh server eligibility/failover-plan checks; advanced HA settings and live qualification open |
+| P13-06 | HA status and VM restart priorities | Typed HA status, heartbeat storage, current plan/overcommit and three VM restart priorities implemented; start-order/delay configuration and live qualification open |
+| P13-07 | Migration compression/GPU placement policy | Reviewed migration compression implemented for advertised fields; GPU placement is excluded specialized hardware scope; live qualification open |
+| P13-08 | Pool clustering | Unsupported on XCP-ng: upstream clustering relies on unavailable proprietary software ([primary evidence](https://docs.xcp-ng.org/installation/upgrade/)); no unsupported RPC workflow is offered |
 | P13-09 | Join/leave directory authentication | Capability review and implementation queued |
 | P13-10 | User/group membership and role assignment | Queued |
 | P13-11 | RBAC-aware eligibility and credential elevation/reconnect-as | Existing subset; remaining work queued |
 | P13-12 | Install/reset host certificate | Queued |
-| P13-13 | Enable pool TLS verification/rotate pool secret | Queued |
-| P13-14 | Legacy SSL mode | Capability review and implementation queued |
+| P13-13 | Enable pool TLS verification/rotate pool secret | Explicit reviewed TLS enable and pool-secret rotation implemented with durable completion receipts; rotation refuses enabled HA or unreachable members; live qualification open |
+| P13-14 | Legacy SSL mode | Unsupported on primary target: legacy SSL and TLS 1.0/1.1 were removed in XCP-ng 8.2 ([release notes](https://docs.xcp-ng.org/releases/release-8-2/)) |
 
 ## 14. Tasks, metrics, alerts and diagnostics
 

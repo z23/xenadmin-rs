@@ -52,6 +52,7 @@ impl Journal {
                 || (old.cancel_dispatched && !record.cancel_dispatched)
                 || (old.network_baseline.is_some()
                     && old.network_baseline != record.network_baseline)
+                || (old.pool_completed && !record.pool_completed)
                 || (old.storage_trim_succeeded && !record.storage_trim_succeeded)
                 || (old.storage_baseline.is_some()
                     && old.storage_baseline != record.storage_baseline)
@@ -149,6 +150,7 @@ impl Journal {
                     *old = new.clone();
                 }
             }
+            current.pool_completed |= evidence.pool_completed;
             if !current.state.terminal() {
                 current.state = if current.task.is_some() {
                     OperationState::Tracking

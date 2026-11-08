@@ -5,6 +5,7 @@ mod demo_details;
 mod dev_inspection;
 mod metrics_view;
 mod network_admin;
+mod pool_view;
 mod preferences;
 mod profiles_view;
 mod resource_admin;
@@ -142,6 +143,7 @@ struct State {
     metrics: Option<metrics_view::MetricsUi>,
     activity: activity::Activity,
     resource_editor: Option<resource_admin::Editor>,
+    pool_editor: Option<pool_view::Editor>,
     network_workspace: Option<network_admin::Workspace>,
     storage_editor: Option<storage_view::Editor>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
@@ -239,6 +241,7 @@ fn init() -> State {
         metrics: None,
         activity: activity::Activity::default(),
         resource_editor: None,
+        pool_editor: None,
         network_workspace: None,
         storage_editor: None,
         resource_operations: Vec::new(),
@@ -1260,6 +1263,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [activity::dialog(s, &k)])
     } else if s.storage_editor.is_some() {
         rune_kit::root(base, [storage_view::dialog(s, &k)])
+    } else if s.pool_editor.is_some() {
+        rune_kit::root(base, [pool_view::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
         rune_kit::root(base, [resource_admin::dialog(s, &k)])
     } else if s.vm_migration.is_some() {
@@ -1763,6 +1768,7 @@ fn demo(s: &mut State) {
     s.resource_editor = None;
     s.network_workspace = None;
     s.storage_editor = None;
+    s.pool_editor = None;
     s.resource_operations.clear();
     s.resource_rows.clear();
     s.activity = activity::Activity::default();
@@ -1945,6 +1951,8 @@ fn main() {
             ("activity", activity::scene),
             ("storage-create", |s| storage_view::scene(s, false)),
             ("storage-review", |s| storage_view::scene(s, true)),
+            ("pool-policies", |s| pool_view::scene(s, false)),
+            ("pool-policy-review", |s| pool_view::scene(s, true)),
             ("pool-administration", |s| resource_admin::scene(s, true)),
             ("connection-settings", |s| profiles_view::scene(s, true)),
             ("connect", |s| s.show_connect = true),

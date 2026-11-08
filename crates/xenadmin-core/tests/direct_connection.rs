@@ -1965,3 +1965,6 @@ mod advanced_properties;
 mod network_administration;
 #[path = "fixtures/storage_lifecycle.rs"]
 mod storage_lifecycle;
+
+#[path = "fixtures/pool_administration.rs"]
+mod pool_administration;

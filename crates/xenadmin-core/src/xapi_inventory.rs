@@ -191,6 +191,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     result.pool = store.class("pool").next().and_then(|(_, record)| {
         let default_sr = refs.link("sr", &record["default_SR"]);
         Some(PoolDetails {
+            administration: pool_administration(record, &refs, store),
             igmp_snooping_enabled: record["igmp_snooping_enabled"].as_bool(),
             id: id(record).ok()?,
             description: string(record, "name_description"),
@@ -578,7 +579,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     appliance: refs.link("vm_appliance", &record["appliance"]),
                     snapshot_policy: refs.link("vmss", &record["snapshot_schedule"]),
                     tags: strings(&record["tags"]).unwrap_or_default(),
-                    ha_restart_priority: text_option(record, "ha_restart_priority"),
+                    ha_restart_priority: record["ha_restart_priority"].as_str().map(str::to_owned),
                     auto_power_on: record["other_config"]["auto_poweron"]
                         .as_str()
                         .and_then(|v| v.parse().ok()),
@@ -645,6 +646,52 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         }
     }
     result
+}
+
+fn pool_administration(
+    record: &Value,
+    refs: &References,
+    store: &Store,
+) -> crate::PoolAdministration {
+    let number = |key: &str| {
+        record[key]
+            .as_u64()
+            .or_else(|| record[key].as_str()?.parse().ok())
+    };
+    let statefiles = record["ha_statefiles"].as_array().filter(|v| v.len() <= 64);
+    let heartbeat_srs: Option<Vec<SrId>> = statefiles.and_then(|values| {
+        values
+            .iter()
+            .map(|value| {
+                let vdi = store
+                    .class("vdi")
+                    .find(|(reference, r)| {
+                        value.as_str() == Some(*reference) || r["uuid"] == *value
+                    })?
+                    .1;
+                refs.link("sr", &vdi["SR"])
+            })
+            .collect()
+    });
+    crate::PoolAdministration {
+        coordinator: refs.link("host", &record["master"]),
+        ha_enabled: record["ha_enabled"].as_bool(),
+        ha_failures_to_tolerate: number("ha_host_failures_to_tolerate"),
+        ha_plan_exists_for: number("ha_plan_exists_for"),
+        ha_overcommitted: record["ha_overcommitted"].as_bool(),
+        ha_allow_overcommit: record["ha_allow_overcommit"].as_bool(),
+        heartbeat_srs_known: heartbeat_srs.is_some(),
+        heartbeat_srs: heartbeat_srs
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+        migration_compression: record["migration_compression"].as_bool(),
+        https_only: record["https_only"].as_bool(),
+        tls_verification_enabled: record["tls_verification_enabled"].as_bool(),
+        secret_rotation_pending: record["is_psr_pending"].as_bool(),
+    }
 }
 
 #[cfg(test)]

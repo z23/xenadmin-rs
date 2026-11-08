@@ -9,6 +9,16 @@ use xenadmin_core::{
 
 pub(super) fn populate(inventory: &mut Inventory) {
     inventory.details.pool = Some(xenadmin_core::PoolDetails {
+        administration: xenadmin_core::PoolAdministration {
+            coordinator: inventory.hosts.keys().next().copied(),
+            ha_enabled: Some(false),
+            ha_failures_to_tolerate: Some(0),
+            migration_compression: Some(false),
+            https_only: Some(false),
+            tls_verification_enabled: Some(false),
+            secret_rotation_pending: Some(false),
+            ..Default::default()
+        },
         igmp_snooping_enabled: Some(false),
         id: inventory.pool_id,
         description: "Synthetic pool for isolated UI tests".into(),

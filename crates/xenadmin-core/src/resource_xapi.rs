@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
 pub(super) enum Check {
+    Pool,
     Network,
     Field(&'static str, Value),
     DefaultSr(SrId),
@@ -109,6 +110,9 @@ pub(super) async fn prepare(
     session: &Session,
     record: &mut ResourceOperationRecord,
 ) -> Result<Vec<Step>, Error> {
+    if matches!(record.action, ResourceAction::Pool(_)) {
+        return super::pool::prepare(session, record).await;
+    }
     if matches!(record.action, ResourceAction::Network(_)) {
         return super::network::prepare(session, record).await;
     }
@@ -118,6 +122,7 @@ pub(super) async fn prepare(
     let (_, fresh) = read(session, record.target).await?;
     let mut steps = Vec::new();
     match &record.action {
+        ResourceAction::Pool(_) => unreachable!(),
         ResourceAction::Network(_) => return super::network::prepare(session, record).await,
         ResourceAction::CancelTask => {
             cancellable_task(&fresh)?;
@@ -290,6 +295,9 @@ pub(super) async fn arguments(
     record: &ResourceOperationRecord,
     step: &Step,
 ) -> Result<Vec<Value>, Error> {
+    if matches!(step.check, Check::Pool) {
+        return super::pool::arguments(session, record).await;
+    }
     if matches!(step.check, Check::Storage) {
         return super::storage::arguments(session, record).await;
     }
@@ -298,6 +306,7 @@ pub(super) async fn arguments(
     }
     let (reference, fresh) = read(session, record.target).await?;
     match &step.check {
+        Check::Pool => super::pool::arguments(session, record).await,
         Check::Network => super::network::arguments(session, record).await,
         Check::TaskCancellation => {
             cancellable_task(&fresh)?;
@@ -388,6 +397,7 @@ fn cancellable_task(record: &Value) -> Result<(), Error> {
 }
 pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Check> {
     match &record.action {
+        ResourceAction::Pool(_) => vec![Check::Pool],
         ResourceAction::Network(_) => vec![Check::Network],
         ResourceAction::CancelTask => vec![Check::TaskCancellation],
         ResourceAction::DismissMessage { .. } => vec![Check::MessageDeleted],
@@ -424,6 +434,9 @@ pub(super) async fn verify(
     record: &ResourceOperationRecord,
     check: &Check,
 ) -> Result<Option<ResourceTarget>, Error> {
+    if matches!(check, Check::Pool) {
+        return super::pool::verify(session, record).await;
+    }
     if matches!(check, Check::Network) {
         return super::network::verify(session, record).await;
     }

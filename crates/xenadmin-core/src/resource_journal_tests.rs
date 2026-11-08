@@ -33,6 +33,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         network_baseline: None,
         storage_baseline: None,
         storage_trim_succeeded: false,
+        pool_completed: false,
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {
@@ -279,6 +280,37 @@ fn storage_baselines_and_positive_trim_proof_are_durable_and_cannot_be_replaced(
     record.storage_baseline = None;
     assert!(matches!(
         journal.resource_save(&mut record),
+        Err(Error::JournalChanged)
+    ));
+}
+
+#[test]
+fn pool_completion_receipt_survives_reload_and_late_control_without_being_retracted() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let mut record = resource(PoolId::from(uuid::Uuid::new_v4()));
+    record.target = ResourceTarget::Pool(record.pool);
+    record.action = ResourceAction::Pool(crate::PoolOperation::EnableTlsVerification);
+    journal.resource_admit(&mut record).unwrap();
+    record.state = OperationState::Dispatching;
+    journal.resource_save(&mut record).unwrap();
+    let mut late = record.clone();
+    record.state = OperationState::OutcomeUnknown;
+    journal.resource_save(&mut record).unwrap();
+    journal
+        .resource_control(record.pool, record.id, OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    late.pool_completed = true;
+    let receipt = journal.resource_evidence(&late).unwrap();
+    assert!(receipt.pool_completed);
+    assert!(receipt.state.terminal());
+    drop(journal);
+    let journal = Journal::open(dir.path()).unwrap();
+    let mut saved = journal.resource_load(record.id).unwrap().unwrap();
+    assert!(saved.pool_completed);
+    saved.pool_completed = false;
+    assert!(matches!(
+        journal.resource_save(&mut saved),
         Err(Error::JournalChanged)
     ));
 }

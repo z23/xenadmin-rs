@@ -413,6 +413,8 @@ pub struct StorageManager {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolDetails {
     #[serde(default)]
+    pub administration: crate::PoolAdministration,
+    #[serde(default)]
     pub igmp_snooping_enabled: Option<bool>,
     pub id: PoolId,
     pub description: String,

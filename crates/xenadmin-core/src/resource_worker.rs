@@ -170,10 +170,12 @@ impl ResourceRequest {
             self.record.detail = format!("Submitting {}", step.label);
             self.save(journal).await?;
             let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call(&step.method,arguments)=>result?};
-            if matches!(
-                step.check,
-                xapi::Check::Scan | xapi::Check::Network | xapi::Check::Storage
-            ) {
+            if matches!(&self.record.action, super::ResourceAction::Pool(op) if op.asynchronous())
+                || matches!(
+                    step.check,
+                    xapi::Check::Scan | xapi::Check::Network | xapi::Check::Storage
+                )
+            {
                 self.record.task = Some(xapi::reply_reference(&value)?);
                 self.record = journal.resource_evidence(&self.record)?;
                 self.announce().await;
@@ -181,6 +183,9 @@ impl ResourceRequest {
             }
             if matches!(step.check, xapi::Check::CreatedNetwork) {
                 self.record.result_reference = Some(xapi::reply_reference(&value)?);
+            }
+            if matches!(step.check, xapi::Check::Pool) {
+                self.record.pool_completed = true;
             }
             self.record = journal.resource_evidence(&self.record)?;
             if self.record.state.terminal() {
@@ -233,8 +238,18 @@ impl ResourceRequest {
             }
             return self.track_cancellation(journal, session, cancel).await;
         }
-        if self.record.task.is_some() && !self.record.storage_trim_succeeded {
+        if self.record.task.is_some()
+            && !self.record.storage_trim_succeeded
+            && !self.record.pool_completed
+        {
             return self.track(journal, session, cancel).await;
+        }
+        if matches!(self.record.action, super::ResourceAction::Pool(_))
+            && !self.record.pool_completed
+        {
+            return Err(Error::Protocol(
+                "pool task identity or completion receipt is unavailable; no write will be replayed",
+            ));
         }
         if matches!(self.record.action, super::ResourceAction::Storage(_))
             && self.record.result_reference.is_none()
@@ -371,7 +386,7 @@ impl ResourceRequest {
             if self.record.state.terminal() {
                 return Ok(());
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
             let task = match task {
                 Ok(task) => {
                     backoff = 1;
@@ -393,7 +408,8 @@ impl ResourceRequest {
                 .as_array()
                 .is_some_and(|ops| ops.iter().any(|op| op == "cancel"));
             if (matches!(&self.record.action, super::ResourceAction::Storage(operation) if operation.creates_reference())
-                || matches!(&self.record.action,super::ResourceAction::Network(operation) if operation.creates()))
+                || matches!(&self.record.action,super::ResourceAction::Network(operation) if operation.creates())
+                || matches!(&self.record.action, super::ResourceAction::Pool(_)))
                 && matches!(task["status"].as_str(), Some("failure" | "cancelled"))
             {
                 let code = task["error_info"]
@@ -409,7 +425,7 @@ impl ResourceRequest {
                     "was cancelled"
                 };
                 self.record.detail = format!(
-                    "Creation task {outcome}{}. Partial resources may remain; inspect before acknowledging the unknown outcome",
+                    "Host task {outcome}{}. Partial changes may remain; inspect before acknowledging the unknown outcome",
                     code.map(|code| format!(": {code}")).unwrap_or_default()
                 );
                 for step in &mut self.record.steps {
@@ -421,6 +437,18 @@ impl ResourceRequest {
             }
             match task["status"].as_str() {
                 Some("success") => {
+                    if matches!(self.record.action, super::ResourceAction::Pool(_)) {
+                        self.record.pool_completed = true;
+                        self.record = journal.resource_evidence(&self.record)?;
+                        if self.record.state.terminal() {
+                            return Ok(());
+                        }
+                        tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=super::pool::verify(session,&self.record)=>{result?;} }
+                        self.reload(journal)?;
+                        if self.record.state.terminal() {
+                            return Ok(());
+                        }
+                    }
                     if let super::ResourceAction::Network(op) = &self.record.action {
                         if op.creates() && self.record.result_reference.is_none() {
                             self.record.result_reference =
@@ -564,7 +592,8 @@ impl ResourceRequest {
                 | OperationState::CancellationRequested
                 | OperationState::OutcomeUnknown
         );
-        let explicit_rejection = self.record.state == OperationState::Dispatching
+        let explicit_rejection = !matches!(self.record.action, super::ResourceAction::Pool(_))
+            && self.record.state == OperationState::Dispatching
             && matches!(error, Error::Api(_) | Error::Coordinator(_));
         let partial = self
             .record

@@ -25,6 +25,8 @@ mod profiles;
 pub use network_types::{
     BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity,
 };
+mod pool_admin;
+pub use pool_admin::{HaRestartPriority, PoolAdministration, PoolOperation};
 mod resources;
 mod storage;
 mod storage_discovery;

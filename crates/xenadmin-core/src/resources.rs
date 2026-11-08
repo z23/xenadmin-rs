@@ -15,6 +15,8 @@ mod worker;
 #[path = "resource_xapi.rs"]
 mod xapi;
 pub(crate) use worker::ResourceRequest;
+#[path = "pool_operations.rs"]
+mod pool;
 #[path = "storage_operations.rs"]
 mod storage;
 
@@ -74,6 +76,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    Pool {
+        target: ObservedResource,
+        operation: crate::PoolOperation,
+    },
     Network {
         target: ObservedResource,
         operation: NetworkOperation,
@@ -127,6 +133,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    Pool(crate::PoolOperation),
     Network(NetworkOperation),
     CancelTask,
     DismissMessage {
@@ -164,6 +171,7 @@ pub enum ResourceAction {
 impl ResourceAction {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Pool(operation) => operation.label(),
             Self::Network(operation) => operation.label(),
             Self::CancelTask => "Request task cancellation",
             Self::DismissMessage { .. } => "Dismiss server message",
@@ -187,6 +195,7 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::Pool(operation) => return operation.validate(target),
             Self::Network(operation) => return operation.validate(target),
             Self::CancelTask => matches!(target, ResourceTarget::Task(_)),
             Self::DismissMessage { .. } => matches!(target, ResourceTarget::Message(_)),
@@ -251,6 +260,7 @@ impl ResourceAction {
 impl ResourceCommand {
     pub(crate) fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
+            Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
             Self::Network { target, operation } => (target, ResourceAction::Network(operation)),
             Self::CancelTask { task } => (task, ResourceAction::CancelTask),
             Self::DismissMessage {
@@ -360,6 +370,8 @@ pub struct ResourceOperationRecord {
     pub(crate) storage_baseline: Option<crate::storage::StorageBaseline>,
     #[serde(default)]
     pub(crate) storage_trim_succeeded: bool,
+    #[serde(default)]
+    pub(crate) pool_completed: bool,
 }
 impl ResourceOperationRecord {
     pub fn revision(&self) -> u64 {
@@ -428,6 +440,7 @@ pub(crate) fn channel(
         network_baseline: None,
         storage_baseline: None,
         storage_trim_succeeded: false,
+        pool_completed: false,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (

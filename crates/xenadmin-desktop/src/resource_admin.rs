@@ -594,6 +594,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .is_some_and(|i| i.pool_id == editor.pool);
         body = body
             .child(
+                Button::new("Pool policies, HA and membership…")
+                    .disabled(!same_pool)
+                    .on_press(crate::pool_view::open)
+                    .build(k),
+            )
+            .child(
                 Button::new("Edit pool name and description")
                     .disabled(!same_pool || (!s.demo && !s.can_mutate()))
                     .on_press(|s: &mut State| open_pool(s, Kind::Rename))

@@ -368,3 +368,27 @@ by the storage command model; authenticated provisioning awaits a journalled Sec
 Read-only storage discovery reuses the authenticated connection, is cancelled on generation
 change or handle drop, and projects bounded capability metadata and SR UUID/name/size records.
 The desktop never receives raw probe XML, RPC references or PBD device-config credentials.
+
+
+## Pool administration increment
+
+`ResourceAction::Pool(PoolOperation)` carries closed typed policy, HA, handover,
+member-ejection and pool-security intents. Commands target an observed pool and
+embed typed member/VM/SR UUIDs. The existing pool-wide journal admission guard
+serializes them with other resource and VM writes. `PoolAdministration` keeps
+missing capability/status fields unknown, including empty versus absent VM HA
+priority values.
+
+Fresh reads and read-only XAPI assertions check policy conflicts, coordinator
+identity, host liveness, HA state, heartbeat eligibility and attachment coverage,
+VM agility and member dependencies immediately before dispatch. The client never
+automatically reduces HA, disables hosts, evacuates guests or shuts them down as
+part of a pool command. These are separate reviewed workflows.
+
+Pool operations persist a monotonic completion receipt after a synchronous reply
+or a successful asynchronous task, before verifying final state. A lost task
+identity, failed/cancelled pool task or partial pool RPC failure stays unknown and
+retains the reservation; a matching field alone cannot prove async completion.
+Recovery only polls or verifies saved evidence. It never replays pool mutations.
+TLS verification here is host-to-host pool policy, independent of desktop trust.
+No pool authentication secrets are read or included in history.
