@@ -229,6 +229,16 @@ impl ResourceRequest {
             .ok_or(Error::Protocol(
                 "host dispatch evidence unavailable; no write will be replayed",
             ))?;
+        self.reload(journal)?;
+        if self.stopped_after_recovery() {
+            return Ok(());
+        }
+        self.record.state = OperationState::Verifying;
+        self.record.can_cancel = false;
+        self.record.detail =
+            "Rechecking existing host task receipts and state; no pending writes will be replayed"
+                .into();
+        self.save(journal).await?;
         for index in 0..count {
             self.reload(journal)?;
             if self.stopped_after_recovery() {

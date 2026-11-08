@@ -442,6 +442,122 @@ async fn delayed_host_receipt_after_recovery_never_runs_the_next_change() {
         connection.close().await;
     }
 }
+#[tokio::test]
+async fn host_recheck_publishes_progress_before_receipt_reads_and_never_replays_pending_steps() {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (mock, records) = fixture_delayed(
+        "",
+        "",
+        Some(("task.get_record", entered.clone(), release.clone())),
+    )
+    .await;
+    empty(&records);
+    {
+        let mut records = records.lock().unwrap();
+        records.get_mut("host").unwrap()["enabled"] = json!(true);
+        records.insert("_task_error".into(), json!("HANDLE_INVALID"));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let id = OperationId::new();
+    let op = c
+        .submit_resource(
+            id,
+            command(
+                &c,
+                HostOperation::EnterMaintenance {
+                    expected_enabled: true,
+                    resident_vms: vec![],
+                },
+            ),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        .await
+        .unwrap();
+    release.notify_one();
+    assert_eq!(done(&op).await.state, OperationState::OutcomeUnknown);
+    let old = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(r) = c
+                .resource_history()
+                .iter()
+                .find(|r| r.id == id && r.state == OperationState::OutcomeUnknown)
+            {
+                return r.revision();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    records.lock().unwrap().remove("_task_error");
+    c.control_resource(id, OperationControl::Recheck).unwrap();
+    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        .await
+        .unwrap();
+    // The successful task response is held back. Recheck must already advertise progress,
+    // rather than publish a higher-revision unknown that looks like its final outcome.
+    tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if c.resource_history()
+                .iter()
+                .any(|r| r.id == id && r.revision() > old && r.state == OperationState::Verifying)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    release.notify_one();
+    let final_record = tokio::time::timeout(Duration::from_secs(4), async {
+        loop {
+            if let Some(r) = c
+                .resource_history()
+                .iter()
+                .find(|r| r.id == id && r.state.terminal())
+            {
+                return r.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        final_record.state,
+        OperationState::PartiallyCompleted,
+        "{}",
+        final_record.detail
+    );
+    assert_eq!(
+        final_record.steps[0].state,
+        xenadmin_core::StepState::Verified
+    );
+    assert_eq!(
+        final_record.steps[1].state,
+        xenadmin_core::StepState::Pending
+    );
+    assert!(
+        records.lock().unwrap()["host"]["other_config"]
+            .get("MAINTENANCE_MODE")
+            .is_none()
+    );
+    assert_eq!(
+        mock.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == "Async.host.disable")
+            .count(),
+        1
+    );
+    c.close().await;
+}
 async fn recheck(
     c: &xenadmin_core::Connection,
     id: OperationId,
