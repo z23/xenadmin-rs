@@ -171,7 +171,7 @@ async fn mock_with_overrides(
                             "session.logout" | "task.destroy" => json!({"result":null}),
                             "VM.get_consoles" => json!({"result":["OpaqueRef:console"]}),
                             "console.get_record" => {
-                                json!({"result":{"protocol":"rfb","location":console_location}})
+                                json!({"result":{"protocol":"rfb","location":console_location,"VM":"OpaqueRef:vm"}})
                             }
                             other => panic!("Unexpected API method: {other}"),
                         },
@@ -376,6 +376,13 @@ async fn authentication_failure_is_terminal_and_does_not_expose_error_data() {
 
 #[tokio::test]
 async fn authenticated_console_preserves_the_handshake_and_transmits_input() {
+    authenticated_console_roundtrip(false).await;
+}
+#[tokio::test]
+async fn authenticated_host_console_preserves_the_handshake_and_transmits_input() {
+    authenticated_console_roundtrip(true).await;
+}
+async fn authenticated_console_roundtrip(host: bool) {
     use xenadmin_core::{ConsoleInput, ConsoleState};
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let location = format!(
@@ -454,7 +461,11 @@ async fn authenticated_console_preserves_the_handshake_and_transmits_input() {
             }
         }
     });
-    let server = mock_console(false, false, Some(location)).await;
+    let server = if host {
+        host_console::server(Some(location), 0).await
+    } else {
+        mock_console(false, false, Some(location)).await
+    };
     let state_directory = tempfile::tempdir().unwrap();
     let backend = Backend::with_state_directory(state_directory.path().into()).unwrap();
     let connection = backend.connect(
@@ -462,14 +473,28 @@ async fn authenticated_console_preserves_the_handshake_and_transmits_input() {
         Credentials::new("root".into(), "fixture-password".into()),
     );
     let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
-    let console = connection
-        .open_console(
-            connection
-                .latest()
-                .observe_vm(inventory.guests().next().unwrap().id)
-                .unwrap(),
-        )
-        .unwrap();
+    let console = if host {
+        let host = *inventory.hosts.keys().next().unwrap();
+        let vm = inventory.details.hosts[&host].control_domain.unwrap();
+        connection
+            .open_host_console(
+                connection
+                    .latest()
+                    .observe_resource(xenadmin_core::ResourceTarget::Host(host))
+                    .unwrap(),
+                vm,
+            )
+            .unwrap()
+    } else {
+        connection
+            .open_console(
+                connection
+                    .latest()
+                    .observe_vm(inventory.guests().next().unwrap().id)
+                    .unwrap(),
+            )
+            .unwrap()
+    };
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let snapshot = console.latest();
@@ -2009,3 +2034,6 @@ mod pool_join;
 
 #[path = "fixtures/firmware_properties.rs"]
 mod firmware_properties;
+
+#[path = "fixtures/host_console.rs"]
+mod host_console;

@@ -20,7 +20,9 @@ pub(super) struct MetricsUi {
 
 fn target(s: &State) -> Option<MetricTarget> {
     let selected = s.selected()?;
-    if s.page == Page::Hosts && s.console.is_none() {
+    if let Some(host) = console_view::host(s) {
+        Some(xenadmin_core::MetricTarget::Host(host))
+    } else if s.page == Page::Hosts && s.console.is_none() {
         HostId::parse(&selected.id).ok().map(MetricTarget::Host)
     } else if s.page == Page::Guests || s.console.is_some() {
         selected.vm.map(MetricTarget::Vm)

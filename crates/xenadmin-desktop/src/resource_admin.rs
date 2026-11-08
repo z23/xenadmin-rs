@@ -125,6 +125,9 @@ fn display_name(inventory: &Inventory, target: ResourceTarget) -> Option<String>
     }
 }
 pub(super) fn selected_target(s: &State) -> Option<ResourceTarget> {
+    if let Some(host) = console_view::host(s) {
+        return Some(ResourceTarget::Host(host));
+    }
     let row = s.selected()?;
     match s.page {
         Page::Hosts => HostId::parse(&row.id).ok().map(ResourceTarget::Host),

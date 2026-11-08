@@ -6,6 +6,7 @@ mod console_view;
 mod demo_details;
 mod dev_inspection;
 mod host_admin;
+mod host_console;
 mod inventory_menu;
 mod metrics_view;
 mod network_admin;
@@ -485,12 +486,18 @@ impl State {
             {
                 return Err(xenadmin_core::Error::Stale);
             }
-            let observed = snapshot.observe_vm(target.vm)?;
-            let console = self
+            let connection = self
                 .connection
                 .as_ref()
-                .ok_or(xenadmin_core::Error::Closed)?
-                .open_console(observed)?;
+                .ok_or(xenadmin_core::Error::Closed)?;
+            let console = if let Some(host) = target.host {
+                connection.open_host_console(
+                    snapshot.observe_resource(xenadmin_core::ResourceTarget::Host(host))?,
+                    target.vm,
+                )?
+            } else {
+                connection.open_console(snapshot.observe_vm(target.vm)?)?
+            };
             if let Some(waker) = &self.waker {
                 console.notify_on_change(waker.clone());
             }
@@ -688,6 +695,9 @@ impl State {
         });
     }
     fn selected(&self) -> Option<Cow<'_, DisplayRow>> {
+        if let Some(host) = console_view::host(self) {
+            return host_console::selected(self, host).map(Cow::Owned);
+        }
         let target = if self.console.is_some() || self.demo && self.console_ui.target().is_some() {
             self.console_ui.target().map(|t| (t.pool, t.vm))
         } else {
@@ -1166,7 +1176,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.metrics.is_some() {
         content = metrics_view::view(s, &k);
     }
-    if s.show_details && s.window_width < 1200.0 && s.console.is_none() {
+    if s.show_details
+        && s.window_width < 1200.0
+        && s.console.is_none()
+        && !(s.demo && s.console_ui.target().is_some())
+    {
         content = col()
             .w_full()
             .h_full()
@@ -1536,7 +1550,8 @@ fn details(s: &State, k: &Kit) -> El {
                 .child(resource_admin::buttons(s, k))
                 .child(network_admin::button(s, k))
                 .child(storage_view::button(s, k))
-                .child(host_admin::button(s, k)),
+                .child(host_admin::button(s, k))
+                .child(host_console::button(s, k)),
             k,
         );
     }
@@ -2015,6 +2030,7 @@ fn main() {
             ("demo", demo),
             ("batch-power", bulk_power::scene),
             ("console-recovery", console_view::recovery_scene),
+            ("host-console", host_console::scene),
             ("search-pools", search_view::scene),
             ("performance", metrics_view::scene),
             ("unavailable-actions", |s| {

@@ -53,7 +53,7 @@ pub(super) struct Workspace {
     error: Option<String>,
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
-    if s.page != Page::Hosts {
+    if s.page != Page::Hosts && console_view::host(s).is_none() {
         return el();
     }
     Button::new("Host administration…")

@@ -19,6 +19,7 @@ pub(super) struct ConsoleTarget {
     pub pool: PoolId,
     pub vm: VmId,
     pub name: String,
+    pub host: Option<xenadmin_core::HostId>,
 }
 #[derive(Default)]
 pub(super) struct ConsoleUi {
@@ -39,12 +40,36 @@ impl ConsoleUi {
 pub(super) fn opened(s: &mut State, pool: PoolId, vm: VmId, name: String) {
     release(s);
     s.console_ui = ConsoleUi {
-        target: Some(ConsoleTarget { pool, vm, name }),
+        target: Some(ConsoleTarget {
+            pool,
+            vm,
+            name,
+            host: None,
+        }),
         serial: next_serial(),
         ..Default::default()
     };
     s.console_pixels = rune::Pixels::new();
     recovery::opened(s);
+}
+
+pub(super) fn opened_host(
+    s: &mut State,
+    pool: PoolId,
+    host: xenadmin_core::HostId,
+    vm: VmId,
+    name: String,
+) {
+    opened(s, pool, vm, name);
+    s.console_ui.target.as_mut().unwrap().host = Some(host);
+    recovery::opened(s);
+}
+pub(super) fn host(s: &State) -> Option<xenadmin_core::HostId> {
+    if s.console.is_some() || s.demo {
+        s.console_ui.target().and_then(|t| t.host)
+    } else {
+        None
+    }
 }
 
 pub(super) fn recovery_scene(s: &mut State) {
@@ -100,13 +125,14 @@ fn send(s: &mut State, input: ConsoleInput) {
 
 pub(super) fn view(s: &State, k: &Kit) -> El {
     let connected = recovery::input_ready(s);
+    let host_console = host(s).is_some();
     let status = match s.console_snapshot.as_ref().map(|x| &x.state) {
         Some(ConsoleState::Connected) => "Connected directly to the host console".into(),
         Some(ConsoleState::Failed(error)) => {
-            format!("Console disconnected: {error}. Reconnect to this VM when it is available.")
+            format!("Console disconnected: {error}. Reconnect when the guest or host is available.")
         }
         Some(ConsoleState::Closed) => {
-            "Console closed. Reconnect to this VM when it is available.".into()
+            "Console closed. Reconnect when the guest or host is available.".into()
         }
         _ => "Opening the host console…".into(),
     };
@@ -253,7 +279,17 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     };
     let title = s.console_ui.target().map_or_else(
         || "VM console".into(),
-        |target| format!("Console · {}", target.name),
+        |target| {
+            format!(
+                "{} · {}",
+                if target.host.is_some() {
+                    "Host text console"
+                } else {
+                    "Console"
+                },
+                target.name
+            )
+        },
     );
     let mut result = col()
         .w_full()
@@ -346,19 +382,23 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             row()
                 .gap(8.0)
                 .flex_wrap()
-                .child(chord(
-                    "Ctrl+Alt+Delete",
-                    vec![0xffe3, 0xffe9, 0xffff],
-                    connected,
-                    k,
-                ))
-                .child(chord(
-                    "Ctrl+Alt+F1",
-                    vec![0xffe3, 0xffe9, 0xffbe],
-                    connected,
-                    k,
-                ))
-                .child(chord("Alt+Tab", vec![0xffe9, 0xff09], connected, k))
+                .children(if host_console {
+                    vec![
+                        chord("Ctrl+C", vec![0xffe3, 0x63], connected, k),
+                        chord("Ctrl+D", vec![0xffe3, 0x64], connected, k),
+                    ]
+                } else {
+                    vec![
+                        chord(
+                            "Ctrl+Alt+Delete",
+                            vec![0xffe3, 0xffe9, 0xffff],
+                            connected,
+                            k,
+                        ),
+                        chord("Ctrl+Alt+F1", vec![0xffe3, 0xffe9, 0xffbe], connected, k),
+                        chord("Alt+Tab", vec![0xffe9, 0xff09], connected, k),
+                    ]
+                })
                 .child(
                     Button::new("Hold right button")
                         .disabled(!connected || s.console_buttons & 4 != 0)
@@ -375,45 +415,53 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 .gap(8.0)
                 .flex_wrap()
                 .child(
-                    Button::new("Send clipboard to VM")
-                        .disabled(!connected)
-                        .on_press_tx(|s: &mut State, tx| {
-                            release(s);
-                            let serial = s.console_ui.serial;
-                            tx.read_clipboard(move |s: &mut State, clipboard, _| {
-                                if s.console.is_none() || s.console_ui.serial != serial {
-                                    return;
-                                }
-                                let text = clipboard.text();
-                                s.console_ui.message =
-                                    Some("Clipboard text sent to the VM.".into());
-                                send(s, ConsoleInput::Clipboard(text.to_owned()));
-                            });
-                        })
-                        .build(k)
-                        .key("send-console-clipboard"),
+                    Button::new(if host_console {
+                        "Send clipboard to host"
+                    } else {
+                        "Send clipboard to VM"
+                    })
+                    .disabled(!connected)
+                    .on_press_tx(|s: &mut State, tx| {
+                        release(s);
+                        let serial = s.console_ui.serial;
+                        tx.read_clipboard(move |s: &mut State, clipboard, _| {
+                            if s.console.is_none() || s.console_ui.serial != serial {
+                                return;
+                            }
+                            let text = clipboard.text();
+                            s.console_ui.message =
+                                Some("Clipboard text sent to the console.".into());
+                            send(s, ConsoleInput::Clipboard(text.to_owned()));
+                        });
+                    })
+                    .build(k)
+                    .key("send-console-clipboard"),
                 )
                 .child(
-                    Button::new("Copy VM clipboard")
-                        .disabled(
-                            !connected
-                                || s.console_snapshot
-                                    .as_ref()
-                                    .is_none_or(|x| x.guest_clipboard.is_none()),
-                        )
-                        .on_press_tx(|s: &mut State, tx| {
-                            release(s);
-                            if let Some(text) = s
-                                .console_snapshot
+                    Button::new(if host_console {
+                        "Copy host clipboard"
+                    } else {
+                        "Copy VM clipboard"
+                    })
+                    .disabled(
+                        !connected
+                            || s.console_snapshot
                                 .as_ref()
-                                .and_then(|x| x.guest_clipboard.as_ref())
-                            {
-                                tx.copy(text.to_string());
-                                s.console_ui.message = Some("VM clipboard copied locally.".into());
-                            }
-                        })
-                        .build(k)
-                        .key("copy-console-clipboard"),
+                                .is_none_or(|x| x.guest_clipboard.is_none()),
+                    )
+                    .on_press_tx(|s: &mut State, tx| {
+                        release(s);
+                        if let Some(text) = s
+                            .console_snapshot
+                            .as_ref()
+                            .and_then(|x| x.guest_clipboard.as_ref())
+                        {
+                            tx.copy(text.to_string());
+                            s.console_ui.message = Some("Remote clipboard copied locally.".into());
+                        }
+                    })
+                    .build(k)
+                    .key("copy-console-clipboard"),
                 ),
         );
     if let Some(message) = &s.console_ui.message {

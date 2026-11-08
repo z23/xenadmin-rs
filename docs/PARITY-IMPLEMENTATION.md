@@ -92,7 +92,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P04-09 | Scaling, framebuffer resize and cursor behavior | Fit/actual-size/panning and cursor handling extended; live resize/display matrix remains open |
 | P04-10 | Full-screen, detached and multiple console windows | Fullscreen implemented; detached/multiple windows require further Rune integration |
 | P04-11 | Save console screenshot | Explicit native save dialog and background PNG export of the captured frame implemented; private atomic file output and console-switch fencing fixture verified, native qualification open |
-| P04-12 | Host text console; guest SSH/RDP/external viewer | Queued |
+| P04-12 | Host text console; guest SSH/RDP/external viewer | Direct authenticated host control-domain RFB console implemented with fresh host/VM/console identity checks and host-only details; protocol/Rune fixtures verified. Guest SSH/RDP/external viewer and live qualification remain open ([report](reports/2026-11-08-host-console.md)) |
 
 ## 5. Snapshots
 

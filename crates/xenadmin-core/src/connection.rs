@@ -665,9 +665,12 @@ impl Connection {
         let vm = observed.id;
         let snapshot = self.latest();
         if !snapshot.is_current()
-            || !snapshot
-                .inventory()
-                .is_some_and(|i| i.pool_id == observed.pool && i.vms.contains_key(&vm))
+            || !snapshot.inventory().is_some_and(|i| {
+                i.pool_id == observed.pool
+                    && i.vms
+                        .get(&vm)
+                        .is_some_and(|v| !v.is_template && !v.is_control_domain)
+            })
             || observed.generation != snapshot.generation
         {
             return Err(Error::Stale);
@@ -678,6 +681,52 @@ impl Connection {
             self.cancel.child_token(),
             self.runtime.clone(),
         );
+        self.requests
+            .try_send(Request::Console(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(console)
+    }
+    pub fn open_host_console(
+        &self,
+        observed: crate::ObservedResource,
+        control_domain: crate::VmId,
+    ) -> Result<crate::Console, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let crate::ResourceTarget::Host(host) = observed.target else {
+            return Err(Error::Stale);
+        };
+        let snapshot = self.latest();
+        let inventory = snapshot
+            .inventory()
+            .filter(|i| {
+                snapshot.is_current()
+                    && snapshot.generation == observed.generation
+                    && i.pool_id == observed.pool
+            })
+            .ok_or(Error::Stale)?;
+        let vm = inventory
+            .details
+            .hosts
+            .get(&host)
+            .and_then(|h| h.control_domain)
+            .and_then(|id| inventory.vms.get(&id))
+            .filter(|vm| {
+                vm.id == control_domain
+                    && vm.is_control_domain
+                    && !vm.is_template
+                    && vm.host == Some(host)
+                    && vm.power_state == crate::PowerState::Running
+            })
+            .ok_or(Error::NoConsole)?;
+        let (console, mut request) = console::channel(
+            vm.id,
+            snapshot.generation,
+            self.cancel.child_token(),
+            self.runtime.clone(),
+        );
+        request.host = Some(host);
         self.requests
             .try_send(Request::Console(request))
             .map_err(|_| Error::Busy)?;

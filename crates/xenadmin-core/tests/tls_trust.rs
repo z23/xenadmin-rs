@@ -233,7 +233,7 @@ async fn opt_out_survives_member_redirect_and_a_separate_console_tls_endpoint() 
                     }
                     "VM.get_consoles" => json!({"result":["OpaqueRef:console"]}),
                     "console.get_record" => {
-                        json!({"result":{"protocol":"rfb", "location":format!("{console_endpoint}/console?ref=OpaqueRef:console")}})
+                        json!({"result":{"protocol":"rfb", "VM":"OpaqueRef:vm", "location":format!("{console_endpoint}/console?ref=OpaqueRef:console")}})
                     }
                     "session.logout" => json!({"result":null}),
                     other => panic!("unexpected fixture call: {other}"),

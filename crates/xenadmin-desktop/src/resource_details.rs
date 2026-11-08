@@ -169,7 +169,11 @@ pub(super) fn append(s: &State, selected: &DisplayRow, mut view: El, k: &Kit) ->
     let Some(inventory) = &s.inventory else {
         return view;
     };
-    match s.page {
+    match if console_view::host(s).is_some() {
+        Page::Hosts
+    } else {
+        s.page
+    } {
         Page::Hosts => {
             let Ok(id) = HostId::parse(&selected.id) else {
                 return view;

@@ -177,6 +177,7 @@ fn inventory_observation_uses_pinned_pool_and_vm_and_rejects_missing_or_wrong_ki
         pool: inventory.pool_id,
         vm: vm.id,
         name: vm.name.clone(),
+        host: None,
     };
     s.table.select("different selection");
     assert_eq!(

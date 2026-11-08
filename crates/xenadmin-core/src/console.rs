@@ -108,6 +108,7 @@ impl Drop for Console {
 
 pub(crate) struct ConsoleRequest {
     pub vm: crate::VmId,
+    pub host: Option<crate::HostId>,
     pub generation: u64,
     sender: watch::Sender<Arc<ConsoleSnapshot>>,
     inputs: mpsc::Receiver<ConsoleInput>,
@@ -137,6 +138,7 @@ pub(crate) fn channel(
         },
         ConsoleRequest {
             vm,
+            host: None,
             generation,
             sender,
             inputs,
@@ -185,48 +187,70 @@ impl ConsoleRequest {
         reference: &str,
         inventory: &Inventory,
     ) -> Result<(), Error> {
-        let references = session
-            .call("VM.get_consoles", vec![json!(reference)])
-            .await?;
-        let mut location = None;
-        for reference in references.as_array().ok_or(Error::ConsoleProtocol)? {
-            let console = session
-                .call("console.get_record", vec![reference.clone()])
+        let cancel = self.cancel.clone();
+        let opening = async {
+            let reference = if let Some(host) = self.host {
+                host_reference(session, host, self.vm).await?
+            } else {
+                reference.to_owned()
+            };
+            let references = session
+                .call("VM.get_consoles", vec![json!(reference)])
                 .await?;
-            if console["protocol"].as_str() == Some("rfb") {
-                location = console["location"].as_str().map(str::to_owned);
-                break;
+            let mut location = None;
+            for console_ref in references
+                .as_array()
+                .filter(|v| v.len() <= 32)
+                .ok_or(Error::ConsoleProtocol)?
+            {
+                let console_ref = crate::xapi::opaque_reference(console_ref)?;
+                let console = session
+                    .call("console.get_record", vec![json!(console_ref)])
+                    .await?;
+                if console["protocol"].as_str() == Some("rfb") {
+                    if console["VM"] != reference {
+                        return Err(Error::Stale);
+                    }
+                    location = console["location"].as_str().map(str::to_owned);
+                    break;
+                }
             }
-        }
-        let location = location.ok_or(Error::NoConsole)?;
-        let stream = tokio::time::timeout(
-            Duration::from_secs(15),
-            tunnel(session, &location, inventory),
-        )
-        .await
-        .map_err(|_| Error::Timeout)??;
-        let client = tokio::time::timeout(Duration::from_secs(15), async {
-            VncConnector::new(stream)
-                .set_auth_method(async { Err(vnc::VncError::ConnectError) })
-                .set_version(vnc::VncVersion::RFB33)
-                .allow_shared(true)
-                .set_pixel_format(vnc::PixelFormat::rgba())
-                .add_encoding(VncEncoding::Zrle)
-                .add_encoding(VncEncoding::CopyRect)
-                .add_encoding(VncEncoding::Raw)
-                .add_encoding(VncEncoding::DesktopSizePseudo)
-                .add_encoding(VncEncoding::ExtendedDesktopSizePseudo)
-                .add_encoding(VncEncoding::CursorPseudo)
-                .add_encoding(VncEncoding::QemuExtendedKeyEvent)
-                .add_encoding(VncEncoding::ExtendedClipboard)
-                .build()?
-                .try_start()
-                .await?
-                .finish()
-        })
-        .await
-        .map_err(|_| Error::Timeout)?
-        .map_err(|_| Error::ConsoleProtocol)?;
+            let location = location.ok_or(Error::NoConsole)?;
+            let stream = tokio::time::timeout(
+                Duration::from_secs(15),
+                tunnel(session, &location, inventory),
+            )
+            .await
+            .map_err(|_| Error::Timeout)??;
+            let client = tokio::time::timeout(Duration::from_secs(15), async {
+                VncConnector::new(stream)
+                    .set_auth_method(async { Err(vnc::VncError::ConnectError) })
+                    .set_version(vnc::VncVersion::RFB33)
+                    .allow_shared(true)
+                    .set_pixel_format(vnc::PixelFormat::rgba())
+                    .add_encoding(VncEncoding::Zrle)
+                    .add_encoding(VncEncoding::CopyRect)
+                    .add_encoding(VncEncoding::Raw)
+                    .add_encoding(VncEncoding::DesktopSizePseudo)
+                    .add_encoding(VncEncoding::ExtendedDesktopSizePseudo)
+                    .add_encoding(VncEncoding::CursorPseudo)
+                    .add_encoding(VncEncoding::QemuExtendedKeyEvent)
+                    .add_encoding(VncEncoding::ExtendedClipboard)
+                    .build()?
+                    .try_start()
+                    .await?
+                    .finish()
+            })
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|_| Error::ConsoleProtocol)?;
+            Ok::<_, Error>(client)
+        };
+        let client = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Ok(()),
+            client = opening => client?,
+        };
         let mut buffer = Framebuffer::default();
         let mut held = BTreeMap::new();
         let mut clipboard = clipboard::Clipboard::default();
@@ -314,6 +338,40 @@ impl ConsoleRequest {
         .await;
         result
     }
+}
+
+async fn host_reference(
+    session: &Session,
+    host: crate::HostId,
+    vm: crate::VmId,
+) -> Result<String, Error> {
+    let host_ref = crate::xapi::opaque_reference(
+        &session
+            .call("host.get_by_uuid", vec![json!(host.to_string())])
+            .await?,
+    )?;
+    let host_record = session
+        .call("host.get_record", vec![json!(host_ref)])
+        .await?;
+    if host_record["uuid"] != host.to_string() {
+        return Err(Error::Stale);
+    }
+    let vm_ref = crate::xapi::opaque_reference(
+        &session
+            .call("host.get_control_domain", vec![json!(host_ref)])
+            .await?,
+    )?;
+    let vm_record = session.call("VM.get_record", vec![json!(vm_ref)]).await?;
+    if vm_record["uuid"] != vm.to_string()
+        || vm_record["is_control_domain"] != true
+        || vm_record["is_a_template"] != false
+        || vm_record["is_a_snapshot"] != false
+        || vm_record["resident_on"] != host_ref
+        || vm_record["power_state"] != "Running"
+    {
+        return Err(Error::Stale);
+    }
+    Ok(vm_ref)
 }
 
 fn key_event(keysym: u32, keycode: Option<u32>, down: bool) -> X11Event {

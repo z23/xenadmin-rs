@@ -30,7 +30,14 @@ pub(super) fn choose(s: &mut State, tx: &mut Tx) {
     tx.save_file(
         rune::FileDialogOptions {
             title: "Save console screenshot".into(),
-            file_name: Some("vm-console.png".into()),
+            file_name: Some(
+                if host(s).is_some() {
+                    "host-console.png"
+                } else {
+                    "vm-console.png"
+                }
+                .into(),
+            ),
             ..Default::default()
         }
         .filter("PNG image", &["png"]),

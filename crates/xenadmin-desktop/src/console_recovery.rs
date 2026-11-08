@@ -28,12 +28,10 @@ impl Waiting {
     fn message(self) -> &'static str {
         match self {
             Self::Connection => {
-                "Waiting for a current connection to this VM's pool. Console input is released."
+                "Waiting for a current connection to this pool. Console input is released."
             }
-            Self::Guest => {
-                "This VM or its resident host is unavailable. The console target is unchanged."
-            }
-            Self::Power => "Waiting for this VM to run. Console input is released.",
+            Self::Guest => "The guest or host is unavailable. The console target is unchanged.",
+            Self::Power => "Waiting for the guest or host to run. Console input is released.",
             Self::ReadOnly => "Interactive consoles require a connection with write access.",
         }
     }
@@ -151,12 +149,15 @@ impl Recovery {
         if let Some(waiting) = self.waiting {
             Some(waiting.message().into())
         } else if !self.enabled {
-            Some("Automatic reconnect is off. Use Reconnect when the VM is available.".into())
+            Some(
+                "Automatic reconnect is off. Use Reconnect when the guest or host is available."
+                    .into(),
+            )
         } else if self.exhausted {
             Some("Automatic reconnect stopped after five attempts. Check the connection and use Reconnect to try again.".into())
         } else if self.retry_at.is_some() {
             Some(format!(
-                "Waiting to reconnect to this VM (attempt {} of 5).",
+                "Waiting to reconnect to this console (attempt {} of 5).",
                 self.attempts + 1
             ))
         } else {
@@ -188,7 +189,22 @@ fn inventory_binding(
     let vm = inventory
         .vms
         .get(&target.vm)
-        .filter(|v| !v.is_template && !v.is_control_domain)
+        .filter(|v| {
+            !v.is_template
+                && match target.host {
+                    Some(host) => {
+                        v.is_control_domain
+                            && v.host == Some(host)
+                            && inventory
+                                .details
+                                .hosts
+                                .get(&host)
+                                .and_then(|h| h.control_domain)
+                                == Some(target.vm)
+                    }
+                    None => !v.is_control_domain,
+                }
+        })
         .ok_or(Waiting::Guest)?;
     if !matches!(vm.power_state, PowerState::Running | PowerState::Paused) {
         return Err(Waiting::Power);
