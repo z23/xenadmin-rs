@@ -34,6 +34,8 @@ pub(super) struct Editor {
     cpu_weight: TextEdit,
     shadow: TextEdit,
     autostart: bool,
+    home_host: Option<xenadmin_core::HostId>,
+    hosts: Vec<(xenadmin_core::HostId, String)>,
     review: Option<VmSettingsPatch>,
     error: Option<String>,
 }
@@ -80,6 +82,12 @@ impl Editor {
     }
     fn patch(&self) -> Result<VmSettingsPatch, String> {
         let mut edits = Vec::new();
+        if self.details.affinity_known && self.home_host != self.details.affinity {
+            edits.push(VmSettingEdit::HomeHost {
+                previous: self.details.affinity,
+                value: self.home_host,
+            });
+        }
         if self.name.text != self.original.name {
             edits.push(VmSettingEdit::Name {
                 previous: self.original.name.clone(),
@@ -284,6 +292,16 @@ pub(super) fn open(s: &mut State) {
         cpu_weight: TextEdit::new(details.cpu_weight.clone().unwrap_or_else(|| "256".into())),
         shadow: TextEdit::new(details.shadow_multiplier.clone().unwrap_or_default()),
         autostart: details.auto_power_on.unwrap_or(false),
+        home_host: details.affinity,
+        hosts: {
+            let mut hosts: Vec<_> = inventory
+                .hosts
+                .values()
+                .map(|host| (host.id, host.name.clone()))
+                .collect();
+            hosts.sort_by_cached_key(|(_, name)| name.to_lowercase());
+            hosts
+        },
         original,
         details,
         review: None,
@@ -302,6 +320,16 @@ fn input(editor: &Editor, field: Field, label: &str, k: &Kit) -> El {
             })
             .build(k),
     )
+}
+
+pub(super) fn home_host_scene(s: &mut State) {
+    demo(s);
+    s.table.select("30000000-0000-0000-0000-000000000000");
+    open(s);
+    if let Some(editor) = &mut s.properties {
+        editor.home_host = None;
+        editor.review = editor.patch().ok();
+    }
 }
 fn submit(s: &mut State) {
     let Some(editor) = &s.properties else { return };
@@ -398,6 +426,28 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 }
                 VmSettingEdit::Autostart { previous, value } => {
                     format!("Autostart: {previous} → {value}")
+                }
+                VmSettingEdit::HomeHost { previous, value } => {
+                    let name = |id: &Option<xenadmin_core::HostId>| {
+                        id.map_or_else(
+                            || "No preference".into(),
+                            |id| {
+                                format!(
+                                    "{} ({id})",
+                                    editor
+                                        .hosts
+                                        .iter()
+                                        .find(|(host, _)| *host == id)
+                                        .map_or("Unknown host", |(_, name)| name.as_str())
+                                )
+                            },
+                        )
+                    };
+                    format!(
+                        "Home host: {} → {}. This is a preference for future starts. It does not migrate the VM or guarantee placement.",
+                        name(previous),
+                        name(value)
+                    )
                 }
             };
             body = body.child(caption(summary, k).wrap_anywhere());
@@ -505,6 +555,39 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .build(k),
             );
         }
+        body = body.child(heading("Home host", k));
+        if editor.details.affinity_known {
+            body = body.child(caption("Preferred host for future starts. The pool can use another host if resources require it; changing this does not migrate the VM.", k).wrap());
+            let mut choices = col().gap(6.0);
+            for (id, label) in std::iter::once((None, "No preference".to_string())).chain(
+                editor
+                    .hosts
+                    .iter()
+                    .map(|(id, name)| (Some(*id), format!("{name} · {id}"))),
+            ) {
+                choices = choices.child(
+                    Button::new(if editor.home_host == id {
+                        format!("✓ {label}")
+                    } else {
+                        label
+                    })
+                    .variant(ButtonVariant::Outline)
+                    .on_press(move |s: &mut State| {
+                        if let Some(editor) = &mut s.properties {
+                            editor.home_host = id;
+                        }
+                    })
+                    .build(k)
+                    .key(format!(
+                        "property-home-host-{}",
+                        id.map_or_else(|| "none".into(), |id| id.to_string())
+                    )),
+                );
+            }
+            body = body.child(choices);
+        } else {
+            body = body.child(caption("The current home-host preference was not reported. Refresh inventory before editing it.", k).wrap());
+        }
     }
     if !s.demo
         && editor.target
@@ -599,6 +682,74 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn home_host_picker_reviews_original_identity_and_keeps_synthetic_apply_disabled() {
+        for size in [(1440.0, 900.0), (513.0, 652.0)] {
+            let mut state = init();
+            demo(&mut state);
+            state.window_width = size.0;
+            state.window_height = size.1;
+            state.table.select("30000000-0000-0000-0000-000000000000");
+            open(&mut state);
+            let previous = state.properties.as_ref().unwrap().details.affinity;
+            assert!(previous.is_some());
+            let original = state.properties.as_ref().unwrap().id;
+            let mut rt = rune::Runtime::new(
+                state,
+                super::super::view,
+                size,
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            let click = |rt: &mut rune::Runtime<State>, key: &str| {
+                rt.update(|_, tx| tx.scroll_into_view(key));
+                for _ in 0..30 {
+                    rt.frame(1.0 / 60.0);
+                }
+                let (x, y) = rt.find(key).unwrap_or_else(|| panic!("missing {key}"));
+                rt.pointer_down(x, y);
+                rt.pointer_up(x, y);
+                rt.frame(0.0);
+                for _ in 0..30 {
+                    rt.frame(1.0 / 60.0);
+                }
+            };
+            click(&mut rt, "property-home-host-none");
+            assert!(
+                rt.state.properties.as_ref().unwrap().home_host.is_none(),
+                "home host click failed at {size:?}"
+            );
+            click(&mut rt, "review-properties");
+            assert_eq!(
+                rt.state
+                    .properties
+                    .as_ref()
+                    .unwrap()
+                    .review
+                    .as_ref()
+                    .unwrap()
+                    .edits(),
+                &[VmSettingEdit::HomeHost {
+                    previous,
+                    value: None
+                }]
+            );
+            assert!(
+                rt.accessibility_json()
+                    .to_string()
+                    .contains("does not migrate")
+            );
+            rt.update(|s, _| {
+                s.table.select("30000000-0000-0000-0000-000000000001");
+            });
+            assert_eq!(rt.state.properties.as_ref().unwrap().id, original);
+            click(&mut rt, "apply-properties");
+            assert!(rt.state.operations.is_empty());
+            assert!(rt.state.properties.is_some());
+        }
+    }
     #[test]
     fn properties_review_is_reachable_and_demo_apply_is_disabled() {
         let mut state = init();

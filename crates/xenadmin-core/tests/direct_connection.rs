@@ -1543,6 +1543,15 @@ async fn settings_mock(
                     current["name_description"]=request["params"][2].clone();Value::Null
                 },
                 "VM.set_other_config"=>{current["other_config"]=request["params"][2].clone();Value::Null},
+                "host.get_by_uuid"=>{
+                    if request["params"][1] != "22222222-2222-2222-2222-222222222222" || current["fixture_missing_host"] == true {return Some(RpcReply::Json(json!({"error":{"message":"UUID_INVALID"}})))}
+                    json!("OpaqueRef:host")
+                },
+                "host.get_record"=>{
+                    if request["params"][1] != "OpaqueRef:host" || current["fixture_missing_host"] == true {return Some(RpcReply::Json(json!({"error":{"message":"HANDLE_INVALID"}})))}
+                    json!({"uuid":"22222222-2222-2222-2222-222222222222"})
+                },
+                "VM.set_affinity"=>{current["affinity"]=request["params"][2].clone();if lose_name_reply{return Some(RpcReply::Drop)}Value::Null},
                 "VM.set_VCPUs_number_live"=>{current["VCPUs_at_startup"]=request["params"][2].clone();if lose_name_reply{return Some(RpcReply::Drop)}Value::Null},
                 "VM.set_memory_dynamic_range"=>{current["memory_dynamic_min"]=request["params"][2].clone();current["memory_dynamic_max"]=request["params"][3].clone();Value::Null},
                 "VM.set_platform"=>{current["platform"]=request["params"][2].clone();Value::Null},

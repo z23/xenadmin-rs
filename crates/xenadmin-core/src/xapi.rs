@@ -755,6 +755,7 @@ pub(crate) async fn prepare_mutation(
     match &operation.action {
         OperationAction::Settings(patch) => {
             patch.validate()?;
+            let record = patch.resolve_record(session, record).await?;
             patch.preflight(&record)?;
             Ok(parent)
         }

@@ -1,4 +1,4 @@
-use crate::{Error, xapi::Session};
+use crate::{Error, HostId, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -22,6 +22,10 @@ impl MemoryLimits {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "field")]
 pub enum VmSettingEdit {
+    HomeHost {
+        previous: Option<HostId>,
+        value: Option<HostId>,
+    },
     LiveCpus {
         previous: u64,
         max: u64,
@@ -86,12 +90,13 @@ impl VmSettingsPatch {
         &self.edits
     }
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        if self.edits.is_empty() || self.edits.len() > 11 {
+        if self.edits.is_empty() || self.edits.len() > 12 {
             return Err(Error::InvalidSettings);
         }
         let mut seen = std::collections::BTreeSet::new();
         for edit in &self.edits {
             let (field, valid) = match edit {
+                VmSettingEdit::HomeHost { previous, value } => (9, previous != value),
                 VmSettingEdit::LiveCpus {
                     previous,
                     max,
@@ -179,10 +184,45 @@ impl VmSettingsPatch {
         }
         Ok(())
     }
+    pub(crate) async fn resolve_record(
+        &self,
+        session: &Session,
+        mut record: Value,
+    ) -> Result<Value, Error> {
+        if self
+            .edits
+            .iter()
+            .any(|edit| matches!(edit, VmSettingEdit::HomeHost { .. }))
+        {
+            let reference = record["affinity"].as_str().ok_or(Error::SettingsConflict)?;
+            record["affinity"] = if reference == "OpaqueRef:NULL" {
+                Value::Null
+            } else {
+                let host = session
+                    .call("host.get_record", vec![json!(reference)])
+                    .await?;
+                let id = HostId::parse(host["uuid"].as_str().ok_or(Error::SettingsConflict)?)
+                    .map_err(|_| Error::SettingsConflict)?;
+                json!(id)
+            };
+        }
+        Ok(record)
+    }
     pub(crate) fn steps(&self) -> Vec<SettingsStep> {
         let mut steps = Vec::new();
         for edit in &self.edits {
             match edit {
+                VmSettingEdit::HomeHost { previous, value } => {
+                    let mut step = SettingsStep::scalar(
+                        "Home host",
+                        "affinity",
+                        "VM.set_affinity",
+                        json!(previous),
+                        json!(value),
+                    );
+                    step.guard = Some(SettingsGuard::OrdinaryState);
+                    steps.push(step);
+                }
                 VmSettingEdit::LiveCpus {
                     previous,
                     max,
@@ -520,7 +560,25 @@ impl SettingsStep {
         before: &Value,
     ) -> Result<(), Error> {
         let mut params = vec![json!(reference)];
-        if let Some(key) = &self.map_key {
+        if self.method == "VM.set_affinity" {
+            let value = if self.value[0].is_null() {
+                json!("OpaqueRef:NULL")
+            } else {
+                let id: HostId = serde_json::from_value(self.value[0].clone())
+                    .map_err(|_| Error::InvalidSettings)?;
+                let reference = session
+                    .call("host.get_by_uuid", vec![json!(id.to_string())])
+                    .await?;
+                let record = session
+                    .call("host.get_record", vec![reference.clone()])
+                    .await?;
+                if record["uuid"] != id.to_string() {
+                    return Err(Error::SettingsConflict);
+                }
+                reference
+            };
+            params.push(value);
+        } else if let Some(key) = &self.map_key {
             let mut map = before[&self.fields[0]]
                 .as_object()
                 .cloned()

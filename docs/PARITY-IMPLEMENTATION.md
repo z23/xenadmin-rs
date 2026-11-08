@@ -121,7 +121,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P06-03 | CPU topology and scheduling weight | Halted cores-per-socket topology and CPU scheduling weight editors implemented; unrelated platform/CPU keys preserved, live qualification open |
 | P06-04 | Static/dynamic memory limits, ballooning/live changes | Halted static/dynamic limits and reviewed running-VM dynamic ranges implemented with fresh static-bound checks; fixture verified, live ballooning qualification open |
 | P06-05 | Boot order, bootable devices, autostart | Boot-order/autostart editors and reviewed halted-VM bootable disk-attachment flags implemented; fixture verified, live qualification open |
-| P06-06 | Home server/host affinity | Queued |
+| P06-06 | Home server/host affinity | Reviewed pool-host preference/set-clear editor implemented with fresh UUID resolution and lost-reply reconciliation; fixture verified, live placement qualification open ([evidence](reports/2026-11-08-home-host.md)) |
 | P06-07 | VM HA restart priority/protection | Queued |
 | P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Queued |
 | P06-09 | HVM shadow-memory settings | Reviewed halted/live shadow-memory multiplier editing implemented with modern HVM identity and advertised capability checks; fixture verified, live qualification open |

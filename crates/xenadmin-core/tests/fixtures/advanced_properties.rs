@@ -266,3 +266,122 @@ async fn modern_hvm_shadow_does_not_require_the_deprecated_boot_policy() {
         .is_err()
     );
 }
+
+fn home_host() -> xenadmin_core::HostId {
+    xenadmin_core::HostId::parse("22222222-2222-2222-2222-222222222222").unwrap()
+}
+#[tokio::test]
+async fn home_host_set_and_clear_preserves_guest_state_and_uses_uuid_identity() {
+    let (server, data) = settings_mock(false, false, None).await;
+    record(&mut data.lock().unwrap(), true);
+    data.lock().unwrap()["affinity"] = json!("OpaqueRef:NULL");
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connection(&server, &backend).await;
+    let vm = c.latest().inventory().unwrap().guests().next().unwrap().id;
+    assert!(c.latest().inventory().unwrap().details.vms[&vm].affinity_known);
+    for (previous, value) in [(None, Some(home_host())), (Some(home_host()), None)] {
+        let op = submit(&c, vec![VmSettingEdit::HomeHost { previous, value }]);
+        assert_eq!(
+            finish(&op).await,
+            OperationState::Succeeded,
+            "{}",
+            op.latest().detail
+        );
+        assert!(
+            !serde_json::to_string(&*op.latest())
+                .unwrap()
+                .contains("OpaqueRef")
+        );
+    }
+    assert_eq!(data.lock().unwrap()["affinity"], "OpaqueRef:NULL");
+    assert_eq!(data.lock().unwrap()["power_state"], "Running");
+    let calls = server.methods.lock().unwrap();
+    assert_eq!(calls.iter().filter(|m| *m == "VM.set_affinity").count(), 2);
+    assert!(
+        !calls
+            .iter()
+            .any(|m| m.contains("migrate") || m.starts_with("Async.VM"))
+    );
+}
+#[tokio::test]
+async fn stale_unknown_missing_or_suspended_home_host_changes_do_not_write() {
+    for case in 0..4 {
+        let (server, data) = settings_mock(false, false, None).await;
+        record(&mut data.lock().unwrap(), false);
+        data.lock().unwrap()["affinity"] = json!("OpaqueRef:NULL");
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&server, &backend).await;
+        match case {
+            0 => data.lock().unwrap()["affinity"] = json!("OpaqueRef:host"),
+            1 => data.lock().unwrap()["affinity"] = Value::Null,
+            2 => data.lock().unwrap()["fixture_missing_host"] = json!(true),
+            _ => data.lock().unwrap()["power_state"] = json!("Suspended"),
+        }
+        let op = submit(
+            &c,
+            vec![VmSettingEdit::HomeHost {
+                previous: None,
+                value: Some(home_host()),
+            }],
+        );
+        let state = finish(&op).await;
+        assert!(
+            matches!(state, OperationState::Rejected | OperationState::Failed),
+            "case {case}: {}",
+            op.latest().detail
+        );
+        assert!(
+            !server
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m == "VM.set_affinity")
+        );
+    }
+}
+#[tokio::test]
+async fn lost_home_host_reply_reconciles_uuid_without_repeating_setter() {
+    let (server, data) = settings_mock(false, true, None).await;
+    record(&mut data.lock().unwrap(), false);
+    data.lock().unwrap()["affinity"] = json!("OpaqueRef:NULL");
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connection(&server, &backend).await;
+    let op = submit(
+        &c,
+        vec![VmSettingEdit::HomeHost {
+            previous: None,
+            value: Some(home_host()),
+        }],
+    );
+    assert_eq!(finish(&op).await, OperationState::OutcomeUnknown);
+    let id = op.latest().id;
+    c.control_operation(id, xenadmin_core::OperationControl::Recheck)
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if c.operation_history()
+                .iter()
+                .any(|r| r.id == id && r.state == OperationState::Succeeded)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        server
+            .methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == "VM.set_affinity")
+            .count(),
+        1
+    );
+}

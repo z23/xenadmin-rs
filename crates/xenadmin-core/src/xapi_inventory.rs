@@ -597,6 +597,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     boot_policy: text_option(record, "HVM_boot_policy"),
                     firmware: text_option(&record["HVM_boot_params"], "firmware"),
                     affinity: refs.link("host", &record["affinity"]),
+                    affinity_known: record["affinity"] == "OpaqueRef:NULL"
+                        || refs.link::<HostId>("host", &record["affinity"]).is_some(),
                     guest_metrics: refs.link("vm_guest_metrics", &record["guest_metrics"]),
                     metrics: refs.link("vm_metrics", &record["metrics"]),
                     suspend_vdi: refs.link("vdi", &record["suspend_VDI"]),

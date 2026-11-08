@@ -109,6 +109,8 @@ pub struct VmDetails {
     pub boot_policy: Option<String>,
     pub firmware: Option<String>,
     pub affinity: Option<HostId>,
+    #[serde(default)]
+    pub affinity_known: bool,
     pub guest_metrics: Option<GuestMetricsId>,
     pub metrics: Option<VmMetricsId>,
     pub suspend_vdi: Option<VdiId>,

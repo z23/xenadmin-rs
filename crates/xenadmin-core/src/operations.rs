@@ -1321,6 +1321,7 @@ impl MutationRequest {
             let before = session
                 .call("VM.get_record", vec![json!(reference)])
                 .await?;
+            let before = patch.resolve_record(session, before).await?;
             if before["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
                 return Err(Error::Stale);
             }
@@ -1372,6 +1373,7 @@ impl MutationRequest {
             let after = session
                 .call("VM.get_record", vec![json!(reference)])
                 .await?;
+            let after = patch.resolve_record(session, after).await?;
             if after["uuid"].as_str() != Some(self.record.vm.to_string().as_str())
                 || !step.verified(&after)
             {
@@ -1402,6 +1404,7 @@ impl MutationRequest {
             .call("VM.get_by_uuid", vec![json!(self.record.vm.to_string())])
             .await?;
         let current = session.call("VM.get_record", vec![reference]).await?;
+        let current = patch.resolve_record(session, current).await?;
         if current["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
             return Err(Error::Stale);
         };

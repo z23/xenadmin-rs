@@ -1982,6 +1982,7 @@ fn main() {
             }),
             ("vm-create", vm_lifecycle::scene),
             ("device-properties", vm_devices::properties_scene),
+            ("home-host", vm_properties::home_host_scene),
             ("vm-migration", vm_migration::scene),
             ("archive-export", transfers::scene),
             ("disk-export", transfers::disk_scene),
