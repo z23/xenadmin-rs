@@ -604,6 +604,20 @@ pub(crate) fn state_directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".xenadmin-rs-state"))
 }
 
+fn journal_sqlite_failure(stage: &'static str, error: rusqlite::Error) -> Error {
+    let code = error.sqlite_error().map(|error| error.extended_code);
+    eprintln!("xenadmin journal initialization failed: stage={stage} sqlite_code={code:?}");
+    Error::Journal
+}
+fn journal_file_failure(stage: &'static str, error: std::io::Error) -> Error {
+    eprintln!(
+        "xenadmin journal initialization failed: stage={stage} os_code={:?}",
+        error.raw_os_error()
+    );
+    Error::Journal
+}
+static JOURNAL_INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) struct Journal(pub(crate) rusqlite::Connection);
 impl Journal {
     pub(crate) fn knows(&self, record: &OperationRecord) -> bool {
@@ -615,58 +629,78 @@ impl Journal {
     }
     pub(crate) fn open(directory: &Path) -> Result<Self, Error> {
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let _initializing = JOURNAL_INITIALIZATION.lock().map_err(|_| Error::Journal)?;
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(directory)
-            .map_err(|_| Error::Journal)?;
+            .map_err(|error| journal_file_failure("directory", error))?;
         let path = directory.join("operations.sqlite3");
-        std::fs::OpenOptions::new()
+        // Closing a non-SQLite fd for an existing database releases this process's
+        // POSIX locks, including locks owned by other live SQLite connections.
+        match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(false)
+            .create_new(true)
             .mode(0o600)
             .open(&path)
-            .map_err(|_| Error::Journal)?;
-        let connection = rusqlite::Connection::open(path).map_err(|_| Error::Journal)?;
+        {
+            Ok(created) => drop(created),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(journal_file_failure("private-file", error)),
+        }
+        let connection = rusqlite::Connection::open(path)
+            .map_err(|error| journal_sqlite_failure("open", error))?;
         connection
             .busy_timeout(Duration::from_secs(2))
-            .map_err(|_| Error::Journal)?;
+            .map_err(|error| journal_sqlite_failure("busy-timeout", error))?;
         let version: u64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(|_| Error::Journal)?;
+            .map_err(|error| journal_sqlite_failure("read-version", error))?;
         if version > 3 {
             return Err(Error::JournalVersion);
         }
+        let journal_mode: String = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .map_err(|error| journal_sqlite_failure("read-journal-mode", error))?;
+        if !journal_mode.eq_ignore_ascii_case("wal") {
+            let selected: String = connection
+                .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+                .map_err(|error| journal_sqlite_failure("enable-wal", error))?;
+            if !selected.eq_ignore_ascii_case("wal") {
+                return Err(Error::Journal);
+            }
+        }
         connection
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
-            .map_err(|_| Error::Journal)?;
+            .execute_batch("PRAGMA synchronous=FULL;")
+            .map_err(|error| journal_sqlite_failure("full-durability", error))?;
         if version < 3 {
             let transaction = rusqlite::Transaction::new_unchecked(
                 &connection,
                 rusqlite::TransactionBehavior::Immediate,
             )
-            .map_err(|_| Error::Journal)?;
+            .map_err(|error| journal_sqlite_failure("migration-begin", error))?;
             let locked_version: u64 = transaction
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
-                .map_err(|_| Error::Journal)?;
+                .map_err(|error| journal_sqlite_failure("migration-read-version", error))?;
             if locked_version > 3 {
                 return Err(Error::JournalVersion);
             }
-            transaction.execute_batch("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|_|Error::Journal)?;
-            let has_revision:bool=transaction.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')",[],|row|row.get(0)).map_err(|_|Error::Journal)?;
+            transaction.execute_batch("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|error| journal_sqlite_failure("migration-create-vm-table",error))?;
+            let has_revision:bool=transaction.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')",[],|row|row.get(0)).map_err(|error| journal_sqlite_failure("migration-inspect-columns",error))?;
             if !has_revision {
                 transaction
                     .execute_batch(
                         "ALTER TABLE operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;",
                     )
-                    .map_err(|_| Error::Journal)?;
+                    .map_err(|error| journal_sqlite_failure("migration-add-revision", error))?;
             }
             transaction
                 .execute_batch("CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, result_reference TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0); PRAGMA user_version=3;")
-                .map_err(|_| Error::Journal)?;
-            transaction.commit().map_err(|_| Error::Journal)?;
+                .map_err(|error| journal_sqlite_failure("migration-create-resource-table",error))?;
+            transaction
+                .commit()
+                .map_err(|error| journal_sqlite_failure("migration-commit", error))?;
         }
         Ok(Self(connection))
     }
@@ -1758,6 +1792,79 @@ mod tests {
         initial.task = None;
         initial.state = OperationState::Submitting;
         assert!(journal.admit(&mut initial).unwrap());
+    }
+    #[test]
+    fn opening_another_journal_preserves_existing_sqlite_process_locks() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = Journal::open(directory.path()).unwrap();
+        first.0.execute_batch("BEGIN IMMEDIATE").unwrap();
+        fn protected(path: &Path) -> bool {
+            std::process::Command::new("python3").arg("-c").arg("import fcntl, os, sys\nfd = os.open(sys.argv[1], os.O_RDWR)\ntry:\n fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\nexcept BlockingIOError:\n sys.exit(0)\nsys.exit(1)").arg(path).status().unwrap().success()
+        }
+        let path = directory.path().join("operations.sqlite3");
+        assert!(
+            protected(&path),
+            "fixture must start with a real SQLite process lock"
+        );
+        let second = Journal::open(directory.path()).unwrap();
+        assert!(
+            protected(&path),
+            "opening history must not release another connection's SQLite process lock"
+        );
+        assert!(second.history().unwrap().is_empty());
+        first.0.execute_batch("ROLLBACK").unwrap();
+    }
+    #[test]
+    fn concurrent_journal_initialization_admission_and_history_keep_private_durable_records() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let gate = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let directory = directory.path();
+                let gate = &gate;
+                scope.spawn(move || {
+                    gate.wait();
+                    for iteration in 0..16 {
+                        let mut journal = Journal::open(directory).unwrap();
+                        if worker < 4 {
+                            let mut operation = record();
+                            operation.id = OperationId::new();
+                            operation.vm = VmId::from(uuid::Uuid::new_v4());
+                            operation.state = OperationState::Submitting;
+                            assert!(journal.admit(&mut operation).unwrap());
+                            operation.state = OperationState::Succeeded;
+                            operation.detail = format!("fixture {worker}/{iteration}");
+                            journal.save(&mut operation).unwrap();
+                        } else {
+                            for row in journal.history().unwrap() {
+                                assert!(matches!(
+                                    row.state,
+                                    OperationState::Submitting | OperationState::Succeeded
+                                ));
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        let journal = Journal::open(directory.path()).unwrap();
+        let records = journal.history().unwrap();
+        assert_eq!(records.len(), 64);
+        assert!(records.iter().all(|r| r.state == OperationState::Succeeded));
+        assert_eq!(
+            std::fs::metadata(directory.path().join("operations.sqlite3"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let integrity: String = journal
+            .0
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
     }
     #[test]
     fn future_journal_formats_are_rejected_without_downgrading() {
