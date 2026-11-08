@@ -696,6 +696,30 @@ async fn cancellation_requires_server_confirmation_and_retains_created_ids() {
     let r = op.latest();
     assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
     assert!(r.cancel_requested);
+    assert!(
+        Journal::open(d.path())
+            .unwrap()
+            .resource_pool_busy(r.pool)
+            .unwrap()
+    );
+    // Cancellation may win the journal CAS as the stream ends. A stopped
+    // tracker stays unknown; an explicit recheck forwards any unsent request
+    // and discovers retained resources without uploading a second time.
+    let (tx, _rx) = mpsc::channel(512);
+    resources::ResourceRequest::tracking((*r).clone())
+        .run(
+            Arc::new(f.session().await),
+            d.path().into(),
+            CancellationToken::new(),
+            tx,
+        )
+        .await;
+    let r = Journal::open(d.path())
+        .unwrap()
+        .resource_load(id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
     assert_eq!(f.count("task.cancel"), 1);
     assert_eq!(f.count("PUT /import"), 1);
     assert_eq!(r.transfer_created.vms, vec![uuid(20).into()]);

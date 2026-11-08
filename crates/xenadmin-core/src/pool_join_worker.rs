@@ -301,7 +301,7 @@ impl ResourceRequest {
         self.record.pool_completed = true;
         self.record = journal.resource_evidence(&self.record)?;
         self.announce().await;
-        if self.record.state.terminal() {
+        if self.stopped_after_recovery() {
             return Ok(());
         }
         peer_current(&inputs, &peer)?;

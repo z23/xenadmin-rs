@@ -130,8 +130,12 @@ impl ResourceRequest {
             tokio::select! {_=cancel.cancelled()=>return Ok(()),_=tokio::time::sleep(Duration::from_millis(250))=>{}}
         }
     }
+    fn stopped_after_recovery(&self) -> bool {
+        self.record.state.terminal()
+            || (!self.reconcile && self.record.state == OperationState::OutcomeUnknown)
+    }
     fn stop_before_dispatch(&mut self) -> bool {
-        if self.record.state.terminal() {
+        if self.record.state.terminal() || self.record.state == OperationState::OutcomeUnknown {
             return true;
         }
         if self.record.cancel_requested {
@@ -218,6 +222,9 @@ impl ResourceRequest {
                 self.record.task = Some(xapi::reply_reference(&value)?);
                 self.record = journal.resource_evidence(&self.record)?;
                 self.announce().await;
+                if self.stopped_after_recovery() {
+                    return Ok(());
+                }
                 return self.track(journal, session, cancel).await;
             }
             if matches!(step.check, xapi::Check::CreatedNetwork) {
@@ -235,7 +242,7 @@ impl ResourceRequest {
                 self.record.pool_completed = true;
             }
             self.record = journal.resource_evidence(&self.record)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             self.announce().await;
@@ -249,7 +256,7 @@ impl ResourceRequest {
             }
             let created = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=xapi::verify(session,&self.record,&step.check)=>result?};
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             if let Some(target) = created {
@@ -277,7 +284,7 @@ impl ResourceRequest {
             return self.reconcile_join(journal, session, cancel).await;
         }
         self.reload(journal)?;
-        if self.record.state.terminal() {
+        if self.stopped_after_recovery() {
             return Ok(());
         }
         if matches!(self.record.action, super::ResourceAction::Host(_)) {
@@ -359,7 +366,7 @@ impl ResourceRequest {
             }
             let created = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=xapi::verify(session,&self.record,check)=>result?};
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             if let Some(target) = created {
@@ -393,7 +400,7 @@ impl ResourceRequest {
     ) -> Result<(), Error> {
         loop {
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             let (_, task) = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=xapi::read(session,self.record.target)=>result? };
@@ -463,7 +470,7 @@ impl ResourceRequest {
         let mut backoff = 1;
         loop {
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
@@ -541,12 +548,12 @@ impl ResourceRequest {
                         }
                         evidence.completed = true;
                         self.record = journal.resource_evidence(&self.record)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                         let created = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=super::snapshot_policy::verify(session,&self.record,&super::snapshot_policy::Verify::Async)=>result?};
                         self.reload(journal)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                         self.record.created = created;
@@ -560,12 +567,12 @@ impl ResourceRequest {
                         }
                         self.record.appliance_completed = true;
                         self.record = journal.resource_evidence(&self.record)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                         let created = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=super::appliance::verify(session,&self.record,&super::appliance::Verify::Async)=>result? };
                         self.reload(journal)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                         self.record.created = created;
@@ -573,12 +580,12 @@ impl ResourceRequest {
                     if matches!(self.record.action, super::ResourceAction::Pool(_)) {
                         self.record.pool_completed = true;
                         self.record = journal.resource_evidence(&self.record)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                         tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=super::pool::verify(session,&self.record)=>{result?;} }
                         self.reload(journal)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                     }
@@ -587,13 +594,13 @@ impl ResourceRequest {
                             self.record.result_reference =
                                 Some(crate::xapi::snapshot_task_result(&task)?);
                             self.record = journal.resource_evidence(&self.record)?;
-                            if self.record.state.terminal() {
+                            if self.stopped_after_recovery() {
                                 return Ok(());
                             }
                         }
                         let created = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=super::network::verify(session,&self.record)=>result? };
                         self.reload(journal)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                         self.record.created = created;
@@ -622,7 +629,7 @@ impl ResourceRequest {
                             self.record.result_reference =
                                 Some(crate::xapi::snapshot_task_result(&task)?);
                             self.record = journal.resource_evidence(&self.record)?;
-                            if self.record.state.terminal() {
+                            if self.stopped_after_recovery() {
                                 return Ok(());
                             }
                         }
@@ -630,7 +637,7 @@ impl ResourceRequest {
                         self.save(journal).await?;
                         let created = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=xapi::verify(session,&self.record,&xapi::Check::Storage)=>result? };
                         self.reload(journal)?;
-                        if self.record.state.terminal() {
+                        if self.stopped_after_recovery() {
                             return Ok(());
                         }
                         if let Some(created) = created {
@@ -670,7 +677,7 @@ impl ResourceRequest {
                 }
                 _ => return Err(Error::Protocol("unknown resource task status")),
             }
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 self.record.can_cancel = false;
                 match self.save(journal).await {
                     Err(Error::JournalChanged) => continue,
@@ -711,10 +718,8 @@ impl ResourceRequest {
                 .send(OperationUpdate::Coordinator(endpoint.clone()))
                 .await;
         }
-        if matches!(error, Error::JournalChanged) && self.reload(journal).is_ok() {
-            if self.record.state == OperationState::Preparing && self.stop_before_dispatch() {
-                let _ = self.save(journal).await;
-            }
+        if matches!(error, Error::JournalChanged) {
+            self.finish_conflict(journal).await;
             return;
         }
         let after_dispatch = matches!(
@@ -738,7 +743,9 @@ impl ResourceRequest {
             .iter()
             .any(|step| step.state == StepState::Verified);
         if let Ok(Some(current)) = journal.resource_load(self.record.id) {
-            if current.state.terminal() {
+            if current.state.terminal()
+                || (!self.reconcile && current.state == OperationState::OutcomeUnknown)
+            {
                 self.record = current;
                 return;
             }
@@ -766,11 +773,158 @@ impl ResourceRequest {
             }
         }
         if let Err(save_error) = self.save(journal).await {
-            if matches!(save_error, Error::JournalChanged) && self.reload(journal).is_ok() {
+            if matches!(save_error, Error::JournalChanged) {
+                self.finish_conflict(journal).await;
                 return;
             }
             self.record.local_error = Some(save_error.to_string());
             self.record.state = OperationState::OutcomeUnknown;
         }
+    }
+
+    async fn finish_conflict(&mut self, journal: &mut Journal) {
+        // This worker has stopped. A concurrent cancellation/evidence update must
+        // not leave its row advertising an active tracker that no longer exists.
+        for _ in 0..16 {
+            if let Err(error) = self.reload(journal) {
+                self.record.local_error = Some(error.to_string());
+                self.record.state = OperationState::OutcomeUnknown;
+                return;
+            }
+            if self.record.state.terminal() || self.record.state == OperationState::OutcomeUnknown {
+                return;
+            }
+            if self.record.state != OperationState::Preparing || !self.stop_before_dispatch() {
+                self.record.state = OperationState::OutcomeUnknown;
+                self.record.can_cancel = false;
+                self.record.detail = "Local tracking stopped after a concurrent update. Recheck the host before retrying; cancellation is not confirmed.".into();
+                for step in &mut self.record.steps {
+                    if step.state == StepState::Dispatching {
+                        step.state = StepState::OutcomeUnknown;
+                        step.detail = self.record.detail.clone();
+                    }
+                }
+            }
+            match self.save(journal).await {
+                Ok(()) => return,
+                Err(Error::JournalChanged) => continue,
+                Err(error) => {
+                    self.record.local_error = Some(error.to_string());
+                    self.record.state = OperationState::OutcomeUnknown;
+                    return;
+                }
+            }
+        }
+        self.record.local_error = Some(Error::JournalChanged.to_string());
+        self.record.state = OperationState::OutcomeUnknown;
+    }
+}
+
+#[cfg(test)]
+mod stopped_worker_tests {
+    use super::*;
+    use crate::{ObservedResource, OperationControl, PoolId, ResourceAction, ResourceTarget};
+
+    #[tokio::test]
+    async fn cancellation_cas_does_not_leave_a_stopped_worker_tracking_or_release_its_guard() {
+        for state in [
+            OperationState::Dispatching,
+            OperationState::Tracking,
+            OperationState::Verifying,
+            OperationState::CancellationRequested,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut journal = Journal::open(directory.path()).unwrap();
+            let pool: PoolId = uuid::Uuid::new_v4().into();
+            let (_, mut request) = crate::resources::channel(
+                OperationId::new(),
+                ObservedResource {
+                    pool,
+                    generation: 1,
+                    target: ResourceTarget::Pool(pool),
+                },
+                ResourceAction::CreateInternalNetwork {
+                    name: "Fixture network".into(),
+                    description: String::new(),
+                    mtu: 1500,
+                },
+                tokio::runtime::Handle::current(),
+            );
+            assert!(journal.resource_admit(&mut request.record).unwrap());
+            request.record.state = state;
+            request.record.task = Some("OpaqueRef:owned-task".into());
+            let created = uuid::Uuid::new_v4().into();
+            request.record.transfer_created.disks.push(created);
+            request.save(&mut journal).await.unwrap();
+            journal
+                .resource_control(
+                    pool,
+                    request.record.id,
+                    OperationControl::RequestCancellation,
+                )
+                .unwrap();
+            assert!(matches!(
+                request.save(&mut journal).await,
+                Err(Error::JournalChanged)
+            ));
+            request
+                .finish_error(&mut journal, Error::JournalChanged)
+                .await;
+            let result = journal.resource_load(request.record.id).unwrap().unwrap();
+            assert_eq!(result.state, OperationState::OutcomeUnknown);
+            assert!(result.cancel_requested);
+            assert_eq!(result.task.as_deref(), Some("OpaqueRef:owned-task"));
+            assert_eq!(result.transfer_created.disks, vec![created]);
+            assert!(journal.resource_pool_busy(pool).unwrap());
+            // A late positive reply may add evidence, but the original worker
+            // must not revive tracking or submit a subsequent configuration step.
+            request.record.result_reference = Some("OpaqueRef:late-result".into());
+            request.record = journal.resource_evidence(&request.record).unwrap();
+            assert_eq!(request.record.state, OperationState::OutcomeUnknown);
+            assert!(request.stopped_after_recovery());
+            assert!(request.stop_before_dispatch());
+            journal
+                .resource_control(pool, result.id, OperationControl::AcknowledgeUnknown)
+                .unwrap();
+            request
+                .finish_error(&mut journal, Error::JournalChanged)
+                .await;
+            assert_eq!(request.record.state, OperationState::AcknowledgedUnknown);
+            assert!(!journal.resource_pool_busy(pool).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_dispatch_remains_definite_after_a_concurrent_update() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(directory.path()).unwrap();
+        let pool = uuid::Uuid::new_v4().into();
+        let (_, mut request) = crate::resources::channel(
+            OperationId::new(),
+            ObservedResource {
+                pool,
+                generation: 1,
+                target: ResourceTarget::Pool(pool),
+            },
+            ResourceAction::CreateInternalNetwork {
+                name: "Fixture network".into(),
+                description: String::new(),
+                mtu: 1500,
+            },
+            tokio::runtime::Handle::current(),
+        );
+        journal.resource_admit(&mut request.record).unwrap();
+        journal
+            .resource_control(
+                pool,
+                request.record.id,
+                OperationControl::RequestCancellation,
+            )
+            .unwrap();
+        request
+            .finish_error(&mut journal, Error::JournalChanged)
+            .await;
+        assert_eq!(request.record.state, OperationState::Cancelled);
+        assert!(!journal.resource_pool_busy(pool).unwrap());
     }
 }

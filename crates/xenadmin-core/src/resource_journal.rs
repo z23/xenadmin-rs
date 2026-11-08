@@ -263,7 +263,7 @@ impl Journal {
             }
             current.pool_completed |= evidence.pool_completed;
             current.appliance_completed |= evidence.appliance_completed;
-            if !current.state.terminal() {
+            if !current.state.terminal() && current.state != OperationState::OutcomeUnknown {
                 current.state = if current.task.is_some() {
                     OperationState::Tracking
                 } else {

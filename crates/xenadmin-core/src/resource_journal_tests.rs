@@ -113,10 +113,14 @@ fn dispatch_evidence_merges_cancellation_without_resurrecting_acknowledged_opera
     let mut unknown = current.clone();
     unknown.state = OperationState::OutcomeUnknown;
     journal.resource_save(&mut unknown).unwrap();
+    operation.result_reference = Some("OpaqueRef:created-resource".into());
+    let recovered = journal.resource_evidence(&operation).unwrap();
+    assert_eq!(recovered.state, OperationState::OutcomeUnknown);
+    assert_eq!(recovered.result_reference, operation.result_reference);
+    assert!(journal.resource_pool_busy(pool).unwrap());
     journal
         .resource_control(pool, operation.id, OperationControl::AcknowledgeUnknown)
         .unwrap();
-    operation.result_reference = Some("OpaqueRef:created-resource".into());
     let current = journal.resource_evidence(&operation).unwrap();
     assert_eq!(current.state, OperationState::AcknowledgedUnknown);
     assert!(current.cancel_requested);

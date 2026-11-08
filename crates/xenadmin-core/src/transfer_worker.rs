@@ -122,7 +122,7 @@ impl ResourceRequest {
         let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.call("task.create",vec![json!(&task_name),json!("Client-owned image transfer")])=>v?};
         self.record.task = Some(crate::resources::xapi::reply_reference(&task)?);
         self.record = journal.resource_evidence(&self.record)?;
-        if self.record.state.terminal() {
+        if self.stopped_after_recovery() {
             return Ok(());
         }
         let fresh_task = session
