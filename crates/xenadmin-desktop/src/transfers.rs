@@ -1,8 +1,15 @@
 use super::*;
+#[cfg(test)]
+#[path = "ovf_transfer_tests.rs"]
+mod ovf_tests;
+#[path = "ovf_transfer_ui.rs"]
+mod ovf_ui;
+
 use std::sync::mpsc;
 use xenadmin_core::{
     DiskImageFormat, ExportSource, ObservedResource, OperationControl, OperationId, OperationState,
-    ResourceAction, ResourceTarget, SrId, TransferAction, TransferFile, TransferRequest, VdiId,
+    OvfPackageFormat, ResourceAction, ResourceTarget, SrId, TransferAction, TransferFile,
+    TransferRequest, VdiId,
 };
 #[derive(Default)]
 pub(super) struct Panel {
@@ -12,6 +19,11 @@ pub(super) struct Panel {
     source_name: String,
     disk_export: Option<(VdiId, SrId, u64)>,
     disk_picker: bool,
+    ovf_import: bool,
+    package_export: Option<OvfPackageFormat>,
+    ovf_preview: Option<xenadmin_core::OvfSummary>,
+    networks: std::collections::BTreeMap<String, xenadmin_core::NetworkId>,
+    inspection_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     format: Option<DiskImageFormat>,
     disk_name: TextEdit,
     pool: Option<ObservedResource>,
@@ -26,12 +38,14 @@ pub(super) struct Panel {
     acknowledge: Option<OperationId>,
 }
 fn close(s: &mut State) {
+    cancel_inspection(s);
     s.transfers.show = false;
     s.transfers.serial += 1;
     s.transfers.pending = false;
     s.transfers.result = None;
 }
 fn begin(s: &mut State, source: Option<ExportSource>) {
+    cancel_inspection(s);
     let serial = s.transfers.serial + 1;
     let pool_id = s.inventory.as_ref().map(|i| i.pool_id);
     let pool = pool_id.and_then(|id| {
@@ -85,7 +99,7 @@ pub(super) fn export_button(s: &State, source: ExportSource, k: &Kit) -> El {
         .inventory
         .as_ref()
         .is_some_and(|i| action.availability(i).is_available());
-    Button::new("Export XVA")
+    Button::new("Export…")
         .variant(ButtonVariant::Outline)
         .disabled(!s.demo && !available)
         .on_press(move |s: &mut State| begin(s, Some(source.clone())))
@@ -120,7 +134,26 @@ fn action(p: &Panel) -> Option<TransferAction> {
         });
     }
     if let Some(source) = p.source.clone() {
-        return Some(TransferAction::ExportXva { source });
+        return Some(match p.package_export {
+            Some(format) => TransferAction::ExportOvf { source, format },
+            None => TransferAction::ExportXva { source },
+        });
+    }
+    if p.ovf_import {
+        let summary = p.file.as_ref()?.ovf()?;
+        if summary
+            .networks
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            != p.networks.keys().cloned().collect()
+        {
+            return None;
+        }
+        return p.sr.map(|sr| TransferAction::ImportOvf {
+            sr,
+            networks: p.networks.clone(),
+        });
     }
     p.sr.map(|sr| {
         if let Some(format) = p.format {
@@ -167,7 +200,16 @@ pub(super) fn disk_button(s: &State, disk: &xenadmin_core::VirtualDisk, k: &Kit)
         .build(k)
         .key(format!("export-disk-{id}"))
 }
+fn cancel_inspection(s: &mut State) {
+    if let Some(cancel) = s.transfers.inspection_cancel.take() {
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 fn set_format(s: &mut State, format: Option<DiskImageFormat>) {
+    cancel_inspection(s);
+    s.transfers.ovf_import = false;
+    s.transfers.package_export = None;
+    s.transfers.networks.clear();
     s.transfers.format = format;
     s.transfers.file = None;
     s.transfers.pending = false;
@@ -182,6 +224,12 @@ fn choose(s: &mut State, tx: &mut Tx) {
     let serial = s.transfers.serial;
     let export = exporting(&s.transfers);
     let format = s.transfers.format;
+    let ovf = s.transfers.ovf_import;
+    let package = s.transfers.package_export;
+    cancel_inspection(s);
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    s.transfers.inspection_cancel = Some(cancel.clone());
+    s.transfers.networks.clear();
     s.transfers.pending = true;
     s.transfers.error = None;
     s.transfers.file = None;
@@ -200,6 +248,8 @@ fn choose(s: &mut State, tx: &mut Tx) {
                         .spawn(move || {
                             let result = if export {
                                 TransferFile::destination(path)
+                            } else if ovf {
+                                TransferFile::ovf_source_with_cancel(path, &cancel)
                             } else if let Some(format) = format {
                                 TransferFile::disk_source(path, format)
                             } else {
@@ -225,21 +275,40 @@ fn choose(s: &mut State, tx: &mut Tx) {
                 }
             }
         };
-    let options = rune::FileDialogOptions {
-        title: if export {
+    let folder = package == Some(OvfPackageFormat::Ovf);
+    let extension = if package == Some(OvfPackageFormat::Ova) {
+        "ova"
+    } else {
+        format.map_or("xva", DiskImageFormat::extension)
+    };
+    let mut options = rune::FileDialogOptions {
+        title: if folder {
+            "Choose a new OVF package directory name"
+        } else if export {
             "Save a new disk or archive image"
         } else {
             "Select a disk or archive image"
         }
         .into(),
-        file_name: export
-            .then(|| format!("guest.{}", format.map_or("xva", DiskImageFormat::extension))),
+        file_name: export.then(|| {
+            if folder {
+                "guest-ovf".into()
+            } else {
+                format!("guest.{extension}")
+            }
+        }),
         ..Default::default()
+    };
+    if !folder {
+        options = options.filter(
+            "Disk or archive image",
+            &if ovf {
+                vec!["ovf", "ova"]
+            } else {
+                vec![extension]
+            },
+        );
     }
-    .filter(
-        "Disk or archive image",
-        &[format.map_or("xva", DiskImageFormat::extension)],
-    );
     if export {
         tx.save_file(options, move |s: &mut State, r, tx| {
             callback(s, r.map_err(|e| e.to_string()), tx)
@@ -330,7 +399,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     } else if p.disk_export.is_some() {
                         "Export disk image"
                     } else if exporting(p) {
-                        "Export XVA"
+                        "Export VM or template"
                     } else {
                         "Import image"
                     },
@@ -419,6 +488,17 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         ),
                 );
             }
+            for id in &r.transfer_created.vbds {
+                card = card.child(
+                    caption(format!("Retained disk attachment UUID: {id}"), k).wrap_anywhere(),
+                );
+            }
+            for id in &r.transfer_created.vifs {
+                card = card.child(caption(format!("Retained NIC UUID: {id}"), k).wrap_anywhere());
+            }
+            for step in &r.steps {
+                card = card.child(caption(format!("{} · {:?}", step.label, step.state), k).wrap());
+            }
             if r.state == OperationState::OutcomeUnknown {
                 card=card.child(caption("Stopping the stream does not prove server cleanup. Recheck reads existing evidence and never sends archive bytes again.",k).wrap());
                 if p.acknowledge == Some(id) {
@@ -436,6 +516,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             body = body.child(card);
         }
     } else {
+        if let Some(pool) = p.pool_id {
+            let name = s
+                .inventory
+                .as_ref()
+                .filter(|i| i.pool_id == pool)
+                .map_or("Captured pool", |i| i.pool_name.as_str());
+            body = body.child(caption(format!("Pool: {name} · {pool}"), k).wrap_anywhere());
+        }
         if !current(s, p) {
             body = body.child(
                 caption(
@@ -485,6 +573,39 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             }
             body = body.child(heading("Import an image", k));
         }
+        if p.source.is_some() {
+            let mut formats = row().gap(8.0).flex_wrap();
+            for (format, label, key) in [
+                (None, "XVA", "xva"),
+                (Some(OvfPackageFormat::Ova), "OVA file", "ova"),
+                (Some(OvfPackageFormat::Ovf), "OVF directory", "ovf"),
+            ] {
+                formats = formats.child(
+                    Button::new(format!(
+                        "{}{label}",
+                        if p.package_export == format {
+                            "✓ "
+                        } else {
+                            ""
+                        }
+                    ))
+                    .disabled(p.review)
+                    .on_press(move |s: &mut State| {
+                        set_format(s, None);
+                        s.transfers.package_export = format;
+                    })
+                    .build(k)
+                    .key(format!("transfer-package-{key}")),
+                );
+            }
+            body = body.child(formats);
+            if let Some(format) = p.package_export {
+                body = body.child(caption(match format {
+                    OvfPackageFormat::Ova => "Create one OVA file containing the descriptor and VHD disks.",
+                    OvfPackageFormat::Ovf => "Create a new private directory containing the OVF descriptor, manifest and VHD disks. Choose a new directory name in the save dialog; existing directories are not reused.",
+                }, k).wrap()).child(caption("OVF/OVA export supports ordinary halted BIOS/UEFI guests with supported disk and NIC settings. Mounted installation media and unsupported configuration must be resolved before export. Package disks contain guest data.", k).wrap());
+            }
+        }
         if p.source.is_none() {
             let mut formats = row().gap(8.0).flex_wrap();
             if p.disk_export.is_none() {
@@ -494,6 +615,22 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .on_press(|s: &mut State| set_format(s, None))
                         .build(k)
                         .key("transfer-format-xva"),
+                );
+            }
+            if p.disk_export.is_none() {
+                formats = formats.child(
+                    Button::new(if p.ovf_import {
+                        "✓ OVF / OVA"
+                    } else {
+                        "OVF / OVA"
+                    })
+                    .disabled(p.review)
+                    .on_press(|s: &mut State| {
+                        set_format(s, None);
+                        s.transfers.ovf_import = true;
+                    })
+                    .build(k)
+                    .key("transfer-format-ovf"),
                 );
             }
             for (format, label) in [(DiskImageFormat::Vhd, "VHD"), (DiskImageFormat::Raw, "Raw")] {
@@ -513,9 +650,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if let Some((vdi, sr, size)) = p.disk_export {
             body=body.child(caption(format!("Disk: {}\nUUID: {vdi}\nStorage: {sr}\nVirtual size: {size} bytes",p.source_name),k).wrap_anywhere()).child(caption("All consumers must remain halted. For a stable point in time, export a disk snapshot. The private file is published only after full transfer and format verification.",k).wrap());
         } else if let Some(source) = &p.source {
-            body=body.child(caption(match source{ExportSource::Vm{vm,expected_template}=>format!("{}: {}\nUUID: {vm}",if *expected_template{"Template"}else{"Virtual machine"},p.source_name),ExportSource::Snapshot{snapshot,parent}=>format!("Disk snapshot: {}\nSnapshot UUID: {snapshot}\nParent VM UUID: {parent}",p.source_name)},k).wrap_anywhere()).child(caption("Save to a new filename. Existing files are never overwritten. The final archive appears only after the complete stream and server task are verified. Exports contain guest disk data.",k).wrap());
+            body=body.child(caption(match source{ExportSource::Vm{vm,expected_template}=>format!("{}: {}\nUUID: {vm}",if *expected_template{"Template"}else{"Virtual machine"},p.source_name),ExportSource::Snapshot{snapshot,parent}=>format!("Disk snapshot: {}\nSnapshot UUID: {snapshot}\nParent VM UUID: {parent}",p.source_name)},k).wrap_anywhere()).child(caption("Save to a new filename. Existing files are never overwritten. The final output appears only after all required transfers and verification complete. Exports contain guest disk data.",k).wrap());
         } else {
-            if p.format.is_some() {
+            if p.ovf_import {
+                body = body.child(caption("Import ordinary BIOS or UEFI guests from OVF or OVA packages containing raw or complete VHD disks. Map each package network explicitly. New guest, disk and NIC identities are created; MAC addresses are generated. Guests are not started. VMDK conversion and unsupported device extensions are not available yet.", k).wrap());
+            } else if p.format.is_some() {
                 body=body.child(caption("Create a new unattached data disk from a complete raw or fixed/dynamic VHD image. Existing disks are not overwritten. Differencing VHD, VHDX and QCOW2 are not supported here.",k).wrap());
                 body = body.child(if p.review {
                     caption(format!("New disk name: {}", p.disk_name.text), k).wrap()
@@ -532,6 +671,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             if let Some(i) = &s.inventory {
                 for sr in &i.storage {
                     let id = SrId::from(sr.uuid);
+                    if p.review && p.sr != Some(id) {
+                        continue;
+                    }
                     let a = TransferAction::ImportXva { sr: id };
                     if a.availability(i).is_available() {
                         body = body.child(
@@ -584,6 +726,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .wrap(),
                 );
             }
+            if let Some(summary) = file.ovf() {
+                body = body.child(ovf_ui::summary(s, summary, k));
+            }
             if let Some(a) = file.archive() {
                 body=body.child(caption(format!("{} guests · {} data disks · {} virtual bytes · {} networks · {} archive bytes",a.guests.len(),a.data_disks,a.virtual_bytes,a.networks,file.size().unwrap_or(0)),k).wrap());
                 for g in &a.guests {
@@ -601,6 +746,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 }
             }
         }
+        if s.demo
+            && let Some(summary) = &p.ovf_preview
+        {
+            body = body
+                .child(heading("application.ova · synthetic preview", k))
+                .child(ovf_ui::summary(s, summary, k));
+        }
         let available = action(p).and_then(|a| s.inventory.as_ref().map(|i| a.availability(i)));
         if let Some(a) = &available
             && !a.is_available()
@@ -608,7 +760,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             body = body.child(caption(a.explanation(), k).wrap());
         }
         if p.review {
-            body=body.child(caption("This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain in history. Transfers reserve pool changes until the outcome is resolved.",k).wrap()).child(Button::new("Begin transfer").disabled(s.demo||!current(s,p)||!available.is_some_and(|a|a.is_available())||p.file.is_none()||(!exporting(p)&&!s.can_mutate())).on_press(apply).build(k).key("transfer-apply"));
+            body=body.child(caption(if exporting(p) { "This review uses the captured source and new destination. Interrupted exports retain their evidence in history. Transfers reserve pool changes until the outcome is resolved." } else { "This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain in history. Transfers reserve pool changes until the outcome is resolved." },k).wrap()).child(Button::new("Begin transfer").disabled(s.demo||!current(s,p)||!available.is_some_and(|a|a.is_available())||p.file.is_none()||(!exporting(p)&&!s.can_mutate())).on_press(apply).build(k).key("transfer-apply"));
         } else {
             body = body.child(
                 Button::new("Review transfer")
@@ -660,6 +812,9 @@ pub(super) fn scene(s: &mut State) {
         }),
     );
 }
+pub(super) fn ovf_scene(s: &mut State, export: bool) {
+    ovf_ui::scene(s, export);
+}
 pub(super) fn disk_scene(s: &mut State) {
     demo(s);
     begin(s, None);
@@ -679,7 +834,7 @@ pub(super) fn disk_scene(s: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn runtime(size: (f32, f32)) -> rune::Runtime<State> {
+    pub(super) fn runtime(size: (f32, f32)) -> rune::Runtime<State> {
         let mut s = init();
         scene(&mut s);
         s.window_width = size.0;
@@ -698,7 +853,7 @@ mod tests {
         }
         rt
     }
-    fn click(rt: &mut rune::Runtime<State>, key: &str) {
+    pub(super) fn click(rt: &mut rune::Runtime<State>, key: &str) {
         rt.update(|_, tx| tx.scroll_into_view(key));
         for _ in 0..30 {
             rt.frame(1.0 / 60.0);
@@ -784,7 +939,7 @@ mod tests {
         assert_eq!(rt.file_dialog().unwrap().0, rune::FileDialogKind::Open);
         rt.resolve_file_dialog(None).unwrap();
     }
-    fn disk_scene(rt: &mut rune::Runtime<State>) -> VdiId {
+    pub(super) fn disk_scene(rt: &mut rune::Runtime<State>) -> VdiId {
         open(&mut rt.state);
         let i = Arc::make_mut(rt.state.inventory.as_mut().unwrap());
         let sr = SrId::from(i.storage[0].uuid);

@@ -219,10 +219,10 @@ See the [same-pool migration increment](reports/2026-11-08-migration.md) for the
 | P11-05 | Transfer-network choice and console relocation | Explicit IP-configured destination transfer network and one-shot console follow after verified local same-pool migration implemented; external/cross-pool/IPv6-only paths and live qualification open |
 | P11-06 | XVA VM/template import/export | Native reviewed plain/gzip ordinary-guest import and halted VM/custom-template export implemented; bounded identity/provenance fixtures verified; zstd, broader archive shapes and live qualification open |
 | P11-07 | Snapshot export | Halted disk-snapshot XVA export implemented with parent/source identity and normalized archive verification; memory checkpoints, snapshot chains and live qualification open |
-| P11-08 | OVF/OVA appliance import/export | Queued |
+| P11-08 | OVF/OVA appliance import/export | Reviewed ordinary HVM raw/VHD OVF/OVA import and VHD package export implemented with explicit SR/network mapping, private atomic publication and no-replay partial-resource recovery; parser/protocol/Rune fixtures verified. VMDK/conversion, advanced appliance settings and live qualification remain open; [report](reports/2026-11-08-ovf-ova-transfers.md) |
 | P11-09 | Standalone disk-image import | Raw and fixed/dynamic VHD import into a new unattached disk implemented; matching disk export, private atomic files, captured size/storage and partial-identity recovery fixture verified. Differencing VHD/VHDX/QCOW2, conversions and live qualification remain open; [report](reports/2026-11-08-disk-image-transfers.md) |
 | P11-10 | Conversion manager | Capability review and implementation queued |
-| P11-11 | Transfer cancellation/expiry/partial-result recovery | XVA stream/task progress, explicit cancellation, expiry and no-replay recovery implemented; failed imports retain unknown guard and known resource UUIDs; other formats and live qualification open |
+| P11-11 | Transfer cancellation/expiry/partial-result recovery | XVA, raw/VHD and ordinary OVF/OVA stream/task progress, explicit cancellation, expiry and no-replay recovery implemented; failed/unknown imports retain proven UUIDs and unresolved guards; conversion formats and live qualification open |
 
 See the [XVA transfer increment](reports/2026-11-08-xva-transfers.md) for format limits, trust and unresolved import cleanup.
 

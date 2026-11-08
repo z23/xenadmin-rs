@@ -1,5 +1,9 @@
 #[path = "host_worker.rs"]
 mod host;
+#[path = "ovf_export_worker.rs"]
+mod ovf_export_worker;
+#[path = "ovf_worker.rs"]
+mod ovf_worker;
 #[path = "pool_join_worker.rs"]
 mod pool_join_worker;
 #[path = "transfer_disk_worker.rs"]

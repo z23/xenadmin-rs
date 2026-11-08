@@ -152,6 +152,14 @@ impl Entry {
                     kind: "Network".into(),
                     uuid: id.uuid(),
                 }))
+                .chain(record.transfer_created.vbds.iter().map(|id| Created {
+                    kind: "Disk attachment".into(),
+                    uuid: id.uuid(),
+                }))
+                .chain(record.transfer_created.vifs.iter().map(|id| Created {
+                    kind: "NIC".into(),
+                    uuid: id.uuid(),
+                }))
                 .collect(),
         }
     }

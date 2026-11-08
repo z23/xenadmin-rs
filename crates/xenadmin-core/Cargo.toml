@@ -17,6 +17,7 @@ zeroize.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 sha2.workspace = true
+sha1 = "=0.10.7"
 tokio-rustls.workspace = true
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"

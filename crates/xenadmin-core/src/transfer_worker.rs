@@ -11,6 +11,16 @@ fn now() -> u64 {
         .as_millis() as u64
 }
 impl ResourceRequest {
+    pub(super) fn save_transfer_progress(&mut self, journal: &mut Journal) -> Result<(), Error> {
+        journal.resource_save(&mut self.record)?;
+        self.sender.send_replace(Arc::new(self.record.clone()));
+        // Progress can coalesce; final state is announced through the reliable path.
+        if let Some(updates) = &self.updates {
+            let _ = updates.try_send(OperationUpdate::Resource(Box::new(self.record.clone())));
+        }
+        Ok(())
+    }
+
     pub(super) fn transfer_plan(&self) -> Result<&Plan, Error> {
         self.record
             .transfer_plan
@@ -37,6 +47,12 @@ impl ResourceRequest {
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
         let action = self.transfer_action()?;
+        if matches!(action, TransferAction::ExportOvf { .. }) {
+            return self.execute_ovf_export(journal, session, cancel).await;
+        }
+        if matches!(action, TransferAction::ImportOvf { .. }) {
+            return self.execute_ovf_import(journal, session, cancel).await;
+        }
         if matches!(action, TransferAction::ImportDisk { .. }) {
             self.create_transfer_disk(journal, session, cancel).await?;
             if self.record.state.terminal() {
@@ -159,30 +175,32 @@ impl ResourceRequest {
         self.record.detail = "Streaming image; host completion must also be verified".into();
         self.save(journal).await?;
         let meter = Arc::new(http::Meter::default());
-        let outcome = {
-            let stream = http::run(
-                session,
-                prepared,
-                self.transfer_plan()?.clone(),
-                meter.clone(),
-            );
-            tokio::pin!(stream);
-            loop {
-                tokio::select! {
-                    _=cancel.cancelled()=>{meter.cancel.cancel();break Err(Error::Closed)},
-                    result=&mut stream=>break result,
-                    _=tokio::time::sleep(Duration::from_millis(250))=>{
-                        self.reload(journal)?;
-                        if self.record.state.terminal(){meter.cancel.cancel();return Ok(())}
-                        if self.record.cancel_requested {meter.cancel.cancel();}
-                        if now()>=self.transfer_plan()?.expires_at_ms {meter.cancel.cancel();break Err(Error::TransferExpired)}
-                        self.record.transfer=Some(meter.progress());
-                        self.record.detail=if self.record.cancel_requested{"Stopping the local stream; server cancellation still requires confirmation"}else{"Streaming image"}.into();
-                        match self.save(journal).await{Ok(())|Err(Error::JournalChanged)=>{},Err(error)=>{meter.cancel.cancel();return Err(error)}}
-                    }
+        let outcome = http::drive(
+            session,
+            prepared,
+            self.transfer_plan()?.clone(),
+            meter.clone(),
+            cancel,
+            |progress| {
+                self.reload(journal)?;
+                if self.record.state.terminal() {
+                    return Ok(false);
                 }
-            }
-        };
+                self.record.transfer = Some(progress);
+                self.record.detail = if self.record.cancel_requested {
+                    "Stopping the local stream; server cancellation still requires confirmation"
+                } else {
+                    "Streaming image"
+                }
+                .into();
+                match self.save_transfer_progress(journal) {
+                    Ok(()) | Err(Error::JournalChanged) => {}
+                    Err(error) => return Err(error),
+                }
+                Ok(!self.record.cancel_requested)
+            },
+        )
+        .await;
         self.reload(journal)?;
         if self.record.state.terminal() {
             return Ok(());
@@ -292,6 +310,12 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(self.transfer_action()?, TransferAction::ExportOvf { .. }) {
+            return self.recheck_ovf_export(journal, session, cancel).await;
+        }
+        if matches!(self.transfer_action()?, TransferAction::ImportOvf { .. }) {
+            return self.recheck_ovf_import(journal, session, cancel).await;
+        }
         self.reload(journal)?;
         if self.record.state.terminal() {
             return Ok(());

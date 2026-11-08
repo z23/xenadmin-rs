@@ -911,3 +911,6 @@ fn disk_record(n: u128, name: &str) -> Value {
 }
 #[path = "transfer_disk_tests.rs"]
 mod disk_tests;
+
+#[path = "ovf_import_tests.rs"]
+mod ovf_import_tests;

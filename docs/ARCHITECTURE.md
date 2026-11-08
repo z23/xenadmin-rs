@@ -472,3 +472,15 @@ A dedicated evidence merge preserves recovery/acknowledgment controls when a lat
 arrives, and a fresh per-step revision check prevents dispatch after recovery. Reconciliation
 is read-only and does not continue pending power or metadata steps. See the
 [snapshot workflow report](reports/2026-11-08-snapshot-workflows.md) for scope and verification.
+
+
+OVF/OVA adds a bounded descriptor/package parser and typed guest plan rather than
+passing arbitrary extension maps into XAPI. Per-resource creation baselines and
+ownership markers are persisted before each write; raw references and local member
+ranges remain in the private transfer plan. OVA member streams are bounded to their
+reviewed offset/length. Each disk leg has separate stream/task evidence, and recovery
+never continues unsubmitted changes. Export captures a fresh guest/device graph,
+streams stable disks into an owned mode-0700 staging directory, validates a generated
+descriptor and integrity manifest, and publishes a new file or directory atomically
+without replacement. See the [OVF/OVA transfer report](reports/2026-11-08-ovf-ova-transfers.md)
+for the supported ordinary-guest subset and remaining interoperability gaps.

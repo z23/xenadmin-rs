@@ -3,7 +3,7 @@ use rustix::fs::{Mode, OFlags};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, Metadata},
-    io::{Read, Seek},
+    io::{Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,7 +17,7 @@ pub(crate) struct Identity {
     ctime_ns: i64,
 }
 impl Identity {
-    fn from(m: &Metadata) -> Self {
+    pub(crate) fn from(m: &Metadata) -> Self {
         Self {
             device: m.dev(),
             inode: m.ino(),
@@ -92,6 +92,8 @@ pub(crate) fn select_source(path: &Path) -> Result<TransferFile, Error> {
         parent,
         manifest: Some(summary),
         disk: None,
+        range: None,
+        ovf: None,
     })
 }
 pub(crate) fn select_destination(path: &Path) -> Result<TransferFile, Error> {
@@ -105,9 +107,11 @@ pub(crate) fn select_destination(path: &Path) -> Result<TransferFile, Error> {
         parent,
         manifest: None,
         disk: None,
+        range: None,
+        ovf: None,
     })
 }
-fn parent_handle(file: &TransferFile) -> Result<File, Error> {
+pub(crate) fn parent_handle(file: &TransferFile) -> Result<File, Error> {
     let path = file.path.parent().ok_or(Error::TransferFile)?;
     let fd = rustix::fs::open(
         path,
@@ -152,12 +156,25 @@ fn open_in(dir: &File, path: &Path, write: bool, create: bool) -> Result<File, E
 }
 pub(crate) fn source(file: &TransferFile) -> Result<File, Error> {
     let dir = parent_handle(file)?;
-    let input = open_in(&dir, &file.path, false, false)?;
+    let mut input = open_in(&dir, &file.path, false, false)?;
     if Some(Identity::from(
         &input.metadata().map_err(|_| Error::TransferFile)?,
     )) != file.identity
     {
         return Err(Error::TransferFileChanged);
+    }
+    if let Some(range) = &file.range {
+        if range.length == 0
+            || range
+                .offset
+                .checked_add(range.length)
+                .is_none_or(|end| end > file.identity.as_ref().map_or(0, |i| i.size))
+        {
+            return Err(Error::TransferFileChanged);
+        }
+        input
+            .seek(SeekFrom::Start(range.offset))
+            .map_err(|_| Error::TransferFile)?;
     }
     Ok(input)
 }
@@ -204,6 +221,21 @@ pub(crate) fn output(plan: &Plan) -> Result<File, Error> {
     }
     Ok(file)
 }
+pub(crate) fn source_receipt(
+    selected: &TransferFile,
+    file: &File,
+    bytes: u64,
+) -> Result<Receipt, Error> {
+    source_unchanged(selected, file)?;
+    if selected.size() != Some(bytes) {
+        return Err(Error::TransferConflict);
+    }
+    Ok(Receipt {
+        bytes,
+        sha256: [0; 32],
+        identity: Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?),
+    })
+}
 pub(crate) fn receipt(file: &File, bytes: u64, sha256: [u8; 32]) -> Result<Receipt, Error> {
     let identity = Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?);
     if identity.size != bytes {
@@ -215,7 +247,7 @@ pub(crate) fn receipt(file: &File, bytes: u64, sha256: [u8; 32]) -> Result<Recei
         identity,
     })
 }
-fn matches_receipt(path: &Path, r: &Receipt) -> Result<bool, Error> {
+pub(crate) fn matches_receipt(path: &Path, r: &Receipt) -> Result<bool, Error> {
     let mut file = open(path, false, false)?;
     let current = Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?);
     if !r.identity.same_inode(&current) || current.size != r.bytes {
@@ -315,6 +347,8 @@ pub(crate) fn select_disk_source(
         identity: Some(identity),
         manifest: None,
         disk: Some(disk),
+        range: None,
+        ovf: None,
     })
 }
 
@@ -342,4 +376,27 @@ pub(crate) fn validate_disk_export(
         return Err(Error::TransferConflict);
     }
     Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FileRange {
+    pub offset: u64,
+    pub length: u64,
+}
+pub(crate) fn select_plain(path: &Path) -> Result<TransferFile, Error> {
+    let (path, parent) = canonical(path)?;
+    let file = open(&path, false, false)?;
+    let identity = Identity::from(&file.metadata().map_err(|_| Error::TransferFile)?);
+    if identity.size == 0 || identity.size > MAX_TRANSFER_BYTES {
+        return Err(Error::TransferLimit);
+    }
+    Ok(TransferFile {
+        path,
+        parent,
+        identity: Some(identity),
+        manifest: None,
+        disk: None,
+        range: None,
+        ovf: None,
+    })
 }

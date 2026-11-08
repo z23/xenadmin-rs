@@ -1993,6 +1993,8 @@ fn main() {
             ("home-host", vm_properties::home_host_scene),
             ("vm-migration", vm_migration::scene),
             ("archive-export", transfers::scene),
+            ("ovf-import", |s| transfers::ovf_scene(s, false)),
+            ("ovf-export", |s| transfers::ovf_scene(s, true)),
             ("disk-export", transfers::disk_scene),
             ("snapshots", |s| {
                 demo(s);

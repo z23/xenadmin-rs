@@ -44,7 +44,7 @@ fn checksum(b: &[u8], at: usize) -> bool {
         .fold(0u32, |sum, (_, v)| sum.wrapping_add(u32::from(*v)));
     !sum == u32be(b, at)
 }
-fn read_at<const N: usize>(f: &mut File, offset: u64) -> Result<[u8; N], Error> {
+fn read_at<const N: usize>(f: &mut (impl Read + Seek), offset: u64) -> Result<[u8; N], Error> {
     f.seek(SeekFrom::Start(offset))
         .map_err(|_| Error::TransferFile)?;
     let mut data = [0; N];
@@ -56,6 +56,13 @@ fn size_ok(n: u64, format: DiskImageFormat) -> bool {
 }
 pub(crate) fn inspect(f: &mut File, format: DiskImageFormat) -> Result<DiskImageSummary, Error> {
     let length = f.metadata().map_err(|_| Error::TransferFile)?.len();
+    inspect_reader(f, length, format)
+}
+pub(crate) fn inspect_reader(
+    f: &mut (impl Read + Seek),
+    length: u64,
+    format: DiskImageFormat,
+) -> Result<DiskImageSummary, Error> {
     if length == 0 || length > crate::transfer::MAX_TRANSFER_BYTES {
         return Err(Error::TransferLimit);
     }

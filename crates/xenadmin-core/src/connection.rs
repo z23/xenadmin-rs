@@ -509,8 +509,22 @@ impl Connection {
             return Err(Error::TransferFile);
         }
         match &request.action {
+            crate::TransferAction::ImportOvf { networks, .. }
+                if request.file.ovf.as_ref().is_none_or(|o| {
+                    o.summary
+                        .networks
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        != networks.keys().cloned().collect()
+                }) =>
+            {
+                return Err(Error::TransferFile);
+            }
             crate::TransferAction::ImportXva { .. }
-                if request.file.manifest.is_none() || request.file.disk.is_some() =>
+                if request.file.manifest.is_none()
+                    || request.file.disk.is_some()
+                    || request.file.ovf.is_some() =>
             {
                 return Err(Error::TransferFile);
             }
@@ -520,7 +534,8 @@ impl Connection {
                     .disk
                     .as_ref()
                     .is_none_or(|d| d.format != *format)
-                    || request.file.manifest.is_some() =>
+                    || request.file.manifest.is_some()
+                    || request.file.ovf.is_some() =>
             {
                 return Err(Error::TransferFile);
             }

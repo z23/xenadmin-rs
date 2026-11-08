@@ -18,11 +18,19 @@ pub enum ExportSource {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferAction {
+    ExportOvf {
+        source: ExportSource,
+        format: crate::OvfPackageFormat,
+    },
     ExportXva {
         source: ExportSource,
     },
     ImportXva {
         sr: SrId,
+    },
+    ImportOvf {
+        sr: SrId,
+        networks: std::collections::BTreeMap<String, crate::NetworkId>,
     },
     ExportDisk {
         vdi: crate::VdiId,
@@ -38,17 +46,28 @@ pub enum TransferAction {
 }
 impl TransferAction {
     pub fn is_export(&self) -> bool {
-        matches!(self, Self::ExportXva { .. } | Self::ExportDisk { .. })
+        matches!(
+            self,
+            Self::ExportXva { .. } | Self::ExportDisk { .. } | Self::ExportOvf { .. }
+        )
     }
     pub fn label(&self) -> &'static str {
         match self {
             Self::ExportXva { .. } => "Export XVA",
+            Self::ExportOvf { .. } => "Export OVF/OVA",
             Self::ImportXva { .. } => "Import XVA",
+            Self::ImportOvf { .. } => "Import OVF/OVA",
             Self::ExportDisk { .. } => "Export disk image",
             Self::ImportDisk { .. } => "Import disk image",
         }
     }
     pub fn availability(&self, i: &Inventory) -> ActionAvailability {
+        if let Self::ExportOvf { source, .. } = self {
+            return Self::ExportXva {
+                source: source.clone(),
+            }
+            .availability(i);
+        }
         let no = |s: &str| ActionAvailability::Prerequisite { reason: s.into() };
         if let Self::ImportDisk { name, .. } = self
             && (name.trim().is_empty()
@@ -58,13 +77,14 @@ impl TransferAction {
             return no("Enter a new disk name of 1–255 printable characters");
         };
         match self {
+            Self::ExportOvf { .. } => unreachable!(),
             Self::ExportDisk {
                 vdi,
                 expected_sr,
                 expected_size,
                 format,
             } => return disk::availability(i, *vdi, *expected_sr, *expected_size, *format),
-            Self::ImportXva { sr } | Self::ImportDisk { sr, .. } => {
+            Self::ImportXva { sr } | Self::ImportDisk { sr, .. } | Self::ImportOvf { sr, .. } => {
                 if i.details.storage.get(sr).is_none_or(|r| {
                     r.content_type != "user"
                         || r.allowed_operations
@@ -131,6 +151,14 @@ impl TransferAction {
                 }
             }
         }
+        if let Self::ImportOvf { networks, .. } = self
+            && (networks.len() > 64
+                || networks
+                    .values()
+                    .any(|n| !i.details.networks.contains_key(n)))
+        {
+            return no("Map every package network to a current pool network");
+        }
         ActionAvailability::Available
     }
 }
@@ -143,8 +171,24 @@ pub struct TransferFile {
     pub(crate) manifest: Option<ArchiveSummary>,
     #[serde(default)]
     pub(crate) disk: Option<crate::DiskImageSummary>,
+    #[serde(default)]
+    pub(crate) range: Option<files::FileRange>,
+    #[serde(default)]
+    pub(crate) ovf: Option<Box<crate::ovf::Selection>>,
 }
 impl TransferFile {
+    pub fn ovf_source(path: impl AsRef<Path>) -> Result<Self, Error> {
+        crate::ovf::select(path.as_ref())
+    }
+    pub fn ovf_source_with_cancel(
+        path: impl AsRef<Path>,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Error> {
+        crate::ovf::package::select_cancel(path.as_ref(), cancel)
+    }
+    pub fn ovf(&self) -> Option<&crate::OvfSummary> {
+        self.ovf.as_ref().map(|v| &v.summary)
+    }
     pub fn source(path: impl AsRef<Path>) -> Result<Self, Error> {
         files::select_source(path.as_ref())
     }
@@ -167,7 +211,10 @@ impl TransferFile {
             .unwrap_or_default()
     }
     pub fn size(&self) -> Option<u64> {
-        self.identity.as_ref().map(|v| v.size)
+        self.range
+            .as_ref()
+            .map(|r| r.length)
+            .or_else(|| self.identity.as_ref().map(|v| v.size))
     }
     pub fn archive(&self) -> Option<&ArchiveSummary> {
         self.manifest.as_ref()
@@ -204,10 +251,18 @@ pub struct TransferCreated {
     pub vms: Vec<VmId>,
     pub disks: Vec<crate::VdiId>,
     pub networks: Vec<crate::NetworkId>,
+    #[serde(default)]
+    pub vbds: Vec<crate::VbdId>,
+    #[serde(default)]
+    pub vifs: Vec<crate::VifId>,
 }
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
     pub file: TransferFile,
+    #[serde(default)]
+    pub ovf_import: Option<Box<crate::ovf::import::ImportPlan>>,
+    #[serde(default)]
+    pub ovf_export: Option<Box<crate::ovf::export::ExportPlan>>,
     #[serde(default)]
     pub disk_creation: Option<disk::Creation>,
     pub temporary: Option<PathBuf>,
@@ -236,6 +291,8 @@ impl Plan {
     pub fn new(file: TransferFile) -> Self {
         Self {
             file,
+            ovf_import: None,
+            ovf_export: None,
             disk_creation: None,
             temporary: None,
             temporary_identity: None,
@@ -260,20 +317,17 @@ pub(crate) fn valid_update(
     match (&old.transfer_plan, &new.transfer_plan) {
         (None, None) => true,
         (Some(a), Some(b)) => {
-            a.file == b.file
-                && disk::valid_creation_update(a.disk_creation.as_ref(), b.disk_creation.as_ref())
-                && (a.baseline.is_none() || a.baseline == b.baseline)
-                && (a.temporary.is_none() || a.temporary == b.temporary)
-                && (a.temporary_identity.is_none() || a.temporary_identity == b.temporary_identity)
-                && (!a.dispatched || b.dispatched)
-                && (!a.stream_invalid || b.stream_invalid)
-                && (a.task_uuid.is_none() || a.task_uuid == b.task_uuid)
-                && (!a.task_success || b.task_success)
-                && (!a.task_failed || b.task_failed)
-                && (!a.task_cancelled || b.task_cancelled)
-                && (a.result.is_none() || a.result == b.result)
-                && (a.stream_receipt.is_none() || a.stream_receipt == b.stream_receipt)
-                && (a.expires_at_ms == 0 || a.expires_at_ms == b.expires_at_ms)
+            plan_accepts(a, b)
+                && old
+                    .transfer_created
+                    .vbds
+                    .iter()
+                    .all(|id| new.transfer_created.vbds.contains(id))
+                && old
+                    .transfer_created
+                    .vifs
+                    .iter()
+                    .all(|id| new.transfer_created.vifs.contains(id))
                 && old
                     .transfer_created
                     .vms
@@ -300,3 +354,28 @@ mod tests;
 
 #[path = "transfer_disk.rs"]
 pub(crate) mod disk;
+
+pub(crate) fn plan_accepts(a: &Plan, b: &Plan) -> bool {
+    (match (&a.ovf_import, &b.ovf_import) {
+        (None, _) => true,
+        (Some(a), Some(b)) => a.accepts(b),
+        _ => false,
+    }) && (match (&a.ovf_export, &b.ovf_export) {
+        (None, _) => true,
+        (Some(a), Some(b)) => a.accepts(b),
+        _ => false,
+    }) && a.file == b.file
+        && disk::valid_creation_update(a.disk_creation.as_ref(), b.disk_creation.as_ref())
+        && (a.baseline.is_none() || a.baseline == b.baseline)
+        && (a.temporary.is_none() || a.temporary == b.temporary)
+        && (a.temporary_identity.is_none() || a.temporary_identity == b.temporary_identity)
+        && (!a.dispatched || b.dispatched)
+        && (!a.stream_invalid || b.stream_invalid)
+        && (a.task_uuid.is_none() || a.task_uuid == b.task_uuid)
+        && (!a.task_success || b.task_success)
+        && (!a.task_failed || b.task_failed)
+        && (!a.task_cancelled || b.task_cancelled)
+        && (a.result.is_none() || a.result == b.result)
+        && (a.stream_receipt.is_none() || a.stream_receipt == b.stream_receipt)
+        && (a.expires_at_ms == 0 || a.expires_at_ms == b.expires_at_ms)
+}

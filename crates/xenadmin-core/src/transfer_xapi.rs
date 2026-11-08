@@ -135,7 +135,11 @@ pub(crate) async fn prepare(
         TransferAction::ImportDisk { .. } | TransferAction::ExportDisk { .. } => {
             return Err(Error::TransferConflict);
         }
-        TransferAction::ImportXva { .. } => return Err(Error::TransferConflict),
+        TransferAction::ImportXva { .. }
+        | TransferAction::ImportOvf { .. }
+        | TransferAction::ExportOvf { .. } => {
+            return Err(Error::TransferConflict);
+        }
     }
     Ok(http::Prepared {
         kind: http::Kind::Archive,

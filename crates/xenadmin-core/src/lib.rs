@@ -79,6 +79,8 @@ pub use vm_lifecycle::{
     GuestFirmware, SnapshotDeletionSelection, VmCopyMode, VmLifecycleOperation,
 };
 mod disk_image;
+mod ovf;
+pub use ovf::{OvfAttachment, OvfDisk, OvfGuest, OvfNic, OvfPackageFormat, OvfSummary};
 mod transfer;
 pub use disk_image::{DiskImageFormat, DiskImageSummary};
 pub use transfer::{
@@ -119,6 +121,8 @@ pub enum Error {
     TransferArchive,
     #[error("Invalid or unsupported disk image; choose a complete raw or fixed/dynamic VHD image")]
     DiskImage,
+    #[error("Unsupported or invalid OVF package: {0}")]
+    Ovf(&'static str),
     #[error(
         "The transfer redirect is outside the authenticated pool or changes the requested operation"
     )]

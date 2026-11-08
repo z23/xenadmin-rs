@@ -214,7 +214,7 @@ pub(crate) async fn run(
         }
         files::source_unchanged(&plan.file, &verifier)?;
         // This receipt records selected file identity and sent byte count; it does not claim a server-side disk digest.
-        files::receipt(&verifier, bytes, [0; 32])
+        files::source_receipt(&plan.file, &verifier, bytes)
     } else {
         let output = files::output(&plan)?;
         let verifier = output.try_clone().map_err(|_| Error::TransferFile)?;
@@ -249,6 +249,30 @@ pub(crate) async fn run(
         output.flush().await.map_err(|_| Error::TransferFile)?;
         output.sync_all().await.map_err(|_| Error::TransferFile)?;
         files::receipt(&verifier, bytes, digest.finalize().into())
+    }
+}
+
+pub(crate) async fn drive(
+    session: &Session,
+    prepared: Prepared,
+    plan: Plan,
+    meter: Arc<Meter>,
+    cancel: &CancellationToken,
+    mut tick: impl FnMut(TransferProgress) -> Result<bool, Error>,
+) -> Result<files::Receipt, Error> {
+    let expires = plan.expires_at_ms;
+    let transfer = run(session, prepared, plan, meter.clone());
+    tokio::pin!(transfer);
+    loop {
+        tokio::select! {
+            _=cancel.cancelled()=>{meter.cancel.cancel();return Err(Error::Closed)},
+            result=&mut transfer=>return result,
+            _=tokio::time::sleep(Duration::from_millis(250))=>{
+                let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis()as u64;
+                if now>=expires{meter.cancel.cancel();return Err(Error::TransferExpired)}
+                if !tick(meter.progress())? {meter.cancel.cancel();return Err(Error::Closed)}
+            }
+        }
     }
 }
 
