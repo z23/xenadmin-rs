@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&StorageOperation, Error> {
     match &record.action {
-        ResourceAction::Storage(op) => Ok(op),
+        ResourceAction::Storage(op)
+        | ResourceAction::AuthenticatedStorage { operation: op, .. } => Ok(op),
         _ => Err(Error::InvalidResourceCommand),
     }
 }
@@ -92,7 +93,7 @@ async fn baseline(session: &Session) -> Result<StorageBaseline, Error> {
             .collect::<Result<_, _>>()?,
     })
 }
-async fn attachment_identity(
+pub(super) async fn attachment_identity(
     session: &Session,
     fresh: &Value,
     sr: SrId,
@@ -343,12 +344,14 @@ pub(super) async fn arguments(
                 if attachment["host"] == host_ref {
                     return Err(Error::ResourceConflict);
                 }
-                if crate::storage::requires_credentials(&attachment["device_config"]) {
+                if !matches!(record.action, ResourceAction::AuthenticatedStorage { .. })
+                    && crate::storage::requires_credentials(&attachment["device_config"])
+                {
                     return Err(Error::Protocol(
-                        "creating authenticated storage attachments is not implemented",
+                        "This attachment requires fresh storage credentials",
                     ));
                 }
-                if crate::storage::location_from_config(&attachment["device_config"]).as_ref()
+                if crate::storage::safe_location_from_config(&attachment["device_config"]).as_ref()
                     != Some(location)
                 {
                     return Err(Error::ResourceConflict);
@@ -507,7 +510,6 @@ pub(super) async fn verify(
             attachment_identity(session, &fresh, sr, *host).await?;
             if fresh["currently_attached"] != false
                 || baseline.pbds.contains(&id)
-                || fresh["other_config"][xapi::OPERATION_TAG] != record.id.to_string()
                 || !config_matches(&fresh["device_config"], &location.device_config())
             {
                 return Err(Error::ResourceConflict);
@@ -533,7 +535,7 @@ pub(super) async fn verify(
         },
     }
 }
-fn config_matches(actual: &Value, expected: &Value) -> bool {
+pub(super) fn config_matches(actual: &Value, expected: &Value) -> bool {
     expected.as_object().is_some_and(|expected| {
         expected.iter().all(|(key, value)| {
             actual[key] == *value || (key == "port" && value == "3260" && actual.get(key).is_none())

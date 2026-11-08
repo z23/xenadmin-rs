@@ -1,5 +1,7 @@
 mod power_batch;
 pub use power_batch::{BatchVmPower, VmPowerBatch};
+mod storage_auth;
+pub use storage_auth::{StorageAuthentication, StorageCredentials, StorageSecretEvidence};
 mod device_properties;
 mod search;
 pub use device_properties::{DeviceProperty, DeviceQos, DiskAccess};

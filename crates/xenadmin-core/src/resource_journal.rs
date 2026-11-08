@@ -79,8 +79,22 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let storage_auth_plan = payload
+                .get("storage_auth_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let cloud_init_plan = payload
                 .get("cloud_init_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
+            let storage_secret_cleanup = payload
+                .get("storage_secret_cleanup")
                 .filter(|v| !v.is_null())
                 .cloned()
                 .map(serde_json::from_value)
@@ -98,6 +112,8 @@ impl Journal {
                 }
             }
             record.power_batch_plan = power_batch_plan;
+            record.storage_auth_plan = storage_auth_plan;
+            record.storage_secret_cleanup = storage_secret_cleanup;
             record.host_plan = host_plan;
             record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
@@ -115,6 +131,7 @@ impl Journal {
                 return Err(Error::Journal);
             }
             crate::cross_pool_backend::validate_record(&record)?;
+            crate::storage_auth::validate_record(&record)?;
             Ok(record)
         })
         .transpose()
@@ -129,7 +146,21 @@ impl Journal {
         {
             plan.interrupted = true;
         }
+        crate::storage_auth::validate_record(record)?;
         if let Some(old) = self.resource_load(record.id)? {
+            if old.storage_auth_plan.as_ref().is_some_and(|p| {
+                record
+                    .storage_auth_plan
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) || old.storage_secret_cleanup.as_ref().is_some_and(|p| {
+                record
+                    .storage_secret_cleanup
+                    .as_ref()
+                    .is_none_or(|n| !n.extends(p))
+            }) {
+                return Err(Error::JournalChanged);
+            }
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
                 return Err(Error::OperationConflict);
@@ -216,6 +247,21 @@ impl Journal {
                 "cross_pool_plan".into(),
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
             );
+        }
+        for (key, value) in [
+            (
+                "storage_auth_plan",
+                serde_json::to_value(&record.storage_auth_plan),
+            ),
+            (
+                "storage_secret_cleanup",
+                serde_json::to_value(&record.storage_secret_cleanup),
+            ),
+        ] {
+            payload
+                .as_object_mut()
+                .ok_or(Error::Journal)?
+                .insert(key.into(), value.map_err(|_| Error::Journal)?);
         }
         if let Some(plan) = &record.host_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(

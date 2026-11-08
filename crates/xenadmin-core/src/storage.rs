@@ -21,6 +21,11 @@ impl NfsVersion {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StorageLocation {
+    IsoSmb {
+        server: String,
+        share: String,
+        path: String,
+    },
     Nfs {
         server: String,
         path: String,
@@ -69,12 +74,12 @@ impl StorageLocation {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Nfs { .. } => "nfs",
-            Self::IsoNfs { .. } => "iso",
+            Self::IsoNfs { .. } | Self::IsoSmb { .. } => "iso",
             Self::Iscsi { .. } => "lvmoiscsi",
         }
     }
     pub(crate) fn content_type(&self) -> &'static str {
-        if matches!(self, Self::IsoNfs { .. }) {
+        if matches!(self, Self::IsoNfs { .. } | Self::IsoSmb { .. }) {
             "iso"
         } else {
             "user"
@@ -86,6 +91,29 @@ impl StorageLocation {
             |s: &str| s.starts_with('/') && s.len() <= 4096 && !s.chars().any(char::is_control);
         let token = storage_token;
         match self {
+            Self::IsoSmb {
+                server,
+                share,
+                path,
+            } => {
+                host(server)
+                    && !share.is_empty()
+                    && share.len() <= 255
+                    && !share
+                        .chars()
+                        .any(|c| c.is_control() || matches!(c, '/' | '\\' | ',' | '@'))
+                    && !matches!(share.as_str(), "." | "..")
+                    && path.len() <= 4096
+                    && !path.starts_with('/')
+                    && !path.ends_with('/')
+                    && !path
+                        .chars()
+                        .any(|c| c.is_control() || matches!(c, '\\' | ','))
+                    && (path.is_empty()
+                        || path
+                            .split('/')
+                            .all(|p| !p.is_empty() && !matches!(p, "." | "..")))
+            }
             Self::Nfs {
                 server, path: p, ..
             }
@@ -109,6 +137,13 @@ impl StorageLocation {
     pub(crate) fn device_config(&self) -> serde_json::Value {
         use serde_json::json;
         let mut config = match self {
+            Self::IsoSmb {
+                server,
+                share,
+                path,
+            } => {
+                json!({"location":format!("//{server}/{share}{}",if path.is_empty(){String::new()}else{format!("/{path}")}),"type":"cifs","vers":"3.0"})
+            }
             Self::Nfs { server, path, .. } => json!({"server":server,"serverpath":path}),
             Self::IsoNfs { server, path, .. } => {
                 json!({"location":format!("{server}:{path}"),"type":"nfs_iso"})
@@ -265,9 +300,26 @@ pub(crate) fn requires_credentials(config: &serde_json::Value) -> bool {
     config.as_object().is_some_and(|config| {
         config.keys().any(|k| {
             let k = k.to_ascii_lowercase();
-            k.contains("password") || k.contains("secret") || k == "chapuser" || k == "username"
+            k.contains("password")
+                || k.contains("secret")
+                || k == "chapuser"
+                || k == "incoming_chapuser"
+                || k == "username"
         })
     })
+}
+pub(crate) fn safe_location_from_config(config: &serde_json::Value) -> Option<StorageLocation> {
+    let mut public = config.clone();
+    let map = public.as_object_mut()?;
+    map.retain(|k, _| {
+        let k = k.to_ascii_lowercase();
+        !k.contains("password")
+            && !k.contains("secret")
+            && k != "chapuser"
+            && k != "incoming_chapuser"
+            && k != "username"
+    });
+    location_from_config(&public)
 }
 pub(crate) fn location_from_config(config: &serde_json::Value) -> Option<StorageLocation> {
     if requires_credentials(config) {
@@ -281,7 +333,20 @@ pub(crate) fn location_from_config(config: &serde_json::Value) -> Option<Storage
         Some("4.1") => NfsVersion::V41,
         _ => return None,
     };
-    let location = if let (Some(server), Some(path)) = (text("server"), text("serverpath")) {
+    let location = if config["type"] == "cifs" {
+        if config["vers"] != "3.0" {
+            return None;
+        }
+        let value = text("location")?;
+        let tail = value.strip_prefix("//")?;
+        let (server, rest) = tail.split_once('/')?;
+        let (share, path) = rest.split_once('/').unwrap_or((rest, ""));
+        StorageLocation::IsoSmb {
+            server: server.into(),
+            share: share.into(),
+            path: path.into(),
+        }
+    } else if let (Some(server), Some(path)) = (text("server"), text("serverpath")) {
         StorageLocation::Nfs {
             server,
             path,
@@ -335,6 +400,22 @@ pub(crate) fn path_counts(value: &serde_json::Value) -> Vec<crate::StoragePathCo
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn smb_projection_preserves_only_safe_location_and_never_downgrades() {
+        let config = json!({"location":"//smb.example.test/images/install","type":"cifs","vers":"3.0","username":"DOMAIN\\private","cifspassword_secret":"private-secret-uuid"});
+        assert!(requires_credentials(&config));
+        assert!(location_from_config(&config).is_none());
+        let location = safe_location_from_config(&config).unwrap();
+        assert_eq!(
+            location.device_config(),
+            json!({"location":"//smb.example.test/images/install","type":"cifs","vers":"3.0"})
+        );
+        let mut legacy = config.clone();
+        legacy["vers"] = json!("1.0");
+        assert!(safe_location_from_config(&legacy).is_none());
+        legacy.as_object_mut().unwrap().remove("vers");
+        assert!(safe_location_from_config(&legacy).is_none());
+    }
     #[test]
     fn attachment_projection_never_copies_authentication_material() {
         let config = json!({"server":"nfs.example.test","serverpath":"/images","chappassword_secret":"private"});

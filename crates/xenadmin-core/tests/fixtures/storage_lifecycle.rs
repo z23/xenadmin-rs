@@ -116,7 +116,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                     *result_ref.lock().unwrap()=Some(if fault==Fault::WrongResult{"OpaqueRef:SR"}else{"OpaqueRef:SR-created"}.into());
                 }
                 "SR.introduce"=>{map.insert("SR-created".into(),json!({"uuid":params[1],"name_label":params[2],"name_description":params[3],"type":params[4],"content_type":params[5],"shared":params[6],"PBDs":[],"VDIs":[]}));*result_ref.lock().unwrap()=Some("OpaqueRef:SR-created".into());},
-                "PBD.create"=>{let mut pbd=params[1].clone();pbd["uuid"]=json!(CREATED);pbd["currently_attached"]=json!(false);map.insert("PBD-created".into(),pbd);*result_ref.lock().unwrap()=Some("OpaqueRef:PBD-created".into());},
+                "PBD.create"=>{let mut pbd=params[1].clone();pbd["other_config"]=json!({});pbd["uuid"]=json!(CREATED);pbd["currently_attached"]=json!(false);map.insert("PBD-created".into(),pbd);*result_ref.lock().unwrap()=Some("OpaqueRef:PBD-created".into());},
                 _=>panic!("unexpected storage mutation {method}"),
             }
             return Some(if fault==Fault::DropReply{RpcReply::Drop}else{RpcReply::Json(json!({"result":"OpaqueRef:storage-task"}))});

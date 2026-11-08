@@ -22,6 +22,17 @@ pub(super) struct Editor {
     server: TextEdit,
     port: TextEdit,
     path: TextEdit,
+    share: TextEdit,
+    authenticate: bool,
+    mutual: bool,
+    auth_epoch: u64,
+    username: TextEdit,
+    password: TextEdit,
+    incoming_username: TextEdit,
+    incoming_password: TextEdit,
+    review_credentials: Option<xenadmin_core::StorageCredentials>,
+    review_auth_label: Option<String>,
+    cleanup_review: Option<(ObservedResource, OperationId, Vec<xenadmin_core::SecretId>)>,
     iqn: TextEdit,
     scsi: TextEdit,
     uuid: TextEdit,
@@ -80,6 +91,17 @@ fn open(s: &mut State, sr: Option<SrId>) {
         server: TextEdit::new(""),
         port: TextEdit::new("3260"),
         path: TextEdit::new("/"),
+        share: TextEdit::new(""),
+        authenticate: false,
+        mutual: false,
+        auth_epoch: 0,
+        username: TextEdit::new(""),
+        password: secure_field(),
+        incoming_username: TextEdit::new(""),
+        incoming_password: secure_field(),
+        review_credentials: None,
+        review_auth_label: None,
+        cleanup_review: None,
         iqn: TextEdit::new(""),
         scsi: TextEdit::new(""),
         uuid: TextEdit::new(""),
@@ -100,6 +122,11 @@ fn open(s: &mut State, sr: Option<SrId>) {
 }
 fn location(editor: &Editor) -> StorageLocation {
     match editor.kind {
+        3 => StorageLocation::IsoSmb {
+            server: editor.server.text.trim().into(),
+            share: editor.share.text.trim().into(),
+            path: editor.path.text.trim_matches('/').into(),
+        },
         1 => StorageLocation::IsoNfs {
             server: editor.server.text.trim().into(),
             path: editor.path.text.trim().into(),
@@ -128,6 +155,10 @@ struct DiscoveryInputs {
     path: String,
     iqn: String,
     scsi: String,
+    share: String,
+    auth_epoch: u64,
+    authenticate: bool,
+    mutual: bool,
 }
 fn inputs(e: &Editor) -> DiscoveryInputs {
     DiscoveryInputs {
@@ -139,6 +170,10 @@ fn inputs(e: &Editor) -> DiscoveryInputs {
         path: e.path.text.clone(),
         iqn: e.iqn.text.clone(),
         scsi: e.scsi.text.clone(),
+        share: e.share.text.clone(),
+        auth_epoch: e.auth_epoch,
+        authenticate: e.authenticate,
+        mutual: e.mutual,
     }
 }
 fn results_current(s: &State, e: &Editor) -> bool {
@@ -187,12 +222,17 @@ fn query(s: &mut State, step: u8) {
                 target_iqn: e.iqn.text.trim().into(),
             },
         };
-        let handle = s
-            .connection
-            .as_ref()
-            .ok_or("Connect before discovery")?
-            .discover_storage(observed, query)
-            .map_err(|e| e.to_string())?;
+        let connection = s.connection.as_ref().ok_or("Connect before discovery")?;
+        let handle = if step != 0 && e.authenticate && matches!(e.kind, 2 | 3) {
+            connection.discover_authenticated_storage(
+                observed,
+                query,
+                credentials(e).ok_or("Enter the storage username and password")?,
+            )
+        } else {
+            connection.discover_storage(observed, query)
+        }
+        .map_err(|e| e.to_string())?;
         if let Some(waker) = &s.waker {
             handle.notify_on_change(waker.clone());
         }
@@ -247,6 +287,12 @@ fn select_result(s: &mut State, index: usize) {
         return;
     };
     if !results_current(s, e) {
+        let e = s.storage_editor.as_mut().unwrap();
+        e.discovered = None;
+        e.error = Some(
+            "Storage inputs or credentials changed. Discover again before selecting a result."
+                .into(),
+        );
         return;
     }
     let e = s.storage_editor.as_mut().unwrap();
@@ -379,6 +425,34 @@ fn discovery_results(s: &State, e: &Editor, k: &Kit) -> El {
     }
     body
 }
+fn credentials(e: &Editor) -> Option<xenadmin_core::StorageCredentials> {
+    if e.username.text.is_empty() || e.password.text.is_empty() {
+        return None;
+    }
+    if e.kind == 3 {
+        Some(xenadmin_core::StorageCredentials::smb(
+            e.username.text.clone(),
+            e.password.text.clone(),
+        ))
+    } else if e.kind == 2 && e.mutual {
+        if e.incoming_username.text.is_empty() || e.incoming_password.text.is_empty() {
+            return None;
+        }
+        Some(xenadmin_core::StorageCredentials::mutual_chap(
+            e.username.text.clone(),
+            e.password.text.clone(),
+            e.incoming_username.text.clone(),
+            e.incoming_password.text.clone(),
+        ))
+    } else if e.kind == 2 {
+        Some(xenadmin_core::StorageCredentials::chap(
+            e.username.text.clone(),
+            e.password.text.clone(),
+        ))
+    } else {
+        None
+    }
+}
 fn review(s: &mut State) {
     let result = (|| {
         let editor = s.storage_editor.as_ref().ok_or("Storage view is closed")?;
@@ -446,6 +520,30 @@ fn stage(s: &mut State, target: ResourceTarget, operation: StorageOperation) {
             editor.error = Some("The connection changed; reopen storage before reviewing.".into());
             return;
         }
+        let auth = editor.authenticate
+            && matches!(editor.kind, 2 | 3)
+            && matches!(
+                operation,
+                StorageOperation::Create { .. } | StorageOperation::CreateAttachment { .. }
+            );
+        editor.review_credentials = if auth { credentials(editor) } else { None };
+        if auth && editor.review_credentials.is_none() {
+            editor.error = Some("Enter the storage username and password before review".into());
+            return;
+        }
+        editor.review_auth_label = auth.then(|| {
+            format!(
+                "{} authentication as {}",
+                if editor.kind == 3 {
+                    "SMB 3.0"
+                } else if editor.mutual {
+                    "Mutual CHAP"
+                } else {
+                    "CHAP"
+                },
+                editor.username.text
+            )
+        });
         editor.review = Some((observed, target, operation));
         editor.error = None;
         editor.confirmation = TextEdit::new("");
@@ -457,6 +555,75 @@ fn current(snapshot: Option<&ConnectionSnapshot>, editor: &Editor) -> bool {
             .observed
             .is_some_and(|observed| snapshot.observe_resource(editor.target).ok() == Some(observed))
     })
+}
+fn stage_cleanup(s: &mut State, id: OperationId) {
+    let Some(editor) = s.storage_editor.as_ref() else {
+        return;
+    };
+    let Some(record) = s.resource_rows.iter().find(|r| {
+        r.id == id
+            && r.pool == editor.pool
+            && r.state.terminal()
+            && matches!(
+                r.action,
+                xenadmin_core::ResourceAction::AuthenticatedStorage { .. }
+            )
+    }) else {
+        return;
+    };
+    let Some(observed) = s
+        .snapshot
+        .as_ref()
+        .and_then(|v| v.observe_resource(ResourceTarget::Pool(editor.pool)).ok())
+    else {
+        return;
+    };
+    let secrets = record
+        .storage_secrets
+        .iter()
+        .filter(|v| !v.cleaned)
+        .map(|v| v.secret)
+        .collect();
+    let editor = s.storage_editor.as_mut().unwrap();
+    editor.cleanup_review = Some((observed, id, secrets));
+    editor.error = None;
+}
+fn apply_cleanup(s: &mut State) {
+    let result = (|| {
+        let e = s
+            .storage_editor
+            .as_ref()
+            .ok_or(xenadmin_core::Error::Closed)?;
+        let (pool, operation, secrets) = e
+            .cleanup_review
+            .as_ref()
+            .ok_or(xenadmin_core::Error::InvalidResourceCommand)?;
+        s.connection
+            .as_ref()
+            .ok_or(xenadmin_core::Error::Closed)?
+            .submit_resource(
+                OperationId::new(),
+                ResourceCommand::CleanupStorageCredentials {
+                    pool: *pool,
+                    operation: *operation,
+                    secrets: secrets.clone(),
+                },
+            )
+    })();
+    match result {
+        Ok(operation) => {
+            if let Some(w) = &s.waker {
+                operation.notify_on_change(w.clone());
+            }
+            s.resource_operations.push(operation);
+            s.storage_editor = None;
+        }
+        Err(e) => {
+            if let Some(editor) = &mut s.storage_editor {
+                editor.error = Some(e.to_string());
+            }
+        }
+    }
 }
 fn apply(s: &mut State) {
     let result = (|| {
@@ -483,16 +650,26 @@ fn apply(s: &mut State) {
         {
             return Err(xenadmin_core::Error::InvalidResourceCommand);
         }
-        s.connection
-            .as_ref()
-            .ok_or(xenadmin_core::Error::Closed)?
-            .submit_resource(
+        let operation = operation.clone();
+        let connection = s.connection.as_ref().ok_or(xenadmin_core::Error::Closed)?;
+        let credentials = s.storage_editor.as_mut().unwrap().review_credentials.take();
+        s.storage_editor.as_mut().unwrap().password = secure_field();
+        s.storage_editor.as_mut().unwrap().incoming_password = secure_field();
+        if let Some(credentials) = credentials {
+            return connection.submit_authenticated_storage(
                 OperationId::new(),
-                ResourceCommand::Storage {
-                    target: observed,
-                    operation: operation.clone(),
-                },
-            )
+                observed,
+                operation,
+                credentials,
+            );
+        }
+        connection.submit_resource(
+            OperationId::new(),
+            ResourceCommand::Storage {
+                target: observed,
+                operation: operation.clone(),
+            },
+        )
     })();
     match result {
         Ok(operation) => {
@@ -505,6 +682,13 @@ fn apply(s: &mut State) {
         Err(error) => {
             if let Some(editor) = &mut s.storage_editor {
                 editor.error = Some(error.to_string());
+                if editor.review_auth_label.is_some() && editor.review_credentials.is_none() {
+                    editor.review = None;
+                    editor.review_auth_label = None;
+                    editor.error = Some(format!(
+                        "{error}. Enter the storage password and review again."
+                    ));
+                }
             }
         }
     }
@@ -590,7 +774,23 @@ fn new_attachment(s: &mut State) {
     editor.mode = Mode::Attachment;
     editor.error = None;
     if let Some(template) = template {
+        editor.authenticate = s.inventory.as_ref().is_some_and(|i| {
+            i.details
+                .pbds
+                .values()
+                .any(|p| p.sr == Some(sr) && p.requires_credentials)
+        });
         match template {
+            StorageLocation::IsoSmb {
+                server,
+                share,
+                path,
+            } => {
+                editor.kind = 3;
+                editor.server = TextEdit::new(server);
+                editor.share = TextEdit::new(share);
+                editor.path = TextEdit::new(path);
+            }
             StorageLocation::Nfs {
                 server,
                 path,
@@ -642,6 +842,15 @@ pub(super) fn button(s: &State, k: &Kit) -> El {
 }
 fn location_lines(location: &StorageLocation) -> Vec<String> {
     match location {
+        StorageLocation::IsoSmb {
+            server,
+            share,
+            path,
+        } => vec![
+            "Backend: ISO library over SMB 3.0".into(),
+            format!("Share: //{server}/{share}/{path}"),
+            "SMB 1 fallback is disabled".into(),
+        ],
         StorageLocation::Nfs {
             server,
             path,
@@ -725,12 +934,23 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .wrap_anywhere(),
         );
-    if let Some((_, target, operation)) = &editor.review {
+    if let Some((_, source, secrets)) = &editor.cleanup_review {
+        body = body
+            .child(heading("Review temporary Secret cleanup", k))
+            .child(caption(format!("Source operation: {source}"), k).wrap_anywhere());
+        for id in secrets {
+            body = body.child(caption(format!("Temporary Secret: {id}"), k).wrap_anywhere());
+        }
+        body=body.child(caption("Deletes only the selected operation's owned, unused temporary Secrets. The backend refuses cleanup when provisioning may still be active or any storage configuration still references a Secret. Attachment-owned credential copies are preserved.",k).wrap());
+    } else if let Some((_, target, operation)) = &editor.review {
         body = body
             .child(heading("Review storage change", k))
             .child(caption(format!("Target UUID: {}", target.uuid()), k).wrap_anywhere());
         for line in describe(operation) {
             body = body.child(caption(line, k).wrap_anywhere());
+        }
+        if let Some(label) = &editor.review_auth_label {
+            body=body.child(caption(label,k).wrap()).child(caption("Credentials are sent through temporary server Secret objects and cleared from this form after submission. Verified provisioning removes unused temporary Secrets; uncertain outcomes retain their identities for explicit cleanup.",k).wrap());
         }
         if matches!(
             operation,
@@ -799,7 +1019,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     );
                 }
                 if attachment.requires_credentials {
-                    body=body.child(caption("This attachment uses credentials. Existing attach/detach works; creating another authenticated attachment is not implemented.",k).wrap());
+                    body=body.child(caption("This attachment uses credentials. A new host attachment requires fresh credentials; existing secrets are never copied into this form.",k).wrap());
                 }
                 body = body.child(
                     Button::new(if attachment.currently_attached == Some(true) {
@@ -943,11 +1163,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .build(k),
                 );
         }
-        body=body.child(caption("Backends: NFS, ISO over NFS, and unauthenticated LVM over iSCSI. CHAP and SMB provisioning are not implemented.",k).wrap());
+        body=body.child(caption("Choose a storage backend. Credentials are session-only inputs; the host stores its attachment credentials in server Secret objects.",k).wrap());
         for (kind, label) in [
             (0, "NFS virtual disks"),
             (1, "ISO library over NFS"),
             (2, "LVM over iSCSI"),
+            (3, "ISO library over SMB 3.0"),
         ] {
             body = body.child(
                 Button::new(format!(
@@ -992,6 +1213,23 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .on_edit(|s: &mut State| &mut s.storage_editor.as_mut().unwrap().scsi)
                         .build(k),
                 );
+        } else if editor.kind == 3 {
+            body = body
+                .child(caption("SMB share name", k))
+                .child(
+                    TextInput::new(&editor.share)
+                        .label("SMB share name")
+                        .on_edit(|s: &mut State| &mut s.storage_editor.as_mut().unwrap().share)
+                        .build(k)
+                        .key("storage-smb-share"),
+                )
+                .child(caption("Optional path inside share", k))
+                .child(
+                    TextInput::new(&editor.path)
+                        .label("Path inside SMB share")
+                        .on_edit(|s: &mut State| &mut s.storage_editor.as_mut().unwrap().path)
+                        .build(k),
+                );
         } else {
             body = body.child(caption("NFS export path", k).wrap()).child(
                 TextInput::new(&editor.path)
@@ -1024,6 +1262,94 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 );
             }
             body = body.child(versions);
+        }
+        if matches!(editor.kind, 2 | 3) {
+            body = body.child(
+                Checkbox::new(editor.authenticate)
+                    .label("Use storage credentials")
+                    .on_toggle(|s: &mut State| {
+                        let e = s.storage_editor.as_mut().unwrap();
+                        e.authenticate = !e.authenticate;
+                        e.auth_epoch += 1;
+                    })
+                    .build(k)
+                    .key("storage-auth"),
+            );
+            if editor.authenticate {
+                if editor.kind == 2 {
+                    body = body.child(
+                        Checkbox::new(editor.mutual)
+                            .label("Mutual CHAP")
+                            .on_toggle(|s: &mut State| {
+                                let e = s.storage_editor.as_mut().unwrap();
+                                e.mutual = !e.mutual;
+                                e.auth_epoch += 1;
+                            })
+                            .build(k),
+                    );
+                }
+                body = body
+                    .child(
+                        caption(
+                            if editor.kind == 3 {
+                                "SMB username (DOMAIN\\user if needed)"
+                            } else {
+                                "CHAP username"
+                            },
+                            k,
+                        )
+                        .wrap(),
+                    )
+                    .child(
+                        TextInput::new(&editor.username)
+                            .label("Storage username")
+                            .on_edit(|s: &mut State| {
+                                let e = s.storage_editor.as_mut().unwrap();
+                                e.auth_epoch += 1;
+                                &mut e.username
+                            })
+                            .build(k)
+                            .key("storage-username"),
+                    )
+                    .child(
+                        TextInput::new(&editor.password)
+                            .secure()
+                            .label("Storage password")
+                            .placeholder("Storage password")
+                            .on_edit(|s: &mut State| {
+                                let e = s.storage_editor.as_mut().unwrap();
+                                e.auth_epoch += 1;
+                                &mut e.password
+                            })
+                            .build(k)
+                            .key("storage-password"),
+                    );
+                if editor.kind == 2 && editor.mutual {
+                    body = body
+                        .child(caption("Incoming CHAP credentials", k))
+                        .child(
+                            TextInput::new(&editor.incoming_username)
+                                .label("Incoming CHAP username")
+                                .on_edit(|s: &mut State| {
+                                    let e = s.storage_editor.as_mut().unwrap();
+                                    e.auth_epoch += 1;
+                                    &mut e.incoming_username
+                                })
+                                .build(k),
+                        )
+                        .child(
+                            TextInput::new(&editor.incoming_password)
+                                .secure()
+                                .label("Incoming CHAP password")
+                                .on_edit(|s: &mut State| {
+                                    let e = s.storage_editor.as_mut().unwrap();
+                                    e.auth_epoch += 1;
+                                    &mut e.incoming_password
+                                })
+                                .build(k),
+                        );
+                }
+            }
         }
         body = body.child(caption("Host for creation, attachment or discovery", k).wrap());
         if let Some(inventory) = &s.inventory {
@@ -1067,6 +1393,8 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 (3, "Discover iSCSI targets"),
                 (4, "Discover LUNs for selected IQN"),
             ]
+        } else if editor.kind == 3 {
+            vec![]
         } else {
             vec![(2, "Discover NFS exports")]
         } {
@@ -1110,6 +1438,42 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
     }
+    if editor.review.is_none() && editor.cleanup_review.is_none() {
+        for record in s
+            .resource_rows
+            .iter()
+            .filter(|r| {
+                r.pool == editor.pool
+                    && matches!(
+                        r.action,
+                        xenadmin_core::ResourceAction::AuthenticatedStorage { .. }
+                    )
+                    && r.storage_secrets.iter().any(|s| !s.cleaned)
+            })
+            .take(20)
+        {
+            let id = record.id;
+            body = body.child(
+                caption(
+                    format!("Temporary storage credentials retained · operation {id}"),
+                    k,
+                )
+                .wrap_anywhere(),
+            );
+            for secret in record.storage_secrets.iter().filter(|v| !v.cleaned) {
+                body = body.child(caption(format!("Secret {}", secret.secret), k).wrap_anywhere());
+            }
+            body = body.child(
+                Button::new("Review unused Secret cleanup…")
+                    .disabled(!record.state.terminal() || !s.can_mutate())
+                    .on_press(move |s: &mut State| stage_cleanup(s, id))
+                    .build(k),
+            );
+            if !record.state.terminal() {
+                body=body.child(caption("Resolve or acknowledge the uncertain source operation in Activity before separate cleanup.",k).wrap());
+            }
+        }
+    }
     if editor.discovery.is_some() {
         body = body.child(caption("Reading storage discovery…", k));
     }
@@ -1136,7 +1500,23 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .on_press(|s: &mut State| s.storage_editor = None)
             .build(k),
     );
-    if let Some((_, _, operation)) = &editor.review {
+    if editor.cleanup_review.is_some() {
+        footer = footer
+            .child(
+                Button::new("Back")
+                    .on_press(|s: &mut State| {
+                        s.storage_editor.as_mut().unwrap().cleanup_review = None
+                    })
+                    .build(k),
+            )
+            .child(
+                Button::new("Delete unused temporary Secrets")
+                    .disabled(s.demo || !s.can_mutate())
+                    .on_press(apply_cleanup)
+                    .build(k)
+                    .key("storage-cleanup-apply"),
+            );
+    } else if let Some((_, _, operation)) = &editor.review {
         let destructive = matches!(
             operation,
             StorageOperation::Forget { .. } | StorageOperation::Destroy { .. }
@@ -1145,7 +1525,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         footer = footer
             .child(
                 Button::new("Back")
-                    .on_press(|s: &mut State| s.storage_editor.as_mut().unwrap().review = None)
+                    .on_press(|s: &mut State| {
+                        let e = s.storage_editor.as_mut().unwrap();
+                        e.review = None;
+                        e.review_credentials = None;
+                        e.review_auth_label = None;
+                    })
                     .build(k),
             )
             .child(
@@ -1231,9 +1616,84 @@ pub(super) fn discovery_scene(s: &mut State) {
     ]));
 }
 
+pub(super) fn authenticated_scene(s: &mut State) {
+    scene(s, false);
+    let e = s.storage_editor.as_mut().unwrap();
+    e.kind = 3;
+    e.authenticate = true;
+    e.name = TextEdit::new("Lab ISO library");
+    e.server = TextEdit::new("smb.example.test");
+    e.share = TextEdit::new("images");
+    e.path = TextEdit::new("install");
+    e.username = TextEdit::new("LAB\\fixture");
+    e.password = secure_field();
+    e.password.text = "synthetic-only-password".into();
+    review(s);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authenticated_storage_review_is_captured_and_footer_remains_reachable() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut s = crate::init();
+            authenticated_scene(&mut s);
+            let e = s.storage_editor.as_mut().unwrap();
+            assert!(e.review_credentials.is_some());
+            e.server = TextEdit::new("changed.example.test");
+            e.username = TextEdit::new("changed");
+            assert!(
+                e.review_auth_label
+                    .as_ref()
+                    .unwrap()
+                    .contains("LAB\\fixture")
+            );
+            assert!(
+                matches!(&e.review.as_ref().unwrap().2,StorageOperation::Create{location:StorageLocation::IsoSmb{server,..},..} if server=="smb.example.test")
+            );
+            let mut rt = rune::Runtime::new(
+                s,
+                crate::view,
+                size,
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            for _ in 0..30 {
+                rt.frame(1.0 / 60.0);
+            }
+            let (x, y) = rt.find("storage-confirm").unwrap();
+            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            rt.pointer_down(x, y);
+            rt.pointer_up(x, y);
+            rt.frame(0.0);
+            assert!(rt.state.resource_operations.is_empty());
+        }
+    }
+    #[test]
+    fn storage_discovery_result_fence_includes_credential_changes() {
+        let mut s = crate::init();
+        discovery_scene(&mut s);
+        let e = s.storage_editor.as_mut().unwrap();
+        e.authenticate = true;
+        e.query_inputs = Some(inputs(e));
+        e.auth_epoch += 1;
+        select_result(&mut s, 0);
+        assert_eq!(
+            s.storage_editor.as_ref().unwrap().server.text,
+            "storage.example.test"
+        );
+        assert!(s.storage_editor.as_ref().unwrap().error.is_some());
+        scene(&mut s, false);
+        let e = s.storage_editor.as_mut().unwrap();
+        e.kind = 3;
+        e.authenticate = true;
+        e.share = TextEdit::new("images");
+        review(&mut s);
+        assert!(s.storage_editor.as_ref().unwrap().review.is_none());
+    }
     #[test]
     fn discovery_selection_is_reachable_bound_to_inputs_and_keeps_review_separate() {
         for size in [(513.0, 652.0), (1440.0, 900.0)] {

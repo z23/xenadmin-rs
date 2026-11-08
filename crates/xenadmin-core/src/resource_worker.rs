@@ -12,6 +12,8 @@ mod ovf_worker;
 mod pool_join_worker;
 #[path = "power_batch_worker.rs"]
 mod power_batch_worker;
+#[path = "storage_auth_worker.rs"]
+mod storage_auth_worker;
 #[path = "transfer_disk_worker.rs"]
 mod transfer_disk_worker;
 #[path = "transfer_worker.rs"]
@@ -28,6 +30,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
+    pub(crate) storage_credentials: Option<crate::StorageCredentials>,
     pub(crate) sensitive: Option<crate::pool_security::SensitiveInputs>,
     pub(crate) cloud_media: Option<crate::CloudInitMedia>,
     pub generation: u64,
@@ -47,6 +50,7 @@ impl ResourceRequest {
         Self {
             sensitive: None,
             cloud_media: None,
+            storage_credentials: None,
             generation,
             join: None,
             cross_pool: None,
@@ -61,6 +65,7 @@ impl ResourceRequest {
         Self {
             sensitive: None,
             cloud_media: None,
+            storage_credentials: None,
             generation: 0,
             join: None,
             cross_pool: None,
@@ -201,6 +206,13 @@ impl ResourceRequest {
         if matches!(self.record.action, super::ResourceAction::CrossPoolVm(_)) {
             return self.execute_cross_pool(journal, session, cancel).await;
         }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::AuthenticatedStorage { .. }
+                | super::ResourceAction::CleanupStorageCredentials { .. }
+        ) {
+            return self.execute_storage_auth(journal, session, cancel).await;
+        }
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.execute_join(journal, session, cancel).await;
         }
@@ -328,6 +340,13 @@ impl ResourceRequest {
         }
         if matches!(self.record.action, super::ResourceAction::CrossPoolVm(_)) {
             return self.recheck_cross_pool(journal, session, cancel).await;
+        }
+        if matches!(
+            self.record.action,
+            super::ResourceAction::AuthenticatedStorage { .. }
+                | super::ResourceAction::CleanupStorageCredentials { .. }
+        ) {
+            return self.reconcile_storage_auth(journal, session, cancel).await;
         }
         if crate::pool_join::destination(&self.record.action).is_some() {
             return self.reconcile_join(journal, session, cancel).await;
@@ -786,6 +805,8 @@ impl ResourceRequest {
         let explicit_rejection = !matches!(
             self.record.action,
             super::ResourceAction::PowerBatch(_)
+                | super::ResourceAction::AuthenticatedStorage { .. }
+                | super::ResourceAction::CleanupStorageCredentials { .. }
                 | super::ResourceAction::Pool(_)
                 | super::ResourceAction::Appliance(_)
                 | super::ResourceAction::SnapshotPolicy(_)

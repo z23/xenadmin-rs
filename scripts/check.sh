@@ -91,3 +91,14 @@ check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import
 "$check_binary" --snap artifacts/batch-power-compact.png --tree artifacts/batch-power-compact.json --scene batch-power --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/cross-pool.png --tree artifacts/cross-pool.json --scene cross-pool --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/cross-pool-compact.png --tree artifacts/cross-pool-compact.json --scene cross-pool --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/storage-auth-review.png --tree artifacts/storage-auth-review.json --scene storage-auth-review --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/storage-auth-review-compact.png --tree artifacts/storage-auth-review-compact.json --scene storage-auth-review --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/console-recovery.png --tree artifacts/console-recovery.json --scene console-recovery --theme dark --size 1440x900 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/console-recovery-compact.png --tree artifacts/console-recovery-compact.json --scene console-recovery --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/host-console.png --tree artifacts/host-console.json --scene host-console --theme dark --size 1440x900 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/host-console-compact.png --tree artifacts/host-console-compact.json --scene host-console --theme dark --size 513x652 --scale 1 --at 1

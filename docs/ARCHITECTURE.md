@@ -363,8 +363,8 @@ creating a PBD and plugging it are separate reviewed commands. Creation saves a 
 baseline, private task/result references and verified public created UUID. Missing task/result
 identity stays unknown; the client never replays provisioning. A saved creation result can be
 verified after the server task disappears. Forget and destroy have different reviews and require
-fresh disk, attachment and pool/host dependency checks. Authentication values are not accepted
-by the storage command model; authenticated provisioning awaits a journalled Secret lifecycle.
+fresh disk, attachment and pool/host dependency checks. Authentication values use a dedicated transient facade; public commands and records contain
+only authentication kind and Secret UUID evidence. See the authenticated storage increment below.
 Read-only storage discovery reuses the authenticated connection, is cancelled on generation
 change or handle drop, and projects bounded capability metadata and SR UUID/name/size records.
 The desktop never receives raw probe XML, RPC references or PBD device-config credentials.
@@ -519,3 +519,21 @@ replays receiver preparation or transfer. The original worker stops after recove
 state even if a late positive receipt arrives. Public Activity exports include the destination
 pool so UUIDs are unambiguous. See the [cross-pool report](reports/2026-11-08-cross-pool-transfers.md)
 for the supported subset, host-to-host transport policy and qualification gaps.
+
+## Authenticated storage credentials
+
+`StorageCredentials` is nonserializable and zeroizes its input strings on drop. The dedicated
+submission facade binds it to an observed pool/SR and a closed CHAP, mutual CHAP or SMB3
+operation. The resource journal persists private immutable storage/Secret baselines, username
+digests and monotonic dispatch/receipt/cleanup evidence, never credential values or Secret
+opaque references. Public history and development inspection expose only bootstrap Secret UUIDs
+and cleanup state. Active admission uses the full private-plan decoder and fails closed on corruption.
+
+The worker creates operation-tagged temporary `secret` objects, provisions through one saved
+async task, then verifies the new SR/PBD graph and fresh attachment-owned Secret copies. XAPI
+ignores `PBD.create.other_config`; verification therefore relies on task/result receipt, new UUID
+baseline, exact host/SR/configuration and credential-copy identities. Cleanup deletes only owned
+bootstrap Secrets after verified task completion and a fresh bounded PBD/SR consumer scan.
+Uncertain provisioning retains evidence; explicit cleanup requires source-row provenance and
+proof that provisioning cannot still be running. Recovery reads existing evidence and never
+continues pending provisioning or deletion. See the [verification report](reports/2026-11-08-authenticated-storage.md).

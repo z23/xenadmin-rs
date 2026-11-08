@@ -1,3 +1,7 @@
+#[path = "storage_auth_backend.rs"]
+mod storage_auth_backend;
+#[path = "storage_auth_journal.rs"]
+mod storage_auth_journal;
 use crate::{
     BondId, Error, HostId, MessageId, NetworkId, NetworkOperation, OperationId, OperationState,
     OperationStep, PbdId, PifId, PoolId, SrId, StorageOperation, TaskId, VlanId,
@@ -99,6 +103,11 @@ pub enum ResourceCommand {
         pool: ObservedResource,
         selection: crate::VmPowerBatch,
     },
+    CleanupStorageCredentials {
+        pool: ObservedResource,
+        operation: OperationId,
+        secrets: Vec<crate::SecretId>,
+    },
     SnapshotPolicy {
         pool: ObservedResource,
         operation: crate::SnapshotPolicyOperation,
@@ -178,6 +187,14 @@ pub enum ResourceCommand {
 pub enum ResourceAction {
     PowerBatch(crate::VmPowerBatch),
     CrossPoolVm(crate::CrossPoolVmOperation),
+    AuthenticatedStorage {
+        operation: StorageOperation,
+        authentication: crate::StorageAuthentication,
+    },
+    CleanupStorageCredentials {
+        operation: OperationId,
+        secrets: Vec<crate::SecretId>,
+    },
     SnapshotPolicy(crate::SnapshotPolicyOperation),
     Appliance(crate::ApplianceOperation),
     Pool(crate::PoolOperation),
@@ -227,6 +244,8 @@ impl ResourceAction {
         match self {
             Self::PowerBatch(_) => "Power actions on selected VMs",
             Self::CrossPoolVm(operation) => operation.mode.label(),
+            Self::AuthenticatedStorage { operation, .. } => operation.label(),
+            Self::CleanupStorageCredentials { .. } => "Clean up retained storage credentials",
             Self::SnapshotPolicy(operation) => operation.label(),
             Self::Appliance(operation) => operation.label(),
             Self::Pool(operation) => operation.label(),
@@ -263,6 +282,23 @@ impl ResourceAction {
                     return Err(Error::InvalidResourceCommand);
                 };
                 return operation.validate(pool);
+            }
+            Self::AuthenticatedStorage {
+                operation,
+                authentication,
+            } => {
+                operation.validate(target)?;
+                authentication.valid_for(operation)
+            }
+            Self::CleanupStorageCredentials { secrets, .. } => {
+                matches!(target, ResourceTarget::Pool(_))
+                    && !secrets.is_empty()
+                    && secrets.len() <= 2
+                    && secrets
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        == secrets.len()
             }
             Self::SnapshotPolicy(operation) => return operation.validate(target),
             Self::Appliance(operation) => return operation.validate(target),
@@ -359,6 +395,14 @@ impl ResourceCommand {
     fn normalize(self) -> (ObservedResource, ResourceAction) {
         match self {
             Self::PowerBatch { pool, selection } => (pool, ResourceAction::PowerBatch(selection)),
+            Self::CleanupStorageCredentials {
+                pool,
+                operation,
+                secrets,
+            } => (
+                pool,
+                ResourceAction::CleanupStorageCredentials { operation, secrets },
+            ),
             Self::PoolSensitive { .. } => {
                 unreachable!("sensitive commands split before normalization")
             }
@@ -497,6 +541,12 @@ pub struct ResourceOperationRecord {
     #[serde(skip)]
     pub(crate) power_batch_plan: Option<crate::power_batch::Plan>,
     #[serde(skip)]
+    pub(crate) storage_auth_plan: Option<crate::storage_auth::Plan>,
+    #[serde(skip)]
+    pub(crate) storage_secret_cleanup: Option<crate::storage_auth::CleanupPlan>,
+    #[serde(default)]
+    pub storage_secrets: Vec<crate::StorageSecretEvidence>,
+    #[serde(skip)]
     pub(crate) snapshot_policy_evidence: Option<snapshot_policy::Evidence>,
     #[serde(default)]
     pub(crate) subject_baseline: Option<Vec<crate::SubjectId>>,
@@ -600,6 +650,9 @@ pub(crate) fn channel(
         appliance_baseline: None,
         host_plan: None,
         power_batch_plan: None,
+        storage_auth_plan: None,
+        storage_secret_cleanup: None,
+        storage_secrets: Vec::new(),
         snapshot_policy_evidence: None,
         subject_baseline: None,
         join_baseline: None,

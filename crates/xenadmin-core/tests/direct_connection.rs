@@ -2041,3 +2041,5 @@ mod firmware_properties;
 mod cloud_init;
 #[path = "fixtures/host_console.rs"]
 mod host_console;
+#[path = "fixtures/storage_authentication.rs"]
+mod storage_authentication;

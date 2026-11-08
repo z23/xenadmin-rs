@@ -439,6 +439,27 @@ impl Connection {
             .map_err(|_| Error::Busy)?;
         Ok(handle)
     }
+    pub fn discover_authenticated_storage(
+        &self,
+        observed: crate::ObservedResource,
+        query: crate::StorageQuery,
+        credentials: crate::StorageCredentials,
+    ) -> Result<crate::StorageDiscovery, Error> {
+        query.validate()?;
+        crate::storage_discovery::validate_credentials(&query, &credentials)?;
+        if !matches!(observed.target, crate::ResourceTarget::Pool(_))
+            || self.latest().observe_resource(observed.target)? != observed
+        {
+            return Err(Error::Stale);
+        }
+        let (handle, mut request) =
+            crate::storage_discovery::channel(observed, query, self.runtime.clone());
+        request.credentials = Some(credentials);
+        self.requests
+            .try_send(Request::StorageDiscovery(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn subscribe_metrics(
         &self,
         observed: crate::ObservedMetrics,
@@ -503,6 +524,34 @@ impl Connection {
             .try_send(Request::ResourceSubmit(Box::new(request)))
             .map_err(|_| Error::Busy)?;
         Ok(operation)
+    }
+    /// Provision authenticated storage without persisting clear credentials.
+    pub fn submit_authenticated_storage(
+        &self,
+        id: crate::OperationId,
+        target: crate::ObservedResource,
+        operation: crate::StorageOperation,
+        credentials: crate::StorageCredentials,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if self.latest().observe_resource(target.target)? != target {
+            return Err(Error::Stale);
+        }
+        credentials.validate(&operation)?;
+        let action = crate::ResourceAction::AuthenticatedStorage {
+            operation,
+            authentication: credentials.authentication,
+        };
+        action.validate(target.target)?;
+        let (handle, mut request) =
+            crate::resources::channel(id, target, action, self.runtime.clone());
+        request.storage_credentials = Some(credentials);
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
     }
     /// Transfer a selected archive or disk image through fixed authenticated endpoints.
     pub fn prepare_cloud_init(

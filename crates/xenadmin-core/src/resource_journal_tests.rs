@@ -42,6 +42,9 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         appliance_baseline: None,
         host_plan: None,
         power_batch_plan: None,
+        storage_auth_plan: None,
+        storage_secret_cleanup: None,
+        storage_secrets: Vec::new(),
         subject_baseline: None,
         snapshot_policy_evidence: None,
         join_baseline: None,
@@ -772,4 +775,117 @@ fn cross_pool_save_requires_a_plan_before_dispatch_or_success() {
         );
         assert!(journal.resource_load(record.id).unwrap().is_none());
     }
+}
+
+fn authenticated_resource(pool: PoolId) -> ResourceOperationRecord {
+    use crate::{
+        StorageAuthentication, StorageLocation, StorageOperation,
+        storage_auth::{Plan, SecretKind, SecretStep},
+    };
+    let mut r = resource(pool);
+    r.target = ResourceTarget::Pool(pool);
+    let operation = StorageOperation::Create {
+        host: crate::HostId::from(uuid::Uuid::new_v4()),
+        name: "Fixture".into(),
+        description: String::new(),
+        location: StorageLocation::Iscsi {
+            portal: "storage.example.test".into(),
+            port: 3260,
+            target_iqn: "iqn.2026-01.example:fixture".into(),
+            scsi_id: "3600fixture".into(),
+        },
+    };
+    r.action = ResourceAction::AuthenticatedStorage {
+        operation: operation.clone(),
+        authentication: StorageAuthentication::Chap,
+    };
+    r.storage_auth_plan = Some(Plan {
+        operation,
+        authentication: StorageAuthentication::Chap,
+        baseline: vec![],
+        task_baseline: vec![],
+        task_uuid: None,
+        secrets: vec![SecretStep {
+            kind: SecretKind::Chap,
+            username_digest: [1; 32],
+            sent: false,
+            completed: false,
+            id: None,
+            cleanup_sent: false,
+            cleaned: false,
+        }],
+        provision_sent: false,
+        provision_succeeded: false,
+        verified: false,
+    });
+    r.steps = (0..3)
+        .map(|_| OperationStep {
+            label: "Fixture".into(),
+            state: StepState::Pending,
+            detail: String::new(),
+        })
+        .collect();
+    r
+}
+#[test]
+fn storage_auth_journal_rejects_corrupt_private_intent_and_missing_completion_proof() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let mut r = authenticated_resource(pool);
+    journal.resource_save(&mut r).unwrap();
+    let mut impossible = r.clone();
+    impossible
+        .storage_auth_plan
+        .as_mut()
+        .unwrap()
+        .provision_succeeded = true;
+    assert!(journal.resource_save(&mut impossible).is_err());
+    let payload: String = journal
+        .0
+        .query_row(
+            "SELECT payload FROM resource_operations WHERE id=?1",
+            [r.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+    payload["storage_auth_plan"]["operation"]["Create"]["name"] = json!("Different intent");
+    journal
+        .0
+        .execute(
+            "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+            rusqlite::params![payload.to_string(), r.id.to_string()],
+        )
+        .unwrap();
+    assert!(journal.resource_load(r.id).is_err());
+    assert!(journal.resource_pool_busy(pool).is_err());
+}
+#[test]
+fn storage_auth_journal_merge_preserves_acknowledgement_and_monotonic_secret_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = Journal::open(dir.path()).unwrap();
+    let pool = PoolId::from(uuid::Uuid::new_v4());
+    let mut r = authenticated_resource(pool);
+    r.state = OperationState::Dispatching;
+    r.steps[0].state = StepState::Dispatching;
+    r.storage_auth_plan.as_mut().unwrap().secrets[0].sent = true;
+    journal.resource_save(&mut r).unwrap();
+    journal.resource_recover(pool).unwrap();
+    journal
+        .resource_control(pool, r.id, crate::OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    let id = crate::SecretId::from(uuid::Uuid::new_v4());
+    let secret = &mut r.storage_auth_plan.as_mut().unwrap().secrets[0];
+    secret.completed = true;
+    secret.id = Some(id);
+    let merged = journal.storage_auth_evidence(&r).unwrap();
+    assert_eq!(merged.state, OperationState::AcknowledgedUnknown);
+    assert_eq!(merged.storage_secrets[0].secret, id);
+    let mut changed = merged.clone();
+    changed.storage_auth_plan.as_mut().unwrap().secrets[0].username_digest = [2; 32];
+    assert!(journal.resource_save(&mut changed).is_err());
+    let public = serde_json::to_string(&merged).unwrap();
+    assert!(!public.contains("username_digest"));
+    assert!(!public.contains("storage_auth_plan"));
 }

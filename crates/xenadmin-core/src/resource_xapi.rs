@@ -134,9 +134,10 @@ pub(super) async fn prepare(
         ResourceAction::SnapshotPolicy(_) => unreachable!(),
         ResourceAction::Appliance(_) => unreachable!(),
         ResourceAction::Pool(_) => unreachable!(),
-        ResourceAction::Host(_) | ResourceAction::PowerBatch(_) => {
-            return Err(Error::InvalidResourceCommand);
-        }
+        ResourceAction::AuthenticatedStorage { .. }
+        | ResourceAction::CleanupStorageCredentials { .. }
+        | ResourceAction::Host(_)
+        | ResourceAction::PowerBatch(_) => return Err(Error::InvalidResourceCommand),
         ResourceAction::Organization(_) => {
             return super::organization::prepare(session, record).await;
         }
@@ -431,7 +432,10 @@ pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Chec
         ResourceAction::SnapshotPolicy(_) => super::snapshot_policy::reconciliation_checks(record),
         ResourceAction::Appliance(_) => super::appliance::reconciliation_checks(record),
         ResourceAction::Pool(_) => vec![Check::Pool],
-        ResourceAction::Host(_) | ResourceAction::PowerBatch(_) => Vec::new(),
+        ResourceAction::AuthenticatedStorage { .. }
+        | ResourceAction::CleanupStorageCredentials { .. }
+        | ResourceAction::Host(_)
+        | ResourceAction::PowerBatch(_) => Vec::new(),
         ResourceAction::Organization(_) => super::organization::checks(record),
         ResourceAction::Network(_) => vec![Check::Network],
         ResourceAction::Transfer(_)

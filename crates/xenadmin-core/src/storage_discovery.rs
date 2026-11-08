@@ -112,6 +112,7 @@ impl Drop for StorageDiscovery {
 pub(crate) struct DiscoveryRequest {
     pub observed: ObservedResource,
     query: StorageQuery,
+    pub(crate) credentials: Option<crate::StorageCredentials>,
     sender: watch::Sender<Option<Result<StorageDiscoveryResult, String>>>,
     cancel: CancellationToken,
 }
@@ -131,6 +132,7 @@ pub(crate) fn channel(
         DiscoveryRequest {
             observed,
             query,
+            credentials: None,
             sender,
             cancel,
         },
@@ -168,7 +170,7 @@ impl DiscoveryRequest {
                     .map(StorageDiscoveryResult::Backends)
             }
             query => {
-                let (host, kind, config, expected) = match query {
+                let (host, kind, mut config, expected) = match query {
                     StorageQuery::NfsExports {
                         host,
                         server,
@@ -202,6 +204,22 @@ impl DiscoveryRequest {
                     }
                     StorageQuery::Backends => unreachable!(),
                 };
+                if let Some(credentials) = &self.credentials {
+                    validate_credentials(query, credentials)?;
+                    for (kind, entry) in credentials
+                        .authentication
+                        .kinds()
+                        .iter()
+                        .zip(&credentials.entries)
+                    {
+                        config[kind.username_key()] = json!(&*entry.username);
+                        let password = kind
+                            .password_key()
+                            .strip_suffix("_secret")
+                            .ok_or(Error::InvalidResourceCommand)?;
+                        config[password] = json!(&*entry.password);
+                    }
+                }
                 let backends = decode_backends(&session.call("SM.get_all_records", vec![]).await?)?;
                 if !backends
                     .iter()
@@ -351,6 +369,34 @@ fn decode_repositories(xml: &str) -> Result<Vec<DiscoveredRepository>, Error> {
     }
     Ok(results)
 }
+pub(crate) fn validate_credentials(
+    query: &StorageQuery,
+    credentials: &crate::StorageCredentials,
+) -> Result<(), Error> {
+    credentials.validate_values()?;
+    let valid = match query {
+        StorageQuery::IscsiTargets { .. }
+        | StorageQuery::IscsiLuns { .. }
+        | StorageQuery::Probe {
+            location: StorageLocation::Iscsi { .. },
+            ..
+        } => matches!(
+            credentials.authentication,
+            crate::StorageAuthentication::Chap | crate::StorageAuthentication::MutualChap
+        ),
+        StorageQuery::Probe {
+            location: StorageLocation::IsoSmb { .. },
+            ..
+        } => credentials.authentication == crate::StorageAuthentication::Smb,
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(Error::InvalidResourceCommand)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

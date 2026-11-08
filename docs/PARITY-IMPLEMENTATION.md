@@ -175,11 +175,11 @@ Implementation boundaries and evidence: [storage lifecycle report](reports/2026-
 | --- | --- | --- |
 | P09-01 | SR name/type/capacity/usage | Existing workflow; qualification open |
 | P09-02 | Probe/discover targets | Read-only backend capabilities, NFS export and iSCSI IQN/LUN enumeration plus bounded SR discovery implemented with explicit selection and captured inputs; fixture verified, lab qualification open |
-| P09-03 | Create SR | Reviewed shared NFS and unauthenticated LVM-iSCSI creation implemented with typed inputs, tracked task and new SR identity verification; CHAP and other backends pending; fixture verified, lab qualification open |
-| P09-04 | Add ISO library | ISO over NFS creation implemented; authenticated SMB/other ISO libraries pending; lab qualification open |
-| P09-05 | Introduce/attach existing SR | Reviewed introduce by exact UUID, separate selected-host PBD creation and attach implemented; existing UUIDs are never implicitly forgotten; authenticated new attachments pending; fixture verified, lab qualification open |
+| P09-03 | Create SR | Reviewed shared NFS and LVM-iSCSI creation, including CHAP/mutual CHAP, implemented with transient credentials, tracked tasks, verified new identities and journalled temporary Secret cleanup; other backends pending; fixture verified, lab qualification open |
+| P09-04 | Add ISO library | ISO over NFS and explicit SMB 3.0 creation with optional transient authentication implemented; no SMB1 fallback; fixture verified, lab qualification open |
+| P09-05 | Introduce/attach existing SR | Reviewed introduce by exact UUID, separate selected-host PBD creation and attach implemented; existing UUIDs are never implicitly forgotten; authenticated new attachments require fresh CHAP/SMB credentials and verify host-owned Secret copies; fixture verified, lab qualification open |
 | P09-06 | Detach/reattach SR | Reviewed selected-host PBD unplug/plug implemented with fresh SR/host identity and consumer checks; attached status explicitly does not imply healthy storage; fixture verified, lab qualification open |
-| P09-07 | Repair SR connectivity | Per-host attach retry and explicit missing-PBD creation implemented; automatic multi-host repair and authenticated missing-PBD reconstruction remain pending; lab qualification open |
+| P09-07 | Repair SR connectivity | Per-host attach retry and explicit missing-PBD creation implemented; authenticated missing-PBD creation from safe projected location and fresh credentials implemented; automatic multi-host repair remains pending; lab qualification open |
 | P09-08 | Rescan/refresh SR | Reviewed asynchronous rescan with durable task tracking, cancellation and reconnect recovery implemented; synthetic fixtures verified, lab qualification open |
 | P09-09 | Forget versus destroy SR | Separate exact-UUID reviews implemented with captured disk set, fresh detach/consumer/default/HA dependency checks and tracked tasks; UI removal limited to 100 reviewed disks; fixture verified, destructive lab qualification open |
 | P09-10 | Choose default SR | Reviewed pool default SR selection with fresh prior-value and user-storage checks implemented; lab qualification open |
@@ -187,7 +187,7 @@ Implementation boundaries and evidence: [storage lifecycle report](reports/2026-
 | P09-12 | Multipath settings/path inspection | Bounded per-PBD path inspection and reviewed standard multipathing changes on empty maintenance hosts with all PBDs detached implemented; automatic detach/replug orchestration remains pending; fixture verified, live path qualification open |
 | P09-13 | Trim/reclaim | Explicit SR_TRIM-capable attached-host reclaim via fixed trim plugin implemented with tracked task and positive-result evidence; unavailable plugin is a reported host error; fixture verified, lab qualification open |
 | P09-14 | Read caching/provisioning options | Capability review and implementation queued |
-| P09-15 | Backend-specific wizards | Typed NFS, ISO-NFS and unauthenticated LVM-iSCSI forms, custom iSCSI port and guided target enumeration implemented; other backends and authentication remain pending |
+| P09-15 | Backend-specific wizards | Typed NFS, ISO-NFS, SMB3 and CHAP/mutual-CHAP LVM-iSCSI forms, custom iSCSI port and authenticated guided target enumeration implemented; other backends remain pending |
 
 ## 10. Networks and host interfaces
 
