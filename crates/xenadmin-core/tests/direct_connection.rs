@@ -1551,6 +1551,11 @@ async fn settings_mock(
                     current["name_description"]=request["params"][2].clone();Value::Null
                 },
                 "VM.set_other_config"=>{current["other_config"]=request["params"][2].clone();Value::Null},
+                "VM.set_VCPUs_number_live"=>{current["VCPUs_at_startup"]=request["params"][2].clone();if lose_name_reply{return Some(RpcReply::Drop)}Value::Null},
+                "VM.set_memory_dynamic_range"=>{current["memory_dynamic_min"]=request["params"][2].clone();current["memory_dynamic_max"]=request["params"][3].clone();Value::Null},
+                "VM.set_platform"=>{current["platform"]=request["params"][2].clone();Value::Null},
+                "VM.set_VCPUs_params"=>{current["VCPUs_params"]=request["params"][2].clone();Value::Null},
+                "VM.set_HVM_shadow_multiplier"|"VM.set_shadow_multiplier_live"=>{assert!(request["params"][2].is_number());current["HVM_shadow_multiplier"]=request["params"][2].clone();Value::Null},
                 _=>return None,
             };
             Some(RpcReply::Json(json!({"result":result})))
@@ -1958,3 +1963,5 @@ mod resource_administration;
 mod network_administration;
 #[path = "fixtures/storage_lifecycle.rs"]
 mod storage_lifecycle;
+#[path = "fixtures/advanced_properties.rs"]
+mod advanced_properties;

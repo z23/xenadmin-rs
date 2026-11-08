@@ -755,9 +755,7 @@ pub(crate) async fn prepare_mutation(
     match &operation.action {
         OperationAction::Settings(patch) => {
             patch.validate()?;
-            for step in patch.steps() {
-                step.preflight(&record)?;
-            }
+            patch.preflight(&record)?;
             Ok(parent)
         }
         OperationAction::Snapshot(SnapshotOperation::Checkpoint { name }) => {

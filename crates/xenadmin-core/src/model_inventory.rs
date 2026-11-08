@@ -82,6 +82,18 @@ impl ActionAvailability {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct VmDetails {
     #[serde(default)]
+    pub domain_type: Option<String>,
+    #[serde(default)]
+    pub cores_per_socket: Option<String>,
+    #[serde(default)]
+    pub topology_known: bool,
+    #[serde(default)]
+    pub cpu_weight: Option<String>,
+    #[serde(default)]
+    pub cpu_weight_known: bool,
+    #[serde(default)]
+    pub shadow_multiplier: Option<String>,
+    #[serde(default)]
     pub is_default_template: Option<bool>,
     pub allowed_operations: Option<Vec<String>>,
     pub current_operations: Vec<RunningOperation>,

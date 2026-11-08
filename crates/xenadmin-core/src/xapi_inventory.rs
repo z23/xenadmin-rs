@@ -518,6 +518,20 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             result.vms.insert(
                 id,
                 VmDetails {
+                    domain_type: text_option(record, "domain_type"),
+                    cores_per_socket: text_option(&record["platform"], "cores-per-socket"),
+                    topology_known: record["platform"]
+                        .as_object()
+                        .is_some_and(|m| m.get("cores-per-socket").is_none_or(Value::is_string)),
+                    cpu_weight: text_option(&record["VCPUs_params"], "weight"),
+                    cpu_weight_known: record["VCPUs_params"]
+                        .as_object()
+                        .is_some_and(|m| m.get("weight").is_none_or(Value::is_string)),
+                    shadow_multiplier: record["HVM_shadow_multiplier"]
+                        .as_f64()
+                        .or_else(|| record["HVM_shadow_multiplier"].as_str()?.parse().ok())
+                        .filter(|v| v.is_finite())
+                        .map(|v| v.to_string()),
                     is_default_template: Some(
                         record["is_default_template"] == true
                             || record["other_config"]["default_template"] == "true",

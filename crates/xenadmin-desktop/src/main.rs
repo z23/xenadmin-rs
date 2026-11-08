@@ -1911,6 +1911,11 @@ fn main() {
                 s.table.select("30000000-0000-0000-0000-000000000000");
                 vm_properties::open(s);
             }),
+            ("properties-running", |s| {
+                demo(s);
+                s.table.select("30000000-0000-0000-0000-000000000001");
+                vm_properties::open(s);
+            }),
             ("vm-create", vm_lifecycle::scene),
             ("vm-migration", vm_migration::scene),
             ("snapshots", |s| {

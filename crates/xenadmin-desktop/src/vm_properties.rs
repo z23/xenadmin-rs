@@ -12,6 +12,9 @@ enum Field {
     DynamicMax,
     StaticMax,
     BootOrder,
+    CpuTopology,
+    CpuWeight,
+    ShadowMultiplier,
 }
 pub(super) struct Editor {
     target: Option<ObservedVm>,
@@ -27,6 +30,9 @@ pub(super) struct Editor {
     dynamic_max: TextEdit,
     static_max: TextEdit,
     boot_order: TextEdit,
+    topology: TextEdit,
+    cpu_weight: TextEdit,
+    shadow: TextEdit,
     autostart: bool,
     review: Option<VmSettingsPatch>,
     error: Option<String>,
@@ -43,6 +49,9 @@ impl Editor {
             Field::DynamicMax => &self.dynamic_max,
             Field::StaticMax => &self.static_max,
             Field::BootOrder => &self.boot_order,
+            Field::CpuTopology => &self.topology,
+            Field::CpuWeight => &self.cpu_weight,
+            Field::ShadowMultiplier => &self.shadow,
         }
     }
     fn field_mut(&mut self, field: Field) -> &mut TextEdit {
@@ -56,6 +65,9 @@ impl Editor {
             Field::DynamicMax => &mut self.dynamic_max,
             Field::StaticMax => &mut self.static_max,
             Field::BootOrder => &mut self.boot_order,
+            Field::CpuTopology => &mut self.topology,
+            Field::CpuWeight => &mut self.cpu_weight,
+            Field::ShadowMultiplier => &mut self.shadow,
         }
     }
     fn memory(&self) -> Option<MemoryLimits> {
@@ -124,6 +136,70 @@ impl Editor {
                     value: self.boot_order.text.clone(),
                 });
             }
+        }
+        if self.original.power_state == PowerState::Running {
+            if let (Some(previous), Some(max)) =
+                (self.details.vcpus_at_startup, self.details.vcpus_max)
+            {
+                let value = self
+                    .startup_cpus
+                    .text
+                    .parse::<u64>()
+                    .map_err(|_| "Enter a whole live vCPU count")?;
+                if value != previous {
+                    edits.push(VmSettingEdit::LiveCpus {
+                        previous,
+                        max,
+                        value,
+                    });
+                }
+            }
+            if let Some(previous) = self.memory() {
+                let min = parse_memory(&self.dynamic_min.text)?;
+                let max = parse_memory(&self.dynamic_max.text)?;
+                if min != previous.dynamic_min || max != previous.dynamic_max {
+                    edits.push(VmSettingEdit::DynamicMemory { previous, min, max });
+                }
+            }
+        }
+        if self.original.power_state == PowerState::Halted
+            && self.details.topology_known
+            && self.topology.text != self.details.cores_per_socket.clone().unwrap_or_default()
+        {
+            edits.push(VmSettingEdit::CpuTopology {
+                previous: self.details.cores_per_socket.clone(),
+                cores_per_socket: self
+                    .topology
+                    .text
+                    .parse::<u64>()
+                    .map_err(|_| "Enter a positive cores-per-socket count")?,
+            });
+        }
+        if self.details.cpu_weight_known
+            && self.cpu_weight.text
+                != self
+                    .details
+                    .cpu_weight
+                    .clone()
+                    .unwrap_or_else(|| "256".into())
+        {
+            edits.push(VmSettingEdit::CpuWeight {
+                previous: self.details.cpu_weight.clone(),
+                weight: self
+                    .cpu_weight
+                    .text
+                    .parse::<u16>()
+                    .map_err(|_| "CPU weight must be 1 to 65535")?,
+            });
+        }
+        if let Some(previous) = &self.details.shadow_multiplier
+            && self.shadow.text != *previous
+        {
+            edits.push(VmSettingEdit::ShadowMultiplier {
+                previous: previous.clone(),
+                value: self.shadow.text.clone(),
+                live: self.original.power_state == PowerState::Running,
+            });
         }
         if let Some(previous) = self.details.auto_power_on
             && self.autostart != previous
@@ -204,6 +280,9 @@ pub(super) fn open(s: &mut State) {
         dynamic_max: TextEdit::new(memory_text(details.memory_dynamic_max)),
         static_max: TextEdit::new(memory_text(details.memory_static_max)),
         boot_order: TextEdit::new(details.boot_order.clone().unwrap_or_default()),
+        topology: TextEdit::new(details.cores_per_socket.clone().unwrap_or_default()),
+        cpu_weight: TextEdit::new(details.cpu_weight.clone().unwrap_or_else(|| "256".into())),
+        shadow: TextEdit::new(details.shadow_multiplier.clone().unwrap_or_default()),
         autostart: details.auto_power_on.unwrap_or(false),
         original,
         details,
@@ -263,6 +342,34 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     if let Some(patch) = &editor.review {
         for edit in patch.edits() {
             let summary = match edit {
+                VmSettingEdit::LiveCpus {
+                    previous,
+                    max,
+                    value,
+                } => format!("Live vCPUs: {previous} → {value} (maximum {max})"),
+                VmSettingEdit::DynamicMemory { previous, min, max } => format!(
+                    "Dynamic memory: {}–{} → {min}–{max} bytes; static limits unchanged",
+                    previous.dynamic_min, previous.dynamic_max
+                ),
+                VmSettingEdit::CpuTopology {
+                    previous,
+                    cores_per_socket,
+                } => format!(
+                    "Cores per socket: {} → {cores_per_socket}",
+                    previous.as_deref().unwrap_or("default")
+                ),
+                VmSettingEdit::CpuWeight { previous, weight } => format!(
+                    "CPU scheduling weight: {} → {weight}",
+                    previous.as_deref().unwrap_or("default (256)")
+                ),
+                VmSettingEdit::ShadowMultiplier {
+                    previous,
+                    value,
+                    live,
+                } => format!(
+                    "Shadow memory multiplier: {previous} → {value}{}",
+                    if *live { " (live)" } else { "" }
+                ),
                 VmSettingEdit::Name { previous, value } => format!("Name: {previous} → {value}"),
                 VmSettingEdit::Description { previous, value } => {
                     format!("Description: {previous} → {value}")
@@ -325,14 +432,66 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     k,
                 ));
             }
-        } else {
+        } else if editor.original.power_state == PowerState::Running {
+            body=body.child(caption("Live changes apply to a running guest. vCPUs can only be increased within its current maximum. Ballooning requires compatible guest tools and may reduce the memory available to applications.",k).wrap());
+            if editor.details.vcpus_max.is_some() && editor.details.vcpus_at_startup.is_some() {
+                body = body.child(input(editor, Field::StartupCpus, "Live vCPUs", k));
+            }
+            if editor.memory().is_some() {
+                body = body
+                    .child(input(
+                        editor,
+                        Field::DynamicMin,
+                        "Dynamic memory minimum",
+                        k,
+                    ))
+                    .child(input(
+                        editor,
+                        Field::DynamicMax,
+                        "Dynamic memory maximum",
+                        k,
+                    ));
+            }
             body = body.child(
                 caption(
-                    "Shut down the VM to change CPU, memory limits or boot order.",
+                    "Static memory limits, maximum vCPUs and boot order require a halted VM.",
                     k,
                 )
                 .wrap(),
             );
+        }
+        if editor.original.power_state == PowerState::Halted && editor.details.topology_known {
+            body = body.child(input(editor, Field::CpuTopology, "Cores per socket", k));
+        }
+        if matches!(
+            editor.original.power_state,
+            PowerState::Halted | PowerState::Running
+        ) {
+            if editor.details.cpu_weight_known {
+                body = body.child(input(
+                    editor,
+                    Field::CpuWeight,
+                    "CPU scheduling weight (1–65535)",
+                    k,
+                ));
+            }
+            let hvm = match editor.details.domain_type.as_deref() {
+                Some("hvm") => true,
+                None | Some("unspecified") => editor
+                    .details
+                    .boot_policy
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty()),
+                _ => false,
+            };
+            if hvm && editor.details.shadow_multiplier.is_some() {
+                body = body.child(input(
+                    editor,
+                    Field::ShadowMultiplier,
+                    "Shadow memory multiplier (1–1000)",
+                    k,
+                ));
+            }
         }
         if editor.details.auto_power_on.is_some() {
             body = body.child(
@@ -499,5 +658,46 @@ mod tests {
         assert!(
             matches!(&patch.edits()[0],VmSettingEdit::Name{previous,value}if previous==&editor.original.name&&value=="Changed demo")
         );
+    }
+    #[test]
+    fn running_guest_draft_uses_live_cpu_and_dynamic_memory_commands() {
+        let mut s = init();
+        demo(&mut s);
+        let id = VmId::parse("30000000-0000-0000-0000-000000000001").unwrap();
+        Arc::make_mut(s.inventory.as_mut().unwrap())
+            .details
+            .vms
+            .get_mut(&id)
+            .unwrap()
+            .vcpus_max = Some(8);
+        s.table.select(id.to_string());
+        open(&mut s);
+        let editor = s.properties.as_mut().unwrap();
+        editor.startup_cpus = TextEdit::new("4");
+        editor.dynamic_min = TextEdit::new("2 GiB");
+        editor.cpu_weight = TextEdit::new("512");
+        let patch = editor.patch().unwrap();
+        assert!(patch.edits().iter().any(|e| matches!(
+            e,
+            VmSettingEdit::LiveCpus {
+                previous: 2,
+                max: 8,
+                value: 4
+            }
+        )));
+        assert!(
+            patch
+                .edits()
+                .iter()
+                .any(|e| matches!(e,VmSettingEdit::DynamicMemory{min,..} if *min==2<<30))
+        );
+        assert!(
+            !patch
+                .edits()
+                .iter()
+                .any(|e| matches!(e, VmSettingEdit::Cpus { .. } | VmSettingEdit::Memory { .. }))
+        );
+        editor.startup_cpus = TextEdit::new("1");
+        assert!(editor.patch().is_err());
     }
 }

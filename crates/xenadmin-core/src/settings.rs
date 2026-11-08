@@ -22,6 +22,29 @@ impl MemoryLimits {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "field")]
 pub enum VmSettingEdit {
+    LiveCpus {
+        previous: u64,
+        max: u64,
+        value: u64,
+    },
+    DynamicMemory {
+        previous: MemoryLimits,
+        min: u64,
+        max: u64,
+    },
+    CpuTopology {
+        previous: Option<String>,
+        cores_per_socket: u64,
+    },
+    CpuWeight {
+        previous: Option<String>,
+        weight: u16,
+    },
+    ShadowMultiplier {
+        previous: String,
+        value: String,
+        live: bool,
+    },
     Name {
         previous: String,
         value: String,
@@ -63,12 +86,44 @@ impl VmSettingsPatch {
         &self.edits
     }
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        if self.edits.is_empty() || self.edits.len() > 6 {
+        if self.edits.is_empty() || self.edits.len() > 11 {
             return Err(Error::InvalidSettings);
         }
         let mut seen = std::collections::BTreeSet::new();
         for edit in &self.edits {
             let (field, valid) = match edit {
+                VmSettingEdit::LiveCpus {
+                    previous,
+                    max,
+                    value,
+                } => (
+                    2,
+                    *previous > 0 && value > previous && value <= max && *max <= i64::MAX as u64,
+                ),
+                VmSettingEdit::DynamicMemory { previous, min, max } => (
+                    3,
+                    previous.valid()
+                        && *min >= previous.static_min
+                        && min <= max
+                        && *max <= previous.static_max
+                        && *min > 0,
+                ),
+                VmSettingEdit::CpuTopology {
+                    previous,
+                    cores_per_socket,
+                } => (
+                    6,
+                    *cores_per_socket > 0
+                        && *cores_per_socket <= i64::MAX as u64
+                        && previous.as_ref().is_none_or(|v| v.len() <= 64),
+                ),
+                VmSettingEdit::CpuWeight { previous, weight } => (
+                    7,
+                    *weight > 0 && previous.as_ref().is_none_or(|v| v.len() <= 64),
+                ),
+                VmSettingEdit::ShadowMultiplier {
+                    previous, value, ..
+                } => (8, shadow(previous).is_some() && shadow(value).is_some()),
                 VmSettingEdit::Name { value, .. } => (
                     0,
                     !value.trim().is_empty()
@@ -110,10 +165,106 @@ impl VmSettingsPatch {
         }
         Ok(())
     }
+    pub(crate) fn preflight(&self, record: &Value) -> Result<(), Error> {
+        let mut projected = record.clone();
+        for step in self.steps() {
+            step.preflight(&projected)?;
+            if let Some(key) = &step.map_key {
+                projected[&step.fields[0]][key] = step.value[0].clone();
+            } else {
+                for (field, value) in step.fields.iter().zip(&step.value) {
+                    projected[field] = value.clone();
+                }
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn steps(&self) -> Vec<SettingsStep> {
         let mut steps = Vec::new();
         for edit in &self.edits {
             match edit {
+                VmSettingEdit::LiveCpus {
+                    previous,
+                    max,
+                    value,
+                } => {
+                    let mut step = SettingsStep::number(
+                        "Live vCPUs",
+                        "VCPUs_at_startup",
+                        "VM.set_VCPUs_number_live",
+                        *previous,
+                        *value,
+                    );
+                    step.requires_halted = false;
+                    step.guard = Some(SettingsGuard::LiveCpus(*max));
+                    steps.push(step);
+                }
+                VmSettingEdit::DynamicMemory { previous, min, max } => steps.push(SettingsStep {
+                    label: "Dynamic memory range".into(),
+                    fields: vec!["memory_dynamic_min".into(), "memory_dynamic_max".into()],
+                    previous: vec![
+                        json!(previous.dynamic_min.to_string()),
+                        json!(previous.dynamic_max.to_string()),
+                    ],
+                    value: vec![json!(min.to_string()), json!(max.to_string())],
+                    method: "VM.set_memory_dynamic_range".into(),
+                    map_key: None,
+                    requires_halted: false,
+                    guard: Some(SettingsGuard::DynamicMemory(
+                        previous.static_min,
+                        previous.static_max,
+                    )),
+                }),
+                VmSettingEdit::CpuTopology {
+                    previous,
+                    cores_per_socket,
+                } => steps.push(SettingsStep {
+                    label: "CPU topology".into(),
+                    fields: vec!["platform".into()],
+                    previous: vec![json!(previous)],
+                    value: vec![json!(cores_per_socket.to_string())],
+                    method: "VM.set_platform".into(),
+                    map_key: Some("cores-per-socket".into()),
+                    requires_halted: true,
+                    guard: Some(SettingsGuard::Topology(*cores_per_socket)),
+                }),
+                VmSettingEdit::CpuWeight { previous, weight } => steps.push(SettingsStep {
+                    label: "CPU scheduling weight".into(),
+                    fields: vec!["VCPUs_params".into()],
+                    previous: vec![json!(previous)],
+                    value: vec![json!(weight.to_string())],
+                    method: "VM.set_VCPUs_params".into(),
+                    map_key: Some("weight".into()),
+                    requires_halted: false,
+                    guard: Some(SettingsGuard::OrdinaryState),
+                }),
+                VmSettingEdit::ShadowMultiplier {
+                    previous,
+                    value,
+                    live,
+                } => steps.push(SettingsStep {
+                    label: "Shadow memory multiplier".into(),
+                    fields: vec!["HVM_shadow_multiplier".into()],
+                    previous: vec![
+                        shadow(previous)
+                            .map(|v| json!(v.to_string()))
+                            .unwrap_or(Value::Null),
+                    ],
+                    value: vec![
+                        shadow(value)
+                            .map(|v| json!(v.to_string()))
+                            .unwrap_or(Value::Null),
+                    ],
+                    method: if *live {
+                        "VM.set_shadow_multiplier_live"
+                    } else {
+                        "VM.set_HVM_shadow_multiplier"
+                    }
+                    .into(),
+                    map_key: None,
+                    requires_halted: !*live,
+                    guard: Some(SettingsGuard::Shadow(*live)),
+                }),
                 VmSettingEdit::Name { previous, value } => steps.push(SettingsStep::scalar(
                     "Name",
                     "name_label",
@@ -167,6 +318,7 @@ impl VmSettingsPatch {
                     method: "VM.set_memory_limits".into(),
                     map_key: None,
                     requires_halted: true,
+                    guard: None,
                 }),
                 VmSettingEdit::BootOrder { previous, value } => steps.push(SettingsStep {
                     label: "Boot order".into(),
@@ -176,6 +328,7 @@ impl VmSettingsPatch {
                     method: "VM.set_HVM_boot_params".into(),
                     map_key: Some("order".into()),
                     requires_halted: true,
+                    guard: None,
                 }),
                 VmSettingEdit::Autostart { previous, value } => steps.push(SettingsStep {
                     label: "Autostart".into(),
@@ -185,11 +338,76 @@ impl VmSettingsPatch {
                     method: "VM.set_other_config".into(),
                     map_key: Some("auto_poweron".into()),
                     requires_halted: false,
+                    guard: None,
                 }),
             }
         }
         steps.retain(|s| s.previous != s.value);
         steps
+    }
+}
+fn shadow(value: &str) -> Option<f64> {
+    if value.len() > 64 {
+        return None;
+    }
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && (1.0..=1000.0).contains(v))
+}
+fn integer(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+#[derive(Clone, Debug)]
+enum SettingsGuard {
+    LiveCpus(u64),
+    DynamicMemory(u64, u64),
+    Topology(u64),
+    OrdinaryState,
+    Shadow(bool),
+}
+impl SettingsGuard {
+    fn preflight(&self, record: &Value) -> Result<(), Error> {
+        let halted = record["power_state"] == "Halted";
+        let running = record["power_state"] == "Running";
+        if !halted && !running {
+            return Err(Error::UnavailableAction);
+        }
+        let valid = match self {
+            Self::LiveCpus(max) => {
+                running
+                    && integer(&record["VCPUs_max"]) == Some(*max)
+                    && crate::xapi::advertises(record, "changing_VCPUs_live")
+            }
+            Self::DynamicMemory(min, max) => {
+                integer(&record["memory_static_min"]) == Some(*min)
+                    && integer(&record["memory_static_max"]) == Some(*max)
+                    && crate::xapi::advertises(record, "changing_dynamic_range")
+            }
+            Self::Topology(cores) => {
+                halted
+                    && integer(&record["VCPUs_max"]).is_some_and(|v| v >= *cores && v % cores == 0)
+            }
+            Self::OrdinaryState => true,
+            Self::Shadow(live) => {
+                (if *live {
+                    running && crate::xapi::advertises(record, "changing_shadow_memory_live")
+                } else {
+                    halted && crate::xapi::advertises(record, "changing_shadow_memory")
+                }) && match record["domain_type"].as_str() {
+                    Some("hvm") => true,
+                    None | Some("unspecified") => record["HVM_boot_policy"]
+                        .as_str()
+                        .is_some_and(|p| !p.is_empty()),
+                    _ => false,
+                }
+            }
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(Error::SettingsConflict)
+        }
     }
 }
 fn memory_values(m: &MemoryLimits) -> Vec<Value> {
@@ -222,6 +440,7 @@ pub(crate) struct SettingsStep {
     method: String,
     map_key: Option<String>,
     requires_halted: bool,
+    guard: Option<SettingsGuard>,
 }
 impl SettingsStep {
     fn scalar(label: &str, field: &str, method: &str, previous: Value, value: Value) -> Self {
@@ -233,6 +452,7 @@ impl SettingsStep {
             method: method.into(),
             map_key: None,
             requires_halted: false,
+            guard: None,
         }
     }
     fn number(label: &str, field: &str, method: &str, previous: u64, value: u64) -> Self {
@@ -255,7 +475,18 @@ impl SettingsStep {
                     value
                         .get(key)
                         .cloned()
-                        .unwrap_or_else(|| json!(if key == "auto_poweron" { "false" } else { "" }))
+                        .unwrap_or_else(|| match key.as_str() {
+                            "auto_poweron" => json!("false"),
+                            "order" => json!(""),
+                            _ => Value::Null,
+                        })
+                } else if field == "HVM_shadow_multiplier" {
+                    value
+                        .as_f64()
+                        .or_else(|| value.as_str()?.parse().ok())
+                        .filter(|v| v.is_finite())
+                        .map(|v| json!(v.to_string()))
+                        .unwrap_or(Value::Null)
                 } else if value.is_number() {
                     json!(value.to_string())
                 } else {
@@ -265,8 +496,14 @@ impl SettingsStep {
             .collect()
     }
     pub(crate) fn preflight(&self, record: &Value) -> Result<(), Error> {
+        if self.map_key.is_some() && !record[&self.fields[0]].is_object() {
+            return Err(Error::SettingsConflict);
+        }
         if self.requires_halted && record["power_state"] != "Halted" {
             return Err(Error::SettingsRequiresHaltedVm);
+        }
+        if let Some(guard) = &self.guard {
+            guard.preflight(record)?;
         }
         if self.values(record) != self.previous {
             return Err(Error::SettingsConflict);
@@ -290,6 +527,13 @@ impl SettingsStep {
                 .ok_or(Error::SettingsConflict)?;
             map.insert(key.clone(), self.value[0].clone());
             params.push(Value::Object(map));
+        } else if matches!(self.guard, Some(SettingsGuard::Shadow(_))) {
+            params.push(json!(
+                self.value[0]
+                    .as_str()
+                    .and_then(shadow)
+                    .ok_or(Error::InvalidSettings)?
+            ));
         } else {
             params.extend(self.value.iter().cloned());
         }
@@ -354,5 +598,34 @@ mod tests {
             value: "New".into(),
         };
         assert!(VmSettingsPatch::new(vec![e.clone(), e]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod advanced_tests {
+    use super::*;
+    #[test]
+    fn initial_review_checks_topology_against_the_planned_cpu_count_then_runtime_checks_fresh_count()
+     {
+        let patch = VmSettingsPatch::new(vec![
+            VmSettingEdit::Cpus {
+                previous_max: 2,
+                previous_startup: 2,
+                max: 8,
+                startup: 4,
+            },
+            VmSettingEdit::CpuTopology {
+                previous: None,
+                cores_per_socket: 4,
+            },
+        ])
+        .unwrap();
+        let before = json!({"power_state":"Halted","VCPUs_max":"2","VCPUs_at_startup":"2","platform":{"keep":"yes"}});
+        assert!(patch.preflight(&before).is_ok());
+        assert!(patch.steps()[2].preflight(&before).is_err());
+        let mut after = before;
+        after["VCPUs_max"] = json!("8");
+        after["VCPUs_at_startup"] = json!("4");
+        assert!(patch.steps()[2].preflight(&after).is_ok());
     }
 }

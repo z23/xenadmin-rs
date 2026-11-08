@@ -117,14 +117,14 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P06-01 | Rename VM/template and description | Normal VM name/description editing implemented; template editing remains queued |
-| P06-02 | Startup/max/live vCPU counts | Halted VM startup/max vCPU editing with ordered steps implemented; live count changes remain queued |
-| P06-03 | CPU topology and scheduling weight | Queued |
-| P06-04 | Static/dynamic memory limits, ballooning/live changes | Halted VM static/dynamic limits editor implemented; live ballooning workflows remain queued |
+| P06-02 | Startup/max/live vCPU counts | Halted startup/max vCPU editing and reviewed live vCPU increases within the existing maximum implemented; exact host capability and current limit checks fixture verified, live qualification open |
+| P06-03 | CPU topology and scheduling weight | Halted cores-per-socket topology and CPU scheduling weight editors implemented; unrelated platform/CPU keys preserved, live qualification open |
+| P06-04 | Static/dynamic memory limits, ballooning/live changes | Halted static/dynamic limits and reviewed running-VM dynamic ranges implemented with fresh static-bound checks; fixture verified, live ballooning qualification open |
 | P06-05 | Boot order, bootable devices, autostart | Boot-order and autostart editors implemented; bootable-device management remains queued |
 | P06-06 | Home server/host affinity | Queued |
 | P06-07 | VM HA restart priority/protection | Queued |
 | P06-08 | BIOS/UEFI/Secure Boot provisioning choices | Queued |
-| P06-09 | HVM shadow-memory settings | Queued |
+| P06-09 | HVM shadow-memory settings | Reviewed halted/live shadow-memory multiplier editing implemented with modern HVM identity and advertised capability checks; fixture verified, live qualification open |
 | P06-10 | Cloud-config parameters/config drive | Queued |
 | P06-11 | Guest tools status/installation media | Guest-reported tools/OS/address display implemented; tools-install media workflow remains queued |
 

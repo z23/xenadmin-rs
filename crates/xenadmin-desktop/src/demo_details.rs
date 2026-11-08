@@ -49,6 +49,11 @@ pub(super) fn populate(inventory: &mut Inventory) {
                 } else {
                     vec!["start".into(), "snapshot".into()]
                 }),
+                topology_known: true,
+                cores_per_socket: Some("1".into()),
+                cpu_weight_known: true,
+                cpu_weight: Some("256".into()),
+                shadow_multiplier: Some("1".into()),
                 vcpus_max: Some(vm.vcpus),
                 vcpus_at_startup: Some(vm.vcpus),
                 memory_static_min: Some(vm.memory_bytes.min(1 << 30)),
