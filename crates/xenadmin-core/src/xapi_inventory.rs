@@ -498,6 +498,10 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             SnapshotPolicy {
+                vms_known: record["VMs"]
+                    .as_array()
+                    .is_some_and(|v| v.iter().all(|r| refs.vm(r).is_some())),
+                last_run_time: record["last_run_time"].as_str().map(str::to_owned),
                 id,
                 name: label(record),
                 description: string(record, "name_description"),

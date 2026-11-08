@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
 pub(super) enum Check {
+    SnapshotPolicy(Box<super::snapshot_policy::Verify>),
     Appliance(super::appliance::Verify),
     Pool,
     Organization(crate::OrganizationEdit),
@@ -112,6 +113,9 @@ pub(super) async fn prepare(
     session: &Session,
     record: &mut ResourceOperationRecord,
 ) -> Result<Vec<Step>, Error> {
+    if matches!(record.action, ResourceAction::SnapshotPolicy(_)) {
+        return super::snapshot_policy::prepare(session, record).await;
+    }
     if matches!(record.action, ResourceAction::Appliance(_)) {
         return super::appliance::prepare(session, record).await;
     }
@@ -127,6 +131,7 @@ pub(super) async fn prepare(
     let (_, fresh) = read(session, record.target).await?;
     let mut steps = Vec::new();
     match &record.action {
+        ResourceAction::SnapshotPolicy(_) => unreachable!(),
         ResourceAction::Appliance(_) => unreachable!(),
         ResourceAction::Pool(_) => unreachable!(),
         ResourceAction::Host(_) => return Err(Error::InvalidResourceCommand),
@@ -306,6 +311,9 @@ pub(super) async fn arguments(
     record: &ResourceOperationRecord,
     step: &Step,
 ) -> Result<Vec<Value>, Error> {
+    if let Check::SnapshotPolicy(check) = &step.check {
+        return super::snapshot_policy::arguments(session, record, check).await;
+    }
     if let Check::Appliance(check) = &step.check {
         return super::appliance::arguments(session, record, check).await;
     }
@@ -387,6 +395,7 @@ pub(super) async fn arguments(
             }
             Ok(vec![json!(reference)])
         }
+        Check::SnapshotPolicy(_) => unreachable!(),
         Check::Scan => {
             if !fresh["allowed_operations"]
                 .as_array()
@@ -413,6 +422,7 @@ fn cancellable_task(record: &Value) -> Result<(), Error> {
 }
 pub(super) fn reconciliation_steps(record: &ResourceOperationRecord) -> Vec<Check> {
     match &record.action {
+        ResourceAction::SnapshotPolicy(_) => super::snapshot_policy::reconciliation_checks(record),
         ResourceAction::Appliance(_) => super::appliance::reconciliation_checks(record),
         ResourceAction::Pool(_) => vec![Check::Pool],
         ResourceAction::Host(_) => Vec::new(),
@@ -454,6 +464,9 @@ pub(super) async fn verify(
     record: &ResourceOperationRecord,
     check: &Check,
 ) -> Result<Option<ResourceTarget>, Error> {
+    if let Check::SnapshotPolicy(check) = check {
+        return super::snapshot_policy::verify(session, record, check).await;
+    }
     if let Check::Appliance(check) = check {
         return super::appliance::verify(session, record, check).await;
     }

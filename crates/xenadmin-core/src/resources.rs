@@ -12,6 +12,8 @@ pub(crate) mod host;
 pub(crate) mod journal;
 #[path = "network_operations.rs"]
 mod network;
+#[path = "snapshot_policy_operations.rs"]
+pub(crate) mod snapshot_policy;
 #[path = "resource_worker.rs"]
 mod worker;
 #[path = "resource_xapi.rs"]
@@ -30,6 +32,7 @@ mod storage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceTarget {
+    SnapshotPolicy(crate::SnapshotPolicyId),
     Pool(PoolId),
     Host(HostId),
     Storage(SrId),
@@ -45,6 +48,7 @@ pub enum ResourceTarget {
 impl ResourceTarget {
     pub(crate) fn class(self) -> &'static str {
         match self {
+            Self::SnapshotPolicy(_) => "VMSS",
             Self::Pool(_) => "pool",
             Self::Host(_) => "host",
             Self::Storage(_) => "SR",
@@ -60,6 +64,7 @@ impl ResourceTarget {
     }
     pub fn uuid(self) -> uuid::Uuid {
         match self {
+            Self::SnapshotPolicy(id) => id.uuid(),
             Self::Pool(id) => id.uuid(),
             Self::Host(id) => id.uuid(),
             Self::Storage(id) => id.uuid(),
@@ -87,6 +92,10 @@ impl ObservedResource {
 }
 
 pub enum ResourceCommand {
+    SnapshotPolicy {
+        pool: ObservedResource,
+        operation: crate::SnapshotPolicyOperation,
+    },
     Appliance {
         pool: ObservedResource,
         operation: crate::ApplianceOperation,
@@ -160,6 +169,7 @@ pub enum ResourceCommand {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
+    SnapshotPolicy(crate::SnapshotPolicyOperation),
     Appliance(crate::ApplianceOperation),
     Pool(crate::PoolOperation),
     Host(crate::HostOperation),
@@ -205,6 +215,7 @@ impl ResourceAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            Self::SnapshotPolicy(operation) => operation.label(),
             Self::Appliance(operation) => operation.label(),
             Self::Pool(operation) => operation.label(),
             Self::Host(operation) => operation.label(),
@@ -233,6 +244,7 @@ impl ResourceAction {
         let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
         let mtu = |value: u64| (1..=65_535).contains(&value);
         let valid = match self {
+            Self::SnapshotPolicy(operation) => return operation.validate(target),
             Self::Appliance(operation) => return operation.validate(target),
             Self::Pool(operation) => return operation.validate(target),
             Self::Host(operation) => return operation.validate(target),
@@ -327,6 +339,9 @@ impl ResourceCommand {
         match self {
             Self::PoolSensitive { .. } => {
                 unreachable!("sensitive commands split before normalization")
+            }
+            Self::SnapshotPolicy { pool, operation } => {
+                (pool, ResourceAction::SnapshotPolicy(operation))
             }
             Self::Appliance { pool, operation } => (pool, ResourceAction::Appliance(operation)),
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
@@ -455,6 +470,8 @@ pub struct ResourceOperationRecord {
     pub(crate) appliance_baseline: Option<Vec<crate::ApplianceId>>,
     #[serde(skip)]
     pub(crate) host_plan: Option<host::Plan>,
+    #[serde(skip)]
+    pub(crate) snapshot_policy_evidence: Option<snapshot_policy::Evidence>,
     #[serde(default)]
     pub(crate) subject_baseline: Option<Vec<crate::SubjectId>>,
 }
@@ -532,6 +549,7 @@ pub(crate) fn channel(
         appliance_completed: false,
         appliance_baseline: None,
         host_plan: None,
+        snapshot_policy_evidence: None,
         subject_baseline: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));

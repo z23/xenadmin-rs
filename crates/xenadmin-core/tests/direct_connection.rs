@@ -1977,3 +1977,6 @@ mod host_administration;
 mod organization;
 #[path = "fixtures/pool_security.rs"]
 mod pool_security;
+
+#[path = "fixtures/snapshot_policy.rs"]
+mod snapshot_policy;

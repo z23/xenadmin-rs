@@ -42,9 +42,17 @@ impl Journal {
                 .map(serde_json::from_value)
                 .transpose()
                 .map_err(|_| Error::Journal)?;
+            let snapshot_policy_evidence = payload
+                .get("snapshot_policy_evidence")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let mut record: ResourceOperationRecord =
                 serde_json::from_value(payload).map_err(|_| Error::Journal)?;
             record.host_plan = host_plan;
+            record.snapshot_policy_evidence = snapshot_policy_evidence;
             record.transfer_plan = transfer_plan;
             record.task = task;
             record.result_reference = result_reference;
@@ -60,6 +68,14 @@ impl Journal {
                 return Err(Error::OperationConflict);
             }
             if !crate::transfer::valid_update(&old, record) {
+                return Err(Error::JournalChanged);
+            }
+            if old.snapshot_policy_evidence.as_ref().is_some_and(|e| {
+                record
+                    .snapshot_policy_evidence
+                    .as_ref()
+                    .is_none_or(|n| !e.accepts(n))
+            }) {
                 return Err(Error::JournalChanged);
             }
             if (old.state.terminal() && old.state != record.state)
@@ -105,6 +121,12 @@ impl Journal {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
                 "transfer_plan".into(),
                 serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
+        }
+        if let Some(e) = &record.snapshot_policy_evidence {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "snapshot_policy_evidence".into(),
+                serde_json::to_value(e).map_err(|_| Error::Journal)?,
             );
         }
         let payload = serde_json::to_string(&payload).map_err(|_| Error::Journal)?;
@@ -195,6 +217,13 @@ impl Journal {
                 if old.is_none() {
                     *old = new.clone();
                 }
+            }
+            if let (Some(current), Some(evidence)) = (
+                &mut current.snapshot_policy_evidence,
+                &evidence.snapshot_policy_evidence,
+            ) {
+                current.completed |= evidence.completed;
+                current.plugin_success |= evidence.plugin_success;
             }
             current.pool_completed |= evidence.pool_completed;
             current.appliance_completed |= evidence.appliance_completed;

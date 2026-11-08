@@ -433,3 +433,7 @@ cancellation, a 45-second deadline and the shared discovery-worker limit.
 See the [security increment report](reports/2026-11-08-pool-security.md) for supported
 flows and the local-superuser/reconnect limitations.
 Disk-image transfer extends the same private plan with a bounded pre-existing VDI baseline, operation ownership marker, creation reference and verified UUID. Every import creates a new unattached VDI, journals intent before `VDI.create`, then sends bytes only once to the fixed raw-VDI endpoint. A lost creation reply can recover the disk identity but never starts the upload during reconciliation. Failed/cancelled image uploads can finish as partial with that exact disk retained; unlike XVA import, this endpoint creates no VM or network records. Format checks validate raw sector length or a complete fixed/dynamic VHD, including bounded BAT ranges and overlap refusal. Export rejects live consumers and rechecks source identity, storage and capacity before atomic publication. See the [disk-image transfer report](reports/2026-11-08-disk-image-transfers.md).
+VMSS schedules are host-side typed resource operations with private creation/run baselines
+and completion receipts. A dedicated read-only query captures the coordinator’s clock and
+execution contract; desktop scheduling is never substituted. Exact membership, task/plugin
+proof and per-VM snapshot read-back constrain success. See the [snapshot schedule report](reports/2026-11-08-snapshot-schedules.md).

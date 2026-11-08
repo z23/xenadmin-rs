@@ -419,6 +419,10 @@ pub struct VmAppliance {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SnapshotPolicy {
+    #[serde(default)]
+    pub vms_known: bool,
+    #[serde(default)]
+    pub last_run_time: Option<String>,
     pub id: SnapshotPolicyId,
     pub name: String,
     pub description: String,

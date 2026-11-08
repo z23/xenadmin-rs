@@ -41,6 +41,7 @@ fn resource(pool: PoolId) -> ResourceOperationRecord {
         appliance_baseline: None,
         host_plan: None,
         subject_baseline: None,
+        snapshot_policy_evidence: None,
     }
 }
 fn vm(pool: PoolId) -> OperationRecord {

@@ -110,7 +110,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P05-10 | New template from snapshot | Reviewed clone with new template identity/provenance checks implemented; fixture verified, lab qualification open |
 | P05-11 | Export snapshot as template/backup | Queued |
 | P05-12 | Ancestry tree, preview image, storage/size detail | Queued |
-| P05-13 | Scheduled-snapshot policies | Capability review and implementation queued |
+| P05-13 | Scheduled-snapshot policies | Implemented/fixture-verified: reviewed host VMSS create/edit/assignment/enable/run/delete; XCP-ng 8.3 plugin contract and local clock checked. Live cron/DST/retention qualification open. [Evidence](reports/2026-11-08-snapshot-schedules.md) |
 
 ## 6. VM properties/resources
 

@@ -26,6 +26,7 @@ enum Request {
     Metrics(crate::metrics::MetricsRequest),
     StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
     SecurityDiscovery(crate::security_discovery::Request),
+    SnapshotPolicySupport(crate::snapshot_policy_support::Request),
     Diagnose(crate::diagnostics::DiagnosticRequest),
     Submit(Box<MutationRequest>),
     ResourceSubmit(Box<crate::resources::ResourceRequest>),
@@ -114,6 +115,9 @@ impl ConnectionSnapshot {
             crate::ResourceTarget::Pif(id) => inventory.details.pifs.contains_key(&id),
             crate::ResourceTarget::Vlan(id) => inventory.details.vlans.contains_key(&id),
             crate::ResourceTarget::Bond(id) => inventory.details.bonds.contains_key(&id),
+            crate::ResourceTarget::SnapshotPolicy(id) => {
+                inventory.details.snapshot_policies.contains_key(&id)
+            }
             crate::ResourceTarget::Pool(id) => id == inventory.pool_id,
             crate::ResourceTarget::Host(id) => inventory.hosts.contains_key(&id),
             crate::ResourceTarget::Task(id) => inventory.details.tasks.contains_key(&id),
@@ -380,6 +384,22 @@ pub struct Connection {
     resource_history: watch::Receiver<Arc<Vec<crate::ResourceOperationRecord>>>,
 }
 impl Connection {
+    pub fn snapshot_policy_support(
+        &self,
+        observed: crate::ObservedResource,
+    ) -> Result<crate::SnapshotPolicySupportQuery, Error> {
+        if !matches!(observed.target, crate::ResourceTarget::Pool(_))
+            || self.latest().observe_resource(observed.target)? != observed
+        {
+            return Err(Error::Stale);
+        }
+        let (handle, request) =
+            crate::snapshot_policy_support::channel(observed, self.runtime.clone());
+        self.requests
+            .try_send(Request::SnapshotPolicySupport(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
     pub fn discover_storage(
         &self,
         observed: crate::ObservedResource,
@@ -900,6 +920,11 @@ async fn run(
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
                                     else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
                                 }
+                                Request::SnapshotPolicySupport(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if discoveries.len()>=4 {request.fail(Error::Busy);}
+                                    else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
+                                }
                                 Request::StorageDiscovery(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
@@ -1221,6 +1246,7 @@ async fn forward_alias(
                         Request::Metrics(request) => request.fail(Error::Busy),
                         Request::StorageDiscovery(request) => request.fail(Error::Busy),
                         Request::SecurityDiscovery(request) => request.fail(Error::Busy),
+                        Request::SnapshotPolicySupport(request) => request.fail(Error::Busy),
                         Request::Diagnose(request) => request.fail(Error::Busy),
                         Request::RememberMembers(_) => {},
                         Request::Control(_, _) | Request::ResourceControl(_,_) => {

@@ -14,6 +14,7 @@ mod preferences;
 mod profiles_view;
 mod resource_admin;
 mod resource_details;
+mod snapshot_policy_view;
 mod storage_view;
 mod transfers;
 mod vm_devices;
@@ -153,6 +154,7 @@ struct State {
     network_workspace: Option<network_admin::Workspace>,
     storage_editor: Option<storage_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
+    snapshot_policy_workspace: Option<snapshot_policy_view::Workspace>,
     resource_operations: Vec<xenadmin_core::ResourceOperation>,
     resource_rows: Vec<xenadmin_core::ResourceOperationRecord>,
     dev_inspection: Option<xenadmin_core::DevInspection>,
@@ -256,6 +258,7 @@ fn init() -> State {
         network_workspace: None,
         storage_editor: None,
         host_workspace: None,
+        snapshot_policy_workspace: None,
         resource_operations: Vec::new(),
         resource_rows: Vec::new(),
         dev_inspection,
@@ -737,6 +740,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= resource_admin::poll(s);
     changed |= storage_view::poll(s);
+    changed |= snapshot_policy_view::poll(s);
     changed |= transfers::poll(s);
     changed |= pool_security_view::poll(s);
     changed |= console_view::poll_export(s);
@@ -1189,6 +1193,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
+        Button::new("Snapshot schedules")
+            .disabled(s.inventory.is_none())
+            .on_press(snapshot_policy_view::open)
+            .build(&k)
+            .key("snapshot-schedules-open"),
+    );
+    controls = controls.child(
         Button::new("Archives")
             .on_press(transfers::open)
             .build(&k)
@@ -1287,6 +1298,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let base = shell.build(&k);
     let root = if s.show_connect {
         rune_kit::root(base, [connection_dialog(s, &k)])
+    } else if s.snapshot_policy_workspace.is_some() {
+        rune_kit::root(base, [snapshot_policy_view::dialog(s, &k)])
     } else if s.host_workspace.is_some() {
         rune_kit::root(base, [host_admin::dialog(s, &k)])
     } else if s.network_workspace.is_some() {
@@ -1995,6 +2008,7 @@ fn main() {
             ("connections", |s| profiles_view::scene(s, false)),
             ("network-interfaces", network_admin::scene),
             ("host-administration", host_admin::scene),
+            ("snapshot-schedules", snapshot_policy_view::scene),
             ("network-create", |s| resource_admin::scene(s, false)),
             ("activity", activity::scene),
             ("organization", organization_view::scene),

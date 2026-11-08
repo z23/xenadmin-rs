@@ -60,8 +60,15 @@ pub use storage_discovery::{
 mod host_types;
 mod settings;
 pub use host_types::{HostOperation, HostPowerOnMode};
+mod snapshot_policy;
+mod snapshot_policy_support;
 mod snapshots;
 pub use migration::{DiskPlacement, NicPlacement, VmMigration};
+pub use snapshot_policy::{
+    ScheduledSnapshotKind, SnapshotPolicyClock, SnapshotPolicyConfig, SnapshotPolicyOperation,
+    SnapshotPolicyState, SnapshotSchedule,
+};
+pub use snapshot_policy_support::{SnapshotPolicySupport, SnapshotPolicySupportQuery};
 mod vm_lifecycle;
 mod vm_lifecycle_backend;
 pub use vm_lifecycle::{
