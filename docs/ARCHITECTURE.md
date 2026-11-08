@@ -744,3 +744,19 @@ known repository signatures, and verifies a new SR/PBD plus explicit persisted a
 No unowned resource is automatically removed. External ownership is not inferable from XAPI;
 the destructive review makes that boundary explicit. See the
 [HBA/allocation report](reports/2026-11-08-storage-provisioning.md).
+
+### External guest tools
+
+`external_tools.rs` owns a version-1, bounded local tool catalog and a captured guest launch
+review. The declaration consists of an absolute executable and separate argument strings,
+with a closed set of typed IP/port/username/UUID placeholders. No shell parsing, raw inventory
+record, session token or password substitution exists. The desktop passes only an allowlisted
+GUI/locale/SSH-agent environment. This is an explicitly trusted local subprocess boundary,
+not a sandbox or in-process plugin API.
+
+Executable inspection runs in bounded background work. Changed inputs or closed reviews
+discard late results. Launch rechecks file identity and the captured current connection,
+pool, generation, running VM and reported address immediately before spawning. Guest-reported
+IP addresses are not authenticated identities; the chosen client's own host-key/certificate
+policy still applies. Local spawn/exit status does not establish a successful guest login.
+The existing private atomic preferences file stores declarations, never guest passwords.

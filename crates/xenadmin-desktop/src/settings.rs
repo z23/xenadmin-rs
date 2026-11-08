@@ -173,6 +173,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 .child(heading("Confirmations",k))
                 .child(check(s,k,"Review routine VM power actions","settings-review-power",|o|o.review_power,|o|o.review_power= !o.review_power))
                 .child(caption("Force actions and configuration changes always keep their required reviews.",k).wrap())
+                .child(Button::new("Configure external tools…").on_press(external_tools::configure).build(k).key("configure-external-tools"))
                 .child(heading("New console defaults",k))
                 .child(check(s,k,"Use actual size instead of fit","settings-console-size",|o|o.console_actual_size,|o|o.console_actual_size= !o.console_actual_size))
                 .child(check(s,k,"Reconnect automatically","settings-console-reconnect",|o|o.console_reconnect,|o|o.console_reconnect= !o.console_reconnect))

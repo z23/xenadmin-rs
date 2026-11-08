@@ -60,7 +60,11 @@ any session; closing the main application closes them all. See the
 [independent console windows report](reports/2026-11-08-independent-console-windows.md).
 
 The application does not promise a generic console for guests that expose no RFB console.
-Guest RDP and SSH integrations can be added later without becoming management dependencies.
+Reviewed guest SSH/RDP and configured local tools run independently of XAPI. Choose a reported
+or manually verified guest IP and review the exact local executable/arguments. Authentication
+happens in the external client; no XAPI password or session is supplied. Local declarations
+are trusted programs, not sandboxed plugins. See the
+[external guest tools report](reports/2026-11-08-external-guest-tools.md).
 
 The [firmware/template increment](reports/2026-11-08-firmware-templates.md) adds reviewed
 BIOS/UEFI/Secure Boot provisioning, eligible chosen-host BIOS identity with explicit

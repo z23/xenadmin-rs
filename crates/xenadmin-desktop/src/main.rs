@@ -10,6 +10,7 @@ mod cross_pool_vm;
 mod demo_details;
 mod dev_inspection;
 mod disk_workspace;
+mod external_tools;
 mod guest_tools_view;
 mod host_admin;
 mod host_console;
@@ -165,6 +166,7 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    external_tools: external_tools::Workspace,
     console_windows: console_windows::Registry,
     console_seat: Option<console_windows::Seat>,
     information: Option<inventory_information::Panel>,
@@ -294,6 +296,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         .flatten()
         .or(inspection_error);
     let mut s = State {
+        external_tools: Default::default(),
         console_windows: Default::default(),
         console_seat: None,
         bulk_power: None,
@@ -828,6 +831,7 @@ fn merge_operation_rows(
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = profiles_view::refresh(s);
     changed |= console_windows::poll_registry(s);
+    changed |= external_tools::poll(s);
     changed |= snapshot_inspection::poll(s);
     changed |= snapshot_capture::poll(s, tx);
     changed |= search_view::poll(s);
@@ -1579,6 +1583,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
+    let root = if external_tools::is_open(s) {
+        rune_kit::root(root, [external_tools::dialog(s, &k)])
+    } else {
+        root
+    };
     root.key("application")
         .on_layout_tx(|s: &mut State, rect, _| {
             if rect[2].is_finite() && rect[2] > 0.0 && (s.window_width - rect[2]).abs() > 0.5 {
@@ -1943,6 +1952,7 @@ fn details(s: &State, k: &Kit) -> El {
                 .build(k)
                 .key("open-console"),
         )
+        .child(external_tools::button(s, k))
         .child(heading("Operations", k))
         .child(actions)
         .child(
@@ -2095,6 +2105,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .child(dialog)
 }
 fn demo(s: &mut State) {
+    external_tools::clear(s);
     s.metrics = None;
     console_view::release(s);
     s.resource_editor = None;
@@ -2254,6 +2265,8 @@ fn main() -> std::process::ExitCode {
             ("batch-power", bulk_power::scene),
             ("console-recovery", console_view::recovery_scene),
             ("multiple-consoles", console_windows::multiple_scene),
+            ("guest-connections", |s| external_tools::scene(s, false)),
+            ("external-tools", |s| external_tools::scene(s, true)),
             ("host-console", host_console::scene),
             ("search-pools", search_view::scene),
             ("performance", metrics_view::scene),

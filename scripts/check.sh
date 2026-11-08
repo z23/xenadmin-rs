@@ -193,3 +193,8 @@ done
 "$check_binary" --snap artifacts/console-window-manager.png --tree artifacts/console-window-manager.json --scene multiple-consoles --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-vlan-bond.png --tree artifacts/management-vlan-bond.json --scene management-vlan-bond --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/management-vlan-bond-compact.png --tree artifacts/management-vlan-bond-compact.json --scene management-vlan-bond --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/guest-connections.png --tree artifacts/guest-connections.json --scene guest-connections --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/guest-connections-compact.png --tree artifacts/guest-connections-compact.json --scene guest-connections --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/external-tools.png --tree artifacts/external-tools.json --scene external-tools --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/external-tools-compact.png --tree artifacts/external-tools-compact.json --scene external-tools --theme dark --size 513x652 --scale 1 --at 1
