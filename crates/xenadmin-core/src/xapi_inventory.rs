@@ -177,6 +177,15 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         classes: store.classes.clone(),
         ..Default::default()
     };
+    result.pool = store.class("pool").next().and_then(|(_, record)| {
+        let default_sr = refs.link("sr", &record["default_SR"]);
+        Some(PoolDetails {
+            id: id(record).ok()?,
+            description: string(record, "name_description"),
+            default_sr,
+            default_sr_known: record["default_SR"] == "OpaqueRef:NULL" || default_sr.is_some(),
+        })
+    });
     for class in OPTIONAL_CLASSES {
         result
             .classes

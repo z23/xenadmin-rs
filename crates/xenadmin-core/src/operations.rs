@@ -423,6 +423,7 @@ pub(crate) struct MutationRequest {
 }
 pub(crate) enum OperationUpdate {
     Record(Box<OperationRecord>),
+    Resource(Box<crate::ResourceOperationRecord>),
     Coordinator(crate::Endpoint),
 }
 struct DispatchPermit(OperationAction);
@@ -541,7 +542,7 @@ pub(crate) fn state_directory() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".xenadmin-rs-state"))
 }
 
-pub(crate) struct Journal(rusqlite::Connection);
+pub(crate) struct Journal(pub(crate) rusqlite::Connection);
 impl Journal {
     pub(crate) fn knows(&self, record: &OperationRecord) -> bool {
         self.load(record.id).ok().flatten().is_some_and(|existing| {
@@ -573,13 +574,13 @@ impl Journal {
         let version: u64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|_| Error::Journal)?;
-        if version > 2 {
+        if version > 3 {
             return Err(Error::JournalVersion);
         }
         connection
             .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .map_err(|_| Error::Journal)?;
-        if version < 2 {
+        if version < 3 {
             let transaction = rusqlite::Transaction::new_unchecked(
                 &connection,
                 rusqlite::TransactionBehavior::Immediate,
@@ -588,7 +589,7 @@ impl Journal {
             let locked_version: u64 = transaction
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|_| Error::Journal)?;
-            if locked_version > 2 {
+            if locked_version > 3 {
                 return Err(Error::JournalVersion);
             }
             transaction.execute_batch("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|_|Error::Journal)?;
@@ -601,7 +602,7 @@ impl Journal {
                     .map_err(|_| Error::Journal)?;
             }
             transaction
-                .execute_batch("PRAGMA user_version=2;")
+                .execute_batch("CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, result_reference TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0); PRAGMA user_version=3;")
                 .map_err(|_| Error::Journal)?;
             transaction.commit().map_err(|_| Error::Journal)?;
         }
@@ -632,6 +633,9 @@ impl Journal {
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::Journal)?;
         let result = (|| {
+            if self.resource_load(record.id)?.is_some() {
+                return Err(Error::OperationConflict);
+            }
             if let Some(existing) = self.load(record.id)? {
                 if existing.pool != record.pool
                     || existing.vm != record.vm
@@ -640,6 +644,17 @@ impl Journal {
                     return Err(Error::OperationConflict);
                 }
                 return Ok(false);
+            }
+            let busy: bool = self
+                .0
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM resource_operations WHERE pool=?1 AND terminal=0)",
+                    [record.pool.to_string()],
+                    |row| row.get(0),
+                )
+                .map_err(|_| Error::Journal)?;
+            if busy {
+                return Err(Error::ConflictingPoolOperation);
             }
             let resources = record.action.resources(record.vm);
             let mut query = self
@@ -666,7 +681,7 @@ impl Journal {
             let total: i64 = self
                 .0
                 .query_row(
-                    "SELECT COUNT(*) FROM operations WHERE terminal=0",
+                    "SELECT (SELECT COUNT(*) FROM operations WHERE terminal=0)+(SELECT COUNT(*) FROM resource_operations WHERE terminal=0)",
                     [],
                     |row| row.get(0),
                 )
@@ -1720,3 +1735,7 @@ mod tests {
         assert_eq!(recover(dir.path(), record().pool).unwrap().len(), 200);
     }
 }
+
+#[cfg(test)]
+#[path = "resource_journal_tests.rs"]
+mod resource_journal_tests;

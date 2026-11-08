@@ -287,3 +287,28 @@ fn live_diagnostic_uses_registered_session_and_reads_current_vm_without_mutation
         server.set_connections([]);
     });
 }
+
+#[test]
+fn resource_history_projection_excludes_private_rpc_evidence_and_intent() {
+    let mut record:crate::ResourceOperationRecord=serde_json::from_value(json!({
+        "id":uuid::Uuid::new_v4(),"pool":uuid::Uuid::new_v4(),"target":{"Network":uuid::Uuid::new_v4()},
+        "action":{"CreateInternalNetwork":{"name":"private-name","description":"private-description","mtu":1500}},
+        "state":"OutcomeUnknown","progress":null,"created_at_ms":0,"detail":"Lost reply OpaqueRef:fixture-secret",
+        "can_cancel":false,"cancel_requested":false,"steps":[{"label":"Create network","state":"OutcomeUnknown","detail":"Uncertain"}],"created":null
+    })).unwrap();
+    record.task = Some("OpaqueRef:task-secret".into());
+    record.result_reference = Some("OpaqueRef:result-secret".into());
+    let value = resource_operation_value(&record);
+    assert_eq!(value["state"], "OutcomeUnknown");
+    assert_eq!(value["steps"][0]["label"], "Create network");
+    for forbidden in [
+        "private-name",
+        "private-description",
+        "OpaqueRef:",
+        "task-secret",
+        "result-secret",
+        "fixture-secret",
+    ] {
+        assert!(!value.to_string().contains(forbidden));
+    }
+}

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     sync::{
         Arc, Mutex, Weak,
@@ -25,6 +25,8 @@ enum Request {
     Console(ConsoleRequest),
     Diagnose(crate::diagnostics::DiagnosticRequest),
     Submit(Box<MutationRequest>),
+    ResourceSubmit(Box<crate::resources::ResourceRequest>),
+    ResourceControl(crate::OperationId, crate::OperationControl),
     Control(crate::OperationId, crate::OperationControl),
     RememberMembers(Vec<crate::Endpoint>),
 }
@@ -70,6 +72,36 @@ impl std::fmt::Display for ObservedVm {
     }
 }
 impl ConnectionSnapshot {
+    pub fn observe_resource(
+        &self,
+        target: crate::ResourceTarget,
+    ) -> Result<crate::ObservedResource, Error> {
+        let inventory = self
+            .inventory
+            .as_ref()
+            .filter(|_| self.is_current())
+            .ok_or(Error::Stale)?;
+        let present = match target {
+            crate::ResourceTarget::Pool(id) => id == inventory.pool_id,
+            crate::ResourceTarget::Host(id) => inventory.hosts.contains_key(&id),
+            crate::ResourceTarget::Storage(id) => {
+                inventory.storage.iter().any(|sr| sr.uuid == id.uuid())
+            }
+            crate::ResourceTarget::Network(id) => inventory
+                .networks
+                .iter()
+                .any(|network| network.uuid == id.uuid()),
+        };
+        if !present {
+            return Err(Error::Stale);
+        }
+        Ok(crate::ObservedResource {
+            pool: inventory.pool_id,
+            generation: self.generation,
+            target,
+        })
+    }
+
     pub fn observe_snapshot(
         &self,
         vm: crate::VmId,
@@ -156,6 +188,7 @@ impl Drop for ConnectionLease {
 struct OwnerRoute {
     receiver: watch::Receiver<Arc<ConnectionSnapshot>>,
     history: watch::Receiver<Arc<Vec<OperationRecord>>>,
+    resource_history: watch::Receiver<Arc<Vec<crate::ResourceOperationRecord>>>,
     requests: mpsc::Sender<Request>,
 }
 struct PoolOwner {
@@ -258,6 +291,7 @@ impl Backend {
         let runtime = self.runtime.as_ref().expect("runtime exists before drop");
         let (requests, receiver_requests) = mpsc::channel(32);
         let (history_sender, history) = watch::channel(Arc::new(Vec::new()));
+        let (resource_sender, resource_history) = watch::channel(Arc::new(Vec::new()));
         runtime.spawn(run(
             options,
             credentials,
@@ -272,10 +306,11 @@ impl Backend {
                 route: OwnerRoute {
                     receiver: receiver.clone(),
                     history: history.clone(),
+                    resource_history: resource_history.clone(),
                     requests: requests.clone(),
                 },
             },
-            history_sender,
+            (history_sender, resource_sender),
         ));
         Connection {
             lease,
@@ -285,6 +320,7 @@ impl Backend {
             runtime: runtime.handle().clone(),
             requests,
             history,
+            resource_history,
         }
     }
 }
@@ -305,8 +341,48 @@ pub struct Connection {
     runtime: tokio::runtime::Handle,
     requests: mpsc::Sender<Request>,
     history: watch::Receiver<Arc<Vec<OperationRecord>>>,
+    resource_history: watch::Receiver<Arc<Vec<crate::ResourceOperationRecord>>>,
 }
 impl Connection {
+    pub fn resource_history(&self) -> Arc<Vec<crate::ResourceOperationRecord>> {
+        self.resource_history.borrow().clone()
+    }
+    pub fn submit_resource(
+        &self,
+        id: crate::OperationId,
+        command: crate::ResourceCommand,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let (observed, action) = command.normalize();
+        if self.latest().observe_resource(observed.target)? != observed {
+            return Err(Error::Stale);
+        }
+        action.validate(observed.target)?;
+        let (operation, request) =
+            crate::resources::channel(id, observed, action, self.runtime.clone());
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(operation)
+    }
+    pub fn control_resource(
+        &self,
+        id: crate::OperationId,
+        control: crate::OperationControl,
+    ) -> Result<(), Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if !self.latest().is_current() {
+            return Err(Error::Stale);
+        }
+        self.requests
+            .try_send(Request::ResourceControl(id, control))
+            .map_err(|_| Error::Busy)
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
@@ -419,9 +495,11 @@ impl Connection {
     pub fn notify_on_change(&self, callback: Arc<dyn Fn() + Send + Sync>) {
         let mut receiver = self.receiver.clone();
         let mut history = self.history.clone();
+        let mut resource_history = self.resource_history.clone();
         self.runtime.spawn(async move {
             loop {
                 tokio::select! {
+                    result = resource_history.changed() => { callback(); if result.is_err() { break; } }
                     result = history.changed() => { callback(); if result.is_err() { break; } }
                     result = receiver.changed() => {
                         callback();
@@ -471,6 +549,11 @@ impl Connection {
         .await;
     }
 }
+type HistorySenders = (
+    watch::Sender<Arc<Vec<OperationRecord>>>,
+    watch::Sender<Arc<Vec<crate::ResourceOperationRecord>>>,
+);
+
 async fn run(
     mut options: ConnectionOptions,
     credentials: Credentials,
@@ -478,13 +561,15 @@ async fn run(
     cancel: CancellationToken,
     mut requests: mpsc::Receiver<Request>,
     context: OwnerContext,
-    history: watch::Sender<Arc<Vec<OperationRecord>>>,
+    histories: HistorySenders,
 ) {
+    let (history, resource_history) = histories;
     let directory = context.directory.clone();
     let mut expected_pool = options.expected_pool;
     let mut protocol_failures = 0u8;
     let (updates, mut operation_updates) = mpsc::channel::<OperationUpdate>(128);
     let mut records = BTreeMap::new();
+    let mut resource_records = BTreeMap::new();
     let mut generation;
     let mut last_inventory = None;
     let mut last_update = None;
@@ -525,6 +610,21 @@ async fn run(
                 let mut journal_error = None;
                 let mut workers = tokio::task::JoinSet::new();
                 let mut diagnostics = tokio::task::JoinSet::new();
+                let mut resource_workers = tokio::task::JoinSet::new();
+                let mut resource_counts = BTreeMap::<crate::OperationId, usize>::new();
+                let mut resource_rechecks = BTreeSet::new();
+                let start_resource =
+                    |request: crate::resources::ResourceRequest,
+                     workers: &mut tokio::task::JoinSet<crate::OperationId>,
+                     counts: &mut BTreeMap<crate::OperationId, usize>| {
+                        *counts.entry(request.record.id).or_default() += 1;
+                        workers.spawn(request.run(
+                            session.clone(),
+                            directory.clone(),
+                            active.clone(),
+                            updates.clone(),
+                        ));
+                    };
                 let mut worker_counts = BTreeMap::<crate::OperationId, usize>::new();
                 let start_worker =
                     |request: MutationRequest,
@@ -554,6 +654,21 @@ async fn run(
                     let batch = tokio::select! {
                         _=cancel.cancelled()=>break None,
                         _=diagnostics.join_next(), if !diagnostics.is_empty()=>{continue;}
+                        done=resource_workers.join_next(), if !resource_workers.is_empty()=>{
+                            match done {
+                                Some(Ok(id))=>{
+                                    if let Some(count)=resource_counts.get_mut(&id) {*count-=1;if *count==0 {resource_counts.remove(&id);}}
+                                    if !resource_counts.contains_key(&id)&&resource_rechecks.remove(&id) {
+                                        match operations::Journal::open(&directory).and_then(|journal|journal.resource_load(id)) {
+                                            Ok(Some(record)) if !record.state.terminal()=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts),
+                                            Err(error)=>publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update),
+                                            _=>{},
+                                        }
+                                    }
+                                },
+                                Some(Err(_))=>break Some(Error::Connection("An infrastructure operation worker stopped unexpectedly. Reconnect to reconcile its journal.".into())),None=>{},
+                            }continue;
+                        }
                         done=workers.join_next(), if !workers.is_empty()=>{
                             match done {
                                 Some(Ok(id))=>{if let Some(count)=worker_counts.get_mut(&id) { *count-=1; if *count==0 {worker_counts.remove(&id);} }},
@@ -565,6 +680,7 @@ async fn run(
                         Some(update)=operation_updates.recv()=>{
                             match update {
                                 OperationUpdate::Coordinator(endpoint)=>break Some(Error::Coordinator(endpoint)),
+                                OperationUpdate::Resource(record)=>{merge_resource_record(&mut resource_records,*record);publish_resource_history(&resource_history,&mut resource_records);},
                                 OperationUpdate::Record(record)=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
                             }
                             continue;
@@ -572,6 +688,10 @@ async fn run(
                         _=refresh.tick(), if recovered && !options.read_only=>{
                             if !directory.join("operations.sqlite3").exists() {continue;}
                             if let Some(inventory)=&last_inventory {
+                                match operations::Journal::open(&directory).and_then(|journal|journal.resource_history(inventory.pool_id)) {
+                                    Ok(rows)=>{for record in rows {merge_resource_record(&mut resource_records,record);}publish_resource_history(&resource_history,&mut resource_records);},
+                                    Err(error)=>{journal_error=Some(error.to_string());publish(&sender,generation,ConnectionState::Ready,&last_inventory,journal_error.clone(),last_update);continue;}
+                                }
                                 match operations::Journal::open(&directory).and_then(|journal|journal.history()) {
                                     Ok(rows)=>{
                                         journal_error=None;
@@ -595,6 +715,28 @@ async fn run(
                         }
                         Some(request)=requests.recv()=>{
                             match request {
+                                Request::ResourceSubmit(request)=>{
+                                    if options.read_only {request.reject(Error::ReadOnly);}
+                                    else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.record.pool) {request.reject(Error::Stale);}
+                                    else if journal_error.is_some() {request.reject(Error::Journal);}
+                                    else if resource_workers.len()>=8 {request.reject(Error::Busy);}
+                                    else {start_resource(*request,&mut resource_workers,&mut resource_counts);}
+                                }
+                                Request::ResourceControl(id,control)=>{
+                                    let result=(|| {
+                                        if options.read_only {return Err(Error::ReadOnly);}
+                                        let pool=last_inventory.as_ref().filter(|_|!token.is_empty()).ok_or(Error::Stale)?.pool_id;
+                                        if !resource_counts.contains_key(&id)&&resource_workers.len()>=8 {return Err(Error::Busy);}
+                                        let journal=operations::Journal::open(&directory)?;
+                                        let record=journal.resource_control(pool,id,control)?;
+                                        if !record.state.terminal() {
+                                            if !resource_counts.contains_key(&id) {start_resource(crate::resources::ResourceRequest::tracking(record.clone()),&mut resource_workers,&mut resource_counts);}
+                                            else if record.state==crate::OperationState::OutcomeUnknown {resource_rechecks.insert(id);}
+                                        }
+                                        merge_resource_record(&mut resource_records,record);publish_resource_history(&resource_history,&mut resource_records);Ok::<_,Error>(())
+                                    })();
+                                    if let Err(error)=result {publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update);}
+                                }
                                 Request::Submit(request)=>{
                                     if options.read_only {request.reject(Error::ReadOnly);}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|inventory|inventory.pool_id==request.record.pool) {
@@ -702,8 +844,14 @@ async fn run(
                                                 .unwrap_or_else(|p| p.into_inner()) =
                                                 Some(target.lease.cancel.clone());
                                         }
-                                        forward_alias(target, sender, history, requests, cancel)
-                                            .await;
+                                        forward_alias(
+                                            target,
+                                            sender,
+                                            (history, resource_history),
+                                            requests,
+                                            cancel,
+                                        )
+                                        .await;
                                         return;
                                     }
                                     Ok(None) => {}
@@ -724,6 +872,40 @@ async fn run(
                                                 merge_record(&mut records, record);
                                             }
                                             publish_history(&history, &mut records);
+                                        }
+                                        Err(error) => journal_error = Some(error.to_string()),
+                                    }
+                                    let recovery = if directory.join("operations.sqlite3").exists()
+                                    {
+                                        operations::Journal::open(&directory).and_then(|journal| {
+                                            journal.resource_recover(inventory.pool_id)
+                                        })
+                                    } else {
+                                        Ok(Vec::new())
+                                    };
+                                    match recovery {
+                                        Ok(rows) => {
+                                            for record in rows {
+                                                if !record.state.terminal()
+                                                    && resource_workers.len() < 8
+                                                {
+                                                    start_resource(
+                                                        crate::resources::ResourceRequest::tracking(
+                                                            record.clone(),
+                                                        ),
+                                                        &mut resource_workers,
+                                                        &mut resource_counts,
+                                                    );
+                                                }
+                                                merge_resource_record(
+                                                    &mut resource_records,
+                                                    record,
+                                                );
+                                            }
+                                            publish_resource_history(
+                                                &resource_history,
+                                                &mut resource_records,
+                                            );
                                         }
                                         Err(error) => journal_error = Some(error.to_string()),
                                     }
@@ -753,11 +935,16 @@ async fn run(
                 active.cancel();
                 let cleanup = tokio::time::sleep(Duration::from_secs(3));
                 tokio::pin!(cleanup);
-                while !workers.is_empty() {
+                while !workers.is_empty() || !resource_workers.is_empty() {
                     tokio::select! {
-                        _=workers.join_next()=>{},
-                        Some(OperationUpdate::Record(record))=operation_updates.recv()=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
-                        _=&mut cleanup=>{workers.abort_all();break;},
+                        _=workers.join_next(), if !workers.is_empty()=>{},
+                        _=resource_workers.join_next(), if !resource_workers.is_empty()=>{},
+                        Some(update)=operation_updates.recv()=>{match update {
+                            OperationUpdate::Record(record)=>{merge_record(&mut records,*record);publish_history(&history,&mut records);},
+                            OperationUpdate::Resource(record)=>{merge_resource_record(&mut resource_records,*record);publish_resource_history(&resource_history,&mut resource_records);},
+                            OperationUpdate::Coordinator(_)=>{},
+                        }},
+                        _=&mut cleanup=>{workers.abort_all();resource_workers.abort_all();break;},
                     }
                 }
                 let _ = tokio::time::timeout(Duration::from_secs(3), session.logout()).await;
@@ -821,10 +1008,12 @@ async fn run(
 async fn forward_alias(
     mut target: AliasTarget,
     sender: watch::Sender<Arc<ConnectionSnapshot>>,
-    history: watch::Sender<Arc<Vec<OperationRecord>>>,
+    histories: HistorySenders,
     mut requests: mpsc::Receiver<Request>,
     cancel: CancellationToken,
 ) {
+    let (history, resource_history) = histories;
+    resource_history.send_replace(target.route.resource_history.borrow().clone());
     sender.send_replace(target.route.receiver.borrow().clone());
     history.send_replace(target.route.history.borrow().clone());
     loop {
@@ -833,6 +1022,10 @@ async fn forward_alias(
             result = target.route.receiver.changed() => {
                 sender.send_replace(target.route.receiver.borrow().clone());
                 if result.is_err() { break; }
+            }
+            result = target.route.resource_history.changed() => {
+                resource_history.send_replace(target.route.resource_history.borrow().clone());
+                if result.is_err() {break;}
             }
             result = target.route.history.changed() => {
                 history.send_replace(target.route.history.borrow().clone());
@@ -843,10 +1036,11 @@ async fn forward_alias(
                 if let Err(error) = target.route.requests.try_send(request) {
                     match error.into_inner() {
                         Request::Submit(request) => request.reject(Error::Busy),
+                        Request::ResourceSubmit(request) => request.reject(Error::Busy),
                         Request::Console(request) => request.fail(Error::Busy),
                         Request::Diagnose(request) => request.fail(Error::Busy),
                         Request::RememberMembers(_) => {},
-                        Request::Control(_, _) => {
+                        Request::Control(_, _) | Request::ResourceControl(_,_) => {
                             let mut snapshot = (*sender.borrow().clone()).clone();
                             snapshot.error = Some(Error::Busy.to_string());
                             sender.send_replace(Arc::new(snapshot));
@@ -924,4 +1118,36 @@ fn publish(
         endpoint: previous.endpoint.clone(),
         verified_members: previous.verified_members.clone(),
     }));
+}
+
+fn merge_resource_record(
+    records: &mut BTreeMap<crate::OperationId, crate::ResourceOperationRecord>,
+    record: crate::ResourceOperationRecord,
+) {
+    if records
+        .get(&record.id)
+        .is_none_or(|old| record.supersedes(old))
+    {
+        records.insert(record.id, record);
+    }
+}
+fn publish_resource_history(
+    history: &watch::Sender<Arc<Vec<crate::ResourceOperationRecord>>>,
+    records: &mut BTreeMap<crate::OperationId, crate::ResourceOperationRecord>,
+) {
+    while records.len() > 1500 {
+        if let Some(id) = records
+            .iter()
+            .filter(|(_, r)| r.state.terminal())
+            .min_by_key(|(_, r)| r.created_at_ms)
+            .map(|(id, _)| *id)
+        {
+            records.remove(&id);
+        } else {
+            break;
+        }
+    }
+    let mut ordered: Vec<_> = records.values().cloned().collect();
+    ordered.sort_by_key(|r| r.created_at_ms);
+    history.send_replace(Arc::new(ordered));
 }

@@ -347,8 +347,17 @@ pub struct StorageManager {
     pub capabilities: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PoolDetails {
+    pub id: PoolId,
+    pub description: String,
+    pub default_sr: Option<SrId>,
+    pub default_sr_known: bool,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct InventoryDetails {
+    #[serde(default)]
+    pub pool: Option<PoolDetails>,
     pub classes: BTreeMap<String, ClassAvailability>,
     pub vms: BTreeMap<VmId, VmDetails>,
     pub hosts: BTreeMap<HostId, HostDetails>,

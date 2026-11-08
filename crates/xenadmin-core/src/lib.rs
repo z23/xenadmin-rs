@@ -16,6 +16,11 @@ mod console;
 mod model;
 mod operations;
 mod profiles;
+mod resources;
+pub use resources::{
+    ObservedResource, ResourceAction, ResourceCommand, ResourceOperation, ResourceOperationRecord,
+    ResourceTarget,
+};
 mod settings;
 mod snapshots;
 mod trust;
@@ -38,6 +43,16 @@ pub use trust::{CertificateFingerprint, ConnectionOptions, Credentials, Endpoint
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Choose valid resource settings and a change to apply")]
+    InvalidResourceCommand,
+    #[error("The resource changed since review. Refresh it before retrying")]
+    ResourceConflict,
+    #[error(
+        "This network has physical or virtual interfaces attached; detach them explicitly before this operation"
+    )]
+    ResourceInUse,
+    #[error("Another VM or infrastructure operation in this pool is running or unresolved")]
+    ConflictingPoolOperation,
     #[error("Choose a valid device operation and a larger disk size")]
     InvalidDeviceOperation,
     #[error("The device changed since this view opened. Refresh before trying again")]

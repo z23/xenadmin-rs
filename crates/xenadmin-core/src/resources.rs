@@ -1,0 +1,361 @@
+use crate::{Error, HostId, NetworkId, OperationId, OperationState, OperationStep, PoolId, SrId};
+use serde::{Deserialize, Serialize};
+use std::{sync::Arc, time::SystemTime};
+use tokio::sync::watch;
+
+#[path = "resource_journal.rs"]
+pub(crate) mod journal;
+#[path = "resource_worker.rs"]
+mod worker;
+#[path = "resource_xapi.rs"]
+mod xapi;
+pub(crate) use worker::ResourceRequest;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceTarget {
+    Pool(PoolId),
+    Host(HostId),
+    Storage(SrId),
+    Network(NetworkId),
+}
+impl ResourceTarget {
+    pub(crate) fn class(self) -> &'static str {
+        match self {
+            Self::Pool(_) => "pool",
+            Self::Host(_) => "host",
+            Self::Storage(_) => "SR",
+            Self::Network(_) => "network",
+        }
+    }
+    pub fn uuid(self) -> uuid::Uuid {
+        match self {
+            Self::Pool(id) => id.uuid(),
+            Self::Host(id) => id.uuid(),
+            Self::Storage(id) => id.uuid(),
+            Self::Network(id) => id.uuid(),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObservedResource {
+    pub(crate) pool: PoolId,
+    pub(crate) generation: u64,
+    pub(crate) target: ResourceTarget,
+}
+impl ObservedResource {
+    pub fn target(self) -> ResourceTarget {
+        self.target
+    }
+}
+
+pub enum ResourceCommand {
+    RenameMetadata {
+        target: ObservedResource,
+        expected_name: String,
+        expected_description: String,
+        name: String,
+        description: String,
+    },
+    CreateInternalNetwork {
+        pool: ObservedResource,
+        name: String,
+        description: String,
+        mtu: u64,
+    },
+    ConfigureInternalNetwork {
+        network: ObservedResource,
+        expected_mtu: u64,
+        mtu: u64,
+    },
+    DeleteInternalNetwork {
+        network: ObservedResource,
+        expected_name: String,
+    },
+    ScanStorage {
+        sr: ObservedResource,
+    },
+    SetHostEnabled {
+        host: ObservedResource,
+        expected_enabled: bool,
+        enabled: bool,
+    },
+    SetDefaultStorage {
+        pool: ObservedResource,
+        sr: SrId,
+        expected_default: Option<SrId>,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResourceAction {
+    RenameMetadata {
+        expected_name: String,
+        expected_description: String,
+        name: String,
+        description: String,
+    },
+    CreateInternalNetwork {
+        name: String,
+        description: String,
+        mtu: u64,
+    },
+    ConfigureInternalNetwork {
+        expected_mtu: u64,
+        mtu: u64,
+    },
+    DeleteInternalNetwork {
+        expected_name: String,
+    },
+    ScanStorage,
+    SetHostEnabled {
+        expected_enabled: bool,
+        enabled: bool,
+    },
+    SetDefaultStorage {
+        sr: SrId,
+        expected_default: Option<SrId>,
+    },
+}
+impl ResourceAction {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::RenameMetadata { .. } => "Edit name and description",
+            Self::CreateInternalNetwork { .. } => "Create internal network",
+            Self::ConfigureInternalNetwork { .. } => "Set internal network MTU",
+            Self::DeleteInternalNetwork { .. } => "Delete internal network",
+            Self::ScanStorage => "Scan storage",
+            Self::SetHostEnabled { enabled: true, .. } => "Enable host",
+            Self::SetHostEnabled { enabled: false, .. } => "Disable host",
+            Self::SetDefaultStorage { .. } => "Set default storage",
+        }
+    }
+    pub(crate) fn validate(&self, target: ResourceTarget) -> Result<(), Error> {
+        let name = |value: &str| {
+            !value.trim().is_empty()
+                && value.chars().count() <= 255
+                && !value.chars().any(char::is_control)
+        };
+        let description = |value: &str| value.len() <= 16_384 && !value.contains('\0');
+        let mtu = |value: u64| (1..=65_535).contains(&value);
+        let valid = match self {
+            Self::RenameMetadata {
+                expected_name,
+                expected_description,
+                name: value,
+                description: desc,
+            } => {
+                name(value)
+                    && description(desc)
+                    && description(expected_name)
+                    && description(expected_description)
+                    && (value != expected_name || desc != expected_description)
+            }
+            Self::CreateInternalNetwork {
+                name: value,
+                description: desc,
+                mtu: value_mtu,
+            } => {
+                matches!(target, ResourceTarget::Pool(_))
+                    && name(value)
+                    && description(desc)
+                    && mtu(*value_mtu)
+            }
+            Self::ConfigureInternalNetwork {
+                expected_mtu,
+                mtu: value,
+            } => {
+                matches!(target, ResourceTarget::Network(_))
+                    && mtu(*expected_mtu)
+                    && mtu(*value)
+                    && expected_mtu != value
+            }
+            Self::DeleteInternalNetwork { expected_name } => {
+                matches!(target, ResourceTarget::Network(_)) && description(expected_name)
+            }
+            Self::ScanStorage => matches!(target, ResourceTarget::Storage(_)),
+            Self::SetHostEnabled {
+                expected_enabled,
+                enabled,
+            } => matches!(target, ResourceTarget::Host(_)) && expected_enabled != enabled,
+            Self::SetDefaultStorage {
+                sr,
+                expected_default,
+            } => matches!(target, ResourceTarget::Pool(_)) && Some(*sr) != *expected_default,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(Error::InvalidResourceCommand)
+        }
+    }
+}
+impl ResourceCommand {
+    pub(crate) fn normalize(self) -> (ObservedResource, ResourceAction) {
+        match self {
+            Self::RenameMetadata {
+                target,
+                expected_name,
+                expected_description,
+                name,
+                description,
+            } => (
+                target,
+                ResourceAction::RenameMetadata {
+                    expected_name,
+                    expected_description,
+                    name,
+                    description,
+                },
+            ),
+            Self::CreateInternalNetwork {
+                pool,
+                name,
+                description,
+                mtu,
+            } => (
+                pool,
+                ResourceAction::CreateInternalNetwork {
+                    name,
+                    description,
+                    mtu,
+                },
+            ),
+            Self::ConfigureInternalNetwork {
+                network,
+                expected_mtu,
+                mtu,
+            } => (
+                network,
+                ResourceAction::ConfigureInternalNetwork { expected_mtu, mtu },
+            ),
+            Self::DeleteInternalNetwork {
+                network,
+                expected_name,
+            } => (
+                network,
+                ResourceAction::DeleteInternalNetwork { expected_name },
+            ),
+            Self::ScanStorage { sr } => (sr, ResourceAction::ScanStorage),
+            Self::SetHostEnabled {
+                host,
+                expected_enabled,
+                enabled,
+            } => (
+                host,
+                ResourceAction::SetHostEnabled {
+                    expected_enabled,
+                    enabled,
+                },
+            ),
+            Self::SetDefaultStorage {
+                pool,
+                sr,
+                expected_default,
+            } => (
+                pool,
+                ResourceAction::SetDefaultStorage {
+                    sr,
+                    expected_default,
+                },
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceOperationRecord {
+    pub id: OperationId,
+    pub pool: PoolId,
+    pub target: ResourceTarget,
+    pub action: ResourceAction,
+    pub state: OperationState,
+    pub progress: Option<f64>,
+    pub detail: String,
+    pub created_at_ms: u64,
+    pub can_cancel: bool,
+    pub cancel_requested: bool,
+    pub steps: Vec<OperationStep>,
+    pub created: Option<ResourceTarget>,
+    #[serde(skip)]
+    pub local_error: Option<String>,
+    #[serde(skip)]
+    pub(crate) revision: u64,
+    #[serde(skip)]
+    pub(crate) task: Option<String>,
+    #[serde(skip)]
+    pub(crate) result_reference: Option<String>,
+    #[serde(default)]
+    pub(crate) cancel_dispatched: bool,
+    #[serde(default)]
+    pub(crate) baseline_networks: Option<Vec<NetworkId>>,
+}
+impl ResourceOperationRecord {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    pub fn can_recheck(&self) -> bool {
+        !self.state.terminal()
+    }
+    pub fn supersedes(&self, other: &Self) -> bool {
+        (
+            self.revision,
+            self.local_error.is_some(),
+            self.revision == 0 && self.state == OperationState::Rejected,
+        ) > (
+            other.revision,
+            other.local_error.is_some(),
+            other.revision == 0 && other.state == OperationState::Rejected,
+        )
+    }
+}
+pub struct ResourceOperation {
+    receiver: watch::Receiver<Arc<ResourceOperationRecord>>,
+    runtime: tokio::runtime::Handle,
+}
+impl ResourceOperation {
+    pub fn latest(&self) -> Arc<ResourceOperationRecord> {
+        self.receiver.borrow().clone()
+    }
+    pub fn notify_on_change(&self, callback: Arc<dyn Fn() + Send + Sync>) {
+        let mut receiver = self.receiver.clone();
+        self.runtime.spawn(async move {
+            while receiver.changed().await.is_ok() {
+                callback();
+            }
+        });
+    }
+}
+pub(crate) fn channel(
+    id: OperationId,
+    target: ObservedResource,
+    action: ResourceAction,
+    runtime: tokio::runtime::Handle,
+) -> (ResourceOperation, ResourceRequest) {
+    let record = ResourceOperationRecord {
+        id,
+        pool: target.pool,
+        target: target.target,
+        action,
+        state: OperationState::Preparing,
+        progress: None,
+        detail: "Waiting for admission".into(),
+        created_at_ms: SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+        can_cancel: false,
+        cancel_requested: false,
+        steps: Vec::new(),
+        created: None,
+        local_error: None,
+        revision: 0,
+        task: None,
+        result_reference: None,
+        cancel_dispatched: false,
+        baseline_networks: None,
+    };
+    let (sender, receiver) = watch::channel(Arc::new(record.clone()));
+    (
+        ResourceOperation { receiver, runtime },
+        ResourceRequest::new(target.generation, record, sender),
+    )
+}
