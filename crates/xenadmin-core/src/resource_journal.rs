@@ -311,7 +311,7 @@ impl Journal {
             }
             step.accepted |= received.accepted;
             step.task_succeeded |= received.task_succeeded;
-            if !current.state.terminal() {
+            if !current.state.terminal() && current.state != OperationState::OutcomeUnknown {
                 current.state = if step.task.is_some() && !step.task_succeeded {
                     OperationState::Tracking
                 } else {

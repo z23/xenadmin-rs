@@ -31,6 +31,18 @@ fn op_memory() -> HostOperation {
     }
 }
 async fn fixture(drop_method: &'static str, fail_method: &'static str) -> (Mock, Records) {
+    fixture_delayed(drop_method, fail_method, None).await
+}
+type Delay = (
+    &'static str,
+    Arc<tokio::sync::Notify>,
+    Arc<tokio::sync::Notify>,
+);
+async fn fixture_delayed(
+    drop_method: &'static str,
+    fail_method: &'static str,
+    delay: Option<Delay>,
+) -> (Mock, Records) {
     let records: Records = Arc::new(Mutex::new(BTreeMap::from([
         (
             "pool".into(),
@@ -225,7 +237,23 @@ async fn fixture(drop_method: &'static str, fail_method: &'static str) -> (Mock,
             None
         }
     };
-    (mock_overridden(override_rpc(callback)).await, records)
+    let callback = override_rpc(callback);
+    let wrapped = override_rpc(move |request: Value| {
+        let callback = callback.clone();
+        let delay = delay.clone();
+        async move {
+            let method = request["method"].as_str().unwrap().to_owned();
+            let response = callback(request).await;
+            if let Some((delayed, entered, release)) = delay
+                && method == delayed
+            {
+                entered.notify_one();
+                release.notified().await;
+            }
+            response
+        }
+    });
+    (mock_overridden(wrapped).await, records)
 }
 async fn connect(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin_core::Connection {
     let mut options = ConnectionOptions::new(mock.endpoint.clone());
@@ -263,6 +291,156 @@ fn empty(records: &Records) {
     r.get_mut("host").unwrap()["resident_VMs"] = json!(["OpaqueRef:VM-dom0"]);
     r.get_mut("VM-guest").unwrap()["resident_on"] = json!("OpaqueRef:host-other");
     r.get_mut("host").unwrap()["enabled"] = json!(false);
+}
+#[tokio::test]
+async fn delayed_host_receipt_after_recovery_never_runs_the_next_change() {
+    for (asynchronous, acknowledge) in [(false, false), (false, true), (true, false), (true, true)]
+    {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (mock, records) = fixture_delayed(
+            "",
+            "",
+            Some((
+                if asynchronous {
+                    "Async.host.disable"
+                } else {
+                    "host.set_multipathing"
+                },
+                entered.clone(),
+                release.clone(),
+            )),
+        )
+        .await;
+        empty(&records);
+        if asynchronous {
+            records.lock().unwrap().get_mut("host").unwrap()["enabled"] = json!(true);
+        } else {
+            records.lock().unwrap().get_mut("host").unwrap()["other_config"]["MAINTENANCE_MODE"] =
+                json!("true");
+        }
+        let pending_key = if asynchronous {
+            "MAINTENANCE_MODE"
+        } else {
+            "multipathhandle"
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        let source = connect(&mock, &backend, false).await;
+        let id = OperationId::new();
+        let operation = source
+            .submit_resource(
+                id,
+                command(
+                    &source,
+                    if asynchronous {
+                        HostOperation::EnterMaintenance {
+                            expected_enabled: true,
+                            resident_vms: vec![],
+                        }
+                    } else {
+                        HostOperation::SetMultipath {
+                            expected: false,
+                            enabled: true,
+                        }
+                    },
+                ),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(4), entered.notified())
+            .await
+            .unwrap();
+        let recovering = Backend::with_state_directory(directory.path().into()).unwrap();
+        let connection = connect(&mock, &recovering, false).await;
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                if connection
+                    .resource_history()
+                    .iter()
+                    .any(|r| r.id == id && r.state == OperationState::OutcomeUnknown)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        if acknowledge {
+            connection
+                .control_resource(id, OperationControl::AcknowledgeUnknown)
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(4), async {
+                loop {
+                    if connection
+                        .resource_history()
+                        .iter()
+                        .any(|r| r.id == id && r.state == OperationState::AcknowledgedUnknown)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+        }
+        release.notify_one();
+        let outcome = done(&operation).await;
+        assert_eq!(
+            outcome.state,
+            if acknowledge {
+                OperationState::AcknowledgedUnknown
+            } else {
+                OperationState::OutcomeUnknown
+            },
+            "{}",
+            outcome.detail
+        );
+        if asynchronous {
+            assert_eq!(records.lock().unwrap()["host"]["enabled"], false);
+        } else {
+            assert_eq!(records.lock().unwrap()["host"]["multipathing"], true);
+        }
+        assert!(
+            records.lock().unwrap()["host"]["other_config"]
+                .get(pending_key)
+                .is_none()
+        );
+        let sql = rusqlite::Connection::open_with_flags(
+            directory.path().join("operations.sqlite3"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let payload: String = sql
+            .query_row(
+                "SELECT payload FROM resource_operations WHERE id=?1",
+                [id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["host_plan"]["steps"][0]["accepted"], true);
+        if asynchronous {
+            assert!(payload["host_plan"]["steps"][0]["task"].is_string());
+        }
+        if !acknowledge {
+            let reconciled = recheck(&connection, id, &operation).await;
+            assert_eq!(
+                reconciled.state,
+                OperationState::PartiallyCompleted,
+                "{}",
+                reconciled.detail
+            );
+            assert!(
+                records.lock().unwrap()["host"]["other_config"]
+                    .get(pending_key)
+                    .is_none()
+            );
+        }
+        source.close().await;
+        connection.close().await;
+    }
 }
 async fn recheck(
     c: &xenadmin_core::Connection,

@@ -56,7 +56,7 @@ impl ResourceRequest {
             }
             self.record = journal.host_evidence(&self.record, index)?;
             self.announce().await;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             if kind.asynchronous()
@@ -68,7 +68,7 @@ impl ResourceRequest {
             }
             self.verify_host_step(journal, session, cancel, index, false)
                 .await?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
         }
@@ -99,7 +99,7 @@ impl ResourceRequest {
         let mut saved = false;
         for _ in 0..16 {
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             self.record.steps[index].state = StepState::Verified;
@@ -146,7 +146,7 @@ impl ResourceRequest {
     ) -> Result<bool, Error> {
         loop {
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(false);
             }
             let step = self.host_step(index)?.clone();
@@ -163,7 +163,7 @@ impl ResourceRequest {
                         .task_succeeded = true;
                     self.record = journal.host_evidence(&self.record, index)?;
                     self.announce().await;
-                    return Ok(!self.record.state.terminal());
+                    return Ok(!self.stopped_after_recovery());
                 }
                 Some(status @ ("failure" | "cancelled")) => {
                     self.record.state = if self
@@ -231,7 +231,7 @@ impl ResourceRequest {
             ))?;
         for index in 0..count {
             self.reload(journal)?;
-            if self.record.state.terminal() {
+            if self.stopped_after_recovery() {
                 return Ok(());
             }
             if matches!(

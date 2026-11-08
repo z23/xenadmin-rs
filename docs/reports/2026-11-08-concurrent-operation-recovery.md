@@ -27,3 +27,18 @@ before dispatch. The XVA fixture now requires durable unknown state before an
 explicit recheck, then checks one cancellation RPC, retained IDs and one upload.
 Existing lost-reply/restart fixtures also verify that failed explicit rechecks
 still publish their outcome. No production host was accessed.
+
+## Host workflow follow-up
+
+Host-specific receipt merging and verification now retain a recovered unknown state.
+An original host worker stops after a late synchronous reply or asynchronous task
+receipt, including when the operator has already acknowledged that unknown outcome.
+Explicit reconciliation can still verify the submitted step, finishing as partial
+when later steps were never sent. Task receipts remain durable private evidence.
+
+A gated mock-host test covers synchronous multipath configuration and asynchronous
+host disabling, each with recovery alone and recovery followed by acknowledgement.
+It checks the retained receipt, absence of the next host change, and read-only
+reconciliation to a partial result. All 19 host administration fixtures and strict
+core/all-target Clippy passed after this change. A separate peer reviewed the
+state and CAS guards. No production hosts were accessed.
