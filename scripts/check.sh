@@ -69,3 +69,8 @@ check_binary="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import
 "$check_binary" --snap artifacts/snapshot-restore-compact.png --tree artifacts/snapshot-restore-compact.json --scene snapshot-restore --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/snapshot-edit.png --tree artifacts/snapshot-edit.json --scene snapshot-edit --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/snapshot-edit-compact.png --tree artifacts/snapshot-edit-compact.json --scene snapshot-edit --theme dark --size 513x652 --scale 1 --at 1
+
+"$check_binary" --snap artifacts/ovf-import.png --tree artifacts/ovf-import.json --scene ovf-import --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/ovf-import-compact.png --tree artifacts/ovf-import-compact.json --scene ovf-import --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/ovf-export.png --tree artifacts/ovf-export.json --scene ovf-export --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/ovf-export-compact.png --tree artifacts/ovf-export-compact.json --scene ovf-export --theme dark --size 513x652 --scale 1 --at 1

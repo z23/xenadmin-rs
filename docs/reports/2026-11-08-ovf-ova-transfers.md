@@ -95,6 +95,14 @@ Vulkan and inspected; this establishes layout coverage, not real desktop-dialog
 or live-host qualification. Peer review identified and resolved controller-parent
 validation and late-publication stop handling before this checkpoint.
 
+Integration onto the current main branch also passed `scripts/check.sh`: 563
+workspace tests, 46 vendored VNC tests, eight lab-helper tests, strict workspace
+Clippy, formatting, build and all synthetic native scene renders. OVF import and
+export are now included in that script at 1440 × 900 and 513 × 652. The compact
+integration renders were inspected. Existing compact device/snapshot scene
+diagnostics about zero-height scroll viewports remain outside this transfer
+change; no live-host qualification was performed.
+
 ## Primary references
 
 - [DMTF OVF 2.1 specification](https://www.dmtf.org/sites/default/files/standards/documents/DSP0243_2.1.0.pdf)
