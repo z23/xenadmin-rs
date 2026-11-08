@@ -31,3 +31,8 @@ No live pool connections or infrastructure changes were used. Real portal behavi
 large live inventories and live navigation remain unqualified. Legacy XenCenter search
 XML is explicitly rejected; interoperability with that format and resource-result export
 remain open. Multi-selection, context menus and bulk actions are separate outstanding work.
+
+Integrated with pool join, snapshot orchestration and OVF/OVA: all **575 workspace
+checks** passed (275 core unit, 152 direct-protocol, 5 profile, 4 TLS, 4 probe and
+135 desktop tests). Strict workspace/all-target Clippy passed. The search scene at
+wide and compact sizes is included in `scripts/check.sh`.
