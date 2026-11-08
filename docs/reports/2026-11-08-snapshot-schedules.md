@@ -71,3 +71,10 @@ Synthetic Vulkan editors were rendered and visually inspected at 1440×900 and 5
 visible field captions were corrected after inspection and the Rune tests and Clippy were
 rerun. Only synthetic inventory was rendered, outside the repository. Native Wayland/X11
 and live host qualification are not established by these checks.
+
+Integration with the 0.7 administration, security, transfer and reconnect changes retained
+all command variants, receipts and private journal data. The merged workspace passed 482
+tests and strict workspace Clippy; all-target checking and workspace building passed.
+The two synthetic schedule scenes also rendered from the isolated integration target.
+The verification script resolves its binary from Cargo metadata so target-directory
+overrides select the freshly built executable, and includes both schedule layouts.
