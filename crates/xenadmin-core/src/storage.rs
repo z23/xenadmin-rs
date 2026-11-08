@@ -19,6 +19,33 @@ impl NfsVersion {
         }
     }
 }
+/// Allocation for new LVM-backed storage. Existing repositories are never converted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StorageAllocation {
+    #[default]
+    DriverDefault,
+    Thick,
+    Thin,
+}
+impl StorageAllocation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::DriverDefault => "Driver default",
+            Self::Thick => "Thick",
+            Self::Thin => "Thin",
+        }
+    }
+    pub(crate) fn value(self) -> Option<&'static str> {
+        match self {
+            Self::DriverDefault => None,
+            Self::Thick => Some("thick"),
+            Self::Thin => Some("thin"),
+        }
+    }
+    fn is_default(&self) -> bool {
+        *self == Self::DriverDefault
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StorageLocation {
     IsoSmb {
@@ -42,6 +69,13 @@ pub enum StorageLocation {
         port: u16,
         target_iqn: String,
         scsi_id: String,
+        #[serde(default, skip_serializing_if = "StorageAllocation::is_default")]
+        allocation: StorageAllocation,
+    },
+    Hba {
+        scsi_id: String,
+        #[serde(default, skip_serializing_if = "StorageAllocation::is_default")]
+        allocation: StorageAllocation,
     },
 }
 fn default_iscsi_port() -> u16 {
@@ -71,11 +105,19 @@ pub(crate) fn storage_token(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || b"-_.:".contains(&c))
 }
 impl StorageLocation {
+    pub fn allocation(&self) -> StorageAllocation {
+        match self {
+            Self::Iscsi { allocation, .. } | Self::Hba { allocation, .. } => *allocation,
+            _ => StorageAllocation::DriverDefault,
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Nfs { .. } => "nfs",
             Self::IsoNfs { .. } | Self::IsoSmb { .. } => "iso",
             Self::Iscsi { .. } => "lvmoiscsi",
+            Self::Hba { .. } => "lvmohba",
         }
     }
     pub(crate) fn content_type(&self) -> &'static str {
@@ -91,6 +133,7 @@ impl StorageLocation {
             |s: &str| s.starts_with('/') && s.len() <= 4096 && !s.chars().any(char::is_control);
         let token = storage_token;
         match self {
+            Self::Hba { scsi_id, .. } => token(scsi_id),
             Self::IsoSmb {
                 server,
                 share,
@@ -125,6 +168,7 @@ impl StorageLocation {
                 port,
                 target_iqn,
                 scsi_id,
+                ..
             } => {
                 host(portal)
                     && *port > 0
@@ -137,6 +181,7 @@ impl StorageLocation {
     pub(crate) fn device_config(&self) -> serde_json::Value {
         use serde_json::json;
         let mut config = match self {
+            Self::Hba { scsi_id, .. } => json!({"SCSIid":scsi_id}),
             Self::IsoSmb {
                 server,
                 share,
@@ -153,6 +198,7 @@ impl StorageLocation {
                 port,
                 target_iqn,
                 scsi_id,
+                ..
             } => {
                 json!({"target":portal,"port":port.to_string(),"targetIQN":target_iqn,"SCSIid":scsi_id})
             }
@@ -161,6 +207,9 @@ impl StorageLocation {
             && let Some(version) = version.value()
         {
             config["nfsversion"] = json!(version);
+        }
+        if let Some(allocation) = self.allocation().value() {
+            config["allocation"] = json!(allocation);
         }
         config
     }
@@ -176,6 +225,8 @@ pub enum StorageOperation {
         name: String,
         description: String,
         location: StorageLocation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hba_device: Option<crate::DiscoveredHbaDevice>,
     },
     Introduce {
         uuid: SrId,
@@ -296,7 +347,23 @@ impl StorageOperation {
                         == expected_disks.len()
             }
         };
-        if valid {
+        let hba_valid = match self {
+            Self::Create {
+                location: StorageLocation::Hba { scsi_id, .. },
+                hba_device: Some(device),
+                ..
+            } => device.valid() && &device.scsi_id == scsi_id,
+            Self::Create {
+                location: StorageLocation::Hba { .. },
+                ..
+            } => false,
+            Self::Create { hba_device, .. } => hba_device.is_none(),
+            Self::Introduce { location, .. } => {
+                location.allocation() == StorageAllocation::DriverDefault
+            }
+            _ => true,
+        };
+        if valid && hba_valid {
             Ok(())
         } else {
             Err(Error::InvalidResourceCommand)
@@ -352,7 +419,18 @@ pub(crate) fn location_from_config(config: &serde_json::Value) -> Option<Storage
         Some("4.1") => NfsVersion::V41,
         _ => return None,
     };
-    let location = if config["type"] == "cifs" {
+    let allocation = match config["allocation"].as_str() {
+        None => StorageAllocation::DriverDefault,
+        Some("thin") => StorageAllocation::Thin,
+        Some("thick") => StorageAllocation::Thick,
+        _ => return None,
+    };
+    let location = if config.get("target").is_none() && config.get("SCSIid").is_some() {
+        StorageLocation::Hba {
+            scsi_id: text("SCSIid")?,
+            allocation,
+        }
+    } else if config["type"] == "cifs" {
         if config["vers"] != "3.0" {
             return None;
         }
@@ -388,6 +466,7 @@ pub(crate) fn location_from_config(config: &serde_json::Value) -> Option<Storage
             },
             target_iqn: text("targetIQN")?,
             scsi_id: text("SCSIid")?,
+            allocation,
         }
     };
     location.validate().then_some(location)
@@ -419,6 +498,54 @@ pub(crate) fn path_counts(value: &serde_json::Value) -> Vec<crate::StoragePathCo
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn legacy_create_payload_keeps_driver_default_and_hba_requires_reviewed_identity() {
+        let old = json!({"Create":{"host":"20000000-0000-0000-0000-000000000001","name":"Fixture","description":"","location":{"Iscsi":{"portal":"192.0.2.1","port":3260,"target_iqn":"iqn.2026-11.example:fixture","scsi_id":"3600fixture"}}}});
+        let operation: StorageOperation = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&operation).unwrap(), old);
+        let pool = ResourceTarget::Pool(crate::PoolId::from(uuid::Uuid::from_u128(1)));
+        assert!(operation.validate(pool).is_ok());
+        let mut operation = StorageOperation::Create {
+            host: crate::HostId::from(uuid::Uuid::from_u128(2)),
+            name: "HBA".into(),
+            description: "".into(),
+            location: StorageLocation::Hba {
+                scsi_id: "3600fixture".into(),
+                allocation: StorageAllocation::Thin,
+            },
+            hba_device: None,
+        };
+        assert!(operation.validate(pool).is_err());
+        if let StorageOperation::Create { hba_device, .. } = &mut operation {
+            *hba_device = Some(crate::DiscoveredHbaDevice {
+                scsi_id: "3600fixture".into(),
+                size_bytes: 4096,
+                vendor: "Fixture".into(),
+                serial: "123".into(),
+            });
+        }
+        assert!(operation.validate(pool).is_ok());
+        if let StorageOperation::Create {
+            hba_device: Some(device),
+            ..
+        } = &mut operation
+        {
+            device.scsi_id = "different".into();
+        }
+        assert!(operation.validate(pool).is_err());
+        let location = StorageLocation::Hba {
+            scsi_id: "3600fixture".into(),
+            allocation: StorageAllocation::Thin,
+        };
+        assert_eq!(
+            location_from_config(&location.device_config()),
+            Some(location)
+        );
+        assert!(
+            location_from_config(&json!({"SCSIid":"3600fixture","allocation":"unexpected"}))
+                .is_none()
+        );
+    }
     #[test]
     fn smb_projection_preserves_only_safe_location_and_never_downgrades() {
         let config = json!({"location":"//smb.example.test/images/install","type":"cifs","vers":"3.0","username":"DOMAIN\\private","cifspassword_secret":"private-secret-uuid"});
@@ -480,6 +607,7 @@ mod tests {
             port: 3260,
             target_iqn: "iqn.2026-01.example:test".into(),
             scsi_id: "3600abcdef".into(),
+            allocation: crate::StorageAllocation::DriverDefault,
         };
         assert!(location.validate());
         assert_eq!(location.device_config()["SCSIid"], "3600abcdef");

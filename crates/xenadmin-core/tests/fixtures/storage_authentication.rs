@@ -38,6 +38,7 @@ fn location(auth: StorageAuthentication) -> StorageLocation {
             port: 3261,
             target_iqn: "iqn.2026-01.example:fixture".into(),
             scsi_id: "3600fixture".into(),
+            allocation: xenadmin_core::StorageAllocation::DriverDefault,
         }
     }
 }
@@ -157,7 +158,7 @@ async fn fixture_delayed(
             let sr_ref=if method=="Async.SR.create"{"OpaqueRef:SR-new"}else{"OpaqueRef:SR"};
             let host=if fault==Fault::WrongHost{json!("OpaqueRef:host2")}else if method=="Async.SR.create"{p[1].clone()}else{p[1]["host"].clone()};
             m.insert("PBD-new".into(),json!({"uuid":PBD,"host":host,"SR":sr_ref,"currently_attached":method=="Async.SR.create","device_config":config,"other_config":{}}));
-            if method=="Async.SR.create"{m.insert("SR-new".into(),json!({"uuid":NEW_SR,"name_label":p[4],"name_description":p[5],"type":p[6],"content_type":p[7],"shared":p[8],"PBDs":["OpaqueRef:PBD-new"],"VDIs":[],"current_operations":{},"sm_config":{}}));}
+            if method=="Async.SR.create"{m.insert("SR-new".into(),json!({"uuid":NEW_SR,"name_label":p[4],"name_description":p[5],"type":p[6],"content_type":p[7],"shared":p[8],"PBDs":["OpaqueRef:PBD-new"],"VDIs":[],"current_operations":{},"sm_config":{"allocation":p[2].get("allocation").cloned().unwrap_or(json!("thick"))}}));}
             *task_result.lock().unwrap()=if method=="Async.SR.create"{sr_ref}else{"OpaqueRef:PBD-new"}.into();
             return Some(if fault==Fault::LostProvision{RpcReply::Drop}else{RpcReply::Json(json!({"result":"OpaqueRef:storage-auth-task"}))});
         }
@@ -209,6 +210,7 @@ fn command(auth: StorageAuthentication, attachment: bool) -> StorageOperation {
         }
     } else {
         StorageOperation::Create {
+            hba_device: None,
             host: HostId::parse(HOST).unwrap(),
             name: "Authenticated fixture".into(),
             description: "".into(),
@@ -669,5 +671,49 @@ async fn changed_attachment_and_rebound_task_cannot_authorize_credential_cleanup
             !rebind
         );
         c.disconnect();
+    }
+}
+
+#[tokio::test]
+async fn authenticated_storage_thin_allocation_is_captured_without_persisting_credentials() {
+    for auth in [
+        StorageAuthentication::Chap,
+        StorageAuthentication::MutualChap,
+    ] {
+        let (mock, data) = fixture(auth, Fault::None).await;
+        data.lock().unwrap().get_mut("SM").unwrap()["configuration"] =
+            json!({"allocation":"thick or thin"});
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&mock, &backend, false).await;
+        let mut operation = command(auth, false);
+        if let StorageOperation::Create {
+            location: StorageLocation::Iscsi { allocation, .. },
+            ..
+        } = &mut operation
+        {
+            *allocation = xenadmin_core::StorageAllocation::Thin;
+        }
+        let op = c
+            .submit_authenticated_storage(
+                OperationId::new(),
+                c.latest().observe_resource(pool()).unwrap(),
+                operation,
+                credentials(auth),
+            )
+            .unwrap();
+        let r = finished(&op).await;
+        assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+        assert_eq!(
+            data.lock().unwrap()["SR-new"]["sm_config"]["allocation"],
+            "thin"
+        );
+        assert_eq!(
+            data.lock().unwrap()["PBD-new"]["device_config"]["allocation"],
+            "thin"
+        );
+        assert!(r.storage_secrets.iter().all(|s| s.cleaned));
+        privacy(&r, dir.path());
+        c.close().await;
     }
 }

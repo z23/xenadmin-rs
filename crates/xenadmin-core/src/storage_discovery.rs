@@ -6,7 +6,9 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-pub use xml::{DiscoveredIscsiLun, DiscoveredIscsiTarget, DiscoveredNfsExport};
+pub use xml::{
+    DiscoveredHbaDevice, DiscoveredIscsiLun, DiscoveredIscsiTarget, DiscoveredNfsExport,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBackend {
@@ -28,9 +30,13 @@ pub enum StorageDiscoveryResult {
     NfsExports(Vec<DiscoveredNfsExport>),
     IscsiTargets(Vec<DiscoveredIscsiTarget>),
     IscsiLuns(Vec<DiscoveredIscsiLun>),
+    HbaDevices(Vec<DiscoveredHbaDevice>),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StorageQuery {
+    HbaDevices {
+        host: HostId,
+    },
     Backends,
     NfsExports {
         host: HostId,
@@ -56,7 +62,7 @@ pub enum StorageQuery {
 impl StorageQuery {
     pub(crate) fn validate(&self) -> Result<(), Error> {
         let valid = match self {
-            Self::Backends => true,
+            Self::Backends | Self::HbaDevices { .. } => true,
             Self::Probe { location, .. } => location.validate(),
             Self::NfsExports { server, .. } => crate::storage::storage_server(server),
             Self::IscsiTargets { portal, port, .. } => {
@@ -171,6 +177,12 @@ impl DiscoveryRequest {
             }
             query => {
                 let (host, kind, mut config, expected) = match query {
+                    StorageQuery::HbaDevices { host } => (
+                        *host,
+                        "lvmohba",
+                        json!({}),
+                        &["SR_BACKEND_FAILURE_90", "SR_BACKEND_FAILURE_107"][..],
+                    ),
                     StorageQuery::NfsExports {
                         host,
                         server,
@@ -180,13 +192,13 @@ impl DiscoveryRequest {
                         if let Some(version) = version.value() {
                             config["nfsversion"] = json!(version);
                         }
-                        (*host, "nfs", config, Some("SR_BACKEND_FAILURE_101"))
+                        (*host, "nfs", config, &["SR_BACKEND_FAILURE_101"][..])
                     }
                     StorageQuery::IscsiTargets { host, portal, port } => (
                         *host,
                         "lvmoiscsi",
                         json!({"target":portal,"port":port.to_string()}),
-                        Some("SR_BACKEND_FAILURE_96"),
+                        &["SR_BACKEND_FAILURE_96"][..],
                     ),
                     StorageQuery::IscsiLuns {
                         host,
@@ -197,10 +209,10 @@ impl DiscoveryRequest {
                         *host,
                         "lvmoiscsi",
                         json!({"target":portal,"port":port.to_string(),"targetIQN":target_iqn}),
-                        Some("SR_BACKEND_FAILURE_107"),
+                        &["SR_BACKEND_FAILURE_107"][..],
                     ),
                     StorageQuery::Probe { host, location } => {
-                        (*host, location.kind(), location.device_config(), None)
+                        (*host, location.kind(), location.device_config(), &[][..])
                     }
                     StorageQuery::Backends => unreachable!(),
                 };
@@ -244,6 +256,9 @@ impl DiscoveryRequest {
                     )
                     .await?;
                 match query {
+                    StorageQuery::HbaDevices { .. } => {
+                        xml::hba(&result).map(StorageDiscoveryResult::HbaDevices)
+                    }
                     StorageQuery::NfsExports { .. } => {
                         xml::exports(&result).map(StorageDiscoveryResult::NfsExports)
                     }
@@ -316,7 +331,7 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
         })
         .collect()
 }
-fn decode_repositories(xml: &str) -> Result<Vec<DiscoveredRepository>, Error> {
+pub(crate) fn decode_repositories(xml: &str) -> Result<Vec<DiscoveredRepository>, Error> {
     if xml.len() > 512 * 1024 {
         return Err(Error::Protocol("storage probe exceeds size limit"));
     }
@@ -331,6 +346,14 @@ fn decode_repositories(xml: &str) -> Result<Vec<DiscoveredRepository>, Error> {
     if !matches!(doc.root_element().tag_name().name(), "SRlist" | "SRList") {
         return Err(Error::Protocol("unsupported storage probe schema"));
     }
+    if doc
+        .root_element()
+        .children()
+        .filter(|n| n.is_element())
+        .any(|n| n.tag_name().name() != "SR")
+    {
+        return Err(Error::Protocol("unsupported storage probe schema"));
+    }
     let mut results = Vec::new();
     for node in doc
         .root_element()
@@ -339,6 +362,15 @@ fn decode_repositories(xml: &str) -> Result<Vec<DiscoveredRepository>, Error> {
     {
         if results.len() >= 1000 {
             return Err(Error::Protocol("too many storage probe results"));
+        }
+        for field in ["uuid", "name_label", "size"] {
+            let nodes = node
+                .children()
+                .filter(|n| n.is_element() && n.tag_name().name().eq_ignore_ascii_case(field))
+                .collect::<Vec<_>>();
+            if nodes.len() > 1 || nodes.iter().any(|n| n.children().any(|c| c.is_element())) {
+                return Err(Error::Protocol("ambiguous storage probe field"));
+            }
         }
         let text = |field: &str| {
             node.children()
@@ -395,6 +427,19 @@ pub(crate) fn validate_credentials(
     } else {
         Err(Error::InvalidResourceCommand)
     }
+}
+
+pub(crate) async fn hba_devices(
+    session: &Session,
+    host: &str,
+) -> Result<Vec<DiscoveredHbaDevice>, Error> {
+    let xml = session
+        .storage_probe_xml(
+            vec![json!(host), json!({}), json!("lvmohba"), json!({})],
+            &["SR_BACKEND_FAILURE_90", "SR_BACKEND_FAILURE_107"],
+        )
+        .await?;
+    xml::hba(&xml)
 }
 
 #[cfg(test)]

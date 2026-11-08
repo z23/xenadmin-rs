@@ -284,6 +284,7 @@ pub(super) async fn verify(
                 ref name,
                 ref description,
                 ref location,
+                ..
             } = plan.operation
             else {
                 return Err(Error::Journal);
@@ -296,6 +297,7 @@ pub(super) async fn verify(
                     && fresh["shared"] == true,
                 "Created storage metadata changed during verification",
             )?;
+            crate::storage_provisioning::verify_allocation(&fresh, location)?;
             let (host_ref, _) = xapi::read(session, ResourceTarget::Host(host)).await?;
             let refs = fresh["PBDs"]
                 .as_array()

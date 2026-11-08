@@ -26,6 +26,10 @@ enum Fault {
     Targets,
     Luns,
     MalformedDiscovery,
+    HbaChanged,
+    HbaExisting,
+    HbaBadProbe,
+    WrongAllocation,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn nfs() -> StorageLocation {
@@ -43,11 +47,11 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         ),
         (
             "host".into(),
-            json!({"uuid":HOST,"name_label":"Fixture host","address":"192.0.2.10","enabled":false,"local_cache_sr":"OpaqueRef:NULL","suspend_image_sr":"OpaqueRef:NULL","crash_dump_sr":"OpaqueRef:NULL"}),
+            json!({"uuid":HOST,"name_label":"Fixture host","address":"192.0.2.10","enabled":false,"current_operations":{},"local_cache_sr":"OpaqueRef:NULL","suspend_image_sr":"OpaqueRef:NULL","crash_dump_sr":"OpaqueRef:NULL"}),
         ),
         (
             "SR".into(),
-            json!({"uuid":SR,"name_label":"Fixture storage","name_description":"Storage","type":"nfs","content_type":"user","shared":true,"is_tools_sr":false,"local_cache_enabled":false,"PBDs":["OpaqueRef:PBD"],"VDIs":if fault==Fault::DiskConsumer{json!(["OpaqueRef:VDI"])}else{json!([])},"current_operations":{},"allowed_operations":["scan","plug","unplug","pbd_create","pbd_destroy","forget","destroy"],"physical_size":"1048576","physical_utilisation":"0"}),
+            json!({"uuid":SR,"name_label":"Fixture storage","name_description":"Storage","type":"nfs","sm_config":{},"content_type":"user","shared":true,"is_tools_sr":false,"local_cache_enabled":false,"PBDs":["OpaqueRef:PBD"],"VDIs":if fault==Fault::DiskConsumer{json!(["OpaqueRef:VDI"])}else{json!([])},"current_operations":{},"allowed_operations":["scan","plug","unplug","pbd_create","pbd_destroy","forget","destroy"],"physical_size":"1048576","physical_utilisation":"0"}),
         ),
         (
             "PBD".into(),
@@ -89,6 +93,15 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             return Some(RpcReply::Json(json!({"result":records.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
         }
         if method=="SR.probe" {
+            if params[3] == "lvmohba" {
+                if params[2].get("SCSIid").is_none() {
+                    let size=if fault==Fault::HbaChanged { "8192" } else { "4096" };
+                    let xml=format!("<Devlist><BlockDevice><SCSIid>3600fixturehba</SCSIid><size>{size}</size><serial>fixture-serial</serial><vendor>Fixture</vendor></BlockDevice><Adapter><host>host1</host></Adapter></Devlist>");
+                    return Some(RpcReply::Json(json!({"error":{"message":"SR_BACKEND_FAILURE_107","data":["private-driver-data","",xml]}})));
+                }
+                let xml=if fault==Fault::HbaExisting {format!("<SRlist><SR><UUID>{CREATED}</UUID></SR></SRlist>")} else if fault==Fault::HbaBadProbe {"<SRlist><Unrecognized/></SRlist>".into()} else {"<SRlist/>".into()};
+                return Some(RpcReply::Json(json!({"result":xml})));
+            }
             if matches!(fault,Fault::Exports|Fault::Targets|Fault::Luns|Fault::MalformedDiscovery) {
                 let (code,xml)=match fault {
                     Fault::Exports=>{assert_eq!(params[2],json!({"server":"nfs.example.test","nfsversion":"4.1"}));("SR_BACKEND_FAILURE_101","<nfs-exports><Export><Path>/images</Path><Accesslist>*</Accesslist></Export></nfs-exports>")},
@@ -111,7 +124,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
                 "PBD.destroy"=>{map.remove("PBD");},
                 "SR.forget"|"SR.destroy"=>{map.remove("SR");},
                 "SR.create"=>{
-                    let created=json!({"uuid":CREATED,"name_label":params[4],"name_description":params[5],"type":params[6],"content_type":params[7],"shared":params[8],"PBDs":["OpaqueRef:PBD-created"],"VDIs":[],"current_operations":{},"allowed_operations":[]});
+                    let created=json!({"uuid":CREATED,"name_label":params[4],"name_description":params[5],"type":params[6],"sm_config":{"allocation":if fault==Fault::WrongAllocation { json!("thick") } else { params[2].get("allocation").cloned().unwrap_or(json!("thick")) }},"content_type":params[7],"shared":params[8],"PBDs":["OpaqueRef:PBD-created"],"VDIs":[],"current_operations":{},"allowed_operations":[]});
                     map.insert("SR-created".into(),created);map.insert("PBD-created".into(),json!({"uuid":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","host":params[1],"SR":"OpaqueRef:SR-created","currently_attached":true,"device_config":params[2]}));
                     *result_ref.lock().unwrap()=Some(if fault==Fault::WrongResult{"OpaqueRef:SR"}else{"OpaqueRef:SR-created"}.into());
                 }
@@ -171,6 +184,7 @@ fn pbd() -> ResourceTarget {
 }
 fn create() -> StorageOperation {
     StorageOperation::Create {
+        hba_device: None,
         host: HostId::parse(HOST).unwrap(),
         name: "New storage".into(),
         description: "Synthetic".into(),
@@ -535,6 +549,7 @@ async fn typed_iso_and_iscsi_creation_and_existing_sr_introduction_use_exact_bac
             port: 3260,
             target_iqn: "iqn.2026-01.example:fixture".into(),
             scsi_id: "3600fixture".into(),
+            allocation: xenadmin_core::StorageAllocation::DriverDefault,
         },
     ];
     for location in locations {
@@ -550,6 +565,7 @@ async fn typed_iso_and_iscsi_creation_and_existing_sr_introduction_use_exact_bac
             &c,
             pool(),
             StorageOperation::Create {
+                hba_device: None,
                 host: HostId::parse(HOST).unwrap(),
                 name: "New storage".into(),
                 description: "".into(),
@@ -849,6 +865,207 @@ async fn guided_discovery_accepts_only_known_error_xml_without_creating_storage(
             assert!(!map.contains_key("SR-created"));
             assert!(!map.contains_key("PBD-created"));
         }
+        c.close().await;
+    }
+}
+
+fn hba_create(allocation: xenadmin_core::StorageAllocation) -> StorageOperation {
+    StorageOperation::Create {
+        host: HostId::parse(HOST).unwrap(),
+        name: "Fixture HBA".into(),
+        description: "Synthetic".into(),
+        location: StorageLocation::Hba {
+            scsi_id: "3600fixturehba".into(),
+            allocation,
+        },
+        hba_device: Some(xenadmin_core::DiscoveredHbaDevice {
+            scsi_id: "3600fixturehba".into(),
+            size_bytes: 4096,
+            vendor: "Fixture".into(),
+            serial: "fixture-serial".into(),
+        }),
+    }
+}
+fn hba_backend(records: &Records) {
+    records.lock().unwrap().insert("SM-hba".into(),json!({"type":"lvmohba","name_label":"Fixture HBA","capabilities":["SR_PROBE"],"configuration":{"allocation":"thick or thin"}}));
+}
+#[tokio::test]
+async fn storage_hba_discovery_and_creation_preserve_exact_selected_device_and_allocation() {
+    for allocation in [
+        xenadmin_core::StorageAllocation::DriverDefault,
+        xenadmin_core::StorageAllocation::Thick,
+        xenadmin_core::StorageAllocation::Thin,
+    ] {
+        let (mock, records) = fixture(Fault::None).await;
+        hba_backend(&records);
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let handle = c
+            .discover_storage(
+                c.latest().observe_resource(pool()).unwrap(),
+                StorageQuery::HbaDevices {
+                    host: HostId::parse(HOST).unwrap(),
+                },
+            )
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(result) = handle.latest() {
+                    break result.unwrap();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let StorageDiscoveryResult::HbaDevices(devices) = result else {
+            panic!("wrong discovery kind")
+        };
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].size_bytes, 4096);
+        assert!(
+            !serde_json::to_string(&devices)
+                .unwrap()
+                .contains("private-driver-data")
+        );
+        let record = finished(&submit(&c, pool(), hba_create(allocation))).await;
+        assert_eq!(record.state, OperationState::Succeeded, "{}", record.detail);
+        assert_eq!(
+            record.created,
+            Some(ResourceTarget::Storage(SrId::parse(CREATED).unwrap()))
+        );
+        {
+            let map = records.lock().unwrap();
+            assert_eq!(
+                map["PBD-created"]["device_config"]["SCSIid"],
+                "3600fixturehba"
+            );
+            if allocation != xenadmin_core::StorageAllocation::DriverDefault {
+                assert_eq!(
+                    map["SR-created"]["sm_config"]["allocation"],
+                    allocation.label().to_lowercase()
+                );
+            }
+        }
+        c.close().await;
+    }
+}
+#[tokio::test]
+async fn storage_hba_refuses_changed_known_used_existing_and_unrecognized_devices_without_formatting()
+ {
+    for fault in [
+        Fault::HbaChanged,
+        Fault::HbaExisting,
+        Fault::HbaBadProbe,
+        Fault::None,
+    ] {
+        let (mock, records) = fixture(fault).await;
+        hba_backend(&records);
+        if fault == Fault::None {
+            records.lock().unwrap().get_mut("PBD").unwrap()["device_config"]["SCSIid"] =
+                json!("3600fixturehba");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let record = finished(&submit(
+            &c,
+            pool(),
+            hba_create(xenadmin_core::StorageAllocation::Thin),
+        ))
+        .await;
+        assert_eq!(record.state, OperationState::Rejected, "{}", record.detail);
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|v| v == "Async.SR.create")
+        );
+        assert!(!records.lock().unwrap().contains_key("SR-created"));
+        c.close().await;
+    }
+}
+#[tokio::test]
+async fn storage_allocation_requires_advertised_driver_choice_and_verified_result() {
+    for fault in [Fault::None, Fault::WrongAllocation] {
+        let (mock, records) = fixture(fault).await;
+        hba_backend(&records);
+        if fault == Fault::None {
+            records.lock().unwrap().get_mut("SM-hba").unwrap()["configuration"] = json!({});
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let record = finished(&submit(
+            &c,
+            pool(),
+            hba_create(xenadmin_core::StorageAllocation::Thin),
+        ))
+        .await;
+        assert_eq!(
+            record.state,
+            if fault == Fault::None {
+                OperationState::Rejected
+            } else {
+                OperationState::OutcomeUnknown
+            },
+            "{}",
+            record.detail
+        );
+        assert_eq!(
+            mock.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|v| v.as_str() == "Async.SR.create")
+                .count(),
+            if fault == Fault::None { 0 } else { 1 }
+        );
+        assert!(
+            !mock
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|v| v == "Async.SR.destroy" || v == "Async.SR.forget")
+        );
+        c.close().await;
+    }
+}
+#[tokio::test]
+async fn storage_hba_lost_or_failed_creation_keeps_unknown_and_never_reformats_on_recheck() {
+    for fault in [Fault::DropReply, Fault::TaskFailure, Fault::TaskCancelled] {
+        let (mock, records) = fixture(fault).await;
+        hba_backend(&records);
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connection(&mock, &backend, false).await;
+        let op = submit(
+            &c,
+            pool(),
+            hba_create(xenadmin_core::StorageAllocation::Thin),
+        );
+        let record = finished(&op).await;
+        assert_eq!(
+            record.state,
+            OperationState::OutcomeUnknown,
+            "{}",
+            record.detail
+        );
+        recheck_unknown(&c, &record).await;
+
+        assert_eq!(
+            mock.methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|v| v.as_str() == "Async.SR.create")
+                .count(),
+            1
+        );
         c.close().await;
     }
 }

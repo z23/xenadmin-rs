@@ -21,6 +21,57 @@ pub struct DiscoveredIscsiLun {
     pub vendor: String,
     pub serial: String,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredHbaDevice {
+    pub scsi_id: String,
+    pub size_bytes: u64,
+    pub vendor: String,
+    pub serial: String,
+}
+impl DiscoveredHbaDevice {
+    pub(crate) fn valid(&self) -> bool {
+        crate::storage::storage_token(&self.scsi_id)
+            && self.size_bytes > 0
+            && self.size_bytes <= i64::MAX as u64
+            && [&self.vendor, &self.serial]
+                .iter()
+                .all(|v| v.len() <= 255 && !v.chars().any(char::is_control))
+    }
+}
+pub(super) fn hba(xml: &str) -> Result<Vec<DiscoveredHbaDevice>, Error> {
+    let doc = document(xml, "Devlist")?;
+    let children = doc
+        .root_element()
+        .children()
+        .filter(|n| n.is_element())
+        .collect::<Vec<_>>();
+    if children.len() > 2000
+        || children
+            .iter()
+            .any(|n| !matches!(n.tag_name().name(), "BlockDevice" | "Adapter"))
+    {
+        return Err(invalid());
+    }
+    let mut seen = BTreeSet::new();
+    let mut result = Vec::new();
+    for row in children
+        .into_iter()
+        .filter(|n| n.tag_name().name() == "BlockDevice")
+    {
+        let device = DiscoveredHbaDevice {
+            scsi_id: required(row, "SCSIid")?.into(),
+            size_bytes: number(row, "size")?.ok_or_else(invalid)?,
+            vendor: value(row, "vendor")?.unwrap_or("").into(),
+            serial: value(row, "serial")?.unwrap_or("").into(),
+        };
+        if !device.valid() || !seen.insert(device.scsi_id.clone()) || result.len() >= 1000 {
+            return Err(invalid());
+        }
+        result.push(device);
+    }
+    result.sort_by(|a, b| a.scsi_id.cmp(&b.scsi_id));
+    Ok(result)
+}
 fn invalid() -> Error {
     Error::Protocol("invalid storage discovery XML")
 }
@@ -166,6 +217,36 @@ pub(super) fn luns(xml: &str) -> Result<Vec<DiscoveredIscsiLun>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hba_discovery_requires_unique_complete_bounded_device_identity() {
+        let row = "<BlockDevice><SCSIid>3600fixture</SCSIid><size>4096</size><serial>abc</serial><vendor>Fixture</vendor></BlockDevice>";
+        assert_eq!(
+            hba(&format!(
+                "<Devlist>{row}<Adapter><host>host1</host></Adapter></Devlist>"
+            ))
+            .unwrap()[0]
+                .serial,
+            "abc"
+        );
+        for xml in [
+            format!("<Devlist>{row}{row}</Devlist>"),
+            format!("<Devlist>{}</Devlist>", row.replace("4096", "0")),
+            format!("<Devlist>{}</Devlist>", row.replace("4096", "-1")),
+            format!(
+                "<Devlist>{}</Devlist>",
+                row.replace(
+                    "<serial>abc</serial>",
+                    "<serial>abc</serial><SERIAL>def</SERIAL>"
+                )
+            ),
+            "<Devlist><Unknown/></Devlist>".into(),
+            "<SRlist/>".into(),
+            "<!DOCTYPE a [<!ENTITY x 'bad'>]><Devlist/>".into(),
+            format!("<Devlist>{}</Devlist>", row.repeat(1001)),
+        ] {
+            assert!(hba(&xml).is_err());
+        }
+    }
     #[test]
     fn discovery_projects_bounded_rows_and_ignores_secret_fields() {
         let e=exports("<nfs-exports><Export><Path>/images</Path><Accesslist>*</Accesslist><password>private</password></Export><Export><Path>iso</Path></Export></nfs-exports>").unwrap();

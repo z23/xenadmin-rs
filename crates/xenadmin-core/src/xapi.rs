@@ -274,13 +274,15 @@ impl Session {
     pub(crate) async fn storage_probe_xml(
         &self,
         parameters: Vec<Value>,
-        expected_error: Option<&str>,
+        expected_errors: &[&str],
     ) -> Result<String, Error> {
+        self.permissions.guard("SR.probe")?;
         let mut params = vec![json!(&*self.token)];
         params.extend(parameters);
         let value = self.rpc_envelope(false, "SR.probe", params).await?;
-        if let Some(expected) = expected_error
-            && value["error"]["message"].as_str() == Some(expected)
+        if value["error"]["message"]
+            .as_str()
+            .is_some_and(|code| expected_errors.contains(&code))
         {
             // These drivers return discovery XML in the missing-parameter error's stderr.
             // Raw backend errors remain private and are never added to Error or logs.

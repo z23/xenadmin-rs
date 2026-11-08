@@ -2350,6 +2350,8 @@ fn main() -> std::process::ExitCode {
             ("disk-copy", |s| disk_workspace::scene(s, true)),
             ("storage-create", |s| storage_view::scene(s, false)),
             ("storage-review", |s| storage_view::scene(s, true)),
+            ("storage-hba", storage_view::hba_scene),
+            ("storage-hba-review", storage_view::hba_review_scene),
             ("storage-repair", storage_view::repair_scene),
             ("storage-maintenance", storage_view::maintenance_scene),
             ("storage-cache", storage_view::cache_scene),

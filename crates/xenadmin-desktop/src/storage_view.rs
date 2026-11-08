@@ -12,9 +12,9 @@ pub(super) fn cache_scene(s: &mut State) {
 }
 use super::*;
 use xenadmin_core::{
-    NfsVersion, ObservedResource, OperationId, PbdId, ResourceCommand, ResourceTarget, SrId,
-    StorageBackend, StorageDiscovery, StorageDiscoveryResult, StorageLocation, StorageOperation,
-    StorageQuery,
+    DiscoveredHbaDevice, NfsVersion, ObservedResource, OperationId, PbdId, ResourceCommand,
+    ResourceTarget, SrId, StorageAllocation, StorageBackend, StorageDiscovery,
+    StorageDiscoveryResult, StorageLocation, StorageOperation, StorageQuery,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,6 +52,8 @@ pub(super) struct Editor {
     uuid: TextEdit,
     confirmation: TextEdit,
     kind: u8,
+    allocation: StorageAllocation,
+    hba_device: Option<(HostId, DiscoveredHbaDevice)>,
     version: NfsVersion,
     host: Option<HostId>,
     review: Option<(Option<ObservedResource>, ResourceTarget, StorageOperation)>,
@@ -123,6 +125,8 @@ fn open(s: &mut State, sr: Option<SrId>) {
         uuid: TextEdit::new(""),
         confirmation: TextEdit::new(""),
         kind: 0,
+        allocation: StorageAllocation::DriverDefault,
+        hba_device: None,
         version: NfsVersion::Automatic,
         host: inventory.hosts.keys().next().copied(),
         review: None,
@@ -137,7 +141,16 @@ fn open(s: &mut State, sr: Option<SrId>) {
     query(s, 0);
 }
 fn location(editor: &Editor) -> StorageLocation {
+    let allocation = if editor.mode == Mode::Introduce {
+        StorageAllocation::DriverDefault
+    } else {
+        editor.allocation
+    };
     match editor.kind {
+        4 => StorageLocation::Hba {
+            scsi_id: editor.scsi.text.trim().into(),
+            allocation,
+        },
         3 => StorageLocation::IsoSmb {
             server: editor.server.text.trim().into(),
             share: editor.share.text.trim().into(),
@@ -153,6 +166,7 @@ fn location(editor: &Editor) -> StorageLocation {
             port: editor.port.text.trim().parse().unwrap_or(0),
             target_iqn: editor.iqn.text.trim().into(),
             scsi_id: editor.scsi.text.trim().into(),
+            allocation,
         },
         _ => StorageLocation::Nfs {
             server: editor.server.text.trim().into(),
@@ -166,6 +180,7 @@ struct DiscoveryInputs {
     host: Option<HostId>,
     kind: u8,
     version: NfsVersion,
+    allocation: StorageAllocation,
     server: String,
     port: String,
     path: String,
@@ -181,6 +196,7 @@ fn inputs(e: &Editor) -> DiscoveryInputs {
         host: e.host,
         kind: e.kind,
         version: e.version,
+        allocation: e.allocation,
         server: e.server.text.clone(),
         port: e.port.text.clone(),
         path: e.path.text.clone(),
@@ -217,6 +233,7 @@ fn query(s: &mut State, step: u8) {
         let port = e.port.text.trim().parse().unwrap_or(0);
         let query = match step {
             0 => StorageQuery::Backends,
+            5 => StorageQuery::HbaDevices { host },
             1 => StorageQuery::Probe {
                 host,
                 location: location(e),
@@ -313,6 +330,13 @@ fn select_result(s: &mut State, index: usize) {
     }
     let e = s.storage_editor.as_mut().unwrap();
     match &e.discovered {
+        Some(StorageDiscoveryResult::HbaDevices(rows)) => {
+            if let (Some(row), Some(host)) = (rows.get(index), e.host) {
+                e.scsi = TextEdit::new(&row.scsi_id);
+                e.hba_device = Some((host, row.clone()));
+                e.uuid = TextEdit::new("");
+            }
+        }
         Some(StorageDiscoveryResult::NfsExports(rows)) => {
             if let Some(row) = rows.get(index) {
                 e.path = TextEdit::new(&row.path);
@@ -346,6 +370,9 @@ fn select_result(s: &mut State, index: usize) {
     e.error = None;
     e.result_page = 0;
 }
+fn editor_hba(result: &StorageDiscoveryResult) -> bool {
+    matches!(result, StorageDiscoveryResult::HbaDevices(_))
+}
 fn discovery_results(s: &State, e: &Editor, k: &Kit) -> El {
     let Some(result) = &e.discovered else {
         return el();
@@ -358,6 +385,20 @@ fn discovery_results(s: &State, e: &Editor, k: &Kit) -> El {
         .wrap();
     }
     let (title, rows) = match result {
+        StorageDiscoveryResult::HbaDevices(rows) => (
+            "Available HBA devices",
+            rows.iter()
+                .map(|r| {
+                    format!(
+                        "{}\n{} · {} · Serial {}",
+                        r.scsi_id,
+                        bytes(r.size_bytes),
+                        r.vendor,
+                        r.serial
+                    )
+                })
+                .collect::<Vec<_>>(),
+        ),
         StorageDiscoveryResult::NfsExports(rows) => (
             "NFS exports",
             rows.iter()
@@ -404,7 +445,7 @@ fn discovery_results(s: &State, e: &Editor, k: &Kit) -> El {
         .wrap(),
     );
     if rows.is_empty() {
-        body=body.child(caption("The backend reported no matching results. You can enter a known location manually.",k).wrap());
+        body=body.child(caption(if editor_hba(result) {"The backend reported no eligible HBA devices. Check zoning, host visibility and existing storage use, then discover again."} else {"The backend reported no matching results. You can enter a known location manually."},k).wrap());
     }
     for (index, text) in rows.iter().enumerate().skip(e.result_page * 20).take(20) {
         body = body.child(caption(text, k).wrap_anywhere()).child(
@@ -484,8 +525,31 @@ fn review(s: &mut State) {
         {
             return Err("Enter an iSCSI port from 1 to 65535".into());
         }
+        let hba_device = if editor.kind == 4 && editor.mode == Mode::Create {
+            let (host, device) = editor
+                .hba_device
+                .as_ref()
+                .ok_or("Discover and select an HBA device before review")?;
+            if editor.host != Some(*host) || editor.scsi.text != device.scsi_id {
+                return Err(
+                    "The selected HBA device belongs to different inputs. Discover again.".into(),
+                );
+            }
+            Some(device.clone())
+        } else {
+            None
+        };
+        if editor.mode == Mode::Create
+            && editor.allocation != StorageAllocation::DriverDefault
+            && !editor.backends.iter().any(|b| {
+                b.kind == location(editor).kind() && b.configuration.contains_key("allocation")
+            })
+        {
+            return Err("The selected driver has not advertised allocation choices. Refresh driver discovery or choose its default.".into());
+        }
         let operation = match editor.mode {
             Mode::Create => StorageOperation::Create {
+                hba_device,
                 host: editor.host.ok_or("Choose a host")?,
                 name: editor.name.text.trim().into(),
                 description: editor.description.text.clone(),
@@ -666,6 +730,14 @@ fn apply(s: &mut State) {
         {
             return Err(xenadmin_core::Error::InvalidResourceCommand);
         }
+        if let StorageOperation::Create {
+            location: StorageLocation::Hba { scsi_id, .. },
+            ..
+        } = operation
+            && editor.confirmation.text != *scsi_id
+        {
+            return Err(xenadmin_core::Error::InvalidResourceCommand);
+        }
         let operation = operation.clone();
         let connection = s.connection.as_ref().ok_or(xenadmin_core::Error::Closed)?;
         let credentials = s.storage_editor.as_mut().unwrap().review_credentials.take();
@@ -796,7 +868,12 @@ fn new_attachment(s: &mut State) {
                 .values()
                 .any(|p| p.sr == Some(sr) && p.requires_credentials)
         });
+        editor.allocation = template.allocation();
         match template {
+            StorageLocation::Hba { scsi_id, .. } => {
+                editor.kind = 4;
+                editor.scsi = TextEdit::new(scsi_id);
+            }
             StorageLocation::IsoSmb {
                 server,
                 share,
@@ -836,6 +913,7 @@ fn new_attachment(s: &mut State) {
                 port,
                 target_iqn,
                 scsi_id,
+                ..
             } => {
                 editor.kind = 2;
                 editor.server = TextEdit::new(&portal);
@@ -858,6 +936,14 @@ pub(super) fn button(s: &State, k: &Kit) -> El {
 }
 fn location_lines(location: &StorageLocation) -> Vec<String> {
     match location {
+        StorageLocation::Hba {
+            scsi_id,
+            allocation,
+        } => vec![
+            "Backend: LVM over HBA / Fibre Channel".into(),
+            format!("LUN SCSI ID: {scsi_id}"),
+            format!("Allocation: {}", allocation.label()),
+        ],
         StorageLocation::IsoSmb {
             server,
             share,
@@ -895,11 +981,13 @@ fn location_lines(location: &StorageLocation) -> Vec<String> {
             port,
             target_iqn,
             scsi_id,
+            allocation,
         } => vec![
             "Backend: LVM over iSCSI".into(),
             format!("Portal: {portal} · port {port}"),
             format!("Target IQN: {target_iqn}"),
             format!("LUN SCSI ID: {scsi_id}"),
+            format!("Allocation: {}", allocation.label()),
         ],
     }
 }
@@ -907,11 +995,13 @@ fn describe(operation: &StorageOperation) -> Vec<String> {
     let mut lines = vec![operation.label().into()];
     match operation {
         StorageOperation::Trim {host,..} => lines.extend([format!("Attached host: {host}"),"Asks the host storage driver to reclaim unused blocks. Completion depends on the backend and storage array; reported capacity may not change immediately.".into()]),
-        StorageOperation::Create {host,name,description,location} => {
+        StorageOperation::Create {host,name,description,location,hba_device} => {
             lines.extend([format!("Name: {name}"),format!("Description: {description}"),format!("Host: {host}")]);
             lines.extend(location_lines(location));
             lines.push("Creates a shared repository. The server may create pool attachments. Review attached hosts after completion.".into());
-            if matches!(location,StorageLocation::Iscsi { .. }) {lines.push("Creating LVM storage can initialize the selected LUN and erase existing data.".into());}
+            if matches!(location,StorageLocation::Iscsi { .. } | StorageLocation::Hba {..}) {lines.push("Creating LVM storage initializes the selected LUN and can permanently erase existing data. Confirm that no other pool or system uses it. Discovery cannot establish external ownership.".into());}
+            if let Some(device) = hba_device { lines.extend([format!("Reviewed device: {} · {} · serial {}",bytes(device.size_bytes),device.vendor,device.serial), "The host will rediscover this exact device and refuse known existing repositories. No existing storage is automatically forgotten or destroyed.".into()]); }
+            if location.allocation() == StorageAllocation::Thin { lines.push("Thin allocation grows VHD disks as they are written; raw disks remain fully allocated. Monitor free space: exhausting the repository can interrupt VMs. This does not convert existing repositories.".into()); }
         }
         StorageOperation::Introduce {uuid,name,description,location} => {
             lines.extend([format!("Existing UUID: {uuid}"),format!("Name: {name}"),format!("Description: {description}")]);
@@ -969,6 +1059,30 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         }
         if let Some(label) = &editor.review_auth_label {
             body=body.child(caption(label,k).wrap()).child(caption("Credentials are sent through temporary server Secret objects and cleared from this form after submission. Verified provisioning removes unused temporary Secrets; uncertain outcomes retain their identities for explicit cleanup.",k).wrap());
+        }
+        if let StorageOperation::Create {
+            location: StorageLocation::Hba { scsi_id, .. },
+            ..
+        } = operation
+        {
+            body = body
+                .child(
+                    caption(
+                        format!("Type the selected LUN SCSI ID to confirm formatting: {scsi_id}"),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                )
+                .child(
+                    TextInput::new(&editor.confirmation)
+                        .label("LUN SCSI ID to confirm formatting")
+                        .on_edit(|s: &mut State| {
+                            &mut s.storage_editor.as_mut().unwrap().confirmation
+                        })
+                        .build(k)
+                        .w_full()
+                        .key("storage-confirm-lun"),
+                );
         }
         if matches!(
             operation,
@@ -1123,8 +1237,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .child(
                 caption(
                     format!(
-                        "Discovered through {} · host {}",
-                        editor.server.text,
+                        "{} · host {}",
+                        if editor.kind == 4 {
+                            "HBA discovery".into()
+                        } else {
+                            format!("Discovered through {}", editor.server.text)
+                        },
                         editor
                             .host
                             .map(|id| id.to_string())
@@ -1188,6 +1306,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             (1, "ISO library over NFS"),
             (2, "LVM over iSCSI"),
             (3, "ISO library over SMB 3.0"),
+            (4, "LVM over HBA / Fibre Channel"),
         ] {
             body = body.child(
                 Button::new(format!(
@@ -1195,20 +1314,57 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     if editor.kind == kind { "✓ " } else { "" }
                 ))
                 .variant(ButtonVariant::Outline)
-                .on_press(move |s: &mut State| s.storage_editor.as_mut().unwrap().kind = kind)
-                .build(k),
+                .on_press(move |s: &mut State| {
+                    let e = s.storage_editor.as_mut().unwrap();
+                    if e.kind != kind {
+                        e.kind = kind;
+                        e.hba_device = None;
+                        e.scsi = TextEdit::new("");
+                        e.allocation = StorageAllocation::DriverDefault;
+                    }
+                })
+                .build(k)
+                .key(format!("storage-kind-{kind}")),
             );
         }
-        body = body
-            .child(caption("Server hostname or IP address", k).wrap())
-            .child(
-                TextInput::new(&editor.server)
-                    .label("Server / iSCSI portal")
-                    .on_edit(|s: &mut State| &mut s.storage_editor.as_mut().unwrap().server)
-                    .build(k)
-                    .key("storage-server"),
+        if editor.kind != 4 {
+            body = body
+                .child(caption("Server hostname or IP address", k).wrap())
+                .child(
+                    TextInput::new(&editor.server)
+                        .label("Server / iSCSI portal")
+                        .on_edit(|s: &mut State| &mut s.storage_editor.as_mut().unwrap().server)
+                        .build(k)
+                        .key("storage-server"),
+                );
+        }
+        if editor.kind == 4 {
+            body = body.child(
+                caption(
+                    if editor.scsi.text.is_empty() {
+                        "Discover HBA devices on the selected host, then select a LUN.".into()
+                    } else {
+                        format!("Selected LUN: {}", editor.scsi.text)
+                    },
+                    k,
+                )
+                .wrap_anywhere(),
             );
-        if editor.kind == 2 {
+            if let Some((host, device)) = &editor.hba_device {
+                body = body.child(
+                    caption(
+                        format!(
+                            "Discovered on host {host}\n{} · {} · serial {}",
+                            bytes(device.size_bytes),
+                            device.vendor,
+                            device.serial
+                        ),
+                        k,
+                    )
+                    .wrap_anywhere(),
+                );
+            }
+        } else if editor.kind == 2 {
             body = body
                 .child(caption("iSCSI port", k))
                 .child(
@@ -1281,6 +1437,38 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 );
             }
             body = body.child(versions);
+        }
+        if matches!(editor.kind, 2 | 4) && editor.mode == Mode::Create {
+            let qualified = editor.backends.iter().any(|b| {
+                b.kind == location(editor).kind() && b.configuration.contains_key("allocation")
+            });
+            body = body.child(caption("Allocation for the new repository", k).wrap());
+            for allocation in [
+                StorageAllocation::DriverDefault,
+                StorageAllocation::Thick,
+                StorageAllocation::Thin,
+            ] {
+                body = body.child(
+                    Button::new(format!(
+                        "{}{}",
+                        if editor.allocation == allocation {
+                            "✓ "
+                        } else {
+                            ""
+                        },
+                        allocation.label()
+                    ))
+                    .disabled(!qualified && allocation != StorageAllocation::DriverDefault)
+                    .on_press(move |s: &mut State| {
+                        s.storage_editor.as_mut().unwrap().allocation = allocation
+                    })
+                    .build(k)
+                    .key(format!("storage-allocation-{}", allocation.label())),
+                );
+            }
+            if !qualified {
+                body=body.child(caption("Allocation choices require the host driver to advertise the allocation option.",k).wrap());
+            }
         }
         if matches!(editor.kind, 2 | 3) {
             body = body.child(
@@ -1394,7 +1582,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .disabled(existing)
                     .variant(ButtonVariant::Outline)
                     .on_press(move |s: &mut State| {
-                        s.storage_editor.as_mut().unwrap().host = Some(id)
+                        let e = s.storage_editor.as_mut().unwrap();
+                        if e.host != Some(id) {
+                            e.host = Some(id);
+                            e.hba_device = None;
+                            if e.kind == 4 {
+                                e.scsi = TextEdit::new("");
+                            }
+                        }
                     })
                     .build(k),
                 );
@@ -1412,6 +1607,8 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 (3, "Discover iSCSI targets"),
                 (4, "Discover LUNs for selected IQN"),
             ]
+        } else if editor.kind == 4 {
+            vec![(5, "Discover HBA devices")]
         } else if editor.kind == 3 {
             vec![]
         } else {
@@ -1559,8 +1756,20 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     } else if let Some((_, _, operation)) = &editor.review {
         let destructive = matches!(
             operation,
-            StorageOperation::Forget { .. } | StorageOperation::Destroy { .. }
+            StorageOperation::Forget { .. }
+                | StorageOperation::Destroy { .. }
+                | StorageOperation::Create {
+                    location: StorageLocation::Hba { .. },
+                    ..
+                }
         );
+        let confirm_text = match operation {
+            StorageOperation::Create {
+                location: StorageLocation::Hba { scsi_id, .. },
+                ..
+            } => scsi_id.clone(),
+            _ => editor.target.uuid().to_string(),
+        };
         let too_many = matches!(operation,StorageOperation::Forget{expected_disks,..}|StorageOperation::Destroy{expected_disks,..} if expected_disks.len()>100);
         footer = footer
             .child(
@@ -1588,8 +1797,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                                 .as_ref()
                                 .is_some_and(|p| p.decision().is_denied())
                             || too_many
-                            || (destructive
-                                && editor.confirmation.text != editor.target.uuid().to_string()),
+                            || (destructive && editor.confirmation.text != confirm_text),
                     )
                     .on_press(apply)
                     .build(k)
@@ -1679,6 +1887,39 @@ pub(super) fn authenticated_scene(s: &mut State) {
     review(s);
 }
 
+pub(super) fn hba_scene(s: &mut State) {
+    scene(s, false);
+    let e = s.storage_editor.as_mut().unwrap();
+    e.kind = 4;
+    e.name = TextEdit::new("Lab HBA storage");
+    e.allocation = StorageAllocation::Thin;
+    e.backends.push(StorageBackend {
+        kind: "lvmohba".into(),
+        name: "LVM over HBA".into(),
+        features: vec!["SR_PROBE".into()],
+        configuration: std::collections::BTreeMap::from([(
+            "allocation".into(),
+            "thin or thick".into(),
+        )]),
+    });
+    e.query_inputs = Some(inputs(e));
+    e.discovered = Some(StorageDiscoveryResult::HbaDevices(vec![
+        DiscoveredHbaDevice {
+            scsi_id: "3600a098038314441455d531234567890".into(),
+            size_bytes: 2 * 1024 * 1024 * 1024 * 1024,
+            vendor: "Fixture array".into(),
+            serial: "LAB-2026-001".into(),
+        },
+    ]));
+}
+pub(super) fn hba_review_scene(s: &mut State) {
+    hba_scene(s);
+    select_result(s, 0);
+    review(s);
+}
+#[cfg(test)]
+#[path = "storage_provisioning_view_tests.rs"]
+mod provisioning_tests;
 #[cfg(test)]
 mod tests {
     use super::*;

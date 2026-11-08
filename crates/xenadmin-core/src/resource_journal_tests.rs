@@ -1061,6 +1061,7 @@ fn authenticated_resource(pool: PoolId) -> ResourceOperationRecord {
     let mut r = resource(pool);
     r.target = ResourceTarget::Pool(pool);
     let operation = StorageOperation::Create {
+        hba_device: None,
         host: crate::HostId::from(uuid::Uuid::new_v4()),
         name: "Fixture".into(),
         description: String::new(),
@@ -1069,6 +1070,7 @@ fn authenticated_resource(pool: PoolId) -> ResourceOperationRecord {
             port: 3260,
             target_iqn: "iqn.2026-01.example:fixture".into(),
             scsi_id: "3600fixture".into(),
+            allocation: crate::StorageAllocation::DriverDefault,
         },
     };
     r.action = ResourceAction::AuthenticatedStorage {

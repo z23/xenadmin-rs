@@ -77,3 +77,7 @@ response plus record absence; this is not independent filesystem inspection. Los
 responses remain uncertain and are never replayed by Recheck. Support logs exclude raw memory
 dumps, and direct raw-dump download remains unavailable for the target API. See the
 [crashdump deletion report](reports/2026-11-08-host-crashdump-deletion.md).
+
+The [HBA/allocation increment](reports/2026-11-08-storage-provisioning.md) adds discovered
+HBA/Fibre Channel LUN creation and driver-advertised thick/thin allocation for new iSCSI/HBA
+repositories. Local EXT/LVM device creation and additional backend wizards remain retained.

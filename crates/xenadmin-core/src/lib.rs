@@ -101,6 +101,7 @@ pub use organization::{
 mod resources;
 mod storage;
 mod storage_discovery;
+mod storage_provisioning;
 pub use resources::{
     ObservedResource, ResourceAction, ResourceCommand, ResourceOperation, ResourceOperationRecord,
     ResourceTarget,
@@ -110,10 +111,10 @@ mod cross_pool_backend;
 pub use cross_pool::{CrossPoolMode, CrossPoolVmOperation, CrossPoolVmSelection};
 mod migration;
 mod migration_backend;
-pub use storage::{NfsVersion, StorageLocation, StorageOperation};
+pub use storage::{NfsVersion, StorageAllocation, StorageLocation, StorageOperation};
 pub use storage_discovery::{
-    DiscoveredIscsiLun, DiscoveredIscsiTarget, DiscoveredNfsExport, DiscoveredRepository,
-    StorageBackend, StorageDiscovery, StorageDiscoveryResult, StorageQuery,
+    DiscoveredHbaDevice, DiscoveredIscsiLun, DiscoveredIscsiTarget, DiscoveredNfsExport,
+    DiscoveredRepository, StorageBackend, StorageDiscovery, StorageDiscoveryResult, StorageQuery,
 };
 mod host_types;
 mod settings;

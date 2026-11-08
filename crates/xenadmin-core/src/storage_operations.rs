@@ -282,9 +282,18 @@ pub(super) async fn arguments(
             name,
             description,
             location,
+            hba_device,
         } => {
             capability(session, location.kind(), "").await?;
+            crate::storage_provisioning::allocation_capability(session, location).await?;
             let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
+            if let Some(device) = hba_device {
+                capability(session, location.kind(), "SR_PROBE").await?;
+                crate::storage_provisioning::hba_creation(
+                    session, &host_ref, *host, location, device,
+                )
+                .await?;
+            }
             Ok(vec![
                 json!(host_ref),
                 location.device_config(),
@@ -324,6 +333,8 @@ pub(super) async fn arguments(
             {
                 return Err(Error::ResourceConflict);
             }
+            crate::storage_provisioning::allocation_capability(session, location).await?;
+            crate::storage_provisioning::verify_allocation(&fresh, location)?;
             allowed(&fresh, "pbd_create")?;
             empty_current(&fresh)?;
             let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
@@ -460,10 +471,20 @@ pub(super) async fn verify(
                 return Err(Error::ResourceConflict);
             }
             if let StorageOperation::Create { host, .. } = op {
+                crate::storage_provisioning::verify_allocation(&fresh, location)?;
                 let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
                 let mut found = false;
                 for pbd in array(&fresh, "PBDs")? {
                     let pbd = by_ref(session, "PBD", pbd).await?;
+                    let id = pbd["uuid"]
+                        .as_str()
+                        .and_then(|v| PbdId::parse(v).ok())
+                        .ok_or(Error::Protocol(
+                            "Created storage attachment UUID unavailable",
+                        ))?;
+                    if baseline.pbds.contains(&id) {
+                        return Err(Error::ResourceConflict);
+                    }
                     if pbd["host"] == host_ref
                         && pbd["SR"] == *reference
                         && config_matches(&pbd["device_config"], &location.device_config())
