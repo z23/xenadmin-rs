@@ -18,10 +18,10 @@ pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&NetworkOper
 fn reference(value: &Value) -> Result<String, Error> {
     xapi::reply_reference(value)
 }
-fn number(value: &Value) -> Option<i64> {
+pub(super) fn number(value: &Value) -> Option<i64> {
     value.as_i64().or_else(|| value.as_str()?.parse().ok())
 }
-fn refs(value: &Value) -> Result<BTreeSet<String>, Error> {
+pub(super) fn refs(value: &Value) -> Result<BTreeSet<String>, Error> {
     value
         .as_array()
         .filter(|v| v.len() <= 10_000)
@@ -30,7 +30,7 @@ fn refs(value: &Value) -> Result<BTreeSet<String>, Error> {
         .map(reference)
         .collect()
 }
-async fn related(session: &Session, class: &str, value: &Value) -> Result<Value, Error> {
+pub(super) async fn related(session: &Session, class: &str, value: &Value) -> Result<Value, Error> {
     session
         .call(
             &format!("{class}.get_record"),
@@ -38,13 +38,13 @@ async fn related(session: &Session, class: &str, value: &Value) -> Result<Value,
         )
         .await
 }
-fn uuid(value: &Value) -> Result<uuid::Uuid, Error> {
+pub(super) fn uuid(value: &Value) -> Result<uuid::Uuid, Error> {
     value["uuid"]
         .as_str()
         .and_then(|v| uuid::Uuid::parse_str(v).ok())
         .ok_or(Error::Protocol("network object UUID unavailable"))
 }
-async fn pif_identity(
+pub(super) async fn pif_identity(
     session: &Session,
     fresh: &Value,
     expected: &PifIdentity,
@@ -425,7 +425,10 @@ fn method(op: &NetworkOperation) -> &'static str {
         NetworkOperation::ConfigureIpv4 { .. } => "Async.PIF.reconfigure_ip",
     }
 }
-async fn all(session: &Session, class: &str) -> Result<serde_json::Map<String, Value>, Error> {
+pub(super) async fn all(
+    session: &Session,
+    class: &str,
+) -> Result<serde_json::Map<String, Value>, Error> {
     let values = session
         .call(&format!("{class}.get_all_records"), vec![])
         .await?;

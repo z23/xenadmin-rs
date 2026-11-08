@@ -195,7 +195,7 @@ Implementation boundaries and evidence: [storage lifecycle report](reports/2026-
 | --- | --- | --- |
 | P10-01 | Network names/bridges | Existing workflow; qualification open |
 | P10-02 | Create/delete internal network | Reviewed creation and unused internal-network deletion implemented; identity provenance, lost replies and fresh interface checks fixture verified; lab qualification open |
-| P10-03 | Create/edit/remove external/VLAN network | Per-host VLAN creation/deletion on reviewed networks implemented; fresh topology and new-identity verification fixture tested. Pool-wide orchestration and VLAN retagging remain queued |
+| P10-03 | Create/edit/remove external/VLAN network | Per-host VLAN creation/deletion, all-host VLAN creation and retagging of unused plain VLAN networks implemented, including tag 0 and preserved unplugged state. Exact topology/new UUIDs, partial completion and read-only recovery fixture verified; management/IP-bearing topology migration and live qualification remain open ([report](reports/2026-11-08-network-topology.md)) |
 | P10-04 | Name/description, MTU and automatic attachment | Names/descriptions, non-management attached-network MTU and automatic new-VM attachment settings implemented with fresh checks; nonstandard management MTU is unsupported by XCP-ng and explicitly refused |
 | P10-05 | Create/destroy bond; change mode/hash settings | Create/destroy unused non-management bonds and mode/hash changes implemented with exact member review; management/VLAN/IP migration during bond creation remains queued |
 | P10-06 | Scan/inspect physical NICs | Physical NIC inspection and asynchronous host rescan implemented; fixture verified, live qualification open |

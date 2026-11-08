@@ -332,7 +332,7 @@ mod tests {
                 .unwrap();
             assert_eq!(review.target, ResourceTarget::Pif(id));
             assert!(
-                matches!(&review.operation, NetworkOperation::ConfigureIpv6 { configuration, .. } if configuration.addresses == ["2001:db8::20/64"])
+                matches!(&review.operation, xenadmin_core::ResourceAction::Network(NetworkOperation::ConfigureIpv6 { configuration, .. }) if configuration.addresses == ["2001:db8::20/64"])
             );
             assert!(review.lines.iter().any(|s| s.contains("DNS is shared")));
             let (x, y) = runtime.find("network-confirm").unwrap();
@@ -378,7 +378,7 @@ mod tests {
         form_review(&mut state);
         assert!(
             matches!(&state.network_workspace.as_ref().unwrap().review.as_ref().unwrap().operation,
-            NetworkOperation::SetInterfacePurpose { before: None, purpose: Some(v), .. } if v == "Storage fabric")
+            xenadmin_core::ResourceAction::Network(NetworkOperation::SetInterfacePurpose { before: None, purpose: Some(v), .. }) if v == "Storage fabric")
         );
         assert_eq!(
             state.inventory.as_ref().unwrap().details.pifs[&id].disallow_unplug,

@@ -6,6 +6,8 @@ mod cross_pool_worker;
 mod host;
 #[path = "host_power_worker.rs"]
 mod host_power_worker;
+#[path = "network_topology_worker.rs"]
+mod network_topology_worker;
 #[path = "ovf_export_worker.rs"]
 mod ovf_export_worker;
 #[path = "ovf_worker.rs"]
@@ -220,6 +222,12 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(
+            self.record.action,
+            super::ResourceAction::NetworkTopology(_)
+        ) {
+            return self.execute_topology(journal, session, cancel).await;
+        }
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.execute_power_batch(journal, session, cancel).await;
         }
@@ -358,6 +366,12 @@ impl ResourceRequest {
         session: &Session,
         cancel: &CancellationToken,
     ) -> Result<(), Error> {
+        if matches!(
+            self.record.action,
+            super::ResourceAction::NetworkTopology(_)
+        ) {
+            return self.reconcile_topology(journal, session, cancel).await;
+        }
         if matches!(self.record.action, super::ResourceAction::PowerBatch(_)) {
             return self.reconcile_power_batch(journal, session, cancel).await;
         }

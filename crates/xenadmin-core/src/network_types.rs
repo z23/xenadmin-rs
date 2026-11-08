@@ -294,11 +294,11 @@ impl NetworkOperation {
             } => pif && expected_attached != attached && (*attached || !expected.management),
             Self::CreateVlan { expected, tag, .. } => {
                 network
-                    && (1..=4094).contains(tag)
+                    && (0..=4094).contains(tag)
                     && target != ResourceTarget::Network(expected.network)
             }
             Self::DeleteVlan { tag, .. } => {
-                matches!(target, ResourceTarget::Vlan(_)) && (1..=4094).contains(tag)
+                matches!(target, ResourceTarget::Vlan(_)) && (0..=4094).contains(tag)
             }
             Self::CreateBond { members, .. } => {
                 network

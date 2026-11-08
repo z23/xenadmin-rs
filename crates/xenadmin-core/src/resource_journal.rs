@@ -46,6 +46,13 @@ impl Journal {
         data.map(|(payload, task, result_reference, revision)| {
             let payload: serde_json::Value =
                 serde_json::from_str(&payload).map_err(|_| Error::Journal)?;
+            let network_topology_plan = payload
+                .get("network_topology_plan")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::Journal)?;
             let power_batch_plan = payload
                 .get("power_batch_plan")
                 .filter(|v| !v.is_null())
@@ -118,6 +125,7 @@ impl Journal {
                     return Err(Error::Journal);
                 }
             }
+            record.network_topology_plan = network_topology_plan;
             record.power_batch_plan = power_batch_plan;
             record.storage_auth_plan = storage_auth_plan;
             record.storage_secret_cleanup = storage_secret_cleanup;
@@ -141,6 +149,7 @@ impl Journal {
             }
             crate::cross_pool_backend::validate_record(&record)?;
             crate::host_power::validate_record(&record)?;
+            super::topology::validate_record(&record).map_err(|_| Error::Journal)?;
             crate::storage_auth::validate_record(&record)?;
             crate::cloud_init::validate_record(&record)?;
             Ok(record)
@@ -153,6 +162,7 @@ impl Journal {
             crate::power_batch::validate_record(record)?;
         }
         crate::cross_pool_backend::validate_record(record)?;
+        super::topology::validate_record(record).map_err(|_| Error::Journal)?;
         if record.state == OperationState::OutcomeUnknown
             && let Some(plan) = &mut record.cloud_init_plan
         {
@@ -183,6 +193,14 @@ impl Journal {
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
                 return Err(Error::OperationConflict);
+            }
+            if old.network_topology_plan.as_ref().is_some_and(|p| {
+                record
+                    .network_topology_plan
+                    .as_ref()
+                    .is_none_or(|n| !p.accepts(n))
+            }) {
+                return Err(Error::JournalChanged);
             }
             if old.power_batch_plan.as_ref().is_some_and(|p| {
                 record
@@ -286,6 +304,12 @@ impl Journal {
                 .as_object_mut()
                 .ok_or(Error::Journal)?
                 .insert(key.into(), value.map_err(|_| Error::Journal)?);
+        }
+        if let Some(plan) = &record.network_topology_plan {
+            payload.as_object_mut().ok_or(Error::Journal)?.insert(
+                "network_topology_plan".into(),
+                serde_json::to_value(plan).map_err(|_| Error::Journal)?,
+            );
         }
         if let Some(plan) = &record.host_plan {
             payload.as_object_mut().ok_or(Error::Journal)?.insert(
@@ -632,4 +656,70 @@ fn cross_created_contains(new: &crate::TransferCreated, old: &crate::TransferCre
         && old.disks.iter().all(|id| new.disks.contains(id))
         && old.vbds.iter().all(|id| new.vbds.contains(id))
         && old.vifs.iter().all(|id| new.vifs.contains(id))
+}
+
+impl Journal {
+    pub(crate) fn topology_evidence(
+        &self,
+        evidence: &ResourceOperationRecord,
+        index: usize,
+    ) -> Result<ResourceOperationRecord, Error> {
+        let incoming = evidence
+            .network_topology_plan
+            .as_ref()
+            .and_then(|p| p.steps.get(index))
+            .ok_or(Error::Journal)?;
+        for _ in 0..16 {
+            let mut current = self.resource_load(evidence.id)?.ok_or(Error::Journal)?;
+            if current.pool != evidence.pool
+                || current.target != evidence.target
+                || current.action != evidence.action
+            {
+                return Err(Error::OperationConflict);
+            }
+            let plan = current
+                .network_topology_plan
+                .as_mut()
+                .ok_or(Error::Journal)?;
+            let step = plan.steps.get_mut(index).ok_or(Error::Journal)?;
+            if step.kind != incoming.kind {
+                return Err(Error::JournalChanged);
+            }
+            macro_rules! receipt {
+                ($field:ident) => {
+                    if step.$field.is_some()
+                        && incoming.$field.is_some()
+                        && step.$field != incoming.$field
+                    {
+                        return Err(Error::JournalChanged);
+                    }
+                    if step.$field.is_none() {
+                        step.$field = incoming.$field.clone();
+                    }
+                };
+            }
+            receipt!(task);
+            receipt!(task_uuid);
+            receipt!(result);
+            receipt!(created);
+            step.completed |= incoming.completed;
+            step.ended |= incoming.ended;
+            step.cancel_sent |= incoming.cancel_sent;
+            let completed = step.completed;
+            current.topology_changes = plan.changes();
+            if !current.state.terminal() && !current.interrupted {
+                current.state = if completed {
+                    OperationState::Verifying
+                } else {
+                    OperationState::Tracking
+                };
+            }
+            match self.resource_save(&mut current) {
+                Ok(()) => return Ok(current),
+                Err(Error::JournalChanged) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Error::JournalChanged)
+    }
 }

@@ -45,6 +45,8 @@ pub(super) enum Entry {
         created_at_ms: u64,
         steps: Vec<Step>,
         created: Vec<Created>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<Created>,
     },
 }
 #[derive(Clone, Serialize)]
@@ -122,6 +124,7 @@ impl Entry {
             created_at_ms: record.created_at_ms,
             steps: steps(&record.steps),
             created,
+            removed: Vec::new(),
         }
     }
     pub fn resource(record: &ResourceOperationRecord) -> Self {
@@ -167,6 +170,45 @@ impl Entry {
                     kind: "NIC".into(),
                     uuid: id.uuid(),
                 }))
+                .chain(
+                    record
+                        .topology_changes
+                        .created_vlans
+                        .iter()
+                        .map(|id| Created {
+                            kind: "VLAN".into(),
+                            uuid: id.uuid(),
+                        }),
+                )
+                .chain(
+                    record
+                        .topology_changes
+                        .created_pifs
+                        .iter()
+                        .map(|id| Created {
+                            kind: "Physical interface".into(),
+                            uuid: id.uuid(),
+                        }),
+                )
+                .collect(),
+            removed: record
+                .topology_changes
+                .removed_vlans
+                .iter()
+                .map(|id| Created {
+                    kind: "VLAN".into(),
+                    uuid: id.uuid(),
+                })
+                .chain(
+                    record
+                        .topology_changes
+                        .removed_pifs
+                        .iter()
+                        .map(|id| Created {
+                            kind: "Physical interface".into(),
+                            uuid: id.uuid(),
+                        }),
+                )
                 .collect(),
         }
     }

@@ -22,6 +22,8 @@ pub(crate) mod journal;
 mod network;
 #[path = "snapshot_policy_operations.rs"]
 pub(crate) mod snapshot_policy;
+#[path = "network_topology_backend.rs"]
+pub(crate) mod topology;
 #[path = "resource_worker.rs"]
 mod worker;
 #[path = "resource_xapi.rs"]
@@ -106,6 +108,10 @@ pub enum ResourceCommand {
     HostPower {
         host: ObservedResource,
         operation: crate::HostPowerOperation,
+    },
+    NetworkTopology {
+        target: ObservedResource,
+        operation: crate::NetworkTopologyOperation,
     },
     PowerBatch {
         pool: ObservedResource,
@@ -194,6 +200,7 @@ pub enum ResourceCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceAction {
     HostPower(crate::HostPowerOperation),
+    NetworkTopology(crate::NetworkTopologyOperation),
     PowerBatch(crate::VmPowerBatch),
     CrossPoolVm(crate::CrossPoolVmOperation),
     AuthenticatedStorage {
@@ -261,6 +268,7 @@ impl ResourceAction {
             Self::Pool(operation) => operation.label(),
             Self::Host(operation) => operation.label(),
             Self::Organization(_) => "Edit organization metadata",
+            Self::NetworkTopology(operation) => operation.label(),
             Self::Network(operation) => operation.label(),
             Self::Transfer(action) => action.label(),
             Self::CloudInit(_) => "Prepare cloud-init drive",
@@ -323,6 +331,7 @@ impl ResourceAction {
                 }
                 return patch.validate();
             }
+            Self::NetworkTopology(operation) => return operation.validate(target),
             Self::Network(operation) => return operation.validate(target),
             Self::Transfer(_) => matches!(target, ResourceTarget::Pool(_)),
             Self::CloudInit(config) => matches!(target, ResourceTarget::Vm(_)) && config.valid(),
@@ -427,6 +436,9 @@ impl ResourceCommand {
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
             Self::Host { target, operation } => (target, ResourceAction::Host(operation)),
             Self::Organization { pool, patch } => (pool, ResourceAction::Organization(patch)),
+            Self::NetworkTopology { target, operation } => {
+                (target, ResourceAction::NetworkTopology(operation))
+            }
             Self::Network { target, operation } => (target, ResourceAction::Network(operation)),
             Self::CancelTask { task } => (task, ResourceAction::CancelTask),
             Self::DismissMessage {
@@ -506,6 +518,10 @@ impl ResourceCommand {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceOperationRecord {
+    #[serde(default)]
+    pub topology_changes: crate::NetworkTopologyChanges,
+    #[serde(skip)]
+    pub(crate) network_topology_plan: Option<crate::network_topology::Plan>,
     #[serde(default)]
     pub(crate) interrupted: bool,
     pub id: OperationId,
@@ -637,6 +653,8 @@ pub(crate) fn channel(
     runtime: tokio::runtime::Handle,
 ) -> (ResourceOperation, ResourceRequest) {
     let record = ResourceOperationRecord {
+        topology_changes: Default::default(),
+        network_topology_plan: None,
         interrupted: false,
         id,
         pool: target.pool,

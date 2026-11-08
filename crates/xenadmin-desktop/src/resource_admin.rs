@@ -530,6 +530,48 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             view = view
                 .child(caption(format!("Created {}", target_label(created)), k).wrap_anywhere());
         }
+        for (label, ids) in [
+            (
+                "Created VLAN",
+                record
+                    .topology_changes
+                    .created_vlans
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "Created interface",
+                record
+                    .topology_changes
+                    .created_pifs
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect(),
+            ),
+            (
+                "Removed VLAN",
+                record
+                    .topology_changes
+                    .removed_vlans
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect(),
+            ),
+            (
+                "Removed interface",
+                record
+                    .topology_changes
+                    .removed_pifs
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect(),
+            ),
+        ] {
+            for id in ids {
+                view = view.child(caption(format!("{label}: {id}"), k).wrap_anywhere());
+            }
+        }
         for step in &record.steps {
             view = view.child(
                 caption(

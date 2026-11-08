@@ -1,5 +1,7 @@
 #[path = "network_interfaces.rs"]
 mod interfaces;
+#[path = "network_topology_ui.rs"]
+mod topology;
 use super::*;
 use xenadmin_core::{
     BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkId, NetworkOperation, ObservedResource,
@@ -9,10 +11,11 @@ use xenadmin_core::{
 struct Review {
     target: ResourceTarget,
     observed: Option<ObservedResource>,
-    operation: NetworkOperation,
+    operation: xenadmin_core::ResourceAction,
     lines: Vec<String>,
 }
 enum Form {
+    Topology(Box<topology::Editor>),
     Interface(Box<interfaces::Editor>),
     Browse,
     Vlan {
@@ -115,6 +118,19 @@ fn set_form(s: &mut State, form: Form) {
     w.error = None;
 }
 fn prepare(s: &mut State, target: ResourceTarget, operation: NetworkOperation, lines: Vec<String>) {
+    prepare_action(
+        s,
+        target,
+        xenadmin_core::ResourceAction::Network(operation),
+        lines,
+    );
+}
+fn prepare_action(
+    s: &mut State,
+    target: ResourceTarget,
+    operation: xenadmin_core::ResourceAction,
+    lines: Vec<String>,
+) {
     let observed = if s.demo {
         None
     } else {
@@ -189,6 +205,13 @@ fn open_ipv4(s: &mut State, id: PifId) {
     );
 }
 fn form_review(s: &mut State) {
+    if s.network_workspace
+        .as_ref()
+        .is_some_and(|w| matches!(w.form, Form::Topology(_)))
+    {
+        topology::prepare(s);
+        return;
+    }
     let result = (|| -> Result<_, String> {
         let w = s
             .network_workspace
@@ -211,8 +234,8 @@ fn form_review(s: &mut State) {
                     .text
                     .parse::<u16>()
                     .ok()
-                    .filter(|v| (1..=4094).contains(v))
-                    .ok_or("Enter a VLAN tag from 1 to 4094")?;
+                    .filter(|v| (0..=4094).contains(v))
+                    .ok_or("Enter a VLAN tag from 0 to 4094")?;
                 (ResourceTarget::Network(network),NetworkOperation::CreateVlan{parent,expected,tag},vec![format!("Destination: {} ({network})",name(i,network)),format!("Parent: {} ({parent})",pif_name(i,parent)),format!("VLAN tag: {tag}"),"Creates an interface on this host. Repeat on other hosts that need this network.".into()])
             }
             Form::Bond {
@@ -323,7 +346,7 @@ fn form_review(s: &mut State) {
                 )
             }
             Form::Interface(editor) => interfaces::review(editor, i)?,
-            Form::Browse => return Err("Choose a change to review".into()),
+            Form::Topology(_) | Form::Browse => return Err("Choose a change to review".into()),
         })
     })();
     match result {
@@ -347,9 +370,29 @@ fn submit(s: &mut State) {
             .ok_or(xenadmin_core::Error::Closed)?
             .submit_resource(
                 OperationId::new(),
-                ResourceCommand::Network {
-                    target,
-                    operation: review.operation.clone(),
+                match &review.operation {
+                    xenadmin_core::ResourceAction::Network(operation) => ResourceCommand::Network {
+                        target,
+                        operation: operation.clone(),
+                    },
+                    xenadmin_core::ResourceAction::NetworkTopology(operation) => {
+                        let ResourceTarget::Network(network) = review.target else {
+                            return Err(xenadmin_core::Error::Stale);
+                        };
+                        if !s.inventory.as_ref().is_some_and(|i| {
+                            s.network_workspace
+                                .as_ref()
+                                .is_some_and(|w| w.pool == i.pool_id)
+                                && operation.availability(i, network).is_available()
+                        }) {
+                            return Err(xenadmin_core::Error::Stale);
+                        }
+                        ResourceCommand::NetworkTopology {
+                            target,
+                            operation: operation.clone(),
+                        }
+                    }
+                    _ => return Err(xenadmin_core::Error::InvalidResourceCommand),
                 },
             )
     })();
@@ -370,7 +413,8 @@ fn browse(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
     if let Some(id) = w.network {
         body = body
             .child(heading(name(i, id), k))
-            .child(caption(format!("Network {id}"), k).wrap_anywhere());
+            .child(caption(format!("Network {id}"), k).wrap_anywhere())
+            .child(topology::buttons(enabled, k));
         body = body.child(
             row()
                 .gap(8.0)
@@ -654,14 +698,15 @@ fn form(s: &State, w: &Workspace, i: &Inventory, k: &Kit) -> El {
     }
     match &w.form {
         Form::Interface(editor) => body = body.child(interfaces::form(editor, i, k)),
+        Form::Topology(editor) => body = body.child(topology::form(editor, i, k)),
         Form::Browse => return browse(s, w, i, k),
         Form::Vlan { parent, tag } => {
             body = body
                 .child(heading("Add VLAN interface", k))
-                .child(caption("VLAN tag (1–4094)", k))
+                .child(caption("VLAN tag (0–4094)", k))
                 .child(
                     TextInput::new(tag)
-                        .label("VLAN tag (1–4094)")
+                        .label("VLAN tag (0–4094)")
                         .on_edit(|s: &mut State| {
                             let Form::Vlan { tag, .. } = &mut edit(s).form else {
                                 unreachable!()
@@ -877,6 +922,9 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         body =
             body.child(caption("The connection changed. Close and reopen networking.", k).wrap());
     }
+    if let Some(reason) = topology::review_unavailable(s, w) {
+        body = body.child(caption(reason, k).wrap().role("alert"));
+    }
     if let Some(error) = &w.error {
         body = body.child(
             caption(error, k)
@@ -926,6 +974,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 Button::new("Confirm network change")
                     .disabled(
                         !s.can_mutate()
+                            || topology::review_unavailable(s, w).is_some()
                             || w.review
                                 .as_ref()
                                 .and_then(|r| r.observed)
@@ -1040,6 +1089,10 @@ pub(super) fn scene(s: &mut State) {
     });
 }
 
+pub(super) fn topology_scene(s: &mut State) {
+    topology::scene(s);
+}
+
 pub(super) fn ipv6_scene(s: &mut State) {
     scene(s);
     interfaces::scene(s);
@@ -1078,7 +1131,7 @@ mod tests {
             let w = runtime.state.network_workspace.as_ref().unwrap();
             assert!(matches!(
                 w.review.as_ref().unwrap().operation,
-                NetworkOperation::SetMtu { mtu: 9000, .. }
+                xenadmin_core::ResourceAction::Network(NetworkOperation::SetMtu { mtu: 9000, .. })
             ));
             let (x, y) = runtime.find("network-confirm").unwrap();
             assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
@@ -1112,11 +1165,11 @@ mod tests {
         let review = w.review.as_ref().unwrap();
         assert!(matches!(
             review.operation,
-            NetworkOperation::SetMtu {
+            xenadmin_core::ResourceAction::Network(NetworkOperation::SetMtu {
                 expected: 1500,
                 mtu: 9000,
                 ..
-            }
+            })
         ));
         let network = w.network.unwrap();
         Arc::make_mut(s.inventory.as_mut().unwrap())
@@ -1133,7 +1186,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .operation,
-            NetworkOperation::SetMtu { expected: 1500, .. }
+            xenadmin_core::ResourceAction::Network(NetworkOperation::SetMtu { expected: 1500, .. })
         ));
     }
 }

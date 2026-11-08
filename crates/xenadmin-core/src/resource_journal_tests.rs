@@ -5,6 +5,8 @@ use crate::{
 
 fn resource(pool: PoolId) -> ResourceOperationRecord {
     ResourceOperationRecord {
+        topology_changes: Default::default(),
+        network_topology_plan: None,
         interrupted: false,
         id: OperationId::new(),
         pool,
@@ -984,4 +986,130 @@ fn host_power_private_plan_is_immutable_bounded_and_cannot_claim_unreceipted_suc
     assert_eq!(merged.state, OperationState::Verifying);
     assert!(merged.interrupted);
     assert_eq!(merged.host_power_secret, row.host_power_secret);
+}
+
+#[test]
+fn topology_private_plan_corruption_refuses_recovery_and_new_admission() {
+    for corrupt in [
+        "pool",
+        "network",
+        "operation",
+        "baseline",
+        "kind",
+        "completed",
+        "result",
+        "created",
+        "success",
+        "missing_plan",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let pool = PoolId::from(uuid::Uuid::new_v4());
+        let mut record = resource(pool);
+        let ResourceTarget::Network(network) = record.target else {
+            panic!()
+        };
+        let uplink = crate::VlanUplink {
+            pif: uuid::Uuid::new_v4().into(),
+            expected: crate::PifIdentity {
+                management: false,
+                host: uuid::Uuid::new_v4().into(),
+                network: uuid::Uuid::new_v4().into(),
+                device: "eth1".into(),
+                mac: "02:00:00:00:00:01".into(),
+            },
+        };
+        let operation = crate::NetworkTopologyOperation::CreateVlans {
+            uplinks: vec![uplink.clone()],
+            tag: 100,
+        };
+        let kind = crate::network_topology::Kind::Create {
+            uplink: uplink.clone(),
+            tag: 100,
+        };
+        record.steps = vec![OperationStep {
+            label: kind.label(),
+            state: StepState::Pending,
+            detail: String::new(),
+        }];
+        record.action = ResourceAction::NetworkTopology(operation.clone());
+        record.network_topology_plan = Some(crate::network_topology::Plan {
+            pool,
+            network,
+            operation,
+            vlans_before: Default::default(),
+            pifs_before: [uplink.pif].into(),
+            tasks_before: Default::default(),
+            steps: vec![crate::network_topology::Receipt {
+                kind,
+                task: None,
+                task_uuid: None,
+                result: None,
+                completed: false,
+                ended: false,
+                cancel_sent: false,
+                created: None,
+                verified: false,
+            }],
+            expires_at_ms: 1000,
+        });
+        journal.resource_admit(&mut record).unwrap();
+        let text: String = journal
+            .0
+            .query_row(
+                "SELECT payload FROM resource_operations WHERE id=?1",
+                [record.id.to_string()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut payload: serde_json::Value = serde_json::from_str(&text).unwrap();
+        match corrupt {
+            "pool" => payload["network_topology_plan"]["pool"] = json!(uuid::Uuid::new_v4()),
+            "network" => payload["network_topology_plan"]["network"] = json!(uuid::Uuid::new_v4()),
+            "operation" => {
+                payload["network_topology_plan"]["operation"]["CreateVlans"]["tag"] = json!(101)
+            }
+            "baseline" => payload["network_topology_plan"]["pifs_before"] = json!([]),
+            "kind" => {
+                payload["network_topology_plan"]["steps"][0]["kind"]["Create"]["tag"] = json!(101)
+            }
+            "completed" => payload["network_topology_plan"]["steps"][0]["completed"] = json!(true),
+            "result" => {
+                payload["network_topology_plan"]["steps"][0]["result"] = json!("OpaqueRef:foreign")
+            }
+            "created" => {
+                payload["topology_changes"]["created_vlans"] = json!([uuid::Uuid::new_v4()])
+            }
+            "success" => payload["state"] = json!(OperationState::Succeeded),
+            "missing_plan" => {
+                payload
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("network_topology_plan");
+            }
+            _ => unreachable!(),
+        }
+        journal
+            .0
+            .execute(
+                "UPDATE resource_operations SET payload=?1 WHERE id=?2",
+                rusqlite::params![payload.to_string(), record.id.to_string()],
+            )
+            .unwrap();
+        assert!(
+            matches!(journal.resource_load(record.id), Err(Error::Journal)),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(
+                journal.resource_control(pool, record.id, OperationControl::Recheck),
+                Err(Error::Journal)
+            ),
+            "{corrupt}"
+        );
+        assert!(
+            matches!(journal.admit(&mut vm(pool)), Err(Error::Journal)),
+            "{corrupt}"
+        );
+    }
 }
