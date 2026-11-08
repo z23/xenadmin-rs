@@ -4882,6 +4882,7 @@ name = "xenadmin-desktop"
 version = "0.6.0"
 dependencies = [
  "image",
+ "libc",
  "rune",
  "rune-kit",
  "serde",
@@ -4889,6 +4890,7 @@ dependencies = [
  "tempfile",
  "uuid",
  "xenadmin-core",
+ "zeroize",
 ]
 
 [[package]]

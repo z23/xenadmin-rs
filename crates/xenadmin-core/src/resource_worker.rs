@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct ResourceRequest {
+    pub(crate) sensitive: Option<crate::pool_security::SensitiveInputs>,
     pub generation: u64,
     pub record: ResourceOperationRecord,
     sender: watch::Sender<Arc<ResourceOperationRecord>>,
@@ -27,6 +28,7 @@ impl ResourceRequest {
         sender: watch::Sender<Arc<ResourceOperationRecord>>,
     ) -> Self {
         Self {
+            sensitive: None,
             generation,
             record,
             sender,
@@ -37,6 +39,7 @@ impl ResourceRequest {
     pub(crate) fn tracking(record: ResourceOperationRecord) -> Self {
         let (sender, _) = watch::channel(Arc::new(record.clone()));
         Self {
+            sensitive: None,
             generation: 0,
             record,
             sender,
@@ -166,7 +169,7 @@ impl ResourceRequest {
             if self.stop_before_dispatch() {
                 return self.save(journal).await;
             }
-            let arguments = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=xapi::arguments(session,&self.record,step)=>result?};
+            let mut arguments = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=xapi::arguments(session,&self.record,step)=>result?};
             // A final journal read closes cancellation/acknowledgement races before the dispatch CAS.
             self.reload(journal)?;
             if self.stop_before_dispatch() {
@@ -174,6 +177,16 @@ impl ResourceRequest {
             }
             if cancel.is_cancelled() {
                 return Err(Error::Closed);
+            }
+            if matches!(
+                &self.record.action,
+                super::ResourceAction::Pool(crate::PoolOperation::Security(_))
+            ) {
+                super::security::add_sensitive(
+                    &self.record,
+                    self.sensitive.as_ref(),
+                    &mut arguments,
+                )?;
             }
             self.record.state = OperationState::Dispatching;
             self.record.steps[index].state = StepState::Dispatching;
@@ -193,6 +206,14 @@ impl ResourceRequest {
                 return self.track(journal, session, cancel).await;
             }
             if matches!(step.check, xapi::Check::CreatedNetwork) {
+                self.record.result_reference = Some(xapi::reply_reference(&value)?);
+            }
+            if matches!(
+                &self.record.action,
+                super::ResourceAction::Pool(crate::PoolOperation::Security(
+                    crate::PoolSecurityOperation::AddSubject { .. }
+                ))
+            ) {
                 self.record.result_reference = Some(xapi::reply_reference(&value)?);
             }
             if matches!(step.check, xapi::Check::Pool) {

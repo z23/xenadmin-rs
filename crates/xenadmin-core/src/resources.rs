@@ -23,6 +23,8 @@ mod appliance;
 mod organization;
 #[path = "pool_operations.rs"]
 mod pool;
+#[path = "security_operations.rs"]
+mod security;
 #[path = "storage_operations.rs"]
 mod storage;
 
@@ -88,6 +90,10 @@ pub enum ResourceCommand {
     Appliance {
         pool: ObservedResource,
         operation: crate::ApplianceOperation,
+    },
+    PoolSensitive {
+        target: ObservedResource,
+        change: crate::PoolSensitiveChange,
     },
     Pool {
         target: ObservedResource,
@@ -299,8 +305,29 @@ impl ResourceAction {
     }
 }
 impl ResourceCommand {
-    pub(crate) fn normalize(self) -> (ObservedResource, ResourceAction) {
+    pub(crate) fn submission(
+        self,
+    ) -> (
+        ObservedResource,
+        ResourceAction,
+        Option<crate::pool_security::SensitiveInputs>,
+    ) {
         match self {
+            Self::PoolSensitive { target, change } => {
+                let (target, action, inputs) = change.split(target);
+                (target, action, Some(inputs))
+            }
+            normal => {
+                let (target, action) = normal.normalize();
+                (target, action, None)
+            }
+        }
+    }
+    fn normalize(self) -> (ObservedResource, ResourceAction) {
+        match self {
+            Self::PoolSensitive { .. } => {
+                unreachable!("sensitive commands split before normalization")
+            }
             Self::Appliance { pool, operation } => (pool, ResourceAction::Appliance(operation)),
             Self::Pool { target, operation } => (target, ResourceAction::Pool(operation)),
             Self::Host { target, operation } => (target, ResourceAction::Host(operation)),
@@ -428,6 +455,8 @@ pub struct ResourceOperationRecord {
     pub(crate) appliance_baseline: Option<Vec<crate::ApplianceId>>,
     #[serde(skip)]
     pub(crate) host_plan: Option<host::Plan>,
+    #[serde(default)]
+    pub(crate) subject_baseline: Option<Vec<crate::SubjectId>>,
 }
 impl ResourceOperationRecord {
     pub fn revision(&self) -> u64 {
@@ -503,6 +532,7 @@ pub(crate) fn channel(
         appliance_completed: false,
         appliance_baseline: None,
         host_plan: None,
+        subject_baseline: None,
     };
     let (sender, receiver) = watch::channel(Arc::new(record.clone()));
     (

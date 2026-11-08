@@ -417,3 +417,18 @@ submitting one server-side operation. Creation baselines and asynchronous comple
 are monotonic journal evidence. Failed/cancelled group tasks and mismatched child outcomes keep
 the pool reserved for inspection; recovery never repeats the power action. Membership removal
 and empty-group deletion preserve VMs and disks. See the [vApp report](reports/2026-11-08-vapps.md).
+
+
+## Transient pool security inputs
+
+`PoolSecurityOperation` is durable safe intent; `PoolSensitiveChange` and
+`ServerCertificate` are nonserializable transient inputs attached only to the queued
+worker. The latter validates bounded PEM and a matching unencrypted PKCS8 key.
+Directory credentials and key material are injected into private RPC arguments only
+after fresh checks and are never stored in the operation record or database.
+Security writes share the pool admission/receipt rules above; restart cannot replay
+a command or recover credentials. Read-only `inspect_pool_security` returns bounded
+typed subject/role/member/certificate projections with generation and drop
+cancellation, a 45-second deadline and the shared discovery-worker limit.
+See the [security increment report](reports/2026-11-08-pool-security.md) for supported
+flows and the local-superuser/reconnect limitations.

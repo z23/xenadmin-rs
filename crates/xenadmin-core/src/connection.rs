@@ -25,6 +25,7 @@ enum Request {
     Console(ConsoleRequest),
     Metrics(crate::metrics::MetricsRequest),
     StorageDiscovery(crate::storage_discovery::DiscoveryRequest),
+    SecurityDiscovery(crate::security_discovery::Request),
     Diagnose(crate::diagnostics::DiagnosticRequest),
     Submit(Box<MutationRequest>),
     ResourceSubmit(Box<crate::resources::ResourceRequest>),
@@ -413,6 +414,22 @@ impl Connection {
         Ok(handle)
     }
 
+    pub fn inspect_pool_security(
+        &self,
+        observed: crate::ObservedResource,
+        query: crate::PoolSecurityQuery,
+    ) -> Result<crate::PoolSecurityDiscovery, Error> {
+        if self.latest().observe_resource(observed.target())? != observed {
+            return Err(Error::Stale);
+        }
+        let (handle, request) =
+            crate::security_discovery::channel(observed, query, self.runtime.clone())?;
+        self.requests
+            .try_send(Request::SecurityDiscovery(request))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
+
     pub fn resource_history(&self) -> Arc<Vec<crate::ResourceOperationRecord>> {
         self.resource_history.borrow().clone()
     }
@@ -424,13 +441,20 @@ impl Connection {
         if self.read_only {
             return Err(Error::ReadOnly);
         }
-        let (observed, action) = command.normalize();
+        let (observed, action, inputs) = command.submission();
+        if let crate::ResourceAction::Pool(crate::PoolOperation::Security(op)) = &action
+            && (op.secret_required() != inputs.is_some()
+                || inputs.as_ref().is_some_and(|v| !v.valid_for(op)))
+        {
+            return Err(Error::InvalidResourceCommand);
+        }
         if self.latest().observe_resource(observed.target)? != observed {
             return Err(Error::Stale);
         }
         action.validate(observed.target)?;
-        let (operation, request) =
+        let (operation, mut request) =
             crate::resources::channel(id, observed, action, self.runtime.clone());
+        request.sensitive = inputs;
         self.requests
             .try_send(Request::ResourceSubmit(Box::new(request)))
             .map_err(|_| Error::Busy)?;
@@ -853,6 +877,11 @@ async fn run(
                                         start_worker(*request,Some(reference),&mut workers,&mut worker_counts);
                                     } else {request.reject(Error::Stale);}
                                 }
+                                Request::SecurityDiscovery(request)=>{
+                                    if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
+                                    else if discoveries.len()>=4 {request.fail(Error::Busy);}
+                                    else {discoveries.spawn(request.run(session.clone(),context.route.receiver.clone(),active.clone()));}
+                                }
                                 Request::StorageDiscovery(request)=>{
                                     if request.observed.generation!=generation||token.is_empty()||!last_inventory.as_ref().is_some_and(|i|i.pool_id==request.observed.pool) {request.fail(Error::Stale);}
                                     else if discoveries.len()>=4 {request.fail(Error::Busy);}
@@ -1173,6 +1202,7 @@ async fn forward_alias(
                         Request::Console(request) => request.fail(Error::Busy),
                         Request::Metrics(request) => request.fail(Error::Busy),
                         Request::StorageDiscovery(request) => request.fail(Error::Busy),
+                        Request::SecurityDiscovery(request) => request.fail(Error::Busy),
                         Request::Diagnose(request) => request.fail(Error::Busy),
                         Request::RememberMembers(_) => {},
                         Request::Control(_, _) | Request::ResourceControl(_,_) => {

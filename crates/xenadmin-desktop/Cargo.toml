@@ -16,6 +16,8 @@ rune-kit.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+libc = "0.2"
+zeroize.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]

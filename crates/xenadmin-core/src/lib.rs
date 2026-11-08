@@ -27,6 +27,15 @@ mod profiles;
 pub use network_types::{
     BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity,
 };
+mod security_discovery;
+pub use security_discovery::{
+    DirectorySubject, PoolSecurityDiscovery, PoolSecurityQuery, PoolSecurityResult,
+    SecurityOverview, SecurityRole,
+};
+mod pool_security;
+pub use pool_security::{
+    DirectoryHostState, PoolSecurityOperation, PoolSensitiveChange, ServerCertificate,
+};
 mod pool_admin;
 pub use pool_admin::{HaRestartPriority, PoolAdministration, PoolOperation};
 mod organization;
@@ -106,6 +115,8 @@ pub enum Error {
     #[error("The transfer resource identities or provenance could not be verified")]
     TransferConflict,
 
+    #[error("{0}")]
+    SecurityPrerequisite(&'static str),
     #[error("Choose up to 32 distinct metric source names")]
     InvalidMetricsOptions,
     #[error("The metrics endpoint or redirect is outside the verified pool")]

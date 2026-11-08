@@ -81,6 +81,8 @@ impl Journal {
                 || (old.appliance_completed && !record.appliance_completed)
                 || (old.appliance_baseline.is_some()
                     && old.appliance_baseline != record.appliance_baseline)
+                || (old.subject_baseline.is_some()
+                    && old.subject_baseline != record.subject_baseline)
                 || (old.storage_trim_succeeded && !record.storage_trim_succeeded)
                 || (old.storage_baseline.is_some()
                     && old.storage_baseline != record.storage_baseline)

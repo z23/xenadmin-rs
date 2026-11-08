@@ -34,6 +34,7 @@ impl HaRestartPriority {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PoolOperation {
+    Security(crate::PoolSecurityOperation),
     SetMigrationCompression {
         expected: bool,
         enabled: bool,
@@ -70,6 +71,7 @@ pub enum PoolOperation {
 impl PoolOperation {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Security(op) => op.label(),
             Self::SetMigrationCompression { .. } => "Set migration compression",
             Self::SetHttpsOnly { .. } => "Set HTTPS-only access",
             Self::DesignateCoordinator { .. } => "Hand over pool coordinator",
@@ -84,6 +86,7 @@ impl PoolOperation {
     }
     pub(crate) fn method(&self) -> &'static str {
         match self {
+            Self::Security(op) => op.method(),
             Self::SetMigrationCompression { .. } => "pool.set_migration_compression",
             Self::SetHttpsOnly { .. } => "Async.pool.set_https_only",
             Self::DesignateCoordinator { .. } => "Async.pool.designate_new_master",
@@ -102,6 +105,7 @@ impl PoolOperation {
     pub(crate) fn validate(&self, target: ResourceTarget) -> Result<(), Error> {
         let valid = matches!(target, ResourceTarget::Pool(_))
             && match self {
+                Self::Security(op) => op.valid(),
                 Self::SetMigrationCompression { expected, enabled }
                 | Self::SetHttpsOnly { expected, enabled } => expected != enabled,
                 Self::DesignateCoordinator { expected, host } => expected != host,

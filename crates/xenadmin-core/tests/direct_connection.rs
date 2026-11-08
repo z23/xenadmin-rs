@@ -1975,3 +1975,5 @@ mod appliances;
 mod host_administration;
 #[path = "fixtures/organization.rs"]
 mod organization;
+#[path = "fixtures/pool_security.rs"]
+mod pool_security;

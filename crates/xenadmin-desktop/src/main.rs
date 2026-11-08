@@ -8,6 +8,7 @@ mod host_admin;
 mod metrics_view;
 mod network_admin;
 mod organization_view;
+mod pool_security_view;
 mod pool_view;
 mod preferences;
 mod profiles_view;
@@ -148,6 +149,7 @@ struct State {
     activity: activity::Activity,
     resource_editor: Option<resource_admin::Editor>,
     pool_editor: Option<pool_view::Editor>,
+    pool_security: Option<pool_security_view::Editor>,
     network_workspace: Option<network_admin::Workspace>,
     storage_editor: Option<storage_view::Editor>,
     host_workspace: Option<host_admin::Workspace>,
@@ -250,6 +252,7 @@ fn init() -> State {
         activity: activity::Activity::default(),
         resource_editor: None,
         pool_editor: None,
+        pool_security: None,
         network_workspace: None,
         storage_editor: None,
         host_workspace: None,
@@ -735,6 +738,7 @@ fn poll(s: &mut State, _: f64, _: &mut Tx) -> bool {
     changed |= resource_admin::poll(s);
     changed |= storage_view::poll(s);
     changed |= transfers::poll(s);
+    changed |= pool_security_view::poll(s);
     changed |= console_view::poll_export(s);
     changed |= metrics_view::poll(s);
     dev_inspection::refresh(s);
@@ -1295,6 +1299,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(base, [activity::dialog(s, &k)])
     } else if s.storage_editor.is_some() {
         rune_kit::root(base, [storage_view::dialog(s, &k)])
+    } else if s.pool_security.is_some() {
+        rune_kit::root(base, [pool_security_view::dialog(s, &k)])
     } else if s.pool_editor.is_some() {
         rune_kit::root(base, [pool_view::dialog(s, &k)])
     } else if s.resource_editor.is_some() {
@@ -1805,6 +1811,7 @@ fn demo(s: &mut State) {
     s.network_workspace = None;
     s.storage_editor = None;
     s.pool_editor = None;
+    s.pool_security = None;
     s.resource_operations.clear();
     s.resource_rows.clear();
     s.activity = activity::Activity::default();
@@ -1994,6 +2001,10 @@ fn main() {
             ("appliance-review", appliance_view::review_scene),
             ("storage-create", |s| storage_view::scene(s, false)),
             ("storage-review", |s| storage_view::scene(s, true)),
+            ("pool-security", |s| pool_security_view::scene(s, false)),
+            ("pool-security-review", |s| {
+                pool_security_view::scene(s, true)
+            }),
             ("pool-policies", |s| pool_view::scene(s, false)),
             ("pool-policy-review", |s| pool_view::scene(s, true)),
             ("pool-administration", |s| resource_admin::scene(s, true)),

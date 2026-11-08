@@ -257,10 +257,10 @@ Implementation and qualification evidence: [host administration report](reports/
 | P13-06 | HA status and VM restart priorities | Typed HA status, heartbeat storage, current plan/overcommit and three VM restart priorities implemented; start-order/delay configuration and live qualification open |
 | P13-07 | Migration compression/GPU placement policy | Reviewed migration compression implemented for advertised fields; GPU placement is excluded specialized hardware scope; live qualification open |
 | P13-08 | Pool clustering | Unsupported on XCP-ng: upstream clustering relies on unavailable proprietary software ([primary evidence](https://docs.xcp-ng.org/installation/upgrade/)); no unsupported RPC workflow is offered |
-| P13-09 | Join/leave directory authentication | Capability review and implementation queued |
-| P13-10 | User/group membership and role assignment | Queued |
-| P13-11 | RBAC-aware eligibility and credential elevation/reconnect-as | Existing subset; remaining work queued |
-| P13-12 | Install/reset host certificate | Queued |
+| P13-09 | Join/leave directory authentication | Reviewed AD join and local-only/credentialed leave implemented with transient credentials, exact member checks and partial/unknown recovery; fixture verified, live qualification open ([report](reports/2026-11-08-pool-security.md)) |
+| P13-10 | User/group membership and role assignment | Directory resolution, subject creation/removal and exact reviewed role edits implemented for explicit RBAC support; restricted/unknown RBAC creation is refused to avoid automatic administrator grants; live qualification open |
+| P13-11 | RBAC-aware eligibility and credential elevation/reconnect-as | Security discovery distinguishes methods, local superuser and RBAC support; security mutations require local superuser. General method-specific eligibility and dedicated reconnect-as/elevation remain queued |
+| P13-12 | Install/reset host certificate | Reviewed PEM/PKCS8 installation and self-signed reset implemented with SHA-256 checks, transient private keys, native file pickers and no automatic trust change; fixture verified, live qualification open |
 | P13-13 | Enable pool TLS verification/rotate pool secret | Explicit reviewed TLS enable and pool-secret rotation implemented with durable completion receipts; rotation refuses enabled HA or unreachable members; live qualification open |
 | P13-14 | Legacy SSL mode | Unsupported on primary target: legacy SSL and TLS 1.0/1.1 were removed in XCP-ng 8.2 ([release notes](https://docs.xcp-ng.org/releases/release-8-2/)) |
 

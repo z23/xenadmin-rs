@@ -177,6 +177,7 @@ fn describe(editor: &Editor, op: &PoolOperation) -> Vec<String> {
             .unwrap_or_else(|| id.to_string())
     };
     match op {
+        PoolOperation::Security(op) => vec![op.label().into()],
         PoolOperation::SetMigrationCompression {expected,enabled} => vec![format!("Migration compression: {expected} → {enabled}"), "Applies to subsequent migrations; compression trades host CPU for lower network usage.".into()],
         PoolOperation::SetHttpsOnly {expected,enabled} => vec![format!("HTTPS-only access: {expected} → {enabled}"),"Changes the pool hosts’ HTTP firewall policy. Existing tools that rely on plain HTTP may stop working.".into()],
         PoolOperation::DesignateCoordinator {expected,host:target} => vec![format!("Current coordinator: {}",host(*expected)),format!("New coordinator: {}",host(*target)),"Performs a planned handover. This connection may briefly disconnect or move to the new coordinator. HA must already be disabled. Does not evacuate or shut down guests.".into()],
@@ -240,7 +241,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         }
         body = body.child(caption("Fresh host checks run again before submission. Interrupted operations stay in history for recheck; no mutation is replayed automatically.",k).wrap());
     } else {
-        body = body.child(heading("Pool policies", k));
+        body = body
+            .child(
+                Button::new("Authentication, access and certificates…")
+                    .on_press(pool_security_view::open)
+                    .build(k)
+                    .key("pool-security-open"),
+            )
+            .child(heading("Pool policies", k));
         if let Some(expected) = admin.migration_compression {
             body = body.child(action(
                 k,

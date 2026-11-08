@@ -40,6 +40,8 @@ identity!(PoolId);
 identity!(HostId);
 identity!(VmId);
 identity!(SnapshotId);
+identity!(SubjectId);
+identity!(RoleId);
 
 #[path = "model_inventory.rs"]
 mod inventory;
