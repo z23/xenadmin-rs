@@ -2275,6 +2275,7 @@ fn main() {
             ("network-ipv6", network_admin::ipv6_scene),
             ("network-topology", network_admin::topology_scene),
             ("management-network", network_admin::management_scene),
+            ("management-dhcp", network_admin::management_dynamic_scene),
             ("host-administration", host_admin::scene),
             ("host-support", host_support_view::scene),
             ("host-power-settings", host_power_view::scene),

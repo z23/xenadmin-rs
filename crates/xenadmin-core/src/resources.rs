@@ -275,6 +275,10 @@ impl ResourceAction {
                 crate::ManagementNetworkOperation::Move { .. } => "host.management_reconfigure",
                 crate::ManagementNetworkOperation::ConfigureIpv4 { .. } => "PIF.reconfigure_ip",
                 crate::ManagementNetworkOperation::ConfigureIpv6 { .. } => "PIF.reconfigure_ipv6",
+                crate::ManagementNetworkOperation::ConfigureDynamic { mode, .. } => match mode {
+                    crate::ManagementDynamicMode::Ipv4Dhcp => "PIF.reconfigure_ip",
+                    _ => "PIF.reconfigure_ipv6",
+                },
             }]),
             Self::Host(op) => op.permission_requirements(),
             Self::Pool(op) => op.permission_requirements(),

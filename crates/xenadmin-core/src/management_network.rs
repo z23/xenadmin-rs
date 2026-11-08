@@ -68,14 +68,20 @@ impl ManagementInterface {
     }
     pub fn address(&self) -> Option<IpAddr> {
         match self.primary {
-            ManagementAddressFamily::Ipv4 if self.ipv4.mode == Ipv4Mode::Static => {
+            ManagementAddressFamily::Ipv4 if self.ipv4.mode != Ipv4Mode::None => {
                 self.ipv4.address.parse().ok()
             }
-            ManagementAddressFamily::Ipv6
-                if self.ipv6.mode == Ipv6Mode::Static && self.ipv6.addresses.len() == 1 =>
-            {
-                crate::network_types::ipv6_cidr(&self.ipv6.addresses[0])
-                    .map(|(ip, _)| IpAddr::V6(ip))
+            ManagementAddressFamily::Ipv6 if self.ipv6.mode != Ipv6Mode::None => {
+                let mut addresses = self
+                    .ipv6
+                    .addresses
+                    .iter()
+                    .filter_map(|v| {
+                        crate::network_types::ipv6_cidr(v).map(|(ip, _)| IpAddr::V6(ip))
+                    })
+                    .filter(usable_address);
+                let first = addresses.next()?;
+                addresses.next().is_none().then_some(first)
             }
             _ => None,
         }
@@ -94,11 +100,59 @@ impl ManagementInterface {
             && self.ipv4.dns.len() <= 2048
             && self.ipv6.observed_valid()
             && self.ipv4.dns == self.ipv6.dns
+            && self
+                .ipv4
+                .dns
+                .split(',')
+                .filter(|v| !v.is_empty())
+                .all(|v| v.parse::<IpAddr>().is_ok())
             && self.address().is_some()
             && match self.primary {
-                ManagementAddressFamily::Ipv4 => self.ipv4.valid(),
-                ManagementAddressFamily::Ipv6 => self.ipv6.valid(),
+                ManagementAddressFamily::Ipv4 => Ipv4Configuration {
+                    mode: Ipv4Mode::Static,
+                    ..self.ipv4.clone()
+                }
+                .valid(),
+                ManagementAddressFamily::Ipv6 => {
+                    self.ipv6.observed_valid()
+                        && (self.ipv6.gateway.is_empty()
+                            || self.ipv6.gateway.parse::<std::net::Ipv6Addr>().is_ok())
+                }
             }
+    }
+}
+fn dns_family(value: &str, ipv4: bool) -> BTreeSet<IpAddr> {
+    value
+        .split(',')
+        .filter_map(|v| v.parse::<IpAddr>().ok())
+        .filter(|v| v.is_ipv4() == ipv4)
+        .collect()
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ManagementDynamicMode {
+    Ipv4Dhcp,
+    Ipv6Dhcp,
+    Ipv6Autoconf,
+}
+impl ManagementDynamicMode {
+    pub fn family(self) -> ManagementAddressFamily {
+        match self {
+            Self::Ipv4Dhcp => ManagementAddressFamily::Ipv4,
+            _ => ManagementAddressFamily::Ipv6,
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ipv6Autoconf => "Autoconf",
+            _ => "DHCP",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ipv4Dhcp => "IPv4 DHCP",
+            Self::Ipv6Dhcp => "IPv6 DHCP",
+            Self::Ipv6Autoconf => "IPv6 autoconfiguration",
+        }
     }
 }
 pub(crate) fn canonical_ipv6(addresses: &[String]) -> Option<Vec<String>> {
@@ -131,6 +185,11 @@ pub enum ManagementNetworkOperation {
         interface: ManagementInterface,
         configuration: Ipv6Configuration,
     },
+    ConfigureDynamic {
+        interface: ManagementInterface,
+        mode: ManagementDynamicMode,
+        recovery: IpAddr,
+    },
 }
 impl ManagementNetworkOperation {
     pub fn label(&self) -> &'static str {
@@ -138,19 +197,21 @@ impl ManagementNetworkOperation {
             Self::Move { .. } => "Move host management interface",
             Self::ConfigureIpv4 { .. } => "Change management IPv4 settings",
             Self::ConfigureIpv6 { .. } => "Change management IPv6 settings",
+            Self::ConfigureDynamic { .. } => "Change automatic management addressing",
         }
     }
     pub fn source(&self) -> &ManagementInterface {
         match self {
             Self::Move { source, .. } => source,
-            Self::ConfigureIpv4 { interface, .. } | Self::ConfigureIpv6 { interface, .. } => {
-                interface
-            }
+            Self::ConfigureIpv4 { interface, .. }
+            | Self::ConfigureIpv6 { interface, .. }
+            | Self::ConfigureDynamic { interface, .. } => interface,
         }
     }
     pub fn recovery_address(&self) -> Option<IpAddr> {
         match self {
             Self::Move { destination, .. } => destination.address(),
+            Self::ConfigureDynamic { recovery, .. } => Some(*recovery).filter(usable_address),
             Self::ConfigureIpv4 { configuration, .. } => {
                 configuration.address.parse().ok().filter(usable_address)
             }
@@ -180,18 +241,51 @@ impl ManagementNetworkOperation {
                         && destination.identity.network != source.identity.network
                         && destination.primary == source.primary
                         && destination.address() != source.address()
+                        && match destination.primary {
+                            ManagementAddressFamily::Ipv4 => {
+                                destination.ipv4.mode == Ipv4Mode::Static
+                            }
+                            ManagementAddressFamily::Ipv6 => {
+                                destination.ipv6.mode == Ipv6Mode::Static
+                            }
+                        }
                 }
                 Self::ConfigureIpv4 { configuration, .. } => {
                     source.primary == ManagementAddressFamily::Ipv4
                         && configuration.mode == Ipv4Mode::Static
                         && configuration.valid()
-                        && configuration != &source.ipv4
+                        && (configuration.mode != source.ipv4.mode
+                            || configuration.address != source.ipv4.address
+                            || configuration.netmask != source.ipv4.netmask
+                            || configuration.gateway != source.ipv4.gateway
+                            || dns_family(&configuration.dns, true)
+                                != dns_family(&source.ipv4.dns, true))
                 }
                 Self::ConfigureIpv6 { configuration, .. } => {
                     source.primary == ManagementAddressFamily::Ipv6
                         && configuration.mode == Ipv6Mode::Static
                         && configuration.valid()
-                        && configuration != &source.ipv6
+                        && (configuration.mode != source.ipv6.mode
+                            || canonical_ipv6(&configuration.addresses)
+                                != canonical_ipv6(&source.ipv6.addresses)
+                            || configuration.gateway != source.ipv6.gateway
+                            || dns_family(&configuration.dns, false)
+                                != dns_family(&source.ipv6.dns, false))
+                }
+                Self::ConfigureDynamic { mode, recovery, .. } => {
+                    mode.family() == source.primary
+                        && matches!(
+                            (mode.family(), recovery),
+                            (ManagementAddressFamily::Ipv4, IpAddr::V4(_))
+                                | (ManagementAddressFamily::Ipv6, IpAddr::V6(_))
+                        )
+                        && match mode {
+                            ManagementDynamicMode::Ipv4Dhcp => source.ipv4.mode != Ipv4Mode::Dhcp,
+                            ManagementDynamicMode::Ipv6Dhcp => source.ipv6.mode != Ipv6Mode::Dhcp,
+                            ManagementDynamicMode::Ipv6Autoconf => {
+                                source.ipv6.mode != Ipv6Mode::Autoconf
+                            }
+                        }
                 }
             };
         if valid {
@@ -205,7 +299,7 @@ impl ManagementNetworkOperation {
             .validate(ResourceTarget::Host(self.source().identity.host))
             .is_err()
         {
-            return ActionAvailability::Prerequisite{reason:"Review a changed static management configuration in the installed address family. Moving management requires a different, already configured and plugged interface with a distinct address.".into()};
+            return ActionAvailability::Prerequisite{reason:"Review a changed management configuration in the installed address family and a usable recovery IP. The current primary address must be unambiguous. Moving management requires a different, already statically configured and plugged interface with a distinct address.".into()};
         }
         let Some(pool) = &i.details.pool else {
             return ActionAvailability::Unknown;

@@ -1,6 +1,6 @@
 mod management_network;
 pub use management_network::{
-    ManagementAddressFamily, ManagementInterface, ManagementNetworkEvidence,
+    ManagementAddressFamily, ManagementDynamicMode, ManagementInterface, ManagementNetworkEvidence,
     ManagementNetworkOperation,
 };
 mod permissions;

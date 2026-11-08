@@ -1,7 +1,7 @@
 use super::*;
 use xenadmin_core::{
-    Ipv6Configuration, Ipv6Mode, ManagementAddressFamily, ManagementInterface,
-    ManagementNetworkOperation, ResourceAction,
+    Ipv6Configuration, Ipv6Mode, ManagementAddressFamily, ManagementDynamicMode,
+    ManagementInterface, ManagementNetworkOperation, ResourceAction,
 };
 pub(super) struct Editor {
     source: ManagementInterface,
@@ -11,6 +11,8 @@ pub(super) struct Editor {
     netmask: TextEdit,
     gateway: TextEdit,
     dns: TextEdit,
+    automatic: Option<ManagementDynamicMode>,
+    recovery: TextEdit,
 }
 fn editor(s: &mut State) -> &mut Editor {
     let Form::Management(editor) = &mut edit(s).form else {
@@ -31,6 +33,8 @@ fn open(s: &mut State, id: PifId, moving: bool) {
     let ipv6 = source.primary == ManagementAddressFamily::Ipv6;
     let value = Editor {
         moving,
+        automatic: None,
+        recovery: TextEdit::new(source.address().map(|v| v.to_string()).unwrap_or_default()),
         destination: None,
         address: TextEdit::new(if ipv6 {
             source.ipv6.addresses.first().cloned().unwrap_or_default()
@@ -77,6 +81,15 @@ fn operation(v: &Editor) -> Result<ManagementNetworkOperation, String> {
                 .ok_or("Choose a configured destination interface")?,
         });
     }
+    if let Some(mode) = v.automatic {
+        return Ok(ManagementNetworkOperation::ConfigureDynamic {
+            interface: v.source.clone(),
+            mode,
+            recovery: v.recovery.text.trim().parse().map_err(
+                |_| "Enter the expected recovery IP address, without a prefix or hostname",
+            )?,
+        });
+    }
     Ok(match v.source.primary {
         ManagementAddressFamily::Ipv4 => ManagementNetworkOperation::ConfigureIpv4 {
             interface: v.source.clone(),
@@ -102,11 +115,16 @@ fn operation(v: &Editor) -> Result<ManagementNetworkOperation, String> {
 fn summary(p: &ManagementInterface) -> String {
     match p.primary {
         ManagementAddressFamily::Ipv4 => format!(
-            "{} / {} · gateway {} · DNS {}",
-            p.ipv4.address, p.ipv4.netmask, p.ipv4.gateway, p.ipv4.dns
+            "{} · {} / {} · gateway {} · DNS {}",
+            p.ipv4.mode.as_str(),
+            p.ipv4.address,
+            p.ipv4.netmask,
+            p.ipv4.gateway,
+            p.ipv4.dns
         ),
         ManagementAddressFamily::Ipv6 => format!(
-            "{} · gateway {} · DNS {}",
+            "{} · {} · gateway {} · DNS {}",
+            p.ipv6.mode.as_str(),
             p.ipv6.addresses.join(", "),
             p.ipv6.gateway,
             p.ipv6.dns
@@ -164,6 +182,14 @@ fn review(v: &Editor, i: &Inventory) -> Result<(ManagementNetworkOperation, Vec<
             c.gateway,
             c.dns
         )),
+        ManagementNetworkOperation::ConfigureDynamic { mode, recovery, .. } => {
+            lines.push(format!(
+                "New addressing: {}. Expected assigned address: {recovery}.",
+                mode.label()
+            ));
+            lines.push("The host obtains its address and primary-family network settings automatically. This address must match a DHCP reservation or a known stable autoconfiguration address; entering it does not create a reservation.".into());
+            lines.push("If the host obtains a different address, this operation remains unresolved. The client does not scan the network or update DNS aliases. Use an independently verified host address to reconnect and inspect it.".into());
+        }
     }
     lines.extend([format!("Recovery address: {} · HTTPS on the current connection port",op.recovery_address().ok_or("Enter a usable recovery address")?),"Management and storage traffic may be interrupted. Have an independent path to the host available. The client checks the new configuration and authenticates the reviewed host at the recovery address.".into(),"Certificate validation follows this connection's existing settings. A new address may need its own trusted certificate; no trust is copied automatically.".into(),"Lost replies remain uncertain. Recheck inspects existing evidence and never repeats the change or rolls it back. Other workspaces are not deliberately disconnected.".into()]);
     Ok((op, lines))
@@ -207,7 +233,7 @@ pub(super) fn review_unavailable(s: &State, w: &Workspace) -> Option<String> {
 pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
     let mut body=col().gap(8.0).child(heading(if v.moving {"Move host management"}else{"Management IP settings"},k))
         .child(caption(format!("{} · {}",pif_name(i,v.source.pif),v.source.pif),k).wrap_anywhere())
-        .child(caption("Static addressing in the installed address family, ordinary physical interfaces, MTU 1500 and HA disabled are required. Bond/VLAN handovers and DHCP changes need a separate workflow.",k).wrap());
+        .child(caption("Use the installed address family, ordinary physical interfaces, MTU 1500 and HA disabled. Bond/VLAN handovers need a separate workflow.",k).wrap());
     if v.moving {
         body=body.child(caption("Choose an already plugged, statically configured interface on this host, with a different network and address.",k).wrap());
         for p in i
@@ -245,48 +271,91 @@ pub(super) fn form(v: &Editor, i: &Inventory, k: &Kit) -> El {
         }
     } else {
         let ipv6 = v.source.primary == ManagementAddressFamily::Ipv6;
-        body = body
-            .child(caption(
-                if ipv6 {
-                    "IPv6 address/prefix"
-                } else {
-                    "IPv4 address"
-                },
-                k,
-            ))
-            .child(
-                TextInput::new(&v.address)
-                    .label(if ipv6 {
+        let mut modes = row().gap(8.0).flex_wrap().child(
+            Button::new(if v.automatic.is_none() {
+                "✓ Static"
+            } else {
+                "Static"
+            })
+            .on_press(|s: &mut State| editor(s).automatic = None)
+            .build(k),
+        );
+        for mode in if ipv6 {
+            vec![
+                ManagementDynamicMode::Ipv6Dhcp,
+                ManagementDynamicMode::Ipv6Autoconf,
+            ]
+        } else {
+            vec![ManagementDynamicMode::Ipv4Dhcp]
+        } {
+            modes = modes.child(
+                Button::new(format!(
+                    "{}{}",
+                    if v.automatic == Some(mode) {
+                        "✓ "
+                    } else {
+                        ""
+                    },
+                    mode.label()
+                ))
+                .on_press(move |s: &mut State| editor(s).automatic = Some(mode))
+                .build(k),
+            );
+        }
+        body = body.child(modes);
+        if v.automatic.is_some() {
+            body=body.child(caption("Expected recovery IP",k)).child(TextInput::new(&v.recovery).label("Expected recovery IP").on_edit(|s:&mut State|&mut editor(s).recovery).build(k))
+                .child(caption("Enter the address reserved by DHCP or expected from stable IPv6 autoconfiguration. The client verifies the actual assignment and host certificate. It does not create reservations, scan for hosts or update DNS aliases.",k).wrap());
+        } else {
+            body = body
+                .child(caption(
+                    if ipv6 {
                         "IPv6 address/prefix"
                     } else {
                         "IPv4 address"
-                    })
-                    .on_edit(|s: &mut State| &mut editor(s).address)
-                    .build(k),
-            );
-        if !ipv6 {
-            body = body.child(caption("Netmask", k)).child(
-                TextInput::new(&v.netmask)
-                    .label("Netmask")
-                    .on_edit(|s: &mut State| &mut editor(s).netmask)
-                    .build(k),
-            );
+                    },
+                    k,
+                ))
+                .child(
+                    TextInput::new(&v.address)
+                        .label(if ipv6 {
+                            "IPv6 address/prefix"
+                        } else {
+                            "IPv4 address"
+                        })
+                        .on_edit(|s: &mut State| &mut editor(s).address)
+                        .build(k),
+                );
+            if !ipv6 {
+                body = body.child(caption("Netmask", k)).child(
+                    TextInput::new(&v.netmask)
+                        .label("Netmask")
+                        .on_edit(|s: &mut State| &mut editor(s).netmask)
+                        .build(k),
+                );
+            }
+            body = body
+                .child(caption("Gateway (optional)", k))
+                .child(
+                    TextInput::new(&v.gateway)
+                        .label("Gateway")
+                        .on_edit(|s: &mut State| &mut editor(s).gateway)
+                        .build(k),
+                )
+                .child(
+                    caption(
+                        "DNS servers, comma separated (only this address family's entries change)",
+                        k,
+                    )
+                    .wrap(),
+                )
+                .child(
+                    TextInput::new(&v.dns)
+                        .label("DNS servers")
+                        .on_edit(|s: &mut State| &mut editor(s).dns)
+                        .build(k),
+                );
         }
-        body = body
-            .child(caption("Gateway (optional)", k))
-            .child(
-                TextInput::new(&v.gateway)
-                    .label("Gateway")
-                    .on_edit(|s: &mut State| &mut editor(s).gateway)
-                    .build(k),
-            )
-            .child(caption("DNS servers, comma separated (shared by IPv4 and IPv6)", k).wrap())
-            .child(
-                TextInput::new(&v.dns)
-                    .label("DNS servers")
-                    .on_edit(|s: &mut State| &mut editor(s).dns)
-                    .build(k),
-            );
     }
     if let Err(error) = review(v, i) {
         body = body.child(caption(error, k).wrap());
@@ -322,9 +391,149 @@ pub(super) fn scene(s: &mut State) {
     editor(s).address = TextEdit::new("192.0.2.20");
     prepare(s);
 }
+pub(super) fn dynamic_scene(s: &mut State) {
+    scene(s);
+    edit(s).review = None;
+    editor(s).automatic = Some(ManagementDynamicMode::Ipv4Dhcp);
+    editor(s).recovery = TextEdit::new("192.0.2.30");
+    prepare(s);
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn automatic_address_review_captures_mode_expected_ip_and_does_not_dispatch_demo() {
+        for size in [(513.0, 652.0), (1440.0, 900.0)] {
+            let mut s = crate::init();
+            dynamic_scene(&mut s);
+            let review = s
+                .network_workspace
+                .as_ref()
+                .unwrap()
+                .review
+                .as_ref()
+                .unwrap();
+            assert!(
+                matches!(&review.operation,ResourceAction::ManagementNetwork(op) if matches!(&**op,ManagementNetworkOperation::ConfigureDynamic { mode:ManagementDynamicMode::Ipv4Dhcp,recovery,.. } if recovery.to_string()=="192.0.2.30"))
+            );
+            assert!(
+                review
+                    .lines
+                    .iter()
+                    .any(|v| v.contains("does not create a reservation"))
+            );
+            assert!(
+                review
+                    .lines
+                    .iter()
+                    .any(|v| v.contains("remains unresolved"))
+            );
+            let mut runtime = rune::Runtime::new(
+                s,
+                crate::view,
+                size,
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            for _ in 0..30 {
+                runtime.frame(1.0 / 60.0);
+            }
+            let (x, y) = runtime.find("network-confirm").unwrap();
+            assert!(x > 0.0 && x < size.0 && y > 0.0 && y < size.1);
+            runtime.pointer_down(x, y);
+            runtime.pointer_up(x, y);
+            runtime.frame(0.0);
+            assert!(runtime.state.resource_operations.is_empty());
+        }
+    }
+    #[test]
+    fn automatic_review_rejects_wrong_family_hostnames_noop_and_changed_lease() {
+        let mut s = crate::init();
+        dynamic_scene(&mut s);
+        for value in [
+            "2001:db8::30",
+            "recovery.example.test",
+            "192.0.2.30/24",
+            "0.0.0.0",
+        ] {
+            edit(&mut s).review = None;
+            editor(&mut s).recovery = TextEdit::new(value);
+            prepare(&mut s);
+            assert!(
+                s.network_workspace.as_ref().unwrap().review.is_none(),
+                "{value}"
+            );
+        }
+        editor(&mut s).recovery = TextEdit::new("192.0.2.30");
+        prepare(&mut s);
+        let source = editor(&mut s).source.pif;
+        Arc::make_mut(s.inventory.as_mut().unwrap())
+            .details
+            .pifs
+            .get_mut(&source)
+            .unwrap()
+            .ip = "192.0.2.99".into();
+        assert!(review_unavailable(&s, s.network_workspace.as_ref().unwrap()).is_some());
+        let p = Arc::make_mut(s.inventory.as_mut().unwrap())
+            .details
+            .pifs
+            .get_mut(&source)
+            .unwrap();
+        p.ip_configuration_mode = "DHCP".into();
+        open(&mut s, source, false);
+        editor(&mut s).automatic = Some(ManagementDynamicMode::Ipv4Dhcp);
+        prepare(&mut s);
+        assert!(s.network_workspace.as_ref().unwrap().review.is_none());
+        let mut s = crate::init();
+        scene(&mut s);
+        let source = editor(&mut s).source.pif;
+        open(&mut s, source, false);
+        editor(&mut s).dns = TextEdit::new("192.0.2.53,2001:db8::99");
+        prepare(&mut s);
+        assert!(
+            s.network_workspace.as_ref().unwrap().review.is_none(),
+            "IPv4 editing must not count ignored IPv6 DNS as a change"
+        );
+    }
+    #[test]
+    fn ipv6_dhcp_and_autoconf_review_require_same_family_and_capture_stable_recovery() {
+        for mode in [
+            ManagementDynamicMode::Ipv6Dhcp,
+            ManagementDynamicMode::Ipv6Autoconf,
+        ] {
+            let mut s = crate::init();
+            scene(&mut s);
+            let source = editor(&mut s).source.pif;
+            let p = Arc::make_mut(s.inventory.as_mut().unwrap())
+                .details
+                .pifs
+                .get_mut(&source)
+                .unwrap();
+            p.primary_address_type = Some("IPv6".into());
+            p.ipv6_configuration_mode = "Static".into();
+            p.ipv6 = vec!["2001:db8::10/64".into()];
+            open(&mut s, source, false);
+            editor(&mut s).automatic = Some(mode);
+            editor(&mut s).recovery = TextEdit::new("2001:db8::30");
+            prepare(&mut s);
+            let review = s
+                .network_workspace
+                .as_ref()
+                .unwrap()
+                .review
+                .as_ref()
+                .unwrap();
+            assert!(
+                matches!(&review.operation,ResourceAction::ManagementNetwork(op) if matches!(&**op,ManagementNetworkOperation::ConfigureDynamic { mode:m,.. } if *m==mode))
+            );
+            edit(&mut s).review = None;
+            editor(&mut s).recovery = TextEdit::new("fe80::30");
+            prepare(&mut s);
+            assert!(s.network_workspace.as_ref().unwrap().review.is_none());
+        }
+    }
     #[test]
     fn management_review_captures_recovery_settings_at_both_widths_without_demo_dispatch() {
         for size in [(513.0, 652.0), (1440.0, 900.0)] {

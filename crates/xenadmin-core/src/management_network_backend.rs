@@ -1,6 +1,7 @@
 use super::{ResourceAction, ResourceOperationRecord, ResourceTarget, network, xapi};
 use crate::{
-    Error, HostId, ManagementInterface, ManagementNetworkOperation, OperationState, StepState,
+    Error, HostId, ManagementDynamicMode, ManagementInterface, ManagementNetworkOperation,
+    OperationState, StepState,
     management_network::{Plan, canonical_ipv6},
     xapi::Session,
 };
@@ -110,7 +111,82 @@ fn addresses(value: &Value) -> Result<Vec<String>, Error> {
         .ok_or(Error::Protocol("IPv6 addresses invalid"))?;
     canonical_ipv6(&values).ok_or(Error::Protocol("IPv6 addresses invalid"))
 }
-async fn pif(s: &Session, before: &ManagementInterface) -> Result<String, Error> {
+fn dns(value: &str) -> Result<BTreeSet<std::net::IpAddr>, Error> {
+    require(value.len() <= 2048, "Management DNS settings exceed limit")?;
+    value
+        .split(',')
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            v.parse()
+                .map_err(|_| Error::Protocol("Management DNS settings invalid"))
+        })
+        .collect()
+}
+fn configured_dns(before: &str, requested: &str, ipv4: bool) -> Result<String, Error> {
+    Ok(dns(before)?
+        .into_iter()
+        .filter(|v| v.is_ipv4() != ipv4)
+        .chain(dns(requested)?.into_iter().filter(|v| v.is_ipv4() == ipv4))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|v| v.to_string())
+        .collect::<Vec<_>>()
+        .join(","))
+}
+fn dynamic_settings(
+    v: &Value,
+    before: &ManagementInterface,
+    mode: ManagementDynamicMode,
+    recovery: std::net::IpAddr,
+) -> Result<bool, Error> {
+    let text = |key: &str| {
+        v[key]
+            .as_str()
+            .ok_or(Error::Protocol("Management IP settings unavailable"))
+    };
+    let ipv4 = mode == ManagementDynamicMode::Ipv4Dhcp;
+    let secondary_dns = |values: BTreeSet<std::net::IpAddr>| {
+        values
+            .into_iter()
+            .filter(|v| v.is_ipv4() != ipv4)
+            .collect::<BTreeSet<_>>()
+    };
+    let shared = secondary_dns(dns(text("DNS")?)?) == secondary_dns(dns(&before.ipv4.dns)?);
+    Ok(shared
+        && if ipv4 {
+            v["ip_configuration_mode"] == mode.as_str()
+                && text("IP")?.parse::<std::net::IpAddr>().ok() == Some(recovery)
+                && crate::Ipv4Configuration {
+                    mode: crate::Ipv4Mode::Static,
+                    address: text("IP")?.into(),
+                    netmask: text("netmask")?.into(),
+                    gateway: text("gateway")?.into(),
+                    dns: text("DNS")?.into(),
+                }
+                .valid()
+                && v["ipv6_configuration_mode"] == before.ipv6.mode.as_str()
+                && addresses(&v["IPv6"])? == before.ipv6.addresses
+                && v["ipv6_gateway"] == before.ipv6.gateway
+        } else {
+            v["ipv6_configuration_mode"] == mode.as_str()
+                && addresses(&v["IPv6"])?.iter().any(|v| {
+                    v.split_once('/')
+                        .and_then(|(v, _)| v.parse::<std::net::IpAddr>().ok())
+                        == Some(recovery)
+                })
+                && (text("ipv6_gateway")?.is_empty()
+                    || text("ipv6_gateway")?.parse::<std::net::Ipv6Addr>().is_ok())
+                && v["ip_configuration_mode"] == before.ipv4.mode.as_str()
+                && v["IP"] == before.ipv4.address
+                && v["netmask"] == before.ipv4.netmask
+                && v["gateway"] == before.ipv4.gateway
+        })
+}
+async fn pif(
+    s: &Session,
+    before: &ManagementInterface,
+    dynamic: Option<(ManagementDynamicMode, std::net::IpAddr)>,
+) -> Result<String, Error> {
     let (reference, v) = xapi::read(s, ResourceTarget::Pif(before.pif)).await?;
     network::pif_identity(s, &v, &before.identity).await?;
     require(
@@ -119,16 +195,24 @@ async fn pif(s: &Session, before: &ManagementInterface) -> Result<String, Error>
             && v["disallow_unplug"].as_bool() == Some(before.protected),
         "Management interface state changed since review",
     )?;
-    require(
+    let settings_match = if let Some((mode, recovery)) = dynamic {
+        dynamic_settings(&v, before, mode, recovery)?
+    } else {
         v["ip_configuration_mode"] == before.ipv4.mode.as_str()
             && v["IP"] == before.ipv4.address
             && v["netmask"] == before.ipv4.netmask
             && v["gateway"] == before.ipv4.gateway
-            && v["DNS"] == before.ipv4.dns
+            && dns(v["DNS"]
+                .as_str()
+                .ok_or(Error::Protocol("Management DNS settings unavailable"))?)?
+                == dns(&before.ipv4.dns)?
             && v["ipv6_configuration_mode"] == before.ipv6.mode.as_str()
             && addresses(&v["IPv6"])?
                 == canonical_ipv6(&before.ipv6.addresses).ok_or(Error::InvalidResourceCommand)?
-            && v["ipv6_gateway"] == before.ipv6.gateway,
+            && v["ipv6_gateway"] == before.ipv6.gateway
+    };
+    require(
+        settings_match,
         "Management IP settings changed since review",
     )?;
     require(
@@ -187,12 +271,15 @@ async fn graph(
             }
             ManagementNetworkOperation::ConfigureIpv4 { configuration, .. } => {
                 source.ipv4 = configuration.clone();
-                source.ipv6.dns = configuration.dns.clone();
+                source.ipv4.dns = configured_dns(&op.source().ipv4.dns, &configuration.dns, true)?;
+                source.ipv6.dns = source.ipv4.dns.clone();
             }
             ManagementNetworkOperation::ConfigureIpv6 { configuration, .. } => {
                 source.ipv6 = configuration.clone();
-                source.ipv4.dns = configuration.dns.clone();
+                source.ipv6.dns = configured_dns(&op.source().ipv6.dns, &configuration.dns, false)?;
+                source.ipv4.dns = source.ipv6.dns.clone();
             }
+            ManagementNetworkOperation::ConfigureDynamic { .. } => {}
         }
     } else if let ManagementNetworkOperation::Move {
         destination: dest, ..
@@ -200,9 +287,15 @@ async fn graph(
     {
         destination = Some(dest.clone());
     }
-    let mut refs = vec![pif(s, &source).await?];
+    let dynamic = match op {
+        ManagementNetworkOperation::ConfigureDynamic { mode, recovery, .. } if after => {
+            Some((*mode, *recovery))
+        }
+        _ => None,
+    };
+    let mut refs = vec![pif(s, &source, dynamic).await?];
     if let Some(dest) = &destination {
-        refs.push(pif(s, dest).await?);
+        refs.push(pif(s, dest, None).await?);
     }
     let expected = if after {
         op.recovery_address()
@@ -350,6 +443,32 @@ pub(super) async fn arguments(
                 json!(c.dns),
             ],
         ),
+        ManagementNetworkOperation::ConfigureDynamic { mode, .. } => {
+            if *mode == ManagementDynamicMode::Ipv4Dhcp {
+                (
+                    "Async.PIF.reconfigure_ip",
+                    vec![
+                        json!(refs[0]),
+                        json!("DHCP"),
+                        json!(""),
+                        json!(""),
+                        json!(""),
+                        json!(""),
+                    ],
+                )
+            } else {
+                (
+                    "Async.PIF.reconfigure_ipv6",
+                    vec![
+                        json!(refs[0]),
+                        json!(mode.as_str()),
+                        json!(""),
+                        json!(""),
+                        json!(""),
+                    ],
+                )
+            }
+        }
     })
 }
 pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(), Error> {

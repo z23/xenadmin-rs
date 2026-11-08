@@ -1,8 +1,9 @@
 use super::*;
 use std::collections::BTreeMap;
 use xenadmin_core::{
-    HostId, ManagementInterface, ManagementNetworkOperation, OperationControl, OperationId,
-    OperationState, ResourceCommand, ResourceOperation, ResourceOperationRecord, ResourceTarget,
+    HostId, ManagementDynamicMode, ManagementInterface, ManagementNetworkOperation,
+    OperationControl, OperationId, OperationState, ResourceCommand, ResourceOperation,
+    ResourceOperationRecord, ResourceTarget,
 };
 fn id(n: u128) -> uuid::Uuid {
     uuid::Uuid::from_u128(n)
@@ -21,6 +22,9 @@ enum Fault {
     Redirect,
     CertificateCopied,
     RebindForCleanup,
+    WrongAssignment,
+    WrongDynamicMode,
+    SecondaryChanged,
 }
 struct Control {
     rows: BTreeMap<String, Value>,
@@ -28,6 +32,7 @@ struct Control {
     coordinator_certificate: String,
     fault: Fault,
     writes: usize,
+    requests: Vec<Value>,
     wrong_certificate: Arc<std::sync::atomic::AtomicBool>,
     delay: bool,
     entered: Arc<tokio::sync::Notify>,
@@ -159,6 +164,77 @@ fn rows(ipv6: bool) -> BTreeMap<String, Value> {
     }
     rows
 }
+fn configure(c: &mut Control, pif: &str, request: &Value) {
+    let ipv4 = request["method"] == "Async.PIF.reconfigure_ip";
+    let dynamic = request["params"][2] != "Static";
+    let fault = c.fault;
+    let v = c.rows.get_mut(pif).unwrap();
+    let old_dns = v["DNS"].as_str().unwrap().to_owned();
+    let requested_dns = request["params"][if ipv4 { 6 } else { 5 }]
+        .as_str()
+        .unwrap();
+    let dns = old_dns
+        .split(',')
+        .filter(|v| {
+            v.parse::<std::net::IpAddr>()
+                .is_ok_and(|v| v.is_ipv4() != ipv4)
+        })
+        .chain(requested_dns.split(',').filter(|v| {
+            v.parse::<std::net::IpAddr>()
+                .is_ok_and(|v| v.is_ipv4() == ipv4)
+        }))
+        .map(String::from)
+        .collect::<Vec<_>>();
+    v["DNS"] = json!(dns.join(","));
+    if ipv4 {
+        for (i, key) in [
+            (2, "ip_configuration_mode"),
+            (3, "IP"),
+            (4, "netmask"),
+            (5, "gateway"),
+        ] {
+            v[key] = request["params"][i].clone();
+        }
+        if dynamic {
+            v["IP"] = json!("127.0.0.3");
+            v["netmask"] = json!("255.0.0.0");
+            v["gateway"] = json!("127.0.0.9");
+        }
+        if fault == Fault::WrongAssignment {
+            v["IP"] = json!("127.0.0.99");
+        }
+        if fault == Fault::WrongDynamicMode {
+            v["ip_configuration_mode"] = json!("Static");
+        }
+        if fault == Fault::SecondaryChanged {
+            v["ipv6_gateway"] = json!("2001:db8::ffff");
+        }
+    } else {
+        for (i, key) in [(2, "ipv6_configuration_mode"), (4, "ipv6_gateway")] {
+            v[key] = request["params"][i].clone();
+        }
+        v["IPv6"] = json!([request["params"][3].clone()]);
+        if dynamic {
+            v["IPv6"] = json!(["::1/128", "fe80::1/64"]);
+            v["ipv6_gateway"] = json!("fe80::ff");
+        }
+        if fault == Fault::WrongAssignment {
+            v["IPv6"] = json!(["2001:db8::99/64"]);
+        }
+        if fault == Fault::WrongDynamicMode {
+            v["ipv6_configuration_mode"] = json!("Static");
+        }
+        if fault == Fault::SecondaryChanged {
+            v["gateway"] = json!("192.0.2.99");
+        }
+    }
+    let address = if ipv4 {
+        v["IP"].clone()
+    } else {
+        json!(v["IPv6"][0].as_str().unwrap().split('/').next().unwrap())
+    };
+    c.rows.get_mut(&reference("host", 2)).unwrap()["address"] = address;
+}
 async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>) {
     let cert = rcgen::generate_simple_self_signed(vec![
         "127.0.0.1".into(),
@@ -182,6 +258,7 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
         coordinator_certificate: coordinator.cert.pem(),
         fault,
         writes: 0,
+        requests: Vec::new(),
         wrong_certificate: wrong_certificate.clone(),
         delay: false,
         entered: Arc::new(tokio::sync::Notify::new()),
@@ -212,11 +289,10 @@ async fn fixture(ipv6: bool, fault: Fault) -> (Mock, Bridge, Arc<Mutex<Control>>
         }
         if method=="task.destroy" {c.rows.remove(request["params"][1].as_str().unwrap());return Some(RpcReply::Json(json!({"result":null})));}
         if method.starts_with("Async.") {
-            c.writes+=1;let pif=request["params"][1].as_str().unwrap().to_owned();
+            c.requests.push(request.clone());c.writes+=1;let pif=request["params"][1].as_str().unwrap().to_owned();
             match method {
                 "Async.host.management_reconfigure"=>{for (r,v) in &mut c.rows {if r.starts_with("OpaqueRef:PIF:"){v["management"]=json!(r==&pif);}}let address=c.rows[&pif]["IP"].clone();c.rows.get_mut(&reference("host",2)).unwrap()["address"]=address;},
-                "Async.PIF.reconfigure_ip"=>{let v=c.rows.get_mut(&pif).unwrap();for (i,key) in [(2,"ip_configuration_mode"),(3,"IP"),(4,"netmask"),(5,"gateway"),(6,"DNS")]{v[key]=request["params"][i].clone();}c.rows.get_mut(&reference("host",2)).unwrap()["address"]=request["params"][3].clone();},
-                "Async.PIF.reconfigure_ipv6"=>{let v=c.rows.get_mut(&pif).unwrap();for (i,key) in [(2,"ipv6_configuration_mode"),(4,"ipv6_gateway"),(5,"DNS")]{v[key]=request["params"][i].clone();}v["IPv6"]=json!([request["params"][3].clone()]);},
+                "Async.PIF.reconfigure_ip" | "Async.PIF.reconfigure_ipv6" => configure(&mut c, &pif, &request),
                 _=>panic!("unexpected write {method}"),
             }
             if c.fault==Fault::CertificateCopied {c.rows.insert(reference("host",9),json!({"uuid":id(9),"address":"192.0.2.9"}));}
@@ -262,7 +338,7 @@ fn operation(c: &xenadmin_core::Connection, kind: u8) -> ManagementNetworkOperat
                 configuration,
             }
         }
-        _ => {
+        2 => {
             let mut configuration = source.ipv6.clone();
             configuration.dns = "2001:db8::53".into();
             ManagementNetworkOperation::ConfigureIpv6 {
@@ -270,6 +346,15 @@ fn operation(c: &xenadmin_core::Connection, kind: u8) -> ManagementNetworkOperat
                 configuration,
             }
         }
+        _ => ManagementNetworkOperation::ConfigureDynamic {
+            interface: source,
+            mode: match kind {
+                3 => ManagementDynamicMode::Ipv4Dhcp,
+                4 => ManagementDynamicMode::Ipv6Dhcp,
+                _ => ManagementDynamicMode::Ipv6Autoconf,
+            },
+            recovery: if kind == 3 { "127.0.0.3" } else { "::1" }.parse().unwrap(),
+        },
     }
 }
 fn submit(c: &xenadmin_core::Connection, op: ManagementNetworkOperation) -> ResourceOperation {
@@ -297,6 +382,212 @@ async fn finish(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
     })
     .await
     .unwrap()
+}
+#[tokio::test]
+async fn automatic_management_addressing_and_return_to_static_verify_assigned_address_and_route() {
+    for kind in [3, 4, 5] {
+        let (mock, bridge, control) = fixture(kind != 3, Fault::None).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&bridge, &backend).await;
+        let result = finish(&submit(&c, operation(&c, kind))).await;
+        assert_eq!(
+            result.state,
+            OperationState::Succeeded,
+            "{kind}: {}",
+            result.detail
+        );
+        assert!(
+            result
+                .management_network
+                .as_ref()
+                .unwrap()
+                .recovery_endpoint_verified
+        );
+        assert_eq!(control.lock().unwrap().writes, 1);
+        assert_eq!(mock.logins.load(Ordering::Relaxed), 2);
+        {
+            let guard = control.lock().unwrap();
+            let request = guard
+                .requests
+                .iter()
+                .find(|v| {
+                    v["method"]
+                        .as_str()
+                        .is_some_and(|v| v.starts_with("Async.PIF.reconfigure"))
+                })
+                .unwrap();
+            assert!(
+                request["params"].as_array().unwrap()[3..]
+                    .iter()
+                    .all(|v| v == ""),
+                "DHCP/autoconf must not receive the proposed recovery IP as static configuration"
+            );
+        }
+        c.close().await;
+        let c = connect(&bridge, &backend).await;
+        let source = ManagementInterface::from_inventory(
+            &c.latest().inventory().unwrap().details.pifs[&id(13).into()],
+        )
+        .unwrap();
+        let op = if kind == 3 {
+            let mut configuration = source.ipv4.clone();
+            configuration.mode = xenadmin_core::Ipv4Mode::Static;
+            ManagementNetworkOperation::ConfigureIpv4 {
+                interface: source,
+                configuration,
+            }
+        } else {
+            let mut configuration = source.ipv6.clone();
+            configuration.mode = xenadmin_core::Ipv6Mode::Static;
+            configuration.addresses = vec!["::1/128".into()];
+            ManagementNetworkOperation::ConfigureIpv6 {
+                interface: source,
+                configuration,
+            }
+        };
+        let result = finish(&submit(&c, op)).await;
+        assert_eq!(
+            result.state,
+            OperationState::Succeeded,
+            "return to static {kind}: {}",
+            result.detail
+        );
+        assert_eq!(control.lock().unwrap().writes, 2);
+        c.close().await;
+    }
+}
+#[tokio::test]
+async fn unexpected_dynamic_assignment_mode_or_secondary_settings_remain_unknown_without_replay() {
+    for (kind, fault) in [3, 4, 5].into_iter().flat_map(|kind| {
+        [
+            Fault::WrongAssignment,
+            Fault::WrongDynamicMode,
+            Fault::SecondaryChanged,
+        ]
+        .into_iter()
+        .map(move |fault| (kind, fault))
+    }) {
+        let (mock, bridge, control) = fixture(kind != 3, fault).await;
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&bridge, &backend).await;
+        let result = finish(&submit(&c, operation(&c, kind))).await;
+        assert_eq!(
+            result.state,
+            OperationState::OutcomeUnknown,
+            "{}",
+            result.detail
+        );
+        assert!(
+            !result
+                .management_network
+                .as_ref()
+                .unwrap()
+                .configuration_observed
+        );
+        assert_eq!(
+            mock.logins.load(Ordering::Relaxed),
+            1,
+            "no recovery login before assignment is observed"
+        );
+        c.control_resource(result.id, OperationControl::Recheck)
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !c.resource_history().iter().any(|r| {
+                r.id == result.id
+                    && r.state == OperationState::OutcomeUnknown
+                    && r.revision() > result.revision()
+            }) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        c.close().await;
+        assert_eq!(control.lock().unwrap().writes, 1);
+    }
+}
+#[tokio::test]
+async fn completed_dynamic_assignment_recovers_after_restart_without_reapplying_network_settings() {
+    let (_mock, bridge, control) = fixture(false, Fault::ReadAfterCompletion).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&bridge, &backend).await;
+    let result = finish(&submit(&c, operation(&c, 3))).await;
+    assert_eq!(
+        result.state,
+        OperationState::OutcomeUnknown,
+        "{}",
+        result.detail
+    );
+    c.close().await;
+    drop(backend);
+    {
+        let mut state = control.lock().unwrap();
+        state.fault = Fault::None;
+        state.rows.remove(&reference("task", 51));
+    }
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&bridge, &backend).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !c
+            .resource_history()
+            .iter()
+            .any(|r| r.id == result.id && r.state == OperationState::Succeeded)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(control.lock().unwrap().writes, 1);
+    c.close().await;
+}
+#[tokio::test]
+async fn same_ip_static_changes_preserve_the_other_dns_family() {
+    for ipv6 in [false, true] {
+        let (_mock, bridge, control) = fixture(ipv6, Fault::None).await;
+        control
+            .lock()
+            .unwrap()
+            .rows
+            .get_mut(&reference("PIF", 13))
+            .unwrap()["DNS"] = json!("192.0.2.53,2001:db8::53");
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+        let c = connect(&bridge, &backend).await;
+        let source = ManagementInterface::from_inventory(
+            &c.latest().inventory().unwrap().details.pifs[&id(13).into()],
+        )
+        .unwrap();
+        let op = if ipv6 {
+            let mut configuration = source.ipv6.clone();
+            configuration.dns = "2001:db8::54".into();
+            ManagementNetworkOperation::ConfigureIpv6 {
+                interface: source,
+                configuration,
+            }
+        } else {
+            let mut configuration = source.ipv4.clone();
+            configuration.gateway = "127.0.0.9".into();
+            configuration.netmask = "255.255.0.0".into();
+            configuration.dns = "192.0.2.54".into();
+            ManagementNetworkOperation::ConfigureIpv4 {
+                interface: source,
+                configuration,
+            }
+        };
+        let result = finish(&submit(&c, op)).await;
+        assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+        let dns = control.lock().unwrap().rows[&reference("PIF", 13)]["DNS"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(dns.contains(if ipv6 { "192.0.2.53" } else { "2001:db8::53" }));
+        assert_eq!(control.lock().unwrap().writes, 1);
+        c.close().await;
+    }
 }
 #[tokio::test]
 async fn management_moves_and_ipv4_ipv6_changes_verify_configuration_and_host_bound_route() {
@@ -545,7 +836,7 @@ async fn closing_during_pending_management_task_keeps_unknown_and_recheck_never_
 }
 #[tokio::test]
 async fn delayed_management_receipt_survives_recovery_without_verifying_from_original_worker() {
-    for acknowledge in [false, true] {
+    for (kind, acknowledge) in [(0, false), (0, true), (3, false), (3, true)] {
         let (mock, bridge, control) = fixture(false, Fault::None).await;
         let (entered, release) = {
             let mut c = control.lock().unwrap();
@@ -555,7 +846,7 @@ async fn delayed_management_receipt_survives_recovery_without_verifying_from_ori
         let dir = tempfile::tempdir().unwrap();
         let backend = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&bridge, &backend).await;
-        let op = submit(&c, operation(&c, 0));
+        let op = submit(&c, operation(&c, kind));
         tokio::time::timeout(Duration::from_secs(5), entered.notified())
             .await
             .unwrap();

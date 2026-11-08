@@ -153,3 +153,5 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/creation-cloud-compact.png --tree artifacts/creation-cloud-compact.json --scene creation-cloud --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/creation-cloud-pending.png --tree artifacts/creation-cloud-pending.json --scene creation-cloud-pending --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/creation-cloud-pending-compact.png --tree artifacts/creation-cloud-pending-compact.json --scene creation-cloud-pending --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-dhcp.png --tree artifacts/management-dhcp.json --scene management-dhcp --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/management-dhcp-compact.png --tree artifacts/management-dhcp-compact.json --scene management-dhcp --theme dark --size 513x652 --scale 1 --at 1
