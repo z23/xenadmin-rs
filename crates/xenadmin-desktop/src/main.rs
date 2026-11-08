@@ -1,10 +1,12 @@
 mod activity;
 mod activity_export;
 mod appliance_view;
+mod bulk_power;
 mod console_view;
 mod demo_details;
 mod dev_inspection;
 mod host_admin;
+mod inventory_menu;
 mod metrics_view;
 mod network_admin;
 mod organization_view;
@@ -147,6 +149,8 @@ impl ActionDiagnostics {
     }
 }
 struct State {
+    bulk_power: Option<bulk_power::Editor>,
+    row_menu: Option<inventory_menu::Context>,
     searches: Option<search_view::Workspace>,
     metrics: Option<metrics_view::MetricsUi>,
     activity: activity::Activity,
@@ -243,7 +247,7 @@ fn init() -> State {
     } else {
         (None, Err("UI fixtures cannot connect to hosts".into()))
     };
-    let mut table = TableState::new().key("inventory-table");
+    let mut table = TableState::new().key("inventory-table").multi_select(true);
     for (name, width) in &preferences.columns {
         table.set_column_width(name, *width);
     }
@@ -253,6 +257,8 @@ fn init() -> State {
         .flatten()
         .or(inspection_error);
     let mut s = State {
+        bulk_power: None,
+        row_menu: None,
         searches: None,
         metrics: None,
         activity: activity::Activity::default(),
@@ -569,9 +575,9 @@ impl State {
         }
         self.tree = tree;
         self.filter_rows();
-        if let Some(id) = selected.filter(|id| self.rows.iter().any(|row| &row.id == id)) {
-            self.table.select(id);
-        } else if let Some(row) = self.rows.first() {
+        if selected.is_none_or(|id| !self.rows.iter().any(|row| row.id == id))
+            && let Some(row) = self.rows.first()
+        {
             self.table.select(row.id.clone());
         }
     }
@@ -895,6 +901,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 s.devices = None;
                 s.host_filter = host;
                 s.page = Page::Guests;
+                s.table.clear_selection();
+                s.row_menu = None;
                 s.filter_rows();
                 if let Some(id) = vm {
                     s.table.select(id.to_string());
@@ -981,11 +989,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         table
     };
+    let cell_font = k.ty.text_small;
+    let cell_ink = k.c.text_base;
     let table = table
-        .cell(|s: &State, i, name| {
+        .cell(move |s: &State, i, name| {
             let r = &s.rows[i];
             match name {
-                "name" => Cell::text(&r.name),
+                "name" => inventory_menu::cell(s, r, cell_font, cell_ink),
                 "state" => Cell::text(&r.state),
                 "location" => Cell::text(&r.location).muted(),
                 "cpu" => Cell::text(&r.cpu).mono(),
@@ -1021,6 +1031,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                         s.metrics = None;
                         s.page = page;
                         s.host_filter = None;
+                        s.table.clear_selection();
+                        s.row_menu = None;
                         s.filter_rows();
                     })
                     .build(&k)
@@ -1064,7 +1076,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                         .placeholder("Search name, UUID or host")
                         .label("Search inventory")
                         .on_edit(|s: &mut State| &mut s.search)
-                        .on_change(|s: &mut State, _| s.filter_rows())
+                        .on_change(|s: &mut State, _| {
+                            s.table.clear_selection();
+                            s.row_menu = None;
+                            s.filter_rows();
+                        })
                         .clear_button()
                         .build(&k)
                         .w(if s.window_width < 800.0 { 180.0 } else { 270.0 })
@@ -1072,6 +1088,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 ),
         )
         .child(tabs);
+    if s.page == Page::Guests {
+        content = content.child(bulk_power::selection_bar(s, &k));
+    }
     if s.demo {
         content = content.child(
             row()
@@ -1399,6 +1418,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
+    let root = if s.bulk_power.is_some() {
+        rune_kit::root(root, [bulk_power::dialog(s, &k)])
+    } else {
+        root
+    };
+    let root = inventory_menu::overlay(s, &k, root);
     root.key("application")
         .on_layout_tx(|s: &mut State, rect, _| {
             if rect[2].is_finite() && rect[2] > 0.0 && (s.window_width - rect[2]).abs() > 0.5 {
@@ -1988,6 +2013,7 @@ fn main() {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("batch-power", bulk_power::scene),
             ("search-pools", search_view::scene),
             ("performance", metrics_view::scene),
             ("unavailable-actions", |s| {

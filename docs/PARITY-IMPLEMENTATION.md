@@ -61,7 +61,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P02-09 | SR attachment/path and disk inspection | SR details display host attachments, disk capacity/flags and VM/snapshot consumers; multipath/path inspection remains queued |
 | P02-10 | Live inventory/stale-state handling | Optional-class negotiation, isolated decode failures and bounded resync implemented; live compatibility/scale qualification open |
 | P02-11 | Filtered/grouped/saved/cross-pool searches | Typed cross-pool text/type/power/host/pool/tag/folder/custom-field filters, grouped ordering and saved definitions implemented and fixture verified; [search report](reports/2026-11-08-cross-pool-search.md); live qualification open |
-| P02-12 | Multi-object actions and context menus | Queued |
+| P02-12 | Multi-object actions and context menus | VM multi-selection, reviewed same-pool power batches and name-cell context menus implemented; fixture verified. Keyboard/whole-row menus and other bulk workflows remain open ([report](reports/2026-11-08-bulk-power-ui.md)) |
 
 ## 3. VM power and recovery
 
@@ -75,7 +75,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P03-06 | Show current tasks and administrative action blocks | Current operations, administrative blocks and typed server tasks parsed; per-action diagnosis implemented; full task center remains queued |
 | P03-07 | Reviewed force recovery with running tasks | Queued |
 | P03-08 | Recovery-mode boot | Queued |
-| P03-09 | Batch VM power actions | Queued |
+| P03-09 | Batch VM power actions | Reviewed 1–32 VM same-pool serial power batches implemented with per-VM outcomes, whole-selection preflight and no-replay recovery; protocol/Rune fixtures verified, live qualification open ([report](reports/2026-11-08-bulk-power-backend.md)) |
 
 ## 4. Consoles
 

@@ -411,7 +411,9 @@ fn clear_view(s: &mut State) {
     s.host_filter = None;
     s.show_details = false;
     s.search = TextEdit::new("");
-    s.table = TableState::new().key("inventory-table");
+    s.table = TableState::new().key("inventory-table").multi_select(true);
+    s.bulk_power = None;
+    s.row_menu = None;
     for (name, width) in &s.preferences.columns {
         s.table.set_column_width(name, *width);
     }
