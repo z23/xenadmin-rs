@@ -253,15 +253,12 @@ fn method(op: &Op, check: &Verify) -> Result<String, Error> {
     Ok(match check {
         Verify::Field { field, .. } => format!("VMSS.set_{field}"),
         Verify::Membership { .. } => "VM.set_snapshot_schedule".into(),
-        Verify::Async => format!(
-            "Async.VMSS.{}",
-            match op {
-                Op::Create { .. } => "create",
-                Op::DeleteEmpty { .. } => "destroy",
-                Op::RunNow { .. } => "snapshot_now",
-                _ => return Err(Error::InvalidResourceCommand),
-            }
-        ),
+        Verify::Async => match op {
+            Op::Create { .. } => "Async.VMSS.create".into(),
+            Op::DeleteEmpty { .. } => "Async.VMSS.destroy".into(),
+            Op::RunNow { .. } => "VMSS.snapshot_now".into(),
+            _ => return Err(Error::InvalidResourceCommand),
+        },
     })
 }
 impl Op {
@@ -467,6 +464,10 @@ async fn snapshot_ids(
         result.insert(*id, ids);
     }
     Ok(result)
+}
+/// The synchronous `VMSS.snapshot_now` reply is the plugin result itself.
+pub(super) fn plugin_success_reply(value: &Value) -> bool {
+    plugin_success(&json!({ "result": value }))
 }
 pub(super) fn plugin_success(task: &Value) -> bool {
     let Some(s) = task["result"].as_str().filter(|s| s.len() <= 4096) else {

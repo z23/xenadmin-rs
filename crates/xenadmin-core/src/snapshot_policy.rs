@@ -239,11 +239,11 @@ impl SnapshotPolicyOperation {
             Self::RunNow { .. } => "Run snapshot schedule now",
         }
     }
+    /// Create and destroy run as host tasks. `VMSS.snapshot_now` has no asynchronous form
+    /// on XCP-ng 8.3.0 ("No async mode for this operation"), so a run is a synchronous call
+    /// whose reply carries the plugin result.
     pub(crate) fn asynchronous(&self) -> bool {
-        matches!(
-            self,
-            Self::Create { .. } | Self::DeleteEmpty { .. } | Self::RunNow { .. }
-        )
+        matches!(self, Self::Create { .. } | Self::DeleteEmpty { .. })
     }
     pub(crate) fn expected(&self) -> Option<&SnapshotPolicyState> {
         match self {

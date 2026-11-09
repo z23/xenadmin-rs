@@ -479,6 +479,18 @@ impl ResourceRequest {
             if matches!(step.check, xapi::Check::Pool) {
                 self.record.pool_completed = true;
             }
+            if matches!(&step.check, xapi::Check::SnapshotPolicy(check) if matches!(**check, super::snapshot_policy::Verify::Async))
+                && matches!(
+                    &self.record.action,
+                    super::ResourceAction::SnapshotPolicy(
+                        crate::SnapshotPolicyOperation::RunNow { .. }
+                    )
+                )
+                && let Some(evidence) = self.record.snapshot_policy_evidence.as_mut()
+            {
+                evidence.plugin_success = super::snapshot_policy::plugin_success_reply(&value);
+                evidence.completed = true;
+            }
             self.record = journal.resource_evidence(&self.record)?;
             if self.stopped_after_recovery() {
                 return Ok(());

@@ -86,13 +86,13 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
  if method=="host.get_servertime"{return Some(RpcReply::Json(json!({"result":"20261108T00:00:00Z"})));}
  if method=="host.get_server_localtime"{return Some(RpcReply::Json(json!({"result":if fault==Fault::Clock{"unavailable"}else{"20261108T10:00:00Z"}})));}
  if method=="VM.assert_operation_valid"{return Some(RpcReply::Json(json!({"result":null})));}
- if method.starts_with("Async.VMSS.")||method.starts_with("VMSS.set_")||method=="VM.set_snapshot_schedule"{let n=writes.fetch_add(1,Ordering::SeqCst);if fault==Fault::SecondField&&n==1{return Some(RpcReply::Json(json!({"error":{"message":"RBAC_PERMISSION_DENIED","data":[]}})));}*last.lock().unwrap()=method.into();let mut m=map.lock().unwrap();match method{
+ if method.starts_with("Async.VMSS.")||method=="VMSS.snapshot_now"||method.starts_with("VMSS.set_")||method=="VM.set_snapshot_schedule"{let n=writes.fetch_add(1,Ordering::SeqCst);if fault==Fault::SecondField&&n==1{return Some(RpcReply::Json(json!({"error":{"message":"RBAC_PERMISSION_DENIED","data":[]}})));}*last.lock().unwrap()=method.into();let mut m=map.lock().unwrap();match method{
  "Async.VMSS.create"=>{assert_eq!(p[1]["enabled"],false);let mut v=policy(NEW);for(k,x)in p[1].as_object().unwrap(){v[k]=x.clone();}m.insert("policy-new".into(),v);},
  "Async.VMSS.destroy"=>{assert_eq!(m["policy"]["VMs"],json!([]));m.remove("policy");},
- "Async.VMSS.snapshot_now"=>{if fault!=Fault::NoSnapshot{m.insert("snapshot".into(),json!({"uuid":SNAP,"is_a_snapshot":true,"is_vmss_snapshot":true,"snapshot_of":"OpaqueRef:vm"}));m.get_mut("vm").unwrap()["snapshots"]=json!(["OpaqueRef:snapshot"]);}m.get_mut("policy").unwrap()["last_run_time"]=json!("20261108T00:00:00Z");},
+ "VMSS.snapshot_now"=>{if matches!(fault,Fault::Failure|Fault::Cancelled){return Some(RpcReply::Json(json!({"error":{"message":"OPERATION_PARTIALLY_FAILED","data":["private payload"]}})));}if fault!=Fault::NoSnapshot{m.insert("snapshot".into(),json!({"uuid":SNAP,"is_a_snapshot":true,"is_vmss_snapshot":true,"snapshot_of":"OpaqueRef:vm"}));m.get_mut("vm").unwrap()["snapshots"]=json!(["OpaqueRef:snapshot"]);}m.get_mut("policy").unwrap()["last_run_time"]=json!("20261108T00:00:00Z");},
  "VM.set_snapshot_schedule"=>{m.get_mut("vm").unwrap()["snapshot_schedule"]=p[2].clone();m.get_mut("policy").unwrap()["VMs"]=if p[2]=="OpaqueRef:NULL"{json!([])}else{json!(["OpaqueRef:vm"])};},
  _=>{let field=method.strip_prefix("VMSS.set_").unwrap();let v=m.get_mut("policy").unwrap();v[field]=p[2].clone();if field=="frequency"{let minute=v["schedule"]["min"].clone();let hour=v["schedule"].get("hour").cloned().unwrap_or(json!("0"));v["schedule"]=match p[2].as_str().unwrap(){"hourly"=>json!({"min":minute}),"daily"=>json!({"hour":hour,"min":minute}),_=>json!({"hour":hour,"min":minute,"days":"Monday"})};}}}
- return Some(if fault==Fault::Drop{RpcReply::Drop}else{RpcReply::Json(json!({"result":if method.starts_with("Async."){json!("OpaqueRef:policy-task")}else{Value::Null}}))});}
+ return Some(if fault==Fault::Drop{RpcReply::Drop}else{RpcReply::Json(json!({"result":if method.starts_with("Async."){json!("OpaqueRef:policy-task")}else if method=="VMSS.snapshot_now"{if fault==Fault::PluginFailure{json!("<value><string>private plugin failure</string></value>")}else{json!("True")}}else{Value::Null}}))});}
  if method=="task.get_record"{let result=if last.lock().unwrap().ends_with("create"){if fault==Fault::Preexisting{"<value><string>OpaqueRef:policy</string></value>"}else{"<value><string>OpaqueRef:policy-new</string></value>"}}else if fault==Fault::PluginFailure{"<value><string>private plugin failure</string></value>"}else{"<value><string>True</string></value>"};return Some(RpcReply::Json(json!({"result":{"status":if fault==Fault::Failure{"failure"}else if fault==Fault::Cancelled{"cancelled"}else{"success"},"progress":"1","allowed_operations":[],"error_info":["OPERATION_PARTIALLY_FAILED","private payload"],"result":result}})));}None}})).await;
     (server, records)
 }
@@ -146,6 +146,7 @@ fn writes(m: &Mock) -> usize {
         .filter(|s| {
             s.starts_with("Async.VMSS.")
                 || s.starts_with("VMSS.set_")
+                || *s == "VMSS.snapshot_now"
                 || *s == "VM.set_snapshot_schedule"
         })
         .count()

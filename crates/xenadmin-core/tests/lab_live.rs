@@ -9884,3 +9884,720 @@ async fn lab_host_archives_and_template_lifecycle() {
     );
     assert_eq!(guest_disks_after, guest_disks, "guest disks changed");
 }
+
+/// P10-02, P10-03, P10-06, P10-07: create an internal network and a tagged VLAN interface
+/// on the coordinator's management NIC attached to it, rescan the host's physical
+/// interfaces, show that unplugging the management interface is refused before submission,
+/// unplug and plug the VLAN interface, delete the VLAN and then the unused network.
+#[tokio::test]
+#[ignore]
+async fn lab_vlan_lifecycle_rescan_and_management_unplug_refusal() {
+    use xenadmin_core::{NetworkOperation, PifIdentity, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let management = inventory
+        .details
+        .pifs
+        .values()
+        .find(|p| {
+            p.host == Some(coordinator) && p.management == Some(true) && p.physical == Some(true)
+        })
+        .cloned()
+        .expect("management interface");
+    let identity = PifIdentity::from_inventory(&management).expect("interface identity");
+    let tag: u16 = 100;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+
+    // Leftovers of an interrupted run: VLANs on lab networks, then the networks.
+    for network in inventory
+        .networks
+        .iter()
+        .filter(|n| n.name.starts_with("lab-vlan-net-"))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let snapshot = c.latest();
+        let i = snapshot.inventory().unwrap();
+        for (vlan, child) in i
+            .details
+            .vlans
+            .values()
+            .filter_map(|v| {
+                let child = i.details.pifs.get(&v.untagged_pif?)?;
+                (child.network == Some(xenadmin_core::NetworkId::from(network.uuid)))
+                    .then(|| (v.clone(), child.clone()))
+            })
+            .collect::<Vec<_>>()
+        {
+            let outcome = resource_op(
+                &c,
+                "delete leftover VLAN",
+                ResourceCommand::Network {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Vlan(vlan.id))
+                        .unwrap(),
+                    operation: NetworkOperation::DeleteVlan {
+                        parent: vlan.tagged_pif.unwrap_or(management.id),
+                        child: child.id,
+                        network: xenadmin_core::NetworkId::from(network.uuid),
+                        tag: vlan.tag.unwrap_or(0) as u16,
+                    },
+                },
+                300,
+            )
+            .await;
+            steps.push(json!({"step": "delete leftover VLAN", "outcome": outcome}));
+        }
+        let outcome = resource_op(
+            &c,
+            "delete leftover network",
+            ResourceCommand::DeleteInternalNetwork {
+                network: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Network(xenadmin_core::NetworkId::from(
+                        network.uuid,
+                    )))
+                    .unwrap(),
+                expected_name: network.name.clone(),
+            },
+            300,
+        )
+        .await;
+        steps.push(json!({"step": "delete leftover network", "outcome": outcome}));
+    }
+
+    let name = format!("lab-vlan-net-{stamp}");
+    let created_network = resource_op(
+        &c,
+        "create network for the VLAN",
+        ResourceCommand::CreateInternalNetwork {
+            pool: c
+                .latest()
+                .observe_resource(ResourceTarget::Pool(pool))
+                .unwrap(),
+            name: name.clone(),
+            description: "Target network for the live VLAN scenario".into(),
+            mtu: 1500,
+        },
+        300,
+    )
+    .await;
+    let network = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(n) = c
+                .latest()
+                .inventory()
+                .and_then(|i| i.networks.iter().find(|n| n.name == name).cloned())
+            {
+                return n;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .ok();
+    steps.push(json!({"step": "create network for the VLAN", "outcome": created_network, "network": network.as_ref().map(|n| n.uuid.to_string())}));
+    let Some(network) = network else {
+        c.close().await;
+        lab.record(
+            "vlan-lifecycle-rescan-and-management-unplug-refusal",
+            json!({"steps": steps}),
+        );
+        panic!("target network not visible");
+    };
+    let network_id: xenadmin_core::NetworkId = network.uuid.into();
+
+    let created = resource_op(
+        &c,
+        "create VLAN",
+        ResourceCommand::Network {
+            target: c
+                .latest()
+                .observe_resource(ResourceTarget::Network(network_id))
+                .unwrap(),
+            operation: NetworkOperation::CreateVlan {
+                parent: management.id,
+                expected: identity.clone(),
+                tag,
+            },
+        },
+        300,
+    )
+    .await;
+    let vlan = tokio::time::timeout(deadline(60), async {
+        loop {
+            let snapshot = c.latest();
+            if let Some(i) = snapshot.inventory()
+                && let Some((vlan, child)) = i.details.vlans.values().find_map(|v| {
+                    let child = i.details.pifs.get(&v.untagged_pif?)?;
+                    (v.tag == Some(tag as u64)
+                        && v.tagged_pif == Some(management.id)
+                        && child.host == Some(coordinator))
+                    .then(|| (v.clone(), child.clone()))
+                })
+            {
+                return Some((vlan, child));
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    steps.push(json!({"step": "create VLAN", "outcome": created, "vlan": vlan.as_ref().map(|(v, child)| json!({"id": v.id.to_string(), "tag": v.tag, "child_pif": child.id.to_string(), "child_device": child.device, "child_vlan": child.vlan, "attached": child.currently_attached, "network": child.network.map(|n| n.to_string()), "on_target_network": child.network == Some(network_id)}))}));
+
+    let scanned = resource_op(
+        &c,
+        "rescan physical interfaces",
+        ResourceCommand::Network {
+            target: c
+                .latest()
+                .observe_resource(ResourceTarget::Host(coordinator))
+                .unwrap(),
+            operation: NetworkOperation::ScanInterfaces,
+        },
+        300,
+    )
+    .await;
+    steps.push(json!({"step": "rescan physical interfaces", "outcome": scanned}));
+
+    // Unplugging the management interface must be refused before anything is sent.
+    let refused = match c
+        .latest()
+        .observe_resource(ResourceTarget::Pif(management.id))
+        .and_then(|target| {
+            c.submit_resource(
+                OperationId::new(),
+                ResourceCommand::Network {
+                    target,
+                    operation: NetworkOperation::SetAttached {
+                        expected: identity.clone(),
+                        expected_attached: true,
+                        attached: false,
+                    },
+                },
+            )
+        }) {
+        Ok(operation) => {
+            let row = wait_outcome(&operation, 120).await;
+            json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+        }
+        Err(error) => json!({"accepted": false, "error": error.to_string()}),
+    };
+    let still_attached =
+        c.latest().inventory().unwrap().details.pifs[&management.id].currently_attached;
+    steps.push(json!({"step": "unplug management interface", "outcome": refused, "expected": "refused", "still_attached": still_attached}));
+
+    if let Some((vlan, child)) = &vlan {
+        for (label, from, to) in [
+            ("unplug VLAN interface", true, false),
+            ("plug VLAN interface", false, true),
+        ] {
+            let current = c
+                .latest()
+                .inventory()
+                .unwrap()
+                .details
+                .pifs
+                .get(&child.id)
+                .cloned();
+            let identity_now = current.as_ref().and_then(PifIdentity::from_inventory);
+            let outcome = match identity_now {
+                Some(identity_now) => match c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(child.id))
+                    .and_then(|target| {
+                        c.submit_resource(
+                            OperationId::new(),
+                            ResourceCommand::Network {
+                                target,
+                                operation: NetworkOperation::SetAttached {
+                                    expected: identity_now,
+                                    expected_attached: from,
+                                    attached: to,
+                                },
+                            },
+                        )
+                    }) {
+                    Ok(operation) => {
+                        let row = wait_outcome(&operation, 300).await;
+                        json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+                    }
+                    Err(error) => json!({"accepted": false, "error": error.to_string()}),
+                },
+                None => json!({"accepted": false, "error": "VLAN interface identity unavailable"}),
+            };
+            let read_back = settle(60, || {
+                c.latest().inventory().is_some_and(|i| {
+                    i.details
+                        .pifs
+                        .get(&child.id)
+                        .is_some_and(|p| p.currently_attached == Some(to))
+                })
+            })
+            .await;
+            steps.push(json!({"step": label, "outcome": outcome, "read_back": read_back}));
+        }
+        let deleted = resource_op(
+            &c,
+            "delete VLAN",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Vlan(vlan.id))
+                    .unwrap(),
+                operation: NetworkOperation::DeleteVlan {
+                    parent: management.id,
+                    child: child.id,
+                    network: network_id,
+                    tag,
+                },
+            },
+            300,
+        )
+        .await;
+        let gone = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                !i.details.vlans.contains_key(&vlan.id) && !i.details.pifs.contains_key(&child.id)
+            })
+        })
+        .await;
+        steps.push(json!({"step": "delete VLAN", "outcome": deleted, "gone": gone}));
+    }
+    let deleted_network = resource_op(
+        &c,
+        "delete the unused network",
+        ResourceCommand::DeleteInternalNetwork {
+            network: c
+                .latest()
+                .observe_resource(ResourceTarget::Network(network_id))
+                .unwrap(),
+            expected_name: name.clone(),
+        },
+        300,
+    )
+    .await;
+    let network_gone = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            !i.networks
+                .iter()
+                .any(|n| xenadmin_core::NetworkId::from(n.uuid) == network_id)
+        })
+    })
+    .await;
+    steps.push(json!({"step": "delete the unused network", "outcome": deleted_network, "gone": network_gone}));
+    c.close().await;
+    lab.record("vlan-lifecycle-rescan-and-management-unplug-refusal", json!({"coordinator": coordinator.to_string(), "management_interface": management.device, "tag": tag, "network": network_id.to_string(), "steps": steps}));
+    for step in &steps {
+        if step["expected"] == "refused" {
+            assert!(
+                step["outcome"]["accepted"] == false || step["outcome"]["state"] == "Rejected",
+                "{step}"
+            );
+            assert_eq!(step["still_attached"], true, "{step}");
+        } else {
+            assert_eq!(step["outcome"]["accepted"], true, "{step}");
+            assert_eq!(step["outcome"]["state"], "Succeeded", "{step}");
+            if step.get("read_back").is_some() {
+                assert_eq!(step["read_back"], true, "{step}");
+            }
+            if step.get("gone").is_some() {
+                assert_eq!(step["gone"], true, "{step}");
+            }
+        }
+    }
+    assert!(vlan.is_some(), "VLAN interface not visible");
+}
+
+/// P05-13: read the pool's snapshot-schedule support (coordinator clock), create a disk
+/// snapshot schedule (created disabled), add the guest, enable it, run it now through the
+/// synchronous plugin call, disable it, remove the guest, delete the empty schedule and
+/// delete the snapshot the run created.
+#[tokio::test]
+#[ignore]
+async fn lab_snapshot_schedule_lifecycle() {
+    use xenadmin_core::{
+        ResourceCommand, ScheduledSnapshotKind, SnapshotPolicyConfig, SnapshotPolicyOperation,
+        SnapshotPolicyState, SnapshotSchedule, VmCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let guest_id = guest.id;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let state_of = |c: &Connection, id: xenadmin_core::SnapshotPolicyId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.snapshot_policies.get(&id).cloned())
+            .and_then(|p| SnapshotPolicyState::from_policy(&p).ok())
+    };
+    let run = |label: &'static str,
+               id: xenadmin_core::SnapshotPolicyId,
+               make: Box<dyn Fn(SnapshotPolicyState) -> SnapshotPolicyOperation>,
+               check: Box<dyn Fn(&xenadmin_core::Inventory) -> bool>| {
+        let c = &c;
+        let pool_target = &pool_target;
+        let state_of = &state_of;
+        async move {
+            let outcome = match state_of(c, id) {
+                Some(expected) => {
+                    resource_op(
+                        c,
+                        label,
+                        ResourceCommand::SnapshotPolicy {
+                            pool: pool_target(c),
+                            operation: make(expected),
+                        },
+                        300,
+                    )
+                    .await
+                }
+                None => {
+                    json!({"step": label, "accepted": false, "error": "schedule not in the inventory"})
+                }
+            };
+            let read_back = settle(60, || c.latest().inventory().is_some_and(|i| check(i))).await;
+            json!({"step": label, "outcome": outcome, "read_back": read_back})
+        }
+    };
+    let mut leftovers = Vec::new();
+    for policy in inventory
+        .details
+        .snapshot_policies
+        .values()
+        .filter(|p| p.name.starts_with("lab-schedule-"))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let id = policy.id;
+        if policy.enabled == Some(true) {
+            leftovers.push(
+                run(
+                    "disable leftover",
+                    id,
+                    Box::new(|expected| SnapshotPolicyOperation::SetEnabled {
+                        expected,
+                        enabled: false,
+                        clock: None,
+                    }),
+                    Box::new(move |i| {
+                        i.details
+                            .snapshot_policies
+                            .get(&id)
+                            .is_some_and(|p| p.enabled == Some(false))
+                    }),
+                )
+                .await,
+            );
+        }
+        for vm in policy.vms.clone() {
+            leftovers.push(
+                run(
+                    "remove leftover member",
+                    id,
+                    Box::new(move |expected| SnapshotPolicyOperation::Membership {
+                        expected,
+                        vm,
+                        join: false,
+                    }),
+                    Box::new(move |i| {
+                        i.details
+                            .snapshot_policies
+                            .get(&id)
+                            .is_some_and(|p| !p.vms.contains(&vm))
+                    }),
+                )
+                .await,
+            );
+        }
+        leftovers.push(
+            run(
+                "delete leftover",
+                id,
+                Box::new(|expected| SnapshotPolicyOperation::DeleteEmpty { expected }),
+                Box::new(move |i| !i.details.snapshot_policies.contains_key(&id)),
+            )
+            .await,
+        );
+    }
+    let support = match c.snapshot_policy_support(pool_target(&c)) {
+        Ok(query) => tokio::time::timeout(deadline(120), async {
+            loop {
+                if let Some(result) = query.latest() {
+                    return result;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .unwrap_or(Err("no support answer within the deadline".into())),
+        Err(error) => Err(error.to_string()),
+    };
+    let support_json = match &support {
+        Ok(s) => {
+            json!({"coordinator": s.clock.coordinator.to_string(), "coordinator_name": s.coordinator_name, "utc_offset_minutes": s.clock.utc_offset_minutes, "local_time": s.local_time, "utc_time": s.utc_time})
+        }
+        Err(e) => json!({"error": e}),
+    };
+    let snapshots_before = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .snapshots
+        .for_vm(guest_id)
+        .map(|s| s.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut steps = Vec::new();
+    let mut policy_id = None;
+    if let Ok(support) = &support {
+        let name = format!("lab-schedule-{stamp}");
+        let config = SnapshotPolicyConfig {
+            name: name.clone(),
+            description: "Created by the live harness".into(),
+            kind: ScheduledSnapshotKind::Disk,
+            retained: 2,
+            schedule: SnapshotSchedule::Hourly { minute: 30 },
+        };
+        let created = resource_op(
+            &c,
+            "create schedule",
+            ResourceCommand::SnapshotPolicy {
+                pool: pool_target(&c),
+                operation: SnapshotPolicyOperation::Create {
+                    config,
+                    clock: support.clock.clone(),
+                },
+            },
+            300,
+        )
+        .await;
+        policy_id = tokio::time::timeout(deadline(60), async {
+            loop {
+                if let Some(id) = c.latest().inventory().and_then(|i| {
+                    i.details
+                        .snapshot_policies
+                        .values()
+                        .find(|p| p.name == name)
+                        .map(|p| p.id)
+                }) {
+                    return id;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .ok();
+        let created_enabled = policy_id.and_then(|id| {
+            c.latest()
+                .inventory()
+                .unwrap()
+                .details
+                .snapshot_policies
+                .get(&id)
+                .and_then(|p| p.enabled)
+        });
+        steps.push(json!({"step": "create schedule", "outcome": created, "policy": policy_id.map(|p| p.to_string()), "enabled_after_creation": created_enabled}));
+        if let Some(id) = policy_id {
+            steps.push(
+                run(
+                    "add the guest",
+                    id,
+                    Box::new(move |expected| SnapshotPolicyOperation::Membership {
+                        expected,
+                        vm: guest_id,
+                        join: true,
+                    }),
+                    Box::new(move |i| {
+                        i.details
+                            .snapshot_policies
+                            .get(&id)
+                            .is_some_and(|p| p.vms.contains(&guest_id))
+                    }),
+                )
+                .await,
+            );
+            let clock = support.clock.clone();
+            steps.push(
+                run(
+                    "enable",
+                    id,
+                    Box::new(move |expected| SnapshotPolicyOperation::SetEnabled {
+                        expected,
+                        enabled: true,
+                        clock: Some(clock.clone()),
+                    }),
+                    Box::new(move |i| {
+                        i.details
+                            .snapshot_policies
+                            .get(&id)
+                            .is_some_and(|p| p.enabled == Some(true))
+                    }),
+                )
+                .await,
+            );
+            let before = snapshots_before.clone();
+            let started = std::time::Instant::now();
+            let mut ran = run(
+                "run now",
+                id,
+                Box::new(|expected| SnapshotPolicyOperation::RunNow { expected }),
+                Box::new(move |i| {
+                    i.snapshots
+                        .for_vm(guest_id)
+                        .any(|s| !before.contains(&s.id))
+                }),
+            )
+            .await;
+            ran["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+            ran["last_run_time"] = json!(
+                c.latest()
+                    .inventory()
+                    .unwrap()
+                    .details
+                    .snapshot_policies
+                    .get(&id)
+                    .and_then(|p| p.last_run_time.clone())
+            );
+            steps.push(ran);
+            steps.push(
+                run(
+                    "disable",
+                    id,
+                    Box::new(|expected| SnapshotPolicyOperation::SetEnabled {
+                        expected,
+                        enabled: false,
+                        clock: None,
+                    }),
+                    Box::new(move |i| {
+                        i.details
+                            .snapshot_policies
+                            .get(&id)
+                            .is_some_and(|p| p.enabled == Some(false))
+                    }),
+                )
+                .await,
+            );
+            steps.push(
+                run(
+                    "remove the guest",
+                    id,
+                    Box::new(move |expected| SnapshotPolicyOperation::Membership {
+                        expected,
+                        vm: guest_id,
+                        join: false,
+                    }),
+                    Box::new(move |i| {
+                        i.details
+                            .snapshot_policies
+                            .get(&id)
+                            .is_some_and(|p| !p.vms.contains(&guest_id))
+                    }),
+                )
+                .await,
+            );
+            steps.push(
+                run(
+                    "delete the empty schedule",
+                    id,
+                    Box::new(|expected| SnapshotPolicyOperation::DeleteEmpty { expected }),
+                    Box::new(move |i| !i.details.snapshot_policies.contains_key(&id)),
+                )
+                .await,
+            );
+        }
+    }
+    // Delete whatever snapshot the run created, with its disks.
+    let mut cleanup = Vec::new();
+    for snapshot in c
+        .latest()
+        .inventory()
+        .unwrap()
+        .snapshots
+        .for_vm(guest_id)
+        .filter(|s| !snapshots_before.contains(&s.id))
+        .map(|s| (s.id, s.name.clone()))
+        .collect::<Vec<_>>()
+    {
+        let inventory = c.latest().inventory().unwrap().clone();
+        let disks = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(snapshot.0) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let outcome = match c
+            .latest()
+            .observe_snapshot(guest_id, snapshot.0)
+            .and_then(|target| {
+                c.submit(
+                    OperationId::new(),
+                    VmCommand::DeleteSnapshot {
+                        snapshot: target,
+                        disks: disks.clone(),
+                    },
+                )
+            }) {
+            Ok(operation) => {
+                let row = wait_vm_outcome(&operation, 300).await;
+                json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+            }
+            Err(error) => json!({"accepted": false, "error": error.to_string()}),
+        };
+        let gone = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.snapshots.get(&snapshot.0).is_none())
+        })
+        .await;
+        cleanup.push(json!({"snapshot": snapshot.0.to_string(), "name": snapshot.1, "disks": disks.len(), "outcome": outcome, "gone": gone}));
+    }
+    c.close().await;
+    lab.record("snapshot-schedule-lifecycle", json!({"guest": guest.name, "support": support_json, "leftovers": leftovers, "steps": steps, "snapshot_cleanup": cleanup}));
+    assert!(
+        support.is_ok(),
+        "snapshot schedules unsupported: {support_json}"
+    );
+    assert!(policy_id.is_some(), "schedule not visible");
+    for step in &steps {
+        assert_eq!(step["outcome"]["accepted"], true, "{step}");
+        assert_eq!(step["outcome"]["state"], "Succeeded", "{step}");
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+    for entry in &cleanup {
+        assert_eq!(entry["gone"], true, "{entry}");
+    }
+}
