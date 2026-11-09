@@ -135,6 +135,37 @@ content. A completed fixture test is not evidence of a completed live scenario.
 8. Export only sanitized reports. Private screenshots, inventories, passwords, private
    keys, packet captures and guest disk images stay outside the repository.
 
+## Optional appliances
+
+The isolated lab has no internet access and the workstation needs no privileges beyond
+libvirt, so the optional pieces below are built on the workstation and carried into the lab
+as images. Package files are downloaded on the workstation once (Alpine `main` and
+`community` for the Alpine release matching the ISO) into a directory outside the source
+tree; the Alpine ISO is checked against the publisher's SHA-256 before every build.
+
+- `storage-network --directory DIR --subnet 192.168.253.0/24 --nics 2` defines an isolated
+  storage network (no DHCP, no forwarding) and adds virtio NICs to every lab host. One NIC
+  hot-plugs into a running host; further NICs wait for the host's next restart because the
+  q35 machine has no spare PCIe slots, and the command says so. The MACs are recorded in the
+  manifest so reruns are idempotent.
+- `nas-image --directory DIR --alpine-iso ISO --sha256 DIGEST --apks DIR` remasters the Alpine
+  `virt` ISO into `nas.iso`: a root overlay (static addresses on both lab networks, exports,
+  boot services, a start script) and an `/extra` directory holding `nfs-utils` and its
+  dependency closure. At every boot the diskless appliance installs those packages from the
+  ISO, formats its data disk on first use, mounts it at `/srv/nfs` and exports `/srv/nfs`,
+  `/srv/nfs/sr`, `/srv/nfs/iso` and `/srv/nfs/heartbeat` to both lab subnets. Progress is
+  written to the serial console, which libvirt logs next to the host serial logs.
+- `nas start|status|stop|undefine --directory DIR` manages the appliance VM (1 GiB, one
+  vCPU, a 64 GiB sparse data disk, NICs on the lab and storage networks). `status` prints the
+  last appliance log lines.
+- `guest-image --directory DIR --alpine-iso ISO --sha256 DIGEST --apks DIR` remasters the same
+  ISO into `guest-tools.iso` with `xe-guest-utilities`, a guest-agent OpenRC service and DHCP
+  on `eth0`. The image stays isohybrid so the client can import it as a bootable disk; a guest
+  built from it reports PV drivers, its address and clean shutdown support to the pool.
+
+None of this creates accounts or credentials: the appliance and the guest have no passwords
+and are reachable only on the isolated lab networks.
+
 ## Cleanup and local tests
 
 ```sh

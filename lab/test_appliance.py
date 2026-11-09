@@ -59,6 +59,7 @@ class ApplianceTests(unittest.TestCase):
     def test_console_parameters_are_added_once(self):
         text = "APPEND modules=loop,squashfs quiet \n"
         self.assertEqual(appliance._console_cfg(text).count("console=ttyS0"), 1)
+        self.assertTrue(appliance._console_cfg(text).rstrip().endswith("console=ttyS0,115200"))
 
     def test_nas_domain_has_cdrom_data_disk_and_both_nics(self):
         m = manifest()

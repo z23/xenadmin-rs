@@ -29,11 +29,24 @@ struct LabHost {
     ip: String,
 }
 
+/// Optional lab appliances recorded in the manifest by `lab/manage.py storage-network`,
+/// `nas-image` and `guest-image`.
+struct LabStorage {
+    subnet: String,
+    /// Host name to the MACs of its virtio NICs on the isolated storage network.
+    host_nics: std::collections::BTreeMap<String, Vec<String>>,
+    /// The NFS appliance's address on the storage network (falls back to its lab address).
+    nas_ip: String,
+}
+
 struct Lab {
     id: String,
     hosts: Vec<LabHost>,
     password: String,
     evidence: PathBuf,
+    storage: Option<LabStorage>,
+    #[allow(dead_code)] // used by the tools-guest provisioning scenario
+    guest_tools_image: Option<PathBuf>,
 }
 
 impl Lab {
@@ -70,6 +83,38 @@ impl Lab {
             })
             .collect::<Vec<_>>();
         assert!(!hosts.is_empty() && hosts.len() <= 3);
+        let storage = document["storage"].as_object().map(|storage| LabStorage {
+            subnet: storage["subnet"]
+                .as_str()
+                .expect("storage subnet")
+                .to_string(),
+            host_nics: storage["host_nics"]
+                .as_object()
+                .map(|hosts| {
+                    hosts
+                        .iter()
+                        .map(|(host, macs)| {
+                            (
+                                host.clone(),
+                                macs.as_array()
+                                    .expect("nic macs")
+                                    .iter()
+                                    .filter_map(|m| m.as_str().map(str::to_lowercase))
+                                    .collect(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            nas_ip: document["nas"]["storage_ip"]
+                .as_str()
+                .or(document["nas"]["ip"].as_str())
+                .expect("appliance address")
+                .to_string(),
+        });
+        let guest_tools_image = document["guest_tools_image"]["path"]
+            .as_str()
+            .map(PathBuf::from);
         let password_file = std::env::var("XENADMIN_LAB_PASSWORD_FILE")
             .expect("XENADMIN_LAB_PASSWORD_FILE must name the lab-only root password file");
         let password = std::fs::read_to_string(password_file)
@@ -88,6 +133,8 @@ impl Lab {
             hosts,
             password,
             evidence,
+            storage,
+            guest_tools_image,
         }
     }
     fn endpoint(&self, index: usize) -> Endpoint {
@@ -14238,6 +14285,305 @@ async fn lab_snapshot_xva_export() {
         }
         if step.get("reached").is_some() {
             assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P10-04, P10-09, P09-02, P09-03, P09-05, P09-06, P09-08: rescan each pool host's physical
+/// interfaces so its storage NIC appears, give that NIC a static address on the isolated
+/// storage network, probe the appliance's NFS exports through the coordinator, create a
+/// shared NFS repository on the appliance and confirm both hosts attach it, detach and
+/// reattach it on the member, then rescan it. The repository is kept for the shared-storage
+/// scenarios that follow; a repository left by an earlier run is reused.
+#[tokio::test]
+#[ignore]
+async fn lab_storage_interfaces_and_shared_nfs_repository() {
+    use xenadmin_core::{
+        Ipv4Configuration, Ipv4Mode, NetworkOperation, NfsVersion, PifIdentity, ResourceCommand,
+        StorageDiscoveryResult, StorageLocation, StorageOperation, StorageQuery,
+    };
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("the manifest records a storage network (lab/manage.py storage-network)");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let prefix = storage
+        .subnet
+        .split('/')
+        .next()
+        .and_then(|a| a.rsplit_once('.'))
+        .map(|(p, _)| p.to_string())
+        .expect("storage subnet prefix");
+    let mut steps = Vec::new();
+    let pif_by_mac = |c: &Connection, host: HostId, macs: &[String]| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pifs
+                .values()
+                .find(|p| p.host == Some(host) && macs.contains(&p.mac.to_lowercase()))
+                .cloned()
+        })
+    };
+    for host in [coordinator, member] {
+        let host_name = inventory.hosts[&host].name.clone();
+        let lab_index = lab
+            .hosts
+            .iter()
+            .position(|h| h.name == host_name)
+            .expect("host in the manifest");
+        let macs = storage
+            .host_nics
+            .get(&host_name)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            !macs.is_empty(),
+            "{host_name} has no storage NICs in the manifest"
+        );
+        let mut entry = resource_op(
+            &c,
+            &format!("rescan physical interfaces on {host_name}"),
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Host(host))
+                    .unwrap(),
+                operation: NetworkOperation::ScanInterfaces,
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(settle(120, || pif_by_mac(&c, host, &macs).is_some()).await);
+        steps.push(entry);
+        let pif = pif_by_mac(&c, host, &macs).expect("storage interface listed after the rescan");
+        let address = format!("{prefix}.{}", 11 + lab_index);
+        let before = Ipv4Configuration {
+            mode: match pif.ip_configuration_mode.as_str() {
+                "DHCP" => Ipv4Mode::Dhcp,
+                "Static" => Ipv4Mode::Static,
+                _ => Ipv4Mode::None,
+            },
+            address: pif.ip.clone(),
+            netmask: pif.netmask.clone(),
+            gateway: pif.gateway.clone(),
+            dns: pif.dns.clone(),
+        };
+        steps.push(json!({"step": "storage interface", "host": host_name, "device": pif.device, "attached": pif.currently_attached, "mode_before": pif.ip_configuration_mode, "address_before": pif.ip}));
+        if pif.ip == address && pif.ip_configuration_mode == "Static" {
+            steps.push(json!({"step": format!("configure a static storage address on {host_name}"), "skipped": "already configured"}));
+        } else {
+            let mut entry = resource_op(
+                &c,
+                &format!("configure a static storage address on {host_name}"),
+                ResourceCommand::Network {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Pif(pif.id))
+                        .unwrap(),
+                    operation: NetworkOperation::ConfigureIpv4 {
+                        expected: PifIdentity::from_inventory(&pif).expect("interface identity"),
+                        before,
+                        configuration: Ipv4Configuration {
+                            mode: Ipv4Mode::Static,
+                            address: address.clone(),
+                            netmask: "255.255.255.0".into(),
+                            gateway: String::new(),
+                            dns: String::new(),
+                        },
+                    },
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(120, || pif_by_mac(&c, host, &macs)
+                    .is_some_and(|p| p.ip == address
+                        && p.ip_configuration_mode == "Static"
+                        && p.currently_attached == Some(true)))
+                .await
+            );
+            entry["address"] = json!(address);
+            steps.push(entry);
+        }
+    }
+
+    // Probe the appliance's exports through the coordinator.
+    let probe = c
+        .discover_storage(
+            c.latest()
+                .observe_resource(ResourceTarget::Pool(pool))
+                .unwrap(),
+            StorageQuery::NfsExports {
+                host: coordinator,
+                server: storage.nas_ip.clone(),
+                version: NfsVersion::Automatic,
+            },
+        )
+        .expect("probe accepted");
+    let result = tokio::time::timeout(deadline(180), async {
+        loop {
+            if let Some(result) = probe.latest() {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("probe answered");
+    let exports = match &result {
+        Ok(StorageDiscoveryResult::NfsExports(rows)) => Some(
+            rows.iter()
+                .map(|r| json!({"path": r.path, "access": r.access}))
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    };
+    steps.push(json!({"step": "probe NFS exports", "server": storage.nas_ip, "exports": exports, "error": result.as_ref().err(), "read_back": exports.as_ref().is_some_and(|e| e.iter().any(|x| x["path"] == "/srv/nfs/sr"))}));
+
+    // Create (or reuse) the shared repository.
+    let find_sr = |c: &Connection, prefix: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.storage
+                .iter()
+                .find(|s| s.name.starts_with(prefix))
+                .map(|s| (xenadmin_core::SrId::from(s.uuid), s.name.clone()))
+        })
+    };
+    let attachments = |c: &Connection, sr: xenadmin_core::SrId| {
+        c.latest()
+            .inventory()
+            .map(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .filter(|p| p.sr == Some(sr))
+                    .map(|p| (p.host, p.currently_attached))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let (sr, sr_name) = if let Some(existing) = find_sr(&c, "lab-nfs-") {
+        steps.push(json!({"step": "create shared NFS repository", "reused": existing.1}));
+        existing
+    } else {
+        let name = format!("lab-nfs-{stamp}");
+        let mut entry = resource_op(
+            &c,
+            "create shared NFS repository",
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                operation: StorageOperation::Create {
+                    host: coordinator,
+                    name: name.clone(),
+                    description: "Shared NFS repository on the lab appliance".into(),
+                    location: StorageLocation::Nfs {
+                        server: storage.nas_ip.clone(),
+                        path: "/srv/nfs/sr".into(),
+                        version: NfsVersion::Automatic,
+                    },
+                    hba_device: None,
+                    local_device: None,
+                },
+            },
+            900,
+        )
+        .await;
+        entry["read_back"] = json!(settle(180, || find_sr(&c, &name).is_some()).await);
+        steps.push(entry);
+        find_sr(&c, &name).expect("shared repository listed")
+    };
+    let shared = settle(180, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .storage
+                .get(&sr)
+                .is_some_and(|d| d.shared == Some(true))
+        }) && attachments(&c, sr).len() == 2
+            && attachments(&c, sr).iter().all(|(_, a)| *a == Some(true))
+    })
+    .await;
+    steps.push(json!({"step": "shared repository attached on both hosts", "repository": sr_name, "read_back": shared, "attachments": attachments(&c, sr).iter().map(|(h, a)| json!({"host": h.map(|h| inventory.hosts[&h].name.clone()), "attached": a})).collect::<Vec<_>>()}));
+
+    // Detach and reattach on the member.
+    for (label, attached) in [
+        ("detach the repository on the member", false),
+        ("reattach the repository on the member", true),
+    ] {
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Storage(sr))
+                    .unwrap(),
+                operation: StorageOperation::SetAttached {
+                    sr,
+                    host: member,
+                    expected_attached: !attached,
+                    attached,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || attachments(&c, sr)
+                .iter()
+                .any(|(h, a)| *h == Some(member) && *a == Some(attached)))
+            .await
+        );
+        steps.push(entry);
+    }
+    let entry = resource_op(
+        &c,
+        "rescan the shared repository",
+        ResourceCommand::ScanStorage {
+            sr: c
+                .latest()
+                .observe_resource(ResourceTarget::Storage(sr))
+                .unwrap(),
+        },
+        180,
+    )
+    .await;
+    steps.push(entry);
+    c.close().await;
+    lab.record(
+        "storage-interfaces-and-shared-nfs-repository",
+        json!({"appliance": storage.nas_ip, "repository": sr_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
         }
         if step.get("read_back").is_some() {
             assert_eq!(step["read_back"], true, "{step}");

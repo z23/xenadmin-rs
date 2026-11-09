@@ -249,7 +249,7 @@ fi
 
 
 def _console_cfg(text):
-    return text.replace("quiet", "quiet console=ttyS0,115200 console=tty0", 1)
+    return text.replace("quiet", "quiet console=tty0 console=ttyS0,115200", 1)
 
 
 def remaster(alpine_iso, digest, apks, overlay, overlay_name, output):
