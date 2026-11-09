@@ -3444,3 +3444,301 @@ async fn lab_member_login_and_pool_alias() {
     assert!(both_ready);
     assert!(refused_error.is_some(), "wrong credentials were accepted");
 }
+
+/// P10-01, P10-02, P10-04 and the NIC rows of P07: an internal network is created, its MTU
+/// and name changed, a NIC on it added to the halted guest and removed again, and the
+/// network deleted; the guest's own NIC and network are untouched and it is started again.
+#[tokio::test]
+#[ignore]
+async fn lab_internal_network_and_nic_lifecycle() {
+    use xenadmin_core::{
+        DeviceCommand, DeviceOperation, PowerAction, PowerState, ResourceCommand, ResourceTarget,
+        VmCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    fn step(steps: &mut Vec<Value>, label: &str, state: OperationState, detail: &str, check: bool) {
+        steps.push(json!({"step": label, "state": format!("{state:?}"), "detail": detail, "verified": check}));
+        assert_eq!(state, OperationState::Succeeded, "{label}: {detail}");
+        assert!(check, "{label}: host state did not read back");
+    }
+    let original_nics = inventory
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(guest.id))
+        .map(|v| v.id)
+        .collect::<Vec<_>>();
+    let network_count = inventory.networks.len();
+
+    // Create.
+    let name = format!("lab-internal-{stamp}");
+    let create = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::CreateInternalNetwork {
+                pool: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pool(inventory.pool_id))
+                    .unwrap(),
+                name: name.clone(),
+                description: "Internal network for the live network scenario".into(),
+                mtu: 1500,
+            },
+        )
+        .expect("network creation accepted");
+    let outcome = wait_outcome(&create, 300).await;
+    let network = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(n) = c
+                .latest()
+                .inventory()
+                .and_then(|i| i.networks.iter().find(|n| n.name == name).cloned())
+            {
+                return n;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    step(
+        &mut steps,
+        "create internal network",
+        outcome.state.clone(),
+        &outcome.detail,
+        network.is_ok(),
+    );
+    let network = network.unwrap();
+    let network_id: xenadmin_core::NetworkId = network.uuid.into();
+    let bridge = network.bridge.clone();
+
+    // MTU and name.
+    let configure = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::ConfigureInternalNetwork {
+                network: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Network(network_id))
+                    .unwrap(),
+                expected_mtu: 1500,
+                mtu: 1400,
+            },
+        )
+        .expect("mtu change accepted");
+    let outcome = wait_outcome(&configure, 120).await;
+    let check = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.details.networks.get(&network_id).and_then(|n| n.mtu) == Some(1400))
+    })
+    .await;
+    step(
+        &mut steps,
+        "set MTU 1400",
+        outcome.state.clone(),
+        &outcome.detail,
+        check,
+    );
+    let renamed = format!("lab-internal-renamed-{stamp}");
+    let rename = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::RenameMetadata {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Network(network_id))
+                    .unwrap(),
+                expected_name: name.clone(),
+                expected_description: "Internal network for the live network scenario".into(),
+                name: renamed.clone(),
+                description: "Renamed by the live network scenario".into(),
+            },
+        )
+        .expect("rename accepted");
+    let outcome = wait_outcome(&rename, 120).await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.networks
+                .iter()
+                .any(|n| n.uuid == network.uuid && n.name == renamed)
+        })
+    })
+    .await;
+    step(
+        &mut steps,
+        "rename and describe",
+        outcome.state.clone(),
+        &outcome.detail,
+        check,
+    );
+
+    // A NIC on the halted guest.
+    if guest.power_state == PowerState::Running {
+        let shutdown = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Halted)
+        })
+        .await;
+        step(
+            &mut steps,
+            "clean shutdown",
+            outcome.state.clone(),
+            &outcome.detail,
+            halted,
+        );
+    }
+    let add = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Device(DeviceCommand {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: DeviceOperation::AddNic {
+                    network: network_id,
+                    device: "1".into(),
+                    mac: None,
+                },
+            }),
+        )
+        .expect("nic addition accepted");
+    let outcome = wait_vm_outcome(&add, 120).await;
+    let nic = tokio::time::timeout(deadline(60), async {
+        loop {
+            let found = c.latest().inventory().and_then(|i| {
+                i.details
+                    .vifs
+                    .values()
+                    .find(|v| v.vm == Some(guest.id) && v.network == Some(network_id))
+                    .map(|v| (v.id, v.mac.clone(), v.device.clone()))
+            });
+            if let Some(found) = found {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    step(
+        &mut steps,
+        "add NIC on the internal network",
+        outcome.state.clone(),
+        &outcome.detail,
+        nic.is_ok(),
+    );
+    let (vif, mac, device) = nic.unwrap();
+    steps.push(json!({"step": "nic", "device": device, "mac_assigned": !mac.is_empty()}));
+    let remove = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Device(DeviceCommand {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: DeviceOperation::DeleteNic { vif },
+            }),
+        )
+        .expect("nic removal accepted");
+    let outcome = wait_vm_outcome(&remove, 120).await;
+    let check = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| !i.details.vifs.contains_key(&vif))
+    })
+    .await;
+    step(
+        &mut steps,
+        "remove NIC",
+        outcome.state.clone(),
+        &outcome.detail,
+        check,
+    );
+
+    // Delete the network, then start the guest.
+    let delete = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::DeleteInternalNetwork {
+                network: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Network(network_id))
+                    .unwrap(),
+                expected_name: renamed.clone(),
+            },
+        )
+        .expect("network deletion accepted");
+    let outcome = wait_outcome(&delete, 120).await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            !i.networks.iter().any(|n| n.uuid == network.uuid) && i.networks.len() == network_count
+        })
+    })
+    .await;
+    step(
+        &mut steps,
+        "delete internal network",
+        outcome.state.clone(),
+        &outcome.detail,
+        check,
+    );
+    let start = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    let running = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running)
+    })
+    .await;
+    step(
+        &mut steps,
+        "start",
+        outcome.state.clone(),
+        &outcome.detail,
+        running,
+    );
+    let nics_after = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(guest.id))
+        .map(|v| v.id)
+        .collect::<Vec<_>>();
+    lab.record(
+        "internal-network-and-nic-lifecycle",
+        json!({"guest": guest.name, "network": {"name": name, "bridge": bridge}, "steps": steps, "original_nics_intact": nics_after == original_nics}),
+    );
+    assert_eq!(nics_after, original_nics, "the guest's own NICs changed");
+    c.close().await;
+}
