@@ -110,7 +110,8 @@ the host did not advertise, a home-server placement across both pool hosts, an e
 failover to a remembered verified member, a default-repository and repository-metadata
 round trip, a halted guest move between the local repositories, a member evacuation
 review refused by the host's blocker report, a tags, custom-field and vApp round trip, a pool
-secret rotation and a folders, message-dismissal and description-batch round trip, plus twenty host-behaviour findings that were
+secret rotation, a folders, message-dismissal and description-batch round trip and a storage
+move refused while a snapshot existed, plus twenty host-behaviour findings that were
 fixed, six host observations, one client journal observation
 and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until

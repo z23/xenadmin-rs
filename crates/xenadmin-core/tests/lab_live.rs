@@ -13953,3 +13953,163 @@ async fn lab_folders_message_dismissal_and_bulk_description_batch() {
         }
     }
 }
+
+/// P11-03, P05-01: with the guest running, take a disk snapshot, submit a live migration
+/// with storage relocation to the member and confirm the client refuses it as an
+/// unsupported topology while snapshots exist, leaving the guest, its disks and the pool's
+/// task list untouched; then delete the snapshot through the reviewed deletion.
+#[tokio::test]
+#[ignore]
+async fn lab_storage_migration_refused_while_a_snapshot_exists() {
+    use xenadmin_core::{PowerAction, PowerState, SnapshotName, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let vm = guest.id;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    if guest.power_state != PowerState::Running {
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!("start the guest");
+        steps.push(start);
+    }
+    let current = c.latest().inventory().unwrap().clone();
+    let source_host = current.vms[&vm].host.expect("resident host");
+    let destination = current
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != source_host && current.hosts[h].enabled)
+        .expect("another enabled host");
+    let disk_srs = |c: &Connection| {
+        c.latest().inventory().map(|i| {
+            i.details
+                .vm_disks
+                .get(&vm)
+                .map(|vbds| {
+                    vbds.iter()
+                        .filter_map(|b| i.details.vbds.get(b))
+                        .filter(|b| b.kind == "Disk")
+                        .filter_map(|b| b.vdi)
+                        .filter_map(|v| i.details.vdis.get(&v).and_then(|d| d.sr))
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        })
+    };
+    let srs_before = disk_srs(&c);
+    let tasks_before = current.details.tasks.len();
+
+    // Snapshot.
+    let snapshot_name = format!("lab-topology-{stamp}");
+    let snapshot = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                name: SnapshotName::new(&snapshot_name).unwrap(),
+            },
+        )
+        .expect("snapshot accepted");
+    let row = wait_vm_outcome(&snapshot, 300).await;
+    let listed = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.snapshots.for_vm(vm).any(|s| s.name == snapshot_name))
+    })
+    .await;
+    steps.push(json!({"step": "take a disk snapshot", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": listed}));
+    let snapshot_id = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .snapshots
+        .for_vm(vm)
+        .find(|s| s.name == snapshot_name)
+        .map(|s| s.id)
+        .expect("snapshot listed");
+
+    // The storage move must be refused while the snapshot exists.
+    let plan = migration_plan(&c.latest().inventory().unwrap().clone(), vm, destination);
+    let migration = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                operation: plan,
+            },
+        )
+        .expect("migration review accepted");
+    let row = wait_vm_outcome(&migration, 300).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let after = c.latest().inventory().unwrap().clone();
+    steps.push(json!({"step": "live migration with storage relocation while a snapshot exists", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "expected_refusal": true,
+        "host_unchanged": after.vms[&vm].host == Some(source_host), "disks_unchanged": disk_srs(&c) == srs_before, "running": after.vms[&vm].power_state == PowerState::Running, "tasks_before": tasks_before, "tasks_after": after.details.tasks.len()}));
+
+    // Delete the snapshot through the reviewed deletion.
+    let disks = after
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.snapshot == Some(snapshot_id) && b.kind == "Disk")
+        .filter_map(|b| b.vdi)
+        .collect::<Vec<_>>();
+    let deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(vm, snapshot_id).unwrap(),
+                disks,
+            },
+        )
+        .expect("snapshot deletion accepted");
+    let row = wait_vm_outcome(&deletion, 300).await;
+    let gone = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.snapshots.for_vm(vm).all(|s| s.id != snapshot_id))
+    })
+    .await;
+    steps.push(json!({"step": "delete the snapshot", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": gone}));
+    c.close().await;
+    lab.record(
+        "storage-migration-refused-while-a-snapshot-exists",
+        json!({"guest": guest.name, "snapshot": snapshot_name, "destination": inventory.hosts[&destination].name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert_eq!(step["state"], "Rejected", "{step}");
+            assert!(
+                step["detail"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("not supported")),
+                "{step}"
+            );
+            assert_eq!(step["host_unchanged"], true, "{step}");
+            assert_eq!(step["disks_unchanged"], true, "{step}");
+            assert_eq!(step["running"], true, "{step}");
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
