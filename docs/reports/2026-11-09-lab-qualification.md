@@ -18,6 +18,14 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 - Workstation: Linux 7.2.15 (Arch-derived), libvirt 12.8.0, QEMU 11.1.2, AMD nested KVM.
 - Live harness: `crates/xenadmin-core/tests/lab_live.rs`, run with the manifest and a
   lab-only password file; targets come only from the manifest.
+- Lab appliances added on 2026-11-10 (see the [lab README](../../lab/README.md)): an
+  isolated storage network with one live-attached virtio NIC per host (a second waits for
+  each host's next restart), an Alpine Linux NFS appliance booted from a remastered Alpine
+  `virt` ISO that carries its packages and configuration offline and exports `/srv/nfs`
+  with `sr`, `iso` and `heartbeat` directories on both lab networks, and a tools-equipped
+  guest image (the same ISO with `xe-guest-utilities`) imported through the client. The
+  workstation granted no privileges for this; everything runs through libvirt as the
+  operator and nothing inside the lab reaches the internet.
 - Native desktop run: the debug `xenadmin-rs` binary inside a nested Hyprland 0.56.2 session
   on the same workstation (1600x1800 headless output, 1558x1758 window), driven over AT-SPI
   through libatspi and the compositor's `sendkeystate` dispatcher, which delivers physical

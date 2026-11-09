@@ -189,6 +189,7 @@ if mount -t ext4 "$DEV" {export}; then
     for d in sr iso heartbeat; do mkdir -p {export}/$d; chmod 1777 {export}/$d; done
     log "nfsd module: $(modprobe nfsd 2>&1 && echo loaded)"
     log "rpcbind: $(rc-service rpcbind start 2>&1 | tr '\\n' ' ' | cut -c1-300)"
+    rc-service rpc.statd start >/dev/null 2>&1
     if ! out=$(rc-service nfs start 2>&1); then
         log "nfs service: $(echo "$out" | tr '\\n' ' ' | cut -c1-200)"
         log "statd: $(rc-service rpc.statd start 2>&1 | tr '\\n' ' ' | cut -c1-200) $(grep -i statd /var/log/messages 2>/dev/null | tail -n 2 | tr '\\n' ' ' | cut -c1-300)"
