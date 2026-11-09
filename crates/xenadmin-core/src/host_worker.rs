@@ -152,6 +152,7 @@ impl ResourceRequest {
         cancel: &CancellationToken,
         index: usize,
     ) -> Result<bool, Error> {
+        let started = std::time::Instant::now();
         loop {
             self.reload(journal)?;
             if self.stopped_after_recovery() {
@@ -174,6 +175,41 @@ impl ResourceRequest {
                     return Ok(!self.stopped_after_recovery());
                 }
                 Some(status @ ("failure" | "cancelled")) => {
+                    let code = task["error_info"]
+                        .as_array()
+                        .and_then(|v| v.first())
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("UNKNOWN_API_ERROR")
+                        .to_string();
+                    // A host that has just rebooted refuses to be enabled until its toolstack
+                    // has finished starting; repeat the enable within the restart bound.
+                    if status == "failure"
+                        && code == "HOST_STILL_BOOTING"
+                        && matches!(step.kind, host::Kind::Enable)
+                        && started.elapsed() < session.options().host_restart_wait
+                    {
+                        self.record.detail =
+                            "The host is still booting; the enable will be repeated".into();
+                        let _ = self.save(journal).await;
+                        let pause =
+                            Duration::from_secs(5).min(session.options().host_restart_wait / 2);
+                        tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),_=tokio::time::sleep(pause)=>{}}
+                        let kind = step.kind.clone();
+                        let (method, arguments) = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed), result=host::arguments(session,&self.record,&kind)=>result?};
+                        let result = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed), result=session.call(method,arguments)=>result?};
+                        let repeated = self
+                            .record
+                            .host_plan
+                            .as_mut()
+                            .ok_or(Error::Journal)?
+                            .steps
+                            .get_mut(index)
+                            .ok_or(Error::Journal)?;
+                        repeated.task = Some(xapi::reply_reference(&result)?);
+                        repeated.task_succeeded = false;
+                        self.record = journal.host_evidence(&self.record, index)?;
+                        continue;
+                    }
                     self.record.state = if self
                         .record
                         .steps
@@ -190,14 +226,9 @@ impl ResourceRequest {
                     self.record.detail = if status == "cancelled" {
                         "Host confirmed task cancellation; completed changes were not undone".into()
                     } else {
-                        let code = task["error_info"]
-                            .as_array()
-                            .and_then(|v| v.first())
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("UNKNOWN_API_ERROR");
                         format!(
                             "Host task failed: {}. Completed changes were not undone",
-                            crate::xapi::safe_error_code(code)
+                            crate::xapi::safe_error_code(&code)
                         )
                     };
                     self.record.steps[index].state = StepState::Failed;

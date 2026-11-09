@@ -153,6 +153,9 @@ pub struct ConnectionOptions {
     /// How long a cross-pool move waits for XAPI to remove the source VM, its attachments
     /// and its disks after the migration task has reported success.
     pub cross_pool_cleanup_wait: Duration,
+    /// How long a reviewed host reboot or toolstack restart waits for the host to come back
+    /// with a newer start marker before its outcome is left unknown.
+    pub host_restart_wait: Duration,
     pub expected_pool: Option<crate::PoolId>,
     pub fallback_endpoints: Vec<Endpoint>,
     additional_pins: BTreeMap<String, CertificateFingerprint>,
@@ -170,6 +173,7 @@ impl ConnectionOptions {
             read_only: false,
             request_timeout: Duration::from_secs(45),
             cross_pool_cleanup_wait: Duration::from_secs(60),
+            host_restart_wait: Duration::from_secs(600),
             expected_pool: None,
             fallback_endpoints: Vec::new(),
             additional_pins: BTreeMap::new(),

@@ -563,14 +563,18 @@ pub(crate) async fn arguments(
             )
         }
         Kind::Enable => {
+            // A toolstack restart re-enables a host while the client's maintenance marker
+            // stays on it; exiting maintenance is still the way to clear that marker, so the
+            // host may already be enabled here and the enable call is then a harmless repeat.
             require(
                 matches!(op, HostOperation::ExitMaintenance)
-                    && host["enabled"] == false
                     && map_bool(&host, "MAINTENANCE_MODE") == Some(true),
-                "The host is no longer disabled in maintenance",
+                "The host no longer carries the maintenance marker",
             )?;
             live(session, &host, true).await?;
-            allowed(&host, "enable")?;
+            if host["enabled"] != true {
+                allowed(&host, "enable")?;
+            }
             (kind.method(), vec![json!(&reference)])
         }
         Kind::Reboot | Kind::Shutdown => {
@@ -863,15 +867,38 @@ pub(crate) async fn verify(
                 } => ("agent_start_time", expected_agent_start_time),
                 _ => return Err(Error::InvalidResourceCommand),
             };
-            live(session, &host, true).await?;
-            let fresh = host["other_config"][key]
-                .as_str()
-                .filter(|s| valid_epoch(s))
-                .and_then(|s| s.parse::<f64>().ok());
-            require(
-                fresh.is_some_and(|fresh| old.parse::<f64>().is_ok_and(|old| fresh > old)),
-                "Host restart has not been confirmed by a newer start marker",
-            )
+            let old = old
+                .parse::<f64>()
+                .map_err(|_| Error::Protocol("reviewed start marker is invalid"))?;
+            // The host writes its new start marker only once it is back; a reboot of a
+            // nested or slow host takes minutes, a toolstack restart tens of seconds. Wait
+            // within the connection's bound, treating an unreachable host as still restarting.
+            let wait = session.options().host_restart_wait;
+            let started = std::time::Instant::now();
+            let mut current = host;
+            loop {
+                let confirmed = async {
+                    live(session, &current, true).await?;
+                    let fresh = current["other_config"][key]
+                        .as_str()
+                        .filter(|s| valid_epoch(s))
+                        .and_then(|s| s.parse::<f64>().ok());
+                    Ok::<bool, Error>(fresh.is_some_and(|fresh| fresh > old))
+                }
+                .await;
+                if confirmed.is_ok_and(|confirmed| confirmed) {
+                    return Ok(());
+                }
+                if started.elapsed() >= wait {
+                    return Err(Error::Protocol(
+                        "Host restart has not been confirmed by a newer start marker",
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5).min(wait)).await;
+                if let Ok((_, fresh_host, _)) = self::host(session, record).await {
+                    current = fresh_host;
+                }
+            }
         }
         Kind::Shutdown => {
             require(

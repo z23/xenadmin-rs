@@ -112,6 +112,16 @@ async fn fixture_delayed(
                         json!({"result":{"status":"pending","progress":0.5}}),
                     ));
                 }
+                // A host that has just rebooted fails its first enable tasks with this code.
+                if let Some(left) = records.get("_still_booting").and_then(Value::as_u64)
+                    && left > 0
+                    && request["params"][1] == "OpaqueRef:task-Async.host.enable"
+                {
+                    records.insert("_still_booting".into(), json!(left - 1));
+                    return Some(RpcReply::Json(
+                        json!({"result":{"status":"failure","progress":1.0,"error_info":["HOST_STILL_BOOTING"]}}),
+                    ));
+                }
                 return Some(RpcReply::Json(records.get("_task_error").map_or_else(
                     || json!({"result":{"status":"success","progress":1.0}}),
                     |code| json!({"error":{"code":1,"message":code,"data":[]}}),
@@ -298,6 +308,8 @@ async fn fixture_delayed(
 }
 async fn connect(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin_core::Connection {
     let mut options = ConnectionOptions::new(mock.endpoint.clone());
+    // Restart fixtures that never publish a newer marker should settle quickly.
+    options.host_restart_wait = Duration::from_secs(2);
     options.read_only = read_only;
     let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
     c.wait_ready(deadline(3)).await.unwrap();
@@ -794,6 +806,99 @@ async fn exit_maintenance_verifies_both_steps() {
     );
     c.close().await;
 }
+/// A toolstack restart re-enables a host that still carries the client's maintenance
+/// marker; exiting maintenance must still clear that marker rather than refuse.
+#[tokio::test]
+async fn exit_maintenance_clears_the_marker_left_on_a_re_enabled_host() {
+    let (mock, r) = fixture("", "").await;
+    empty(&r);
+    {
+        let mut r = r.lock().unwrap();
+        let host = r.get_mut("host").unwrap();
+        host["enabled"] = json!(true);
+        host["other_config"]["MAINTENANCE_MODE"] = json!("true");
+    }
+    let d = tempfile::tempdir().unwrap();
+    let b = Backend::with_state_directory(d.path().into()).unwrap();
+    let c = connect(&mock, &b, false).await;
+    let op = c
+        .submit_resource(
+            OperationId::new(),
+            command(&c, HostOperation::ExitMaintenance),
+        )
+        .unwrap();
+    let outcome = done(&op).await;
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert_eq!(r.lock().unwrap()["host"]["enabled"], true);
+    assert!(
+        r.lock().unwrap()["host"]["other_config"]
+            .get("MAINTENANCE_MODE")
+            .is_none()
+    );
+    c.close().await;
+}
+/// Right after a reboot the host refuses to be enabled with HOST_STILL_BOOTING; exiting
+/// maintenance repeats the enable within the restart bound instead of failing.
+#[tokio::test]
+async fn exit_maintenance_repeats_the_enable_while_the_host_is_still_booting() {
+    let (mock, r) = fixture("", "").await;
+    empty(&r);
+    {
+        let mut r = r.lock().unwrap();
+        r.get_mut("host").unwrap()["enabled"] = json!(false);
+        r.get_mut("host").unwrap()["other_config"]["MAINTENANCE_MODE"] = json!("true");
+        r.insert("_still_booting".into(), json!(2));
+    }
+    let d = tempfile::tempdir().unwrap();
+    let b = Backend::with_state_directory(d.path().into()).unwrap();
+    let c = connect(&mock, &b, false).await;
+    let op = c
+        .submit_resource(
+            OperationId::new(),
+            command(&c, HostOperation::ExitMaintenance),
+        )
+        .unwrap();
+    let outcome = tokio::time::timeout(deadline(30), async {
+        loop {
+            let row = op.latest();
+            if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert_eq!(r.lock().unwrap()["host"]["enabled"], true);
+    assert!(
+        r.lock().unwrap()["host"]["other_config"]
+            .get("MAINTENANCE_MODE")
+            .is_none()
+    );
+    assert_eq!(
+        mock.methods
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| m.as_str() == "Async.host.enable")
+            .count(),
+        3,
+        "two refused enables are repeated before the third succeeds"
+    );
+    c.close().await;
+}
+
 #[tokio::test]
 async fn restart_and_shutdown_require_evidence_not_disconnection() {
     for method in [
