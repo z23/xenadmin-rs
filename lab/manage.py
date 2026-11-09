@@ -569,9 +569,13 @@ def draft(args):
     print(f"Offline lab preparation written to {directory}; virtualization and installer checks remain pending")
 
 
+import appliance  # noqa: E402  (lab appliances; imports this module's helpers)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    appliance.add_commands(commands)
     commands.add_parser("doctor")
     preparation = commands.add_parser("draft", help="Prepare an offline lab handoff before virtualization/installer are available")
     preparation.add_argument("--directory", required=True)
@@ -610,6 +614,8 @@ def main():
             unattended(args)
         elif args.command == "serve":
             serve(args)
+        elif args.command in appliance.COMMANDS:
+            appliance.run(args)
         else:
             control(args)
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError, ET.ParseError) as error:
