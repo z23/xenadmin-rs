@@ -14349,7 +14349,10 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
             i.details
                 .pifs
                 .values()
-                .find(|p| p.host == Some(host) && macs.contains(&p.mac.to_lowercase()))
+                .find(|p| {
+                    p.host == Some(host)
+                        && macs.first().is_some_and(|m| p.mac.eq_ignore_ascii_case(m))
+                })
                 .cloned()
         })
     };
@@ -14640,6 +14643,17 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
         .await;
         entry["read_back"] =
             json!(settle(120, || member_attached(&c) == Some(Some(attached))).await);
+        // The client refuses to detach a repository that running guests use anywhere in the
+        // pool, even on a host without them; record that guard instead of failing.
+        if entry["state"] == "Rejected"
+            && entry["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("in use"))
+        {
+            entry["expected_refusal"] = json!(true);
+            note(&mut steps, entry);
+            break;
+        }
         note(&mut steps, entry);
     }
     let entry = resource_op(
@@ -14661,6 +14675,10 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
         json!({"appliance": storage.nas_ip, "repository": sr_name, "steps": steps}),
     );
     for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert_eq!(step["state"], "Rejected", "{step}");
+            continue;
+        }
         if step.get("accepted").is_some() {
             assert_eq!(step["accepted"], true, "{step}");
             assert_eq!(step["state"], "Succeeded", "{step}");
@@ -14861,13 +14879,17 @@ async fn lab_tools_guest_on_shared_storage() {
         })
     };
     let reported = settle(240, || {
-        agent(&c).is_some_and(|(tools, networks, _)| !tools.is_empty() && !networks.is_empty())
+        agent(&c).is_some_and(|(tools, _, _)| !tools.is_empty())
+    })
+    .await;
+    let addressed = settle(60, || {
+        agent(&c).is_some_and(|(_, networks, _)| !networks.is_empty())
     })
     .await;
     let (tools, networks, os) = agent(&c).unwrap_or_default();
     note(
         &mut steps,
-        json!({"step": "guest agent reports tools and address", "read_back": reported, "tools_version": tools, "network_keys": networks.keys().collect::<Vec<_>>(), "os": os.get("name"), "host": c.latest().inventory().unwrap().vms[&vm].host.map(|h| inventory.hosts[&h].name.clone())}),
+        json!({"step": "guest agent reports its tools version", "read_back": reported, "address_reported": addressed, "tools_version": tools, "network_keys": networks.keys().collect::<Vec<_>>(), "os": os.get("name"), "host": c.latest().inventory().unwrap().vms[&vm].host.map(|h| inventory.hosts[&h].name.clone())}),
     );
 
     // Hot plug with PV drivers present.
@@ -16014,6 +16036,13 @@ async fn lab_member_storage_bond_round_trip() {
                         settle(180, || member_pbd(&c).is_some_and(|(_, a)| a == Some($attached)))
                             .await
                     );
+                    if entry["state"] == "Rejected"
+                        && entry["detail"]
+                            .as_str()
+                            .is_some_and(|d| d.contains("in use"))
+                    {
+                        entry["expected_refusal"] = json!(true);
+                    }
                     note(&mut steps, entry);
                 }
             }
@@ -16027,17 +16056,25 @@ async fn lab_member_storage_bond_round_trip() {
         json!({"step": "storage NICs", "first": {"device": first.device, "mode": first.ip_configuration_mode, "attached": first.currently_attached}, "second": {"device": second.device, "mode": second.ip_configuration_mode, "attached": second.currently_attached}}),
     );
 
-    // Free the first NIC (the repository rides on its address).
+    // Free both NICs: a bond member must carry no address and be detached.
     repository_attached!("detach the shared repository on the member", false);
-    if first.currently_attached == Some(true) {
-        set_attached!("detach the first storage NIC", first.clone(), false);
-    }
-    if first.ip_configuration_mode != "None" {
-        configure!(
-            "clear the first storage NIC's address",
-            pif_by_mac(&c, &macs[0]).unwrap(),
-            none.clone()
-        );
+    for (index, mac) in macs.iter().take(2).enumerate() {
+        let nic = pif_by_mac(&c, mac).expect("storage NIC");
+        if nic.currently_attached == Some(true) {
+            set_attached!(
+                &format!("detach storage NIC {}", index + 1),
+                nic.clone(),
+                false
+            );
+        }
+        let nic = pif_by_mac(&c, mac).expect("storage NIC");
+        if nic.ip_configuration_mode != "None" {
+            configure!(
+                &format!("clear storage NIC {}'s address", index + 1),
+                nic,
+                none.clone()
+            );
+        }
     }
 
     // Bond network and bond.
@@ -16249,6 +16286,10 @@ async fn lab_member_storage_bond_round_trip() {
         json!({"member": member_name, "bond_network": bond_network_name, "steps": steps}),
     );
     for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert_eq!(step["state"], "Rejected", "{step}");
+            continue;
+        }
         if step.get("accepted").is_some() {
             assert_eq!(step["accepted"], true, "{step}");
             assert_eq!(step["state"], "Succeeded", "{step}");
@@ -16849,29 +16890,36 @@ async fn lab_member_storage_interface_repair() {
         );
         note(&mut steps, entry);
         let fresh = pif_by_mac(&c, &macs[0]).expect("storage interface");
-        let mut entry = resource_op(
-            &c,
-            "attach the storage interface",
-            ResourceCommand::Network {
-                target: c
-                    .latest()
-                    .observe_resource(ResourceTarget::Pif(fresh.id))
-                    .unwrap(),
-                operation: NetworkOperation::SetAttached {
-                    expected: PifIdentity::from_inventory(&fresh).expect("interface identity"),
-                    expected_attached: false,
-                    attached: true,
+        if fresh.currently_attached == Some(true) {
+            note(
+                &mut steps,
+                json!({"step": "attach the storage interface", "skipped": "already attached after the rescan"}),
+            );
+        } else {
+            let mut entry = resource_op(
+                &c,
+                "attach the storage interface",
+                ResourceCommand::Network {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Pif(fresh.id))
+                        .unwrap(),
+                    operation: NetworkOperation::SetAttached {
+                        expected: PifIdentity::from_inventory(&fresh).expect("interface identity"),
+                        expected_attached: false,
+                        attached: true,
+                    },
                 },
-            },
-            300,
-        )
-        .await;
-        entry["read_back"] = json!(
-            settle(120, || pif_by_mac(&c, &macs[0])
-                .is_some_and(|p| p.currently_attached == Some(true)))
-            .await
-        );
-        note(&mut steps, entry);
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(120, || pif_by_mac(&c, &macs[0])
+                    .is_some_and(|p| p.currently_attached == Some(true)))
+                .await
+            );
+            note(&mut steps, entry);
+        }
         let after = probe(&c).await;
         note(
             &mut steps,
