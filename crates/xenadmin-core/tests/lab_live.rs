@@ -961,10 +961,12 @@ async fn stable_frame(console: &xenadmin_core::Console, seconds: u64) -> String 
         loop {
             if let Some(frame) = &console.latest().frame {
                 recent.push_back(frame_digest(frame));
-                if recent.len() > 8 {
+                // Boot output pauses for a few seconds between service groups; a login
+                // prompt or shell stays put far longer, so demand twelve quiet seconds.
+                if recent.len() > 24 {
                     recent.pop_front();
                 }
-                if recent.len() == 8 {
+                if recent.len() == 24 {
                     let distinct: std::collections::BTreeSet<&String> = recent.iter().collect();
                     if distinct.len() <= 2 {
                         return recent.back().unwrap().clone();
@@ -1001,30 +1003,39 @@ async fn wait_report(reports: &Reports, value: &str, seconds: u64) -> bool {
     .await
 }
 
-/// Logs into the live Alpine guest, gives it a static lab address, mounts the data disk and
-/// reports the marker file's content to the workstation listener.
+/// Logs into the live Alpine guest, gives it a static lab address and reports the marker
+/// held in the data disk's first sector to the workstation listener. The live image has no
+/// filesystem tools, so the marker is a raw sector write; the verification pass only reads,
+/// and an empty sector reports MISSING so a blank disk can never pass as a restored marker.
 async fn guest_report_marker(
     console: &xenadmin_core::Console,
     gateway: &str,
     port: u16,
     guest_ip: &str,
+    write: Option<char>,
 ) {
-    stable_frame(console, 180).await;
+    stable_frame(console, 240).await;
+    // A bare Return re-prompts a login prompt and is harmless in a shell.
+    type_line(console, "").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    stable_frame(console, 60).await;
     type_line(console, "root").await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     type_line(console, "ip link set eth0 up").await;
     type_line(console, &format!("ip addr add {guest_ip}/24 dev eth0")).await;
     type_line(console, "d=/dev/xvdb; [ -b $d ] || d=/dev/sdb").await;
+    if let Some(value) = write {
+        type_line(
+            console,
+            &format!("printf {value} | dd of=$d bs=512 count=1 conv=notrunc; sync"),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    type_line(console, "v=$(head -c 1 $d | tr -d '\\0')").await;
     type_line(
         console,
-        "mount $d /mnt || (mkfs.ext4 -q -F $d && mount $d /mnt)",
-    )
-    .await;
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    type_line(console, "[ -f /mnt/marker ] || echo A > /mnt/marker; sync").await;
-    type_line(
-        console,
-        &format!("wget -q -O- http://{gateway}:{port}/report/$(cat /mnt/marker)"),
+        &format!("wget -q -O- http://{gateway}:{port}/report/${{v:-MISSING}}"),
     )
     .await;
 }
@@ -1057,7 +1068,7 @@ async fn lab_guest_console_and_snapshot_restore() {
         .expect("console");
     stable_frame(&console, 180).await;
     let frame_before_login = save_frame(&lab, &console, "before-login");
-    guest_report_marker(&console, &gateway, port, &guest_ip).await;
+    guest_report_marker(&console, &gateway, port, &guest_ip, Some('A')).await;
     let reported_a = wait_report(&reports, "A", 90).await;
     let frame_after_login = save_frame(&lab, &console, "after-marker-a");
 
@@ -1100,10 +1111,16 @@ async fn lab_guest_console_and_snapshot_restore() {
     })
     .await
     .expect("snapshot visible");
-    type_line(&console, "echo B > /mnt/marker; sync").await;
     type_line(
         &console,
-        &format!("wget -q -O- http://{gateway}:{port}/report/$(cat /mnt/marker)"),
+        "printf B | dd of=$d bs=512 count=1 conv=notrunc; sync",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    type_line(&console, "v=$(head -c 1 $d | tr -d '\\0')").await;
+    type_line(
+        &console,
+        &format!("wget -q -O- http://{gateway}:{port}/report/${{v:-MISSING}}"),
     )
     .await;
     let reported_b = wait_report(&reports, "B", 60).await;
@@ -1149,7 +1166,7 @@ async fn lab_guest_console_and_snapshot_restore() {
     let console = c
         .open_console(c.latest().observe_vm(guest.id).unwrap())
         .expect("console after restore");
-    guest_report_marker(&console, &gateway, port, &guest_ip).await;
+    guest_report_marker(&console, &gateway, port, &guest_ip, None).await;
     let restored = wait_report(&reports, "A", 90).await;
     let late_b = reports.received.lock().unwrap().iter().any(|v| v == "B");
     let frame_after_restore = save_frame(&lab, &console, "after-restore");
@@ -1173,4 +1190,38 @@ async fn lab_guest_console_and_snapshot_restore() {
     );
     assert!(reported_b, "guest never reported the changed marker B");
     assert!(restored && !late_b, "restored disk did not read marker A");
+}
+
+/// Diagnostic: type the lines in `XENADMIN_LAB_SHELL` (separated by `;;`) into the running
+/// lab guest's console and save the resulting frame. Never asserts anything about the guest.
+#[tokio::test]
+#[ignore]
+async fn lab_guest_shell_probe() {
+    use xenadmin_core::PowerState;
+    let lab = Lab::load();
+    let script = std::env::var("XENADMIN_LAB_SHELL").expect("XENADMIN_LAB_SHELL");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let console = c
+        .open_console(c.latest().observe_vm(guest.id).unwrap())
+        .expect("console");
+    stable_frame(&console, 240).await;
+    for line in script.split(";;") {
+        type_line(&console, line.trim()).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let frame = save_frame(&lab, &console, "shell-probe");
+    console.close();
+    c.close().await;
+    eprintln!("frame: {frame:?}");
 }
