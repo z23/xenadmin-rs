@@ -6763,3 +6763,156 @@ async fn lab_chosen_host_start_and_action_diagnosis() {
         }
     }
 }
+
+/// P03-03, P03-04, P04-01: suspend the running guest, refuse a chosen-host resume on the
+/// member that cannot reach its local disks, resume it on the chosen resident host and
+/// receive a console frame afterwards.
+#[tokio::test]
+#[ignore]
+async fn lab_suspend_and_chosen_host_resume() {
+    use xenadmin_core::{PowerAction, PowerState, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let resident = guest.host.expect("resident host");
+    let other = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != resident && inventory.hosts[h].enabled)
+        .expect("another enabled member");
+    let advertised = guest.allowed_actions.contains(&PowerAction::Suspend);
+    let diagnosed = match c
+        .latest()
+        .observe_vm(guest.id)
+        .and_then(|target| c.diagnose_power(target, PowerAction::Suspend))
+    {
+        Ok(handle) => diagnosis(&handle, 60).await,
+        Err(error) => json!({"error": error.to_string()}),
+    };
+    let suspend = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Suspend,
+            },
+        )
+        .expect("suspend accepted");
+    let suspend = wait_vm_outcome(&suspend, 300).await;
+    let suspended = settle(180, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms.get(&guest.id).is_some_and(|v| {
+                v.power_state == PowerState::Suspended
+                    && v.allowed_actions.contains(&PowerAction::Resume)
+            })
+        })
+    })
+    .await;
+    let mut body = json!({
+        "guest": guest.name,
+        "resident": resident.to_string(), "other": other.to_string(),
+        "suspend_advertised": advertised, "suspend_diagnosis": diagnosed,
+        "suspend": {"state": format!("{:?}", suspend.state), "detail": suspend.detail},
+        "suspended": suspended,
+    });
+    if suspend.state == OperationState::Succeeded && suspended {
+        let refused = match c.submit(
+            OperationId::new(),
+            VmCommand::PowerOnHost {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Resume,
+                host: other,
+            },
+        ) {
+            Ok(operation) => {
+                let row = wait_vm_outcome(&operation, 300).await;
+                json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+            }
+            Err(error) => json!({"accepted": false, "error": error.to_string()}),
+        };
+        let still_suspended = settle(30, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.vms
+                    .get(&guest.id)
+                    .is_some_and(|v| v.power_state == PowerState::Suspended)
+            })
+        })
+        .await;
+        let resumed = c
+            .submit(
+                OperationId::new(),
+                VmCommand::PowerOnHost {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::Resume,
+                    host: resident,
+                },
+            )
+            .expect("chosen-host resume accepted");
+        let resumed = wait_vm_outcome(&resumed, 300).await;
+        let on_resident = settle(180, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.vms.get(&guest.id).is_some_and(|v| {
+                    v.power_state == PowerState::Running && v.host == Some(resident)
+                })
+            })
+        })
+        .await;
+        let frame = match c.latest().observe_vm(guest.id) {
+            Ok(target) => match c.open_console(target) {
+                Ok(console) => {
+                    let got = stable_frame(&console, 60).await;
+                    console.close();
+                    got
+                }
+                Err(error) => format!("console refused: {error}"),
+            },
+            Err(error) => format!("stale: {error}"),
+        };
+        body["resume_on_other_host"] = refused.clone();
+        body["still_suspended_after_refusal"] = json!(still_suspended);
+        body["resume_on_resident_host"] =
+            json!({"state": format!("{:?}", resumed.state), "detail": resumed.detail});
+        body["running_on_resident"] = json!(on_resident);
+        body["console_after_resume"] = json!(frame);
+        c.close().await;
+        lab.record("suspend-and-chosen-host-resume", body);
+        assert_ne!(
+            refused["state"], "Succeeded",
+            "resume on the other host succeeded: {refused}"
+        );
+        assert!(
+            still_suspended,
+            "guest left Suspended by the refused placement"
+        );
+        assert_eq!(
+            resumed.state,
+            OperationState::Succeeded,
+            "{}",
+            resumed.detail
+        );
+        assert!(on_resident, "guest is not running on the chosen host");
+        assert!(!frame.is_empty(), "no console frame after resume");
+    } else {
+        // Record the refusal and leave the guest as it was; a failed suspend keeps it running.
+        let running = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.vms
+                    .get(&guest.id)
+                    .is_some_and(|v| v.power_state == PowerState::Running)
+            })
+        })
+        .await;
+        body["running_after_refused_suspend"] = json!(running);
+        c.close().await;
+        lab.record("suspend-and-chosen-host-resume", body);
+        assert!(running, "guest neither suspended nor kept running");
+    }
+}

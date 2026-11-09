@@ -95,7 +95,7 @@ sharing, internal network and NIC lifecycle, cross-pool copy and move round trip
 standalone pool, XVA and OVA export and import, pool rename, member enable, toolstack restart
 and reboot, a memory checkpoint, CD drive and guest tools media, local repository creation,
 forget, introduce and destroy, the concurrent-edit, interrupted-edit and interrupted-restore
-paths, and a chosen-host start with per-action diagnosis and home server edits, plus twelve host-behaviour findings that were fixed, one host durability observation and
+paths, and chosen-host start and resume with per-action diagnosis and home server edits, plus twelve host-behaviour findings that were fixed, one host durability observation and
 one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
