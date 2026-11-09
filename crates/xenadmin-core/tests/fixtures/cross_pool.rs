@@ -212,7 +212,7 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> Connection {
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
     let mut watch = c.watch();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !watch.borrow().is_current() {
             watch.changed().await.unwrap();
         }
@@ -252,7 +252,7 @@ fn selection(source: &Connection, dest: &Connection, mode: CrossPoolMode) -> Cro
     }
 }
 async fn done(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -448,7 +448,7 @@ async fn recorded_completion_survives_removed_task_and_reconnect_without_a_secon
     let dest = connect(&f.destination, &backend, false).await;
     f.control.lock().unwrap().hold_destination_read = true;
     let recheck = source.recheck_cross_pool_vm(result.id, &dest).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), f.entered.notified())
+    tokio::time::timeout(deadline(5), f.entered.notified())
         .await
         .unwrap();
     let progress = recheck.latest();
@@ -577,7 +577,7 @@ async fn read_only_peer_foreign_backend_and_old_connection_observations_are_reje
 }
 
 async fn history_state(connection: &Connection, id: OperationId, state: OperationState) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             if connection
                 .resource_history()
@@ -608,7 +608,7 @@ async fn late_task_receipts_survive_recovery_and_acknowledgement_without_old_wor
                 &dest,
             )
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), f.entered.notified())
+        tokio::time::timeout(deadline(5), f.entered.notified())
             .await
             .unwrap();
         let recovered_backend = Backend::with_state_directory(dir.path().into()).unwrap();
@@ -812,11 +812,11 @@ async fn concurrent_recheck_waits_for_owned_tracker_without_rejecting_the_operat
     history_state(&source, op.latest().id, OperationState::OutcomeUnknown).await;
     f.control.lock().unwrap().hold_poll = true;
     let first = source.recheck_cross_pool_vm(op.latest().id, &dest).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), f.entered.notified())
+    tokio::time::timeout(deadline(5), f.entered.notified())
         .await
         .unwrap();
     let second = source.recheck_cross_pool_vm(op.latest().id, &dest).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let record = second.latest();
             if record.state != OperationState::Preparing {

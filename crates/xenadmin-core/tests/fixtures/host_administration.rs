@@ -300,11 +300,11 @@ async fn connect(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin_co
     let mut options = ConnectionOptions::new(mock.endpoint.clone());
     options.read_only = read_only;
     let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     c
 }
 async fn done(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -388,14 +388,14 @@ async fn delayed_host_receipt_after_recovery_never_runs_the_next_change() {
                 ),
             )
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        tokio::time::timeout(deadline(4), entered.notified())
             .await
             .unwrap();
         let recovering = Backend::with_state_directory(directory.path().into()).unwrap();
         let connection = connect(&mock, &recovering, false).await;
         // Startup's initial Unknown precedes its read-only observer. Wait for that
         // observer's missing-receipt result before acknowledging the operation.
-        tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::time::timeout(deadline(4), async {
             loop {
                 if connection.resource_history().iter().any(|r| {
                     r.id == id
@@ -420,7 +420,7 @@ async fn delayed_host_receipt_after_recovery_never_runs_the_next_change() {
             connection
                 .control_resource(id, OperationControl::AcknowledgeUnknown)
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(4), async {
+            tokio::time::timeout(deadline(4), async {
                 loop {
                     if connection
                         .resource_history()
@@ -524,12 +524,12 @@ async fn host_recheck_publishes_progress_before_receipt_reads_and_never_replays_
             ),
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+    tokio::time::timeout(deadline(4), entered.notified())
         .await
         .unwrap();
     release.notify_one();
     assert_eq!(done(&op).await.state, OperationState::OutcomeUnknown);
-    let old = tokio::time::timeout(Duration::from_secs(4), async {
+    let old = tokio::time::timeout(deadline(4), async {
         loop {
             if let Some(r) = c
                 .resource_history()
@@ -545,12 +545,12 @@ async fn host_recheck_publishes_progress_before_receipt_reads_and_never_replays_
     .unwrap();
     records.lock().unwrap().remove("_task_error");
     c.control_resource(id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(4), entered.notified())
+    tokio::time::timeout(deadline(4), entered.notified())
         .await
         .unwrap();
     // The successful task response is held back. Recheck must already advertise progress,
     // rather than publish a higher-revision unknown that looks like its final outcome.
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if c.resource_history()
                 .iter()
@@ -564,7 +564,7 @@ async fn host_recheck_publishes_progress_before_receipt_reads_and_never_replays_
     .await
     .unwrap();
     release.notify_one();
-    let final_record = tokio::time::timeout(Duration::from_secs(4), async {
+    let final_record = tokio::time::timeout(deadline(4), async {
         loop {
             if let Some(r) = c
                 .resource_history()
@@ -616,7 +616,7 @@ async fn recheck(
     // The handle can settle before its final record reaches connection history.
     let old = original.latest().revision();
     c.control_resource(id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if let Some(r) = c.resource_history().iter().find(|r| {
                 r.id == id
@@ -1179,7 +1179,7 @@ async fn stop_remaining_steps_waits_for_inflight_task_without_undo_or_replay() {
             ),
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while operation.latest().state != OperationState::Tracking {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -1232,7 +1232,7 @@ async fn interrupted_maintenance_recovers_after_restart_without_dispatching_rema
     drop(b);
     let b = Backend::with_state_directory(d.path().into()).unwrap();
     let c = connect(&mock, &b, false).await;
-    let out = tokio::time::timeout(Duration::from_secs(3), async {
+    let out = tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(out) = c
                 .resource_history()

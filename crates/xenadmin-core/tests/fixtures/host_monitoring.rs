@@ -8,7 +8,7 @@ async fn catalog(c: &xenadmin_core::Connection) -> Result<xenadmin_core::HostDat
     let q = c
         .host_data_sources(c.latest().observe_resource(host()).unwrap())
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if let Some(result) = q.latest() {
                 return result;
@@ -257,7 +257,7 @@ async fn positive_receipt_recovers_after_restart_without_recording_again() {
         json!("CPU 7 utilization");
     let recovered = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&mock, &recovered, false).await;
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if c.resource_history()
                 .iter()

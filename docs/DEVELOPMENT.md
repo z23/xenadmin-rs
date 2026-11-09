@@ -63,7 +63,10 @@ For standalone diagnosis when the desktop is not running, use the authenticated
 ## Verification
 
 `./scripts/check.sh` runs isolated protocol and UI fixtures. It does not connect to a
-production host. The inspector's Unix-socket tests cover private ownership and modes,
+production host. Protocol and trust fixtures wait for asynchronous publication with
+bounded polling deadlines; `XENADMIN_TEST_TIME_SCALE` (an integer from 1 to 20, default 1)
+multiplies those deadlines on slower shared runners and CI sets 4. The scale never changes
+what a fixture asserts. The inspector's Unix-socket tests cover private ownership and modes,
 protocol bounds, rejection of unsupported requests, socket lifecycle, and the public data
 projection. Headless UI captures contain synthetic data only. Infrastructure-changing
 qualification belongs in the explicitly designated [disposable lab](../lab/README.md).

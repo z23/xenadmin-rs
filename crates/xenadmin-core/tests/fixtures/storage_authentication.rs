@@ -178,7 +178,7 @@ async fn connect(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin_co
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
     let mut w = c.watch();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         while !w.borrow().is_current() {
             w.changed().await.unwrap();
         }
@@ -188,7 +188,7 @@ async fn connect(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin_co
     c
 }
 async fn finished(op: &ResourceOperation) -> Arc<xenadmin_core::ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -363,7 +363,7 @@ async fn storage_auth_read_only_refuses_writes_but_allows_transient_chap_discove
             credentials(StorageAuthentication::Chap),
         )
         .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(4), async {
+    let result = tokio::time::timeout(deadline(4), async {
         loop {
             if let Some(r) = discovery.latest() {
                 return r;
@@ -387,7 +387,7 @@ fn history_state(
     let caller = std::panic::Location::caller();
     async move {
         let mut observed = Vec::new();
-        let result = tokio::time::timeout(Duration::from_secs(5), async {
+        let result = tokio::time::timeout(deadline(5), async {
             loop {
                 if let Some(r) = c.resource_history().iter().find(|r| r.id == id) {
                     if predicate(r) {
@@ -564,7 +564,7 @@ async fn delayed_secret_receipt_preserves_recovery_and_ack_but_still_retains_ide
                 credentials(StorageAuthentication::Chap),
             )
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(4), entered.notified())
+        tokio::time::timeout(deadline(4), entered.notified())
             .await
             .unwrap();
         let recovering = Backend::with_state_directory(dir.path().into()).unwrap();
@@ -587,7 +587,7 @@ async fn delayed_secret_receipt_preserves_recovery_and_ack_but_still_retains_ide
             .await;
         }
         release.notify_one();
-        let r = tokio::time::timeout(Duration::from_secs(4), async {
+        let r = tokio::time::timeout(deadline(4), async {
             loop {
                 let r = op.latest();
                 if !r.storage_secrets.is_empty() {

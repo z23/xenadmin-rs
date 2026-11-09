@@ -209,11 +209,11 @@ async fn connection(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin
         options,
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    connection.wait_ready(deadline(3)).await.unwrap();
     connection
 }
 async fn finish_resource(operation: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let record = operation.latest();
             if record.state.terminal() || record.state == OperationState::OutcomeUnknown {
@@ -245,7 +245,7 @@ async fn rechecked(
     connection
         .control_resource(id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             let rows = connection.resource_history();
             if rows.iter().any(|r| r.id == id && r.state.terminal()) {
@@ -565,7 +565,7 @@ async fn scan_task_survives_disconnect_and_keeps_the_pool_reserved() {
             },
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while operation.latest().progress != Some(0.25) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -578,7 +578,7 @@ async fn scan_task_survives_disconnect_and_keeps_the_pool_reserved() {
         OperationState::OutcomeUnknown
     );
     let second = connection(&mock, &backend, false).await;
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while !second
             .resource_history()
             .iter()
@@ -621,7 +621,7 @@ async fn cancellation_during_preflight_prevents_every_write() {
     let operation = connection
         .submit_resource(id, rename(&connection, "Renamed", "Changed description"))
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(deadline(2), async {
         while operation.latest().revision() == 0 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -701,7 +701,7 @@ async fn creation_reconciliation_cannot_adopt_a_resource_from_the_preexisting_ba
     connection
         .control_resource(id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(record) = connection.resource_history().iter().find(|r| {
                 r.id == id
@@ -744,7 +744,7 @@ async fn same_pool_alias_routes_resource_commands_and_history_to_one_owner() {
         finish_resource(&operation).await.state,
         OperationState::Succeeded
     );
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(deadline(2), async {
         while !first
             .resource_history()
             .iter()
@@ -869,7 +869,7 @@ async fn explicit_recheck_publishes_verifying_until_final_read_finishes() {
     connection
         .control_resource(id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(4), gate.entered.notified())
+    tokio::time::timeout(deadline(4), gate.entered.notified())
         .await
         .unwrap();
     let db = rusqlite::Connection::open(dir.path().join("operations.sqlite3")).unwrap();
@@ -884,7 +884,7 @@ async fn explicit_recheck_publishes_verifying_until_final_read_finishes() {
         serde_json::from_str::<Value>(&state).unwrap()["state"],
         "Verifying"
     );
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if let Some(row) = connection
                 .resource_history()
@@ -900,7 +900,7 @@ async fn explicit_recheck_publishes_verifying_until_final_read_finishes() {
     .await
     .unwrap();
     gate.release.notify_one();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if let Some(row) = connection
                 .resource_history()

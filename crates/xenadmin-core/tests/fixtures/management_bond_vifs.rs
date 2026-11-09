@@ -127,7 +127,7 @@ async fn review(
             op,
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             if let Some(r) = q.latest() {
                 break r;
@@ -346,7 +346,7 @@ async fn management_guest_review_allows_read_only_and_fences_closed_connection()
     options.accept_invalid_certificates = true;
     options.read_only = true;
     let c = b.connect(options, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(5)).await.unwrap();
+    c.wait_ready(deadline(5)).await.unwrap();
     let op = review(&c, intent(&c, false, false)).await.unwrap();
     assert!(matches!(
         c.submit_resource(
@@ -374,11 +374,11 @@ async fn management_guest_review_allows_read_only_and_fences_closed_connection()
             intent(&c, false, false),
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+    tokio::time::timeout(deadline(5), entered.notified())
         .await
         .unwrap();
     c.close().await;
-    let result = tokio::time::timeout(Duration::from_secs(5), async {
+    let result = tokio::time::timeout(deadline(5), async {
         loop {
             if let Some(r) = q.latest() {
                 break r;

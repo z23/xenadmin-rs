@@ -15,7 +15,7 @@ async fn ready(server: &Mock) -> (tempfile::TempDir, Backend, xenadmin_core::Con
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("fixture-user".into(), "private-fixture-password".into()),
     );
-    connection.wait_ready(Duration::from_secs(4)).await.unwrap();
+    connection.wait_ready(deadline(4)).await.unwrap();
     (directory, backend, connection)
 }
 async fn start(connection: &xenadmin_core::Connection) -> xenadmin_core::Operation {
@@ -121,7 +121,7 @@ async fn session_renewal_discards_previous_permission_denial() {
         first.power_permission(PowerAction::Start),
         PermissionDecision::Denied
     );
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let now = connection.latest();
             if now.is_current() && now.generation() != first.generation() {
@@ -261,7 +261,7 @@ async fn missing_logging_apply_permission_prevents_changing_the_destination() {
             },
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if operation.latest().state.terminal() {
                 break;

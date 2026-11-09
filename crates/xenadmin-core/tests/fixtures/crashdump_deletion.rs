@@ -70,7 +70,7 @@ async fn connect(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin_co
     let mut options = ConnectionOptions::new(mock.endpoint.clone());
     options.read_only = read_only;
     let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(8)).await.unwrap();
+    c.wait_ready(deadline(8)).await.unwrap();
     c
 }
 fn command(c: &xenadmin_core::Connection) -> ResourceCommand {
@@ -83,7 +83,7 @@ fn command(c: &xenadmin_core::Connection) -> ResourceCommand {
     }
 }
 async fn finish(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             let row = op.latest();
             if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
@@ -176,7 +176,7 @@ async fn vanished_record_after_failed_or_lost_delete_is_unknown_and_recheck_neve
             before.detail
         );
         c.control_resource(id, OperationControl::Recheck).unwrap();
-        let after = tokio::time::timeout(Duration::from_secs(8), async {
+        let after = tokio::time::timeout(deadline(8), async {
             loop {
                 if let Some(row) = c
                     .resource_history()

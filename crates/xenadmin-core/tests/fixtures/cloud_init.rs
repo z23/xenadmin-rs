@@ -17,7 +17,7 @@ async fn cloud_init_facade_binds_media_to_vm_pool_generation_and_write_access() 
         options.clone(),
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    let i = a.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let i = a.wait_ready(deadline(3)).await.unwrap();
     let vm = i.guests().next().unwrap().id;
     let observed = a.latest().observe_vm(vm).unwrap();
     let sr = SrId::from(uuid::Uuid::from_u128(1));
@@ -36,7 +36,7 @@ async fn cloud_init_facade_binds_media_to_vm_pool_generation_and_write_access() 
         options.clone(),
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    b.wait_ready(Duration::from_secs(3)).await.unwrap();
+    b.wait_ready(deadline(3)).await.unwrap();
     assert!(matches!(
         b.prepare_cloud_init(OperationId::new(), observed, sr, "1".into(), media(vm)),
         Err(Error::Stale)
@@ -48,7 +48,7 @@ async fn cloud_init_facade_binds_media_to_vm_pool_generation_and_write_access() 
         options,
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     let fresh = c.latest().observe_vm(vm).unwrap();
     assert!(matches!(
         c.prepare_cloud_init(OperationId::new(), fresh, sr, "1".into(), media(vm)),

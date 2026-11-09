@@ -27,7 +27,7 @@ async fn preview_mock(block: Arc<AtomicBool>, entered: Arc<Notify>, release: Arc
 async fn result(
     query: &xenadmin_core::SnapshotPreviewQuery,
 ) -> Result<Option<xenadmin_core::SnapshotPreview>, String> {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(v) = query.latest() {
                 return v;
@@ -48,7 +48,7 @@ async fn snapshot_preview_facade_allows_readonly_and_rejects_another_connection_
         options.clone(),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let i = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let i = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = i.guests().next().unwrap().id;
     let snapshot = xenadmin_core::SnapshotId::parse(SNAPSHOT_UUID).unwrap();
     let observed = connection.latest().observe_snapshot(vm, snapshot).unwrap();
@@ -60,7 +60,7 @@ async fn snapshot_preview_facade_allows_readonly_and_rejects_another_connection_
     );
     let other_backend = Backend::start().unwrap();
     let other = other_backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    other.wait_ready(Duration::from_secs(3)).await.unwrap();
+    other.wait_ready(deadline(3)).await.unwrap();
     assert!(matches!(
         other.snapshot_preview(observed),
         Err(xenadmin_core::Error::Stale)
@@ -80,7 +80,7 @@ async fn snapshot_preview_pending_read_is_cancelled_by_connection_retirement() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let i = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let i = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = i.guests().next().unwrap().id;
     let observed = connection
         .latest()
@@ -88,7 +88,7 @@ async fn snapshot_preview_pending_read_is_cancelled_by_connection_retirement() {
         .unwrap();
     block.store(true, Ordering::SeqCst);
     let query = connection.snapshot_preview(observed).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), entered.notified())
+    tokio::time::timeout(deadline(3), entered.notified())
         .await
         .unwrap();
     connection.close().await;
@@ -121,7 +121,7 @@ async fn snapshot_upload_requires_write_access_generation_and_local_creation_evi
         options.clone(),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = inventory.guests().next().unwrap().id;
     let snapshot = xenadmin_core::SnapshotId::parse(SNAPSHOT_UUID).unwrap();
     let observed = connection.latest().observe_snapshot(vm, snapshot).unwrap();
@@ -137,7 +137,7 @@ async fn snapshot_upload_requires_write_access_generation_and_local_creation_evi
     options.read_only = false;
     let other_backend = Backend::start().unwrap();
     let other = other_backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    other.wait_ready(Duration::from_secs(3)).await.unwrap();
+    other.wait_ready(deadline(3)).await.unwrap();
     assert!(matches!(
         other.upload_snapshot_preview(OperationId::new(), observed, OperationId::new(), image()),
         Err(xenadmin_core::Error::Stale)
@@ -146,7 +146,7 @@ async fn snapshot_upload_requires_write_access_generation_and_local_creation_evi
     let upload = other
         .upload_snapshot_preview(OperationId::new(), fresh, OperationId::new(), image())
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while !upload.latest().state.terminal() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

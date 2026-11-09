@@ -126,7 +126,7 @@ async fn ha_policy_rechecks_positive_receipts_without_replaying_lost_replies() {
         let r = finished(&op).await;
         assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
         c.control_resource(r.id, OperationControl::Recheck).unwrap();
-        let checked = tokio::time::timeout(Duration::from_secs(4), async {
+        let checked = tokio::time::timeout(deadline(4), async {
             loop {
                 let row = c
                     .resource_history()

@@ -11,6 +11,9 @@ use tokio::{
     net::TcpListener,
 };
 use xenadmin_core::{Backend, ConnectionOptions, Credentials, Endpoint, PoolId};
+#[path = "fixtures/deadlines.rs"]
+mod deadlines;
+use deadlines::deadline;
 
 const POOL: &str = "11111111-1111-1111-1111-111111111111";
 struct Server {
@@ -115,7 +118,7 @@ async fn dropping_a_handle_does_not_disconnect_other_handles() {
         ConnectionOptions::new(server.endpoint.clone()),
         credentials("root"),
     );
-    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    connection.wait_ready(deadline(3)).await.unwrap();
     let another = connection.clone();
     drop(connection);
     tokio::time::sleep(Duration::from_millis(30)).await;
@@ -135,12 +138,12 @@ async fn authenticated_aliases_share_one_inventory_and_keep_owner_alive() {
         ConnectionOptions::new(first.endpoint.clone()),
         credentials("root"),
     );
-    owner.wait_ready(Duration::from_secs(3)).await.unwrap();
+    owner.wait_ready(deadline(3)).await.unwrap();
     let alias = backend.connect(
         ConnectionOptions::new(second.endpoint.clone()),
         credentials("root"),
     );
-    alias.wait_ready(Duration::from_secs(3)).await.unwrap();
+    alias.wait_ready(deadline(3)).await.unwrap();
     assert_eq!(owner.latest().generation(), alias.latest().generation());
     assert_eq!(first.logins.load(Ordering::SeqCst), 1);
     assert_eq!(second.logins.load(Ordering::SeqCst), 1);
@@ -161,23 +164,19 @@ async fn alias_with_different_identity_or_access_cannot_borrow_owner_authority()
         ConnectionOptions::new(server.endpoint.clone()),
         credentials("root"),
     );
-    owner.wait_ready(Duration::from_secs(3)).await.unwrap();
+    owner.wait_ready(deadline(3)).await.unwrap();
     let other = backend.connect(
         ConnectionOptions::new(server.endpoint.clone()),
         credentials("observer"),
     );
-    let error = other
-        .wait_ready(Duration::from_secs(3))
-        .await
-        .unwrap_err()
-        .to_string();
+    let error = other.wait_ready(deadline(3)).await.unwrap_err().to_string();
     assert!(error.contains("different credentials"));
     assert!(!error.contains("synthetic-password"));
     assert!(owner.latest().is_current());
     let mut options = ConnectionOptions::new(server.endpoint.clone());
     options.read_only = true;
     let read_only = backend.connect(options, credentials("root"));
-    assert!(read_only.wait_ready(Duration::from_secs(3)).await.is_err());
+    assert!(read_only.wait_ready(deadline(3)).await.is_err());
     assert!(owner.latest().is_current());
     owner.close().await;
 }
@@ -192,7 +191,7 @@ async fn profile_pool_identity_is_checked_before_publishing_ready() {
     let connection = backend.connect(options, credentials("root"));
     assert!(
         connection
-            .wait_ready(Duration::from_secs(3))
+            .wait_ready(deadline(3))
             .await
             .unwrap_err()
             .to_string()
@@ -214,7 +213,7 @@ async fn remembered_member_is_tried_when_primary_is_unreachable() {
     options.expected_pool = Some(PoolId::parse(POOL).unwrap());
     options.fallback_endpoints.push(server.endpoint.clone());
     let connection = backend.connect(options, credentials("root"));
-    connection.wait_ready(Duration::from_secs(5)).await.unwrap();
+    connection.wait_ready(deadline(5)).await.unwrap();
     assert_eq!(
         connection.latest().active_endpoint(),
         Some(&server.endpoint)

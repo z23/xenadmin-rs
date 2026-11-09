@@ -160,7 +160,7 @@ async fn connection(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
     let mut watch = c.watch();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while !watch.borrow().is_current() {
             watch.changed().await.unwrap();
         }
@@ -170,7 +170,7 @@ async fn connection(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin
     c
 }
 async fn finished(operation: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let r = operation.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -243,7 +243,7 @@ async fn storage_create_uses_async_task_and_checks_created_identity_and_topology
         if fault == Fault::VerifyFailure {
             c.control_resource(record.id, OperationControl::Recheck)
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::time::timeout(deadline(3), async {
                 loop {
                     if c.resource_history()
                         .iter()
@@ -389,7 +389,7 @@ async fn storage_discovery_is_read_only_and_inventory_hides_secret_config() {
             },
         )
         .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(3), async {
+    let result = tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(r) = query.latest() {
                 break r;
@@ -526,7 +526,7 @@ async fn storage_discovery_cancels_with_connection_generation_and_sanitizes_erro
         if fault == Fault::SlowProbe {
             c.close().await;
         }
-        let result = tokio::time::timeout(Duration::from_secs(2), async {
+        let result = tokio::time::timeout(deadline(2), async {
             loop {
                 if let Some(result) = query.latest() {
                     break result;
@@ -657,7 +657,7 @@ async fn destroy_dispatches_only_after_exact_detached_repository_review() {
 async fn recheck_unknown(c: &xenadmin_core::Connection, record: &ResourceOperationRecord) {
     c.control_resource(record.id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(current) = c.resource_history().iter().find(|r| {
                 r.id == record.id
@@ -836,7 +836,7 @@ async fn guided_discovery_accepts_only_known_error_xml_without_creating_storage(
         let query = c
             .discover_storage(c.latest().observe_resource(pool()).unwrap(), request)
             .unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(3), async {
+        let result = tokio::time::timeout(deadline(3), async {
             loop {
                 if let Some(r) = query.latest() {
                     break r;
@@ -921,7 +921,7 @@ async fn storage_hba_discovery_and_creation_preserve_exact_selected_device_and_a
                 },
             )
             .unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(3), async {
+        let result = tokio::time::timeout(deadline(3), async {
             loop {
                 if let Some(result) = handle.latest() {
                     break result.unwrap();

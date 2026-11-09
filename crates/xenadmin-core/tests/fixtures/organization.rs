@@ -141,7 +141,7 @@ async fn connection(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin
     let mut options = ConnectionOptions::new(mock.endpoint.clone());
     options.read_only = read_only;
     let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     c
 }
 fn command(c: &xenadmin_core::Connection, edits: Vec<Edit>) -> ResourceCommand {
@@ -154,7 +154,7 @@ fn command(c: &xenadmin_core::Connection, edits: Vec<Edit>) -> ResourceCommand {
     }
 }
 async fn finish(operation: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let record = operation.latest();
             if record.state.terminal() || record.state == OperationState::OutcomeUnknown {
@@ -246,7 +246,7 @@ async fn lost_tag_reply_keeps_pool_reserved_and_recheck_does_not_repeat_or_advan
         .unwrap();
     assert_eq!(finish(&second).await.state, OperationState::Rejected);
     c.control_resource(id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if c.resource_history()
                 .iter()

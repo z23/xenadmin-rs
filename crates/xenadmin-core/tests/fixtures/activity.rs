@@ -52,7 +52,7 @@ async fn connect(mock: &Mock, backend: &Backend, read_only: bool) -> xenadmin_co
         options,
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    connection.wait_ready(deadline(3)).await.unwrap();
     let snapshot = connection.latest();
     let id = TaskId::parse(TASK).unwrap();
     let task = &snapshot.inventory().unwrap().details.tasks[&id];
@@ -90,7 +90,7 @@ fn message_command(c: &xenadmin_core::Connection) -> ResourceCommand {
     }
 }
 async fn finish(operation: &ResourceOperation) -> Arc<xenadmin_core::ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let row = operation.latest();
             if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
@@ -107,7 +107,7 @@ async fn recheck(
     id: OperationId,
 ) -> Arc<Vec<xenadmin_core::ResourceOperationRecord>> {
     let revision =
-        tokio::time::timeout(Duration::from_secs(4), async {
+        tokio::time::timeout(deadline(4), async {
             loop {
                 if let Some(record) = c.resource_history().iter().find(|record| {
                     record.id == id && record.state == OperationState::OutcomeUnknown
@@ -120,7 +120,7 @@ async fn recheck(
         .await
         .unwrap();
     c.control_resource(id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let rows = c.resource_history();
             if rows.iter().any(|r| {
@@ -172,7 +172,7 @@ async fn accepted_request_is_not_completion_and_duplicate_task_cancellation_is_r
     let op = c
         .submit_resource(OperationId::new(), task_command(&c))
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while op.latest().state != OperationState::CancellationRequested {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -185,8 +185,13 @@ async fn accepted_request_is_not_completion_and_duplicate_task_cancellation_is_r
         .unwrap();
     assert_eq!(finish(&duplicate).await.state, OperationState::Rejected);
     data.lock().unwrap().0["status"] = json!("cancelling");
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    assert!(op.latest().detail.contains("cancelling"));
+    tokio::time::timeout(deadline(3), async {
+        while !op.latest().detail.contains("cancelling") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert!(!op.latest().state.terminal());
     data.lock().unwrap().0["status"] = json!("cancelled");
     assert_eq!(finish(&op).await.state, OperationState::Succeeded);
@@ -329,7 +334,7 @@ async fn external_cancellation_keeps_local_task_owner_reconciling_its_original_o
             },
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while original.latest().state != OperationState::Tracking {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -340,7 +345,7 @@ async fn external_cancellation_keeps_local_task_owner_reconciling_its_original_o
         .submit_resource(OperationId::new(), task_command(&c))
         .unwrap();
     assert_eq!(finish(&cancellation).await.state, OperationState::Succeeded);
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         while !original.latest().state.terminal()
             || !c.operation_history().iter().any(|record| {
                 record.id == original.latest().id && record.state == OperationState::Cancelled
@@ -387,7 +392,7 @@ async fn restart_recovers_cancellation_by_reading_status_without_resubmission() 
     data.lock().unwrap().0["status"] = json!("cancelled");
     let backend = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&mock, &backend, false).await;
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if c.resource_history()
                 .iter()

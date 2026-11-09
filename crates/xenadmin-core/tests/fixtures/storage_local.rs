@@ -141,7 +141,7 @@ async fn storage_local_discovery_is_nonformatting_and_retains_existing_repositor
             },
         )
         .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(3), async {
+    let result = tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(result) = probe.latest() {
                 break result.unwrap();

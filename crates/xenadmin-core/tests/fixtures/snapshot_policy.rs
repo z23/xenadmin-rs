@@ -103,11 +103,11 @@ async fn connect(m: &Mock, b: &Backend, ro: bool) -> xenadmin_core::Connection {
         opts,
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     c
 }
 async fn done(o: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let r = o.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -189,7 +189,7 @@ async fn policy_support_reports_host_local_clock_and_refuses_unknown_runtime() {
                     .unwrap(),
             )
             .unwrap();
-        let value = tokio::time::timeout(Duration::from_secs(3), async {
+        let value = tokio::time::timeout(deadline(3), async {
             loop {
                 if let Some(v) = h.latest() {
                     break v;
@@ -387,7 +387,7 @@ async fn policy_receipt_survives_recheck_without_task_replay() {
     .await;
     assert_eq!(r.state, OperationState::OutcomeUnknown);
     c.control_resource(r.id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if c.resource_history()
                 .iter()
@@ -473,7 +473,7 @@ async fn policy_restart_restores_private_completion_and_baseline_without_replay(
     drop(b);
     let b = Backend::with_state_directory(d.path().into()).unwrap();
     let c = connect(&m, &b, false).await;
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if c.resource_history()
                 .iter()

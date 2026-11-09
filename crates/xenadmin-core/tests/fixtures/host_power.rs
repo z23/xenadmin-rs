@@ -65,7 +65,7 @@ async fn connect(mock: &Mock, b: &Backend, ro: bool) -> xenadmin_core::Connectio
     let mut o = ConnectionOptions::new(mock.endpoint.clone());
     o.read_only = ro;
     let c = b.connect(o, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     c
 }
 fn submit(c: &xenadmin_core::Connection) -> ResourceOperation {
@@ -79,7 +79,7 @@ fn submit(c: &xenadmin_core::Connection) -> ResourceOperation {
     .unwrap()
 }
 async fn done(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -96,7 +96,7 @@ async fn history(
     id: OperationId,
     p: impl Fn(&ResourceOperationRecord) -> bool,
 ) -> ResourceOperationRecord {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             if let Some(r) = c.resource_history().iter().find(|r| r.id == id && p(r)) {
                 return r.clone();
@@ -282,7 +282,7 @@ async fn recovered_late_secret_receipt_preserves_acknowledgement_and_never_sets_
         let b = Backend::with_state_directory(d.path().into()).unwrap();
         let c = connect(&m, &b, false).await;
         let op = submit(&c);
-        tokio::time::timeout(Duration::from_secs(3), entered.notified())
+        tokio::time::timeout(deadline(3), entered.notified())
             .await
             .unwrap();
         let recovery = Backend::with_state_directory(d.path().into()).unwrap();

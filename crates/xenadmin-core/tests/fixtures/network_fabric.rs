@@ -261,7 +261,7 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_cor
         options,
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    c.wait_ready(Duration::from_secs(5)).await.unwrap();
+    c.wait_ready(deadline(5)).await.unwrap();
     c
 }
 fn target() -> ResourceTarget {
@@ -290,7 +290,7 @@ fn submit(c: &xenadmin_core::Connection, op: Operation) -> xenadmin_core::Resour
 async fn finish(
     op: &xenadmin_core::ResourceOperation,
 ) -> Arc<xenadmin_core::ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -412,7 +412,7 @@ async fn positive_creation_identity_survives_failed_verification_and_removed_tas
         map.insert("allow-read".into(), json!({}));
     }
     c.control_resource(r.id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let now = c
                 .resource_history()
@@ -487,7 +487,7 @@ async fn pending_task_cancellation_is_not_completion_and_no_new_create_is_admitt
     let c = connect(&m, &b, false).await;
     let command = create(&c, kind);
     let op = submit(&c, command.clone());
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !op.latest().can_cancel {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -496,7 +496,7 @@ async fn pending_task_cancellation_is_not_completion_and_no_new_create_is_admitt
     .unwrap();
     c.control_resource(op.latest().id, OperationControl::RequestCancellation)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !m.methods.lock().unwrap().iter().any(|m| m == "task.cancel") {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -588,7 +588,7 @@ async fn late_success_receipts_keep_new_ids_after_recovery_and_acknowledgement_w
         let b = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&m, &b, false).await;
         let op = submit(&c, create(&c, kind));
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             while records
                 .lock()
                 .unwrap()
@@ -604,7 +604,7 @@ async fn late_success_receipts_keep_new_ids_after_recovery_and_acknowledgement_w
         .unwrap();
         let b2 = Backend::with_state_directory(dir.path().into()).unwrap();
         let c2 = connect(&m, &b2, false).await;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             while !c2
                 .resource_history()
                 .iter()
@@ -619,7 +619,7 @@ async fn late_success_receipts_keep_new_ids_after_recovery_and_acknowledgement_w
         if acknowledge {
             c2.control_resource(id, OperationControl::AcknowledgeUnknown)
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(deadline(5), async {
                 while !c2
                     .resource_history()
                     .iter()
@@ -632,7 +632,7 @@ async fn late_success_receipts_keep_new_ids_after_recovery_and_acknowledgement_w
             .unwrap();
         }
         records.lock().unwrap().remove("_hold_task");
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             while op.latest().network_fabric_created.is_none() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -702,7 +702,7 @@ async fn deletion_lost_reply_stays_unknown_but_saved_completion_survives_removed
             map.remove("task");
         }
         c.control_resource(r.id, OperationControl::Recheck).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             loop {
                 let row = c
                     .resource_history()

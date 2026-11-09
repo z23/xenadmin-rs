@@ -106,7 +106,7 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_cor
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
     let mut w = c.watch();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while !w.borrow().is_current() {
             w.changed().await.unwrap();
         }
@@ -121,7 +121,7 @@ fn target(c: &xenadmin_core::Connection) -> xenadmin_core::ObservedResource {
         .unwrap()
 }
 async fn finished(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -138,7 +138,7 @@ async fn inspect(
     q: PoolSecurityQuery,
 ) -> Result<PoolSecurityResult, String> {
     let h = c.inspect_pool_security(target(c), q).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(v) = h.latest() {
                 return v;
@@ -524,7 +524,7 @@ async fn recheck(
 ) -> ResourceOperationRecord {
     c.control_resource(old.id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(record) = c.resource_history().iter().find(|v| {
                 v.id == old.id
@@ -608,7 +608,7 @@ async fn reconnect_does_not_restore_or_replay_directory_credentials() {
     assert_eq!(r.state, OperationState::OutcomeUnknown);
     c.close().await;
     let next = connect(&mock, &b, false).await;
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if next
                 .resource_history()

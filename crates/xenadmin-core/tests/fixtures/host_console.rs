@@ -50,7 +50,7 @@ async fn host_console_rejects_changed_control_identity_ownership_and_console_gra
             ConnectionOptions::new(server.endpoint.clone()),
             Credentials::new("root".into(), "fixture".into()),
         );
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let host = *inventory.hosts.keys().next().unwrap();
         let console = connection
             .open_host_console(
@@ -61,7 +61,7 @@ async fn host_console_rejects_changed_control_identity_ownership_and_console_gra
                 VmId::parse(VM).unwrap(),
             )
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(deadline(3), async {
             loop {
                 if matches!(console.latest().state, ConsoleState::Failed(_)) {
                     break;
@@ -90,7 +90,7 @@ async fn host_console_admission_requires_matching_control_domain_and_writable_cu
         options.read_only = read_only;
         let connection =
             backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let host = *inventory.hosts.keys().next().unwrap();
         let snapshot = connection.latest();
         let observed = snapshot
@@ -150,7 +150,7 @@ async fn console_close_cancels_pending_discovery_without_opening_a_late_tunnel()
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let console = connection
         .open_console(
             connection
@@ -159,11 +159,11 @@ async fn console_close_cancels_pending_discovery_without_opening_a_late_tunnel()
                 .unwrap(),
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), entered.notified())
+    tokio::time::timeout(deadline(3), entered.notified())
         .await
         .unwrap();
     console.close();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while console.latest().state != ConsoleState::Closed {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

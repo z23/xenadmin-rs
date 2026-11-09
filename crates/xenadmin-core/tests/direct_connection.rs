@@ -1,5 +1,8 @@
 #[path = "fixtures/crashdump_deletion.rs"]
 mod crashdump_deletion;
+#[path = "fixtures/deadlines.rs"]
+mod deadlines;
+use deadlines::deadline;
 #[path = "fixtures/management_network.rs"]
 mod management_network;
 use serde_json::{Value, json};
@@ -217,7 +220,7 @@ async fn direct_login_bootstrap_and_logout_need_no_xo() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     assert_eq!(inventory.pool_name, "Fixture pool");
     let vm = inventory.guests().next().unwrap();
     assert_eq!(vm.power_state, PowerState::Halted);
@@ -240,14 +243,14 @@ async fn session_expiry_resynchronizes_in_a_new_generation() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    let initial = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let initial = connection.wait_ready(deadline(3)).await.unwrap();
     let first_generation = connection.latest().generation();
     let observed = connection
         .latest()
         .observe_vm(initial.guests().next().unwrap().id)
         .unwrap();
     let mut receiver = connection.watch();
-    tokio::time::timeout(Duration::from_secs(6), async {
+    tokio::time::timeout(deadline(6), async {
         loop {
             {
                 let snapshot = receiver.borrow_and_update();
@@ -298,8 +301,8 @@ async fn a_vm_observation_cannot_be_used_in_another_pool_with_the_same_vm_uuid()
         ConnectionOptions::new(second.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory_a = a.wait_ready(Duration::from_secs(3)).await.unwrap();
-    let inventory_b = b.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory_a = a.wait_ready(deadline(3)).await.unwrap();
+    let inventory_b = b.wait_ready(deadline(3)).await.unwrap();
     assert_ne!(inventory_a.pool_id, inventory_b.pool_id);
     let observed = a
         .latest()
@@ -329,7 +332,7 @@ async fn reconnecting_the_same_pool_rejects_the_previous_connection_observation(
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = a.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = a.wait_ready(deadline(3)).await.unwrap();
     let observed = a
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -340,7 +343,7 @@ async fn reconnecting_the_same_pool_rejects_the_previous_connection_observation(
         Credentials::new("root".into(), "fixture".into()),
     );
     assert_eq!(
-        b.wait_ready(Duration::from_secs(3)).await.unwrap().pool_id,
+        b.wait_ready(deadline(3)).await.unwrap().pool_id,
         inventory.pool_id
     );
     assert!(matches!(
@@ -371,7 +374,7 @@ async fn authentication_failure_is_terminal_and_does_not_expose_error_data() {
         Credentials::new("root".into(), "fixture-password".into()),
     );
     let error = connection
-        .wait_ready(Duration::from_secs(3))
+        .wait_ready(deadline(3))
         .await
         .unwrap_err()
         .to_string();
@@ -479,7 +482,7 @@ async fn authenticated_console_roundtrip(host: bool) {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let console = if host {
         let host = *inventory.hosts.keys().next().unwrap();
         let vm = inventory.details.hosts[&host].control_domain.unwrap();
@@ -502,7 +505,7 @@ async fn authenticated_console_roundtrip(host: bool) {
             )
             .unwrap()
     };
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let snapshot = console.latest();
             if let Some(frame) = &snapshot.frame
@@ -534,7 +537,7 @@ async fn authenticated_console_roundtrip(host: bool) {
         })
         .unwrap();
     console.input(ConsoleInput::ReleaseAll).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while !keys.lock().unwrap().contains(&(0xff0d, false))
             || pointer_count.load(Ordering::SeqCst) < 2
         {
@@ -545,11 +548,11 @@ async fn authenticated_console_roundtrip(host: bool) {
     .unwrap();
     console.close();
     connection.close().await;
-    let _ = tokio::time::timeout(Duration::from_secs(3), rfb).await;
+    let _ = tokio::time::timeout(deadline(3), rfb).await;
 }
 
 async fn finish(operation: &xenadmin_core::Operation) -> xenadmin_core::OperationState {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let record = operation.latest();
             if record.state.terminal()
@@ -574,7 +577,7 @@ async fn power_action_tracks_the_host_task_and_deduplicates_submission() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -617,7 +620,7 @@ async fn lost_mutation_reply_remains_unknown_and_blocks_a_second_mutation() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -650,8 +653,8 @@ async fn lost_mutation_reply_remains_unknown_and_blocks_a_second_mutation() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    connection.wait_ready(deadline(3)).await.unwrap();
+    tokio::time::timeout(deadline(3), async {
         loop {
             if connection
                 .operation_history()
@@ -701,7 +704,7 @@ async fn task_progress_does_not_cancel_the_inventory_long_poll() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = inventory.guests().next().unwrap().id;
     let observed = connection.latest().observe_vm(vm).unwrap();
     let _operation = connection
@@ -713,7 +716,7 @@ async fn task_progress_does_not_cancel_the_inventory_long_poll() {
             },
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if connection
                 .latest()
@@ -760,7 +763,7 @@ async fn a_transient_task_read_failure_does_not_abandon_the_task_or_repeat_the_m
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let observed = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -793,7 +796,7 @@ async fn failed_tasks_show_the_safe_host_error_code_and_are_cleaned_up() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let observed = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -859,7 +862,7 @@ async fn suspended_and_paused_guests_have_nondestructive_recovery_actions() {
             ConnectionOptions::new(server.endpoint.clone()),
             Credentials::new("fixture".into(), "fixture".into()),
         );
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let vm = inventory.guests().next().unwrap();
         assert_eq!(vm.allowed_actions, vec![action]);
         let operation = connection
@@ -910,10 +913,10 @@ async fn an_established_session_follows_a_new_coordinator_in_a_new_generation() 
         ConnectionOptions::new(source.endpoint.clone()),
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    connection.wait_ready(deadline(3)).await.unwrap();
     let first = connection.latest().generation();
     release.notify_one();
-    tokio::time::timeout(Duration::from_secs(6), async {
+    tokio::time::timeout(deadline(6), async {
         loop {
             let snapshot = connection.latest();
             if snapshot.is_current() && snapshot.generation() != first {
@@ -960,7 +963,7 @@ async fn cancellation_after_reconnect_reaches_the_recovered_task() {
         )
     };
     let connection = connect();
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let id = OperationId::new();
     let old = connection
         .submit(
@@ -974,7 +977,7 @@ async fn cancellation_after_reconnect_reaches_the_recovered_task() {
             },
         )
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while !old.latest().has_task() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -983,14 +986,11 @@ async fn cancellation_after_reconnect_reaches_the_recovered_task() {
     .unwrap();
     connection.close().await;
     let replacement = connect();
-    replacement
-        .wait_ready(Duration::from_secs(3))
-        .await
-        .unwrap();
+    replacement.wait_ready(deadline(3)).await.unwrap();
     replacement
         .control_operation(id, OperationControl::RequestCancellation)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             if replacement
                 .operation_history()
@@ -1035,7 +1035,7 @@ async fn terminal_persistence_failure_is_visible_and_keeps_the_vm_reserved() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     // Create the journal through a first operation, then inject a durable-write failure.
     let observed = connection
         .latest()
@@ -1092,7 +1092,7 @@ async fn read_only_connections_do_not_open_the_journal_or_admit_mutations() {
         options,
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let observed = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -1216,7 +1216,7 @@ async fn snapshot_creation_verifies_result_identity_and_deduplicates_the_full_in
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     assert_eq!(inventory.vms.len(), 1);
     let vm = inventory.guests().next().unwrap().id;
     assert_eq!(inventory.snapshots.for_vm(vm).count(), 1);
@@ -1274,7 +1274,7 @@ async fn snapshot_restore_uses_snapshot_reference_and_never_starts_the_guest() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = inventory.guests().next().unwrap().id;
     let observed = connection
         .latest()
@@ -1318,7 +1318,7 @@ async fn snapshot_restore_rechecks_power_state_and_parent_relationship_before_di
             ConnectionOptions::new(server.endpoint.clone()),
             Credentials::new("root".into(), "fixture".into()),
         );
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let vm = inventory.guests().next().unwrap().id;
         let snapshot = connection
             .latest()
@@ -1356,7 +1356,7 @@ async fn unverified_snapshot_creation_preserves_evidence_and_blocks_conflicting_
             ConnectionOptions::new(server.endpoint.clone()),
             Credentials::new("root".into(), "fixture".into()),
         );
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let vm = connection
             .latest()
             .observe_vm(inventory.guests().next().unwrap().id)
@@ -1408,7 +1408,7 @@ async fn saved_snapshot_result_can_be_verified_after_reconnect_without_the_task_
         )
     };
     let first = connect();
-    let inventory = first.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = first.wait_ready(deadline(3)).await.unwrap();
     let vm = first
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -1433,11 +1433,11 @@ async fn saved_snapshot_result_can_be_verified_after_reconnect_without_the_task_
         .filter(|r| r["method"] == "task.get_record")
         .count();
     let second = connect();
-    second.wait_ready(Duration::from_secs(3)).await.unwrap();
+    second.wait_ready(deadline(3)).await.unwrap();
     second
         .control_operation(id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             if second.operation_history().iter().any(|r| {
                 r.id == id && r.state == OperationState::Succeeded && r.created_snapshot.is_some()
@@ -1479,7 +1479,7 @@ async fn snapshot_observations_are_connection_scoped_and_read_only_mode_cannot_m
         options.clone(),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = first.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = first.wait_ready(deadline(3)).await.unwrap();
     let vm = inventory.guests().next().unwrap().id;
     let id = SnapshotId::parse(SNAPSHOT_UUID).unwrap();
     let snapshot = first.latest().observe_snapshot(vm, id).unwrap();
@@ -1494,7 +1494,7 @@ async fn snapshot_observations_are_connection_scoped_and_read_only_mode_cannot_m
         options.clone(),
         Credentials::new("root".into(), "fixture".into()),
     );
-    second.wait_ready(Duration::from_secs(3)).await.unwrap();
+    second.wait_ready(deadline(3)).await.unwrap();
     assert!(matches!(
         second.submit(OperationId::new(), VmCommand::RevertSnapshot { snapshot }),
         Err(Error::Stale)
@@ -1503,7 +1503,7 @@ async fn snapshot_observations_are_connection_scoped_and_read_only_mode_cannot_m
     let mut options = options;
     options.read_only = true;
     let read_only = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    read_only.wait_ready(Duration::from_secs(3)).await.unwrap();
+    read_only.wait_ready(deadline(3)).await.unwrap();
     let observed = read_only.latest().observe_vm(vm).unwrap();
     assert!(matches!(
         read_only.submit(
@@ -1616,7 +1616,7 @@ async fn settings_changes_preserve_other_map_keys_and_record_verified_steps() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -1668,7 +1668,7 @@ async fn settings_failure_retains_applied_values_and_stops_later_steps() {
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -1722,7 +1722,7 @@ async fn lost_settings_response_reconciles_values_without_repeating_the_write() 
             ConnectionOptions::new(server.endpoint.clone()),
             Credentials::new("root".into(), "fixture".into()),
         );
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let vm = connection
             .latest()
             .observe_vm(inventory.guests().next().unwrap().id)
@@ -1741,7 +1741,7 @@ async fn lost_settings_response_reconciles_values_without_repeating_the_write() 
                 },
             )
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(deadline(3), async {
             while operation.latest().state != OperationState::OutcomeUnknown {
                 tokio::time::sleep(Duration::from_millis(10)).await
             }
@@ -1751,7 +1751,7 @@ async fn lost_settings_response_reconciles_values_without_repeating_the_write() 
         connection
             .control_operation(id, OperationControl::Recheck)
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(deadline(3), async {
             while !connection
                 .operation_history()
                 .iter()
@@ -1828,7 +1828,7 @@ async fn chosen_host_start_checks_destination_before_dispatch_and_preserves_unkn
             ConnectionOptions::new(server.endpoint.clone()),
             Credentials::new("root".into(), "fixture".into()),
         );
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let vm = connection
             .latest()
             .observe_vm(inventory.guests().next().unwrap().id)
@@ -1886,7 +1886,7 @@ async fn memory_snapshot_uses_checkpoint_and_verifies_the_result_without_startin
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
     let vm = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
@@ -1937,7 +1937,7 @@ async fn settings_read_errors_do_not_report_an_applied_mutation_as_failed() {
             ConnectionOptions::new(server.endpoint.clone()),
             Credentials::new("root".into(), "fixture".into()),
         );
-        let inventory = connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let inventory = connection.wait_ready(deadline(3)).await.unwrap();
         let vm = connection
             .latest()
             .observe_vm(inventory.guests().next().unwrap().id)

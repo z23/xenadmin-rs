@@ -294,7 +294,7 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_cor
         options,
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+    connection.wait_ready(deadline(3)).await.unwrap();
     connection
 }
 fn network() -> ResourceTarget {
@@ -313,7 +313,7 @@ fn vlan(connection: &xenadmin_core::Connection) -> NetworkOperation {
 async fn finish(
     operation: &xenadmin_core::ResourceOperation,
 ) -> Arc<xenadmin_core::ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let r = operation.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {

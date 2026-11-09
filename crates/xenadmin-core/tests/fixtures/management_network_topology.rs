@@ -283,7 +283,7 @@ async fn changed_graph_after_completion_is_unknown_and_recheck_does_not_reconfig
     );
     c.control_resource(result.id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !c.resource_history().iter().any(|r| {
             r.id == result.id
                 && r.revision() > result.revision()
@@ -320,7 +320,7 @@ async fn completed_topology_handover_recovers_after_restart_without_task_or_writ
     }
     let backend = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&bridge, &backend).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !c
             .resource_history()
             .iter()

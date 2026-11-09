@@ -21,7 +21,7 @@ async fn connection(
     let mut options = ConnectionOptions::new(server.endpoint.clone());
     options.read_only = read_only;
     let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     c
 }
 fn command(c: &xenadmin_core::Connection, patch: VmSettingsPatch) -> VmCommand {
@@ -151,7 +151,7 @@ async fn lost_secure_boot_reply_reconciles_policy_without_repeating_write() {
     assert_eq!(result.state, OperationState::OutcomeUnknown);
     c.control_operation(result.id, OperationControl::Recheck)
         .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(3), async {
+    let result = tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(r) = c
                 .operation_history()
@@ -196,7 +196,7 @@ async fn read_only_connection_can_query_boot_readiness_without_admitting_writes(
         .id;
     let observed = snapshot.observe_vm(id).unwrap();
     let query = c.guest_boot_status(observed).unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(3), async {
+    let result = tokio::time::timeout(deadline(3), async {
         loop {
             if let Some(result) = query.latest() {
                 break result;
@@ -228,7 +228,7 @@ async fn read_only_connection_can_query_boot_readiness_without_admitting_writes(
 }
 
 async fn finish(op: &xenadmin_core::Operation) -> xenadmin_core::OperationRecord {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {

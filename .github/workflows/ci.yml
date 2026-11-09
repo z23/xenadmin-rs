@@ -19,6 +19,9 @@ jobs:
       - name: Install the repository toolchain
         run: rustup show
       - name: Check, test, and render
+        env:
+          # Shared runners are slower than a workstation; extend fixture polling deadlines only.
+          XENADMIN_TEST_TIME_SCALE: "4"
         run: ./scripts/check.sh
       - name: Keep rendered UI artifacts
         if: always()

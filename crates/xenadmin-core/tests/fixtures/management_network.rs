@@ -344,7 +344,7 @@ async fn connect(bridge: &Bridge, backend: &Backend) -> xenadmin_core::Connectio
     let mut options = ConnectionOptions::new(bridge.endpoint.clone());
     options.accept_invalid_certificates = true;
     let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(5)).await.unwrap();
+    c.wait_ready(deadline(5)).await.unwrap();
     c
 }
 fn operation(c: &xenadmin_core::Connection, kind: u8) -> ManagementNetworkOperation {
@@ -397,7 +397,7 @@ fn submit(c: &xenadmin_core::Connection, op: ManagementNetworkOperation) -> Reso
     .unwrap()
 }
 async fn finish(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -519,7 +519,7 @@ async fn unexpected_dynamic_assignment_mode_or_secondary_settings_remain_unknown
         );
         c.control_resource(result.id, OperationControl::Recheck)
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             while !c.resource_history().iter().any(|r| {
                 r.id == result.id
                     && r.state == OperationState::OutcomeUnknown
@@ -556,7 +556,7 @@ async fn completed_dynamic_assignment_recovers_after_restart_without_reapplying_
     }
     let backend = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&bridge, &backend).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !c
             .resource_history()
             .iter()
@@ -762,7 +762,7 @@ async fn saved_management_completion_survives_missing_task_and_restart_without_r
         state.rows.remove(&reference("task", 51));
     }
     let c = connect(&bridge, &backend).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             if c.resource_history()
                 .iter()
@@ -802,7 +802,7 @@ async fn recovery_identity_constraint_preserves_original_ca_and_endpoint_pin_pol
             );
         }
         let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-        c.wait_ready(Duration::from_secs(5)).await.unwrap();
+        c.wait_ready(deadline(5)).await.unwrap();
         let result = finish(&submit(&c, operation(&c, 0))).await;
         assert_eq!(
             result.state,
@@ -837,7 +837,7 @@ async fn closing_during_pending_management_task_keeps_unknown_and_recheck_never_
     let backend = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&bridge, &backend).await;
     let op = submit(&c, operation(&c, 0));
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while op.latest().state != OperationState::Tracking {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -873,12 +873,12 @@ async fn delayed_management_receipt_survives_recovery_without_verifying_from_ori
         let backend = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&bridge, &backend).await;
         let op = submit(&c, operation(&c, kind));
-        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        tokio::time::timeout(deadline(5), entered.notified())
             .await
             .unwrap();
         let second = Backend::with_state_directory(dir.path().into()).unwrap();
         let recovered = connect(&bridge, &second).await;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             loop {
                 if recovered.resource_history().iter().any(|r| {
                     r.id == op.latest().id
@@ -896,7 +896,7 @@ async fn delayed_management_receipt_survives_recovery_without_verifying_from_ori
             recovered
                 .control_resource(op.latest().id, OperationControl::AcknowledgeUnknown)
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(deadline(5), async {
                 while !recovered.resource_history().iter().any(|r| {
                     r.id == op.latest().id && r.state == OperationState::AcknowledgedUnknown
                 }) {
@@ -1041,7 +1041,7 @@ async fn readonly_management_connection_cannot_submit_handover() {
     options.read_only = true;
     options.accept_invalid_certificates = true;
     let c = backend.connect(options, Credentials::new("root".into(), "fixture".into()));
-    c.wait_ready(Duration::from_secs(5)).await.unwrap();
+    c.wait_ready(deadline(5)).await.unwrap();
     let result = c.submit_resource(
         OperationId::new(),
         ResourceCommand::ManagementNetwork {

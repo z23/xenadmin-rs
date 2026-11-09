@@ -120,7 +120,7 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> Connection {
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
     let mut w = c.watch();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         while !w.borrow().is_current() {
             w.changed().await.unwrap();
         }
@@ -148,7 +148,7 @@ fn credentials() -> Credentials {
     Credentials::new("join-admin".into(), "join-private-password".into())
 }
 async fn finished(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -280,7 +280,7 @@ async fn lost_join_reply_stays_unknown_after_destination_recheck_and_never_repla
     assert!(f.control.lock().unwrap().joined);
     dest.control_resource(result.id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if dest
                 .resource_history()
@@ -318,7 +318,7 @@ async fn recorded_join_reply_can_be_rechecked_through_the_destination_connection
     f.control.lock().unwrap().fault = Fault::None;
     dest.control_resource(result.id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             if dest
                 .resource_history()

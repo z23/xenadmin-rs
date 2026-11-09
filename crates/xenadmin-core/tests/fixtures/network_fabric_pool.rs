@@ -322,7 +322,7 @@ async fn changed(
     c: &xenadmin_core::Connection,
     old: &xenadmin_core::ResourceOperationRecord,
 ) -> Arc<xenadmin_core::ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             if let Some(r) = c.resource_history().iter().find(|r| {
                 r.id == old.id
@@ -397,7 +397,7 @@ async fn late_completion_keeps_owned_ids_without_resuming_suffix_after_recovery_
         let b = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&m, &b, false).await;
         let op = submit_pool(&c, create_pool(&c, kind));
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             while !records.lock().unwrap().contains_key("_pool_read") {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -408,7 +408,7 @@ async fn late_completion_keeps_owned_ids_without_resuming_suffix_after_recovery_
         let c2 = connect(&m, &b2, false).await;
         let before = op.latest();
         let _ = before;
-        let unknown = tokio::time::timeout(Duration::from_secs(5), async {
+        let unknown = tokio::time::timeout(deadline(5), async {
             loop {
                 if let Some(r) = c2.resource_history().iter().find(|r| {
                     r.id == op.latest().id
@@ -430,7 +430,7 @@ async fn late_completion_keeps_owned_ids_without_resuming_suffix_after_recovery_
         }
         c2.close().await;
         records.lock().unwrap().remove("_pool_hold");
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             while op.latest().topology_changes.created_fabric.is_empty() {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
@@ -537,7 +537,7 @@ async fn corrupt_pool_receipts_prefix_and_public_success_are_refused_on_restart(
             options,
             Credentials::new("root".into(), "fixture-password".into()),
         );
-        c.wait_ready(Duration::from_secs(5)).await.unwrap();
+        c.wait_ready(deadline(5)).await.unwrap();
         assert!(c.latest().error().is_some(), "case{case}");
         assert!(
             !c.resource_history().iter().any(|row| row.id == r.id),
@@ -560,7 +560,7 @@ async fn cancellation_keeps_uncertain_pool_reserved_and_does_not_start_remaining
     let c = connect(&m, &b, false).await;
     let command = create_pool(&c, kind);
     let op = submit_pool(&c, command.clone());
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !op.latest().can_cancel || op.latest().state != OperationState::Tracking {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -569,7 +569,7 @@ async fn cancellation_keeps_uncertain_pool_reserved_and_does_not_start_remaining
     .unwrap();
     c.control_resource(op.latest().id, OperationControl::RequestCancellation)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while records.lock().unwrap().get("_pool_cancel") != Some(&json!(1)) {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -625,7 +625,7 @@ async fn all_verified_preparing_restart_still_requires_fresh_final_graph() {
         }
         let b = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&m, &b, false).await;
-        let row = tokio::time::timeout(Duration::from_secs(5), async {
+        let row = tokio::time::timeout(deadline(5), async {
             loop {
                 if let Some(row) = c.resource_history().iter().find(|row| {
                     row.id == r.id

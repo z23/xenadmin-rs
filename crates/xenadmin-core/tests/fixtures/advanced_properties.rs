@@ -26,7 +26,7 @@ async fn connection(server: &Mock, backend: &Backend) -> xenadmin_core::Connecti
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     c
 }
 fn submit(c: &xenadmin_core::Connection, edits: Vec<VmSettingEdit>) -> xenadmin_core::Operation {
@@ -176,7 +176,7 @@ async fn lost_live_cpu_reply_rechecks_saved_value_without_repeating_hotplug() {
     let id = operation.latest().id;
     c.control_operation(id, xenadmin_core::OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if c.operation_history()
                 .iter()
@@ -361,7 +361,7 @@ async fn lost_home_host_reply_reconciles_uuid_without_repeating_setter() {
     let id = op.latest().id;
     c.control_operation(id, xenadmin_core::OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if c.operation_history()
                 .iter()

@@ -317,7 +317,7 @@ async fn saved_vlan_replacement_ids_survive_restart_without_task_and_refuse_rebi
         }
         let b = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&bridge, &b).await;
-        let recovered = tokio::time::timeout(Duration::from_secs(8), async {
+        let recovered = tokio::time::timeout(deadline(8), async {
             loop {
                 if let Some(r) = c
                     .resource_history()

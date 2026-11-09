@@ -79,11 +79,11 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_cor
         opts,
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
-    c.wait_ready(Duration::from_secs(3)).await.unwrap();
+    c.wait_ready(deadline(3)).await.unwrap();
     c
 }
 async fn finished(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -386,7 +386,7 @@ async fn appliance_saved_completion_receipt_rechecks_without_task_or_mutation_re
     connection
         .control_resource(first.id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if connection
                 .resource_history()

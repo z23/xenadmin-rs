@@ -152,7 +152,7 @@ async fn settled(
     id: OperationId,
     revision: u64,
 ) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             if let Some(r) = c.resource_history().iter().find(|r| {
                 r.id == id
@@ -183,7 +183,7 @@ async fn every_uncertain_ipv6_stage_refuses_continuation_and_recheck_never_repla
             control.lock().unwrap().fault = fault;
             let pending = submit(&c, op.clone());
             if fault == Fault::Pending {
-                tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::time::timeout(deadline(5), async {
                     while pending.latest().state != OperationState::Tracking {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
@@ -396,12 +396,12 @@ async fn ipv6_late_task_receipt_does_not_revive_an_interrupted_stage_and_recheck
         (g.entered.clone(), g.release.clone())
     };
     let pending = submit(&c, op.clone());
-    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+    tokio::time::timeout(deadline(5), entered.notified())
         .await
         .unwrap();
     let second = Backend::with_state_directory(dir.path().into()).unwrap();
     let recovered = connect(&bridge, &second).await;
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while !recovered
             .resource_history()
             .iter()
@@ -446,7 +446,7 @@ async fn ipv6_completion_proof_survives_task_removal_and_restart() {
     }
     let b = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&bridge, &b).await;
-    let recovered = tokio::time::timeout(Duration::from_secs(8), async {
+    let recovered = tokio::time::timeout(deadline(8), async {
         loop {
             if let Some(v) = c
                 .resource_history()
@@ -538,7 +538,7 @@ async fn ipv6_vlan_over_bond_round_trips_preserve_reviewed_guest_identity_and_ne
                 op.clone(),
             )
             .unwrap();
-        op = tokio::time::timeout(Duration::from_secs(5), async {
+        op = tokio::time::timeout(deadline(5), async {
             loop {
                 if let Some(v) = q.latest() {
                     break v.unwrap();
@@ -657,7 +657,7 @@ async fn leave_partial_cannot_bypass_an_active_or_unknown_child_or_a_stale_prede
         (g.entered.clone(), g.release.clone())
     };
     let child = submit(&c, op.clone());
-    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+    tokio::time::timeout(deadline(5), entered.notified())
         .await
         .unwrap();
     assert_eq!(

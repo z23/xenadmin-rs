@@ -118,7 +118,7 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_cor
         Credentials::new("fixture".into(), "fixture-password".into()),
     );
     let mut w = c.watch();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while !w.borrow().is_current() {
             w.changed().await.unwrap();
         }
@@ -128,7 +128,7 @@ async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_cor
     c
 }
 async fn finished(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    tokio::time::timeout(deadline(4), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -372,7 +372,7 @@ async fn pool_completed_receipt_survives_verification_failure_and_rechecks_witho
     let r = finished(&op).await;
     assert_eq!(r.state, OperationState::OutcomeUnknown);
     c.control_resource(r.id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         loop {
             if c.resource_history()
                 .iter()

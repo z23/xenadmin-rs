@@ -124,7 +124,7 @@ async fn connect(mock: &Mock, backend: &Backend) -> xenadmin_core::Connection {
         ConnectionOptions::new(mock.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
     );
-    c.wait_ready(Duration::from_secs(8)).await.unwrap();
+    c.wait_ready(deadline(8)).await.unwrap();
     c
 }
 fn policy(c: &xenadmin_core::Connection) -> ResourceCommand {
@@ -154,7 +154,7 @@ fn policy(c: &xenadmin_core::Connection) -> ResourceCommand {
     }
 }
 async fn finish(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(deadline(10), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -295,7 +295,7 @@ async fn alarm_refresh_requires_positive_receipt_and_never_replays_lost_reply() 
         }
         if fault == Fault::Lost {
             c.control_resource(id, OperationControl::Recheck).unwrap();
-            tokio::time::timeout(Duration::from_secs(8), async {
+            tokio::time::timeout(deadline(8), async {
                 loop {
                     if c.resource_history()
                         .iter()
@@ -333,7 +333,7 @@ async fn alarm_lost_setter_reconciles_by_readback_without_replay() {
     let first = finish(&op).await;
     assert_eq!(first.state, OperationState::OutcomeUnknown);
     c.control_resource(id, OperationControl::Recheck).unwrap();
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             if c.resource_history()
                 .iter()

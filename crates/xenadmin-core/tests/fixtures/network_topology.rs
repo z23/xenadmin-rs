@@ -166,7 +166,7 @@ async fn connect(mock: &Mock, backend: &Backend) -> xenadmin_core::Connection {
         ConnectionOptions::new(mock.endpoint.clone()),
         Credentials::new("root".into(), "fixture-password".into()),
     );
-    connection.wait_ready(Duration::from_secs(4)).await.unwrap();
+    connection.wait_ready(deadline(4)).await.unwrap();
     connection
 }
 fn operation(connection: &xenadmin_core::Connection, retag: bool) -> NetworkTopologyOperation {
@@ -219,7 +219,7 @@ fn submit(
         .unwrap()
 }
 async fn finish(operation: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             let row = operation.latest();
             if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
@@ -423,7 +423,7 @@ async fn recorded_vlan_completion_survives_removed_task_and_restart_without_cont
     let c = connect(&mock, &backend).await;
     c.control_resource(result.id, OperationControl::Recheck)
         .unwrap();
-    let after = tokio::time::timeout(Duration::from_secs(5), async {
+    let after = tokio::time::timeout(deadline(5), async {
         loop {
             if let Some(row) = c
                 .resource_history()
@@ -500,13 +500,13 @@ async fn late_vlan_task_receipts_survive_recovery_without_reviving_original_work
         let backend = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&mock, &backend).await;
         let op = submit(&c, operation(&c, false));
-        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        tokio::time::timeout(deadline(5), entered.notified())
             .await
             .unwrap();
         let recovered_backend = Backend::with_state_directory(dir.path().into()).unwrap();
         let recovered = connect(&mock, &recovered_backend).await;
         async fn state(c: &xenadmin_core::Connection, id: OperationId, expected: OperationState) {
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(deadline(5), async {
                 loop {
                     if c.resource_history().iter().any(|r| {
                         r.id == id
@@ -614,7 +614,7 @@ async fn recheck_does_not_dispatch_a_previously_recorded_cancellation_intent() {
     let backend = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&mock, &backend).await;
     let op = submit(&c, operation(&c, false));
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while control.lock().unwrap().task_reads == 0 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -650,7 +650,7 @@ async fn recheck_does_not_dispatch_a_previously_recorded_cancellation_intent() {
     let before_reads = control.lock().unwrap().task_reads;
     c.control_resource(result.id, OperationControl::Recheck)
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         loop {
             if control.lock().unwrap().task_reads > before_reads
                 && c.resource_history().iter().any(|r| {
@@ -678,7 +678,7 @@ async fn an_expired_plan_keeps_completed_first_host_without_dispatching_remainin
     let backend = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&mock, &backend).await;
     let op = submit(&c, operation(&c, false));
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(deadline(5), async {
         while op.latest().state != OperationState::Tracking || !op.latest().can_cancel {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

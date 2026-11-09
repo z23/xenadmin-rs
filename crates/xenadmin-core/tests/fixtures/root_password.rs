@@ -71,7 +71,7 @@ async fn connect(mock: &Mock, backend: &Backend, password: &str) -> xenadmin_cor
         ConnectionOptions::new(mock.endpoint.clone()),
         Credentials::new("root".into(), password.into()),
     );
-    c.wait_ready(Duration::from_secs(5)).await.unwrap();
+    c.wait_ready(deadline(5)).await.unwrap();
     c
 }
 fn submit(c: &xenadmin_core::Connection) -> ResourceOperation {
@@ -91,7 +91,7 @@ fn submit(c: &xenadmin_core::Connection) -> ResourceOperation {
     .unwrap()
 }
 async fn done(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -108,7 +108,7 @@ async fn history(
     id: OperationId,
     predicate: impl Fn(&ResourceOperationRecord) -> bool,
 ) -> ResourceOperationRecord {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             if let Some(r) = c
                 .resource_history()
@@ -167,7 +167,7 @@ async fn password_change_verifies_login_rotates_reconnect_and_invalidates_old_al
             .reconnect_credentials_updated
     );
     privacy(d.path(), &r);
-    tokio::time::timeout(Duration::from_secs(3), async {
+    tokio::time::timeout(deadline(3), async {
         while alias.latest().state() != ConnectionState::Disconnected {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -177,7 +177,7 @@ async fn password_change_verifies_login_rotates_reconnect_and_invalidates_old_al
     assert!(c.latest().is_current());
     let before = state.lock().unwrap().logins.len();
     state.lock().unwrap().expire = true;
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             if state.lock().unwrap().logins.len() > before && c.latest().is_current() {
                 break;

@@ -119,7 +119,7 @@ async fn failed_lost_or_unverified_management_bond_never_replays() {
         let c = connect(&bridge, &b).await;
         let op = submit(&c, reviewed(&c, false));
         if fault == Fault::Pending {
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(deadline(5), async {
                 while op.latest().state != OperationState::Tracking {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
@@ -158,7 +158,7 @@ pub(super) async fn rechecked(
     id: xenadmin_core::OperationId,
     revision: u64,
 ) -> ResourceOperationRecord {
-    tokio::time::timeout(Duration::from_secs(8), async {
+    tokio::time::timeout(deadline(8), async {
         loop {
             if let Some(row) = c
                 .resource_history()
@@ -261,7 +261,7 @@ async fn recorded_management_bond_completion_recovers_without_task_or_second_wri
         }
         let backend = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&bridge, &backend).await;
-        let row = tokio::time::timeout(Duration::from_secs(8), async {
+        let row = tokio::time::timeout(deadline(8), async {
             loop {
                 if let Some(row) = c
                     .resource_history()
@@ -300,12 +300,12 @@ async fn late_management_bond_receipt_preserves_recovered_state_without_opening_
         let backend = Backend::with_state_directory(dir.path().into()).unwrap();
         let c = connect(&bridge, &backend).await;
         let op = submit(&c, reviewed(&c, false));
-        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        tokio::time::timeout(deadline(5), entered.notified())
             .await
             .unwrap();
         let second = Backend::with_state_directory(dir.path().into()).unwrap();
         let recovered = connect(&bridge, &second).await;
-        tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::time::timeout(deadline(5), async {
             while !recovered
                 .resource_history()
                 .iter()
@@ -320,7 +320,7 @@ async fn late_management_bond_receipt_preserves_recovered_state_without_opening_
             recovered
                 .control_resource(op.latest().id, OperationControl::AcknowledgeUnknown)
                 .unwrap();
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(deadline(5), async {
                 while !recovered.resource_history().iter().any(|r| {
                     r.id == op.latest().id && r.state == OperationState::AcknowledgedUnknown
                 }) {

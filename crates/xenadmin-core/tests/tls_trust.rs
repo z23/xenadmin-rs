@@ -6,6 +6,9 @@ use tokio::{
     net::TcpListener,
 };
 use xenadmin_core::{Backend, ConnectionOptions, Credentials, Endpoint};
+#[path = "fixtures/deadlines.rs"]
+mod deadlines;
+use deadlines::deadline;
 
 async fn attempt(pin: Option<bool>, insecure: bool) -> (String, bool) {
     let rcgen::CertifiedKey { cert, key_pair } =
@@ -77,11 +80,11 @@ async fn attempt(pin: Option<bool>, insecure: bool) -> (String, bool) {
         Credentials::new("fixture".into(), "not-a-real-password".into()),
     );
     let error = connection
-        .wait_ready(Duration::from_secs(5))
+        .wait_ready(deadline(5))
         .await
         .unwrap_err()
         .to_string();
-    let reached_api = tokio::time::timeout(Duration::from_secs(5), task)
+    let reached_api = tokio::time::timeout(deadline(5), task)
         .await
         .unwrap()
         .unwrap();
@@ -251,14 +254,14 @@ async fn opt_out_survives_member_redirect_and_a_separate_console_tls_endpoint() 
         options,
         Credentials::new("fixture".into(), "fixture".into()),
     );
-    let inventory = connection.wait_ready(Duration::from_secs(5)).await.unwrap();
+    let inventory = connection.wait_ready(deadline(5)).await.unwrap();
     assert_eq!(inventory.storage[0].capacity_bytes, None);
     let observed = connection
         .latest()
         .observe_vm(inventory.guests().next().unwrap().id)
         .unwrap();
     let _console = connection.open_console(observed).unwrap();
-    tokio::time::timeout(Duration::from_secs(5), console_task)
+    tokio::time::timeout(deadline(5), console_task)
         .await
         .unwrap()
         .unwrap();
