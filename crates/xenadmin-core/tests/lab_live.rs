@@ -6524,3 +6524,242 @@ async fn lab_saved_profiles_connect_all_and_remove() {
     assert!(distinct && disconnected && removed);
     assert_eq!(remaining, vec!["Lab pool".to_string()]);
 }
+
+async fn diagnosis(handle: &xenadmin_core::ActionDiagnostic, seconds: u64) -> Value {
+    tokio::time::timeout(deadline(seconds), async {
+        loop {
+            if let Some(result) = handle.latest() {
+                return match result {
+                    Ok(availability) => json!({"availability": format!("{availability:?}")}),
+                    Err(error) => json!({"error": error}),
+                };
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| json!({"error": "no diagnosis within deadline"}))
+}
+
+async fn diagnose_all(c: &Connection, vm: xenadmin_core::VmId) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for action in xenadmin_core::PowerAction::ALL {
+        let entry = match c
+            .latest()
+            .observe_vm(vm)
+            .and_then(|target| c.diagnose_power(target, action))
+        {
+            Ok(handle) => diagnosis(&handle, 60).await,
+            Err(error) => json!({"error": error.to_string()}),
+        };
+        out.insert(format!("{action:?}"), entry);
+    }
+    out
+}
+
+fn available(diagnosis: &serde_json::Map<String, Value>, action: &str) -> bool {
+    diagnosis
+        .get(action)
+        .and_then(|d| d["availability"].as_str())
+        == Some("Available")
+}
+
+/// P03-04, P03-05, P03-06: explain every power action on the running, shutting-down and
+/// halted guest; refuse a chosen-host start on the member that cannot reach the guest's
+/// local disks; start the guest on the chosen resident host; set and restore the home server.
+#[tokio::test]
+#[ignore]
+async fn lab_chosen_host_start_and_action_diagnosis() {
+    use xenadmin_core::{PowerAction, PowerState, VmCommand, VmSettingEdit, VmSettingsPatch};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let resident = guest.host.expect("resident host");
+    let other = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != resident && inventory.hosts[h].enabled)
+        .expect("another enabled member");
+    let host_name = |id: HostId| {
+        inventory
+            .hosts
+            .get(&id)
+            .map(|h| h.name.clone())
+            .unwrap_or_default()
+    };
+
+    let while_running = diagnose_all(&c, guest.id).await;
+    let shutdown = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::CleanShutdown,
+            },
+        )
+        .expect("shutdown accepted");
+    let during_shutdown = match c
+        .latest()
+        .observe_vm(guest.id)
+        .and_then(|target| c.diagnose_power(target, PowerAction::Start))
+    {
+        Ok(handle) => diagnosis(&handle, 60).await,
+        Err(error) => json!({"error": error.to_string()}),
+    };
+    let shutdown = wait_vm_outcome(&shutdown, 300).await;
+    let halted = settle(180, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms.get(&guest.id).is_some_and(|v| {
+                v.power_state == PowerState::Halted
+                    && v.allowed_actions.contains(&PowerAction::Start)
+            })
+        })
+    })
+    .await;
+    assert_eq!(
+        shutdown.state,
+        OperationState::Succeeded,
+        "{}",
+        shutdown.detail
+    );
+    assert!(halted, "guest did not halt");
+    let while_halted = diagnose_all(&c, guest.id).await;
+
+    // A chosen-host start on the member that cannot reach the guest's local disks.
+    let refused = match c.submit(
+        OperationId::new(),
+        VmCommand::PowerOnHost {
+            vm: c.latest().observe_vm(guest.id).unwrap(),
+            action: PowerAction::Start,
+            host: other,
+        },
+    ) {
+        Ok(operation) => {
+            let row = wait_vm_outcome(&operation, 300).await;
+            json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+        }
+        Err(error) => json!({"accepted": false, "error": error.to_string()}),
+    };
+    let still_halted = settle(30, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&guest.id)
+                .is_some_and(|v| v.power_state == PowerState::Halted)
+        })
+    })
+    .await;
+
+    // A chosen-host start on the resident host.
+    let started = c
+        .submit(
+            OperationId::new(),
+            VmCommand::PowerOnHost {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+                host: resident,
+            },
+        )
+        .expect("chosen-host start accepted");
+    let started = wait_vm_outcome(&started, 300).await;
+    let on_resident = settle(180, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&guest.id)
+                .is_some_and(|v| v.power_state == PowerState::Running && v.host == Some(resident))
+        })
+    })
+    .await;
+
+    // Home server: pin to the resident host, then restore the previous value.
+    let previous_affinity = c.latest().inventory().unwrap().details.vms[&guest.id].affinity;
+    let mut home = Vec::new();
+    for value in [Some(resident), previous_affinity] {
+        let current = c.latest().inventory().unwrap().details.vms[&guest.id].affinity;
+        if current == value {
+            home.push(json!({"value": value.map(|h| h.to_string()), "skipped": "already set"}));
+            continue;
+        }
+        let patch = VmSettingsPatch::new(vec![VmSettingEdit::HomeHost {
+            previous: current,
+            value,
+        }])
+        .unwrap();
+        let operation = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Configure {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    patch,
+                },
+            )
+            .expect("home host edit accepted");
+        let row = wait_vm_outcome(&operation, 120).await;
+        let applied = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details
+                    .vms
+                    .get(&guest.id)
+                    .is_some_and(|v| v.affinity == value && v.affinity_known)
+            })
+        })
+        .await;
+        home.push(json!({
+            "value": value.map(|h| h.to_string()), "state": format!("{:?}", row.state),
+            "detail": row.detail, "read_back": applied,
+        }));
+    }
+    c.close().await;
+    lab.record(
+        "chosen-host-start-and-action-diagnosis",
+        json!({
+            "guest": guest.name,
+            "resident": {"id": resident.to_string(), "name": host_name(resident)},
+            "other": {"id": other.to_string(), "name": host_name(other)},
+            "diagnosis_while_running": while_running,
+            "diagnosis_during_shutdown": during_shutdown,
+            "shutdown": {"state": format!("{:?}", shutdown.state), "detail": shutdown.detail},
+            "diagnosis_while_halted": while_halted,
+            "start_on_other_host": refused,
+            "still_halted_after_refusal": still_halted,
+            "start_on_resident_host": {"state": format!("{:?}", started.state), "detail": started.detail},
+            "running_on_resident": on_resident,
+            "home_host": home,
+        }),
+    );
+    assert!(
+        !available(&while_running, "Start"),
+        "Start offered on a running guest"
+    );
+    assert!(available(&while_running, "CleanShutdown"));
+    assert!(available(&while_halted, "Start"));
+    assert!(
+        !available(&while_halted, "CleanShutdown"),
+        "shutdown offered on a halted guest"
+    );
+    assert_ne!(
+        refused["state"], "Succeeded",
+        "start on the other host succeeded: {refused}"
+    );
+    assert!(still_halted, "guest left Halted by the refused placement");
+    assert_eq!(
+        started.state,
+        OperationState::Succeeded,
+        "{}",
+        started.detail
+    );
+    assert!(on_resident, "guest is not running on the chosen host");
+    for entry in &home {
+        if entry.get("skipped").is_none() {
+            assert_eq!(entry["state"], "Succeeded", "{entry}");
+            assert_eq!(entry["read_back"], true, "{entry}");
+        }
+    }
+}
