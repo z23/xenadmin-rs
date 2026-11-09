@@ -3195,10 +3195,9 @@ async fn lab_disk_lifecycle_on_halted_guest() {
         120,
     )
     .await;
-    let still_there = c
-        .latest()
-        .inventory()
-        .is_some_and(|i| i.details.vdis.contains_key(&scratch) && i.details.vbds.contains_key(&vbd));
+    let still_there = c.latest().inventory().is_some_and(|i| {
+        i.details.vdis.contains_key(&scratch) && i.details.vbds.contains_key(&vbd)
+    });
     steps.push(json!({"step": "delete through an attachment that does not own the disk", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "disk_and_attachment_kept": still_there}));
     assert_eq!(
         outcome.state,
@@ -3206,7 +3205,10 @@ async fn lab_disk_lifecycle_on_halted_guest() {
         "deletion through a non-owning attachment: {}",
         outcome.detail
     );
-    assert!(still_there, "the refused deletion changed the disk or its attachment");
+    assert!(
+        still_there,
+        "the refused deletion changed the disk or its attachment"
+    );
     let outcome = device(
         &c,
         guest.id,
@@ -3350,4 +3352,95 @@ async fn lab_disk_lifecycle_on_halted_guest() {
     );
     assert!(intact, "the guest's original disks changed");
     c.close().await;
+}
+
+/// P01-02, P01-07: login through a non-coordinator member follows the coordinator redirect
+/// to the same pool; a second connection to another member of that pool with the same
+/// credentials shares the pool; wrong credentials through a member are refused.
+#[tokio::test]
+#[ignore]
+async fn lab_member_login_and_pool_alias() {
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 2, "two pool members are required");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+
+    // Through the member first.
+    let member = connect(&lab, &backend, 1, false).await;
+    let member_summary = inventory_summary(&member);
+    let member_snapshot = member.latest();
+    let member_route = json!({
+        "requested": lab.hosts[1].ip,
+        "active_endpoint": member_snapshot.active_endpoint().map(|e| e.to_string()),
+        "route": member_snapshot.connection_route(),
+        "verified_members": member_snapshot.verified_members().iter().map(|e| e.to_string()).collect::<Vec<_>>(),
+    });
+
+    // Then the coordinator, in the same backend: same pool, shared ownership.
+    let coordinator = connect(&lab, &backend, 0, false).await;
+    let coordinator_summary = inventory_summary(&coordinator);
+    let same_pool = member_summary["pool_id"] == coordinator_summary["pool_id"];
+    let both_ready = settle(30, || {
+        member.latest().is_current() && coordinator.latest().is_current()
+    })
+    .await;
+    let same_revision = settle(30, || {
+        member.latest().inventory().map(|i| i.revision)
+            == coordinator.latest().inventory().map(|i| i.revision)
+    })
+    .await;
+
+    // Closing the member's handle leaves the coordinator's connection in place.
+    member.close().await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let coordinator_after_member_closed = format!("{:?}", coordinator.latest().state());
+    coordinator.close().await;
+
+    // Wrong credentials through the member are refused once the redirect target is
+    // pinned; with only the member pinned, the redirect itself is refused before any
+    // credential reaches the coordinator.
+    let wrong = || Credentials::new("root".into(), format!("{}-wrong", lab.password));
+    let (member_only, _) = pinned_options(&lab.endpoint(1)).await;
+    let refused = backend.connect(member_only, wrong());
+    let unpinned_redirect = refused
+        .wait_ready(deadline(60))
+        .await
+        .err()
+        .map(|e| e.to_string());
+    refused.close().await;
+    let (mut all_pinned, _) = pinned_options(&lab.endpoint(1)).await;
+    for other in 0..lab.hosts.len() {
+        if other != 1
+            && let Some(observation) = inspect_result(&lab.endpoint(other)).await
+        {
+            all_pinned
+                .add_host_certificate(lab.endpoint(other), observation.details.fingerprint.clone());
+        }
+    }
+    let refused = backend.connect(all_pinned, wrong());
+    let refused_error = refused
+        .wait_ready(deadline(60))
+        .await
+        .err()
+        .map(|e| e.to_string());
+    let refused_state = format!("{:?}", refused.latest().state());
+    refused.close().await;
+
+    lab.record(
+        "member-login-and-pool-alias",
+        json!({
+            "member": member_route,
+            "member_inventory": member_summary,
+            "coordinator_inventory": coordinator_summary,
+            "same_pool": same_pool,
+            "both_ready": both_ready,
+            "same_revision": same_revision,
+            "coordinator_after_member_closed": coordinator_after_member_closed,
+            "wrong_password_via_member": {"error": refused_error, "state": refused_state},
+            "redirect_to_unpinned_coordinator": unpinned_redirect,
+        }),
+    );
+    assert!(same_pool, "member login reached a different pool");
+    assert!(both_ready);
+    assert!(refused_error.is_some(), "wrong credentials were accepted");
 }
