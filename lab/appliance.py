@@ -198,7 +198,7 @@ if mount -t ext4 "$DEV" {export}; then
     else
         log "nfs service started"
     fi
-    log "rpc: $(rpcinfo -p 2>/dev/null | awk '{print $5}' | sort -u | tr '\\n' ' ')"
+    log "rpc: $(rpcinfo -p 2>/dev/null | awk '{{print $5}}' | sort -u | tr '\\n' ' ')"
     log "exports: $(exportfs 2>&1 | tr '\\n' ' ' | cut -c1-300)"
 else
     log "mount failed for $DEV"
