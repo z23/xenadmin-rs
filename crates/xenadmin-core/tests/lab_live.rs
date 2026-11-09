@@ -6093,3 +6093,100 @@ async fn lab_concurrent_description_edit_is_refused() {
     first.close().await;
     second.close().await;
 }
+
+/// VM settings, failure column: a description edit whose reply is lost because the client
+/// closes right after submitting it is recovered on restart, resolved by a recheck against
+/// the host's current value, and never repeated.
+#[tokio::test]
+#[ignore]
+async fn lab_interrupted_description_edit_resolves_on_restart() {
+    use xenadmin_core::{OperationControl, VmCommand, VmSettingEdit, VmSettingsPatch};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let value = format!("Interrupted edit at {stamp}");
+    let id = OperationId::new();
+    let (guest_id, previous, state_at_close) = {
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let c = connect(&lab, &backend, 0, false).await;
+        let guest = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .guests()
+            .find(|v| v.name.starts_with("lab-guest-"))
+            .expect("lab guest")
+            .clone();
+        let patch = VmSettingsPatch::new(vec![VmSettingEdit::Description {
+            previous: guest.description.clone(),
+            value: value.clone(),
+        }])
+        .unwrap();
+        let operation = c
+            .submit(
+                id,
+                VmCommand::Configure {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    patch,
+                },
+            )
+            .expect("edit accepted");
+        // Close at once: a single setter call completes within milliseconds.
+        tokio::task::yield_now().await;
+        let state_at_close = format!("{:?}", operation.latest().state);
+        c.close().await;
+        (guest.id, guest.description.clone(), state_at_close)
+    };
+
+    // Same state directory, new process.
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let (record, timeline) = wait_history_outcome(&c, id, 300).await;
+    let record = record.expect("interrupted record recovered");
+    let mut recheck = None;
+    let record = if record.state == OperationState::OutcomeUnknown {
+        let before = (format!("{:?}", record.state), record.detail.clone());
+        c.control_operation(id, OperationControl::Recheck)
+            .expect("recheck accepted");
+        let moved = settle(120, || {
+            c.operation_history()
+                .iter()
+                .find(|r| r.id == id)
+                .is_some_and(|r| (format!("{:?}", r.state), r.detail.clone()) != before)
+        })
+        .await;
+        let (after, more) = wait_history_outcome(&c, id, 300).await;
+        recheck = Some(json!({"before": before.1, "moved": moved, "timeline": more}));
+        after.expect("record after recheck")
+    } else {
+        record
+    };
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let current = c.latest().inventory().unwrap().vms[&guest_id]
+        .description
+        .clone();
+    let consistent = match record.state {
+        OperationState::Succeeded => current == value,
+        OperationState::Failed | OperationState::Rejected => current == previous,
+        _ => current == value || current == previous,
+    };
+    lab.record(
+        "interrupted-description-edit",
+        json!({
+            "state_at_close": state_at_close,
+            "recovered": {"state": format!("{:?}", record.state), "detail": record.detail, "timeline": timeline},
+            "recheck": recheck,
+            "description_now": if current == value { "new" } else if current == previous { "previous" } else { "other" },
+            "consistent_with_record": consistent,
+        }),
+    );
+    assert!(
+        consistent,
+        "record {:?} does not match the host's description",
+        record.state
+    );
+    c.close().await;
+}
