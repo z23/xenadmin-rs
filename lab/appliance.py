@@ -172,10 +172,12 @@ def nas_overlay(manifest):
 # Runs on every boot of the diskless appliance: install the packages shipped on the ISO,
 # prepare the data disk and export it. Progress goes to the serial console for the lab log.
 log() {{ echo "lab-nas: $*" > /dev/console; logger -t lab-nas "$*" 2>/dev/null; }}
-if apk add --quiet --allow-untrusted /media/cdrom/extra/*.apk; then
+EXTRA=$(ls -d /media/*/extra 2>/dev/null | head -n 1)
+log "media: $(ls /media | tr '\n' ' ') extra: ${{EXTRA:-none}} ($(ls "$EXTRA" 2>/dev/null | wc -l) files)"
+if out=$(apk add --allow-untrusted --force-non-repository "$EXTRA"/*.apk 2>&1); then
     log "packages installed"
 else
-    log "package installation failed"
+    log "package installation failed: $(echo "$out" | grep -v '^(' | tail -n 4 | tr '\n' ' ')"
 fi
 DEV=$(findfs LABEL=labnfs 2>/dev/null || echo /dev/vda)
 if ! blkid "$DEV" | grep -q 'TYPE="ext4"'; then
@@ -228,11 +230,12 @@ def guest_overlay(hostname="lab-tools"):
     """Alpine diskless overlay for the tools-equipped guest: DHCP, guest agent, console login."""
     start = """#!/bin/sh
 log() { echo "lab-tools: $*" > /dev/console; }
-if apk add --quiet --allow-untrusted /media/cdrom/extra/*.apk; then
+EXTRA=$(ls -d /media/*/extra 2>/dev/null | head -n 1)
+if out=$(apk add --allow-untrusted --force-non-repository "$EXTRA"/*.apk 2>&1); then
     log "guest tools installed"
     rc-service xe-guest-utilities start && log "guest agent running"
 else
-    log "guest tools installation failed"
+    log "guest tools installation failed: $(echo "$out" | tail -n 3 | tr '\n' ' ')"
 fi
 """
     buffer = io.BytesIO()
@@ -360,10 +363,11 @@ def nas(args):
     if "nas" not in manifest or "iso" not in manifest["nas"]:
         raise ValueError("Build the appliance image first with nas-image")
     nas = manifest["nas"]
-    if manage.sha256(Path(nas["iso"])) != nas["iso_sha256"]:
-        raise ValueError("Appliance image changed since it was built")
     defined = manage.virsh("list", "--all", "--name").stdout.splitlines()
     if args.action == "start":
+        # libvirt chowns an in-use image to the QEMU user, so the check belongs to start only.
+        if manage.sha256(Path(nas["iso"])) != nas["iso_sha256"]:
+            raise ValueError("Appliance image changed since it was built")
         disk = directory / f"{nas['name']}-data.qcow2"
         if not disk.exists():
             manage.run("qemu-img", "create", "-f", "qcow2", str(disk), f"{nas['data_gib']}G")

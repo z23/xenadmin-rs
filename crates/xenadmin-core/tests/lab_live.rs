@@ -45,7 +45,6 @@ struct Lab {
     password: String,
     evidence: PathBuf,
     storage: Option<LabStorage>,
-    #[allow(dead_code)] // used by the tools-guest provisioning scenario
     guest_tools_image: Option<PathBuf>,
 }
 
@@ -14584,6 +14583,338 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
         if step.get("accepted").is_some() {
             assert_eq!(step["accepted"], true, "{step}");
             assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P11-09, P08-02, P06-11, P07-14, P11-01: build a tools-equipped guest on the shared NFS
+/// repository from the lab's remastered Alpine image: import the isohybrid image as a raw
+/// disk on that repository, create a VM from the generic template there, attach the disk as
+/// its boot device and start it; wait for the guest agent to report a tools version and an
+/// address; connect and disconnect its NIC while it runs (hot plug needs PV drivers); then
+/// live-migrate it to the member and back without moving storage. The guest stays running on
+/// the coordinator for later scenarios and a guest left by an earlier run is reused.
+#[tokio::test]
+#[ignore]
+async fn lab_tools_guest_on_shared_storage() {
+    use xenadmin_core::{
+        DeviceOperation, DiskImageFormat, DiskPlacement, GuestFirmware, NicPlacement, PowerAction,
+        PowerState, TransferAction, TransferFile, TransferRequest, VmCommand, VmLifecycleOperation,
+        VmMigration,
+    };
+    let lab = Lab::load();
+    let image = lab
+        .guest_tools_image
+        .clone()
+        .expect("the manifest records a tools guest image (lab/manage.py guest-image)");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let shared: xenadmin_core::SrId = inventory
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| s.uuid.into())
+        .expect("the shared NFS repository from the storage scenario");
+    let network = inventory
+        .details
+        .pifs
+        .values()
+        .find(|p| p.host == Some(coordinator) && p.management == Some(true))
+        .and_then(|p| p.network)
+        .expect("management network");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+
+    let vm = if let Some(existing) = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+    {
+        steps.push(json!({"step": "reuse the tools guest", "name": existing.name, "power_state": format!("{:?}", existing.power_state)}));
+        existing.id
+    } else {
+        // Import the bootable image as a raw disk on the shared repository.
+        let disk_name = format!("lab-tools-image-{stamp}");
+        let file = TransferFile::disk_source(&image, DiskImageFormat::Raw).expect("inspect image");
+        let started = std::time::Instant::now();
+        let import = c
+            .transfer(
+                OperationId::new(),
+                c.latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                TransferRequest {
+                    action: TransferAction::ImportDisk {
+                        sr: shared,
+                        name: disk_name.clone(),
+                        format: DiskImageFormat::Raw,
+                    },
+                    file,
+                },
+            )
+            .expect("import accepted");
+        let outcome = wait_outcome(&import, 900).await;
+        let imported = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details
+                    .vdis
+                    .values()
+                    .any(|v| v.name == disk_name && v.sr == Some(shared))
+            })
+        })
+        .await;
+        steps.push(json!({"step": "import the tools image onto the shared repository", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "read_back": imported}));
+        let vdi = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .details
+            .vdis
+            .values()
+            .find(|v| v.name == disk_name && v.sr == Some(shared))
+            .map(|v| v.id)
+            .expect("imported disk listed");
+        let template = inventory
+            .vms
+            .values()
+            .find(|v| v.is_template && v.name == "Other install media")
+            .expect("generic template");
+        let name = format!("lab-tools-{stamp}");
+        let create = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: c.latest().observe_vm(template.id).unwrap(),
+                    operation: VmLifecycleOperation::Create {
+                        name: name.clone(),
+                        description: "Lab guest with xe-guest-utilities on the shared repository"
+                            .into(),
+                        sr: shared,
+                        network,
+                        iso: None,
+                        vcpus: 1,
+                        memory: 512 * 1024 * 1024,
+                        disk_size: None,
+                        firmware: GuestFirmware::Bios,
+                        bios_host: None,
+                    },
+                },
+            )
+            .expect("creation accepted");
+        let outcome = wait_vm_outcome(&create, 300).await;
+        let vm = outcome.created_vm.expect("created VM identity");
+        let visible = settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms.contains_key(&vm))
+        })
+        .await;
+        steps.push(json!({"step": "create the tools guest", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": visible}));
+        let mut entry = device_op(
+            &c,
+            vm,
+            DeviceOperation::AttachDisk {
+                vdi,
+                device: "0".into(),
+                read_only: false,
+            },
+            300,
+        )
+        .await;
+        entry["step"] = json!("attach the imported disk as the boot device");
+        entry["read_back"] = json!(
+            settle(60, || c.latest().inventory().is_some_and(|i| i
+                .details
+                .vm_disks
+                .get(&vm)
+                .is_some_and(|d| !d.is_empty())))
+            .await
+        );
+        steps.push(entry);
+        vm
+    };
+    if c.latest().inventory().unwrap().vms[&vm].power_state != PowerState::Running {
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!("start the tools guest");
+        steps.push(start);
+    }
+    let agent = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            let g = i.details.vms.get(&vm)?.guest_metrics?;
+            let m = i.details.guest_metrics.get(&g)?;
+            Some((
+                m.tools_version.clone(),
+                m.networks.clone(),
+                m.os_version.clone(),
+            ))
+        })
+    };
+    let reported = settle(240, || {
+        agent(&c).is_some_and(|(tools, networks, _)| !tools.is_empty() && !networks.is_empty())
+    })
+    .await;
+    let (tools, networks, os) = agent(&c).unwrap_or_default();
+    steps.push(json!({"step": "guest agent reports tools and address", "read_back": reported, "tools_version": tools, "network_keys": networks.keys().collect::<Vec<_>>(), "os": os.get("name"), "host": c.latest().inventory().unwrap().vms[&vm].host.map(|h| inventory.hosts[&h].name.clone())}));
+
+    // Hot plug with PV drivers present.
+    let nic = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .vifs
+        .values()
+        .find(|v| v.vm == Some(vm))
+        .cloned()
+        .expect("the guest's NIC");
+    let vif = nic.id;
+    let vif_view = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.vifs.get(&vif).cloned())
+    };
+    let hotplug = settle(60, || {
+        vif_view(&c).is_some_and(|v| {
+            v.allowed_operations
+                .as_deref()
+                .is_some_and(|ops| ops.iter().any(|o| o == "unplug"))
+        })
+    })
+    .await;
+    steps.push(json!({"step": "NIC hot unplug advertised", "read_back": hotplug, "allowed_operations": vif_view(&c).and_then(|v| v.allowed_operations)}));
+    if hotplug {
+        let mut entry = device_op(&c, vm, DeviceOperation::UnplugNic { vif }, 180).await;
+        entry["step"] = json!("disconnect the NIC while running");
+        entry["read_back"] = json!(
+            settle(60, || vif_view(&c)
+                .is_some_and(|v| v.currently_attached == Some(false)))
+            .await
+        );
+        steps.push(entry);
+        let mut entry = device_op(&c, vm, DeviceOperation::PlugNic { vif }, 180).await;
+        entry["step"] = json!("reconnect the NIC while running");
+        entry["read_back"] = json!(
+            settle(60, || vif_view(&c)
+                .is_some_and(|v| v.currently_attached == Some(true)))
+            .await
+        );
+        steps.push(entry);
+    }
+
+    // Live migration on shared storage: disks stay where they are.
+    let current = c.latest().inventory().unwrap().clone();
+    let source = current.vms[&vm].host.expect("resident host");
+    for (label, destination) in [
+        (
+            "live-migrate to the member on shared storage",
+            if source == coordinator {
+                member
+            } else {
+                coordinator
+            },
+        ),
+        ("live-migrate back", source),
+    ] {
+        let now = c.latest().inventory().unwrap().clone();
+        let disks = now.details.vm_disks[&vm]
+            .iter()
+            .filter_map(|b| now.details.vbds.get(b))
+            .filter(|b| b.kind == "Disk")
+            .filter_map(|b| {
+                let vdi = b.vdi?;
+                let sr = now.details.vdis.get(&vdi)?.sr?;
+                Some(DiskPlacement {
+                    vdi,
+                    expected_sr: sr,
+                    destination_sr: sr,
+                })
+            })
+            .collect::<Vec<_>>();
+        let networks = now
+            .details
+            .vifs
+            .values()
+            .filter(|v| v.vm == Some(vm))
+            .filter_map(|v| {
+                let network = v.network?;
+                Some(NicPlacement {
+                    vif: v.id,
+                    expected_network: network,
+                    destination_network: network,
+                })
+            })
+            .collect::<Vec<_>>();
+        let advertised = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details.vms.get(&vm).is_some_and(|d| {
+                    d.allowed_operations
+                        .as_ref()
+                        .is_some_and(|ops| ops.iter().any(|op| op == "pool_migrate"))
+                })
+            })
+        })
+        .await;
+        let started = std::time::Instant::now();
+        let migration = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Migrate {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    operation: VmMigration {
+                        destination,
+                        expected_host: now.vms[&vm].host,
+                        expected_affinity: None,
+                        live: true,
+                        disks,
+                        networks,
+                        transfer_network: None,
+                    },
+                },
+            )
+            .expect("migration accepted");
+        let (row, progress) = wait_vm_outcome_sampled(&migration, 900).await;
+        let placed = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.vms[&vm].host == Some(destination)
+                    && i.vms[&vm].power_state == PowerState::Running
+            })
+        })
+        .await;
+        steps.push(json!({"step": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed, "pool_migrate_advertised": advertised, "elapsed_ms": started.elapsed().as_millis() as u64, "progress_samples": progress, "destination": inventory.hosts[&destination].name}));
+    }
+    c.close().await;
+    lab.record(
+        "tools-guest-on-shared-storage",
+        json!({"vm": vm.to_string(), "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
         }
         if step.get("read_back").is_some() {
             assert_eq!(step["read_back"], true, "{step}");
