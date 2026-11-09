@@ -150,6 +150,9 @@ pub struct ConnectionOptions {
     pub accept_invalid_certificates: bool,
     pub read_only: bool,
     pub request_timeout: Duration,
+    /// How long a cross-pool move waits for XAPI to remove the source VM, its attachments
+    /// and its disks after the migration task has reported success.
+    pub cross_pool_cleanup_wait: Duration,
     pub expected_pool: Option<crate::PoolId>,
     pub fallback_endpoints: Vec<Endpoint>,
     additional_pins: BTreeMap<String, CertificateFingerprint>,
@@ -166,6 +169,7 @@ impl ConnectionOptions {
             accept_invalid_certificates: false,
             read_only: false,
             request_timeout: Duration::from_secs(45),
+            cross_pool_cleanup_wait: Duration::from_secs(60),
             expected_pool: None,
             fallback_endpoints: Vec::new(),
             additional_pins: BTreeMap::new(),

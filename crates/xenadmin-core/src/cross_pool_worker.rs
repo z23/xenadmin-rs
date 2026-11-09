@@ -335,7 +335,34 @@ impl ResourceRequest {
         if self.stopped_after_recovery() {
             return Ok(());
         }
-        tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), result=backend::verify_source(source,self.cross_plan()?)=>result? };
+        // XAPI removes the source VM and its devices after the migration task has already
+        // reported success, and releases the source disks only on a later storage scan. Wait
+        // within the connection's bound instead of leaving every ordinary move unknown.
+        let wait = source.options().cross_pool_cleanup_wait;
+        let started = std::time::Instant::now();
+        let mut waited = false;
+        let disposition = loop {
+            let result = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), result=backend::verify_source(source,self.cross_plan()?)=>result };
+            let elapsed = started.elapsed();
+            match result {
+                Ok(backend::SourceDisposition::Clean) => break backend::SourceDisposition::Clean,
+                Ok(pending @ backend::SourceDisposition::DisksPending(_))
+                    if elapsed >= wait.min(Duration::from_secs(10)) =>
+                {
+                    break pending;
+                }
+                Ok(backend::SourceDisposition::DisksPending(_)) => {}
+                Err(Error::Protocol(reason))
+                    if reason.contains("not yet verified") && elapsed < wait => {}
+                Err(error) => return Err(error),
+            }
+            if !waited {
+                waited = true;
+                self.record.detail = "Destination verified; waiting for XAPI to finish removing the source VM, its devices and disks".into();
+                let _ = self.save(journal).await;
+            }
+            tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), _=tokio::time::sleep(Duration::from_secs(2))=>{} }
+        };
         self.reload(journal)?;
         if self.stopped_after_recovery() {
             return Ok(());
@@ -347,7 +374,14 @@ impl ResourceRequest {
         for step in &mut self.record.steps {
             step.state = StepState::Verified;
         }
-        self.record.detail = if self.cross_plan()?.operation.mode.copy() { "Copy verified in the destination pool with new identities and MAC addresses; source VM remains halted and unchanged" } else { "Move verified in the destination pool; source VM and exclusive source disks were removed by XAPI" }.into();
+        self.record.detail = if self.cross_plan()?.operation.mode.copy() {
+            "Copy verified in the destination pool with new identities and MAC addresses; source VM remains halted and unchanged".into()
+        } else {
+            match disposition {
+                backend::SourceDisposition::Clean => "Move verified in the destination pool; source VM and exclusive source disks were removed by XAPI".into(),
+                backend::SourceDisposition::DisksPending(count) => format!("Move verified in the destination pool; the source VM and its attachments were removed, and {count} source disk record(s) remain until XAPI's next storage scan releases them"),
+            }
+        };
         self.save(journal).await?;
         if let Some(task) = &self.record.task {
             let _ = tokio::time::timeout(

@@ -26,6 +26,10 @@ enum Fault {
     Pending,
     DelaySubmit,
     RetainedSource,
+    /// XAPI removes the moved source VM and devices a moment after the task succeeds.
+    LaggingSource,
+    /// The destination releases an unrelated disk record between review and preflight.
+    DestinationReleases,
 }
 struct Control {
     source: Records,
@@ -108,7 +112,7 @@ fn apply(c: &mut Control) {
     if !c.copy
         && !matches!(
             c.fault,
-            Fault::Failure | Fault::Pending | Fault::RetainedSource
+            Fault::Failure | Fault::Pending | Fault::RetainedSource | Fault::LaggingSource
         )
     {
         for key in [
@@ -125,6 +129,12 @@ fn apply(c: &mut Control) {
 }
 async fn fixture(fault: Fault, live: bool) -> Fixture {
     let mut destination = records(false, live);
+    if fault == Fault::DestinationReleases {
+        destination.insert(
+            "OpaqueRef:VDI:stale".into(),
+            json!({"uuid":id(77),"name_label":"Released after review","SR":"OpaqueRef:SR:storage","virtual_size":"1024","type":"user","managed":true,"sharable":false,"read_only":false,"is_a_snapshot":false,"missing":false,"VBDs":[],"other_config":{},"sm_config":{},"snapshot_of":"OpaqueRef:NULL","cbt_enabled":false}),
+        );
+    }
     if matches!(fault, Fault::Collision | Fault::WrongResult) {
         let mut existing = records(true, false)["OpaqueRef:VM:guest"].clone();
         if fault == Fault::WrongResult {
@@ -161,10 +171,17 @@ async fn fixture(fault: Fault, live: bool) -> Fixture {
             let reply=if method=="event.from" {
                 json!({"token":"cross-pool-token","events":if p[2]=="" {rows.iter().map(|(reference,snapshot)|json!({"class":reference.split(':').nth(1).unwrap().to_ascii_lowercase(),"operation":"add","ref":reference,"snapshot":snapshot})).collect::<Vec<_>>()}else{vec![]}})
             } else if let Some(class)=method.strip_suffix(".get_all_records") {
-                json!(rows.iter().filter(|(reference,_)|reference.starts_with(&format!("OpaqueRef:{class}:"))).collect::<BTreeMap<_,_>>())
+                let listing = json!(rows.iter().filter(|(reference,_)|reference.starts_with(&format!("OpaqueRef:{class}:"))).collect::<BTreeMap<_,_>>());
+                if !source && class=="VDI" && fault==Fault::DestinationReleases { rows.remove("OpaqueRef:VDI:stale"); }
+                listing
             } else if let Some(class)=method.strip_suffix(".get_by_uuid") {
-                match rows.iter().find(|(reference,v)| reference.starts_with(&format!("OpaqueRef:{class}:"))&&v["uuid"]==p[1]) {
-                    Some((reference,_))=>json!(reference),None=>return Some(RpcReply::Json(json!({"error":{"message":"UUID_INVALID","data":[class]}})))
+                let found = rows.iter().find(|(reference,v)| reference.starts_with(&format!("OpaqueRef:{class}:"))&&v["uuid"]==p[1]).map(|(reference,_)| json!(reference));
+                // The lagging source answers its first post-move lookup, then its records vanish.
+                if source && sent && fault==Fault::LaggingSource && class=="VM" && p[1]==json!(id(3)) {
+                    for key in ["OpaqueRef:VM:guest","OpaqueRef:VDI:disk","OpaqueRef:VBD:disk","OpaqueRef:VIF:nic"] { rows.remove(key); }
+                }
+                match found {
+                    Some(reference)=>reference,None=>return Some(RpcReply::Json(json!({"error":{"message":"UUID_INVALID","data":[class]}})))
                 }
             } else if method.ends_with(".get_record") {
                 if (source && method=="task.get_record"&&fault==Fault::PollApi) || (!source&&method=="VM.get_record"&&sent&&fault==Fault::VerifyApi) {
@@ -206,6 +223,8 @@ async fn fixture(fault: Fault, live: bool) -> Fixture {
 }
 async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> Connection {
     let mut options = ConnectionOptions::new(mock.endpoint.clone());
+    // Fixtures that keep source records only need a short wait before the outcome is unknown.
+    options.cross_pool_cleanup_wait = Duration::from_secs(3);
     options.read_only = readonly;
     let c = backend.connect(
         options,
@@ -252,7 +271,8 @@ fn selection(source: &Connection, dest: &Connection, mode: CrossPoolMode) -> Cro
     }
 }
 async fn done(op: &ResourceOperation) -> Arc<ResourceOperationRecord> {
-    tokio::time::timeout(deadline(5), async {
+    // A move whose source records never go away waits ten seconds before it is unknown.
+    tokio::time::timeout(deadline(20), async {
         loop {
             let r = op.latest();
             if r.state.terminal() || r.state == OperationState::OutcomeUnknown {
@@ -413,6 +433,59 @@ async fn lost_or_failed_task_receipts_remain_unknown_and_rechecks_never_replay()
         source.close().await;
         dest.close().await;
     }
+}
+
+/// A destination record released between review and preflight is not an arrival and must
+/// not send the operator back to the review.
+#[tokio::test]
+async fn destination_releases_between_review_and_preflight_do_not_refuse_the_move() {
+    let f = fixture(Fault::DestinationReleases, false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let source = connect(&f.source, &backend, false).await;
+    let dest = connect(&f.destination, &backend, false).await;
+    let op = source
+        .transfer_vm_to_pool(
+            OperationId::new(),
+            selection(&source, &dest, CrossPoolMode::MoveHalted),
+            &dest,
+        )
+        .unwrap();
+    let result = done(&op).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert_eq!(count(&f.source, "Async.VM.migrate_send"), 1);
+    source.close().await;
+    dest.close().await;
+}
+
+/// XAPI reports the migration task complete before it has removed the source VM and its
+/// devices; the move waits for that cleanup instead of ending unknown.
+#[tokio::test]
+async fn move_waits_for_the_source_cleanup_that_follows_the_task() {
+    let f = fixture(Fault::LaggingSource, false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let source = connect(&f.source, &backend, false).await;
+    let dest = connect(&f.destination, &backend, false).await;
+    let op = source
+        .transfer_vm_to_pool(
+            OperationId::new(),
+            selection(&source, &dest, CrossPoolMode::MoveHalted),
+            &dest,
+        )
+        .unwrap();
+    let result = done(&op).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert!(
+        !f.control
+            .lock()
+            .unwrap()
+            .source
+            .contains_key("OpaqueRef:VM:guest")
+    );
+    assert_eq!(count(&f.source, "Async.VM.migrate_send"), 1);
+    source.close().await;
+    dest.close().await;
 }
 
 #[tokio::test]

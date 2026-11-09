@@ -627,9 +627,20 @@ pub(crate) async fn revalidate(
 ) -> Result<Prepared, Error> {
     pool(source, plan.source_pool).await?;
     let current = baseline(destination).await?;
+    // Only arrivals since the review can be mistaken for this transfer's result; records
+    // the destination released meanwhile (a storage scan after an earlier move) are not
+    // a reason to send the operator back to the review.
+    let arrivals = current.iter().any(|(class, ids)| {
+        ids.iter().any(|id| {
+            !plan
+                .baseline
+                .get(class)
+                .is_some_and(|known| known.contains(id))
+        })
+    });
     require(
-        current == plan.baseline,
-        "Destination identities changed during preflight; reopen this review",
+        !arrivals,
+        "Destination identities appeared during preflight; reopen this review",
     )?;
     // Fresh collision checks immediately before dispatch also cover arrivals since review.
     let mut latest = plan.clone();
@@ -853,7 +864,18 @@ pub(crate) async fn verify_destination(
     Ok(created)
 }
 
-pub(crate) async fn verify_source(source_session: &Session, plan: &Plan) -> Result<(), Error> {
+/// What a move left behind on the source pool once its VM and attachments are gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceDisposition {
+    Clean,
+    /// Source disk records XAPI has not yet garbage-collected; their count.
+    DisksPending(usize),
+}
+
+pub(crate) async fn verify_source(
+    source_session: &Session,
+    plan: &Plan,
+) -> Result<SourceDisposition, Error> {
     pool(source_session, plan.source_pool).await?;
     if plan.operation.mode.copy() {
         let (_, _, current, shape) = source(source_session, &plan.operation).await?;
@@ -861,36 +883,44 @@ pub(crate) async fn verify_source(source_session: &Session, plan: &Plan) -> Resu
             current == plan.graph && shape == plan.shape,
             "Source guest changed during copy; destination exists but source preservation is unverified",
         )?;
-    } else {
+        return Ok(SourceDisposition::Clean);
+    }
+    require(
+        snapshots::optional_record(source_session, "VM", &plan.operation.vm.to_string())
+            .await?
+            .is_none(),
+        "Destination exists but source VM removal is not yet verified",
+    )?;
+    for (class, id) in plan
+        .graph
+        .disks
+        .iter()
+        .map(|b| ("VBD", b.id.uuid()))
+        .chain(plan.graph.nics.iter().map(|n| ("VIF", n.id.uuid())))
+    {
         require(
-            snapshots::optional_record(source_session, "VM", &plan.operation.vm.to_string())
+            snapshots::optional_record(source_session, class, &id.to_string())
                 .await?
                 .is_none(),
-            "Destination exists but source VM removal is not yet verified",
+            "Destination exists but source device cleanup is not yet verified",
         )?;
-        for (class, id) in plan
-            .graph
-            .disks
-            .iter()
-            .map(|b| ("VBD", b.id.uuid()))
-            .chain(plan.graph.nics.iter().map(|n| ("VIF", n.id.uuid())))
-            .chain(
-                plan.graph
-                    .disks
-                    .iter()
-                    .filter_map(|b| b.disk.as_ref())
-                    .map(|d| ("VDI", d.id.uuid())),
-            )
+    }
+    // Source disks are released by the storage manager's own scan after the move, which
+    // can lag the migration task by a while; they are reported rather than treated as doubt.
+    let mut pending = 0;
+    for disk in plan.graph.disks.iter().filter_map(|b| b.disk.as_ref()) {
+        if snapshots::optional_record(source_session, "VDI", &disk.id.to_string())
+            .await?
+            .is_some()
         {
-            require(
-                snapshots::optional_record(source_session, class, &id.to_string())
-                    .await?
-                    .is_none(),
-                "Destination exists but source device cleanup is not yet verified",
-            )?;
+            pending += 1;
         }
     }
-    Ok(())
+    Ok(if pending == 0 {
+        SourceDisposition::Clean
+    } else {
+        SourceDisposition::DisksPending(pending)
+    })
 }
 
 #[cfg(test)]
