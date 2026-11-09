@@ -14113,3 +14113,134 @@ async fn lab_storage_migration_refused_while_a_snapshot_exists() {
         }
     }
 }
+
+/// P11-07, P05-01: take a disk snapshot of the running guest, export that snapshot as an
+/// uncompressed XVA into the lab's private transfer directory with the client's checksum and
+/// identity verification, record the archive size, then delete the snapshot and the archive.
+#[tokio::test]
+#[ignore]
+async fn lab_snapshot_xva_export() {
+    use xenadmin_core::{
+        ExportSource, PowerAction, PowerState, SnapshotName, TransferAction, TransferFile,
+        TransferRequest, VmCommand, XvaCompression,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let vm = guest.id;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    if guest.power_state != PowerState::Running {
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!("start the guest");
+        steps.push(start);
+    }
+    let snapshot_name = format!("lab-export-{stamp}");
+    let snapshot = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                name: SnapshotName::new(&snapshot_name).unwrap(),
+            },
+        )
+        .expect("snapshot accepted");
+    let row = wait_vm_outcome(&snapshot, 300).await;
+    let listed = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.snapshots.for_vm(vm).any(|s| s.name == snapshot_name))
+    })
+    .await;
+    steps.push(json!({"step": "take a disk snapshot", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": listed}));
+    let snapshot_id = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .snapshots
+        .for_vm(vm)
+        .find(|s| s.name == snapshot_name)
+        .map(|s| s.id)
+        .expect("snapshot listed");
+
+    let directory = lab.evidence.parent().unwrap().join("transfers");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("{snapshot_name}.xva"));
+    let started = std::time::Instant::now();
+    let export = c
+        .transfer(
+            OperationId::new(),
+            c.latest()
+                .observe_resource(ResourceTarget::Pool(inventory.pool_id))
+                .unwrap(),
+            TransferRequest {
+                action: TransferAction::ExportXva {
+                    source: ExportSource::Snapshot {
+                        snapshot: snapshot_id,
+                        parent: vm,
+                    },
+                    compression: XvaCompression::Uncompressed,
+                },
+                file: TransferFile::destination(&path).expect("export destination"),
+            },
+        )
+        .expect("snapshot export accepted");
+    let outcome = wait_outcome(&export, 1800).await;
+    let size = std::fs::metadata(&path).map(|m| m.len()).ok();
+    steps.push(json!({"step": "export the snapshot as an uncompressed XVA", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": size, "read_back": size.is_some_and(|s| s > 0),
+        "steps": outcome.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()}));
+    let _ = std::fs::remove_file(&path);
+
+    let current = c.latest().inventory().unwrap().clone();
+    let disks = current
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.snapshot == Some(snapshot_id) && b.kind == "Disk")
+        .filter_map(|b| b.vdi)
+        .collect::<Vec<_>>();
+    let deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(vm, snapshot_id).unwrap(),
+                disks,
+            },
+        )
+        .expect("snapshot deletion accepted");
+    let row = wait_vm_outcome(&deletion, 300).await;
+    let gone = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.snapshots.for_vm(vm).all(|s| s.id != snapshot_id))
+    })
+    .await;
+    steps.push(json!({"step": "delete the snapshot", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": gone}));
+    c.close().await;
+    lab.record(
+        "snapshot-xva-export",
+        json!({"guest": guest.name, "snapshot": snapshot_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
