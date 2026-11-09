@@ -60,6 +60,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Cross-pool move round trip | P11-04 | Passed after fixes | The halted guest was moved from its pool to the standalone host and back (and once more each way after an interrupted attempt left it on the standalone host), each leg in 25 to 35 s with both disks relocated, the VM UUID preserved by XAPI, the source pool verified empty of the VM, its attachments and its disks, and the destination verified with the reviewed placement; the guest started again on its home pool. The first attempts ended unknown or refused (findings 9 and 10) |
 | XVA export and import across pools | P11-06 | Passed | The halted guest was exported uncompressed to a 74.6 MB XVA file on the workstation in 5.5 s (the allocated blocks of its 68 MiB image and 1 GiB data disks) with the export verified against the saved file; the file was imported into the standalone pool's local repository in 2.5 s as a new VM with two disks whose identities and storage were verified; the import was deleted with its disks, the file removed and the guest started again |
 | Pool name and member enable state | P13-03, P12-03 | Passed after fix | The pool XCP-ng had left unnamed was renamed through the client once the review expected its empty label (finding 11); the client refuses to set an empty name by design, so the lab pool keeps a lasting name and later runs rename and restore it; the second member was disabled and enabled again with each state read back |
+| Member toolstack restart and reboot | P12-03, P12-05, P12-06 | Passed after fixes | The empty second member entered maintenance; its toolstack restart was confirmed by a newer agent start time after 16 s once the client waited for it (finding 12); the restart had re-enabled the host with the marker still set, so maintenance was exited and entered again through the client; the reviewed reboot was confirmed by a newer boot time after 156 s; exiting maintenance then repeated the enable that XCP-ng refused with HOST_STILL_BOOTING until it succeeded, and the member was enabled with its marker cleared |
 
 ## Findings
 
@@ -155,6 +156,24 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    review". The inventory now also carries the pool's own label, the reviews expect that,
    and the editor keeps showing the placeholder. Unit coverage was added for the empty
    label and for the placeholder being refused.
+
+12. **A toolstack restart's new start marker arrives after the call returns.**
+   `host.restart_agent` returns at once and the host publishes its new `agent_start_time`
+   some twenty seconds later; a host reboot publishes its new `boot_time` minutes later on
+   the nested lab. The client checked the marker immediately and left the operation
+   OutcomeUnknown ("not confirmed by a newer start marker") although the restart had
+   happened. It now waits for the newer marker within the connection's host restart bound
+   (ten minutes by default), treating an unreachable host as still restarting, and the
+   fixtures bound that wait so a marker that never changes still settles quickly. A
+   toolstack restart also re-enables scheduling on a host that carries the client's
+   maintenance marker, so the host is then enabled and marked at once; the client refused
+   both entering maintenance again and exiting it from that state, leaving the marker
+   stuck. Exiting maintenance now accepts an already enabled host that still carries the
+   marker, repeats the harmless enable call and clears the marker. A host that has just
+   rebooted also refuses `host.enable` with HOST_STILL_BOOTING for a while after its new
+   boot time is visible; the enable is now repeated every few seconds within the same
+   restart bound instead of failing the exit from maintenance. Unit coverage was added for
+   both.
 
 ## Console observation
 

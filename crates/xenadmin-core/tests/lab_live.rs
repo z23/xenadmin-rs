@@ -4580,3 +4580,217 @@ async fn lab_pool_metadata_and_host_enable() {
     lab.record("pool-metadata-and-host-enable", json!({"steps": steps}));
     c.close().await;
 }
+
+/// P12-03, P12-05 and P12-06: the empty second member is put into maintenance, its
+/// toolstack restarted, the host rebooted through the reviewed operation and maintenance
+/// exited once it is back, each step read back from the inventory.
+#[tokio::test]
+#[ignore]
+async fn lab_member_toolstack_restart_and_reboot() {
+    use xenadmin_core::{HostOperation, ResourceCommand, ResourceTarget};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory.coordinator.expect("coordinator");
+    let member = *inventory
+        .hosts
+        .keys()
+        .find(|h| **h != coordinator)
+        .expect("a member");
+    let member_name = inventory.hosts[&member].name.clone();
+    assert!(
+        !inventory
+            .vms
+            .values()
+            .any(|v| v.host == Some(member) && !v.is_control_domain),
+        "the member must not host guests"
+    );
+    let mut steps = Vec::new();
+    async fn host_op(
+        c: &Connection,
+        host: xenadmin_core::HostId,
+        operation: HostOperation,
+        seconds: u64,
+    ) -> std::sync::Arc<xenadmin_core::ResourceOperationRecord> {
+        let op = c
+            .submit_resource(
+                OperationId::new(),
+                ResourceCommand::Host {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Host(host))
+                        .unwrap(),
+                    operation,
+                },
+            )
+            .expect("host operation accepted");
+        wait_outcome(&op, seconds).await
+    }
+    let details = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.hosts.get(&member).cloned())
+    };
+
+    // A toolstack restart re-enables a host that still carries the client's maintenance
+    // marker (an earlier interrupted run can leave that state); exit maintenance first then.
+    if inventory.hosts[&member].enabled
+        && details(&c).and_then(|h| h.maintenance_mode) == Some(true)
+    {
+        let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
+        steps.push(json!({"step": "clear a stale maintenance marker", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+
+    // Maintenance.
+    let outcome = host_op(
+        &c,
+        member,
+        HostOperation::EnterMaintenance {
+            expected_enabled: inventory.hosts[&member].enabled,
+            resident_vms: Vec::new(),
+        },
+        300,
+    )
+    .await;
+    let disabled = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| !i.hosts[&member].enabled)
+    })
+    .await;
+    steps.push(json!({"step": "enter maintenance", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": disabled}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+
+    // Toolstack restart.
+    let agent_before = details(&c)
+        .and_then(|h| h.agent_start_time)
+        .expect("agent start time");
+    let started = std::time::Instant::now();
+    let outcome = host_op(
+        &c,
+        member,
+        HostOperation::RestartToolstack {
+            expected_agent_start_time: agent_before.clone(),
+        },
+        600,
+    )
+    .await;
+    let restarted = settle(300, || {
+        details(&c)
+            .and_then(|h| h.agent_start_time)
+            .is_some_and(|t| t != agent_before)
+    })
+    .await;
+    steps.push(json!({"step": "restart toolstack", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "agent_start_time_changed": restarted}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+
+    // The toolstack restart re-enables the host while the client's maintenance marker
+    // stays (finding 12); the operator's way back is exiting maintenance, which clears the
+    // marker, and entering it again before the reviewed reboot.
+    if c.latest()
+        .inventory()
+        .is_some_and(|i| i.hosts[&member].enabled)
+    {
+        let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
+        steps.push(json!({"step": "clear the marker the restart left", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        let outcome = host_op(
+            &c,
+            member,
+            HostOperation::EnterMaintenance {
+                expected_enabled: true,
+                resident_vms: Vec::new(),
+            },
+            300,
+        )
+        .await;
+        let disabled = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| !i.hosts[&member].enabled)
+        })
+        .await;
+        steps.push(json!({"step": "enter maintenance again", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": disabled}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+
+    // Reboot.
+    let boot_before = details(&c).and_then(|h| h.boot_time).expect("boot time");
+    let started = std::time::Instant::now();
+    let outcome = host_op(
+        &c,
+        member,
+        HostOperation::Reboot {
+            expected_boot_time: boot_before.clone(),
+        },
+        900,
+    )
+    .await;
+    let rebooted = settle(900, || {
+        details(&c)
+            .and_then(|h| h.boot_time)
+            .is_some_and(|t| t != boot_before)
+    })
+    .await;
+    steps.push(json!({"step": "reboot", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "boot_time_changed": rebooted}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        rebooted,
+        "the member did not come back with a new boot time"
+    );
+
+    // Exit maintenance.
+    let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
+    let enabled = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.hosts[&member].enabled)
+    })
+    .await;
+    steps.push(json!({"step": "exit maintenance", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": enabled}));
+    lab.record(
+        "member-toolstack-restart-and-reboot",
+        json!({"member": member_name, "steps": steps}),
+    );
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(enabled);
+    c.close().await;
+}

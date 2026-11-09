@@ -90,11 +90,14 @@ provisioning from an imported bootable image, console input with guest data inte
 reviewed snapshot restore, the power matrix, live migration, metrics, property edits and a
 native desktop session with console keyboard input on a lab that has no XO service, a
 coordinator power loss under a live session, a snapshot create interrupted by a client restart,
-snapshot clones to VM and template, and the halted-guest disk lifecycle, plus six host-behaviour
-findings that were fixed, one host durability observation and one open upstream accessibility
-finding. Member failover, the remaining interruption paths, pointer and Orca qualification and an
-XO-managed VM remain qualification gates. Milestones remain open until their retained workflows
-and relevant acceptance checks pass.
+snapshot clones to VM and template, the halted-guest disk lifecycle, member login and pool
+sharing, internal network and NIC lifecycle, cross-pool copy and move round trips to a
+standalone pool, XVA export and import, pool rename and member enable, plus eleven
+host-behaviour findings that were fixed, one host durability observation and one open upstream
+accessibility finding. Member failover, the remaining interruption paths, OVF transfers,
+storage administration, pointer and Orca qualification and an XO-managed VM remain
+qualification gates. Milestones remain open until their retained workflows and relevant
+acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols
 
