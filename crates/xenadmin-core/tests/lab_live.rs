@@ -3742,3 +3742,294 @@ async fn lab_internal_network_and_nic_lifecycle() {
     assert_eq!(nics_after, original_nics, "the guest's own NICs changed");
     c.close().await;
 }
+
+/// P01-06, P11-07 and the transfer rows: with the third host standalone, the halted lab
+/// guest is copied across pools over the lab network, the copy is booted on the other pool
+/// and reports the data-disk marker through its console, and the copy is then deleted with
+/// its disks; both pools stay connected in one client throughout and the guest is started
+/// again at the end.
+#[tokio::test]
+#[ignore]
+async fn lab_cross_pool_copy_and_verify() {
+    use xenadmin_core::{
+        CrossPoolMode, CrossPoolVmOperation, CrossPoolVmSelection, DiskPlacement, NicPlacement,
+        PowerAction, PowerState, ResourceTarget, VmCommand, VmLifecycleOperation,
+    };
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let gateway = std::env::var("XENADMIN_LAB_GATEWAY").unwrap_or_else(|_| "192.168.254.1".into());
+    let port: u16 = 8000;
+    let copy_ip =
+        std::env::var("XENADMIN_LAB_COPY_IP").unwrap_or_else(|_| "192.168.254.102".into());
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let source = connect(&lab, &backend, 0, false).await;
+    let destination = connect(&lab, &backend, 2, false).await;
+    let source_inventory = source.latest().inventory().unwrap().clone();
+    let destination_inventory = destination.latest().inventory().unwrap().clone();
+    assert_ne!(
+        source_inventory.pool_id, destination_inventory.pool_id,
+        "the third host must be a separate pool; run the reviewed ejection first"
+    );
+    let guest = source_inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let mut steps = Vec::new();
+
+    // Halt the guest for a halted copy.
+    if guest.power_state == PowerState::Running {
+        let shutdown = source
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: source.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            source
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Halted)
+        })
+        .await;
+        steps.push(json!({"step": "clean shutdown", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": halted}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert!(halted);
+    }
+
+    // Placement: every disk to the destination host's local repository, the NIC to the
+    // destination network with the same name, transfer over the destination host's address.
+    let source_inventory = source.latest().inventory().unwrap().clone();
+    let destination_host = *destination_inventory
+        .hosts
+        .keys()
+        .next()
+        .expect("destination host");
+    let destination_sr =
+        local_sr_of(&destination_inventory, destination_host).expect("destination repository");
+    let disks = source_inventory.details.vm_disks[&guest.id]
+        .iter()
+        .filter_map(|vbd| source_inventory.details.vbds.get(vbd))
+        .filter(|b| b.kind == "Disk")
+        .filter_map(|b| {
+            let vdi = b.vdi?;
+            Some(DiskPlacement {
+                vdi,
+                expected_sr: source_inventory.details.vdis.get(&vdi)?.sr?,
+                destination_sr,
+            })
+        })
+        .collect::<Vec<_>>();
+    let networks = source_inventory
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(guest.id))
+        .filter_map(|v| {
+            let network = v.network?;
+            let name = &source_inventory
+                .networks
+                .iter()
+                .find(|n| xenadmin_core::NetworkId::from(n.uuid) == network)?
+                .name;
+            let destination_network = destination_inventory
+                .networks
+                .iter()
+                .find(|n| &n.name == name)?;
+            Some(NicPlacement {
+                vif: v.id,
+                expected_network: network,
+                destination_network: destination_network.uuid.into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !disks.is_empty() && !networks.is_empty(),
+        "placement incomplete"
+    );
+    let transfer_network = networks[0].destination_network;
+    let selection = CrossPoolVmSelection {
+        source: source.latest().observe_vm(guest.id).unwrap(),
+        destination: destination
+            .latest()
+            .observe_resource(ResourceTarget::Pool(destination_inventory.pool_id))
+            .unwrap(),
+        operation: CrossPoolVmOperation {
+            vm: guest.id,
+            destination_pool: destination_inventory.pool_id,
+            destination_host,
+            expected_host: None,
+            expected_affinity: None,
+            transfer_network,
+            transfer_address: destination_inventory.hosts[&destination_host]
+                .address
+                .clone(),
+            mode: CrossPoolMode::CopyHalted,
+            disks: disks.clone(),
+            networks: networks.clone(),
+            host_transport_reviewed: true,
+        },
+    };
+    let started = std::time::Instant::now();
+    let copy = source
+        .transfer_vm_to_pool(OperationId::new(), selection, &destination)
+        .expect("cross-pool copy accepted");
+    let outcome = wait_outcome(&copy, 1800).await;
+    let copy_ms = started.elapsed().as_millis() as u64;
+    let created = outcome.transfer_created.clone();
+    let copied_vm = created.vms.first().copied();
+    let visible = settle(120, || {
+        copied_vm.is_some_and(|id| {
+            destination
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.vms.contains_key(&id))
+        })
+    })
+    .await;
+    steps.push(json!({"step": "cross-pool copy", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": copy_ms, "created_vms": created.vms.len(), "created_disks": created.disks.len(), "visible_on_destination": visible}));
+    let source_still_there = source
+        .latest()
+        .inventory()
+        .unwrap()
+        .vms
+        .contains_key(&guest.id);
+
+    // Boot the copy on the other pool and read its marker through the console.
+    let mut marker = json!(null);
+    if let (Some(copied), true) = (copied_vm, visible) {
+        let start_offered = settle(60, || {
+            destination.latest().inventory().is_some_and(|i| {
+                i.vms
+                    .get(&copied)
+                    .is_some_and(|v| v.allowed_actions.contains(&PowerAction::Start))
+            })
+        })
+        .await;
+        let reports = report_listener(&format!("{gateway}:{port}")).await;
+        let start = destination
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: destination.latest().observe_vm(copied).unwrap(),
+                    action: PowerAction::Start,
+                },
+            )
+            .expect("copy start accepted");
+        let start_outcome = wait_vm_outcome(&start, 300).await;
+        let running = settle(120, || {
+            destination
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&copied].power_state == PowerState::Running)
+        })
+        .await;
+        let mut reported = false;
+        if running {
+            let console = destination
+                .open_console(destination.latest().observe_vm(copied).unwrap())
+                .expect("copy console");
+            guest_report_marker(&console, &gateway, port, &copy_ip, None).await;
+            reported = wait_report(&reports, "A", 120).await;
+            drop(console);
+            let shutdown = destination
+                .submit(
+                    OperationId::new(),
+                    VmCommand::Power {
+                        vm: destination.latest().observe_vm(copied).unwrap(),
+                        action: PowerAction::CleanShutdown,
+                    },
+                )
+                .expect("copy shutdown accepted");
+            let outcome = wait_vm_outcome(&shutdown, 300).await;
+            steps.push(json!({"step": "copy clean shutdown", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+            settle(120, || {
+                destination
+                    .latest()
+                    .inventory()
+                    .is_some_and(|i| i.vms[&copied].power_state == PowerState::Halted)
+            })
+            .await;
+        }
+        marker = json!({"start_offered": start_offered, "start": format!("{:?}", start_outcome.state), "running": running, "marker_a_reported": reported, "received": reports.received.lock().unwrap().clone()});
+        reports.task.abort();
+
+        // Delete the copy with its disks on the destination pool.
+        let copy_disks = disks_of(destination.latest().inventory().unwrap(), copied);
+        let deletion = destination
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: destination.latest().observe_vm(copied).unwrap(),
+                    operation: VmLifecycleOperation::Delete {
+                        expected_template: false,
+                        disks: copy_disks.clone(),
+                        snapshots: Vec::new(),
+                    },
+                },
+            )
+            .expect("copy deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        let gone = settle(120, || {
+            destination.latest().inventory().is_some_and(|i| {
+                !i.vms.contains_key(&copied)
+                    && copy_disks.iter().all(|d| !i.details.vdis.contains_key(d))
+            })
+        })
+        .await;
+        steps.push(json!({"step": "delete the copy with its disks", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "disks": copy_disks.len(), "gone": gone}));
+    }
+
+    // Start the lab guest again.
+    let start = source
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: source.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    let running = settle(120, || {
+        source
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running)
+    })
+    .await;
+    steps.push(json!({"step": "start the lab guest", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": running}));
+    let both_ready = source.latest().is_current() && destination.latest().is_current();
+    lab.record(
+        "cross-pool-copy-and-verify",
+        json!({
+            "source_pool": source_inventory.pool_id.to_string(),
+            "destination_pool": destination_inventory.pool_id.to_string(),
+            "destination_host": lab.hosts[2].name,
+            "disks": disks.len(),
+            "nics": networks.len(),
+            "steps": steps,
+            "copy_marker": marker,
+            "source_guest_retained": source_still_there,
+            "both_pools_connected_throughout": both_ready,
+        }),
+    );
+    assert!(source_still_there, "a copy must keep the source guest");
+    assert!(
+        copied_vm.is_some() && visible,
+        "the copy did not appear on the destination pool"
+    );
+    assert!(running, "the lab guest did not start again");
+    source.close().await;
+    destination.close().await;
+}
