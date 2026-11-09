@@ -29,7 +29,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P01-01 | Direct host/pool login and logout without XO | Existing workflow; live-lab read-only login through each of three XCP-ng 8.3.0 hosts recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
+| P01-01 | Direct host/pool login and logout without XO | Existing workflow; live-lab read-only login through each of three XCP-ng 8.3.0 hosts and a native desktop cold start with session-password login recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
 | P01-02 | Connect through a non-coordinator member | Existing workflow; qualification open |
 | P01-03 | Session renewal and reconnect | Bounded reconnect/resync and jitter implemented; coordinator-outage qualification open |
 | P01-04 | Try remembered verified pool members after endpoint failure | Verified-member candidates persisted and retried; live failover qualification open |
@@ -82,7 +82,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P04-01 | Embedded direct authenticated RFB console | Existing workflow; live-lab authenticated tunnel delivered 720x400 frames ([live lab](reports/2026-11-09-lab-qualification.md)); reconnect qualification open |
-| P04-02 | Keyboard and basic pointer input | Focus-aware keyboard/pointer controls extended; live-lab keyboard input logged into a guest and ran commands, shifted characters need explicit Shift events as the desktop forwards them ([live lab](reports/2026-11-09-lab-qualification.md)); pointer and layout matrix remain open |
+| P04-02 | Keyboard and basic pointer input | Focus-aware keyboard/pointer controls extended; live-lab keyboard input through the core facade and through the Rune console with physical key events logged into a guest and ran commands the guest reported over the network ([live lab](reports/2026-11-09-lab-qualification.md)); pointer and layout matrix remain open |
 | P04-03 | Ctrl+Alt+Delete and deliberate special-key controls | Deliberate key-chord toolbar implemented; guest/platform qualification open |
 | P04-04 | Mouse wheel/middle button | Wheel and middle-button mapping implemented; real guest qualification open |
 | P04-05 | Extended QEMU keys, layouts and shortcut capture | QEMU physical-key extension implemented with fallback; non-US/shortcut-capture qualification remains open |
@@ -306,7 +306,7 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | P18-03 | Portable/distro package, upgrade and uninstall | User-prefix installation, retained releases, atomic active-version selection and ownership-checked removal implemented; AppImage with source/notices and Ubuntu CI packaging added; local fixture/native package smoke passed, clean-system qualification open ([evidence](reports/2026-11-08-linux-packaging.md)) |
 | P18-04 | Native Wayland/X11/GPU compatibility | Existing subset; remaining work queued |
 | P18-05 | HiDPI/multimonitor/compact windows | Existing subset; remaining work queued |
-| P18-06 | Keyboard navigation/focus/Orca | Qualification open |
+| P18-06 | Keyboard navigation/focus/Orca | Keyboard navigation reached and activated controls under a nested compositor; the AT-SPI tree omits children clipped out of and back into a scrolling container (live-lab finding 6, upstream Rune/AccessKit behaviour); Orca speech, real display protocols and the remaining matrix open ([live lab](reports/2026-11-09-lab-qualification.md)) |
 | P18-07 | Native file selection/clipboard integration | Explicit console clipboard and native CA/screenshot/transfer/search/activity pickers implemented with cancelled/stale-callback fixtures; real portal/clipboard/desktop qualification remains open |
 | P18-08 | General/confirmation/console/display options | Persistent system/light/dark appearance, reduced motion, optional routine-power review and new-console fit/reconnect defaults implemented alongside per-profile options; compact/wide Rune fixtures and native synthetic renders verified, real desktop qualification open ([evidence](reports/2026-11-08-desktop-options.md)) |
 | P18-09 | External tools/plugins | Versioned bounded trusted local executable/argv declarations, editable SSH/RDP presets, per-launch command/target review and local process status implemented and fixture verified. Automatic discovery, declarative extension views and richer plugin APIs remain open; Windows plugin compatibility excluded ([report](reports/2026-11-08-external-guest-tools.md)) |
@@ -318,7 +318,7 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P19-01 | Actual XCP-ng inventory/console | Live-lab inventory and console recorded on XCP-ng 8.3.0 ([live lab](reports/2026-11-09-lab-qualification.md)); scale and other lineages open |
-| P19-02 | XO-down recovery | Lab qualification open |
+| P19-02 | XO-down recovery | Native desktop cold start, login, inventory, details and console keyboard input completed on the lab, which has no XO service ([live lab](reports/2026-11-09-lab-qualification.md)); an XO-managed VM, interruption paths and clean-system installation remain open |
 | P19-03 | VM power correctness | Live-lab power actions reached their expected states on XCP-ng 8.3.0 ([live lab](reports/2026-11-09-lab-qualification.md)); guests with tools and interruption paths open |
 | P19-04 | Snapshot data integrity | Disk snapshot restore data integrity recorded on the live lab ([live lab](reports/2026-11-09-lab-qualification.md)); checkpoint memory integrity open |
 | P19-05 | Member/coordinator/TLS recovery | Lab qualification open |

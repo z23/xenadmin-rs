@@ -85,9 +85,11 @@ exports remain open.
 The disposable nested lab is now provisioned: three XCP-ng 8.3.0 hosts installed unattended
 by the harness on 2026-11-09. The [first live qualification report](reports/2026-11-09-lab-qualification.md)
 records read-only recovery with certificate pins, reviewed maintenance/ejection/join, guest
-provisioning from an imported bootable image, console frames and a reviewed snapshot restore,
-plus three host-behaviour findings that were fixed. Guest data integrity through the console,
-failover, native desktop sessions and the complete XO-down acceptance run remain qualification
+provisioning from an imported bootable image, console input with guest data integrity, a
+reviewed snapshot restore, the power matrix, live migration, metrics, property edits and a
+native desktop session with console keyboard input on a lab that has no XO service, plus five
+host-behaviour findings that were fixed and one open upstream accessibility finding. Failover,
+interruption paths, pointer and Orca qualification and an XO-managed VM remain qualification
 gates. Milestones remain open until their retained workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols

@@ -46,6 +46,14 @@ accessibility and scrolling sections. The manifest and current modules support t
 description. Verify behavior in M0 and M3 rather than relying on either paragraph alone.
 The documented incoming Wayland file-drag gap requires a working file picker for imports.
 
+Live-lab finding: the pinned revision keeps a scroll viewport's children in the viewport's
+content space, and AccessKit's AT-SPI adapter (`accesskit_unix` 0.24.1,
+`accesskit_atspi_common` 0.21.1) re-evaluates clipping only for nodes whose own data
+changed, so children clipped out and then back in by a resize or scroll stay listed but
+unregistered on the bus. See finding 6 of the
+[live qualification report](reports/2026-11-09-lab-qualification.md). Resolving it needs a
+change in one of the two upstreams or a reviewed fork.
+
 ## Host APIs
 
 - [XCP-ng release history](https://docs.xcp-ng.org/releases/)

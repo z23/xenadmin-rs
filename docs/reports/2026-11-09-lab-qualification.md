@@ -18,6 +18,10 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 - Workstation: Linux 7.2.15 (Arch-derived), libvirt 12.8.0, QEMU 11.1.2, AMD nested KVM.
 - Live harness: `crates/xenadmin-core/tests/lab_live.rs`, run with the manifest and a
   lab-only password file; targets come only from the manifest.
+- Native desktop run: the debug `xenadmin-rs` binary inside a nested Hyprland 0.56.2 session
+  on the same workstation (1600x1800 headless output, 1558x1758 window), driven over AT-SPI
+  through libatspi and the compositor's `sendkeystate` dispatcher, which delivers physical
+  key events; screenshots through `grim`. The lab contains no Xen Orchestra service.
 
 ## Workstation prerequisites found during setup
 
@@ -45,6 +49,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Guest and host metrics | P14-07, P14-08 | Passed after fix | Direct RRD subscriptions for the running guest (44 advertised sources) and its host (68) delivered 120-sample series at a five-second step for CPU, memory and disk-queue sources; the first attempt failed on the data-source listing (finding 5) |
 | VM property edits | P06-01, P06-02, P06-04 | Passed | The description was edited on the running guest; maximum and startup vCPUs and all four memory limits were edited while halted; each setter was verified by a fresh read and the inventory read the new values back; the guest was started again |
 | Reviewed maintenance and ejection | P12-03, P13-02 | Passed | Member entered maintenance (disabled observed), reviewed ejection task completed, member left the coordinator's inventory and returned as a standalone pool with a new identity |
+| Native desktop session, no XO anywhere | P01-01, P04-02, P18-06, P19-02 | Passed, finding 6 | Cold start from the saved profile, session-password login through the connect dialog, inventory, UUID search, details and Open console in the Rune window; the embedded console rendered the guest, physical key events logged in as root, configured the guest's address and ran `wget` twice against a listener on the isolated bridge, which logged both requests from the guest including the data-disk marker A; shifted characters arrived correctly once Shift was sent as a physical key carrying its modifier mask. Pointer input was not exercised: the nested session has no pointer injection and a text-mode guest shows no pointer effect |
 
 ## Findings
 
@@ -85,6 +90,20 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    strictly; the metrics decoder already treated absent limits as unknown. Unit coverage
    was added.
 
+6. **Children clipped out of and back into a scrolling container never return to the AT-SPI
+   bus.** With the pinned Rune revision and AccessKit's Unix adapter (`accesskit_unix` 0.24.1
+   and `accesskit_atspi_common` 0.21.1, the current releases), shrinking the window to 700 px
+   made Rune resend 119 nodes and the adapter unregister the 28 details-column children that
+   fell outside the column's clip (141 registered objects became 113). Growing the window
+   back to 1758 px made Rune resend 26 nodes, none of them those children, because Rune keeps
+   a scroll viewport's children in the viewport's content space and nothing about them
+   changed. The adapter lists them as children again but re-evaluates clipping only for
+   nodes whose own data changed, so an assistive client gets "Unknown object" for Open
+   console, Migrate and the power controls until the column is rebuilt. Keyboard focus
+   still reaches them, and a window built at its final size exposes every node. Both halves
+   are upstream behaviour; the question is recorded in [sources](../SOURCES.md) and P18-06
+   stays open.
+
 ## Console observation
 
 The host console applied no implicit shift to keysym events: `:` arrived as `;` and
@@ -92,10 +111,19 @@ uppercase as lowercase until the harness sent Shift around shifted characters, a
 physical keyboard and the desktop's key forwarding do. A blinking text cursor alternates
 two frames, so frame-settling checks must tolerate that.
 
+The desktop forwards QEMU extended keys as physical scancodes, so an injected Shift must be
+a physical key event for the guest and must also carry the xkb modifier mask for the
+desktop's own text fields; the compositor's key injection satisfied both, while a virtual
+keyboard tool with its own keymap garbled every character. Rune buttons activate with Space,
+and Enter on a focused link opened the workstation's browser outside the nested session.
+
 ## Limitations
 
-This run used the core facade through the live harness, not the Rune desktop window.
-Native desktop sessions, interruption paths for the passed workflows, memory checkpoints,
-migration, storage and network administration and the remaining ledger rows are recorded
-as they are exercised. The lab now holds one running guest, its snapshots and one
+The harness scenarios used the core facade; the desktop scenario used the Rune window under
+a nested compositor, so real seat input, X11, clipboard, Orca speech, non-US layouts, pointer
+input and the desktop's own console reconnect across a reboot remain unqualified. The M2 gate
+names an XO-managed VM; this lab has no XO at all, so the run shows the client working with
+no XO service rather than with a specific XO VM. Interruption paths for the passed workflows,
+memory checkpoints, storage and network administration and the remaining ledger rows are
+recorded as they are exercised. The lab now holds one running guest, its snapshots and one
 device-less guest left by the partial creation; they stay for later deletion scenarios.

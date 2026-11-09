@@ -140,3 +140,9 @@ cargo test -p xenadmin-core --test lab_live -- --ignored --test-threads=1
 `XENADMIN_DEV_RPC_TRACE=1` prints failed XAPI method names and sanitized error codes to
 stderr during these runs; it never prints parameters, tokens or payloads. Scenario results
 and host findings are recorded in the dated qualification reports under `reports/`.
+
+The native desktop can be driven in the same lab without a physical seat: a nested
+compositor with a headless output, AT-SPI for discovery and activation, and the compositor's
+physical key injection for typing. Virtual keyboard tools with their own keymap do not
+produce valid QEMU scancodes. Rune headless screenshots never substitute for these runs, and
+a nested compositor still does not establish real seat, clipboard or Orca behaviour.
