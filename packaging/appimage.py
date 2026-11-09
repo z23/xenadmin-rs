@@ -9,12 +9,40 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from install import atomic, digest, manifest, regular, verify
 from manifest import generate
 
 ROOT = Path(__file__).resolve().parent
 MAX_INPUT = 64 * 1024 * 1024
+
+
+# Release mirrors answer with transient gateway errors now and then; a pinned input is
+# retried a few times before the build is refused. Client errors and hash mismatches never are.
+RETRY_DELAYS = (2, 5, 10)
+_sleep = time.sleep
+
+
+def transient(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code >= 500 or error.code == 429
+    return isinstance(error, (urllib.error.URLError, TimeoutError))
+
+
+def download(url):
+    request = urllib.request.Request(url, headers={'User-Agent': 'xenadmin-rs-packaging'})
+    for attempt, delay in enumerate((*RETRY_DELAYS, None)):
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.read(MAX_INPUT + 1)
+        except (urllib.error.URLError, TimeoutError) as error:
+            if delay is None or not transient(error):
+                raise
+            print(f'Packaging input fetch failed (attempt {attempt + 1}): {error}; retrying in {delay}s', flush=True)
+            _sleep(delay)
+    raise AssertionError('unreachable')
 
 
 def fetch(cache, name, descriptor):
@@ -24,9 +52,7 @@ def fetch(cache, name, descriptor):
         if digest(path) != descriptor['sha256']:
             raise ValueError(f"Cached packaging input changed: {name}")
         return path
-    request = urllib.request.Request(descriptor['url'], headers={'User-Agent': 'xenadmin-rs-packaging'})
-    with urllib.request.urlopen(request, timeout=60) as response:
-        data = response.read(MAX_INPUT + 1)
+    data = download(descriptor['url'])
     if len(data) > MAX_INPUT or hashlib.sha256(data).hexdigest() != descriptor['sha256']:
         raise ValueError(f"Packaging input hash or size mismatch: {name}")
     atomic(path, data)

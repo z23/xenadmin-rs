@@ -5,7 +5,9 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import appimage
 from appimage import fetch
+import urllib.error
 from install import digest
 
 
@@ -25,6 +27,63 @@ class AppImagePackaging(unittest.TestCase):
             path.symlink_to(root / 'other')
             with self.assertRaises(ValueError):
                 fetch(root, 'tool', desc)
+
+    def test_transient_download_errors_are_retried_and_client_errors_are_not(self):
+        data = b'reviewed bytes'
+        desc = {'url': 'https://example.invalid/tool', 'sha256': __import__('hashlib').sha256(data).hexdigest()}
+
+        class Response:
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, limit):
+                return self.body[:limit]
+
+        def opener(answers):
+            calls = []
+
+            def urlopen(request, timeout):
+                calls.append(request.full_url)
+                answer = answers.pop(0)
+                if isinstance(answer, Exception):
+                    raise answer
+                return Response(answer)
+            return urlopen, calls
+
+        def gateway(code):
+            return urllib.error.HTTPError(desc['url'], code, 'gateway', {}, None)
+
+        slept = []
+        original = (appimage.urllib.request.urlopen, appimage._sleep)
+        appimage._sleep = slept.append
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                appimage.urllib.request.urlopen, calls = opener([gateway(504), urllib.error.URLError('reset'), data])
+                self.assertEqual(fetch(root, 'tool', desc).read_bytes(), data)
+                self.assertEqual(len(calls), 3)
+                self.assertEqual(slept, list(appimage.RETRY_DELAYS[:2]))
+                appimage.urllib.request.urlopen, calls = opener([gateway(404), data])
+                with self.assertRaises(urllib.error.HTTPError):
+                    fetch(root, 'other', desc)
+                self.assertEqual(len(calls), 1)
+                appimage.urllib.request.urlopen, calls = opener([gateway(502)] * (len(appimage.RETRY_DELAYS) + 1))
+                with self.assertRaises(urllib.error.HTTPError):
+                    fetch(root, 'other', desc)
+                self.assertEqual(len(calls), len(appimage.RETRY_DELAYS) + 1)
+                appimage.urllib.request.urlopen, calls = opener([b'tampered bytes', data])
+                with self.assertRaises(ValueError):
+                    fetch(root, 'other', desc)
+                self.assertEqual(len(calls), 1)
+                self.assertFalse((root / 'other').exists())
+        finally:
+            appimage.urllib.request.urlopen, appimage._sleep = original
 
     def test_apprun_preserves_arguments_and_routes_probe_and_installer(self):
         with tempfile.TemporaryDirectory(prefix='image space ') as tmp:
