@@ -1605,7 +1605,7 @@ async fn lab_console_reconnect_after_hard_reboot() {
     let started = std::time::Instant::now();
     let mut transitions: Vec<Value> = Vec::new();
     let mut last = String::new();
-    let mut note = |console: &xenadmin_core::Console,
+    let note = |console: &xenadmin_core::Console,
                     transitions: &mut Vec<Value>,
                     last: &mut String| {
         let snapshot = console.latest();
