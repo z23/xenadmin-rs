@@ -16626,3 +16626,97 @@ async fn lab_member_return_and_second_storage_nic() {
         }
     }
 }
+
+/// P04-12 (diagnostic use): open the member's control-domain text console through the
+/// client, log in with the lab-only root password, and capture frames of the dom0 view of
+/// its network devices, addresses, interface records, bridges and interface-rename rules.
+/// Frames are saved next to the evidence files for review; nothing is changed on the host.
+#[tokio::test]
+#[ignore]
+async fn lab_member_dom0_network_diagnostic() {
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator)
+        .expect("member");
+    let control_domain = inventory.details.hosts[&member]
+        .control_domain
+        .expect("control domain");
+    let console = c
+        .open_host_console(
+            c.latest()
+                .observe_resource(ResourceTarget::Host(member))
+                .unwrap(),
+            control_domain,
+        )
+        .expect("host console");
+    let connected = tokio::time::timeout(deadline(60), async {
+        loop {
+            let snapshot = console.latest();
+            if snapshot.state == xenadmin_core::ConsoleState::Connected && snapshot.frame.is_some()
+            {
+                return true;
+            }
+            if let xenadmin_core::ConsoleState::Failed(_) = &snapshot.state {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(connected, "member host console did not connect");
+    stable_frame_or_last(&console, 20).await;
+    let mut frames = Vec::new();
+    frames.push(save_frame(&lab, &console, "diag-0-login"));
+    type_line(&console, "root").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    type_line(&console, &lab.password).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    frames.push(save_frame(&lab, &console, "diag-1-shell"));
+    for (label, command) in [
+        ("2-links", "clear; ip -br link"),
+        ("3-addrs", "clear; ip -br addr"),
+        (
+            "4-pifs",
+            "clear; xe pif-list host-name-label=$(hostname) params=device,MAC,IP,currently-attached,network-name-label",
+        ),
+        (
+            "5-ovs",
+            "clear; ovs-vsctl show | grep -E 'Bridge|Port|Interface' | head -28",
+        ),
+        (
+            "6-rename",
+            "clear; cat /etc/sysconfig/network-scripts/interface-rename-data/dynamic-rules.json | head -30",
+        ),
+        (
+            "7-ifcfg",
+            "clear; ls /etc/sysconfig/network-scripts/; tail -n 20 /var/log/daemon.log | cut -c1-150",
+        ),
+    ] {
+        type_line(&console, command).await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        frames.push(save_frame(&lab, &console, &format!("diag-{label}")));
+    }
+    type_line(&console, "clear; exit").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    console.close();
+    c.close().await;
+    lab.record(
+        "member-dom0-network-diagnostic",
+        json!({"member": inventory.hosts[&member].name, "frames": frames}),
+    );
+    eprintln!("frames: {frames:?}");
+}
