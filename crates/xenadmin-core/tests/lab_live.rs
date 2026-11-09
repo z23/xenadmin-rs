@@ -1225,3 +1225,433 @@ async fn lab_guest_shell_probe() {
     c.close().await;
     eprintln!("frame: {frame:?}");
 }
+
+/// P03-01, P03-02, P03-03, P04-07: every power action the host advertises for the lab guest,
+/// in a sequence that returns it to Running, with the console reopened after each restart.
+/// Actions the host does not advertise are recorded as unavailable, not attempted.
+#[tokio::test]
+#[ignore]
+async fn lab_guest_power_matrix() {
+    use xenadmin_core::{PowerAction, PowerState, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let sequence: Vec<(PowerAction, PowerState)> = vec![
+        (PowerAction::CleanShutdown, PowerState::Halted),
+        (PowerAction::Start, PowerState::Running),
+        (PowerAction::Reboot, PowerState::Running),
+        (PowerAction::Pause, PowerState::Paused),
+        (PowerAction::Unpause, PowerState::Running),
+        (PowerAction::Suspend, PowerState::Suspended),
+        (PowerAction::Resume, PowerState::Running),
+        (PowerAction::HardReboot, PowerState::Running),
+        (PowerAction::HardShutdown, PowerState::Halted),
+        (PowerAction::Start, PowerState::Running),
+    ];
+    let mut results = Vec::new();
+    for (action, expected) in sequence {
+        let before = c.latest().inventory().unwrap().vms[&guest.id].clone();
+        if !before.allowed_actions.contains(&action) {
+            results.push(json!({"action": format!("{action:?}"), "advertised": false, "power_state": format!("{:?}", before.power_state)}));
+            continue;
+        }
+        let console = (expected == PowerState::Running
+            && before.power_state == PowerState::Running)
+            .then(|| {
+                c.open_console(c.latest().observe_vm(guest.id).unwrap())
+                    .expect("console")
+            });
+        let operation = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    action,
+                },
+            )
+            .expect("power action accepted");
+        let outcome = wait_vm_outcome(&operation, 300).await;
+        let reached = settle(180, || {
+            c.latest()
+                .inventory()
+                .and_then(|i| i.vms.get(&guest.id).map(|v| v.power_state == expected))
+                .unwrap_or(false)
+        })
+        .await;
+        let console_after = if let Some(console) = console {
+            let frame = tokio::time::timeout(deadline(180), async {
+                loop {
+                    let snapshot = console.latest();
+                    if snapshot.state == xenadmin_core::ConsoleState::Connected
+                        && snapshot.frame.is_some()
+                    {
+                        return "frame after restart";
+                    }
+                    if let xenadmin_core::ConsoleState::Failed(error) = &snapshot.state {
+                        return if error.is_empty() {
+                            "failed"
+                        } else {
+                            "failed with error"
+                        };
+                    }
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            })
+            .await
+            .unwrap_or("no frame within deadline");
+            console.close();
+            Some(frame)
+        } else {
+            None
+        };
+        results.push(json!({
+            "action": format!("{action:?}"), "advertised": true,
+            "state": format!("{:?}", outcome.state), "detail": outcome.detail,
+            "expected": format!("{expected:?}"), "reached": reached,
+            "console_after_restart": console_after,
+        }));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{action:?}: {}",
+            outcome.detail
+        );
+        assert!(reached, "{action:?}: guest did not reach {expected:?}");
+    }
+    c.close().await;
+    lab.record(
+        "guest-power-matrix",
+        json!({"guest": guest.name, "actions": results}),
+    );
+}
+
+/// P05-08, P08-08: delete every lab snapshot with its exclusively owned disks through the
+/// reviewed deletion, then delete the device-less guest left by the partial creation.
+#[tokio::test]
+#[ignore]
+async fn lab_cleanup_snapshots_and_partial_guest() {
+    use xenadmin_core::{VmCommand, VmLifecycleOperation};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let mut deleted = Vec::new();
+    for snapshot in inventory
+        .snapshots
+        .for_vm(
+            inventory
+                .guests()
+                .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+                .map(|v| v.id)
+                .expect("lab guest"),
+        )
+        .filter(|s| s.name.starts_with("lab-marker-") || s.name.starts_with("probe-"))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let vm = snapshot.vm.expect("snapshot parent");
+        let disks = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(snapshot.id) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let operation = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(vm, snapshot.id).unwrap(),
+                    disks: disks.clone(),
+                },
+            )
+            .expect("snapshot deletion accepted");
+        let outcome = wait_vm_outcome(&operation, 300).await;
+        let gone = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.snapshots.get(&snapshot.id).is_none())
+        })
+        .await;
+        deleted.push(json!({"snapshot": snapshot.name, "disks": disks.len(), "state": format!("{:?}", outcome.state), "detail": outcome.detail, "gone": gone}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}: {}",
+            snapshot.name,
+            outcome.detail
+        );
+        assert!(gone, "{} still listed", snapshot.name);
+    }
+    let mut partial = None;
+    if let Some(leftover) = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| {
+            v.name.starts_with("lab-guest-")
+                && !v.is_template
+                && c.latest()
+                    .inventory()
+                    .unwrap()
+                    .details
+                    .vm_disks
+                    .get(&v.id)
+                    .is_none_or(|d| d.is_empty())
+        })
+        .cloned()
+    {
+        let operation = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: c.latest().observe_vm(leftover.id).unwrap(),
+                    operation: VmLifecycleOperation::Delete {
+                        expected_template: false,
+                        disks: Vec::new(),
+                        snapshots: Vec::new(),
+                    },
+                },
+            )
+            .expect("deletion accepted");
+        let outcome = wait_vm_outcome(&operation, 300).await;
+        let gone = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| !i.vms.contains_key(&leftover.id))
+        })
+        .await;
+        partial = Some(
+            json!({"vm": leftover.name, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "gone": gone}),
+        );
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert!(gone, "partial guest still listed");
+    }
+    c.close().await;
+    lab.record(
+        "cleanup-snapshots-and-partial-guest",
+        json!({"snapshots": deleted, "partial_guest": partial}),
+    );
+}
+
+/// P11-01, P11-03, P11-05: live-migrate the running lab guest to another pool member with
+/// both disks relocated to that member's local repository, then open its console there.
+#[tokio::test]
+#[ignore]
+async fn lab_guest_live_migration_with_storage() {
+    use xenadmin_core::{DiskPlacement, NicPlacement, PowerState, SrId, VmCommand, VmMigration};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let source_host = guest.host.expect("resident host");
+    let destination = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != source_host && inventory.hosts[h].enabled)
+        .expect("another enabled member");
+    let destination_sr =
+        local_sr_of(&inventory, destination).expect("destination local repository");
+    let disks = inventory.details.vm_disks[&guest.id]
+        .iter()
+        .filter_map(|vbd| inventory.details.vbds.get(vbd))
+        .filter(|b| b.kind == "Disk")
+        .filter_map(|b| {
+            let vdi = b.vdi?;
+            let sr = inventory.details.vdis.get(&vdi)?.sr?;
+            Some(DiskPlacement {
+                vdi,
+                expected_sr: sr,
+                destination_sr,
+            })
+        })
+        .collect::<Vec<_>>();
+    let networks = inventory
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(guest.id))
+        .filter_map(|v| {
+            let network = v.network?;
+            Some(NicPlacement {
+                vif: v.id,
+                expected_network: network,
+                destination_network: network,
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(disks.len(), 2, "expected the image and data disks");
+    let migration = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: VmMigration {
+                    destination,
+                    expected_host: Some(source_host),
+                    expected_affinity: None,
+                    live: true,
+                    disks: disks.clone(),
+                    networks,
+                    transfer_network: None,
+                },
+            },
+        )
+        .expect("migration accepted");
+    let outcome = wait_vm_outcome(&migration, 1200).await;
+    let relocated = settle(300, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms.get(&guest.id).is_some_and(|v| {
+                v.host == Some(destination) && v.power_state == PowerState::Running
+            }) && i.details.vm_disks.get(&guest.id).is_some_and(|vbds| {
+                vbds.iter()
+                    .filter_map(|b| i.details.vbds.get(b))
+                    .filter(|b| b.kind == "Disk")
+                    .all(|b| {
+                        b.vdi
+                            .and_then(|v| i.details.vdis.get(&v))
+                            .and_then(|v| v.sr)
+                            == Some(destination_sr)
+                    })
+            })
+        })
+    })
+    .await;
+    let console = c
+        .open_console(c.latest().observe_vm(guest.id).unwrap())
+        .expect("console on destination");
+    let frame = tokio::time::timeout(deadline(120), async {
+        loop {
+            let snapshot = console.latest();
+            if snapshot.frame.is_some() && snapshot.state == xenadmin_core::ConsoleState::Connected
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    console.close();
+    c.close().await;
+    lab.record(
+        "guest-live-migration-with-storage",
+        json!({
+            "guest": guest.name, "from": source_host.to_string(), "to": destination.to_string(),
+            "destination_repository": SrId::to_string(&destination_sr),
+            "operation": {"state": format!("{:?}", outcome.state), "detail": outcome.detail},
+            "running_on_destination_with_relocated_disks": relocated,
+            "console_on_destination": frame,
+        }),
+    );
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        relocated,
+        "guest or its disks did not reach the destination"
+    );
+    assert!(frame, "no console frame from the destination host");
+}
+
+/// Diagnostic for P04-07: keep a console open across a hard reboot and record every
+/// console state change with timestamps, including any failure message.
+#[tokio::test]
+#[ignore]
+async fn lab_console_reconnect_after_hard_reboot() {
+    use xenadmin_core::{ConsoleState, PowerAction, PowerState, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let console = c
+        .open_console(c.latest().observe_vm(guest.id).unwrap())
+        .expect("console");
+    stable_frame(&console, 180).await;
+    let started = std::time::Instant::now();
+    let mut transitions: Vec<Value> = Vec::new();
+    let mut last = String::new();
+    let mut note = |console: &xenadmin_core::Console,
+                    transitions: &mut Vec<Value>,
+                    last: &mut String| {
+        let snapshot = console.latest();
+        let state = match &snapshot.state {
+            ConsoleState::Failed(error) => format!("Failed: {error}"),
+            other => format!("{other:?}"),
+        };
+        let frame = snapshot.frame.as_ref().map(|f| (f.width, f.height));
+        let key = format!("{state} {frame:?}");
+        if key != *last {
+            transitions.push(json!({"at_ms": started.elapsed().as_millis() as u64, "state": state, "frame": frame}));
+            *last = key;
+        }
+    };
+    note(&console, &mut transitions, &mut last);
+    let operation = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::HardReboot,
+            },
+        )
+        .expect("hard reboot accepted");
+    let deadline_at = std::time::Instant::now() + deadline(180);
+    let mut outcome = None;
+    while std::time::Instant::now() < deadline_at {
+        note(&console, &mut transitions, &mut last);
+        if outcome.is_none() {
+            let row = operation.latest();
+            if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
+                outcome = Some(
+                    json!({"state": format!("{:?}", row.state), "detail": row.detail, "at_ms": started.elapsed().as_millis() as u64}),
+                );
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let final_state = console.latest().state.clone();
+    console.close();
+    c.close().await;
+    lab.record(
+        "console-reconnect-after-hard-reboot",
+        json!({
+            "guest": guest.name, "reboot": outcome, "transitions": transitions,
+            "final_state": format!("{final_state:?}"),
+        }),
+    );
+}

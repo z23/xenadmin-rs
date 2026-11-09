@@ -67,9 +67,9 @@ partial/unknown outcomes and does not establish live-host compatibility.
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P03-01 | Start, clean shutdown and reboot | Existing workflow; live-lab start recorded ([live lab](reports/2026-11-09-lab-qualification.md)); shutdown/reboot and interruption qualification open |
-| P03-02 | Force shutdown/reboot | Reviewed force shutdown/reboot implemented; separate running-task recovery is tracked in P03-07. Live qualification open |
-| P03-03 | Pause/unpause and suspend/resume | Existing workflow; qualification open |
+| P03-01 | Start, clean shutdown and reboot | Existing workflow; live-lab start and clean shutdown recorded, clean reboot unavailable on the tool-less guest ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
+| P03-02 | Force shutdown/reboot | Reviewed force shutdown/reboot implemented; separate running-task recovery is tracked in P03-07. Live-lab hard reboot and hard shutdown recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
+| P03-03 | Pause/unpause and suspend/resume | Existing workflow; live-lab pause/unpause recorded, suspend/resume unavailable on the tool-less guest ([live lab](reports/2026-11-09-lab-qualification.md)); suspend qualification open |
 | P03-04 | Start/resume on a chosen eligible host/home server | Chosen-host start/resume and fresh compatibility preflight implemented; live placement qualification open |
 | P03-05 | Explain unavailable actions | Host block messages preserved, current diagnostic context enforced and contradictory blocked/allowed operations refused; lab RBAC/state qualification open |
 | P03-06 | Show current tasks and administrative action blocks | Current operations, administrative blocks, per-action diagnosis and pool-wide task Activity workspace implemented; fixture verified, live qualification open |
@@ -319,7 +319,7 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | --- | --- | --- |
 | P19-01 | Actual XCP-ng inventory/console | Live-lab inventory and console recorded on XCP-ng 8.3.0 ([live lab](reports/2026-11-09-lab-qualification.md)); scale and other lineages open |
 | P19-02 | XO-down recovery | Lab qualification open |
-| P19-03 | VM power correctness | Lab qualification open |
+| P19-03 | VM power correctness | Live-lab power actions reached their expected states on XCP-ng 8.3.0 ([live lab](reports/2026-11-09-lab-qualification.md)); guests with tools and interruption paths open |
 | P19-04 | Snapshot data integrity | Disk snapshot restore data integrity recorded on the live lab ([live lab](reports/2026-11-09-lab-qualification.md)); checkpoint memory integrity open |
 | P19-05 | Member/coordinator/TLS recovery | Lab qualification open |
 | P19-06 | Console input/relocation | Live-lab console keyboard input recorded ([live lab](reports/2026-11-09-lab-qualification.md)); relocation after migration open |
