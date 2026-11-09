@@ -4033,3 +4033,223 @@ async fn lab_cross_pool_copy_and_verify() {
     source.close().await;
     destination.close().await;
 }
+
+/// Builds a halted cross-pool move or copy of `vm` from `source` to the first host of
+/// `destination`'s pool, mapping every disk to that host's local repository and every NIC
+/// to the destination network with the same name.
+fn cross_pool_selection(
+    source: &Connection,
+    destination: &Connection,
+    vm: xenadmin_core::VmId,
+    mode: xenadmin_core::CrossPoolMode,
+) -> xenadmin_core::CrossPoolVmSelection {
+    use xenadmin_core::{
+        CrossPoolVmOperation, CrossPoolVmSelection, DiskPlacement, NicPlacement, ResourceTarget,
+    };
+    let source_inventory = source.latest().inventory().unwrap().clone();
+    let destination_inventory = destination.latest().inventory().unwrap().clone();
+    let destination_host = destination_inventory
+        .coordinator
+        .or_else(|| destination_inventory.hosts.keys().next().copied())
+        .expect("destination host");
+    let destination_sr =
+        local_sr_of(&destination_inventory, destination_host).expect("destination repository");
+    let disks = source_inventory.details.vm_disks[&vm]
+        .iter()
+        .filter_map(|vbd| source_inventory.details.vbds.get(vbd))
+        .filter(|b| b.kind == "Disk")
+        .filter_map(|b| {
+            let vdi = b.vdi?;
+            Some(DiskPlacement {
+                vdi,
+                expected_sr: source_inventory.details.vdis.get(&vdi)?.sr?,
+                destination_sr,
+            })
+        })
+        .collect::<Vec<_>>();
+    let networks = source_inventory
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(vm))
+        .filter_map(|v| {
+            let network = v.network?;
+            let name = &source_inventory
+                .networks
+                .iter()
+                .find(|n| xenadmin_core::NetworkId::from(n.uuid) == network)?
+                .name;
+            let target = destination_inventory
+                .networks
+                .iter()
+                .find(|n| &n.name == name)?;
+            Some(NicPlacement {
+                vif: v.id,
+                expected_network: network,
+                destination_network: target.uuid.into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !disks.is_empty() && !networks.is_empty(),
+        "placement incomplete"
+    );
+    CrossPoolVmSelection {
+        source: source.latest().observe_vm(vm).unwrap(),
+        destination: destination
+            .latest()
+            .observe_resource(ResourceTarget::Pool(destination_inventory.pool_id))
+            .unwrap(),
+        operation: CrossPoolVmOperation {
+            vm,
+            destination_pool: destination_inventory.pool_id,
+            destination_host,
+            expected_host: None,
+            expected_affinity: None,
+            transfer_network: networks[0].destination_network,
+            transfer_address: destination_inventory.hosts[&destination_host]
+                .address
+                .clone(),
+            mode,
+            disks,
+            networks,
+            host_transport_reviewed: true,
+        },
+    }
+}
+
+/// P11-04 moves: the halted lab guest is moved to the standalone pool and back, each move
+/// leaving the source pool without it and the destination with a verified new identity; the
+/// guest is started again on its own pool at the end.
+#[tokio::test]
+#[ignore]
+async fn lab_cross_pool_move_round_trip() {
+    use xenadmin_core::{CrossPoolMode, PowerAction, PowerState, VmCommand};
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let home = connect(&lab, &backend, 0, false).await;
+    let away = connect(&lab, &backend, 2, false).await;
+    let home_pool = home.latest().inventory().unwrap().pool_id;
+    let away_pool = away.latest().inventory().unwrap().pool_id;
+    assert_ne!(
+        home_pool, away_pool,
+        "the third host must be a separate pool"
+    );
+    // The guest may sit on either pool after an earlier interrupted move; the round trip
+    // starts where it is and always ends on its home pool.
+    let find_guest = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.guests()
+                .find(|v| v.name.starts_with("lab-guest-"))
+                .cloned()
+        })
+    };
+    let (guest, starting_away) = match find_guest(&home) {
+        Some(guest) => (guest, false),
+        None => (find_guest(&away).expect("lab guest on either pool"), true),
+    };
+    let holder = if starting_away { &away } else { &home };
+    let mut steps = Vec::new();
+    if guest.power_state == PowerState::Running {
+        let shutdown = holder
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: holder.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            holder
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Halted)
+        })
+        .await;
+        steps.push(json!({"step": "clean shutdown", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": halted}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+
+    let mut current = guest.id;
+    let mut legs = Vec::new();
+    let mut plan: Vec<(&str, &Connection, &Connection)> = vec![
+        ("to the standalone pool", &home, &away),
+        ("back home", &away, &home),
+    ];
+    if starting_away {
+        plan.insert(0, ("home from the standalone pool", &away, &home));
+    }
+    for (label, from, to) in plan {
+        let selection = cross_pool_selection(from, to, current, CrossPoolMode::MoveHalted);
+        let started = std::time::Instant::now();
+        let operation = from
+            .transfer_vm_to_pool(OperationId::new(), selection, to)
+            .expect("cross-pool move accepted");
+        let outcome = wait_outcome(&operation, 1800).await;
+        let moved = outcome.transfer_created.vms.first().copied();
+        let arrived = settle(120, || {
+            moved.is_some_and(|id| {
+                to.latest()
+                    .inventory()
+                    .is_some_and(|i| i.vms.get(&id).is_some_and(|v| v.name == guest.name))
+            })
+        })
+        .await;
+        let departed = settle(120, || {
+            from.latest()
+                .inventory()
+                .is_some_and(|i| !i.vms.contains_key(&current))
+        })
+        .await;
+        legs.push(json!({
+            "leg": label, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64,
+            "previous_id": current.to_string(), "new_id": moved.map(|m| m.to_string()), "arrived": arrived, "departed_from_source": departed,
+            "disks": outcome.transfer_created.disks.len(),
+        }));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{label}: {}",
+            outcome.detail
+        );
+        assert!(
+            arrived && departed,
+            "{label}: the move was not reflected on both pools"
+        );
+        current = moved.unwrap();
+    }
+
+    let start = home
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: home.latest().observe_vm(current).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    let running = settle(120, || {
+        home.latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&current].power_state == PowerState::Running)
+    })
+    .await;
+    steps.push(json!({"step": "start on the home pool", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": running}));
+    lab.record(
+        "cross-pool-move-round-trip",
+        json!({"guest": guest.name, "home_pool": home_pool.to_string(), "away_pool": away_pool.to_string(), "steps": steps, "legs": legs, "final_id": current.to_string()}),
+    );
+    assert!(running, "the guest did not start again on its home pool");
+    home.close().await;
+    away.close().await;
+}

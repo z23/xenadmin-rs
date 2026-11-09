@@ -57,6 +57,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Login through a member and pool sharing | P01-02, P01-07, P01-11 | Passed | A read-write login addressed to the second member followed the coordinator redirect and became Ready on the coordinator's endpoint with all three hosts, the member and coordinator recorded as verified members; a second connection to the coordinator in the same client saw the same pool and inventory revision; closing the first handle disconnected the shared pool session, as the profile editor states. With only the member's certificate pinned, the redirect to the coordinator was refused by TLS before any credential left the client; with both pinned, a wrong password was refused with SESSION_AUTHENTICATION_FAILED |
 | Internal network and NIC lifecycle | P07-12, P07-13, P10-01, P10-02, P10-04 | Passed | An internal network was created on the pool (bridge `xapi0` observed), its MTU lowered to 1400 and its name and description changed, each read back; on the halted guest a NIC on that network was added with a generated MAC at device 1 and removed again; the network was deleted and the network count returned to its previous value; the guest's own NIC and network were untouched and it was started again |
 | Cross-pool copy with both pools connected | P01-06, P11-04, P13-02 | Passed | The third host was ejected again through the reviewed ejection and returned as a standalone pool; one client held the two-host pool and the standalone pool at once; the halted guest was copied across pools over the lab network to the standalone host's local repository with its NIC mapped to the same-named network, in 18 s, with new VM, disk and MAC identities and the source guest retained; the copy started on the other pool and its console typed commands that reported marker A from the copied data disk; the copy was shut down and deleted with both disks, and the guest was started again on its own pool |
+| Cross-pool move round trip | P11-04 | Passed after fixes | The halted guest was moved from its pool to the standalone host and back (and once more each way after an interrupted attempt left it on the standalone host), each leg in 25 to 35 s with both disks relocated, the VM UUID preserved by XAPI, the source pool verified empty of the VM, its attachments and its disks, and the destination verified with the reviewed placement; the guest started again on its home pool. The first attempts ended unknown or refused (findings 9 and 10) |
 
 ## Findings
 
@@ -128,6 +129,22 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    right after the conversion, including on the recheck path that finds a conversion whose
    reply was lost. A host that refuses the recompute is named in the step detail rather than
    failing the clone. Unit coverage was added for both workflows.
+
+9. **A cross-pool move's source cleanup lags the migration task.** `VM.migrate_send`
+   reports success while the source VM, its attachments and above all its disk records are
+   still being removed; the disks go only on the source storage manager's next scan. The
+   client verified the source immediately and left every ordinary move as OutcomeUnknown
+   ("source device cleanup is not yet verified"). It now waits for the source VM and
+   attachments within the connection's cleanup bound (sixty seconds by default) and, once
+   they are gone, accepts lingering disk records after a ten-second grace, naming their
+   count in the outcome. Unit coverage was added.
+
+10. **Records the destination releases after the review refused the next move.** The
+   preflight compared the destination's full VM, disk and attachment identity sets with the
+   reviewed baseline and refused on any difference; after a move, the previous move's
+   released source disks on that pool changed the set and the move back was refused with
+   "reopen this review". Only identities that appear after the review can be mistaken for a
+   transfer's result, so the preflight now refuses on arrivals alone. Unit coverage was added.
 
 ## Console observation
 
