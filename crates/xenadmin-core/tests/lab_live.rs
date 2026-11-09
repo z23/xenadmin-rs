@@ -1606,8 +1606,8 @@ async fn lab_console_reconnect_after_hard_reboot() {
     let mut transitions: Vec<Value> = Vec::new();
     let mut last = String::new();
     let note = |console: &xenadmin_core::Console,
-                    transitions: &mut Vec<Value>,
-                    last: &mut String| {
+                transitions: &mut Vec<Value>,
+                last: &mut String| {
         let snapshot = console.latest();
         let state = match &snapshot.state {
             ConsoleState::Failed(error) => format!("Failed: {error}"),
@@ -1646,12 +1646,42 @@ async fn lab_console_reconnect_after_hard_reboot() {
     }
     let final_state = console.latest().state.clone();
     console.close();
+    // The core console is one tunnel; the desktop reopens it after a restart. Emulate the
+    // operator's reopen once the guest is running again and record whether frames arrive.
+    let running = settle(180, || {
+        c.latest()
+            .inventory()
+            .and_then(|i| {
+                i.vms
+                    .get(&guest.id)
+                    .map(|v| v.power_state == PowerState::Running)
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    let reopened = c
+        .open_console(c.latest().observe_vm(guest.id).unwrap())
+        .expect("console reopened");
+    let frame_after_reopen = tokio::time::timeout(deadline(120), async {
+        loop {
+            let snapshot = reopened.latest();
+            if snapshot.frame.is_some() && snapshot.state == ConsoleState::Connected {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    reopened.close();
     c.close().await;
     lab.record(
         "console-reconnect-after-hard-reboot",
         json!({
             "guest": guest.name, "reboot": outcome, "transitions": transitions,
             "final_state": format!("{final_state:?}"),
+            "running_again": running, "frame_after_manual_reopen": frame_after_reopen,
         }),
     );
+    assert!(frame_after_reopen, "no frame after reopening the console");
 }
