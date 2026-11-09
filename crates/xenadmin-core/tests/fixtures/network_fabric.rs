@@ -631,6 +631,10 @@ async fn late_success_receipts_keep_new_ids_after_recovery_and_acknowledgement_w
             .await
             .unwrap();
         }
+        // The recovered instance's own read-only tracker may legitimately establish
+        // success once the task completes. Close it first so only the original
+        // worker observes the late receipt; it must keep the IDs without reviving.
+        c2.close().await;
         records.lock().unwrap().remove("_hold_task");
         tokio::time::timeout(deadline(5), async {
             while op.latest().network_fabric_created.is_none() {
@@ -658,7 +662,6 @@ async fn late_success_receipts_keep_new_ids_after_recovery_and_acknowledgement_w
         );
         assert_eq!(writes.load(Ordering::SeqCst), 1);
         c.close().await;
-        c2.close().await;
     }
 }
 
