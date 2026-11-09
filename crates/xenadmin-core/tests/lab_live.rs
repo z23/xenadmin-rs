@@ -5073,3 +5073,271 @@ async fn lab_checkpoint_and_cd_drive_tools_media() {
     assert!(running);
     c.close().await;
 }
+
+/// P11-08: the halted guest is exported as an OVA package, the package is inspected and
+/// imported into the standalone pool with its network mapped by name, the import is
+/// deleted with its disks, the file removed and the guest started again.
+#[tokio::test]
+#[ignore]
+async fn lab_ovf_export_and_import_across_pools() {
+    use xenadmin_core::{
+        ExportSource, OvfPackageFormat, PowerAction, PowerState, ResourceTarget, TransferAction,
+        TransferFile, TransferRequest, VmCommand, VmLifecycleOperation, VmSettingEdit,
+        VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let home = connect(&lab, &backend, 0, false).await;
+    let away = connect(&lab, &backend, 2, false).await;
+    let home_inventory = home.latest().inventory().unwrap().clone();
+    let away_inventory = away.latest().inventory().unwrap().clone();
+    assert_ne!(
+        home_inventory.pool_id, away_inventory.pool_id,
+        "the third host must be a separate pool"
+    );
+    let guest = home_inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    if guest.power_state == PowerState::Running {
+        let shutdown = home
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: home.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            home.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Halted)
+        })
+        .await;
+        steps.push(json!({"step": "clean shutdown", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": halted}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+
+    // The OVF writer represents the dc boot order only; set it through the reviewed boot
+    // order editor and restore the guest's own order afterwards.
+    async fn boot_order(
+        c: &Connection,
+        vm: xenadmin_core::VmId,
+        previous: &str,
+        value: &str,
+    ) -> std::sync::Arc<xenadmin_core::OperationRecord> {
+        let patch = VmSettingsPatch::new(vec![VmSettingEdit::BootOrder {
+            previous: previous.into(),
+            value: value.into(),
+        }])
+        .unwrap();
+        let op = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Configure {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    patch,
+                },
+            )
+            .expect("boot order edit accepted");
+        wait_vm_outcome(&op, 120).await
+    }
+    let original_order = home.latest().inventory().unwrap().details.vms[&guest.id]
+        .boot_order
+        .clone()
+        .unwrap_or_default();
+    if original_order != "dc" {
+        let outcome = boot_order(&home, guest.id, &original_order, "dc").await;
+        let check = settle(60, || {
+            home.latest()
+                .inventory()
+                .is_some_and(|i| i.details.vms[&guest.id].boot_order.as_deref() == Some("dc"))
+        })
+        .await;
+        steps.push(json!({"step": "set boot order dc for the export", "from": original_order, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert!(check);
+    }
+
+    // Export as an OVA package.
+    let directory = lab.evidence.parent().unwrap().join("transfers");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("lab-guest-{stamp}.ova"));
+    let started = std::time::Instant::now();
+    let export = home
+        .transfer(
+            OperationId::new(),
+            home.latest()
+                .observe_resource(ResourceTarget::Pool(home_inventory.pool_id))
+                .unwrap(),
+            TransferRequest {
+                action: TransferAction::ExportOvf {
+                    source: ExportSource::Vm {
+                        vm: guest.id,
+                        expected_template: false,
+                    },
+                    format: OvfPackageFormat::Ova,
+                },
+                file: TransferFile::destination(&path).expect("export destination"),
+            },
+        )
+        .expect("export accepted");
+    let outcome = wait_outcome(&export, 1800).await;
+    let size = std::fs::metadata(&path).map(|m| m.len()).ok();
+    steps.push(json!({"step": "export OVA", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": size}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+
+    // Inspect and import with the package's networks mapped by name.
+    let file = TransferFile::ovf_source(&path).expect("inspect package");
+    let summary = file.ovf().cloned().expect("OVF summary");
+    let destination_host = away_inventory
+        .coordinator
+        .or_else(|| away_inventory.hosts.keys().next().copied())
+        .expect("destination host");
+    let sr = local_sr_of(&away_inventory, destination_host).expect("destination repository");
+    let fallback = away_inventory
+        .networks
+        .first()
+        .map(|n| xenadmin_core::NetworkId::from(n.uuid))
+        .expect("a destination network");
+    let networks = summary
+        .networks
+        .iter()
+        .map(|name| {
+            let target = away_inventory
+                .networks
+                .iter()
+                .find(|n| &n.name == name)
+                .map(|n| xenadmin_core::NetworkId::from(n.uuid))
+                .unwrap_or(fallback);
+            (name.clone(), target)
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let inspected = json!({"guests": summary.guests.iter().map(|g| json!({"name": g.name, "cpus": g.cpus, "memory": g.memory_bytes, "disks": g.disks.len()})).collect::<Vec<_>>(), "disks": summary.disks.len(), "networks": summary.networks, "manifest_verified": summary.manifest_verified});
+    let started = std::time::Instant::now();
+    let import = away
+        .transfer(
+            OperationId::new(),
+            away.latest()
+                .observe_resource(ResourceTarget::Pool(away_inventory.pool_id))
+                .unwrap(),
+            TransferRequest {
+                action: TransferAction::ImportOvf { sr, networks },
+                file,
+            },
+        )
+        .expect("import accepted");
+    let outcome = wait_outcome(&import, 1800).await;
+    let imported = outcome.transfer_created.vms.first().copied();
+    let visible = settle(120, || {
+        imported.is_some_and(|id| {
+            away.latest()
+                .inventory()
+                .is_some_and(|i| i.vms.contains_key(&id))
+        })
+    })
+    .await;
+    let imported_disks = imported.map(|id| disks_of(away.latest().inventory().unwrap(), id).len());
+    steps.push(json!({"step": "import OVA", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "created_vms": outcome.transfer_created.vms.len(), "created_disks": outcome.transfer_created.disks.len(), "visible": visible, "disks": imported_disks}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        visible,
+        "the imported VM did not appear on the destination pool"
+    );
+    let imported = imported.unwrap();
+
+    // Delete the import with its disks, remove the file, start the guest.
+    let disks = disks_of(away.latest().inventory().unwrap(), imported);
+    let deletion = away
+        .submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: away.latest().observe_vm(imported).unwrap(),
+                operation: VmLifecycleOperation::Delete {
+                    expected_template: false,
+                    disks: disks.clone(),
+                    snapshots: Vec::new(),
+                },
+            },
+        )
+        .expect("deletion accepted");
+    let outcome = wait_vm_outcome(&deletion, 300).await;
+    let gone = settle(120, || {
+        away.latest().inventory().is_some_and(|i| {
+            !i.vms.contains_key(&imported) && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+        })
+    })
+    .await;
+    steps.push(json!({"step": "delete the import with its disks", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "disks": disks.len(), "gone": gone}));
+    let removed = std::fs::remove_file(&path).is_ok();
+    if original_order != "dc" {
+        let outcome = boot_order(&home, guest.id, "dc", &original_order).await;
+        let check = settle(60, || {
+            home.latest().inventory().is_some_and(|i| {
+                i.details.vms[&guest.id].boot_order.as_deref() == Some(original_order.as_str())
+            })
+        })
+        .await;
+        steps.push(json!({"step": "restore boot order", "to": original_order, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+    let start = home
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: home.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    let running = settle(120, || {
+        home.latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running)
+    })
+    .await;
+    steps.push(json!({"step": "start", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": running}));
+    lab.record(
+        "ovf-export-and-import-across-pools",
+        json!({"guest": guest.name, "package": inspected, "file_removed": removed, "steps": steps}),
+    );
+    assert!(gone && running);
+    home.close().await;
+    away.close().await;
+}
