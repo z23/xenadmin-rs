@@ -232,10 +232,16 @@ def stopped(host):
         raise ValueError(f"{host['name']} must be shut off before this operation")
 
 
+def bridge_name(manifest):
+    return "xal" + manifest["id"].replace("-", "")[:8]
+
+
 def check_subnet(manifest):
     subnet = ipaddress.IPv4Network(manifest["subnet"])
-    bridge = "xal" + manifest["id"].replace("-", "")[:8]
-    for route in json.loads(run("ip", "-json", "route", "show", "table", "all").stdout):
+    bridge = bridge_name(manifest)
+    # Only the main table assigns addresses to workstation links. Policy tables such as a
+    # VPN catch-all are checked by check_routing once the bridge exists.
+    for route in json.loads(run("ip", "-json", "route", "show").stdout):
         destination = route.get("dst", "default")
         if destination == "default" or route.get("dev") == bridge:
             continue
@@ -252,6 +258,20 @@ def check_subnet(manifest):
             mask = ip.attrib.get("netmask", ip.attrib.get("prefix", "24"))
             if subnet.overlaps(ipaddress.IPv4Network(f"{address}/{mask}", strict=False)):
                 raise ValueError("Lab subnet overlaps another libvirt network; choose another /24")
+
+
+def check_routing(manifest):
+    """After the bridge exists, every lab host address must resolve to it, not to a VPN."""
+    bridge = bridge_name(manifest)
+    for host in manifest["hosts"]:
+        routes = json.loads(run("ip", "-json", "route", "get", host["ip"]).stdout)
+        device = routes[0].get("dev") if routes else None
+        if device != bridge:
+            raise ValueError(
+                f"{host['ip']} routes via {device or 'nothing'} instead of {bridge}; a policy-routing "
+                "table (for example a VPN catch-all) captures the lab subnet. Add a rule such as "
+                f"`ip rule add to {manifest['subnet']} lookup main priority 5000` or choose another /24"
+            )
 
 
 def prepare(directory, manifest):
@@ -308,6 +328,7 @@ def control(args):
         active = virsh("net-list", "--name").stdout.splitlines()
         if manifest["name"] not in active:
             virsh("net-start", manifest["name"])
+        check_routing(manifest)
         for host in manifest["hosts"]:
             log = serial_log(directory, host)
             if log.is_symlink():
@@ -477,6 +498,7 @@ def serve(args):
         raise ValueError("Lab network has not been defined; run prepare first")
     if manifest["name"] not in virsh("net-list", "--name").stdout.splitlines():
         virsh("net-start", manifest["name"])
+    check_routing(manifest)
     address = (gateway(manifest), int(manifest["unattended"]["port"]))
     server = ThreadingHTTPServer(address, answerfile_handler(manifest, directory / "answerfiles"))
     print(f"Serving answer files at {manifest['unattended']['answerfile_url']}; stop with Ctrl-C", flush=True)

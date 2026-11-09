@@ -107,6 +107,24 @@ class LabTests(unittest.TestCase):
                 manage.check_subnet(manifest)
             virsh.assert_not_called()
 
+    def test_policy_routes_are_checked_after_the_bridge_exists_not_before(self):
+        manage.write_plan(self.args)
+        _, manifest = manage.load(self.plan)
+        bridge = manage.bridge_name(manifest)
+        main_only = subprocess.CompletedProcess([], 0, json.dumps([{"dst": "10.0.0.0/8", "dev": "lan"}]), "")
+        with patch.object(manage, "run", return_value=main_only) as run, patch.object(manage, "virsh") as virsh:
+            virsh.return_value = subprocess.CompletedProcess([], 0, "", "")
+            manage.check_subnet(manifest)
+            self.assertEqual(run.call_args.args, ("ip", "-json", "route", "show"))
+        captured = subprocess.CompletedProcess([], 0, json.dumps([{"dst": "192.168.254.11", "dev": "vpn0", "table": "65743"}]), "")
+        with patch.object(manage, "run", return_value=captured):
+            with self.assertRaisesRegex(ValueError, "routes via vpn0"):
+                manage.check_routing(manifest)
+        direct = subprocess.CompletedProcess([], 0, json.dumps([{"dst": "192.168.254.11", "dev": bridge}]), "")
+        with patch.object(manage, "run", return_value=direct) as run:
+            manage.check_routing(manifest)
+            self.assertEqual(run.call_count, len(manifest["hosts"]))
+
     def test_dangling_disk_symlink_is_rejected_before_qemu_img_can_write(self):
         manage.write_plan(self.args)
         directory, manifest = manage.load(self.plan)

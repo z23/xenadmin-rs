@@ -25,8 +25,12 @@ matching names are rejected. `undefine` retains disk images and evidence.
   traversal and SELinux/AppArmor storage policy must permit QEMU access. Disk images
   start mode 0600; libvirt applies its normal DAC/security driver policy.
 - A dedicated unused private /24. `prepare` and `start` reject overlaps with workstation
-  routes or other libvirt networks. Nothing enables NAT, bridging to a physical NIC,
-  guest internet access, autostart, or storage forwarding.
+  routes or other libvirt networks, and `start`/`serve` verify that each lab address
+  resolves to the lab bridge once it exists. A VPN whose policy-routing table captures
+  all destinations needs an exception such as
+  `ip rule add to SUBNET lookup main priority 5000` before the WARP-style rule. Nothing
+  enables NAT, bridging to a physical NIC, guest internet access, autostart, or storage
+  forwarding.
 
 ## Prepare and install
 
