@@ -102,8 +102,8 @@ tracking and cloud-init drive editors, host and pool setting round trips, the ho
 console and Ctrl+Alt+Delete, a coordinator handover round trip, a member certificate reset,
 host backup and support bundle downloads, the template lifecycle, a VLAN lifecycle, a
 scheduled-snapshot policy lifecycle, the inventory tables with the certificate opt-out and a
-force shutdown reviewed against another client's task and a UEFI creation from an ISO
-library image, plus twenty host-behaviour findings that were fixed, three host observations
+force shutdown reviewed against another client's task, a UEFI creation from an ISO library
+image and a memory checkpoint restore, plus twenty host-behaviour findings that were fixed, three host observations
 and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.

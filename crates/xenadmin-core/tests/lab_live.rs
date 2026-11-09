@@ -11223,3 +11223,194 @@ async fn lab_vm_wizard_with_iso_uefi_and_secure_boot() {
         }
     }
 }
+
+/// P05-05, P05-03, P05-04, P04-02: a memory checkpoint of the running guest is taken while a
+/// timed report is pending inside the guest; the report arrives once from the live guest,
+/// the checkpoint is restored through the reviewed workflow (shut down, revert, resume), and
+/// the same report arrives again from the resumed memory image; the checkpoint is deleted.
+#[tokio::test]
+#[ignore]
+async fn lab_checkpoint_restore_resumes_memory_state() {
+    use xenadmin_core::{PowerAction, PowerState, SnapshotName, SnapshotWorkflow, VmCommand};
+    let lab = Lab::load();
+    let gateway = std::env::var("XENADMIN_LAB_GATEWAY").unwrap_or_else(|_| "192.168.254.1".into());
+    let port: u16 = 8000;
+    let guest_ip =
+        std::env::var("XENADMIN_LAB_GUEST_IP").unwrap_or_else(|_| "192.168.254.100".into());
+    let reports = report_listener(&format!("{gateway}:{port}")).await;
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    if guest.power_state != PowerState::Running {
+        power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await;
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = format!("RESUMED-{stamp}");
+    let count = |reports: &Reports| {
+        reports
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|v| **v == token)
+            .count()
+    };
+
+    let console = c
+        .open_console(c.latest().observe_vm(guest.id).unwrap())
+        .expect("console");
+    guest_report_marker(&console, &gateway, port, &guest_ip, None).await;
+    let marker_reported = wait_report(&reports, "A", 90).await;
+    // A report that fires from inside the guest 45 s later, whatever the guest does meanwhile.
+    type_line(
+        &console,
+        &format!("(sleep 45; wget -q -O- http://{gateway}:{port}/report/{token}) &"),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let armed_at = std::time::Instant::now();
+
+    let name = format!("lab-ckpt-{stamp}");
+    let checkpoint = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateCheckpoint {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                name: SnapshotName::new(&name).unwrap(),
+            },
+        )
+        .expect("checkpoint accepted");
+    let checkpoint = wait_vm_outcome(&checkpoint, 300).await;
+    let checkpoint_seconds = armed_at.elapsed().as_secs();
+    let snapshot = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(s) = c.latest().inventory().and_then(|i| {
+                i.snapshots
+                    .for_vm(guest.id)
+                    .find(|s| s.name == name)
+                    .cloned()
+            }) {
+                return s;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("checkpoint listed");
+    let first = wait_report(&reports, &token, 120).await;
+    let first_count = count(&reports);
+    let first_after_seconds = armed_at.elapsed().as_secs();
+    console.close();
+
+    let restore = c
+        .submit(
+            OperationId::new(),
+            VmCommand::SnapshotWorkflow {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: SnapshotWorkflow::Restore {
+                    snapshot: snapshot.id,
+                    expected_state: PowerState::Running,
+                    checkpoint: true,
+                    shutdown: true,
+                    start_after: true,
+                },
+            },
+        )
+        .expect("restore accepted");
+    let restore = wait_vm_outcome(&restore, 600).await;
+    let restored_at = std::time::Instant::now();
+    let running = settle(180, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&guest.id)
+                .is_some_and(|v| v.power_state == PowerState::Running)
+        })
+    })
+    .await;
+    let second = settle(150, || count(&reports) > first_count).await;
+    let second_after_seconds = restored_at.elapsed().as_secs();
+    let total = count(&reports);
+    let frame = match c
+        .latest()
+        .observe_vm(guest.id)
+        .and_then(|target| c.open_console(target))
+    {
+        Ok(console) => {
+            let digest = stable_frame_or_last(&console, 20).await;
+            let saved = save_frame(&lab, &console, "after-checkpoint-restore");
+            console.close();
+            json!({"digest": digest, "file": saved})
+        }
+        Err(error) => json!({"error": error.to_string()}),
+    };
+    let disks = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.snapshot == Some(snapshot.id) && b.kind == "Disk")
+        .filter_map(|b| b.vdi)
+        .collect::<Vec<_>>();
+    let deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(guest.id, snapshot.id).unwrap(),
+                disks: disks.clone(),
+            },
+        )
+        .expect("checkpoint deletion accepted");
+    let deletion = wait_vm_outcome(&deletion, 300).await;
+    let gone = settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.snapshots.get(&snapshot.id).is_none()
+                && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+        })
+    })
+    .await;
+    reports.task.abort();
+    c.close().await;
+    lab.record("checkpoint-restore-resumes-memory-state", json!({
+        "guest": guest.name, "marker_reported": marker_reported, "token": token,
+        "checkpoint": {"state": format!("{:?}", checkpoint.state), "detail": checkpoint.detail, "seconds_after_arming": checkpoint_seconds, "snapshot": snapshot.id.to_string(), "power_state": format!("{:?}", snapshot.power_state)},
+        "report_from_live_guest": {"received": first, "count": first_count, "seconds_after_arming": first_after_seconds},
+        "restore": {"state": format!("{:?}", restore.state), "detail": restore.detail, "steps": restore.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()},
+        "running_after_restore": running, "report_from_resumed_memory": {"received": second, "seconds_after_restore": second_after_seconds, "total_reports": total},
+        "console_after": frame, "checkpoint_deletion": {"state": format!("{:?}", deletion.state), "detail": deletion.detail, "disks": disks.len(), "gone": gone},
+    }));
+    assert_eq!(
+        checkpoint.state,
+        OperationState::Succeeded,
+        "{}",
+        checkpoint.detail
+    );
+    assert!(first, "the live guest never reported");
+    assert_eq!(
+        restore.state,
+        OperationState::Succeeded,
+        "{}",
+        restore.detail
+    );
+    assert!(running, "guest not running after the restore");
+    assert!(second, "the resumed memory image never repeated the report");
+    assert_eq!(
+        deletion.state,
+        OperationState::Succeeded,
+        "{}",
+        deletion.detail
+    );
+    assert!(gone, "checkpoint or its disks remain");
+}
