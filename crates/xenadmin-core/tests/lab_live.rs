@@ -5625,3 +5625,352 @@ async fn lab_local_storage_lifecycle_on_standalone_host() {
     assert!(gone);
     c.close().await;
 }
+
+/// P09-05 and P09-09: a local repository on the standalone host's data disk is forgotten
+/// (its records dropped, its data kept), rediscovered on the disk by the non-formatting
+/// probe, introduced again by its exact UUID, given a host attachment and attached, then
+/// detached and destroyed, leaving the disk as found.
+#[tokio::test]
+#[ignore]
+async fn lab_local_storage_forget_and_introduce() {
+    use xenadmin_core::{
+        LocalDeviceDeclaration, LocalStorageKind, ResourceCommand, ResourceTarget,
+        StorageDiscoveryResult, StorageLocation, StorageOperation, StorageQuery,
+    };
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let device = std::env::var("XENADMIN_LAB_DATA_DEVICE")
+        .unwrap_or_else(|_| "/dev/disk/by-id/ata-QEMU_HARDDISK_lab-data".into());
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 2, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let host = inventory
+        .coordinator
+        .or_else(|| inventory.hosts.keys().next().copied())
+        .expect("host");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    async fn storage(
+        c: &Connection,
+        target: ResourceTarget,
+        operation: StorageOperation,
+        seconds: u64,
+    ) -> std::sync::Arc<xenadmin_core::ResourceOperationRecord> {
+        let op = c
+            .submit_resource(
+                OperationId::new(),
+                ResourceCommand::Storage {
+                    target: c.latest().observe_resource(target).unwrap(),
+                    operation,
+                },
+            )
+            .expect("storage command accepted");
+        wait_outcome(&op, seconds).await
+    }
+    let attachment_of = |c: &Connection, sr: xenadmin_core::SrId| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pbds
+                .values()
+                .find(|p| p.sr == Some(sr) && p.host == Some(host))
+                .map(|p| (p.id, p.currently_attached))
+        })
+    };
+    let find_sr = |c: &Connection, id: xenadmin_core::SrId| {
+        c.latest().inventory().and_then(|i| {
+            i.storage
+                .iter()
+                .find(|s| xenadmin_core::SrId::from(s.uuid) == id)
+                .cloned()
+        })
+    };
+    async fn probe(
+        c: &Connection,
+        pool: xenadmin_core::PoolId,
+        host: xenadmin_core::HostId,
+        device: &str,
+    ) -> Result<StorageDiscoveryResult, String> {
+        let probe = c
+            .discover_storage(
+                c.latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                StorageQuery::LocalDevice {
+                    host,
+                    device: device.into(),
+                },
+            )
+            .expect("probe accepted");
+        tokio::time::timeout(deadline(180), async {
+            loop {
+                if let Some(result) = probe.latest() {
+                    break result;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("probe answered")
+    }
+
+    // Any repository already on the disk is destroyed first (detached, then destroyed).
+    for leftover in inventory
+        .storage
+        .iter()
+        .filter(|s| s.name.starts_with("lab-sr-"))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let id: xenadmin_core::SrId = leftover.uuid.into();
+        if let Some((pbd, Some(true))) = attachment_of(&c, id) {
+            let outcome = storage(
+                &c,
+                ResourceTarget::Pbd(pbd),
+                StorageOperation::SetAttached {
+                    sr: id,
+                    host,
+                    expected_attached: true,
+                    attached: false,
+                },
+                300,
+            )
+            .await;
+            steps.push(json!({"step": "detach a leftover repository", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+            settle(60, || {
+                attachment_of(&c, id).is_some_and(|(_, now)| now == Some(false))
+            })
+            .await;
+        }
+        let outcome = storage(
+            &c,
+            ResourceTarget::Storage(id),
+            StorageOperation::Destroy {
+                expected_name: leftover.name.clone(),
+                expected_disks: Vec::new(),
+            },
+            300,
+        )
+        .await;
+        steps.push(json!({"step": "destroy a leftover repository", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+        settle(60, || find_sr(&c, id).is_none()).await;
+    }
+
+    // Create, detach, forget.
+    let name = format!("lab-sr-{stamp}");
+    let location = StorageLocation::Local {
+        kind: LocalStorageKind::Ext,
+        device: device.clone(),
+    };
+    let outcome = storage(
+        &c,
+        ResourceTarget::Pool(inventory.pool_id),
+        StorageOperation::Create {
+            host,
+            name: name.clone(),
+            description: "Local repository for the forget and introduce scenario".into(),
+            location: location.clone(),
+            hba_device: None,
+            local_device: Some(LocalDeviceDeclaration {
+                identity_statement: "Operator declares the lab data disk for VM storage".into(),
+                acknowledge_data_loss: true,
+            }),
+        },
+        900,
+    )
+    .await;
+    let sr = tokio::time::timeout(deadline(120), async {
+        loop {
+            if let Some(s) = c
+                .latest()
+                .inventory()
+                .and_then(|i| i.storage.iter().find(|s| s.name == name).cloned())
+            {
+                break s;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("repository visible");
+    let sr_id: xenadmin_core::SrId = sr.uuid.into();
+    steps.push(json!({"step": "create", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "uuid": sr_id.to_string()}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    let (pbd, _) = attachment_of(&c, sr_id).expect("attachment");
+    let outcome = storage(
+        &c,
+        ResourceTarget::Pbd(pbd),
+        StorageOperation::SetAttached {
+            sr: sr_id,
+            host,
+            expected_attached: true,
+            attached: false,
+        },
+        300,
+    )
+    .await;
+    settle(60, || {
+        attachment_of(&c, sr_id).is_some_and(|(_, now)| now == Some(false))
+    })
+    .await;
+    steps.push(json!({"step": "detach", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    let outcome = storage(
+        &c,
+        ResourceTarget::Storage(sr_id),
+        StorageOperation::Forget {
+            expected_name: name.clone(),
+            expected_disks: Vec::new(),
+        },
+        300,
+    )
+    .await;
+    let forgotten = settle(60, || find_sr(&c, sr_id).is_none()).await;
+    steps.push(json!({"step": "forget", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "record_gone": forgotten}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(forgotten);
+
+    // The data is still on the disk: the probe finds the repository by its UUID.
+    let result = probe(&c, inventory.pool_id, host, &device).await;
+    let found = match &result {
+        Ok(StorageDiscoveryResult::LocalRepositories(rows)) => {
+            rows.iter().find(|r| r.repository.uuid == sr_id).map(
+                |r| json!({"kind": format!("{:?}", r.kind), "size_bytes": r.repository.size_bytes}),
+            )
+        }
+        _ => None,
+    };
+    steps.push(json!({"step": "probe after forgetting", "found": found, "result": match &result { Ok(_) => "ok".to_string(), Err(e) => e.clone() }}));
+    assert!(
+        found.is_some(),
+        "the forgotten repository was not found on the disk: {result:?}"
+    );
+
+    // Introduce it by exact UUID, give it a host attachment and attach it.
+    let outcome = storage(
+        &c,
+        ResourceTarget::Pool(inventory.pool_id),
+        StorageOperation::Introduce {
+            uuid: sr_id,
+            name: name.clone(),
+            description: "Introduced again by the live scenario".into(),
+            location: location.clone(),
+        },
+        300,
+    )
+    .await;
+    let back = settle(120, || find_sr(&c, sr_id).is_some()).await;
+    steps.push(json!({"step": "introduce by UUID", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "visible": back}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(back);
+    let outcome = storage(
+        &c,
+        ResourceTarget::Storage(sr_id),
+        StorageOperation::CreateAttachment {
+            host,
+            location: location.clone(),
+        },
+        300,
+    )
+    .await;
+    let attachment = settle(120, || attachment_of(&c, sr_id).is_some()).await;
+    steps.push(json!({"step": "create host attachment", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "visible": attachment}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    let (pbd, attached) = attachment_of(&c, sr_id).expect("attachment");
+    if attached != Some(true) {
+        let outcome = storage(
+            &c,
+            ResourceTarget::Pbd(pbd),
+            StorageOperation::SetAttached {
+                sr: sr_id,
+                host,
+                expected_attached: false,
+                attached: true,
+            },
+            300,
+        )
+        .await;
+        let check = settle(60, || {
+            attachment_of(&c, sr_id).is_some_and(|(_, now)| now == Some(true))
+        })
+        .await;
+        steps.push(json!({"step": "attach", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+
+    // Leave the disk as found.
+    let outcome = storage(
+        &c,
+        ResourceTarget::Pbd(pbd),
+        StorageOperation::SetAttached {
+            sr: sr_id,
+            host,
+            expected_attached: true,
+            attached: false,
+        },
+        300,
+    )
+    .await;
+    settle(60, || {
+        attachment_of(&c, sr_id).is_some_and(|(_, now)| now == Some(false))
+    })
+    .await;
+    steps.push(json!({"step": "detach before destroying", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    let outcome = storage(
+        &c,
+        ResourceTarget::Storage(sr_id),
+        StorageOperation::Destroy {
+            expected_name: name.clone(),
+            expected_disks: Vec::new(),
+        },
+        300,
+    )
+    .await;
+    let gone = settle(120, || find_sr(&c, sr_id).is_none()).await;
+    steps.push(json!({"step": "destroy", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "gone": gone}));
+    lab.record(
+        "local-storage-forget-and-introduce",
+        json!({"host": lab.hosts[2].name, "device": device, "steps": steps}),
+    );
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(gone);
+    c.close().await;
+}
