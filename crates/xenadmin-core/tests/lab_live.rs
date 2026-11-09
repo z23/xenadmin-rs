@@ -8797,3 +8797,380 @@ async fn lab_disk_plug_cbt_ha_priority_and_cloud_init_drive() {
         "cloud-init drive remains attached: {removal:?}"
     );
 }
+
+async fn resource_op(
+    c: &Connection,
+    label: &str,
+    command: xenadmin_core::ResourceCommand,
+    seconds: u64,
+) -> Value {
+    match c.submit_resource(OperationId::new(), command) {
+        Ok(operation) => {
+            let row = wait_outcome(&operation, seconds).await;
+            json!({"step": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                   "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+        }
+        Err(error) => json!({"step": label, "accepted": false, "error": error.to_string()}),
+    }
+}
+
+/// P12-02, P12-13, P12-09, P13-07, P10-10, P04-12, P04-03: edit and restore a member's name
+/// and description and its syslog destination, the pool's VM autostart, migration
+/// compression and IGMP snooping settings, each verified on read-back; open the
+/// coordinator's control-domain text console; send Ctrl+Alt+Delete to the guest console and
+/// watch the guest reboot in place.
+#[tokio::test]
+#[ignore]
+async fn lab_host_and_pool_settings_round_trip() {
+    use xenadmin_core::{
+        ConsoleInput, HostOperation, NetworkOperation, PoolOperation, PowerState, ResourceCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("an enabled member");
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let mut results = Vec::new();
+    let host_target = |h: HostId| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(h))
+            .unwrap()
+    };
+    let pool_target = || {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+
+    // Member name and description, then restored exactly.
+    let name = inventory.hosts[&member].name.clone();
+    let description = inventory.details.hosts[&member].description.clone();
+    let renamed = format!("{name}-renamed");
+    let mut entry = resource_op(
+        &c,
+        "rename member",
+        ResourceCommand::RenameMetadata {
+            target: host_target(member),
+            expected_name: name.clone(),
+            expected_description: description.clone(),
+            name: renamed.clone(),
+            description: "Renamed by the live harness".into(),
+        },
+        180,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c.latest().inventory().is_some_and(|i| i
+            .hosts
+            .get(&member)
+            .is_some_and(|h| h.name == renamed)
+            && i.details.hosts.get(&member).is_some_and(
+                |h| h.description == "Renamed by the live harness"
+            )))
+        .await
+    );
+    results.push(entry);
+    let mut entry = resource_op(
+        &c,
+        "restore member name",
+        ResourceCommand::RenameMetadata {
+            target: host_target(member),
+            expected_name: renamed.clone(),
+            expected_description: "Renamed by the live harness".into(),
+            name: name.clone(),
+            description: description.clone(),
+        },
+        180,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c.latest().inventory().is_some_and(|i| i
+            .hosts
+            .get(&member)
+            .is_some_and(|h| h.name == name)
+            && i.details
+                .hosts
+                .get(&member)
+                .is_some_and(|h| h.description == description)))
+        .await
+    );
+    results.push(entry);
+
+    // Member syslog destination, then restored.
+    let syslog_before = inventory.details.hosts[&member].syslog_destination.clone();
+    let destination = Some(lab.hosts[0].ip.clone());
+    let mut entry = resource_op(
+        &c,
+        "set syslog destination",
+        ResourceCommand::Host {
+            target: host_target(member),
+            operation: HostOperation::SetSyslog {
+                expected_destination: syslog_before.clone(),
+                destination: destination.clone(),
+            },
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c.latest().inventory().is_some_and(|i| i
+            .details
+            .hosts
+            .get(&member)
+            .is_some_and(|h| h.syslog_destination == destination)))
+        .await
+    );
+    results.push(entry);
+    let mut entry = resource_op(
+        &c,
+        "restore syslog destination",
+        ResourceCommand::Host {
+            target: host_target(member),
+            operation: HostOperation::SetSyslog {
+                expected_destination: destination.clone(),
+                destination: syslog_before.clone(),
+            },
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c.latest().inventory().is_some_and(|i| i
+            .details
+            .hosts
+            .get(&member)
+            .is_some_and(|h| h.syslog_destination == syslog_before)))
+        .await
+    );
+    results.push(entry);
+
+    // Pool VM autostart, migration compression and IGMP snooping, each toggled and restored.
+    let pool_details = |i: &xenadmin_core::Inventory| i.details.pool.clone();
+    let autostart = pool_details(&inventory)
+        .and_then(|p| p.auto_poweron)
+        .unwrap_or(false);
+    for (label, expected, enabled) in [
+        ("enable pool autostart", autostart, !autostart),
+        ("restore pool autostart", !autostart, autostart),
+    ] {
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Host {
+                target: pool_target(),
+                operation: HostOperation::SetPoolAutostart { expected, enabled },
+            },
+            180,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(60, || c.latest().inventory().is_some_and(|i| pool_details(
+                i
+            )
+            .and_then(|p| p.auto_poweron)
+                == Some(enabled)))
+            .await
+        );
+        results.push(entry);
+    }
+    let compression = pool_details(&inventory)
+        .and_then(|p| p.administration.migration_compression)
+        .unwrap_or(false);
+    for (label, expected, enabled) in [
+        ("toggle migration compression", compression, !compression),
+        ("restore migration compression", !compression, compression),
+    ] {
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Pool {
+                target: pool_target(),
+                operation: PoolOperation::SetMigrationCompression { expected, enabled },
+            },
+            180,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(60, || c.latest().inventory().is_some_and(|i| pool_details(
+                i
+            )
+            .and_then(|p| p.administration.migration_compression)
+                == Some(enabled)))
+            .await
+        );
+        results.push(entry);
+    }
+    let snooping = pool_details(&inventory)
+        .and_then(|p| p.igmp_snooping_enabled)
+        .unwrap_or(false);
+    for (label, expected, enabled) in [
+        ("toggle igmp snooping", snooping, !snooping),
+        ("restore igmp snooping", !snooping, snooping),
+    ] {
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Network {
+                target: pool_target(),
+                operation: NetworkOperation::SetIgmpSnooping { expected, enabled },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(60, || c.latest().inventory().is_some_and(|i| pool_details(
+                i
+            )
+            .and_then(|p| p.igmp_snooping_enabled)
+                == Some(enabled)))
+            .await
+        );
+        results.push(entry);
+    }
+
+    // The coordinator's control-domain text console.
+    let control_domain = inventory.details.hosts[&coordinator]
+        .control_domain
+        .expect("control domain");
+    let host_console = match c.open_host_console(host_target(coordinator), control_domain) {
+        Ok(console) => {
+            let got = tokio::time::timeout(deadline(60), async {
+                loop {
+                    let snapshot = console.latest();
+                    if snapshot.state == xenadmin_core::ConsoleState::Connected
+                        && snapshot.frame.is_some()
+                    {
+                        return Ok(());
+                    }
+                    if let xenadmin_core::ConsoleState::Failed(error) = &snapshot.state {
+                        return Err(error.clone());
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap_or(Err("no frame within the deadline".into()));
+            // RFB paints the first frame in rectangles; wait for a frame that repeats.
+            let digest = stable_frame_or_last(&console, 20).await;
+            let saved = got
+                .is_ok()
+                .then(|| save_frame(&lab, &console, "host-console"))
+                .flatten();
+            let size = console.latest().frame.as_ref().map(|f| (f.width, f.height));
+            console.close();
+            json!({"opened": true, "frame": got.is_ok(), "error": got.err(), "size": size, "digest": digest, "file": saved})
+        }
+        Err(error) => json!({"opened": false, "error": error.to_string()}),
+    };
+
+    // Ctrl+Alt+Delete through the guest console: the guest reboots in place.
+    let metrics_start = |i: &xenadmin_core::Inventory| {
+        i.details
+            .vms
+            .get(&guest.id)
+            .and_then(|v| v.metrics)
+            .and_then(|m| i.details.vm_metrics.get(&m))
+            .and_then(|m| m.start_time.clone())
+    };
+    let start_before = metrics_start(&inventory);
+    let chord = match c
+        .latest()
+        .observe_vm(guest.id)
+        .and_then(|target| c.open_console(target))
+    {
+        Ok(console) => {
+            let ready = tokio::time::timeout(deadline(60), async {
+                loop {
+                    let snapshot = console.latest();
+                    if snapshot.state == xenadmin_core::ConsoleState::Connected
+                        && snapshot.frame.is_some()
+                    {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap_or(false);
+            let sent = ready
+                && console
+                    .input(ConsoleInput::KeyChord(vec![0xffe3, 0xffe9, 0xffff]))
+                    .is_ok();
+            let at = std::time::Instant::now();
+            let rebooted = sent
+                && settle(180, || {
+                    c.latest().inventory().is_some_and(|i| {
+                        metrics_start(i).is_some() && metrics_start(i) != start_before
+                    })
+                })
+                .await;
+            let running_again = settle(180, || {
+                c.latest().inventory().is_some_and(|i| {
+                    i.vms.get(&guest.id).is_some_and(|v| {
+                        v.power_state == PowerState::Running && !v.allowed_actions.is_empty()
+                    })
+                })
+            })
+            .await;
+            let frame_after = stable_frame_or_last(&console, 30).await;
+            let saved = save_frame(&lab, &console, "after-ctrl-alt-del");
+            console.close();
+            json!({"console_ready": ready, "chord_sent": sent, "start_time_before": start_before, "start_time_after": metrics_start(c.latest().inventory().unwrap()),
+                   "rebooted_in_place": rebooted, "seconds": at.elapsed().as_secs(), "running_again": running_again, "frame_after": frame_after, "file": saved})
+        }
+        Err(error) => json!({"console_ready": false, "error": error.to_string()}),
+    };
+    c.close().await;
+    lab.record(
+        "host-and-pool-settings-round-trip",
+        json!({
+            "coordinator": coordinator.to_string(), "member": member.to_string(), "guest": guest.name,
+            "settings": results, "host_console": host_console, "ctrl_alt_delete": chord,
+        }),
+    );
+    for entry in &results {
+        assert_eq!(entry["accepted"], true, "{entry}");
+        assert_eq!(entry["state"], "Succeeded", "{entry}");
+        assert_eq!(entry["read_back"], true, "{entry}");
+    }
+    assert_eq!(host_console["frame"], true, "{host_console}");
+    assert_eq!(chord["chord_sent"], true, "{chord}");
+    assert_eq!(chord["running_again"], true, "{chord}");
+}
+
+/// The digest of the first frame that repeats, or of the last frame seen within the bound.
+async fn stable_frame_or_last(console: &xenadmin_core::Console, seconds: u64) -> String {
+    let mut last = String::new();
+    let _ = tokio::time::timeout(deadline(seconds), async {
+        loop {
+            if let Some(frame) = console.latest().frame.as_ref() {
+                let digest = frame_digest(frame);
+                if digest == last {
+                    return;
+                }
+                last = digest;
+            }
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+    })
+    .await;
+    last
+}
