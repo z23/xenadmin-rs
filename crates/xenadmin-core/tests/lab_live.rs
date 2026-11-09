@@ -1504,6 +1504,14 @@ async fn lab_guest_live_migration_with_storage() {
         })
         .collect::<Vec<_>>();
     assert_eq!(disks.len(), 2, "expected the image and data disks");
+    // Storage relocation needs an explicit IP-configured transfer network on the destination.
+    let transfer_network = inventory
+        .details
+        .pifs
+        .values()
+        .find(|p| p.host == Some(destination) && p.management_purpose.is_some())
+        .and_then(|p| p.network)
+        .expect("destination management network");
     let migration = c
         .submit(
             OperationId::new(),
@@ -1516,7 +1524,7 @@ async fn lab_guest_live_migration_with_storage() {
                     live: true,
                     disks: disks.clone(),
                     networks,
-                    transfer_network: None,
+                    transfer_network: Some(transfer_network),
                 },
             },
         )
