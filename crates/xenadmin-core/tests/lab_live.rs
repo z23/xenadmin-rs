@@ -13113,3 +13113,424 @@ async fn lab_halted_guest_move_between_local_repositories() {
         }
     }
 }
+
+/// Submit one organisation change through the pool and wait for its outcome.
+async fn organization_op(
+    c: &Connection,
+    pool: xenadmin_core::PoolId,
+    label: &str,
+    object: xenadmin_core::OrganizationObjectId,
+    change: xenadmin_core::OrganizationChange,
+) -> Value {
+    use xenadmin_core::{OrganizationEdit, OrganizationPatch, ResourceCommand};
+    let patch = OrganizationPatch::new(vec![OrganizationEdit { object, change }]).unwrap();
+    let command = ResourceCommand::Organization {
+        pool: c
+            .latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap(),
+        patch,
+    };
+    resource_op(c, label, command, 120).await
+}
+
+/// Submit one vApp operation through the pool and wait for its outcome.
+async fn appliance_op(
+    c: &Connection,
+    pool: xenadmin_core::PoolId,
+    label: &str,
+    operation: xenadmin_core::ApplianceOperation,
+    seconds: u64,
+) -> Value {
+    let command = xenadmin_core::ResourceCommand::Appliance {
+        pool: c
+            .latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap(),
+        operation,
+    };
+    resource_op(c, label, command, seconds).await
+}
+
+/// P15-01, P15-03, P15-04, P15-05: assign and remove a tag on the lab guest; add a custom
+/// field definition to the pool, set and clear its value on the guest and remove the
+/// definition; create a vApp, add the guest, set its order and delays, shut the vApp down
+/// cleanly and start it again in order, rename the vApp, remove the guest and delete the
+/// empty vApp; every change is read back from the inventory.
+#[tokio::test]
+#[ignore]
+async fn lab_tags_custom_fields_and_vapp_round_trip() {
+    use xenadmin_core::{
+        ApplianceMember, ApplianceOperation, ApplianceOrder, AppliancePower, CustomFieldDefinition,
+        CustomFieldType, OrganizationChange, OrganizationEdit, OrganizationObjectId,
+        OrganizationPatch, PowerState, ResourceCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let vm = guest.id;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let object_of = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .organization
+                .objects
+                .iter()
+                .find(|o| o.id == OrganizationObjectId::Vm(vm))
+                .cloned()
+        })
+    };
+    let definitions_of = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.organization.definitions.clone())
+    };
+    let object = object_of(&c).expect("the guest's organisation object");
+    steps.push(json!({"step": "organisation before", "complete": inventory.details.organization.complete, "tags": object.tags, "folder": object.folder, "custom_fields": object.custom_fields, "definitions": definitions_of(&c).map(|d| d.len())}));
+
+    // Tags.
+    let previous_tags = object.tags.clone().unwrap_or_default();
+    let tag = format!("lab-tag-{stamp}");
+    let mut with_tag = previous_tags.clone();
+    with_tag.push(tag.clone());
+    for (label, previous, value, present) in [
+        (
+            "assign a tag",
+            previous_tags.clone(),
+            with_tag.clone(),
+            true,
+        ),
+        (
+            "remove the tag",
+            with_tag.clone(),
+            previous_tags.clone(),
+            false,
+        ),
+    ] {
+        let patch = OrganizationPatch::new(vec![OrganizationEdit {
+            object: OrganizationObjectId::Vm(vm),
+            change: OrganizationChange::Tags { previous, value },
+        }])
+        .unwrap();
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Organization {
+                pool: pool_target(&c),
+                patch,
+            },
+            120,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(60, || object_of(&c).is_some_and(|o| o
+                .tags
+                .as_ref()
+                .is_some_and(|t| t.contains(&tag) == present)))
+            .await
+        );
+        steps.push(entry);
+    }
+
+    // Custom field definition and value.
+    let previous_definitions = definitions_of(&c).unwrap_or_default();
+    let definition = CustomFieldDefinition {
+        name: format!("lab-field-{stamp}"),
+        kind: CustomFieldType::String,
+    };
+    let mut with_definition = previous_definitions.clone();
+    with_definition.push(definition.clone());
+    let mut entry = organization_op(
+        &c,
+        pool,
+        "add a custom field definition",
+        OrganizationObjectId::Pool(pool),
+        OrganizationChange::Definitions {
+            previous: previous_definitions.clone(),
+            value: with_definition.clone(),
+        },
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || definitions_of(&c)
+            .is_some_and(|d| d.contains(&definition)))
+        .await
+    );
+    steps.push(entry);
+    let mut entry = organization_op(
+        &c,
+        pool,
+        "set the custom field value on the guest",
+        OrganizationObjectId::Vm(vm),
+        OrganizationChange::CustomField {
+            definition: definition.clone(),
+            previous: None,
+            value: Some("marker".into()),
+        },
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || object_of(&c).is_some_and(|o| o
+            .custom_fields
+            .get(&definition.name)
+            .map(String::as_str)
+            == Some("marker")))
+        .await
+    );
+    steps.push(entry);
+    let mut entry = organization_op(
+        &c,
+        pool,
+        "clear the custom field value",
+        OrganizationObjectId::Vm(vm),
+        OrganizationChange::CustomField {
+            definition: definition.clone(),
+            previous: Some("marker".into()),
+            value: None,
+        },
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || object_of(&c).is_some_and(|o| !o
+            .custom_fields
+            .contains_key(&definition.name)))
+        .await
+    );
+    steps.push(entry);
+    let mut entry = organization_op(
+        &c,
+        pool,
+        "remove the custom field definition",
+        OrganizationObjectId::Pool(pool),
+        OrganizationChange::Definitions {
+            previous: with_definition.clone(),
+            value: previous_definitions.clone(),
+        },
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || definitions_of(&c)
+            .is_some_and(|d| !d.contains(&definition)))
+        .await
+    );
+    steps.push(entry);
+
+    // vApp lifecycle with the guest as its member.
+    let appliance_of = |c: &Connection, name: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .appliances
+                .values()
+                .find(|a| a.name == name)
+                .cloned()
+        })
+    };
+    let vapp = format!("lab-vapp-{stamp}");
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "create an empty vApp",
+        ApplianceOperation::Create {
+            name: vapp.clone(),
+            description: "vApp for the live organisation scenario".into(),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(settle(60, || appliance_of(&c, &vapp).is_some()).await);
+    steps.push(entry);
+    let appliance = appliance_of(&c, &vapp).expect("created vApp").id;
+    let member_of = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .vms
+                .get(&vm)
+                .map(|d| (d.appliance, d.appliance_order))
+        })
+    };
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "add the guest to the vApp",
+        ApplianceOperation::Membership {
+            appliance,
+            expected_members: Vec::new(),
+            vm,
+            join: true,
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || member_of(&c)
+            .is_some_and(|(a, _)| a == Some(appliance))
+            && appliance_of(&c, &vapp).is_some_and(|a| a.vms.contains(&vm)))
+        .await
+    );
+    steps.push(entry);
+    let previous_order = member_of(&c)
+        .and_then(|(_, o)| o)
+        .unwrap_or(ApplianceOrder {
+            order: 0,
+            start_delay: 0,
+            shutdown_delay: 0,
+        });
+    let order = ApplianceOrder {
+        order: 1,
+        start_delay: 5,
+        shutdown_delay: 5,
+    };
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "set the guest's vApp order and delays",
+        ApplianceOperation::SetOrder {
+            appliance,
+            vm,
+            previous: previous_order,
+            value: order,
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] =
+        json!(settle(60, || member_of(&c).is_some_and(|(_, o)| o == Some(order))).await);
+    steps.push(entry);
+    let current_state = c.latest().inventory().unwrap().vms[&vm].power_state.clone();
+    if current_state == PowerState::Running {
+        let mut entry = appliance_op(
+            &c,
+            pool,
+            "shut the vApp down cleanly",
+            ApplianceOperation::Power {
+                appliance,
+                members: vec![ApplianceMember {
+                    vm,
+                    state: PowerState::Running,
+                    order,
+                }],
+                action: AppliancePower::CleanShutdown,
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(180, || c
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&vm].power_state == PowerState::Halted))
+            .await
+        );
+        steps.push(entry);
+    } else {
+        steps.push(
+            json!({"step": "vApp shutdown", "skipped": format!("guest was {current_state:?}")}),
+        );
+    }
+    let started = std::time::Instant::now();
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "start the vApp in order",
+        ApplianceOperation::Power {
+            appliance,
+            members: vec![ApplianceMember {
+                vm,
+                state: PowerState::Halted,
+                order,
+            }],
+            action: AppliancePower::Start,
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(180, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&vm].power_state == PowerState::Running))
+        .await
+    );
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    steps.push(entry);
+    let renamed = format!("{vapp}-renamed");
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "rename the vApp",
+        ApplianceOperation::Rename {
+            appliance,
+            previous_name: vapp.clone(),
+            previous_description: "vApp for the live organisation scenario".into(),
+            name: renamed.clone(),
+            description: "Renamed by the live organisation scenario".into(),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(settle(60, || appliance_of(&c, &renamed).is_some()).await);
+    steps.push(entry);
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "remove the guest from the vApp",
+        ApplianceOperation::Membership {
+            appliance,
+            expected_members: vec![vm],
+            vm,
+            join: false,
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || member_of(&c).is_some_and(|(a, _)| a.is_none())
+            && appliance_of(&c, &renamed).is_some_and(|a| a.vms.is_empty()))
+        .await
+    );
+    steps.push(entry);
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "delete the empty vApp",
+        ApplianceOperation::DeleteEmpty {
+            appliance,
+            expected_name: renamed.clone(),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(settle(60, || appliance_of(&c, &renamed).is_none()).await);
+    steps.push(entry);
+    c.close().await;
+    lab.record(
+        "tags-custom-fields-and-vapp-round-trip",
+        json!({"guest": guest.name, "tag": tag, "field": definition.name, "vapp": vapp, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}

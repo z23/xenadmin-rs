@@ -93,6 +93,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Endpoint failure with a remembered verified member | P01-04, P01-03 | Passed | A first connection through the coordinator reported its verified members; a second connection was given a dead address in the lab subnet as its endpoint together with the pool identity and that member list, as the desktop profile editor persists them. The dead endpoint failed after 3.1 s with "Cannot reach the XCP-ng management endpoint", the connection went Reconnecting and reached Ready through the remembered coordinator endpoint 4.2 s after the start with the expected pool. The same options without the pool identity stayed Connecting and Reconnecting on the dead endpoint for 45 s and never tried the member. Evidence: 1794244334-remembered-member-fallback-after-endpoint-failure.json |
 | Default repository and repository metadata round trip | P09-10, P09-11, P09-08 | Passed | The pool's default repository was moved from the coordinator's local repository to the member's and read back from the pool details; a review that still believed the previous default was current and asked for a change was refused with "The resource changed since review. Refresh it before retrying" and nothing applied; the default was restored. The member's local repository was renamed with a new description and both were restored, each read back; a rescan of it completed with the host confirming the task. Evidence: 1794244607-default-storage-and-repository-metadata-round-trip.json |
 | Halted guest move between the local repositories | P11-02, P11-03 | Passed | With the guest halted and no snapshots present, a plan whose expected host equalled its destination was refused as invalid before any write; the guest and both of its disks were moved from the coordinator's local repository to the member's in 19 s and back in 21 s through the reviewed halted move, each verified by the disks' repository, the guest's cleared residency and its home host; the guest then started on the coordinator. Evidence: 1794245098-halted-guest-move-between-local-repositories.json |
+| Member evacuation review with a diskless VM | P12-04, P12-03 | Passed as a refusal, observation 26 | A diskless VM pinned to the member was started there. A maintenance review that believed the member empty was refused with "Resident VMs changed since review" and left the member enabled and the VM running on it. The review that named the VM as the member's resident guest was refused after the host's own blocker report, which the client now relays: "The host reports VMs that prevent evacuation (lab-evac-…: VM_LACKS_FEATURE)". The member stayed enabled and unchanged. The refusal arrived two minutes after submission in both runs; the client performs no wait in that review, so the time was spent in the host's blocker evaluation. The VM, which has nothing to boot, had powered itself off by then and its record was deleted. Evidence: 1794245573-member-evacuation-of-a-diskless-vm.json |
 
 ## Findings
 
@@ -297,6 +298,12 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    host to advertise `ratelimit`, was not offered and the scenario skipped it. XenCenter sets
    the ratelimit policy without that advertisement; whether the client should do the same is
    an open product decision, not a host fault.
+26. **A guest without PV drivers cannot be evacuated.** XCP-ng 8.3 reported the running
+   diskless tool-less VM as preventing evacuation with VM_LACKS_FEATURE, so the member could
+   not be evacuated through the pool. The client refused before any change; it had reported
+   only that blockers existed, and now names the blocking VMs and the host's code in the
+   refusal (unit covered). An evacuation that actually moves a guest needs shared storage or
+   a tools-equipped guest, neither of which the lab has.
 
 ## Console observation
 
