@@ -17041,7 +17041,7 @@ async fn lab_tools_guest_clean_reboot_and_address() {
         c.latest().inventory().is_some_and(|i| {
             i.vms
                 .get(&vm)
-                .is_some_and(|v| v.allowed_actions.contains(&PowerAction::HardReboot))
+                .is_some_and(|v| v.allowed_actions.contains(&PowerAction::Reboot))
         })
     })
     .await;
@@ -17056,7 +17056,7 @@ async fn lab_tools_guest_clean_reboot_and_address() {
             OperationId::new(),
             VmCommand::Power {
                 vm: c.latest().observe_vm(vm).unwrap(),
-                action: PowerAction::HardReboot,
+                action: PowerAction::Reboot,
             },
         )
         .expect("clean reboot accepted");
