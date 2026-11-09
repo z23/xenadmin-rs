@@ -307,6 +307,25 @@ async fn sr(session: &Session, sr: SrId) -> Result<String, Error> {
     permits(&r, "vdi_create")?;
     Ok(reference)
 }
+/// An installation image is a read-only, present disk of type `iso` or any read-only disk
+/// in an ISO library: XCP-ng 8.3.0 records the images of its ISO repositories (including
+/// the host's tools image) with type `user`, so the repository's content type decides.
+async fn require_iso_image(session: &Session, image: &Value) -> Result<(), Error> {
+    if image["read_only"] != true || image["missing"] != false {
+        return Err(Error::UnavailableAction);
+    }
+    if image["type"] == "iso" {
+        return Ok(());
+    }
+    let sr = session
+        .call("SR.get_record", vec![json!(reference(&image["SR"])?)])
+        .await?;
+    if sr["content_type"] == "iso" {
+        Ok(())
+    } else {
+        Err(Error::UnavailableAction)
+    }
+}
 async fn validate_create_choices(
     session: &Session,
     operation: &VmLifecycleOperation,
@@ -324,9 +343,7 @@ async fn validate_create_choices(
         idle(&network)?;
         if let Some(image) = iso {
             let (_, image) = fresh(session, "VDI", image.uuid()).await?;
-            if image["type"] != "iso" || image["read_only"] != true || image["missing"] != false {
-                return Err(Error::UnavailableAction);
-            }
+            require_iso_image(session, &image).await?;
         }
         let _ = firmware;
     }
@@ -845,12 +862,7 @@ pub(crate) async fn prepare(
         Step::InstallIso { vm, image } => {
             let (vm_ref, r) = target(session, plan, vm).await?;
             let (image_ref, image_record) = fresh(session, "VDI", image.uuid()).await?;
-            if image_record["type"] != "iso"
-                || image_record["read_only"] != true
-                || image_record["missing"] != false
-            {
-                return Err(Error::UnavailableAction);
-            }
+            require_iso_image(session, &image_record).await?;
             let (_, cd) = first_cd(session, &r)
                 .await?
                 .ok_or(Error::VmLifecycleConflict)?;

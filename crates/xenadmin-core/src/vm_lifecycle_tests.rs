@@ -481,6 +481,27 @@ fn deleting(disks: Vec<VdiId>) -> VmLifecycleOperation {
     }
 }
 #[tokio::test]
+async fn iso_library_images_recorded_as_user_disks_are_installation_sources() {
+    for (content_type, expected) in [
+        ("iso", OperationState::Succeeded),
+        ("user", OperationState::Rejected),
+    ] {
+        let (f, r, _) = fixture(Fault::None).await;
+        {
+            let mut records = r.lock().unwrap();
+            records.get_mut("OpaqueRef:VDI:iso").unwrap()["type"] = json!("user");
+            records.get_mut("OpaqueRef:VDI:iso").unwrap()["SR"] = json!("OpaqueRef:SR:library");
+            records.insert(
+                "OpaqueRef:SR:library".into(),
+                json!({"uuid":uuid(14),"content_type":content_type,"current_operations":{},"allowed_operations":[]}),
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let result = execute(&f, dir.path(), creating()).await;
+        assert_eq!(result.state, expected, "{content_type}: {}", result.detail);
+    }
+}
+#[tokio::test]
 async fn fast_clone_and_full_copy_preserve_source_and_verify_new_resource_ids() {
     for mode in [
         VmCopyMode::Fast,

@@ -10960,3 +10960,266 @@ async fn lab_force_shutdown_review_with_a_running_task() {
         assert_eq!(forced["halted"], true, "{forced}");
     }
 }
+
+/// P08-02, P08-03, P06-08: create a UEFI VM from the generic template with the host's tools
+/// image as the installation source and a new 2 GiB disk on the coordinator's local
+/// repository, read its boot status, review a Secure Boot policy change on the halted VM,
+/// and delete the VM with its disk.
+#[tokio::test]
+#[ignore]
+async fn lab_vm_wizard_with_iso_uefi_and_secure_boot() {
+    use xenadmin_core::{
+        GuestFirmware, PowerState, VmCommand, VmLifecycleOperation, VmSettingEdit, VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let template = inventory
+        .vms
+        .values()
+        .find(|v| v.is_template && v.name == "Other install media")
+        .expect("generic template")
+        .clone();
+    let network: xenadmin_core::NetworkId = inventory
+        .networks
+        .iter()
+        .find(|n| n.bridge == "xenbr0")
+        .expect("pool network")
+        .uuid
+        .into();
+    let sr = local_sr_of(&inventory, coordinator).expect("coordinator local repository");
+    let iso = inventory
+        .details
+        .tools_media
+        .keys()
+        .next()
+        .copied()
+        .expect("guest tools image");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let lifecycle = |source: xenadmin_core::VmId, operation: VmLifecycleOperation, seconds: u64| {
+        let c = &c;
+        async move {
+            match c.latest().observe_vm(source).and_then(|target| {
+                c.submit(
+                    OperationId::new(),
+                    VmCommand::Lifecycle {
+                        source: target,
+                        operation,
+                    },
+                )
+            }) {
+                Ok(operation) => {
+                    let row = wait_vm_outcome(&operation, seconds).await;
+                    json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                           "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+                }
+                Err(error) => json!({"accepted": false, "error": error.to_string()}),
+            }
+        }
+    };
+    let mut steps = Vec::new();
+    for vm in inventory
+        .vms
+        .values()
+        .filter(|v| v.name.starts_with("lab-wizard-"))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        if vm.power_state == PowerState::Running {
+            halt_guest(&c, vm.id).await;
+        }
+        let disks = disks_of(c.latest().inventory().unwrap(), vm.id);
+        let outcome = lifecycle(
+            vm.id,
+            VmLifecycleOperation::Delete {
+                expected_template: vm.is_template,
+                disks,
+                snapshots: Vec::new(),
+            },
+            300,
+        )
+        .await;
+        steps.push(json!({"step": "delete leftover", "name": vm.name, "outcome": outcome}));
+    }
+    let name = format!("lab-wizard-{stamp}");
+    let created = lifecycle(
+        template.id,
+        VmLifecycleOperation::Create {
+            name: name.clone(),
+            description:
+                "UEFI guest created by the live harness with the tools image as install source"
+                    .into(),
+            sr,
+            network,
+            iso: Some(iso),
+            vcpus: 1,
+            memory: 512 * 1024 * 1024,
+            disk_size: Some(2 * 1024 * 1024 * 1024),
+            firmware: GuestFirmware::Uefi,
+            bios_host: None,
+        },
+        600,
+    )
+    .await;
+    let vm = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(v) = c.latest().inventory().and_then(|i| {
+                i.vms
+                    .values()
+                    .find(|v| v.name == name && !v.is_template)
+                    .cloned()
+            }) {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .ok();
+    let devices = vm.as_ref().map(|vm| {
+        let snapshot = c.latest();
+        let i = snapshot.inventory().unwrap();
+        let d = i.details.vms.get(&vm.id);
+        json!({"id": vm.id.to_string(), "power_state": format!("{:?}", vm.power_state),
+               "vbds": i.details.vbds.values().filter(|b| b.vm == Some(vm.id)).map(|b| json!({"kind": b.kind, "device": b.userdevice, "empty": b.empty, "vdi": b.vdi.map(|v| v.to_string()), "is_tools_image": b.vdi == Some(iso), "bootable": b.bootable})).collect::<Vec<_>>(),
+               "disk_sizes": disks_of(i, vm.id).iter().filter_map(|d| i.details.vdis.get(d)).map(|d| d.virtual_size).collect::<Vec<_>>(),
+               "firmware": d.and_then(|d| d.firmware.clone()), "secure_boot": d.and_then(|d| d.secure_boot), "boot_policy": d.and_then(|d| d.boot_policy.clone()), "domain_type": d.and_then(|d| d.domain_type.clone()),
+               "vcpus": d.and_then(|d| d.vcpus_at_startup), "memory_static_max": d.and_then(|d| d.memory_static_max), "nics": i.details.vifs.values().filter(|n| n.vm == Some(vm.id)).count()})
+    });
+    steps.push(
+        json!({"step": "create UEFI VM with ISO and disk", "outcome": created, "vm": devices}),
+    );
+    let mut boot_status = None;
+    let mut secure_boot = Vec::new();
+    if let Some(vm) = &vm {
+        boot_status = match c.latest().observe_vm(vm.id).and_then(|target| c.guest_boot_status(target)) {
+            Ok(query) => tokio::time::timeout(deadline(60), async {
+                loop {
+                    if let Some(result) = query.latest() {
+                        return match result {
+                            Ok(s) => json!({"firmware": s.firmware, "policy": s.policy, "guest": format!("{:?}", s.guest), "pool": format!("{:?}", s.pool)}),
+                            Err(e) => json!({"error": e}),
+                        };
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .ok(),
+            Err(error) => Some(json!({"error": error.to_string()})),
+        };
+        let current = c.latest().inventory().unwrap().details.vms[&vm.id]
+            .secure_boot
+            .unwrap_or(false);
+        for value in [!current, current] {
+            let previous = c.latest().inventory().unwrap().details.vms[&vm.id]
+                .secure_boot
+                .unwrap_or(false);
+            if previous == value {
+                secure_boot.push(json!({"value": value, "skipped": "already set"}));
+                continue;
+            }
+            let entry = match VmSettingsPatch::new(vec![VmSettingEdit::SecureBoot {
+                previous,
+                value,
+            }]) {
+                Ok(patch) => match c.latest().observe_vm(vm.id).and_then(|target| {
+                    c.submit(
+                        OperationId::new(),
+                        VmCommand::Configure { vm: target, patch },
+                    )
+                }) {
+                    Ok(operation) => {
+                        let row = wait_vm_outcome(&operation, 180).await;
+                        let read_back = settle(60, || {
+                            c.latest().inventory().is_some_and(|i| {
+                                i.details
+                                    .vms
+                                    .get(&vm.id)
+                                    .is_some_and(|d| d.secure_boot == Some(value))
+                            })
+                        })
+                        .await;
+                        json!({"value": value, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": read_back})
+                    }
+                    Err(error) => {
+                        json!({"value": value, "accepted": false, "error": error.to_string()})
+                    }
+                },
+                Err(error) => {
+                    json!({"value": value, "accepted": false, "error": error.to_string()})
+                }
+            };
+            let stop = entry["state"] != "Succeeded";
+            secure_boot.push(entry);
+            if stop {
+                break;
+            }
+        }
+        let disks = disks_of(c.latest().inventory().unwrap(), vm.id);
+        let outcome = lifecycle(
+            vm.id,
+            VmLifecycleOperation::Delete {
+                expected_template: false,
+                disks: disks.clone(),
+                snapshots: Vec::new(),
+            },
+            300,
+        )
+        .await;
+        let gone = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                !i.vms.contains_key(&vm.id) && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+            })
+        })
+        .await;
+        let iso_kept = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .details
+            .vdis
+            .contains_key(&iso);
+        steps.push(json!({"step": "delete the VM with its disk", "outcome": outcome, "disks": disks.len(), "gone": gone, "tools_image_kept": iso_kept}));
+    }
+    c.close().await;
+    lab.record("vm-wizard-with-iso-uefi-and-secure-boot", json!({"template": template.name, "install_source": iso.to_string(), "steps": steps, "boot_status": boot_status, "secure_boot_policy": secure_boot}));
+    for step in &steps {
+        assert_eq!(step["outcome"]["accepted"], true, "{step}");
+        assert_eq!(step["outcome"]["state"], "Succeeded", "{step}");
+        if step.get("gone").is_some() {
+            assert_eq!(step["gone"], true, "{step}");
+            assert_eq!(step["tools_image_kept"], true, "{step}");
+        }
+    }
+    let vm_json = steps
+        .iter()
+        .find(|s| s["step"] == "create UEFI VM with ISO and disk")
+        .and_then(|s| s.get("vm"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    assert_eq!(vm_json["firmware"], "uefi", "{vm_json}");
+    assert!(
+        vm_json["vbds"].as_array().is_some_and(|v| v
+            .iter()
+            .any(|b| b["kind"] == "CD" && b["is_tools_image"] == true)
+            && v.iter().any(|b| b["kind"] == "Disk")),
+        "{vm_json}"
+    );
+    for entry in &secure_boot {
+        if entry.get("skipped").is_none() {
+            assert_eq!(entry["accepted"], true, "{entry}");
+        }
+    }
+}

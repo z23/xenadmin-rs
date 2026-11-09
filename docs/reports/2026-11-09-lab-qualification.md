@@ -84,6 +84,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Scheduled-snapshot policy lifecycle | P05-13 | Passed after a fix, finding 19 | The pool's schedule support reported the coordinator's clock (UTC offset 0). A disk schedule was created disabled, the guest was added, the schedule enabled, run now through the synchronous plugin call (1.8 s; the schedule's last run time advanced and a snapshot named by the run appeared), disabled, emptied and deleted; the run's snapshot was deleted with its two disks. An enabled schedule with the guest left by the first attempt was disabled, emptied and deleted through the same workflows first |
 | Inventory tables and certificate opt-out | P01-15, P02-02, P02-05, P02-06, P02-10, P09-01 | Passed | A read-only login with the explicit certificate-validation opt-out and no pin reached Ready. The inventory presented seven repositories with type, capacity, usage, sharing, attachment and disk counts (both 22 GiB local EXT repositories, the shared tools ISO library and the udev drives), two networks with bridge, MTU and interface counts, the guest's general information (vCPUs, memory limits and actual memory, firmware and boot policy, start time and clock-qualified elapsed boot time, no guest tools) and each host's product, build, Xen, CPU, memory, boot and agent start times and manufacturer, the pool's coordinator, default repository and policy flags, and 23 optional record classes negotiated as available |
 | Force shutdown review with another client's running task | P03-07, P11-01, P14-02 | Passed, observation 20 | While a second client's storage live migration ran, the first client captured the VM's running `migrate_send` task in the force shutdown review and the host admitted the force: the task completed, the VM state was verified and no other server task was cancelled by the client. The host stopped the migration task and the owning client's record ended OutcomeUnknown ("placement is incomplete or cannot be verified"); its recheck left it unknown because the guest was halted on no host, so it remains for the operator to acknowledge. The guest's two disks stayed together on the source repository and it was started again |
+| VM wizard with an ISO install source, UEFI firmware and Secure Boot policy | P08-02, P08-03, P06-08 | Passed after a fix, finding 21 | A UEFI VM was created from the generic template with the host's tools image as the installation source and a new 2 GiB disk on the coordinator's local repository: the halted VM carried the image in a CD drive at slot 1, the disk at slot 0, one NIC, one vCPU, 512 MiB and firmware uefi with Secure Boot off; its boot status read firmware uefi, policy off, guest readiness Disabled and pool readiness Ready. The Secure Boot policy was turned on and off through the halted-VM editor, each verified on read-back, and the VM was deleted with its disk while the shared tools image stayed. The creation was first refused because the client required the image's own type to be `iso` (finding 21) |
 
 ## Findings
 
@@ -255,6 +256,12 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    is incomplete or cannot be verified") and its recheck cannot resolve it because the guest
    is no longer running anywhere, so the operator acknowledges it. The client cancelled no
    other client's task. No client change was made.
+21. **ISO library images are recorded as `user` disks.** XCP-ng 8.3.0 gives the disks of its
+   ISO repositories, including the host's tools image, the VDI type `user`; only the
+   repository's content type says `iso`. The creation wizard required the image's own type
+   to be `iso` and refused every ISO on the lab, while the CD-drive and tools-media paths
+   already judged by the repository. The wizard now accepts a read-only, present image whose
+   type is `iso` or whose repository content type is `iso`. Unit coverage was added.
 
 ## Console observation
 
