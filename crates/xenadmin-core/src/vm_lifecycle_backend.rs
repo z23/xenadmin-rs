@@ -207,6 +207,38 @@ fn permits(r: &Value, cap: &str) -> Result<(), Error> {
         Err(Error::UnavailableAction)
     }
 }
+/// XCP-ng 8.3.0 never advertises `changing_memory_limits` for a halted guest; it advertises
+/// the static and dynamic range operations that the combined limits setter changes.
+fn permits_memory_limits(r: &Value) -> Result<(), Error> {
+    idle(r)?;
+    if crate::xapi::advertises(r, "changing_memory_limits")
+        || (crate::xapi::advertises(r, "changing_static_range")
+            && crate::xapi::advertises(r, "changing_dynamic_range"))
+    {
+        Ok(())
+    } else {
+        Err(Error::UnavailableAction)
+    }
+}
+/// XCP-ng 8.3.0 advertises no vCPU operation for a halted guest although its setters succeed.
+/// A halted, idle guest reaches the server, whose explicit refusal stays authoritative; a
+/// running guest still needs the advertised capability.
+fn permits_vcpu_change(r: &Value) -> Result<(), Error> {
+    idle(r)?;
+    if crate::xapi::advertises(r, "changing_VCPUs") || r["power_state"] == "Halted" {
+        Ok(())
+    } else {
+        Err(Error::UnavailableAction)
+    }
+}
+#[cfg(test)]
+pub(crate) fn permits_memory_limits_for_test(r: &Value) -> Result<(), Error> {
+    permits_memory_limits(r)
+}
+#[cfg(test)]
+pub(crate) fn permits_vcpu_change_for_test(r: &Value) -> Result<(), Error> {
+    permits_vcpu_change(r)
+}
 async fn fresh(session: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
     snapshots::optional_record(session, class, &id.to_string())
         .await?
@@ -681,7 +713,7 @@ pub(crate) async fn prepare(
                     ))
                 }
                 Change::Memory(value) => {
-                    permits(&r, "changing_memory_limits")?;
+                    permits_memory_limits(&r)?;
                     let min = number(&r["memory_static_min"]).ok_or(Error::VmLifecycleConflict)?;
                     if min > value {
                         return Err(Error::InvalidVmLifecycle);
@@ -698,14 +730,14 @@ pub(crate) async fn prepare(
                     ))
                 }
                 Change::VcpuMax(value) => {
-                    permits(&r, "changing_VCPUs")?;
+                    permits_vcpu_change(&r)?;
                     Ok(call(
                         "VM.set_VCPUs_max",
                         vec![json!(vm_ref), json!(value.to_string())],
                     ))
                 }
                 Change::VcpuStartup(value) => {
-                    permits(&r, "changing_VCPUs")?;
+                    permits_vcpu_change(&r)?;
                     Ok(call(
                         "VM.set_VCPUs_at_startup",
                         vec![json!(vm_ref), json!(value.to_string())],

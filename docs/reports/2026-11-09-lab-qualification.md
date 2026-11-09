@@ -36,6 +36,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | --- | --- | --- | --- |
 | Direct recovery, read-only | P01-01, P01-11, P01-13, P19-01 | Passed | Credential-free certificate inspection, exact-endpoint pin, read-only login and current inventory on all three standalone hosts; wrong pins and the untrusted self-signed certificate were refused before any credential was sent |
 | Reviewed pool join | P13-02 | Passed after fixes | First attempt was refused locally and the second left an unknown outcome (findings 1 and 2). After the fixes a standalone host joined the two-host pool in eleven seconds: `pool.join` receipt recorded, destination membership verified, member visible on the destination, the old standalone connection kept its original pool identity |
+| Guest provisioning | P11-09, P08-02, P07-03, P07-02, P03-01, P04-01 | Passed after fix | A 68 MiB isohybrid Alpine image imported as a raw disk into the coordinator's local repository, a guest created from the generic template without a disk, the image attached as its first disk, a blank data disk added, the guest started, and the embedded console delivered 720x400 frames through the authenticated tunnel; the first attempt stopped at the memory setter (finding 3) |
 | Reviewed maintenance and ejection | P12-03, P13-02 | Passed | Member entered maintenance (disabled observed), reviewed ejection task completed, member left the coordinator's inventory and returned as a standalone pool with a new identity |
 
 ## Findings
@@ -52,6 +53,15 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    Post-join verification failed on the first read and left the operation unknown. It now
    keeps re-reading within its timeout; an operator recheck through the destination
    connection still resolves a late case. Fixture coverage was added.
+
+3. **Halted guests do not advertise `changing_memory_limits` or `changing_VCPUs`.** XCP-ng
+   8.3.0 lists `changing_static_range` and `changing_dynamic_range` for a halted guest and
+   no vCPU operation at all, yet `VM.set_memory_limits`, `VM.set_VCPUs_max` and
+   `VM.set_VCPUs_at_startup` succeed. VM creation gated its memory and vCPU steps on the
+   absent names and stopped partially complete, leaving a device-less guest. The gate now
+   accepts the range pair for the combined limits setter and lets a halted, idle guest's
+   vCPU setters reach the server; a running guest still needs the advertised capability.
+   Unit coverage was added.
 
 ## Limitations
 

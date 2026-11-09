@@ -532,6 +532,41 @@ async fn creates_vm_with_resources_disk_network_iso_and_merged_firmware() {
     assert_eq!(count(&c, "VDI.create"), 1);
     assert_eq!(count(&c, "VBD.insert"), 1);
 }
+/// XCP-ng 8.3.0 advertises only the memory range operations for halted guests and no vCPU
+/// operation at all, although the setters succeed. Creation must not refuse on their absence.
+#[tokio::test]
+async fn creates_vm_when_the_host_advertises_only_range_operations() {
+    let (f, r, c) = fixture(Fault::None).await;
+    {
+        let mut r = r.lock().unwrap();
+        r.get_mut("OpaqueRef:VM:source").unwrap()["allowed_operations"] = json!([
+            "clone",
+            "copy",
+            "provision",
+            "make_into_template",
+            "destroy",
+            "changing_static_range",
+            "changing_dynamic_range"
+        ]);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let result = execute(&f, dir.path(), creating()).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    let records = r.lock().unwrap();
+    assert_eq!(records["OpaqueRef:VM:new"]["VCPUs_max"], "4");
+    assert_eq!(
+        records["OpaqueRef:VM:new"]["memory_static_max"],
+        "2147483648"
+    );
+    assert_eq!(count(&c, "VM.set_memory_limits"), 1);
+    assert_eq!(count(&c, "VM.set_VCPUs_max"), 1);
+    let mut running = records["OpaqueRef:VM:source"].clone();
+    running["power_state"] = json!("Running");
+    assert!(crate::vm_lifecycle_backend::permits_vcpu_change_for_test(&running).is_err());
+    let mut halted_partial = records["OpaqueRef:VM:source"].clone();
+    halted_partial["allowed_operations"] = json!(["changing_static_range"]);
+    assert!(crate::vm_lifecycle_backend::permits_memory_limits_for_test(&halted_partial).is_err());
+}
 #[tokio::test]
 async fn diskless_template_uses_clone_then_explicit_owned_disk_and_new_nic() {
     let (f, r, c) = fixture(Fault::None).await;
