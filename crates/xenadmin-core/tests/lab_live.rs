@@ -647,6 +647,12 @@ fn guest_image() -> PathBuf {
     )
 }
 
+/// Record a step and echo it, so a scenario that panics later still leaves its trail in the log.
+fn note(steps: &mut Vec<Value>, entry: Value) {
+    eprintln!("step: {entry}");
+    steps.push(entry);
+}
+
 /// Wait for a VM operation's outcome while sampling the progress it reports (P14-01).
 async fn wait_vm_outcome_sampled(
     operation: &xenadmin_core::Operation,
@@ -14377,8 +14383,14 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
         )
         .await;
         entry["read_back"] = json!(settle(120, || pif_by_mac(&c, host, &macs).is_some()).await);
-        steps.push(entry);
-        let pif = pif_by_mac(&c, host, &macs).expect("storage interface listed after the rescan");
+        note(&mut steps, entry);
+        let Some(pif) = pif_by_mac(&c, host, &macs) else {
+            lab.record(
+                "storage-interfaces-and-shared-nfs-repository",
+                json!({"appliance": storage.nas_ip, "failed": format!("storage interface of {host_name} not listed"), "steps": steps}),
+            );
+            panic!("storage interface of {host_name} not listed: {steps:?}");
+        };
         let address = format!("{prefix}.{}", 11 + lab_index);
         let before = Ipv4Configuration {
             mode: match pif.ip_configuration_mode.as_str() {
@@ -14391,9 +14403,15 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
             gateway: pif.gateway.clone(),
             dns: pif.dns.clone(),
         };
-        steps.push(json!({"step": "storage interface", "host": host_name, "device": pif.device, "attached": pif.currently_attached, "mode_before": pif.ip_configuration_mode, "address_before": pif.ip}));
+        note(
+            &mut steps,
+            json!({"step": "storage interface", "host": host_name, "device": pif.device, "attached": pif.currently_attached, "mode_before": pif.ip_configuration_mode, "address_before": pif.ip}),
+        );
         if pif.ip == address && pif.ip_configuration_mode == "Static" {
-            steps.push(json!({"step": format!("configure a static storage address on {host_name}"), "skipped": "already configured"}));
+            note(
+                &mut steps,
+                json!({"step": format!("configure a static storage address on {host_name}"), "skipped": "already configured"}),
+            );
         } else {
             let mut entry = resource_op(
                 &c,
@@ -14426,7 +14444,36 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
                 .await
             );
             entry["address"] = json!(address);
-            steps.push(entry);
+            note(&mut steps, entry);
+        }
+        // Configuring an address does not bring a secondary interface up; attach it.
+        let pif = pif_by_mac(&c, host, &macs).expect("storage interface");
+        if pif.currently_attached != Some(true) {
+            let mut entry = resource_op(
+                &c,
+                &format!("attach the storage interface on {host_name}"),
+                ResourceCommand::Network {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Pif(pif.id))
+                        .unwrap(),
+                    operation: NetworkOperation::SetAttached {
+                        expected: PifIdentity::from_inventory(&pif).expect("interface identity"),
+                        expected_attached: false,
+                        attached: true,
+                    },
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(120, || pif_by_mac(&c, host, &macs)
+                    .is_some_and(
+                        |p| p.currently_attached == Some(true) && p.ip == address
+                    ))
+                .await
+            );
+            note(&mut steps, entry);
         }
     }
 
@@ -14461,7 +14508,10 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
         ),
         _ => None,
     };
-    steps.push(json!({"step": "probe NFS exports", "server": storage.nas_ip, "exports": exports, "error": result.as_ref().err(), "read_back": exports.as_ref().is_some_and(|e| e.iter().any(|x| x["path"] == "/srv/nfs/sr"))}));
+    note(
+        &mut steps,
+        json!({"step": "probe NFS exports", "server": storage.nas_ip, "exports": exports, "error": result.as_ref().err(), "read_back": exports.as_ref().is_some_and(|e| e.iter().any(|x| x["path"] == "/srv/nfs/sr"))}),
+    );
 
     // Create (or reuse) the shared repository.
     let find_sr = |c: &Connection, prefix: &str| {
@@ -14486,7 +14536,10 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
             .unwrap_or_default()
     };
     let (sr, sr_name) = if let Some(existing) = find_sr(&c, "lab-nfs-") {
-        steps.push(json!({"step": "create shared NFS repository", "reused": existing.1}));
+        note(
+            &mut steps,
+            json!({"step": "create shared NFS repository", "reused": existing.1}),
+        );
         existing
     } else {
         let name = format!("lab-nfs-{stamp}");
@@ -14515,8 +14568,17 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
         )
         .await;
         entry["read_back"] = json!(settle(180, || find_sr(&c, &name).is_some()).await);
-        steps.push(entry);
-        find_sr(&c, &name).expect("shared repository listed")
+        note(&mut steps, entry);
+        match find_sr(&c, &name) {
+            Some(found) => found,
+            None => {
+                lab.record(
+                    "storage-interfaces-and-shared-nfs-repository",
+                    json!({"appliance": storage.nas_ip, "failed": "shared repository not listed", "steps": steps}),
+                );
+                panic!("shared repository not listed: {steps:?}");
+            }
+        }
     };
     let shared = settle(180, || {
         c.latest().inventory().is_some_and(|i| {
@@ -14528,20 +14590,43 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
             && attachments(&c, sr).iter().all(|(_, a)| *a == Some(true))
     })
     .await;
-    steps.push(json!({"step": "shared repository attached on both hosts", "repository": sr_name, "read_back": shared, "attachments": attachments(&c, sr).iter().map(|(h, a)| json!({"host": h.map(|h| inventory.hosts[&h].name.clone()), "attached": a})).collect::<Vec<_>>()}));
+    note(
+        &mut steps,
+        json!({"step": "shared repository attached on both hosts", "repository": sr_name, "read_back": shared, "attachments": attachments(&c, sr).iter().map(|(h, a)| json!({"host": h.map(|h| inventory.hosts[&h].name.clone()), "attached": a})).collect::<Vec<_>>()}),
+    );
 
-    // Detach and reattach on the member.
-    for (label, attached) in [
-        ("detach the repository on the member", false),
-        ("reattach the repository on the member", true),
-    ] {
+    // Attach, detach and reattach on the member, starting from its actual state.
+    let member_attached = |c: &Connection| {
+        attachments(c, sr)
+            .iter()
+            .find(|(h, _)| *h == Some(member))
+            .map(|(_, a)| *a)
+    };
+    let member_pbd = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pbds
+                .values()
+                .find(|p| p.sr == Some(sr) && p.host == Some(member))
+                .map(|p| p.id)
+        })
+    };
+    let mut plan = Vec::new();
+    if member_attached(&c) != Some(Some(true)) {
+        plan.push(("attach the repository on the member", true));
+    }
+    plan.push(("detach the repository on the member", false));
+    plan.push(("reattach the repository on the member", true));
+    for (label, attached) in plan {
         let mut entry = resource_op(
             &c,
             label,
             ResourceCommand::Storage {
                 target: c
                     .latest()
-                    .observe_resource(ResourceTarget::Storage(sr))
+                    .observe_resource(ResourceTarget::Pbd(
+                        member_pbd(&c).expect("the member's attachment record"),
+                    ))
                     .unwrap(),
                 operation: StorageOperation::SetAttached {
                     sr,
@@ -14550,16 +14635,12 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
                     attached,
                 },
             },
-            300,
+            600,
         )
         .await;
-        entry["read_back"] = json!(
-            settle(120, || attachments(&c, sr)
-                .iter()
-                .any(|(h, a)| *h == Some(member) && *a == Some(attached)))
-            .await
-        );
-        steps.push(entry);
+        entry["read_back"] =
+            json!(settle(120, || member_attached(&c) == Some(Some(attached))).await);
+        note(&mut steps, entry);
     }
     let entry = resource_op(
         &c,
@@ -14573,7 +14654,7 @@ async fn lab_storage_interfaces_and_shared_nfs_repository() {
         180,
     )
     .await;
-    steps.push(entry);
+    note(&mut steps, entry);
     c.close().await;
     lab.record(
         "storage-interfaces-and-shared-nfs-repository",
@@ -15318,6 +15399,382 @@ async fn lab_member_evacuation_of_the_tools_guest() {
         }
         if step.get("reached").is_some() {
             assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P02-08: list every physical interface of the pool with its host, device, MAC, network,
+/// address configuration and attachment state, and the networks it serves. Read-only; used
+/// to inspect the lab's interfaces after hot-plugging NICs.
+#[tokio::test]
+#[ignore]
+async fn lab_inventory_interfaces() {
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, true).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let mut pifs = inventory
+        .details
+        .pifs
+        .values()
+        .map(|p| {
+            json!({
+                "host": p.host.map(|h| inventory.hosts[&h].name.clone()),
+                "device": p.device, "mac": p.mac, "physical": p.physical, "vlan": p.vlan,
+                "network": p.network.and_then(|n| inventory.networks.iter().find(|x| xenadmin_core::NetworkId::from(x.uuid) == n).map(|x| x.name.clone())),
+                "management": p.management, "attached": p.currently_attached,
+                "mode": p.ip_configuration_mode, "ip": p.ip, "netmask": p.netmask, "gateway": p.gateway,
+                "capabilities": p.capabilities,
+            })
+        })
+        .collect::<Vec<_>>();
+    pifs.sort_by_key(|p| (p["host"].to_string(), p["device"].to_string()));
+    for pif in &pifs {
+        eprintln!("pif: {pif}");
+    }
+    c.close().await;
+    lab.record("inventory-interfaces", json!({"pifs": pifs}));
+}
+
+/// P12-03, P12-05, P10-04, P10-09, P09-06: put the empty member into maintenance, reboot it
+/// through the reviewed reboot so the NIC defined for its next start appears and the
+/// hot-plugged NIC gets its persistent name, exit maintenance, rescan its interfaces and
+/// confirm both storage NICs by MAC, configure and attach the first with its static storage
+/// address, attach the shared repository on the member, and leave the second NIC
+/// unconfigured for the bond scenario.
+#[tokio::test]
+#[ignore]
+async fn lab_member_reboot_adds_the_second_storage_nic() {
+    use xenadmin_core::{
+        HostOperation, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity, ResourceCommand,
+        StorageOperation,
+    };
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("the manifest records a storage network");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator)
+        .expect("member");
+    let member_name = inventory.hosts[&member].name.clone();
+    assert!(
+        !inventory
+            .vms
+            .values()
+            .any(|v| v.host == Some(member) && !v.is_control_domain),
+        "the member must not host guests"
+    );
+    let lab_index = lab
+        .hosts
+        .iter()
+        .position(|h| h.name == member_name)
+        .expect("member in the manifest");
+    let macs = storage
+        .host_nics
+        .get(&member_name)
+        .cloned()
+        .unwrap_or_default();
+    assert!(macs.len() >= 2, "two storage NICs recorded for the member");
+    let prefix = storage
+        .subnet
+        .split('/')
+        .next()
+        .and_then(|a| a.rsplit_once('.'))
+        .map(|(p, _)| p.to_string())
+        .expect("storage subnet prefix");
+    let address = format!("{prefix}.{}", 11 + lab_index);
+    let mut steps = Vec::new();
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let details = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.hosts.get(&member).cloned())
+    };
+    let pif_by_mac = |c: &Connection, mac: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pifs
+                .values()
+                .find(|p| p.host == Some(member) && p.mac.eq_ignore_ascii_case(mac))
+                .cloned()
+        })
+    };
+    note(
+        &mut steps,
+        json!({"step": "interfaces before", "pifs": macs.iter().map(|m| pif_by_mac(&c, m).map(|p| json!({"device": p.device, "mode": p.ip_configuration_mode, "ip": p.ip, "attached": p.currently_attached}))).collect::<Vec<_>>()}),
+    );
+
+    // Maintenance, reboot, exit (finding 12: clear a leftover marker first).
+    if details(&c).and_then(|h| h.maintenance_mode) == Some(true) {
+        let entry = resource_op(
+            &c,
+            "clear the leftover maintenance marker",
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::ExitMaintenance,
+            },
+            300,
+        )
+        .await;
+        note(&mut steps, entry);
+    }
+    let enabled = c.latest().inventory().unwrap().hosts[&member].enabled;
+    let mut entry = resource_op(
+        &c,
+        "enter maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::EnterMaintenance {
+                expected_enabled: enabled,
+                resident_vms: Vec::new(),
+            },
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || details(&c).and_then(|h| h.maintenance_mode)
+            == Some(true))
+        .await
+    );
+    note(&mut steps, entry);
+    let boot_before = details(&c).and_then(|h| h.boot_time).expect("boot time");
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "reboot the member",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::Reboot {
+                expected_boot_time: boot_before.clone(),
+            },
+        },
+        900,
+    )
+    .await;
+    let rebooted = settle(900, || {
+        details(&c)
+            .and_then(|h| h.boot_time)
+            .is_some_and(|t| t != boot_before)
+    })
+    .await;
+    entry["read_back"] = json!(rebooted);
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    note(&mut steps, entry);
+    let live = settle(300, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .hosts
+                .get(&member)
+                .and_then(|h| h.metrics)
+                .and_then(|m| i.details.host_metrics.get(&m))
+                .and_then(|m| m.live)
+                == Some(true)
+        })
+    })
+    .await;
+    note(
+        &mut steps,
+        json!({"step": "member live again", "read_back": live}),
+    );
+    let mut entry = resource_op(
+        &c,
+        "exit maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::ExitMaintenance,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.hosts[&member].enabled))
+        .await
+    );
+    note(&mut steps, entry);
+
+    // Both storage NICs after the restart.
+    let mut entry = resource_op(
+        &c,
+        "rescan physical interfaces",
+        ResourceCommand::Network {
+            target: host_target(&c),
+            operation: NetworkOperation::ScanInterfaces,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] =
+        json!(settle(120, || macs.iter().all(|m| pif_by_mac(&c, m).is_some())).await);
+    note(&mut steps, entry);
+    note(
+        &mut steps,
+        json!({"step": "interfaces after", "pifs": macs.iter().map(|m| pif_by_mac(&c, m).map(|p| json!({"device": p.device, "mode": p.ip_configuration_mode, "ip": p.ip, "attached": p.currently_attached}))).collect::<Vec<_>>()}),
+    );
+    let first = pif_by_mac(&c, &macs[0]).expect("first storage NIC");
+    if !(first.ip_configuration_mode == "Static" && first.ip == address) {
+        let before = Ipv4Configuration {
+            mode: match first.ip_configuration_mode.as_str() {
+                "DHCP" => Ipv4Mode::Dhcp,
+                "Static" => Ipv4Mode::Static,
+                _ => Ipv4Mode::None,
+            },
+            address: first.ip.clone(),
+            netmask: first.netmask.clone(),
+            gateway: first.gateway.clone(),
+            dns: first.dns.clone(),
+        };
+        let mut entry = resource_op(
+            &c,
+            "configure the static storage address",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(first.id))
+                    .unwrap(),
+                operation: NetworkOperation::ConfigureIpv4 {
+                    expected: PifIdentity::from_inventory(&first).expect("interface identity"),
+                    before,
+                    configuration: Ipv4Configuration {
+                        mode: Ipv4Mode::Static,
+                        address: address.clone(),
+                        netmask: "255.255.255.0".into(),
+                        gateway: String::new(),
+                        dns: String::new(),
+                    },
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || pif_by_mac(&c, &macs[0]).is_some_and(|p| p.ip
+                == address
+                && p.ip_configuration_mode == "Static"))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    let first = pif_by_mac(&c, &macs[0]).expect("first storage NIC");
+    if first.currently_attached != Some(true) {
+        let mut entry = resource_op(
+            &c,
+            "attach the storage interface",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(first.id))
+                    .unwrap(),
+                operation: NetworkOperation::SetAttached {
+                    expected: PifIdentity::from_inventory(&first).expect("interface identity"),
+                    expected_attached: false,
+                    attached: true,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || pif_by_mac(&c, &macs[0])
+                .is_some_and(|p| p.currently_attached == Some(true)))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+
+    // The shared repository on the member.
+    if let Some(sr) = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| xenadmin_core::SrId::from(s.uuid))
+    {
+        let member_attached = |c: &Connection| {
+            c.latest().inventory().and_then(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .find(|p| p.sr == Some(sr) && p.host == Some(member))
+                    .map(|p| p.currently_attached)
+            })
+        };
+        let member_pbd = |c: &Connection| {
+            c.latest().inventory().and_then(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .find(|p| p.sr == Some(sr) && p.host == Some(member))
+                    .map(|p| p.id)
+            })
+        };
+        if member_attached(&c) != Some(Some(true)) {
+            let mut entry = resource_op(
+                &c,
+                "attach the shared repository on the member",
+                ResourceCommand::Storage {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Pbd(
+                            member_pbd(&c).expect("the member's attachment record"),
+                        ))
+                        .unwrap(),
+                    operation: StorageOperation::SetAttached {
+                        sr,
+                        host: member,
+                        expected_attached: false,
+                        attached: true,
+                    },
+                },
+                600,
+            )
+            .await;
+            entry["read_back"] =
+                json!(settle(120, || member_attached(&c) == Some(Some(true))).await);
+            note(&mut steps, entry);
+        } else {
+            note(
+                &mut steps,
+                json!({"step": "shared repository on the member", "already_attached": true}),
+            );
+        }
+    }
+    c.close().await;
+    lab.record(
+        "member-reboot-adds-the-second-storage-nic",
+        json!({"member": member_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
         }
         if step.get("read_back").is_some() {
             assert_eq!(step["read_back"], true, "{step}");
