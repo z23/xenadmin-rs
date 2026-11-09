@@ -840,16 +840,30 @@ async fn lab_guest_provisioning() {
     assert!(attached, "guest does not show two disks");
 }
 
-/// Types one line into a guest console as RFB key events. Printable ASCII keysyms equal
-/// the character codes; QEMU applies any shift state itself. Ends with Return.
+/// Types one line into a guest console as RFB key events the way a physical US keyboard
+/// would: shifted characters are sent with Shift held, because the console encodes
+/// physical keys and the host applies no implicit shift. Ends with Return.
 async fn type_line(console: &xenadmin_core::Console, text: &str) {
     use xenadmin_core::ConsoleInput;
+    const SHIFT: u32 = 0xffe1;
+    fn shifted(ch: char) -> bool {
+        ch.is_ascii_uppercase() || "~!@#$%^&*()_+{}|:\"<>?".contains(ch)
+    }
     for ch in text.chars() {
         assert!(
             ch.is_ascii() && !ch.is_ascii_control(),
             "ASCII only: {ch:?}"
         );
         let keysym = ch as u32;
+        let shift = shifted(ch);
+        if shift {
+            console
+                .input(ConsoleInput::Key {
+                    keysym: SHIFT,
+                    down: true,
+                })
+                .unwrap();
+        }
         console
             .input(ConsoleInput::Key { keysym, down: true })
             .unwrap();
@@ -859,6 +873,14 @@ async fn type_line(console: &xenadmin_core::Console, text: &str) {
                 down: false,
             })
             .unwrap();
+        if shift {
+            console
+                .input(ConsoleInput::Key {
+                    keysym: SHIFT,
+                    down: false,
+                })
+                .unwrap();
+        }
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
     console
@@ -931,21 +953,22 @@ async fn report_listener(address: &str) -> Reports {
     Reports { received, task }
 }
 
+/// Waits until the console shows at most two alternating frames (a blinking text cursor)
+/// for a few seconds, then returns the latest frame's digest.
 async fn stable_frame(console: &xenadmin_core::Console, seconds: u64) -> String {
     tokio::time::timeout(deadline(seconds), async {
-        let mut last = String::new();
-        let mut same = 0;
+        let mut recent: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         loop {
             if let Some(frame) = &console.latest().frame {
-                let digest = frame_digest(frame);
-                if digest == last {
-                    same += 1;
-                    if same >= 6 {
-                        return digest;
+                recent.push_back(frame_digest(frame));
+                if recent.len() > 8 {
+                    recent.pop_front();
+                }
+                if recent.len() == 8 {
+                    let distinct: std::collections::BTreeSet<&String> = recent.iter().collect();
+                    if distinct.len() <= 2 {
+                        return recent.back().unwrap().clone();
                     }
-                } else {
-                    same = 0;
-                    last = digest;
                 }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -953,6 +976,22 @@ async fn stable_frame(console: &xenadmin_core::Console, seconds: u64) -> String 
     })
     .await
     .expect("console frame settled")
+}
+
+/// Saves the current console frame as a binary PPM next to the evidence files.
+fn save_frame(lab: &Lab, console: &xenadmin_core::Console, label: &str) -> Option<String> {
+    let frame = console.latest().frame.clone()?;
+    let mut data = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
+    for pixel in frame.rgba.chunks_exact(4) {
+        data.extend_from_slice(&pixel[..3]);
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let path = lab.evidence.join(format!("{stamp}-console-{label}.ppm"));
+    std::fs::write(&path, data).ok()?;
+    Some(path.display().to_string())
 }
 
 async fn wait_report(reports: &Reports, value: &str, seconds: u64) -> bool {
@@ -1016,9 +1055,11 @@ async fn lab_guest_console_and_snapshot_restore() {
     let console = c
         .open_console(c.latest().observe_vm(guest.id).unwrap())
         .expect("console");
+    stable_frame(&console, 180).await;
+    let frame_before_login = save_frame(&lab, &console, "before-login");
     guest_report_marker(&console, &gateway, port, &guest_ip).await;
     let reported_a = wait_report(&reports, "A", 90).await;
-    let frame_after_login = console.latest().frame.as_ref().map(|f| frame_digest(f));
+    let frame_after_login = save_frame(&lab, &console, "after-marker-a");
 
     // Disk snapshot while running, then change the marker.
     let snapshot_name = format!(
@@ -1111,11 +1152,12 @@ async fn lab_guest_console_and_snapshot_restore() {
     guest_report_marker(&console, &gateway, port, &guest_ip).await;
     let restored = wait_report(&reports, "A", 90).await;
     let late_b = reports.received.lock().unwrap().iter().any(|v| v == "B");
+    let frame_after_restore = save_frame(&lab, &console, "after-restore");
     console.close();
     c.close().await;
     lab.record("guest-console-and-snapshot-restore", json!({
         "guest": {"name": guest.name, "id": guest.id.to_string()},
-        "console_frame_after_login": frame_after_login,
+        "console_frames": {"before_login": frame_before_login, "after_marker_a": frame_after_login, "after_restore": frame_after_restore},
         "marker_reported_before_snapshot": reported_a,
         "snapshot": {"state": format!("{:?}", snapshot_outcome.state), "detail": snapshot_outcome.detail, "id": snapshot_id.to_string()},
         "marker_reported_after_change": reported_b,

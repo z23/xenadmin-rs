@@ -82,10 +82,13 @@ ownership. Its scope and recovery evidence are recorded in the
 children under the same reservation. Cross-pool bulk moves and batch snapshot/checkpoint
 exports remain open.
 
-The user requested a prepared local disposable lab and deferred live tests until virtualization
-is available. No active lab has been provisioned. Actual host compatibility, guest data
-integrity, failover and the complete XO-down acceptance run remain qualification gates.
-Milestones remain open until their retained workflows and relevant acceptance checks pass.
+The disposable nested lab is now provisioned: three XCP-ng 8.3.0 hosts installed unattended
+by the harness on 2026-11-09. The [first live qualification report](reports/2026-11-09-lab-qualification.md)
+records read-only recovery with certificate pins, reviewed maintenance/ejection/join, guest
+provisioning from an imported bootable image, console frames and a reviewed snapshot restore,
+plus three host-behaviour findings that were fixed. Guest data integrity through the console,
+failover, native desktop sessions and the complete XO-down acceptance run remain qualification
+gates. Milestones remain open until their retained workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols
 

@@ -16,9 +16,10 @@ multiple saved connections, optional keyring credentials and an embedded RFB con
 No Xen Orchestra service is used.
 
 Local protocol and TLS fixtures, Rune widget interactions, headless rendering, and a native
-window smoke test pass. **Successful live-host qualification is pending.**
-The first qualification target is XCP-ng 8.3 LTS on Linux x86-64.
-See the [actual results and remaining gaps](docs/reports/2026-11-07-alpha.md).
+window smoke test pass. **Live-host qualification has started** against a disposable nested
+XCP-ng 8.3.0 lab; see the [first live qualification report](docs/reports/2026-11-09-lab-qualification.md)
+for what passed, what was fixed and what remains open.
+See the [initial alpha results and gaps](docs/reports/2026-11-07-alpha.md).
 Version 0.1.1 adds a connection-wide certificate-validation opt-out and fixes inventory
 bootstrap with unknown storage sizes; see the [connection fix report](docs/reports/2026-11-07-connection-fixes.md).
 Version 0.1.2 strengthens interrupted-operation recovery and adds resume/unpause controls;

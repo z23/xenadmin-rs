@@ -29,7 +29,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P01-01 | Direct host/pool login and logout without XO | Existing workflow; qualification open |
+| P01-01 | Direct host/pool login and logout without XO | Existing workflow; live-lab read-only login through each of three XCP-ng 8.3.0 hosts recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
 | P01-02 | Connect through a non-coordinator member | Existing workflow; qualification open |
 | P01-03 | Session renewal and reconnect | Bounded reconnect/resync and jitter implemented; coordinator-outage qualification open |
 | P01-04 | Try remembered verified pool members after endpoint failure | Verified-member candidates persisted and retried; live failover qualification open |
@@ -39,9 +39,9 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | P01-08 | Connect/disconnect all; remove profiles; reconnect as another user | Profile edit/remove, per-connection and bulk controls implemented; bounded saved-credential loads, per-profile failures and pending cancellation fixture-verified; live qualification open |
 | P01-09 | Session-only password | Existing workflow; qualification open |
 | P01-10 | Save/forget credentials and protected session restore | Opt-in Secret Service save/load/forget and per-profile startup restore implemented; stale credential results, locked/missing keyring and no-retry behavior fixture-verified; desktop-service qualification open |
-| P01-11 | System CA/name verification and endpoint pins | Existing workflow; qualification open |
+| P01-11 | System CA/name verification and endpoint pins | Existing workflow; live-lab exact-endpoint pins accepted and wrong/untrusted certificates refused before credentials on all three hosts ([live lab](reports/2026-11-09-lab-qualification.md)) |
 | P01-12 | Desktop custom-CA file selection | Native portal file picker and manual path entry implemented; cancelled/stale editor results fixture verified, native portal qualification open |
-| P01-13 | Inspect and accept unknown certificates | Credential-free TLS inspection, bounded certificate details and explicit exact-endpoint SHA-256 review implemented; fixture verified, live qualification open ([report](reports/2026-11-08-connection-trust.md)) |
+| P01-13 | Inspect and accept unknown certificates | Credential-free TLS inspection, bounded certificate details and explicit exact-endpoint SHA-256 review implemented; fixture verified, live-lab inspection and pin acceptance recorded ([live lab](reports/2026-11-09-lab-qualification.md)) ([report](reports/2026-11-08-connection-trust.md)) |
 | P01-14 | Review changed certificate and replace trust | Previous/presented pin and stored certificate comparison, stale-review rejection and draft-only replacement implemented; no automatic save/login or trust propagation; fixture verified, live qualification open |
 | P01-15 | Easy certificate-validation opt-out | Existing workflow; qualification open |
 | P01-16 | Proxy/timeout options and richer connection diagnostics | Request timeout, Direct/captured Environment/HTTP CONNECT routing, transient proxy authentication, effective route and login/inventory/event failure stage implemented; unsupported HTTPS/SOCKS/PAC proxies refused explicitly; fixture verified, live/native proxy qualification open |
@@ -67,7 +67,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P03-01 | Start, clean shutdown and reboot | Existing workflow; qualification open |
+| P03-01 | Start, clean shutdown and reboot | Existing workflow; live-lab start recorded ([live lab](reports/2026-11-09-lab-qualification.md)); shutdown/reboot and interruption qualification open |
 | P03-02 | Force shutdown/reboot | Reviewed force shutdown/reboot implemented; separate running-task recovery is tracked in P03-07. Live qualification open |
 | P03-03 | Pause/unpause and suspend/resume | Existing workflow; qualification open |
 | P03-04 | Start/resume on a chosen eligible host/home server | Chosen-host start/resume and fresh compatibility preflight implemented; live placement qualification open |
@@ -81,7 +81,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P04-01 | Embedded direct authenticated RFB console | Existing workflow; qualification open |
+| P04-01 | Embedded direct authenticated RFB console | Existing workflow; live-lab authenticated tunnel delivered 720x400 frames ([live lab](reports/2026-11-09-lab-qualification.md)); reconnect qualification open |
 | P04-02 | Keyboard and basic pointer input | Focus-aware keyboard/pointer controls extended; real guest input/layout matrix remains open |
 | P04-03 | Ctrl+Alt+Delete and deliberate special-key controls | Deliberate key-chord toolbar implemented; guest/platform qualification open |
 | P04-04 | Mouse wheel/middle button | Wheel and middle-button mapping implemented; real guest qualification open |
@@ -99,9 +99,9 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P05-01 | List per-VM snapshots and basic details | Existing workflow; qualification open |
-| P05-02 | Create named disk snapshot | Existing workflow; qualification open |
-| P05-03 | Restore to existing VM | Reviewed exact-identity disk/checkpoint restore with task and postcondition verification; fixture verified, lab data-integrity qualification open. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
-| P05-04 | Shutdown-before/boot-or-resume-after restore | Explicit clean shutdown of a running VM and optional start/resume after verified restore; durable per-step partial/unknown outcomes and no replay. Fixture verified, live qualification open |
+| P05-02 | Create named disk snapshot | Existing workflow; live-lab disk snapshot of a running guest recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
+| P05-03 | Restore to existing VM | Reviewed exact-identity disk/checkpoint restore with task and postcondition verification; fixture verified, live-lab restore of a running guest recorded ([live lab](reports/2026-11-09-lab-qualification.md)); data-integrity confirmation and checkpoint qualification open. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
+| P05-04 | Shutdown-before/boot-or-resume-after restore | Explicit clean shutdown of a running VM and optional start/resume after verified restore; durable per-step partial/unknown outcomes and no replay. Fixture verified, live-lab shutdown/restore/start recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
 | P05-05 | Disk-and-memory checkpoint creation | Named memory checkpoint command, confirmation and result verification implemented; data-integrity qualification open |
 | P05-06 | Guest-quiesced snapshot creation | Explicitly unsupported on XCP-ng 8.1+ because VSS/quiesced support was removed; no legacy API or consistency fallback offered. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
 | P05-07 | Snapshot description at creation; edit name/description | Create description after new snapshot identity verification; reviewed name/description edits with concurrent-change guards and partial outcomes. Fixture verified, live qualification open |
@@ -135,8 +135,8 @@ Property editor evidence is in the [device property report](reports/2026-11-08-d
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P07-01 | List disks/attachments/device positions | VM disk/attachment/device-position view implemented; live storage qualification open |
-| P07-02 | Create disk on selected SR | Reviewed halted-VM creation and attachment on a chosen eligible SR implemented; created disk UUID survives partial failure; fixture verified, lab qualification open |
-| P07-03 | Attach existing disk | Reviewed halted-VM attachment of an unattached managed, non-shared user disk implemented, with explicit access mode and no ownership claim; fixture verified, lab qualification open |
+| P07-02 | Create disk on selected SR | Reviewed halted-VM creation and attachment on a chosen eligible SR implemented; created disk UUID survives partial failure; fixture verified, live-lab happy path recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
+| P07-03 | Attach existing disk | Reviewed halted-VM attachment of an unattached managed, non-shared user disk implemented, with explicit access mode and no ownership claim; fixture verified, live-lab happy path recorded ([live lab](reports/2026-11-09-lab-qualification.md)); rejection qualification open |
 | P07-04 | Detach disk without deleting data | Reviewed halted-VM detachment implemented; backing disk and data remain; fixture verified, lab qualification open |
 | P07-05 | Activate/deactivate disk attachment | Reviewed existing disk attachment plug/unplug implemented with fresh ownership checks; lab qualification open |
 | P07-06 | Resize disk | Grow-only ordinary VDI workflow supports detached disks and inactive/unreserved attachments on running or halted VMs, exact consumer review and driver-rounded size verification; attached online resize is not offered for the XCP-ng 8.3 API lineage; lab qualification open ([report](reports/2026-11-08-disk-administration.md)) |
@@ -158,7 +158,7 @@ Implementation and verification details are in the [VM lifecycle report](reports
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P08-01 | Browse templates | Template inventory and lifecycle action entry points implemented; lab qualification open |
-| P08-02 | Create VM from template | Reviewed halted-VM wizard implemented with name/description, CPUs/memory, destination SR, network, optional disk/ISO and ordinary firmware choices; fixture verified, lab qualification open |
+| P08-02 | Create VM from template | Reviewed halted-VM wizard implemented with name/description, CPUs/memory, destination SR, network, optional disk/ISO and ordinary firmware choices; fixture verified. Live lab: diskless creation from the generic template recorded, plus one partial outcome before the halted-guest capability fix ([live lab](reports/2026-11-09-lab-qualification.md)); ISO/disk creation paths remain open |
 | P08-03 | Installation source, copied BIOS and cloud-config options | ISO selection, inherited/BIOS/UEFI/Secure Boot modes and chosen-host BIOS identity copy with reviewed affinity side effect implemented for eligible templates; optional inline cloud-init inputs continue through an exact-created-VM configuration-drive review after verified creation; private draft, failed/unknown outcomes and selection/reconnect guards fixture verified; live qualification open ([report](reports/2026-11-08-creation-cloud-init.md)); legacy CoreOS plugin integration excluded |
 | P08-04 | Instant/fast template creation | Fast clone to custom template implemented when the source/storage advertises support; fixture verified, lab qualification open |
 | P08-05 | Clone versus full-copy VM | Reviewed halted source clone versus full copy to selected SR implemented, with VM/template result choice; fixture verified, lab qualification open |
@@ -220,7 +220,7 @@ See the [same-pool migration increment](reports/2026-11-08-migration.md) for the
 | P11-06 | XVA VM/template import/export | Reviewed plain/gzip/zstd ordinary-guest import and VM/custom-template export implemented. Explicit checkpoint import verifies the entire memory/disk stream and retains new suspended guests without resuming; export requires the exact requested compression before atomic publication. Identity/provenance/recovery fixtures verified ([checkpoint](reports/2026-11-08-checkpoint-archives.md), [compression](reports/2026-11-08-xva-compression.md)). Broader archive shapes and live qualification open |
 | P11-07 | Snapshot export | Halted disk-snapshot and suspended memory-checkpoint XVA export implemented, with explicit disks-only/memory review and complete checksum/identity verification. Full-export endpoint omits ancestry; alternative snapshot-chain packaging and live qualification remain open ([evidence](reports/2026-11-08-checkpoint-archives.md)) |
 | P11-08 | OVF/OVA appliance import/export | Reviewed ordinary HVM raw/VHD OVF/OVA import and VHD package export implemented with explicit SR/network mapping, private atomic publication and no-replay partial-resource recovery; parser/protocol/Rune fixtures verified. Self-contained VMDK conversion is available separately; appliance disk remapping, advanced appliance settings and live qualification remain open; [report](reports/2026-11-08-ovf-ova-transfers.md) |
-| P11-09 | Standalone disk-image import | Raw and fixed/dynamic VHD import into a new unattached disk implemented; matching disk export, private atomic files, captured size/storage and partial-identity recovery fixture verified. Self-contained QCOW2/VMDK/VHDX can be converted locally into a separately reviewed raw/VHD import. Backing-chain/differencing/multi-file inputs and live qualification remain open; [report](reports/2026-11-08-disk-image-transfers.md) |
+| P11-09 | Standalone disk-image import | Raw and fixed/dynamic VHD import into a new unattached disk implemented; matching disk export, private atomic files, captured size/storage and partial-identity recovery fixture verified. Self-contained QCOW2/VMDK/VHDX can be converted locally into a separately reviewed raw/VHD import. Live lab: raw import of a bootable image into a local repository recorded ([live lab](reports/2026-11-09-lab-qualification.md)). Backing-chain/differencing/multi-file inputs, VHD and export qualification remain open; [report](reports/2026-11-08-disk-image-transfers.md) |
 | P11-10 | Conversion manager | Offline reviewed self-contained QCOW2/VMDK/VHDX/VHD/raw → raw/dynamic VHD conversion implemented with mandatory isolation, content comparison, private recovery/cleanup and separate import handoff. Synthetic real-QEMU/Rune verified; explicit backing chains, multi-file images, appliance remapping and audited VMware remote-service conversion remain retained ([report](reports/2026-11-08-local-conversion.md)) |
 | P11-11 | Transfer cancellation/expiry/partial-result recovery | XVA, checkpoint XVA, raw/VHD and ordinary OVF/OVA stream/task progress, cancellation, expiry and no-replay recovery implemented; failed/unknown imports retain proven UUIDs and unresolved guards. Checkpoint recheck never sends an unsent cancel or transfer, and late task/created-memory evidence preserves recovery/acknowledgement. Conversion formats and live qualification open |
 
@@ -234,7 +234,7 @@ Implementation and qualification evidence: [host administration report](reports/
 | --- | --- | --- |
 | P12-01 | Host hardware/software properties | Host General information adds BIOS/chipset, authentication and boot/toolstack elapsed observations to software/CPU/memory and attachment details; fixture/native synthetic verified, live qualification open |
 | P12-02 | Rename/description | Reviewed host metadata editing implemented with fresh conflict checks and explicit partial outcomes; lab qualification open |
-| P12-03 | Enable/disable scheduling; enter/exit maintenance | Reviewed disable/evacuate/maintenance marker and enable/exit workflows implemented with exact guest review and per-step outcomes; fixture-verified, lab open |
+| P12-03 | Enable/disable scheduling; enter/exit maintenance | Reviewed disable/evacuate/maintenance marker and enable/exit workflows implemented with exact guest review and per-step outcomes; fixture-verified, live-lab maintenance entry recorded ([live lab](reports/2026-11-09-lab-qualification.md)); exit/evacuation qualification open |
 | P12-04 | Evacuate host with destination checks | Reviewed guest UUID set, fresh blockers/possible-host checks and authoritative assert_can_evacuate before disable and evacuation; no automatic HA reduction or guest shutdown; fixture-verified, lab open |
 | P12-05 | Shutdown/reboot host | Reviewed shutdown/reboot for disabled empty hosts; separate handover required for multi-host coordinators; task success/offline or newer boot marker verifies outcome; fixture-verified, lab open |
 | P12-06 | Restart toolstack | Reviewed toolstack restart with pending-task preflight and newer agent-start marker recovery; fixture-verified, lab open |
@@ -252,7 +252,7 @@ Implementation and qualification evidence: [host administration report](reports/
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P13-01 | Create/dissolve pool | A standalone host is already a pool; naming, individual ejection and joining an independently connected pool are implemented. Reviewed coordinated dissolution now checks all disabled/evacuated members before serial ejection, preserves the coordinator and clears its pool metadata last; positive receipts, fresh final-state checks and no-replay recovery are fixture verified. Live ejection/reboot qualification remains open ([join](reports/2026-11-08-pool-join.md), [dissolution](reports/2026-11-08-pool-dissolution.md)) |
-| P13-02 | Join/eject/remove pool member | Reviewed standalone-host join and ejection of disabled, evacuated non-coordinator members with empty local guest storage implemented; offline removal is implemented with the P12-11 disabled/empty/non-coordinator and independent power-off checks; live qualification open ([join report](reports/2026-11-08-pool-join.md), [removal report](reports/2026-11-08-host-administration.md)) |
+| P13-02 | Join/eject/remove pool member | Reviewed standalone-host join and ejection of disabled, evacuated non-coordinator members with empty local guest storage implemented; offline removal is implemented with the P12-11 disabled/empty/non-coordinator and independent power-off checks. Live lab: join and ejection both recorded after two XCP-ng 8.3.0 findings were fixed ([live lab](reports/2026-11-09-lab-qualification.md)); offline removal qualification open ([join report](reports/2026-11-08-pool-join.md), [removal report](reports/2026-11-08-host-administration.md)) |
 | P13-03 | Pool name/description | Reviewed metadata editing with fresh conflict checks and explicit partial outcomes implemented; lab qualification open |
 | P13-04 | Planned coordinator handover during evacuation | Explicit reviewed handover to a live enabled member implemented; HA must already be disabled. Separate from evacuation; live qualification open |
 | P13-05 | Enable/configure/disable HA; heartbeat SR selection | Reviewed enable/disable, heartbeat SR selection, failure tolerance, overcommit policy and persistent timeout default implemented with fresh server checks and durable positive setter receipts. Timeout edits require disabled HA and respect configuration precedence; fixture verified, live qualification open ([report](reports/2026-11-08-ha-policies.md)) |
@@ -317,7 +317,7 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
-| P19-01 | Actual XCP-ng inventory/console | Lab qualification open |
+| P19-01 | Actual XCP-ng inventory/console | Live-lab inventory and console recorded on XCP-ng 8.3.0 ([live lab](reports/2026-11-09-lab-qualification.md)); scale and other lineages open |
 | P19-02 | XO-down recovery | Lab qualification open |
 | P19-03 | VM power correctness | Lab qualification open |
 | P19-04 | Snapshot data integrity | Lab qualification open |
