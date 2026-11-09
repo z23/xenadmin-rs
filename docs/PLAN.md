@@ -115,9 +115,9 @@ move refused while a snapshot existed, a verified snapshot XVA export and, on th
 appliances added on 2026-11-10, a shared NFS repository on both hosts with HA, a tools-equipped
 guest with NIC hot plug, shared-storage live migration and a real member evacuation, a storage
 bond round trip and a member power cycle, plus twenty host-behaviour findings that were
-fixed, six host observations, one client journal observation
-and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
-qualification and an XO-managed VM remain qualification gates. Milestones remain open until
+fixed, eight host observations, one client journal observation, a fixed client verification
+finding, two open client decisions and one open upstream accessibility finding. Member
+failover, pointer and Orca qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols

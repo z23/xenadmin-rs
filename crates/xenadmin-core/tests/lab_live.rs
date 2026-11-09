@@ -16994,3 +16994,112 @@ async fn lab_member_storage_interface_repair() {
         }
     }
 }
+
+/// P03-01, P06-11: clean-reboot the tools guest through the client (the agent makes the
+/// clean operations available), wait for the agent to report again after the restart, and
+/// record whether it now reports an address from the lab network's DHCP range.
+#[tokio::test]
+#[ignore]
+async fn lab_tools_guest_clean_reboot_and_address() {
+    use xenadmin_core::{PowerAction, PowerState, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+        .cloned()
+        .expect("the tools guest");
+    let vm = guest.id;
+    let mut steps = Vec::new();
+    if guest.power_state != PowerState::Running {
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!("start the tools guest");
+        note(&mut steps, start);
+    }
+    let metrics_start = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .vms
+                .get(&vm)
+                .and_then(|v| v.metrics)
+                .and_then(|m| i.details.vm_metrics.get(&m))
+                .and_then(|m| m.start_time.clone())
+        })
+    };
+    let agent = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            let g = i.details.vms.get(&vm)?.guest_metrics?;
+            let m = i.details.guest_metrics.get(&g)?;
+            Some((m.tools_version.clone(), m.networks.clone()))
+        })
+    };
+    let advertised = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&vm)
+                .is_some_and(|v| v.allowed_actions.contains(&PowerAction::CleanReboot))
+        })
+    })
+    .await;
+    note(
+        &mut steps,
+        json!({"step": "clean reboot advertised with the agent present", "read_back": advertised, "allowed_actions": c.latest().inventory().unwrap().vms[&vm].allowed_actions.iter().map(|a| format!("{a:?}")).collect::<Vec<_>>()}),
+    );
+    let start_before = metrics_start(&c);
+    let started = std::time::Instant::now();
+    let reboot = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                action: PowerAction::CleanReboot,
+            },
+        )
+        .expect("clean reboot accepted");
+    let row = wait_vm_outcome(&reboot, 300).await;
+    let restarted = settle(240, || {
+        metrics_start(&c).is_some_and(|t| Some(&t) != start_before.as_ref())
+            && c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&vm].power_state == PowerState::Running)
+    })
+    .await;
+    note(
+        &mut steps,
+        json!({"step": "clean reboot", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": restarted, "elapsed_ms": started.elapsed().as_millis() as u64}),
+    );
+    let reported = settle(240, || {
+        agent(&c).is_some_and(|(tools, _)| !tools.is_empty())
+    })
+    .await;
+    let addressed = settle(120, || {
+        agent(&c).is_some_and(|(_, networks)| !networks.is_empty())
+    })
+    .await;
+    let (tools, networks) = agent(&c).unwrap_or_default();
+    note(
+        &mut steps,
+        json!({"step": "agent after the restart", "read_back": reported, "address_reported": addressed, "tools_version": tools, "network_keys": networks.keys().collect::<Vec<_>>(), "addresses": networks.values().map(|v| if v.contains(':') { "<ipv6>".to_string() } else { v.rsplit_once('.').map(|(p, _)| format!("{p}.x")).unwrap_or_default() }).collect::<Vec<_>>()}),
+    );
+    c.close().await;
+    lab.record(
+        "tools-guest-clean-reboot-and-address",
+        json!({"guest": guest.name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
