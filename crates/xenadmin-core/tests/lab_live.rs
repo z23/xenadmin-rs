@@ -11481,6 +11481,28 @@ async fn lab_dom0_memory_change_with_member_reboot() {
             .and_then(|i| i.details.hosts.get(&member).cloned())
     };
 
+    // An interrupted earlier run can leave the member enabled with the client's maintenance
+    // marker still set (finding 12); exiting maintenance first keeps the scenario
+    // self-contained and re-exercises the no-op enable path.
+    if details(&c).and_then(|h| h.maintenance_mode) == Some(true) {
+        let mut entry = resource_op(
+            &c,
+            "clear the leftover maintenance marker",
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::ExitMaintenance,
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || details(&c).and_then(|h| h.maintenance_mode)
+                == Some(false))
+            .await
+        );
+        steps.push(entry);
+    }
+
     let mut entry = resource_op(
         &c,
         "set control-domain memory",
@@ -11691,6 +11713,318 @@ async fn lab_dom0_memory_change_with_member_reboot() {
         if step.get("boot_time_changed").is_some() {
             assert_eq!(step["boot_time_changed"], true, "{step}");
             assert_eq!(step["actual_within_five_percent"], true, "{step}");
+        }
+    }
+}
+
+/// P07-14, P07-15, P07-16, P02-07: add a NIC on a fresh internal network while the guest is
+/// halted, start the guest and disconnect and reconnect that NIC while it runs, halt the
+/// guest again, move the NIC to the management network with a replacement MAC (destroy and
+/// re-create), set and clear a rate limit when the host advertises one, read every change
+/// back from the inventory's NIC graph, then remove the NIC, delete the network and start
+/// the guest.
+#[tokio::test]
+#[ignore]
+async fn lab_nic_plug_edit_and_rate_limit() {
+    use xenadmin_core::{
+        DeviceOperation, DeviceProperty, DeviceQos, PowerAction, PowerState, ResourceCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let vm = guest.id;
+    let existing: Vec<_> = inventory
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(vm))
+        .cloned()
+        .collect();
+    assert_eq!(
+        existing.len(),
+        1,
+        "the lab guest should carry exactly one NIC"
+    );
+    let management = existing[0].network.expect("the existing NIC's network");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let vif_view = |c: &Connection, vif: xenadmin_core::VifId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.vifs.get(&vif).cloned())
+    };
+    let nic_by_device = |c: &Connection, device: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .vifs
+                .values()
+                .find(|v| v.vm == Some(vm) && v.device == device)
+                .cloned()
+        })
+    };
+
+    if guest.power_state != PowerState::Halted {
+        let mut halt = halt_guest(&c, vm).await;
+        halt["step"] = json!("halt the guest");
+        steps.push(halt);
+    }
+
+    // A fresh internal network for the new NIC.
+    let name = format!("lab-nic-{stamp}");
+    let mut entry = resource_op(
+        &c,
+        "create internal network",
+        ResourceCommand::CreateInternalNetwork {
+            pool: c
+                .latest()
+                .observe_resource(ResourceTarget::Pool(inventory.pool_id))
+                .unwrap(),
+            name: name.clone(),
+            description: "Internal network for the NIC lifecycle scenario".into(),
+            mtu: 1500,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.networks.iter().any(|n| n.name == name)))
+        .await
+    );
+    steps.push(entry);
+    let network_id: xenadmin_core::NetworkId = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .networks
+        .iter()
+        .find(|n| n.name == name)
+        .expect("created network")
+        .uuid
+        .into();
+
+    // Add the NIC while halted.
+    let mut entry = device_op(
+        &c,
+        vm,
+        DeviceOperation::AddNic {
+            network: network_id,
+            device: "1".into(),
+            mac: None,
+        },
+        120,
+    )
+    .await;
+    entry["step"] = json!("add NIC on the internal network");
+    entry["read_back"] = json!(
+        settle(60, || nic_by_device(&c, "1")
+            .is_some_and(|v| v.network == Some(network_id)))
+        .await
+    );
+    steps.push(entry);
+    let nic = nic_by_device(&c, "1").expect("new NIC");
+    let vif = nic.id;
+    let original_mac = nic.mac.clone();
+    steps.push(json!({"step": "nic", "device": nic.device, "mac": original_mac, "qos_known": nic.qos_known, "qos_supported_algorithms": nic.qos_supported_algorithms}));
+
+    // Start, then disconnect and reconnect the NIC while the guest runs.
+    let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+    start["step"] = json!("start the guest");
+    steps.push(start);
+    let attached = settle(90, || {
+        vif_view(&c, vif).is_some_and(|v| {
+            v.currently_attached == Some(true)
+                && v.allowed_operations
+                    .as_deref()
+                    .is_some_and(|ops| ops.iter().any(|o| o == "unplug"))
+        })
+    })
+    .await;
+    steps.push(
+        json!({"step": "NIC attached after start with unplug advertised", "read_back": attached}),
+    );
+    let mut entry = device_op(&c, vm, DeviceOperation::UnplugNic { vif }, 180).await;
+    entry["step"] = json!("disconnect the NIC while running");
+    entry["read_back"] = json!(
+        settle(60, || vif_view(&c, vif)
+            .is_some_and(|v| v.currently_attached == Some(false)))
+        .await
+    );
+    steps.push(entry);
+    let plug_advertised = settle(30, || {
+        vif_view(&c, vif).is_some_and(|v| {
+            v.allowed_operations
+                .as_deref()
+                .is_some_and(|ops| ops.iter().any(|o| o == "plug"))
+        })
+    })
+    .await;
+    let mut entry = device_op(&c, vm, DeviceOperation::PlugNic { vif }, 180).await;
+    entry["step"] = json!("reconnect the NIC while running");
+    entry["plug_advertised_first"] = json!(plug_advertised);
+    entry["read_back"] = json!(
+        settle(60, || vif_view(&c, vif)
+            .is_some_and(|v| v.currently_attached == Some(true)))
+        .await
+    );
+    steps.push(entry);
+
+    // Halt, then move the NIC to the management network with a replacement MAC.
+    let mut halt = halt_guest(&c, vm).await;
+    halt["step"] = json!("halt the guest for the NIC edit");
+    steps.push(halt);
+    let new_mac = format!(
+        "0a:4c:41:42:{:02x}:{:02x}",
+        (stamp >> 8) & 0xff,
+        stamp & 0xff
+    );
+    let mut entry = device_op(
+        &c,
+        vm,
+        DeviceOperation::EditNic {
+            vif,
+            expected_network: network_id,
+            expected_mac: original_mac.clone(),
+            network: management,
+            mac: new_mac.clone(),
+        },
+        120,
+    )
+    .await;
+    entry["step"] = json!("move the NIC to the management network with a new MAC");
+    entry["read_back"] = json!(
+        settle(60, || nic_by_device(&c, "1").is_some_and(|v| v.network
+            == Some(management)
+            && v.mac == new_mac))
+        .await
+    );
+    steps.push(entry);
+    let nic = nic_by_device(&c, "1").expect("edited NIC");
+    let vif = nic.id;
+    steps.push(json!({"step": "nic after edit", "same_record": vif == existing[0].id || vif == nic.id, "recreated": nic.id != existing[0].id, "mac": nic.mac}));
+
+    // Rate limit when the host advertises the algorithm.
+    if nic
+        .qos_supported_algorithms
+        .as_deref()
+        .is_some_and(|a| a.iter().any(|s| s == "ratelimit"))
+    {
+        let mut entry = device_op(
+            &c,
+            vm,
+            DeviceOperation::Property {
+                change: DeviceProperty::NicRate {
+                    vif,
+                    previous: DeviceQos {
+                        algorithm: nic.qos_algorithm.clone(),
+                        parameters: nic.qos_parameters.clone(),
+                    },
+                    kilobytes_per_second: Some(10_240),
+                },
+            },
+            120,
+        )
+        .await;
+        entry["step"] = json!("set a 10240 KB/s rate limit");
+        entry["read_back"] = json!(
+            settle(60, || vif_view(&c, vif)
+                .is_some_and(|v| v.qos_algorithm == "ratelimit"
+                    && v.qos_parameters.get("kbps").map(String::as_str)
+                        == Some("10240")))
+            .await
+        );
+        steps.push(entry);
+        let limited = vif_view(&c, vif).expect("limited NIC");
+        let mut entry = device_op(
+            &c,
+            vm,
+            DeviceOperation::Property {
+                change: DeviceProperty::NicRate {
+                    vif,
+                    previous: DeviceQos {
+                        algorithm: limited.qos_algorithm.clone(),
+                        parameters: limited.qos_parameters.clone(),
+                    },
+                    kilobytes_per_second: None,
+                },
+            },
+            120,
+        )
+        .await;
+        entry["step"] = json!("clear the rate limit");
+        entry["read_back"] = json!(
+            settle(60, || vif_view(&c, vif)
+                .is_some_and(|v| v.qos_algorithm.is_empty()))
+            .await
+        );
+        entry["parameters_after_clear"] = json!(vif_view(&c, vif).map(|v| v.qos_parameters));
+        steps.push(entry);
+    } else {
+        steps.push(json!({"step": "rate limit", "skipped": "the host does not advertise the ratelimit QoS algorithm for this NIC", "qos_supported_algorithms": nic.qos_supported_algorithms}));
+    }
+
+    // Remove the NIC, delete the network and start the guest.
+    let mut entry = device_op(&c, vm, DeviceOperation::DeleteNic { vif }, 120).await;
+    entry["step"] = json!("remove the NIC");
+    entry["read_back"] = json!(
+        settle(60, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| !i.details.vifs.contains_key(&vif)))
+        .await
+    );
+    steps.push(entry);
+    let mut entry = resource_op(
+        &c,
+        "delete internal network",
+        ResourceCommand::DeleteInternalNetwork {
+            network: c
+                .latest()
+                .observe_resource(ResourceTarget::Network(network_id))
+                .unwrap(),
+            expected_name: name.clone(),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| !i.networks.iter().any(|n| n.name == name)))
+        .await
+    );
+    steps.push(entry);
+    let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+    start["step"] = json!("start the guest");
+    steps.push(start);
+    c.close().await;
+    lab.record(
+        "nic-plug-edit-and-rate-limit",
+        json!({"guest": guest.name, "network": name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
         }
     }
 }

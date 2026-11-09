@@ -1109,7 +1109,7 @@ impl ResourceRequest {
                 .await;
         }
         if matches!(error, Error::JournalChanged) {
-            self.finish_conflict(journal).await;
+            self.finish_conflict(journal, None).await;
             return;
         }
         let after_dispatch = matches!(
@@ -1177,7 +1177,10 @@ impl ResourceRequest {
         }
         if let Err(save_error) = self.save(journal).await {
             if matches!(save_error, Error::JournalChanged) {
-                self.finish_conflict(journal).await;
+                // The row changed while this error was being recorded. Keep the error
+                // that stopped the worker in the detail; the generic conflict text alone
+                // hides what actually happened on the host.
+                self.finish_conflict(journal, Some(error.to_string())).await;
                 return;
             }
             self.record.local_error = Some(save_error.to_string());
@@ -1185,9 +1188,15 @@ impl ResourceRequest {
         }
     }
 
-    async fn finish_conflict(&mut self, journal: &mut Journal) {
+    async fn finish_conflict(&mut self, journal: &mut Journal, cause: Option<String>) {
         // This worker has stopped. A concurrent cancellation/evidence update must
         // not leave its row advertising an active tracker that no longer exists.
+        let detail = match &cause {
+            Some(cause) => format!(
+                "Local tracking stopped after a concurrent update while handling: {cause}. Recheck the host before retrying; cancellation is not confirmed."
+            ),
+            None => "Local tracking stopped after a concurrent update. Recheck the host before retrying; cancellation is not confirmed.".to_string(),
+        };
         for _ in 0..16 {
             if let Err(error) = self.reload(journal) {
                 self.record.local_error = Some(error.to_string());
@@ -1201,7 +1210,7 @@ impl ResourceRequest {
             if self.record.state != OperationState::Preparing || !self.stop_before_dispatch() {
                 self.record.state = OperationState::OutcomeUnknown;
                 self.record.can_cancel = false;
-                self.record.detail = "Local tracking stopped after a concurrent update. Recheck the host before retrying; cancellation is not confirmed.".into();
+                self.record.detail = detail.clone();
                 for step in &mut self.record.steps {
                     if step.state == StepState::Dispatching {
                         step.state = StepState::OutcomeUnknown;
@@ -1259,6 +1268,56 @@ mod stopped_worker_tests {
             handle.latest().local_error.as_deref(),
             Some(Error::Busy.to_string().as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn conflict_after_a_worker_error_keeps_the_cause_in_the_detail() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(directory.path()).unwrap();
+        let pool: PoolId = uuid::Uuid::new_v4().into();
+        let (_, mut request) = crate::resources::channel(
+            OperationId::new(),
+            ObservedResource {
+                pool,
+                generation: 1,
+                target: ResourceTarget::Pool(pool),
+            },
+            ResourceAction::CreateInternalNetwork {
+                name: "Fixture network".into(),
+                description: String::new(),
+                mtu: 1500,
+            },
+            tokio::runtime::Handle::current(),
+        );
+        assert!(journal.resource_admit(&mut request.record).unwrap());
+        request.record.state = OperationState::Dispatching;
+        request.record.steps = vec![crate::OperationStep {
+            label: "Enable scheduling".into(),
+            state: StepState::Dispatching,
+            detail: String::new(),
+        }];
+        request.save(&mut journal).await.unwrap();
+        // Another writer bumps the row while the worker holds a stale copy.
+        journal
+            .resource_control(
+                pool,
+                request.record.id,
+                OperationControl::RequestCancellation,
+            )
+            .unwrap();
+        request
+            .finish_conflict(&mut journal, Some("Host scheduling is not enabled".into()))
+            .await;
+        let result = journal.resource_load(request.record.id).unwrap().unwrap();
+        assert_eq!(result.state, OperationState::OutcomeUnknown);
+        assert!(result.interrupted);
+        assert!(result.cancel_requested);
+        assert_eq!(
+            result.detail,
+            "Local tracking stopped after a concurrent update while handling: Host scheduling is not enabled. Recheck the host before retrying; cancellation is not confirmed."
+        );
+        assert_eq!(result.steps[0].state, StepState::OutcomeUnknown);
+        assert_eq!(result.steps[0].detail, result.detail);
     }
 
     #[tokio::test]
@@ -1332,7 +1391,7 @@ mod stopped_worker_tests {
                 journal.resource_load(result.id).unwrap().unwrap().state,
                 OperationState::Verifying
             );
-            request.finish_conflict(&mut journal).await;
+            request.finish_conflict(&mut journal, None).await;
             assert_eq!(
                 journal.resource_load(result.id).unwrap().unwrap().state,
                 OperationState::Verifying
