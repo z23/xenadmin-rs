@@ -5974,3 +5974,122 @@ async fn lab_local_storage_forget_and_introduce() {
     assert!(gone);
     c.close().await;
 }
+
+/// VM settings, failure column: an edit reviewed against a description that another client
+/// has changed meanwhile is refused before any write, and a fresh review succeeds.
+#[tokio::test]
+#[ignore]
+async fn lab_concurrent_description_edit_is_refused() {
+    use xenadmin_core::{VmCommand, VmSettingEdit, VmSettingsPatch};
+    let lab = Lab::load();
+    let first_state = tempfile::tempdir().unwrap();
+    let second_state = tempfile::tempdir().unwrap();
+    let first_backend = Backend::with_state_directory(first_state.path().into()).unwrap();
+    let second_backend = Backend::with_state_directory(second_state.path().into()).unwrap();
+    let first = connect(&lab, &first_backend, 0, false).await;
+    let second = connect(&lab, &second_backend, 0, false).await;
+    let guest = first
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    async fn edit(
+        c: &Connection,
+        vm: xenadmin_core::VmId,
+        previous: &str,
+        value: &str,
+    ) -> Result<std::sync::Arc<xenadmin_core::OperationRecord>, String> {
+        let patch = VmSettingsPatch::new(vec![VmSettingEdit::Description {
+            previous: previous.into(),
+            value: value.into(),
+        }])
+        .unwrap();
+        let op = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Configure {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    patch,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(wait_vm_outcome(&op, 120).await)
+    }
+
+    // The first client reviews the current description; the second changes it meanwhile.
+    let reviewed = guest.description.clone();
+    let meanwhile = format!("Changed by another client at {stamp}");
+    let other = edit(&second, guest.id, &reviewed, &meanwhile)
+        .await
+        .expect("second client's edit accepted");
+    assert_eq!(other.state, OperationState::Succeeded, "{}", other.detail);
+    let seen = settle(60, || {
+        first
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].description == meanwhile)
+    })
+    .await;
+
+    // The stale review is refused before any write; a fresh one succeeds.
+    let stale = edit(
+        &first,
+        guest.id,
+        &reviewed,
+        &format!("Stale review at {stamp}"),
+    )
+    .await;
+    let stale_outcome = match &stale {
+        Ok(record) => {
+            json!({"accepted": true, "state": format!("{:?}", record.state), "detail": record.detail})
+        }
+        Err(error) => json!({"accepted": false, "error": error}),
+    };
+    let unchanged = first
+        .latest()
+        .inventory()
+        .is_some_and(|i| i.vms[&guest.id].description == meanwhile);
+    let fresh_value = format!("Fresh review at {stamp}");
+    let fresh = edit(&first, guest.id, &meanwhile, &fresh_value)
+        .await
+        .expect("fresh edit accepted");
+    let applied = settle(60, || {
+        first
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].description == fresh_value)
+    })
+    .await;
+    lab.record(
+        "concurrent-description-edit-refused",
+        json!({
+            "guest": guest.name,
+            "other_client_edit": {"state": format!("{:?}", other.state), "seen_by_first_client": seen},
+            "stale_review": stale_outcome,
+            "description_unchanged_by_stale_review": unchanged,
+            "fresh_review": {"state": format!("{:?}", fresh.state), "detail": fresh.detail, "applied": applied},
+        }),
+    );
+    assert!(
+        seen,
+        "the first client did not observe the other client's change"
+    );
+    assert!(
+        !stale
+            .as_ref()
+            .is_ok_and(|r| r.state == OperationState::Succeeded),
+        "a stale review was applied"
+    );
+    assert!(unchanged);
+    assert_eq!(fresh.state, OperationState::Succeeded, "{}", fresh.detail);
+    assert!(applied);
+    first.close().await;
+    second.close().await;
+}
