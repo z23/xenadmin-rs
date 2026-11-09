@@ -82,7 +82,7 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P04-01 | Embedded direct authenticated RFB console | Existing workflow; live-lab authenticated tunnel delivered 720x400 frames ([live lab](reports/2026-11-09-lab-qualification.md)); reconnect qualification open |
-| P04-02 | Keyboard and basic pointer input | Focus-aware keyboard/pointer controls extended; real guest input/layout matrix remains open |
+| P04-02 | Keyboard and basic pointer input | Focus-aware keyboard/pointer controls extended; live-lab keyboard input logged into a guest and ran commands, shifted characters need explicit Shift events as the desktop forwards them ([live lab](reports/2026-11-09-lab-qualification.md)); pointer and layout matrix remain open |
 | P04-03 | Ctrl+Alt+Delete and deliberate special-key controls | Deliberate key-chord toolbar implemented; guest/platform qualification open |
 | P04-04 | Mouse wheel/middle button | Wheel and middle-button mapping implemented; real guest qualification open |
 | P04-05 | Extended QEMU keys, layouts and shortcut capture | QEMU physical-key extension implemented with fallback; non-US/shortcut-capture qualification remains open |
@@ -99,9 +99,9 @@ partial/unknown outcomes and does not establish live-host compatibility.
 | ID | Workflow | Delivery state |
 | --- | --- | --- |
 | P05-01 | List per-VM snapshots and basic details | Existing workflow; qualification open |
-| P05-02 | Create named disk snapshot | Existing workflow; live-lab disk snapshot of a running guest recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
-| P05-03 | Restore to existing VM | Reviewed exact-identity disk/checkpoint restore with task and postcondition verification; fixture verified, live-lab restore of a running guest recorded ([live lab](reports/2026-11-09-lab-qualification.md)); data-integrity confirmation and checkpoint qualification open. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
-| P05-04 | Shutdown-before/boot-or-resume-after restore | Explicit clean shutdown of a running VM and optional start/resume after verified restore; durable per-step partial/unknown outcomes and no replay. Fixture verified, live-lab shutdown/restore/start recorded ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
+| P05-02 | Create named disk snapshot | Existing workflow; live-lab disk snapshot of a running guest recorded with its first-sector content captured ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
+| P05-03 | Restore to existing VM | Reviewed exact-identity disk/checkpoint restore with task and postcondition verification; fixture verified, live-lab restore returned the snapshot's disk content after a later change ([live lab](reports/2026-11-09-lab-qualification.md)); checkpoint qualification open. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
+| P05-04 | Shutdown-before/boot-or-resume-after restore | Explicit clean shutdown of a running VM and optional start/resume after verified restore; durable per-step partial/unknown outcomes and no replay. Fixture verified, live-lab shutdown/restore/start recorded with the restored content confirmed from the guest ([live lab](reports/2026-11-09-lab-qualification.md)); interruption qualification open |
 | P05-05 | Disk-and-memory checkpoint creation | Named memory checkpoint command, confirmation and result verification implemented; data-integrity qualification open |
 | P05-06 | Guest-quiesced snapshot creation | Explicitly unsupported on XCP-ng 8.1+ because VSS/quiesced support was removed; no legacy API or consistency fallback offered. [Evidence](reports/2026-11-08-snapshot-workflows.md) |
 | P05-07 | Snapshot description at creation; edit name/description | Create description after new snapshot identity verification; reviewed name/description edits with concurrent-change guards and partial outcomes. Fixture verified, live qualification open |
@@ -320,9 +320,9 @@ See the [organization increment](reports/2026-11-08-organization.md) for capture
 | P19-01 | Actual XCP-ng inventory/console | Live-lab inventory and console recorded on XCP-ng 8.3.0 ([live lab](reports/2026-11-09-lab-qualification.md)); scale and other lineages open |
 | P19-02 | XO-down recovery | Lab qualification open |
 | P19-03 | VM power correctness | Lab qualification open |
-| P19-04 | Snapshot data integrity | Lab qualification open |
+| P19-04 | Snapshot data integrity | Disk snapshot restore data integrity recorded on the live lab ([live lab](reports/2026-11-09-lab-qualification.md)); checkpoint memory integrity open |
 | P19-05 | Member/coordinator/TLS recovery | Lab qualification open |
-| P19-06 | Console input/relocation | Lab qualification open |
+| P19-06 | Console input/relocation | Live-lab console keyboard input recorded ([live lab](reports/2026-11-09-lab-qualification.md)); relocation after migration open |
 | P19-07 | Host/version/storage/permission compatibility | Lab qualification open |
 | P19-08 | Scale/responsiveness/long-running use | Lab qualification open |
 
