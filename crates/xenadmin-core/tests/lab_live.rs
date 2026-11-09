@@ -10396,7 +10396,7 @@ async fn lab_snapshot_schedule_lifecycle() {
                 pool: pool_target(&c),
                 operation: SnapshotPolicyOperation::Create {
                     config,
-                    clock: support.clock.clone(),
+                    clock: support.clock,
                 },
             },
             300,
@@ -10447,7 +10447,7 @@ async fn lab_snapshot_schedule_lifecycle() {
                 )
                 .await,
             );
-            let clock = support.clock.clone();
+            let clock = support.clock;
             steps.push(
                 run(
                     "enable",
@@ -10455,7 +10455,7 @@ async fn lab_snapshot_schedule_lifecycle() {
                     Box::new(move |expected| SnapshotPolicyOperation::SetEnabled {
                         expected,
                         enabled: true,
-                        clock: Some(clock.clone()),
+                        clock: Some(clock),
                     }),
                     Box::new(move |i| {
                         i.details
@@ -10599,5 +10599,364 @@ async fn lab_snapshot_schedule_lifecycle() {
     }
     for entry in &cleanup {
         assert_eq!(entry["gone"], true, "{entry}");
+    }
+}
+
+/// P01-15, P02-02, P02-05, P02-06, P02-10, P09-01: log in read-only with the explicit
+/// certificate-validation opt-out instead of a pin and record what the inventory presents:
+/// the storage and network tables, each guest's general information, each host's and the
+/// pool's properties, and which optional record classes the host negotiated.
+#[tokio::test]
+#[ignore]
+async fn lab_inventory_tables_and_certificate_opt_out() {
+    use xenadmin_core::{ConnectionState, NetworkId, SrId};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let mut options = ConnectionOptions::new(lab.endpoint(0));
+    options.accept_invalid_certificates = true;
+    options.read_only = true;
+    let c = backend.connect(options, lab.credentials());
+    let ready = c
+        .wait_ready(deadline(90))
+        .await
+        .map(|_| true)
+        .map_err(|e| e.to_string());
+    let snapshot = c.latest();
+    let Some(i) = snapshot.inventory() else {
+        lab.record(
+            "inventory-tables-and-certificate-opt-out",
+            json!({"ready": ready, "state": format!("{:?}", snapshot.state())}),
+        );
+        panic!("no inventory: {ready:?}");
+    };
+    let now = SystemTime::now();
+    let storage = i.storage.iter().map(|s| {
+        let id = SrId::from(s.uuid);
+        let d = i.details.storage.get(&id);
+        json!({"name": s.name, "kind": s.kind, "capacity_bytes": s.capacity_bytes, "used_bytes": s.used_bytes,
+               "shared": d.and_then(|d| d.shared), "content_type": d.map(|d| d.content_type.clone()),
+               "attachments": i.details.pbds.values().filter(|p| p.sr == Some(id)).count(),
+               "attached": i.details.pbds.values().filter(|p| p.sr == Some(id) && p.currently_attached == Some(true)).count(),
+               "disks": i.details.vdis.values().filter(|v| v.sr == Some(id)).count()})
+    }).collect::<Vec<_>>();
+    let networks = i.networks.iter().map(|n| {
+        let id = NetworkId::from(n.uuid);
+        let d = i.details.networks.get(&id);
+        json!({"name": n.name, "bridge": n.bridge, "mtu": d.and_then(|d| d.mtu), "managed": d.and_then(|d| d.managed),
+               "pifs": i.details.pifs.values().filter(|p| p.network == Some(id)).count(),
+               "vifs": i.details.vifs.values().filter(|v| v.network == Some(id)).count()})
+    }).collect::<Vec<_>>();
+    let guests = i.guests().map(|v| {
+        let d = i.details.vms.get(&v.id);
+        let metrics = d.and_then(|d| d.metrics).and_then(|m| i.details.vm_metrics.get(&m));
+        let guest = d.and_then(|d| d.guest_metrics).and_then(|g| i.details.guest_metrics.get(&g));
+        json!({"name": v.name, "power_state": format!("{:?}", v.power_state), "host": v.host.map(|h| h.to_string()),
+               "vcpus_at_startup": d.and_then(|d| d.vcpus_at_startup), "vcpus_max": d.and_then(|d| d.vcpus_max),
+               "memory_static_max": d.and_then(|d| d.memory_static_max), "memory_actual": metrics.and_then(|m| m.memory_actual),
+               "boot_policy": d.and_then(|d| d.boot_policy.clone()), "firmware": d.and_then(|d| d.firmware.clone()), "domain_type": d.and_then(|d| d.domain_type.clone()),
+               "start_time": metrics.and_then(|m| m.start_time.clone()), "elapsed_since_boot": metrics.and_then(|m| m.elapsed_since_boot(now)),
+               "guest_os": guest.map(|g| g.os_version.get("name").cloned()), "tools": guest.map(|g| g.tools_version.len()), "guest_networks": guest.map(|g| g.networks.len()),
+               "disks": i.details.vm_disks.get(&v.id).map(|b| b.len()), "nics": i.details.vifs.values().filter(|n| n.vm == Some(v.id)).count()})
+    }).collect::<Vec<_>>();
+    let hosts = i.hosts.values().map(|h| {
+        let d = i.details.hosts.get(&h.id);
+        let metrics = d.and_then(|d| d.metrics).and_then(|m| i.details.host_metrics.get(&m));
+        json!({"name": h.name, "address": h.address, "enabled": h.enabled, "version": h.version,
+               "product": d.map(|d| json!({"brand": d.software_version.get("product_brand"), "version": d.software_version.get("product_version"), "build": d.software_version.get("build_number"), "xen": d.software_version.get("xen")})),
+               "cpu": d.map(|d| json!({"count": d.cpu_info.get("cpu_count"), "model": d.cpu_info.get("modelname")})),
+               "memory_total": metrics.and_then(|m| m.memory_total), "memory_free": metrics.and_then(|m| m.memory_free),
+               "boot_time": d.and_then(|d| d.boot_time.clone()), "agent_start_time": d.and_then(|d| d.agent_start_time.clone()),
+               "manufacturer": d.and_then(|d| d.bios_strings.get("system-manufacturer").cloned()), "capabilities": d.map(|d| d.capabilities.len()),
+               "external_auth": d.and_then(|d| d.external_auth_type.clone())})
+    }).collect::<Vec<_>>();
+    let pool = i.details.pool.as_ref().map(|p| json!({"name": p.name, "description": p.description, "coordinator": p.administration.coordinator.map(|h| h.to_string()),
+        "ha_enabled": p.ha_enabled, "default_sr": p.default_sr.map(|s| s.to_string()), "igmp_snooping": p.igmp_snooping_enabled, "auto_poweron": p.auto_poweron,
+        "migration_compression": p.administration.migration_compression, "https_only": p.administration.https_only, "tls_verification": p.administration.tls_verification_enabled}));
+    let classes = i
+        .details
+        .classes
+        .iter()
+        .map(|(k, v)| (k.clone(), format!("{v:?}")))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let state = format!("{:?}", snapshot.state());
+    let endpoint = snapshot.active_endpoint().map(|e| e.to_string());
+    let pool_id = i.pool_id.to_string();
+    c.close().await;
+    lab.record("inventory-tables-and-certificate-opt-out", json!({
+        "ready": ready, "state": state, "endpoint": endpoint, "pool_id": pool_id, "certificate_validation": "opted out explicitly, no pin",
+        "storage": storage, "networks": networks, "guests": guests, "hosts": hosts, "pool": pool, "optional_classes": classes,
+    }));
+    assert_eq!(state, format!("{:?}", ConnectionState::Ready), "{ready:?}");
+    assert!(
+        storage
+            .iter()
+            .any(|s| s["capacity_bytes"].as_u64().is_some_and(|b| b > 0)),
+        "no repository capacity"
+    );
+    assert_eq!(hosts.len(), 2, "pool hosts");
+    assert!(
+        !classes.is_empty(),
+        "no optional class negotiation recorded"
+    );
+}
+
+/// P03-07, P11-01, P14-02: while another client's storage live migration of the guest
+/// runs, review a force shutdown with the captured running task and record the host's
+/// admission answer; the other client then cancels its own migration, and once the VM has
+/// no task the force shutdown is reviewed again, applied, and the guest started.
+#[tokio::test]
+#[ignore]
+async fn lab_force_shutdown_review_with_a_running_task() {
+    use xenadmin_core::{
+        ForceRecoveryAction, OperationControl, PowerAction, PowerState, VmCommand,
+        VmRecoveryOperation,
+    };
+    let lab = Lab::load();
+    let first_state = tempfile::tempdir().unwrap();
+    let second_state = tempfile::tempdir().unwrap();
+    let first_backend = Backend::with_state_directory(first_state.path().into()).unwrap();
+    let second_backend = Backend::with_state_directory(second_state.path().into()).unwrap();
+    let c = connect(&lab, &first_backend, 0, false).await;
+    let other = connect(&lab, &second_backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    if guest.power_state != PowerState::Running {
+        power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await;
+    }
+    let inventory = other.latest().inventory().unwrap().clone();
+    let source_host = inventory.vms[&guest.id].host.expect("resident host");
+    let destination = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != source_host && inventory.hosts[h].enabled)
+        .expect("member");
+    let plan = migration_plan(&inventory, guest.id, destination);
+    let source_sr = plan.disks[0].expected_sr;
+    let advertised = settle(120, || {
+        other.latest().inventory().is_some_and(|i| {
+            i.details.vms.get(&guest.id).is_some_and(|v| {
+                v.allowed_operations
+                    .as_ref()
+                    .is_some_and(|ops| ops.iter().any(|op| op == "migrate_send"))
+            })
+        })
+    })
+    .await;
+    let migration = other
+        .submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: other.latest().observe_vm(guest.id).unwrap(),
+                operation: plan,
+            },
+        )
+        .expect("migration accepted");
+    let migration_id = migration.latest().id;
+    let seen = settle(90, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vms
+                .get(&guest.id)
+                .is_some_and(|v| !v.current_operations.is_empty())
+        })
+    })
+    .await;
+    let now = c.latest().inventory().unwrap().clone();
+    let running = now.details.vms[&guest.id]
+        .current_operations
+        .iter()
+        .map(|o| json!({"operation": o.operation, "task": o.task.map(|t| t.to_string())}))
+        .collect::<Vec<_>>();
+    let captured = VmRecoveryOperation::tasks(&now, guest.id);
+    let review = match &captured {
+        Ok(tasks) => {
+            let operation = VmRecoveryOperation::Force {
+                action: ForceRecoveryAction::Shutdown,
+                tasks: tasks.clone(),
+            };
+            let reason = operation.unavailable_reason(&now, guest.id);
+            match c.latest().observe_vm(guest.id).and_then(|target| {
+                c.submit(
+                    OperationId::new(),
+                    VmCommand::Recovery {
+                        vm: target,
+                        operation,
+                    },
+                )
+            }) {
+                Ok(op) => {
+                    let row = wait_vm_outcome(&op, 300).await;
+                    json!({"captured_tasks": tasks.len(), "unavailable_reason": reason, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                           "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+                }
+                Err(error) => {
+                    json!({"captured_tasks": tasks.len(), "unavailable_reason": reason, "accepted": false, "error": error.to_string()})
+                }
+            }
+        }
+        Err(error) => {
+            json!({"captured_tasks": 0, "accepted": false, "error": format!("capture: {error}")})
+        }
+    };
+    let migration_state_at_review = format!("{:?}", migration.latest().state);
+    let task_still_present = c.latest().inventory().unwrap().details.vms[&guest.id]
+        .current_operations
+        .len();
+    // The other client cancels its own migration; this client never touches that task.
+    let cancel_requested = other
+        .control_operation(migration_id, OperationControl::RequestCancellation)
+        .map(|_| true)
+        .map_err(|e| e.to_string());
+    let migration_row = wait_vm_outcome(&migration, 900).await;
+    // A halted VM has no resident host; judge consistency by its disks alone.
+    let disks_on = |i: &xenadmin_core::Inventory| -> Vec<xenadmin_core::SrId> {
+        i.details
+            .vm_disks
+            .get(&guest.id)
+            .map(|vbds| {
+                vbds.iter()
+                    .filter_map(|b| i.details.vbds.get(b))
+                    .filter(|b| b.kind == "Disk")
+                    .filter_map(|b| i.details.vdis.get(&b.vdi?)?.sr)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let together = |srs: &[xenadmin_core::SrId]| {
+        srs.len() == 2
+            && (srs.iter().all(|s| *s == source_sr) || srs.iter().all(|s| *s != source_sr))
+    };
+    let consistent = settle(300, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| together(&disks_on(i)))
+    })
+    .await;
+    let capturable = settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vms
+                .get(&guest.id)
+                .is_some_and(|v| v.current_operations.is_empty())
+                && VmRecoveryOperation::tasks(i, guest.id).is_ok_and(|t| t.is_empty())
+        })
+    })
+    .await;
+    let mut forced = None;
+    if c.latest().inventory().unwrap().vms[&guest.id].power_state == PowerState::Running {
+        let now = c.latest().inventory().unwrap().clone();
+        forced = Some(match VmRecoveryOperation::tasks(&now, guest.id) {
+            Ok(tasks) => match c.latest().observe_vm(guest.id).and_then(|target| {
+                c.submit(
+                    OperationId::new(),
+                    VmCommand::Recovery {
+                        vm: target,
+                        operation: VmRecoveryOperation::Force {
+                            action: ForceRecoveryAction::Shutdown,
+                            tasks: tasks.clone(),
+                        },
+                    },
+                )
+            }) {
+                Ok(op) => {
+                    let row = wait_vm_outcome(&op, 300).await;
+                    let halted = settle(120, || {
+                        c.latest().inventory().is_some_and(|i| {
+                            i.vms
+                                .get(&guest.id)
+                                .is_some_and(|v| v.power_state == PowerState::Halted)
+                        })
+                    })
+                    .await;
+                    json!({"captured_tasks": tasks.len(), "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "halted": halted,
+                           "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+                }
+                Err(error) => {
+                    json!({"captured_tasks": tasks.len(), "accepted": false, "error": error.to_string()})
+                }
+            },
+            Err(error) => {
+                json!({"accepted": false, "error": format!("capture: {error}"), "power_state": format!("{:?}", now.vms[&guest.id].power_state)})
+            }
+        });
+    }
+    // The owner rechecks its unknown migration once the VM has settled.
+    let owner_recheck = if migration_row.state == OperationState::OutcomeUnknown {
+        let requested = other
+            .control_operation(migration_id, OperationControl::Recheck)
+            .map(|_| true)
+            .map_err(|e| e.to_string());
+        let final_state = tokio::time::timeout(deadline(180), async {
+            loop {
+                let row = migration.latest();
+                if row.state.terminal()
+                    || row.state == OperationState::AcknowledgedUnknown
+                    || (row.state == OperationState::OutcomeUnknown && row.detail != migration_row.detail)
+                {
+                    return json!({"state": format!("{:?}", row.state), "detail": row.detail});
+                }
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| json!({"state": format!("{:?}", migration.latest().state), "detail": "still unresolved after the deadline"}));
+        json!({"requested": requested, "after": final_state})
+    } else {
+        json!({"skipped": "migration record was not unknown"})
+    };
+    let snapshot_after = c.latest();
+    let inventory_after = snapshot_after.inventory().unwrap();
+    let disks_after = disks_on(inventory_after);
+    let placement_after = json!({"power_state": format!("{:?}", inventory_after.vms[&guest.id].power_state), "host": inventory_after.vms[&guest.id].host.map(|h| h.to_string()), "repositories": disks_after.iter().map(|s| s.to_string()).collect::<Vec<_>>(), "together": together(&disks_after)});
+    let after = inventory_after.vms[&guest.id]
+        .host
+        .map(|h| (h, disks_after.clone()));
+    let mut returned = None;
+    if after.as_ref().is_some_and(|(host, _)| *host == destination) {
+        let inventory = c.latest().inventory().unwrap().clone();
+        let back = c.submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: migration_plan(&inventory, guest.id, source_host),
+            },
+        );
+        returned = Some(match back {
+            Ok(op) => {
+                let row = wait_vm_outcome(&op, 1200).await;
+                json!({"state": format!("{:?}", row.state), "detail": row.detail})
+            }
+            Err(error) => json!({"error": error.to_string()}),
+        });
+    }
+    let mut power = Vec::new();
+    if c.latest().inventory().unwrap().vms[&guest.id].power_state == PowerState::Halted {
+        power.push(power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await);
+    }
+    other.close().await;
+    c.close().await;
+    lab.record("force-shutdown-review-with-a-running-task", json!({
+        "guest": guest.name, "migration_advertised": advertised, "task_seen": seen, "running_operations_at_review": running,
+        "force_review_during_task": review, "migration_state_at_review": migration_state_at_review, "task_present_after_review": task_still_present,
+        "cancellation_requested_by_owner": cancel_requested, "migration": {"state": format!("{:?}", migration_row.state), "detail": migration_row.detail},
+        "placement_consistent": consistent, "capturable_after": capturable, "owner_recheck": owner_recheck, "placement_after": placement_after,
+        "force_shutdown_without_tasks": forced, "returned": returned, "power": power,
+    }));
+    assert!(seen, "the migration task never appeared on the VM");
+    assert_eq!(review["accepted"], true, "{review}");
+    assert!(
+        ["Succeeded", "Rejected", "Failed"].contains(&review["state"].as_str().unwrap_or("")),
+        "{review}"
+    );
+    assert_eq!(placement_after["together"], true, "{placement_after}");
+    if let Some(forced) = &forced {
+        assert_eq!(forced["state"], "Succeeded", "{forced}");
+        assert_eq!(forced["halted"], true, "{forced}");
     }
 }

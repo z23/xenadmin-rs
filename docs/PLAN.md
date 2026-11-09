@@ -100,9 +100,10 @@ live property editors with snapshot metadata, two-VM power batches, an other-cli
 cancellation, a recovery boot override, the disk attachment, HA priority, changed-block
 tracking and cloud-init drive editors, host and pool setting round trips, the host text
 console and Ctrl+Alt+Delete, a coordinator handover round trip, a member certificate reset,
-host backup and support bundle downloads, the template lifecycle, a VLAN lifecycle and a
-scheduled-snapshot policy lifecycle, plus nineteen host-behaviour findings that were fixed,
-two host observations and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
+host backup and support bundle downloads, the template lifecycle, a VLAN lifecycle, a
+scheduled-snapshot policy lifecycle, the inventory tables with the certificate opt-out and a
+force shutdown reviewed against another client's task, plus nineteen host-behaviour findings
+that were fixed, three host observations and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
 
