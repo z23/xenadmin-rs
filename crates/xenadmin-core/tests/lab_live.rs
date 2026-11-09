@@ -15781,3 +15781,456 @@ async fn lab_member_reboot_adds_the_second_storage_nic() {
         }
     }
 }
+
+/// P10-05, P10-09, P09-06: on the member, free its configured storage interface, bond both
+/// storage NICs into a new network (active-backup, then balance-slb and back), give the bond
+/// the static storage address and attach it, re-attach the shared repository over the bond,
+/// then undo everything: detach, clear the bond's address, destroy the bond, delete the bond
+/// network, restore the first NIC's address and re-attach the repository.
+#[tokio::test]
+#[ignore]
+async fn lab_member_storage_bond_round_trip() {
+    use xenadmin_core::{
+        BondHash, BondMode, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity,
+        ResourceCommand, StorageOperation,
+    };
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("the manifest records a storage network");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let member_name = inventory.hosts[&member].name.clone();
+    let lab_index = lab
+        .hosts
+        .iter()
+        .position(|h| h.name == member_name)
+        .expect("member in the manifest");
+    let macs = storage
+        .host_nics
+        .get(&member_name)
+        .cloned()
+        .unwrap_or_default();
+    assert!(macs.len() >= 2, "two storage NICs recorded for the member");
+    let prefix = storage
+        .subnet
+        .split('/')
+        .next()
+        .and_then(|a| a.rsplit_once('.'))
+        .map(|(p, _)| p.to_string())
+        .expect("storage subnet prefix");
+    let address = format!("{prefix}.{}", 11 + lab_index);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let pif_by_mac = |c: &Connection, mac: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pifs
+                .values()
+                .find(|p| p.host == Some(member) && p.mac.eq_ignore_ascii_case(mac))
+                .cloned()
+        })
+    };
+    let pif_by_id = |c: &Connection, id: xenadmin_core::PifId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pifs.get(&id).cloned())
+    };
+    let shared = inventory
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| xenadmin_core::SrId::from(s.uuid));
+    let member_pbd = |c: &Connection| {
+        shared.and_then(|sr| {
+            c.latest().inventory().and_then(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .find(|p| p.sr == Some(sr) && p.host == Some(member))
+                    .map(|p| (p.id, p.currently_attached))
+            })
+        })
+    };
+    let pif_target = |c: &Connection, id: xenadmin_core::PifId| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pif(id))
+            .unwrap()
+    };
+    let ipv4 = |pif: &xenadmin_core::PhysicalInterface| Ipv4Configuration {
+        mode: match pif.ip_configuration_mode.as_str() {
+            "DHCP" => Ipv4Mode::Dhcp,
+            "Static" => Ipv4Mode::Static,
+            _ => Ipv4Mode::None,
+        },
+        address: pif.ip.clone(),
+        netmask: pif.netmask.clone(),
+        gateway: pif.gateway.clone(),
+        dns: pif.dns.clone(),
+    };
+    let none = Ipv4Configuration {
+        mode: Ipv4Mode::None,
+        address: String::new(),
+        netmask: String::new(),
+        gateway: String::new(),
+        dns: String::new(),
+    };
+    let static_address = Ipv4Configuration {
+        mode: Ipv4Mode::Static,
+        address: address.clone(),
+        netmask: "255.255.255.0".into(),
+        gateway: String::new(),
+        dns: String::new(),
+    };
+
+    // Helpers as nested async blocks are awkward; repeat the small patterns inline.
+    macro_rules! set_attached {
+        ($label:expr, $pif:expr, $attached:expr) => {{
+            let pif = $pif;
+            let mut entry = resource_op(
+                &c,
+                $label,
+                ResourceCommand::Network {
+                    target: pif_target(&c, pif.id),
+                    operation: NetworkOperation::SetAttached {
+                        expected: PifIdentity::from_inventory(&pif).expect("interface identity"),
+                        expected_attached: !$attached,
+                        attached: $attached,
+                    },
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(120, || pif_by_id(&c, pif.id)
+                    .is_some_and(|p| p.currently_attached == Some($attached)))
+                .await
+            );
+            note(&mut steps, entry);
+        }};
+    }
+    macro_rules! configure {
+        ($label:expr, $pif:expr, $configuration:expr) => {{
+            let pif = $pif;
+            let configuration: Ipv4Configuration = $configuration;
+            let wanted = (configuration.mode.clone(), configuration.address.clone());
+            let mut entry = resource_op(
+                &c,
+                $label,
+                ResourceCommand::Network {
+                    target: pif_target(&c, pif.id),
+                    operation: NetworkOperation::ConfigureIpv4 {
+                        expected: PifIdentity::from_inventory(&pif).expect("interface identity"),
+                        before: ipv4(&pif),
+                        configuration,
+                    },
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(120, || pif_by_id(&c, pif.id).is_some_and(|p| {
+                    p.ip == wanted.1
+                        && matches!(
+                            (wanted.0.clone(), p.ip_configuration_mode.as_str()),
+                            (Ipv4Mode::None, "None")
+                                | (Ipv4Mode::Static, "Static")
+                                | (Ipv4Mode::Dhcp, "DHCP")
+                        )
+                }))
+                .await
+            );
+            note(&mut steps, entry);
+        }};
+    }
+    macro_rules! repository_attached {
+        ($label:expr, $attached:expr) => {{
+            if let (Some(sr), Some((pbd, current))) = (shared, member_pbd(&c)) {
+                if current == Some($attached) {
+                    note(&mut steps, json!({"step": $label, "skipped": "already in that state"}));
+                } else {
+                    let mut entry = resource_op(
+                        &c,
+                        $label,
+                        ResourceCommand::Storage {
+                            target: c
+                                .latest()
+                                .observe_resource(ResourceTarget::Pbd(pbd))
+                                .unwrap(),
+                            operation: StorageOperation::SetAttached {
+                                sr,
+                                host: member,
+                                expected_attached: !$attached,
+                                attached: $attached,
+                            },
+                        },
+                        600,
+                    )
+                    .await;
+                    entry["read_back"] = json!(
+                        settle(180, || member_pbd(&c).is_some_and(|(_, a)| a == Some($attached)))
+                            .await
+                    );
+                    note(&mut steps, entry);
+                }
+            }
+        }};
+    }
+
+    let first = pif_by_mac(&c, &macs[0]).expect("first storage NIC");
+    let second = pif_by_mac(&c, &macs[1]).expect("second storage NIC");
+    note(
+        &mut steps,
+        json!({"step": "storage NICs", "first": {"device": first.device, "mode": first.ip_configuration_mode, "attached": first.currently_attached}, "second": {"device": second.device, "mode": second.ip_configuration_mode, "attached": second.currently_attached}}),
+    );
+
+    // Free the first NIC (the repository rides on its address).
+    repository_attached!("detach the shared repository on the member", false);
+    if first.currently_attached == Some(true) {
+        set_attached!("detach the first storage NIC", first.clone(), false);
+    }
+    if first.ip_configuration_mode != "None" {
+        configure!(
+            "clear the first storage NIC's address",
+            pif_by_mac(&c, &macs[0]).unwrap(),
+            none.clone()
+        );
+    }
+
+    // Bond network and bond.
+    let bond_network_name = format!("lab-bond-{stamp}");
+    let mut entry = resource_op(
+        &c,
+        "create the bond network",
+        ResourceCommand::CreateInternalNetwork {
+            pool: c
+                .latest()
+                .observe_resource(ResourceTarget::Pool(pool))
+                .unwrap(),
+            name: bond_network_name.clone(),
+            description: "Network carried by the member's storage bond".into(),
+            mtu: 1500,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c.latest().inventory().is_some_and(|i| i
+            .networks
+            .iter()
+            .any(|n| n.name == bond_network_name)))
+        .await
+    );
+    note(&mut steps, entry);
+    let bond_network: xenadmin_core::NetworkId = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .networks
+        .iter()
+        .find(|n| n.name == bond_network_name)
+        .expect("bond network")
+        .uuid
+        .into();
+    let (first, second) = (
+        pif_by_mac(&c, &macs[0]).unwrap(),
+        pif_by_mac(&c, &macs[1]).unwrap(),
+    );
+    let bond_of = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .bonds
+                .values()
+                .find(|b| b.slaves.contains(&first.id) && b.slaves.contains(&second.id))
+                .cloned()
+        })
+    };
+    let mut entry = resource_op(
+        &c,
+        "create an active-backup bond of both storage NICs",
+        ResourceCommand::Network {
+            target: c
+                .latest()
+                .observe_resource(ResourceTarget::Network(bond_network))
+                .unwrap(),
+            operation: NetworkOperation::CreateBond {
+                members: vec![
+                    (
+                        first.id,
+                        PifIdentity::from_inventory(&first).expect("identity"),
+                    ),
+                    (
+                        second.id,
+                        PifIdentity::from_inventory(&second).expect("identity"),
+                    ),
+                ],
+                mode: BondMode::ActiveBackup,
+                hash: BondHash::SourceMac,
+            },
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(settle(120, || bond_of(&c).is_some()).await);
+    note(&mut steps, entry);
+    let Some(bond) = bond_of(&c) else {
+        lab.record(
+            "member-storage-bond-round-trip",
+            json!({"member": member_name, "failed": "bond not listed", "steps": steps}),
+        );
+        panic!("bond not listed: {steps:?}");
+    };
+    note(
+        &mut steps,
+        json!({"step": "bond", "mode": bond.mode, "links_up": bond.links_up, "master": bond.master.map(|m| pif_by_id(&c, m).map(|p| p.device))}),
+    );
+    for (label, expected, mode, wire) in [
+        (
+            "switch the bond to balance-slb",
+            "active-backup",
+            BondMode::BalanceSlb,
+            "balance-slb",
+        ),
+        (
+            "switch the bond back to active-backup",
+            "balance-slb",
+            BondMode::ActiveBackup,
+            "active-backup",
+        ),
+    ] {
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Bond(bond.id))
+                    .unwrap(),
+                operation: NetworkOperation::SetBondMode {
+                    expected_mode: expected.into(),
+                    mode,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] =
+            json!(settle(120, || bond_of(&c).is_some_and(|b| b.mode == wire)).await);
+        note(&mut steps, entry);
+    }
+
+    // The bond carries the storage address and the repository.
+    let master = bond
+        .master
+        .and_then(|m| pif_by_id(&c, m))
+        .expect("bond master interface");
+    configure!(
+        "give the bond the static storage address",
+        master.clone(),
+        static_address.clone()
+    );
+    let master = pif_by_id(&c, master.id).unwrap();
+    if master.currently_attached != Some(true) {
+        set_attached!("attach the bond", master.clone(), true);
+    }
+    repository_attached!("re-attach the shared repository over the bond", true);
+
+    // Undo.
+    repository_attached!(
+        "detach the shared repository before dissolving the bond",
+        false
+    );
+    let master = pif_by_id(&c, master.id).unwrap();
+    if master.currently_attached == Some(true) {
+        set_attached!("detach the bond", master.clone(), false);
+    }
+    configure!(
+        "clear the bond's address",
+        pif_by_id(&c, master.id).unwrap(),
+        none.clone()
+    );
+    let mut entry = resource_op(
+        &c,
+        "destroy the bond",
+        ResourceCommand::Network {
+            target: c
+                .latest()
+                .observe_resource(ResourceTarget::Bond(bond.id))
+                .unwrap(),
+            operation: NetworkOperation::DeleteBond {
+                master: master.id,
+                members: vec![first.id, second.id],
+                primary: bond.primary_slave.unwrap_or(first.id),
+            },
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(settle(120, || bond_of(&c).is_none()).await);
+    note(&mut steps, entry);
+    let mut entry = resource_op(
+        &c,
+        "delete the bond network",
+        ResourceCommand::DeleteInternalNetwork {
+            network: c
+                .latest()
+                .observe_resource(ResourceTarget::Network(bond_network))
+                .unwrap(),
+            expected_name: bond_network_name.clone(),
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c.latest().inventory().is_some_and(|i| !i
+            .networks
+            .iter()
+            .any(|n| n.name == bond_network_name)))
+        .await
+    );
+    note(&mut steps, entry);
+    let first = pif_by_mac(&c, &macs[0]).expect("first storage NIC after the bond");
+    configure!(
+        "restore the first storage NIC's address",
+        first.clone(),
+        static_address.clone()
+    );
+    let first = pif_by_mac(&c, &macs[0]).unwrap();
+    if first.currently_attached != Some(true) {
+        set_attached!("re-attach the first storage NIC", first.clone(), true);
+    }
+    repository_attached!("re-attach the shared repository on the member", true);
+    c.close().await;
+    lab.record(
+        "member-storage-bond-round-trip",
+        json!({"member": member_name, "bond_network": bond_network_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
