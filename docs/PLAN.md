@@ -96,8 +96,9 @@ standalone pool, XVA and OVA export and import, pool rename, member enable, tool
 and reboot, a memory checkpoint, CD drive and guest tools media, local repository creation,
 forget, introduce and destroy, the concurrent-edit, interrupted-edit and interrupted-restore
 paths, chosen-host start and resume with per-action diagnosis and home server edits, and the
-live property editors with snapshot metadata and two-VM power batches, plus fourteen host-behaviour
-findings that were fixed, one host durability observation and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
+live property editors with snapshot metadata, two-VM power batches, an other-client task
+cancellation and a recovery boot override, plus fourteen host-behaviour findings that were
+fixed, two host observations and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
 

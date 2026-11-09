@@ -1481,32 +1481,17 @@ async fn lab_cleanup_snapshots_and_partial_guest() {
     );
 }
 
-/// P11-01, P11-03, P11-05: live-migrate the running lab guest to another pool member with
-/// both disks relocated to that member's local repository, then open its console there.
-#[tokio::test]
-#[ignore]
-async fn lab_guest_live_migration_with_storage() {
-    use xenadmin_core::{DiskPlacement, NicPlacement, PowerState, SrId, VmCommand, VmMigration};
-    let lab = Lab::load();
-    let state = tempfile::tempdir().unwrap();
-    let backend = Backend::with_state_directory(state.path().into()).unwrap();
-    let c = connect(&lab, &backend, 0, false).await;
-    let inventory = c.latest().inventory().unwrap().clone();
-    let guest = inventory
-        .guests()
-        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
-        .expect("running lab guest")
-        .clone();
-    let source_host = guest.host.expect("resident host");
-    let destination = inventory
-        .hosts
-        .keys()
-        .copied()
-        .find(|h| *h != source_host && inventory.hosts[h].enabled)
-        .expect("another enabled member");
-    let destination_sr =
-        local_sr_of(&inventory, destination).expect("destination local repository");
-    let disks = inventory.details.vm_disks[&guest.id]
+/// A live storage migration of every disk of `vm` onto `destination`'s local repository,
+/// keeping each NIC on its network and transferring over the destination's management
+/// network (storage relocation needs an explicit IP-configured transfer network).
+fn migration_plan(
+    inventory: &xenadmin_core::Inventory,
+    vm: xenadmin_core::VmId,
+    destination: HostId,
+) -> xenadmin_core::VmMigration {
+    use xenadmin_core::{DiskPlacement, NicPlacement, VmMigration};
+    let destination_sr = local_sr_of(inventory, destination).expect("destination local repository");
+    let disks = inventory.details.vm_disks[&vm]
         .iter()
         .filter_map(|vbd| inventory.details.vbds.get(vbd))
         .filter(|b| b.kind == "Disk")
@@ -1524,7 +1509,7 @@ async fn lab_guest_live_migration_with_storage() {
         .details
         .vifs
         .values()
-        .filter(|v| v.vm == Some(guest.id))
+        .filter(|v| v.vm == Some(vm))
         .filter_map(|v| {
             let network = v.network?;
             Some(NicPlacement {
@@ -1534,8 +1519,6 @@ async fn lab_guest_live_migration_with_storage() {
             })
         })
         .collect::<Vec<_>>();
-    assert_eq!(disks.len(), 2, "expected the image and data disks");
-    // Storage relocation needs an explicit IP-configured transfer network on the destination.
     let transfer_network = inventory
         .details
         .pifs
@@ -1543,20 +1526,50 @@ async fn lab_guest_live_migration_with_storage() {
         .find(|p| p.host == Some(destination) && p.management == Some(true))
         .and_then(|p| p.network)
         .expect("destination management network");
+    VmMigration {
+        destination,
+        expected_host: inventory.vms[&vm].host,
+        expected_affinity: None,
+        live: true,
+        disks,
+        networks,
+        transfer_network: Some(transfer_network),
+    }
+}
+
+/// P11-01, P11-03, P11-05: live-migrate the running lab guest to another pool member with
+/// both disks relocated to that member's local repository, then open its console there.
+#[tokio::test]
+#[ignore]
+async fn lab_guest_live_migration_with_storage() {
+    use xenadmin_core::{PowerState, SrId, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let source_host = guest.host.expect("resident host");
+    let destination = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != source_host && inventory.hosts[h].enabled)
+        .expect("another enabled member");
+    let plan = migration_plan(&inventory, guest.id, destination);
+    let destination_sr = plan.disks[0].destination_sr;
+    let disks = plan.disks.clone();
+    assert_eq!(disks.len(), 2, "expected the image and data disks");
     let migration = c
         .submit(
             OperationId::new(),
             VmCommand::Migrate {
                 vm: c.latest().observe_vm(guest.id).unwrap(),
-                operation: VmMigration {
-                    destination,
-                    expected_host: Some(source_host),
-                    expected_affinity: None,
-                    live: true,
-                    disks: disks.clone(),
-                    networks,
-                    transfer_network: Some(transfer_network),
-                },
+                operation: plan.clone(),
             },
         )
         .expect("migration accepted");
@@ -7893,4 +7906,537 @@ async fn lab_batch_power_actions_over_two_vms() {
         snapshot_deletion.detail
     );
     assert!(snapshot_gone, "source snapshot or its disks remain");
+}
+
+/// P14-04, P14-05, P14-02, P11-02: a second client sees the storage live migration another
+/// client started in the pool-wide task inventory with its typed details and requests its
+/// cancellation through the reviewed task command; both clients record the outcome and the
+/// guest is verified running on one host with its disks beside it (migrated back if the
+/// task completed first).
+#[tokio::test]
+#[ignore]
+async fn lab_other_client_task_inspection_and_cancellation() {
+    use xenadmin_core::{OperationControl, PowerAction, PowerState, ResourceCommand, VmCommand};
+    let lab = Lab::load();
+    let first_state = tempfile::tempdir().unwrap();
+    let second_state = tempfile::tempdir().unwrap();
+    let first_backend = Backend::with_state_directory(first_state.path().into()).unwrap();
+    let second_backend = Backend::with_state_directory(second_state.path().into()).unwrap();
+    let first = connect(&lab, &first_backend, 0, false).await;
+    let second = connect(&lab, &second_backend, 0, false).await;
+    let guest = first
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    if guest.power_state != PowerState::Running {
+        power_to(&first, guest.id, PowerAction::Start, PowerState::Running).await;
+    }
+    // A storage move is refused while the guest has snapshots; delete the checkpoint an
+    // earlier interrupted attempt left (named lab-cancel-*) through the reviewed deletion.
+    let mut leftovers = Vec::new();
+    for snapshot in first
+        .latest()
+        .inventory()
+        .unwrap()
+        .snapshots
+        .for_vm(guest.id)
+        .filter(|s| s.name.starts_with("lab-cancel-"))
+        .map(|s| s.id)
+        .collect::<Vec<_>>()
+    {
+        let inventory = first.latest().inventory().unwrap().clone();
+        let disks = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(snapshot) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let deletion = first
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: first.latest().observe_snapshot(guest.id, snapshot).unwrap(),
+                    disks,
+                },
+            )
+            .expect("leftover snapshot deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        let gone = settle(60, || {
+            first
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.snapshots.get(&snapshot).is_none())
+        })
+        .await;
+        leftovers.push(json!({"snapshot": snapshot.to_string(), "state": format!("{:?}", outcome.state), "detail": outcome.detail, "gone": gone}));
+    }
+    let inventory = first.latest().inventory().unwrap().clone();
+    let source_host = inventory.vms[&guest.id].host.expect("resident host");
+    let destination = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != source_host && inventory.hosts[h].enabled)
+        .expect("another enabled member");
+    let plan = migration_plan(&inventory, guest.id, destination);
+    let source_sr = plan.disks[0].expected_sr;
+    // A freshly started guest advertises migration a few seconds after its power state.
+    let migration_advertised = settle(120, || {
+        first.latest().inventory().is_some_and(|i| {
+            i.details.vms.get(&guest.id).is_some_and(|v| {
+                v.allowed_operations
+                    .as_ref()
+                    .is_some_and(|ops| ops.iter().any(|op| op == "migrate_send"))
+            })
+        })
+    })
+    .await;
+    let tasks_before = second
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .tasks
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let migration = first
+        .submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: first.latest().observe_vm(guest.id).unwrap(),
+                operation: plan,
+            },
+        )
+        .expect("migration accepted");
+    let started = std::time::Instant::now();
+    let mut names_seen = std::collections::BTreeSet::new();
+    // The other client sees the new task in the pool-wide inventory.
+    let task = tokio::time::timeout(deadline(180), async {
+        loop {
+            if let Some(i) = second.latest().inventory() {
+                for t in i
+                    .details
+                    .tasks
+                    .values()
+                    .filter(|t| !tasks_before.contains(&t.id))
+                {
+                    names_seen.insert(format!("{} ({})", t.name, t.status));
+                }
+                if let Some(task) = i
+                    .details
+                    .tasks
+                    .values()
+                    .find(|t| {
+                        !tasks_before.contains(&t.id)
+                            && t.name.contains("migrate_send")
+                            && t.status == "pending"
+                    })
+                    .cloned()
+                {
+                    return Some(task);
+                }
+            }
+            if migration.latest().state.terminal() {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("task wait deadline");
+    let seen_after_ms = started.elapsed().as_millis() as u64;
+    let typed = task.as_ref().map(|task| {
+        json!({
+            "id": task.id.to_string(), "name": task.name, "description": task.description, "status": task.status,
+            "progress": task.progress, "created": task.created, "resident_host": task.resident_host.map(|h| h.to_string()),
+            "allowed_operations": task.allowed_operations, "parent": task.parent.map(|t| t.to_string()),
+            "subtasks": task.subtasks.len(), "result_type": task.result_type,
+        })
+    });
+    let cancel = match &task {
+        Some(task) => match second
+            .latest()
+            .observe_resource(ResourceTarget::Task(task.id))
+            .and_then(|observed| {
+                second.submit_resource(
+                    OperationId::new(),
+                    ResourceCommand::CancelTask { task: observed },
+                )
+            }) {
+            Ok(operation) => {
+                let row = wait_outcome(&operation, 300).await;
+                let mut entry = json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                       "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()});
+                if row.state == OperationState::OutcomeUnknown {
+                    // The owning client destroys its task once it has read the result, so the
+                    // canceller's verification can find nothing: recheck, then acknowledge.
+                    let rechecked = second
+                        .control_resource(row.id, OperationControl::Recheck)
+                        .map(|_| true)
+                        .unwrap_or(false);
+                    let after_recheck = tokio::time::timeout(deadline(30), async {
+                        loop {
+                            let now = operation.latest();
+                            if now.state != OperationState::OutcomeUnknown
+                                && now.state != OperationState::Verifying
+                            {
+                                return format!("{:?}", now.state);
+                            }
+                            if now.state == OperationState::OutcomeUnknown
+                                && rechecked
+                                && now.detail != row.detail
+                            {
+                                return format!("{:?}", now.state);
+                            }
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| format!("{:?}", operation.latest().state));
+                    // Acknowledgement is read from the durable history, as the activity view does.
+                    let history_state = || {
+                        second
+                            .resource_history()
+                            .iter()
+                            .find(|r| r.id == row.id)
+                            .map(|r| r.state.clone())
+                    };
+                    let mut ack_errors = Vec::new();
+                    let acknowledged = tokio::time::timeout(deadline(30), async {
+                        loop {
+                            match history_state() {
+                                Some(OperationState::AcknowledgedUnknown) => return true,
+                                Some(OperationState::OutcomeUnknown) => {
+                                    if let Err(error) = second.control_resource(
+                                        row.id,
+                                        OperationControl::AcknowledgeUnknown,
+                                    ) {
+                                        ack_errors.push(error.to_string());
+                                    }
+                                }
+                                Some(state) if state.terminal() => return false,
+                                _ => {}
+                            }
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or(false);
+                    let last = second
+                        .resource_history()
+                        .iter()
+                        .find(|r| r.id == row.id)
+                        .cloned()
+                        .map(std::sync::Arc::new)
+                        .unwrap_or_else(|| operation.latest());
+                    entry["acknowledge_errors"] = json!(ack_errors);
+                    entry["recheck_requested"] = json!(rechecked);
+                    entry["state_after_recheck"] = json!(after_recheck);
+                    entry["detail_after_recheck"] = json!(last.detail);
+                    entry["acknowledged"] = json!(acknowledged);
+                    entry["final_state"] = json!(format!("{:?}", last.state));
+                }
+                entry
+            }
+            Err(error) => json!({"accepted": false, "error": error.to_string()}),
+        },
+        None => json!({"accepted": false, "error": "task not seen before the migration finished"}),
+    };
+    let migration = wait_vm_outcome(&migration, 1200).await;
+    let migration_elapsed_ms = started.elapsed().as_millis() as u64;
+    let task_after = match &task {
+        Some(task) => {
+            tokio::time::timeout(deadline(120), async {
+                loop {
+                    let snapshot = second.latest();
+                    if let Some(i) = snapshot.inventory() {
+                        match i.details.tasks.get(&task.id) {
+                            None => return json!({"present": false}),
+                            Some(t) if t.status != "pending" => {
+                                return json!({"present": true, "status": t.status, "error_code": t.error_code, "finished": t.finished, "progress": t.progress});
+                            }
+                            _ => {}
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| json!({"present": true, "status": "still pending after the deadline"}))
+        }
+        None => json!({"present": false}),
+    };
+    // Where is the guest now, with which disks?
+    let placement = |i: &xenadmin_core::Inventory| -> Option<(HostId, Vec<xenadmin_core::SrId>)> {
+        let host = i.vms.get(&guest.id)?.host?;
+        let srs = i
+            .details
+            .vm_disks
+            .get(&guest.id)?
+            .iter()
+            .filter_map(|b| i.details.vbds.get(b))
+            .filter(|b| b.kind == "Disk")
+            .filter_map(|b| i.details.vdis.get(&b.vdi?)?.sr)
+            .collect();
+        Some((host, srs))
+    };
+    let consistent = settle(300, || {
+        first.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&guest.id)
+                .is_some_and(|v| v.power_state == PowerState::Running)
+                && placement(i).is_some_and(|(host, srs)| {
+                    srs.len() == 2
+                        && ((host == source_host && srs.iter().all(|s| *s == source_sr))
+                            || (host == destination && srs.iter().all(|s| *s != source_sr)))
+                })
+        })
+    })
+    .await;
+    let after = placement(&first.latest().inventory().unwrap());
+    let mut returned = None;
+    if after.as_ref().is_some_and(|(host, _)| *host == destination) {
+        // The migration completed before the cancellation took effect; bring the guest back.
+        let inventory = first.latest().inventory().unwrap().clone();
+        let back = first
+            .submit(
+                OperationId::new(),
+                VmCommand::Migrate {
+                    vm: first.latest().observe_vm(guest.id).unwrap(),
+                    operation: migration_plan(&inventory, guest.id, source_host),
+                },
+            )
+            .expect("return migration accepted");
+        let row = wait_vm_outcome(&back, 1200).await;
+        let home = settle(300, || {
+            first.latest().inventory().is_some_and(|i| {
+                placement(i).is_some_and(|(host, srs)| {
+                    host == source_host && srs.iter().all(|s| *s == source_sr)
+                })
+            })
+        })
+        .await;
+        returned =
+            Some(json!({"state": format!("{:?}", row.state), "detail": row.detail, "home": home}));
+    }
+    let second_history = second.resource_history().len();
+    first.close().await;
+    second.close().await;
+    lab.record(
+        "other-client-task-inspection-and-cancellation",
+        json!({
+            "guest": guest.name, "source_host": source_host.to_string(), "destination": destination.to_string(),
+            "leftover_snapshots": leftovers, "migration_advertised_before_submission": migration_advertised,
+            "task_seen_by_other_client": typed, "seen_after_ms": seen_after_ms, "task_names_seen": names_seen,
+            "cancellation": cancel, "task_after": task_after,
+            "migration": {"state": format!("{:?}", migration.state), "detail": migration.detail, "elapsed_ms": migration_elapsed_ms,
+                "steps": migration.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()},
+            "placement_after": after.map(|(h, srs)| json!({"host": h.to_string(), "repositories": srs.iter().map(|s| s.to_string()).collect::<Vec<_>>()})),
+            "consistent": consistent, "returned": returned, "second_client_resource_records": second_history,
+        }),
+    );
+    assert!(
+        task.is_some(),
+        "the other client never saw the migration task: {names_seen:?}"
+    );
+    assert_eq!(cancel["accepted"], true, "{cancel}");
+    let settled = cancel["final_state"]
+        .as_str()
+        .or(cancel["state"].as_str())
+        .unwrap_or("");
+    assert!(
+        ["Succeeded", "Rejected", "Failed", "AcknowledgedUnknown"].contains(&settled),
+        "cancellation did not settle: {cancel}"
+    );
+    assert!(
+        migration.state == OperationState::Cancelled
+            || migration.state == OperationState::Succeeded,
+        "{}",
+        migration.detail
+    );
+    assert!(consistent, "guest and disks are not together on one host");
+}
+
+/// Halt a running guest: a clean shutdown first, and a hard shutdown when the guest does
+/// not acknowledge it (a guest sitting in its firmware after a recovery boot ignores ACPI).
+async fn halt_guest(c: &Connection, vm: xenadmin_core::VmId) -> Value {
+    use xenadmin_core::{PowerAction, PowerState, VmCommand};
+    let advertised = settle(30, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&vm)
+                .is_some_and(|v| v.allowed_actions.contains(&PowerAction::CleanShutdown))
+        })
+    })
+    .await;
+    if !advertised {
+        let forced = power_to(c, vm, PowerAction::HardShutdown, PowerState::Halted).await;
+        return json!({"action": "HardShutdown (clean shutdown not advertised)", "forced": forced, "reached": true});
+    }
+    let clean = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                action: PowerAction::CleanShutdown,
+            },
+        )
+        .expect("clean shutdown accepted");
+    let clean = tokio::time::timeout(deadline(150), async {
+        loop {
+            let row = clean.latest();
+            if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
+                return Some(row);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap_or(None);
+    let halted = settle(30, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&vm)
+                .is_some_and(|v| v.power_state == PowerState::Halted)
+        })
+    })
+    .await;
+    if halted {
+        return json!({"action": "CleanShutdown", "state": clean.map(|r| format!("{:?}", r.state)), "reached": true});
+    }
+    let forced = power_to(c, vm, PowerAction::HardShutdown, PowerState::Halted).await;
+    json!({"action": "CleanShutdown then HardShutdown", "clean": clean.map(|r| json!({"state": format!("{:?}", r.state), "detail": r.detail})), "forced": forced, "reached": true})
+}
+
+/// P03-08, P04-01: boot the halted guest from recovery media (CD, then network) through the
+/// reviewed override, which saves the exact boot order, starts the guest and restores the
+/// order after the start; capture the console while the firmware looks for media, then
+/// return the guest to its normal boot.
+#[tokio::test]
+#[ignore]
+async fn lab_recovery_boot_override_and_restore() {
+    use xenadmin_core::{
+        PowerAction, PowerState, RecoveryBootConfiguration, VmCommand, VmRecoveryOperation,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let mut power = Vec::new();
+    if guest.power_state == PowerState::Running {
+        power.push(halt_guest(&c, guest.id).await);
+    }
+    let inventory = c.latest().inventory().unwrap().clone();
+    let original_order = inventory.details.vms[&guest.id].boot_order.clone();
+    let configuration = RecoveryBootConfiguration::from_inventory(&inventory, guest.id)
+        .expect("recovery boot available on the halted HVM guest");
+    let operation = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Recovery {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: VmRecoveryOperation::Boot {
+                    configuration: configuration.clone(),
+                },
+            },
+        )
+        .expect("recovery boot accepted");
+    let row = wait_vm_outcome(&operation, 600).await;
+    let restored = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vms
+                .get(&guest.id)
+                .is_some_and(|v| v.boot_order == original_order)
+                && i.vms
+                    .get(&guest.id)
+                    .is_some_and(|v| v.power_state == PowerState::Running)
+        })
+    })
+    .await;
+    let (frame, saved) = match c
+        .latest()
+        .observe_vm(guest.id)
+        .and_then(|target| c.open_console(target))
+    {
+        Ok(console) => {
+            // The firmware finds no bootable medium and the guest may halt within seconds;
+            // take the first connected frame rather than waiting for a stable one.
+            let got = tokio::time::timeout(deadline(30), async {
+                loop {
+                    let snapshot = console.latest();
+                    if snapshot.state == xenadmin_core::ConsoleState::Connected
+                        && snapshot.frame.is_some()
+                    {
+                        return true;
+                    }
+                    if matches!(snapshot.state, xenadmin_core::ConsoleState::Failed(_)) {
+                        return false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap_or(false);
+            let digest = if got {
+                console
+                    .latest()
+                    .frame
+                    .as_ref()
+                    .map(|frame| frame_digest(frame))
+                    .unwrap_or_default()
+            } else {
+                format!("no frame: {:?}", console.latest().state)
+            };
+            let saved = got
+                .then(|| save_frame(&lab, &console, "recovery-boot"))
+                .flatten();
+            console.close();
+            (digest, saved)
+        }
+        Err(error) => (format!("console refused: {error}"), None),
+    };
+    // The firmware found no bootable medium, so return the guest to its normal boot.
+    let halted_after =
+        c.latest().inventory().unwrap().vms[&guest.id].power_state == PowerState::Halted;
+    if !halted_after {
+        power.push(power_to(&c, guest.id, PowerAction::HardShutdown, PowerState::Halted).await);
+    }
+    power.push(power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await);
+    let history = c.operation_history().len();
+    c.close().await;
+    lab.record(
+        "recovery-boot-override-and-restore",
+        json!({
+            "guest": guest.name, "original_order": original_order, "configuration": configuration,
+            "operation": {"state": format!("{:?}", row.state), "detail": row.detail,
+                "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>(),
+                "restoration_offered_afterwards": row.recovery_boot_restoration().is_some()},
+            "order_restored_while_running": restored, "console_frame": frame, "console_frame_file": saved,
+            "guest_halted_by_itself": halted_after, "power": power, "vm_history_records": history,
+        }),
+    );
+    assert_eq!(row.state, OperationState::Succeeded, "{}", row.detail);
+    assert!(
+        restored,
+        "boot order was not restored to {original_order:?} on the running guest"
+    );
+    assert!(
+        !frame.starts_with("console refused"),
+        "console refused during the recovery boot: {frame}"
+    );
 }
