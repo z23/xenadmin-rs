@@ -4794,3 +4794,282 @@ async fn lab_member_toolstack_restart_and_reboot() {
     assert!(enabled);
     c.close().await;
 }
+
+/// P05-05, P05-08 and P07-10: a memory checkpoint of the running, tool-less guest is
+/// created and deleted through the reviewed deletion, then a CD drive is added to the
+/// halted guest, the host's guest tools image inserted through the reviewed tools-media
+/// workflow and ejected again.
+#[tokio::test]
+#[ignore]
+async fn lab_checkpoint_and_cd_drive_tools_media() {
+    use xenadmin_core::{
+        DeviceCommand, DeviceOperation, PowerAction, PowerState, SnapshotName, VmCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    async fn device(
+        c: &Connection,
+        vm: xenadmin_core::VmId,
+        operation: DeviceOperation,
+        seconds: u64,
+    ) -> std::sync::Arc<xenadmin_core::OperationRecord> {
+        let op = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Device(DeviceCommand {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    operation,
+                }),
+            )
+            .expect("device command accepted");
+        wait_vm_outcome(&op, seconds).await
+    }
+    let snapshot_disks = |c: &Connection, snapshot| {
+        c.latest()
+            .inventory()
+            .map(|i| {
+                i.details
+                    .vbds
+                    .values()
+                    .filter(|b| b.snapshot == Some(snapshot) && b.kind == "Disk")
+                    .filter_map(|b| b.vdi)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    // Leftover checkpoints of an interrupted run go first, through the same reviewed deletion.
+    for leftover in inventory
+        .snapshots
+        .for_vm(guest.id)
+        .filter(|s| s.name.starts_with("lab-checkpoint-"))
+        .map(|s| s.id)
+        .collect::<Vec<_>>()
+    {
+        let disks = snapshot_disks(&c, leftover);
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(guest.id, leftover).unwrap(),
+                    disks,
+                },
+            )
+            .expect("leftover deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        steps.push(json!({"step": "delete a leftover checkpoint", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    }
+
+    // Memory checkpoint of the running guest: XCP-ng 8.3.0 takes one without guest tools.
+    let name = format!("lab-checkpoint-{stamp}");
+    let checkpoint = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateCheckpoint {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                name: SnapshotName::new(&name).unwrap(),
+            },
+        )
+        .expect("checkpoint accepted");
+    let outcome = wait_vm_outcome(&checkpoint, 600).await;
+    let created = tokio::time::timeout(deadline(120), async {
+        loop {
+            if let Some(s) = c.latest().inventory().and_then(|i| {
+                i.snapshots
+                    .for_vm(guest.id)
+                    .find(|s| s.name == name)
+                    .cloned()
+            }) {
+                return s;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    steps.push(json!({"step": "memory checkpoint of the running guest", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "visible": created.is_ok(), "power_state": created.as_ref().ok().map(|s| format!("{:?}", s.power_state))}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    let created = created.expect("checkpoint visible");
+    let still_running = c
+        .latest()
+        .inventory()
+        .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running);
+    let disks = snapshot_disks(&c, created.id);
+    let deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(guest.id, created.id).unwrap(),
+                disks: disks.clone(),
+            },
+        )
+        .expect("checkpoint deletion accepted");
+    let outcome = wait_vm_outcome(&deletion, 300).await;
+    let gone = settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.snapshots.get(&created.id).is_none()
+                && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+        })
+    })
+    .await;
+    steps.push(json!({"step": "delete the checkpoint with its disks", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "disks": disks.len(), "gone": gone, "guest_kept_running": still_running}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(gone);
+
+    // Halt for the CD drive work.
+    if guest.power_state == PowerState::Running {
+        let shutdown = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Halted)
+        })
+        .await;
+        steps.push(json!({"step": "clean shutdown", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": halted}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+    let cd_drive = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .vbds
+                .values()
+                .find(|b| b.vm == Some(guest.id) && b.kind == "CD")
+                .map(|b| (b.id, b.empty, b.vdi))
+        })
+    };
+    if cd_drive(&c).is_none() {
+        let outcome = device(
+            &c,
+            guest.id,
+            DeviceOperation::AddCdDrive { device: "3".into() },
+            120,
+        )
+        .await;
+        let check = settle(60, || cd_drive(&c).is_some()).await;
+        steps.push(json!({"step": "add CD drive", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert!(check);
+    } else {
+        steps.push(json!({"step": "add CD drive", "skipped": "the guest already has one"}));
+    }
+    let (vbd, _, previous) = cd_drive(&c).expect("CD drive");
+
+    // Insert the host's guest tools image, then eject it.
+    let inventory = c.latest().inventory().unwrap().clone();
+    let (image, source) = inventory
+        .details
+        .tools_media
+        .iter()
+        .next()
+        .map(|(id, s)| (*id, s.label()))
+        .expect("guest tools media advertised by the host");
+    let sr = inventory
+        .details
+        .vdis
+        .get(&image)
+        .and_then(|v| v.sr)
+        .expect("tools image repository");
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::MountGuestTools {
+            vbd,
+            image,
+            sr,
+            previous,
+        },
+        120,
+    )
+    .await;
+    let inserted = settle(60, || {
+        cd_drive(&c).is_some_and(|(_, empty, vdi)| empty == Some(false) && vdi == Some(image))
+    })
+    .await;
+    steps.push(json!({"step": "insert guest tools image", "source": source, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": inserted}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(inserted);
+    let outcome = device(&c, guest.id, DeviceOperation::EjectCd { vbd }, 120).await;
+    let ejected = settle(60, || {
+        cd_drive(&c).is_some_and(|(_, empty, _)| empty == Some(true))
+    })
+    .await;
+    steps.push(json!({"step": "eject", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": ejected}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(ejected);
+
+    // Start the guest again.
+    let start = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    let running = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running)
+    })
+    .await;
+    steps.push(json!({"step": "start", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": running}));
+    lab.record(
+        "checkpoint-and-cd-drive-tools-media",
+        json!({"guest": guest.name, "steps": steps}),
+    );
+    assert!(running);
+    c.close().await;
+}
