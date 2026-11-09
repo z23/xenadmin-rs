@@ -91,10 +91,7 @@ pub(super) async fn arguments(
 ) -> Result<Vec<Value>, Error> {
     let op = operation(record)?;
     require(
-        discovery::methods(session)
-            .await?
-            .iter()
-            .any(|m| m == op.method()),
+        discovery::advertised(session, op.method()).await? != Some(false),
         "The host does not advertise this security operation",
     )?;
     require(

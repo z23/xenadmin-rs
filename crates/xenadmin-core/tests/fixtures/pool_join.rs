@@ -23,10 +23,13 @@ enum Fault {
     VerifyFailure,
     DelayAuth,
     DelayJoin,
+    CatalogueUnimplemented,
+    MemberRestarting,
 }
 struct Control {
     fault: Fault,
     joined: bool,
+    metrics_reads_after_join: usize,
 }
 struct Fixture {
     source: Mock,
@@ -45,6 +48,7 @@ async fn fixture(fault: Fault) -> Fixture {
     let control = Arc::new(Mutex::new(Control {
         fault,
         joined: false,
+        metrics_reads_after_join: 0,
     }));
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -69,7 +73,10 @@ async fn fixture(fault: Fault) -> Fixture {
                     {"class":"host","operation":"add","ref":if source{"OpaqueRef:source-host"}else{"OpaqueRef:dest-host"},"snapshot":host_record(source)}
                 ]}),
                 "session.get_record"=>json!({"is_local_superuser":fault!=Fault::Unprivileged}),
-                "host.list_methods"=>json!(["pool.join"]),
+                "host.list_methods"=>{
+                    if fault==Fault::CatalogueUnimplemented {return Some(RpcReply::Json(json!({"error":{"message":"NOT_IMPLEMENTED","data":[]}})));}
+                    json!(["pool.join"])
+                },
                 "pool.get_all_records"=>{
                     let mut record=pool_record(source);
                     if !source && auth && fault==Fault::WrongAuthPool {record["uuid"]=json!(SOURCE);}
@@ -81,12 +88,25 @@ async fn fixture(fault: Fault) -> Fixture {
                     let mut records=serde_json::Map::new();let mut record=host_record(source);
                     if !source && auth && fault==Fault::WrongAuthCoordinator {record["uuid"]=json!(SOURCE_HOST);}
                     records.insert(if source{"OpaqueRef:source-host"}else{"OpaqueRef:dest-host"}.into(),record);
-                    if !source&&joined {records.insert("OpaqueRef:source-host".into(),host_record(true));}
+                    if !source&&joined {let mut member=host_record(true);member["metrics"]=json!("OpaqueRef:member-metrics");records.insert("OpaqueRef:source-host".into(),member);}
                     json!(records)
                 },
                 "host.get_by_uuid"=>{assert_eq!(p[1],SOURCE_HOST);json!("OpaqueRef:source-host")},
-                "host.get_record"=>{assert_eq!(p[1],"OpaqueRef:source-host");host_record(true)},
-                "host_metrics.get_record"=>json!({"live":true}),
+                "host.get_record"=>{
+                    assert_eq!(p[1],"OpaqueRef:source-host");
+                    let mut record=host_record(true);
+                    if !source&&joined {record["metrics"]=json!("OpaqueRef:member-metrics");}
+                    record
+                },
+                "host_metrics.get_record"=>{
+                    if !source && joined && fault==Fault::MemberRestarting && p[1]=="OpaqueRef:member-metrics" {
+                        let mut c=c.lock().unwrap();
+                        c.metrics_reads_after_join+=1;
+                        // The joined member's toolstack restart: not live for the first reads.
+                        if c.metrics_reads_after_join<=2 {return Some(RpcReply::Json(json!({"result":{"live":false}})));}
+                    }
+                    json!({"live":true})
+                },
                 "VM.get_all_records"=>json!({"OpaqueRef:guest":{"is_control_domain":false,"power_state":if fault==Fault::RunningGuest{"Running"}else{"Halted"},"scheduled_to_be_resident_on":"OpaqueRef:NULL","current_operations":{}}}),
                 "SR.get_all_records"=>if fault==Fault::SharedStorage{json!({"OpaqueRef:sr":{"shared":true,"is_tools_sr":false,"current_operations":{}}})}else{json!({})},
                 "Bond.get_all_records"=>if fault==Fault::Bond{json!({"OpaqueRef:bond":{}})}else{json!({})},
@@ -222,6 +242,62 @@ async fn join_verifies_destination_credentials_and_membership_without_persisting
     assert!(result.applies_to_pool(PoolId::parse(DEST).unwrap()));
     assert_eq!(result.recovery_pool(), PoolId::parse(DEST).unwrap());
     privacy(dir.path(), &result);
+}
+/// XCP-ng 8.3.0 answers `host.list_methods` with NOT_IMPLEMENTED. An absent catalogue
+/// cannot prove the join unsupported, so the reviewed join proceeds and the server itself
+/// remains the authority that refuses unknown methods.
+#[tokio::test]
+async fn join_proceeds_when_the_host_does_not_implement_the_method_catalogue() {
+    let f = fixture(Fault::CatalogueUnimplemented).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let source = connect(&f.source, &backend, false).await;
+    let dest = connect(&f.destination, &backend, false).await;
+    let op = source
+        .join_pool(
+            OperationId::new(),
+            selection(&source, &dest),
+            &dest,
+            credentials(),
+        )
+        .unwrap();
+    let result = finished(&op).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert_eq!(joins(&f.source), 1);
+    privacy(dir.path(), &result);
+}
+/// Right after `pool.join` the member restarts its toolstack and the coordinator reports it
+/// not live for a short window (observed on XCP-ng 8.3.0). Verification keeps re-reading
+/// within its timeout instead of settling for an unknown outcome on the first read.
+#[tokio::test]
+async fn join_verification_waits_for_the_restarting_member_to_become_live() {
+    let f = fixture(Fault::MemberRestarting).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let source = connect(&f.source, &backend, false).await;
+    let dest = connect(&f.destination, &backend, false).await;
+    let op = source
+        .join_pool(
+            OperationId::new(),
+            selection(&source, &dest),
+            &dest,
+            credentials(),
+        )
+        .unwrap();
+    let result = tokio::time::timeout(deadline(20), async {
+        loop {
+            let row = op.latest();
+            if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert!(f.control.lock().unwrap().metrics_reads_after_join >= 3);
+    assert_eq!(joins(&f.source), 1);
 }
 #[tokio::test]
 async fn join_rejects_changed_identity_privilege_ha_and_source_prerequisites_before_dispatch() {

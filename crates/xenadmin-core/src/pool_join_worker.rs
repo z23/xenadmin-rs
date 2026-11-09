@@ -139,10 +139,7 @@ async fn source(session: &Session, spec: &JoinSpec) -> Result<(), Error> {
         "Reconnect the source with a local superuser before joining a pool",
     )?;
     require(
-        discovery::methods(session)
-            .await?
-            .iter()
-            .any(|v| v == "pool.join"),
+        discovery::advertised(session, "pool.join").await? != Some(false),
         "This host does not advertise pool joining",
     )?;
     for vm in discovery::records(session, "VM", 10_000).await?.values() {
@@ -212,9 +209,18 @@ async fn verify(session: &Session, record: &ResourceOperationRecord) -> Result<(
         actual == expected,
         "Destination membership does not yet match the reviewed join; recheck through the destination connection",
     )?;
-    let (_, host) = xapi::read(session, ResourceTarget::Host(spec.source_host)).await?;
-    idle(&host)?;
-    live(session, &host).await
+    // A member restarts its toolstack right after joining and reports itself not live
+    // for a short window. Keep re-reading until the caller's timeout expires; a final
+    // negative read still yields an unknown outcome that a later recheck can resolve.
+    loop {
+        let (_, host) = xapi::read(session, ResourceTarget::Host(spec.source_host)).await?;
+        idle(&host)?;
+        match live(session, &host).await {
+            Ok(()) => return Ok(()),
+            Err(Error::Protocol(_)) => tokio::time::sleep(Duration::from_secs(2)).await,
+            Err(error) => return Err(error),
+        }
+    }
 }
 impl ResourceRequest {
     pub(super) async fn execute_join(

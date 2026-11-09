@@ -241,7 +241,14 @@ impl Session {
 
     async fn rpc(&self, event: bool, method: &str, params: Vec<Value>) -> Result<Value, Error> {
         let value = self.rpc_envelope(event, method, params).await?;
-        Self::rpc_result(value)
+        let result = Self::rpc_result(value);
+        if let Err(error) = &result
+            && rpc_trace_enabled()
+        {
+            // Development diagnostics only: method name and sanitized error, never parameters.
+            eprintln!("xenadmin rpc trace: {method} -> {error}");
+        }
+        result
     }
     fn rpc_result(value: Value) -> Result<Value, Error> {
         if let Some(error) = value.get("error").filter(|e| !e.is_null()) {
@@ -497,6 +504,13 @@ impl Session {
         .await?;
         Ok((reference, destination))
     }
+}
+
+/// `XENADMIN_DEV_RPC_TRACE=1` prints failed method names and sanitized error codes to
+/// stderr for lab diagnosis. Parameters, session tokens and payloads are never printed.
+fn rpc_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("XENADMIN_DEV_RPC_TRACE").is_some_and(|v| v == "1"))
 }
 
 fn optional_class_error(code: &str) -> Option<crate::model::ClassAvailability> {

@@ -32,6 +32,7 @@ enum Fault {
     VerifyFailure,
     Unsupported,
     NotRoot,
+    CatalogueUnimplemented,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn pem() -> (String, String) {
@@ -69,7 +70,10 @@ async fn fixture(fault: Fault) -> (Mock, Records, Arc<Mutex<String>>) {
     let mock=mock_overridden(override_rpc(move|request|{let r=r.clone();let c=c.clone();let writes=writes.clone();let verify=verify.clone();async move{
         let method=request["method"].as_str().unwrap();let p=&request["params"];
         if method=="event.from"&&p[2]==""{let mut initial=batch("initial","Halted");for event in initial["events"].as_array_mut().unwrap(){if let Some(v)=r.lock().unwrap().get(event["class"].as_str().unwrap()){event["snapshot"]=v.clone();}}return Some(RpcReply::Json(json!({"result":initial})));}
-        if method=="host.list_methods"{return Some(RpcReply::Json(json!({"result":if fault==Fault::Unsupported{vec![]}else{METHODS.to_vec()}})));}
+        if method=="host.list_methods"{
+            if fault==Fault::CatalogueUnimplemented {return Some(RpcReply::Json(json!({"error":{"message":"NOT_IMPLEMENTED","data":[]}})));}
+            return Some(RpcReply::Json(json!({"result":if fault==Fault::Unsupported{vec![]}else{METHODS.to_vec()}})));
+        }
         if method=="session.get_record"{return Some(RpcReply::Json(json!({"result":{"is_local_superuser":fault!=Fault::NotRoot}})));}
         if method=="auth.get_subject_identifier"{assert_eq!(p[1],"example\\alice");return Some(RpcReply::Json(json!({"result":"S-fixture-new"})));}
         if method=="auth.get_subject_information_from_identifier"{return Some(RpcReply::Json(json!({"result":{"subject-name":"Fixture User","private-data":"not projected"}})));}
@@ -256,6 +260,18 @@ async fn directory_join_leave_use_transient_credentials_and_verify_members() {
     .await;
     assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
     assert_eq!(mutations(&mock), 2);
+}
+/// An absent method catalogue (NOT_IMPLEMENTED on XCP-ng 8.3.0) is not evidence that a
+/// security operation is unsupported; an explicitly empty catalogue still refuses.
+#[tokio::test]
+async fn directory_join_proceeds_without_a_method_catalogue() {
+    let (mock, _, _) = fixture(Fault::CatalogueUnimplemented).await;
+    let dir = tempfile::tempdir().unwrap();
+    let b = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &b, false).await;
+    let r = finished(&c.submit_resource(OperationId::new(), join(&c)).unwrap()).await;
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    assert_eq!(mutations(&mock), 1);
 }
 #[tokio::test]
 async fn directory_stale_members_and_missing_privilege_or_methods_refuse_before_write() {

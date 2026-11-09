@@ -172,6 +172,19 @@ pub(crate) async fn directory_hosts(session: &Session) -> Result<Vec<DirectoryHo
     hosts.sort_by_key(|h| h.host);
     Ok(hosts)
 }
+/// Whether the host advertises `method` in its method catalogue. `Ok(None)` means the host
+/// does not implement `host.list_methods` at all: XCP-ng 8.3.0 answers NOT_IMPLEMENTED.
+/// Callers then rely on the server refusing an unknown method explicitly, before any change,
+/// instead of refusing locally on the strength of an absent catalogue.
+pub(crate) async fn advertised(session: &Session, method: &str) -> Result<Option<bool>, Error> {
+    match methods(session).await {
+        Ok(list) => Ok(Some(list.iter().any(|m| m == method))),
+        Err(Error::Api(code)) if code == "NOT_IMPLEMENTED" || code == "MESSAGE_METHOD_UNKNOWN" => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
 pub(crate) async fn methods(session: &Session) -> Result<Vec<String>, Error> {
     let value = session.call("host.list_methods", vec![]).await?;
     let values = value
