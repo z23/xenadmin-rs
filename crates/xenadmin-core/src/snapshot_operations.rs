@@ -271,8 +271,11 @@ impl MutationRequest {
             self.persist_steps(journal).await?;
         }
         if current["is_a_template"] == false {
+            // The conversion reached the host even if its reply was lost; the host still
+            // needs to recompute the new VM's allowed operations (see below).
+            let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("VM.update_allowed_operations",vec![json!(&reference)])=>result};
             self.record.steps[0].state = StepState::Verified;
-            self.record.steps[0].detail = "New VM identity and halted state verified".into();
+            self.record.steps[0].detail = verified_detail(refreshed);
             return self.persist_steps(journal).await;
         }
         if self.record.steps[0].state != StepState::Pending {
@@ -314,6 +317,9 @@ impl MutationRequest {
             self.record.can_cancel = false;
             return self.persist_steps(journal).await;
         }
+        // XCP-ng 8.3 keeps the template's allowed operations on the new VM until asked to
+        // recompute them, so Start would stay withheld; the recompute changes nothing else.
+        let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("VM.update_allowed_operations",vec![json!(&reference)])=>result};
         self.record.state = OperationState::Verifying;
         self.persist_steps(journal).await?;
         let (verified, after) =
@@ -322,8 +328,19 @@ impl MutationRequest {
             return Err(Error::SnapshotConflict);
         }
         self.record.steps[0].state = StepState::Verified;
-        self.record.steps[0].detail = "New VM identity and halted state verified".into();
+        self.record.steps[0].detail = verified_detail(refreshed);
         self.persist_steps(journal).await
+    }
+}
+
+/// The conversion step's detail: the identity check passed either way, and a host that
+/// would not recompute the new VM's allowed operations is named rather than hidden.
+fn verified_detail(refreshed: Result<serde_json::Value, Error>) -> String {
+    match refreshed {
+        Ok(_) => "New VM identity and halted state verified".into(),
+        Err(error) => format!(
+            "New VM identity and halted state verified; the host did not refresh its allowed operations ({error}), so Start may stay withheld until it does"
+        ),
     }
 }
 

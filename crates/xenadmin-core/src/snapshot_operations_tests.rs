@@ -93,6 +93,10 @@ async fn fixture_with_permissions(
                 records.get_mut("OpaqueRef:VM:clone").unwrap()["is_a_template"]=json!(false);
                 if fault==Fault::ConversionLost {json!({"_fixture_close_without_reply":true})}else{json!({"result":null})}
             },
+            "VM.update_allowed_operations"=>{
+                assert_eq!(request["params"][1],"OpaqueRef:VM:clone");
+                json!({"result":null})
+            },
             "VM.hard_shutdown"=>{
                 assert_eq!(request["params"][1],"OpaqueRef:VM:snapshot");
                 records.get_mut("OpaqueRef:VM:snapshot").unwrap()["power_state"]=json!("Halted");
@@ -198,6 +202,11 @@ async fn snapshot_clone_returns_a_verified_halted_vm_or_template() {
             usize::from(!as_template)
         );
         assert_eq!(
+            count(&calls, "VM.update_allowed_operations"),
+            usize::from(!as_template),
+            "the new VM's allowed operations are refreshed once after its conversion"
+        );
+        assert_eq!(
             records.lock().unwrap()["OpaqueRef:VM:parent"]["power_state"],
             "Running"
         );
@@ -226,6 +235,7 @@ async fn snapshot_clone_lost_conversion_reply_reconciles_without_repeating_write
     assert_eq!(record.state, OperationState::Succeeded, "{}", record.detail);
     assert_eq!(count(&calls, "Async.VM.clone"), 1);
     assert_eq!(count(&calls, "VM.set_is_a_template"), 1);
+    assert_eq!(count(&calls, "VM.update_allowed_operations"), 1);
 }
 
 #[tokio::test]

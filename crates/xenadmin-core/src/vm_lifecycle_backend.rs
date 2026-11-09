@@ -37,6 +37,11 @@ pub(crate) enum Step {
     Provision {
         vm: VmId,
     },
+    /// Asks the host to recompute the VM's allowed operations after a template became a VM:
+    /// XCP-ng 8.3 keeps the template's list until asked, which withholds Start.
+    RefreshAllowedOperations {
+        vm: VmId,
+    },
     ConfigureDevices {
         vm: VmId,
     },
@@ -94,6 +99,7 @@ impl Step {
             },
             Self::CopyBios { .. } => "Copy host BIOS identity and set home host",
             Self::Provision { .. } => "Provision VM",
+            Self::RefreshAllowedOperations { .. } => "Refresh allowed operations",
             Self::ConfigureDevices { .. } => "Prepare VM devices",
             Self::CheckHosts { .. } => "Check compatible hosts",
             Self::Device { .. } => "Configure device",
@@ -791,6 +797,10 @@ pub(crate) async fn prepare(
             }
             Ok(call("Async.VM.provision", vec![json!(vm_ref)]))
         }
+        Step::RefreshAllowedOperations { vm } => {
+            let (vm_ref, _) = target(session, plan, vm).await?;
+            Ok(call("VM.update_allowed_operations", vec![json!(vm_ref)]))
+        }
         Step::CheckHosts { vm } => {
             let (reference, _) = target(session, plan, vm).await?;
             compatible_hosts(session, &reference).await?;
@@ -1233,6 +1243,9 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
                     vm,
                     change: Change::Template(as_template),
                 });
+                if !as_template {
+                    plan.push(Step::RefreshAllowedOperations { vm });
+                }
             }
         }
         _ => return Err(Error::InvalidVmLifecycle),
@@ -1400,6 +1413,7 @@ pub(crate) async fn verify(
                 && r["other_config"].get("disks").is_none())
         }
         Step::ConfigureDevices { .. } => Ok(plan.evidence[index].completed),
+        Step::RefreshAllowedOperations { .. } => Ok(plan.evidence[index].completed),
         Step::CheckHosts { vm } => {
             let (reference, _) = fresh(session, "VM", vm.uuid()).await?;
             compatible_hosts(session, &reference).await?;

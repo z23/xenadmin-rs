@@ -272,6 +272,9 @@ async fn fixture_with_authority(
                 };
                 return json!({"result":(0..16).map(|n|n.to_string()).filter(|slot|!r.iter().any(|(k,v)|k.starts_with(&format!("OpaqueRef:{class}:"))&&v["VM"]==p[1]&&v[key]==*slot)).collect::<Vec<_>>()});
             }
+            if method == "VM.update_allowed_operations" {
+                return json!({"result":null});
+            }
             if method == "VM.remove_from_other_config" {
                 r.get_mut(p[1].as_str().unwrap()).unwrap()["other_config"]
                     .as_object_mut()
@@ -508,6 +511,42 @@ async fn fast_clone_and_full_copy_preserve_source_and_verify_new_resource_ids() 
         );
     }
 }
+/// XCP-ng 8.3.0 keeps a template's allowed operations on the VM it was turned into until
+/// asked to recompute them, which withholds Start; the conversion is followed by that ask.
+#[tokio::test]
+async fn template_cloned_into_a_vm_has_its_allowed_operations_refreshed() {
+    let (f, r, c) = fixture(Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let result = execute(
+        &f,
+        dir.path(),
+        VmLifecycleOperation::Clone {
+            name: "Reviewed VM".into(),
+            expected_template: true,
+            mode: VmCopyMode::Fast,
+            as_template: false,
+        },
+    )
+    .await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert_eq!(
+        r.lock().unwrap()["OpaqueRef:VM:new"]["is_a_template"],
+        false
+    );
+    assert_eq!(count(&c, "VM.set_is_a_template"), 1);
+    assert_eq!(count(&c, "VM.update_allowed_operations"), 1);
+    let refresh = c
+        .lock()
+        .unwrap()
+        .iter()
+        .position(|r| r["method"] == "VM.update_allowed_operations");
+    let conversion = c
+        .lock()
+        .unwrap()
+        .iter()
+        .position(|r| r["method"] == "VM.set_is_a_template");
+    assert!(refresh > conversion, "the refresh follows the conversion");
+}
 #[tokio::test]
 async fn creates_vm_with_resources_disk_network_iso_and_merged_firmware() {
     let (f, r, c) = fixture(Fault::None).await;
@@ -610,6 +649,7 @@ async fn converts_halted_vm_and_edits_custom_template_metadata() {
         "Edited"
     );
     assert_eq!(count(&c, "VM.set_is_a_template"), 1);
+    assert_eq!(count(&c, "VM.update_allowed_operations"), 0);
 }
 #[tokio::test]
 async fn record_only_deletion_keeps_disks_and_explicit_owned_cleanup_removes_only_selection() {
@@ -960,6 +1000,7 @@ async fn ordinary_vm_clone_can_be_converted_to_template_without_changing_source(
     );
     assert_eq!(r.lock().unwrap()["OpaqueRef:VM:new"]["is_a_template"], true);
     assert_eq!(count(&c, "VM.set_is_a_template"), 1);
+    assert_eq!(count(&c, "VM.update_allowed_operations"), 0);
 }
 #[tokio::test]
 async fn uncertain_creation_reserves_created_vm_and_disk_identities() {
