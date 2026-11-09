@@ -82,7 +82,9 @@ checks; `./scripts/package.sh` builds a release archive under `artifacts/`.
 - [Design decision](docs/DECISION.md) compares the architecture alternatives.
 
 The recovery release acceptance gate is to locate, start, and use the console of an XO VM
-with XO unreachable. This requires a designated disposable lab and authorized test scope.
+with XO unreachable. The designated disposable lab now exists and the console workflow has
+run on it with no XO present; the gate still needs an XO-managed VM, which the lab does not
+yet contain.
 Later releases extend snapshot workflows and add VM creation, migration, storage and network administration,
 metrics, and import and export.
 

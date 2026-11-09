@@ -35,8 +35,9 @@ backend dependencies, and each slice must leave the desktop usable.
 | P10 | Organization, saved searches, tags/folders, vApps, bulk actions, native extensions and translation catalogs |
 | P11 | AppImage/portable packaging and native Arch/Ubuntu 24.04 qualification under Wayland/X11 |
 
-Current implementation work delivers parts of P0–P10. The prepared offline lab
-handoff awaits virtualization; live qualification is deferred at the user's request.
+Current implementation work delivers parts of P0–P10. The disposable lab is provisioned
+and the first live qualification is recorded (see [current state](#current-state)); most
+rows still need their failure and interruption paths before they count as qualified.
 All phases retain open workflows or qualification gates. The per-row ledger and verification report
 are the completion authority. In particular, an API/data-model implementation does not
 establish a usable end-to-end workflow or live-host compatibility.

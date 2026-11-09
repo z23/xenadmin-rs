@@ -43,7 +43,9 @@ python3 lab/manage.py draft --directory ~/src/xenadmin-rs-lab-prep
 This records a three-host resource plan, current prerequisite availability, a candidate
 isolated subnet and the [acceptance scenarios](ACCEPTANCE.md). It creates no hypervisor
 resources and cannot be passed to lifecycle commands as an active manifest. Live tests
-remain pending until virtualization and a verified installer are available.
+take their targets from a manifest created by the lifecycle commands below; the first
+recorded run is in the [live qualification report](../docs/reports/2026-11-09-lab-qualification.md)
+and the per-scenario results are in the [acceptance record](ACCEPTANCE.md).
 
 Run `python3 lab/manage.py doctor` first. Replace the following placeholders explicitly:
 

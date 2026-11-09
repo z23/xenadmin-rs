@@ -18,8 +18,9 @@ expanded device inventory and action diagnosis, console controls, VM property ed
 durable steps, chosen-host placement, memory checkpoints and safe first device actions.
 Rows below record those concrete subsets; no broad row is complete merely because a
 supporting type or method exists. Local automated checks do not establish live qualification.
-The [nested lab harness](../lab/README.md) creates isolated, owned local resources; no
-live-host qualification has yet been established by this change.
+The [nested lab harness](../lab/README.md) creates isolated, owned local resources. Rows
+that cite the live lab link to the dated qualification report recording exactly what was
+exercised on XCP-ng 8.3.0; every other row still has no live-host evidence.
 
 The [device lifecycle increment](reports/2026-11-08-device-lifecycle.md) adds the reviewed
 halted-VM disk, CD-drive and NIC workflows recorded in section 7. It retains explicit
