@@ -304,6 +304,14 @@ pub enum Error {
     SettingsRequiresHaltedVm,
     #[error("VM properties changed since this editor opened. Reload them before saving")]
     SettingsConflict,
+    #[error(
+        "The host does not advertise this change for the VM in its current state. Reload the editor and check the VM's allowed operations"
+    )]
+    SettingsNotAdvertised,
+    #[error(
+        "The vCPU maximum must be a multiple of the VM's cores per socket. Change the CPU topology first"
+    )]
+    SettingsTopologyMismatch,
     #[error("Enter a snapshot name of 1–255 characters without control characters")]
     InvalidSnapshotName,
     #[error(

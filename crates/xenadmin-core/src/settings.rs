@@ -296,6 +296,12 @@ impl VmSettingsPatch {
 
     pub(crate) fn steps(&self) -> Vec<SettingsStep> {
         let mut steps = Vec::new();
+        let planned_cores = self.edits.iter().find_map(|edit| match edit {
+            VmSettingEdit::CpuTopology {
+                cores_per_socket, ..
+            } => Some(*cores_per_socket),
+            _ => None,
+        });
         for edit in &self.edits {
             match edit {
                 VmSettingEdit::SecureBoot { previous, value } => {
@@ -437,13 +443,14 @@ impl VmSettingsPatch {
                     max,
                     startup,
                 } => {
-                    let maximum = SettingsStep::number(
+                    let mut maximum = SettingsStep::number(
                         "Maximum vCPUs",
                         "VCPUs_max",
                         "VM.set_VCPUs_max",
                         *previous_max,
                         *max,
                     );
+                    maximum.guard = Some(SettingsGuard::CpuCount(*max, planned_cores));
                     let startup = SettingsStep::number(
                         "Startup vCPUs",
                         "VCPUs_at_startup",
@@ -517,6 +524,7 @@ enum SettingsGuard {
     LiveCpus(u64),
     DynamicMemory(u64, u64),
     Topology(u64),
+    CpuCount(u64, Option<u64>),
     OrdinaryState,
     Shadow(bool),
 }
@@ -526,6 +534,16 @@ impl SettingsGuard {
         let running = record["power_state"] == "Running";
         if !halted && !running {
             return Err(Error::UnavailableAction);
+        }
+        let advertised = match self {
+            Self::LiveCpus(_) => Some("changing_VCPUs_live"),
+            Self::DynamicMemory(..) => Some("changing_dynamic_range"),
+            Self::Shadow(true) => Some("changing_shadow_memory_live"),
+            Self::Shadow(false) => Some("changing_shadow_memory"),
+            _ => None,
+        };
+        if advertised.is_some_and(|operation| !crate::xapi::advertises(record, operation)) {
+            return Err(Error::SettingsNotAdvertised);
         }
         let valid = match self {
             Self::SecureBoot => halted && crate::guest_boot::firmware(record) == Some("uefi"),
@@ -550,6 +568,17 @@ impl SettingsGuard {
             Self::Topology(cores) => {
                 halted
                     && integer(&record["VCPUs_max"]).is_some_and(|v| v >= *cores && v % cores == 0)
+            }
+            Self::CpuCount(max, planned) => {
+                let cores = planned.or_else(|| {
+                    record["platform"]["cores-per-socket"]
+                        .as_str()
+                        .and_then(|c| c.parse::<u64>().ok())
+                });
+                if cores.is_some_and(|c| c == 0 || max % c != 0) {
+                    return Err(Error::SettingsTopologyMismatch);
+                }
+                halted
             }
             Self::OrdinaryState => true,
             Self::Shadow(live) => {
@@ -758,6 +787,76 @@ mod tests {
             .unwrap();
             assert_eq!(p.steps()[0].fields, vec![first]);
         }
+    }
+    #[test]
+    fn unadvertised_live_changes_are_named_and_changed_limits_remain_conflicts() {
+        let p = VmSettingsPatch::new(vec![VmSettingEdit::LiveCpus {
+            previous: 2,
+            max: 4,
+            value: 3,
+        }])
+        .unwrap();
+        let running = |operations: Vec<&str>, max: &str| json!({"power_state": "Running", "VCPUs_max": max, "VCPUs_at_startup": "2", "allowed_operations": operations, "blocked_operations": {}});
+        assert!(matches!(
+            p.steps()[0].preflight(&running(vec![], "4")),
+            Err(Error::SettingsNotAdvertised)
+        ));
+        assert!(matches!(
+            p.steps()[0].preflight(&running(vec!["changing_VCPUs_live"], "3")),
+            Err(Error::SettingsConflict)
+        ));
+        assert!(
+            p.steps()[0]
+                .preflight(&running(vec!["changing_VCPUs_live"], "4"))
+                .is_ok()
+        );
+        let shadow = VmSettingsPatch::new(vec![VmSettingEdit::ShadowMultiplier {
+            previous: "1.0".into(),
+            value: "2.0".into(),
+            live: true,
+        }])
+        .unwrap();
+        assert!(matches!(
+            shadow.steps()[0].preflight(&json!({"power_state": "Running", "domain_type": "hvm", "HVM_shadow_multiplier": 1.0, "allowed_operations": ["changing_shadow_memory"], "blocked_operations": {}})),
+            Err(Error::SettingsNotAdvertised)
+        ));
+    }
+    #[test]
+    fn vcpu_maximum_must_stay_a_multiple_of_the_current_or_planned_cores_per_socket() {
+        let halted = json!({"power_state":"Halted","VCPUs_max":"4","VCPUs_at_startup":"4","platform":{"cores-per-socket":"4"}});
+        let shrink = VmSettingsPatch::new(vec![VmSettingEdit::Cpus {
+            previous_max: 4,
+            previous_startup: 4,
+            max: 2,
+            startup: 2,
+        }])
+        .unwrap();
+        assert!(matches!(
+            shrink.preflight(&halted),
+            Err(Error::SettingsTopologyMismatch)
+        ));
+        let with_topology = VmSettingsPatch::new(vec![
+            VmSettingEdit::Cpus {
+                previous_max: 4,
+                previous_startup: 4,
+                max: 2,
+                startup: 2,
+            },
+            VmSettingEdit::CpuTopology {
+                previous: Some("4".into()),
+                cores_per_socket: 2,
+            },
+        ])
+        .unwrap();
+        assert!(with_topology.preflight(&halted).is_ok());
+        let grow = VmSettingsPatch::new(vec![VmSettingEdit::Cpus {
+            previous_max: 4,
+            previous_startup: 4,
+            max: 8,
+            startup: 4,
+        }])
+        .unwrap();
+        assert!(grow.preflight(&halted).is_ok());
     }
     #[test]
     fn stale_property_drafts_and_running_resource_edits_are_rejected() {

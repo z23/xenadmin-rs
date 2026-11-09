@@ -6916,3 +6916,614 @@ async fn lab_suspend_and_chosen_host_resume() {
         assert!(running, "guest neither suspended nor kept running");
     }
 }
+
+async fn apply_vm_edit<F: Fn(&xenadmin_core::Inventory) -> bool>(
+    c: &Connection,
+    vm: xenadmin_core::VmId,
+    label: &str,
+    edits: Vec<xenadmin_core::VmSettingEdit>,
+    applied: F,
+) -> Value {
+    let patch = match xenadmin_core::VmSettingsPatch::new(edits) {
+        Ok(patch) => patch,
+        Err(error) => {
+            return json!({"edit": label, "accepted": false, "error": error.to_string()});
+        }
+    };
+    let operation = match c.latest().observe_vm(vm).and_then(|target| {
+        c.submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Configure { vm: target, patch },
+        )
+    }) {
+        Ok(operation) => operation,
+        Err(error) => {
+            return json!({"edit": label, "accepted": false, "error": error.to_string()});
+        }
+    };
+    let row = wait_vm_outcome(&operation, 180).await;
+    let read_back = settle(60, || c.latest().inventory().is_some_and(|i| applied(i))).await;
+    json!({
+        "edit": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+        "read_back": read_back,
+        "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>(),
+    })
+}
+
+async fn power_to(
+    c: &Connection,
+    vm: xenadmin_core::VmId,
+    action: xenadmin_core::PowerAction,
+    expected: xenadmin_core::PowerState,
+) -> Value {
+    let operation = c
+        .submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Power {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                action,
+            },
+        )
+        .expect("power action accepted");
+    let row = wait_vm_outcome(&operation, 300).await;
+    let reached = settle(180, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&vm)
+                .is_some_and(|v| v.power_state == expected && !v.allowed_actions.is_empty())
+        })
+    })
+    .await;
+    assert_eq!(
+        row.state,
+        OperationState::Succeeded,
+        "{action:?}: {}",
+        row.detail
+    );
+    assert!(reached, "{action:?}: guest did not reach {expected:?}");
+    json!({"action": format!("{action:?}"), "state": format!("{:?}", row.state), "reached": reached})
+}
+
+/// P05-01, P05-07, P06-02, P06-03, P06-04, P06-09: on the running guest edit the CPU
+/// scheduling weight and the dynamic memory range and submit a live shadow multiplier edit
+/// (refused by name when the host does not advertise it); while halted raise the vCPU
+/// maximum, set the CPU topology and the shadow multiplier; increase vCPUs live once the
+/// host advertises it; create a snapshot with a description, edit its name and description
+/// and delete it; finally restore the vCPU counts and the shadow multiplier.
+#[tokio::test]
+#[ignore]
+async fn lab_live_property_editors_and_snapshot_metadata() {
+    use xenadmin_core::{
+        MemoryLimits, PowerAction, PowerState, SnapshotWorkflow, VmCommand, VmSettingEdit,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let id = guest.id;
+    let details = || c.latest().inventory().unwrap().details.vms[&id].clone();
+    let mut results = Vec::new();
+    let mut power = Vec::new();
+    // A halted guest left by an interrupted run may carry a topology its vCPU count cannot
+    // satisfy; set a single core per socket through the editor before starting it.
+    if guest.power_state != PowerState::Running {
+        let cores = details().cores_per_socket;
+        if cores.as_deref() != Some("1") {
+            results.push(
+                apply_vm_edit(
+                    &c,
+                    id,
+                    "repair: cpu topology reset while halted",
+                    vec![VmSettingEdit::CpuTopology {
+                        previous: cores,
+                        cores_per_socket: 1,
+                    }],
+                    |i| i.details.vms[&id].cores_per_socket.as_deref() == Some("1"),
+                )
+                .await,
+            );
+        }
+        power.push(power_to(&c, id, PowerAction::Start, PowerState::Running).await);
+    }
+    let advertises = |operation: &str| {
+        details()
+            .allowed_operations
+            .is_some_and(|ops| ops.iter().any(|op| op == operation))
+    };
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // Running: scheduling weight, dynamic memory range, live shadow multiplier.
+    let before = details();
+    let weight: u16 = if before.cpu_weight.as_deref() == Some("512") {
+        256
+    } else {
+        512
+    };
+    results.push(
+        apply_vm_edit(
+            &c,
+            id,
+            "cpu weight",
+            vec![VmSettingEdit::CpuWeight {
+                previous: before.cpu_weight.clone(),
+                weight,
+            }],
+            |i| i.details.vms[&id].cpu_weight.as_deref() == Some(weight.to_string().as_str()),
+        )
+        .await,
+    );
+    let restored_weight: u16 = before
+        .cpu_weight
+        .as_deref()
+        .and_then(|w| w.parse().ok())
+        .unwrap_or(256);
+    results.push(
+        apply_vm_edit(
+            &c,
+            id,
+            "cpu weight restored",
+            vec![VmSettingEdit::CpuWeight {
+                previous: Some(weight.to_string()),
+                weight: restored_weight,
+            }],
+            |i| {
+                i.details.vms[&id].cpu_weight.as_deref()
+                    == Some(restored_weight.to_string().as_str())
+            },
+        )
+        .await,
+    );
+    let limits = MemoryLimits {
+        static_min: before.memory_static_min.unwrap_or(0),
+        dynamic_min: before.memory_dynamic_min.unwrap_or(0),
+        dynamic_max: before.memory_dynamic_max.unwrap_or(0),
+        static_max: before.memory_static_max.unwrap_or(0),
+    };
+    if limits.static_min < limits.static_max && limits.static_min > 0 {
+        let mib = 1u64 << 20;
+        let midpoint =
+            (limits.static_min + (limits.static_max - limits.static_min) / 2) / mib * mib;
+        let target_min = if limits.dynamic_min == limits.static_min {
+            midpoint.max(limits.static_min)
+        } else {
+            limits.static_min
+        };
+        let target_max = limits.static_max;
+        results.push(
+            apply_vm_edit(
+                &c,
+                id,
+                "dynamic memory live",
+                vec![VmSettingEdit::DynamicMemory {
+                    previous: limits.clone(),
+                    min: target_min,
+                    max: target_max,
+                }],
+                move |i| {
+                    let v = &i.details.vms[&id];
+                    v.memory_dynamic_min == Some(target_min)
+                        && v.memory_dynamic_max == Some(target_max)
+                },
+            )
+            .await,
+        );
+        let now = details();
+        let current = MemoryLimits {
+            static_min: limits.static_min,
+            dynamic_min: now.memory_dynamic_min.unwrap_or(target_min),
+            dynamic_max: now.memory_dynamic_max.unwrap_or(target_max),
+            static_max: limits.static_max,
+        };
+        let (back_min, back_max) = (limits.dynamic_min, limits.dynamic_max);
+        results.push(
+            apply_vm_edit(
+                &c,
+                id,
+                "dynamic memory restored",
+                vec![VmSettingEdit::DynamicMemory {
+                    previous: current,
+                    min: back_min,
+                    max: back_max,
+                }],
+                move |i| {
+                    let v = &i.details.vms[&id];
+                    v.memory_dynamic_min == Some(back_min) && v.memory_dynamic_max == Some(back_max)
+                },
+            )
+            .await,
+        );
+    } else {
+        results.push(json!({"edit": "dynamic memory live", "skipped": format!("static limits {}..{} leave no dynamic range", limits.static_min, limits.static_max)}));
+    }
+    let shadow_before = before
+        .shadow_multiplier
+        .clone()
+        .unwrap_or_else(|| "1".into());
+    let shadow_live_advertised = advertises("changing_shadow_memory_live");
+    let mut live_shadow = apply_vm_edit(
+        &c,
+        id,
+        "shadow multiplier live",
+        vec![VmSettingEdit::ShadowMultiplier {
+            previous: shadow_before.clone(),
+            value: "2.0".into(),
+            live: true,
+        }],
+        |i| {
+            i.details.vms[&id]
+                .shadow_multiplier
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                == Some(2.0)
+        },
+    )
+    .await;
+    live_shadow["advertised"] = json!(shadow_live_advertised);
+    live_shadow["expected"] = json!(if shadow_live_advertised {
+        "Succeeded"
+    } else {
+        "Rejected"
+    });
+    results.push(live_shadow);
+    if shadow_live_advertised {
+        results.push(
+            apply_vm_edit(
+                &c,
+                id,
+                "shadow multiplier live restored",
+                vec![VmSettingEdit::ShadowMultiplier {
+                    previous: "2.0".into(),
+                    value: shadow_before.clone(),
+                    live: true,
+                }],
+                |i| {
+                    i.details.vms[&id]
+                        .shadow_multiplier
+                        .as_deref()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        == shadow_before.parse::<f64>().ok()
+                },
+            )
+            .await,
+        );
+    }
+
+    // Halted: raise the vCPU maximum, set the topology and the shadow multiplier.
+    power.push(power_to(&c, id, PowerAction::CleanShutdown, PowerState::Halted).await);
+    let halted = details();
+    let (previous_max, previous_startup) = (
+        halted.vcpus_max.unwrap_or(1),
+        halted.vcpus_at_startup.unwrap_or(1),
+    );
+    let new_max = previous_max + 1;
+    results.push(
+        apply_vm_edit(
+            &c,
+            id,
+            "vcpu maximum raised while halted",
+            vec![VmSettingEdit::Cpus {
+                previous_max,
+                previous_startup,
+                max: new_max,
+                startup: previous_startup,
+            }],
+            move |i| {
+                let v = &i.details.vms[&id];
+                v.vcpus_max == Some(new_max) && v.vcpus_at_startup == Some(previous_startup)
+            },
+        )
+        .await,
+    );
+    let cores = if halted.cores_per_socket.as_deref() == Some("1") {
+        new_max
+    } else {
+        1
+    };
+    results.push(
+        apply_vm_edit(
+            &c,
+            id,
+            "cpu topology while halted",
+            vec![VmSettingEdit::CpuTopology {
+                previous: halted.cores_per_socket.clone(),
+                cores_per_socket: cores,
+            }],
+            move |i| {
+                i.details.vms[&id].cores_per_socket.as_deref() == Some(cores.to_string().as_str())
+            },
+        )
+        .await,
+    );
+    let halted_shadow_advertised = settle(30, || advertises("changing_shadow_memory")).await;
+    let mut halted_shadow = apply_vm_edit(
+        &c,
+        id,
+        "shadow multiplier while halted",
+        vec![VmSettingEdit::ShadowMultiplier {
+            previous: details()
+                .shadow_multiplier
+                .unwrap_or_else(|| shadow_before.clone()),
+            value: "2.0".into(),
+            live: false,
+        }],
+        |i| {
+            i.details.vms[&id]
+                .shadow_multiplier
+                .as_deref()
+                .and_then(|v| v.parse::<f64>().ok())
+                == Some(2.0)
+        },
+    )
+    .await;
+    halted_shadow["advertised"] = json!(halted_shadow_advertised);
+    halted_shadow["expected"] = json!(if halted_shadow_advertised {
+        "Succeeded"
+    } else {
+        "Rejected"
+    });
+    results.push(halted_shadow);
+    power.push(power_to(&c, id, PowerAction::Start, PowerState::Running).await);
+    let live_cpus_wait = std::time::Instant::now();
+    let live_cpus_advertised = settle(180, || advertises("changing_VCPUs_live")).await;
+    let mut live_cpus = apply_vm_edit(
+        &c,
+        id,
+        "vcpus increased live",
+        vec![VmSettingEdit::LiveCpus {
+            previous: previous_startup,
+            max: new_max,
+            value: new_max,
+        }],
+        move |i| i.details.vms[&id].vcpus_at_startup == Some(new_max),
+    )
+    .await;
+    live_cpus["advertised"] = json!(live_cpus_advertised);
+    live_cpus["advertised_after_seconds"] = json!(live_cpus_wait.elapsed().as_secs());
+    live_cpus["expected"] = json!(if live_cpus_advertised {
+        "Succeeded"
+    } else {
+        "Rejected"
+    });
+    results.push(live_cpus);
+
+    // Snapshot with a description, metadata edit, deletion.
+    let name = format!("lab-meta-{stamp}");
+    let description = "Created by the live harness with a description".to_string();
+    let created = c
+        .submit(
+            OperationId::new(),
+            VmCommand::SnapshotWorkflow {
+                vm: c.latest().observe_vm(id).unwrap(),
+                operation: SnapshotWorkflow::Create {
+                    name: name.clone(),
+                    description: description.clone(),
+                    memory: false,
+                },
+            },
+        )
+        .expect("snapshot creation accepted");
+    let created = wait_vm_outcome(&created, 300).await;
+    let snapshot = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(s) = c.latest().inventory().and_then(|i| {
+                i.snapshots
+                    .for_vm(id)
+                    .find(|s| s.name == name && s.description == description)
+                    .cloned()
+            }) {
+                return s;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("snapshot with its description listed");
+    let renamed = format!("{name}-renamed");
+    let edited_description = "Edited by the live harness".to_string();
+    let edit = c
+        .submit(
+            OperationId::new(),
+            VmCommand::SnapshotWorkflow {
+                vm: c.latest().observe_vm(id).unwrap(),
+                operation: SnapshotWorkflow::Edit {
+                    snapshot: snapshot.id,
+                    expected_name: name.clone(),
+                    expected_description: description.clone(),
+                    name: renamed.clone(),
+                    description: edited_description.clone(),
+                },
+            },
+        )
+        .expect("snapshot edit accepted");
+    let edit = wait_vm_outcome(&edit, 180).await;
+    let edit_read_back = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.snapshots
+                .get(&snapshot.id)
+                .is_some_and(|s| s.name == renamed && s.description == edited_description)
+        })
+    })
+    .await;
+    let disks = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.snapshot == Some(snapshot.id) && b.kind == "Disk")
+        .filter_map(|b| b.vdi)
+        .collect::<Vec<_>>();
+    let deleted = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(id, snapshot.id).unwrap(),
+                disks: disks.clone(),
+            },
+        )
+        .expect("snapshot deletion accepted");
+    let deleted = wait_vm_outcome(&deleted, 300).await;
+    let gone = settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.snapshots.get(&snapshot.id).is_none()
+                && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+        })
+    })
+    .await;
+
+    // Restore the vCPU counts (maximum back to the startup count) and the shadow
+    // multiplier from the current values, then leave the guest running.
+    power.push(power_to(&c, id, PowerAction::CleanShutdown, PowerState::Halted).await);
+    let current = details();
+    let (current_max, current_startup) = (
+        current.vcpus_max.unwrap_or(1),
+        current.vcpus_at_startup.unwrap_or(1),
+    );
+    let current_cores = current
+        .cores_per_socket
+        .as_deref()
+        .and_then(|c| c.parse::<u64>().ok());
+    if current_cores.is_some_and(|c| previous_startup % c != 0) {
+        // The editor must refuse a vCPU maximum the current topology cannot satisfy.
+        let mut refused = apply_vm_edit(
+            &c,
+            id,
+            "vcpus restored against an incompatible topology",
+            vec![VmSettingEdit::Cpus {
+                previous_max: current_max,
+                previous_startup: current_startup,
+                max: previous_startup,
+                startup: previous_startup,
+            }],
+            move |i| i.details.vms[&id].vcpus_max == Some(previous_startup),
+        )
+        .await;
+        refused["expected"] = json!("Rejected");
+        refused["expected_detail"] = json!("cores per socket");
+        results.push(refused);
+    }
+    if current_cores != Some(1) {
+        results.push(
+            apply_vm_edit(
+                &c,
+                id,
+                "cpu topology restored while halted",
+                vec![VmSettingEdit::CpuTopology {
+                    previous: current.cores_per_socket.clone(),
+                    cores_per_socket: 1,
+                }],
+                |i| i.details.vms[&id].cores_per_socket.as_deref() == Some("1"),
+            )
+            .await,
+        );
+    }
+    results.push(
+        apply_vm_edit(
+            &c,
+            id,
+            "vcpus restored while halted",
+            vec![VmSettingEdit::Cpus {
+                previous_max: current_max,
+                previous_startup: current_startup,
+                max: previous_startup,
+                startup: previous_startup,
+            }],
+            move |i| {
+                let v = &i.details.vms[&id];
+                v.vcpus_max == Some(previous_startup)
+                    && v.vcpus_at_startup == Some(previous_startup)
+            },
+        )
+        .await,
+    );
+    if let Some(current_shadow) = current
+        .shadow_multiplier
+        .clone()
+        .filter(|s| s.parse::<f64>().ok() != shadow_before.parse::<f64>().ok())
+    {
+        {
+            let target = shadow_before.parse::<f64>().ok();
+            results.push(
+                apply_vm_edit(
+                    &c,
+                    id,
+                    "shadow multiplier restored while halted",
+                    vec![VmSettingEdit::ShadowMultiplier {
+                        previous: current_shadow,
+                        value: shadow_before.clone(),
+                        live: false,
+                    }],
+                    move |i| {
+                        i.details.vms[&id]
+                            .shadow_multiplier
+                            .as_deref()
+                            .and_then(|v| v.parse::<f64>().ok())
+                            == target
+                    },
+                )
+                .await,
+            );
+        }
+    }
+    power.push(power_to(&c, id, PowerAction::Start, PowerState::Running).await);
+    c.close().await;
+    lab.record(
+        "live-property-editors-and-snapshot-metadata",
+        json!({
+            "guest": guest.name,
+            "before": {"cpu_weight": before.cpu_weight, "shadow_multiplier": before.shadow_multiplier, "memory": limits, "vcpus_max": previous_max, "vcpus_at_startup": previous_startup, "cores_per_socket": halted.cores_per_socket, "allowed_operations": before.allowed_operations},
+            "edits": results, "power": power,
+            "snapshot": {
+                "created": {"state": format!("{:?}", created.state), "detail": created.detail, "id": snapshot.id.to_string(), "listed_with_description": true},
+                "edited": {"state": format!("{:?}", edit.state), "detail": edit.detail, "read_back": edit_read_back},
+                "deleted": {"state": format!("{:?}", deleted.state), "detail": deleted.detail, "disks": disks.len(), "gone_with_disks": gone},
+            },
+        }),
+    );
+    for entry in &results {
+        if entry.get("skipped").is_some() {
+            continue;
+        }
+        assert_eq!(entry["accepted"], true, "{entry}");
+        let expected = entry["expected"].as_str().unwrap_or("Succeeded");
+        assert_eq!(entry["state"], expected, "{entry}");
+        if expected == "Succeeded" {
+            assert_eq!(entry["read_back"], true, "{entry}");
+        } else {
+            let needle = entry["expected_detail"]
+                .as_str()
+                .unwrap_or("does not advertise");
+            assert!(
+                entry["detail"].as_str().is_some_and(|d| d.contains(needle)),
+                "refusal does not name its reason ({needle}): {entry}"
+            );
+        }
+    }
+    assert_eq!(
+        created.state,
+        OperationState::Succeeded,
+        "{}",
+        created.detail
+    );
+    assert_eq!(edit.state, OperationState::Succeeded, "{}", edit.detail);
+    assert!(edit_read_back, "snapshot metadata edit not read back");
+    assert_eq!(
+        deleted.state,
+        OperationState::Succeeded,
+        "{}",
+        deleted.detail
+    );
+    assert!(gone, "snapshot or its disks remain");
+}

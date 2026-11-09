@@ -71,6 +71,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Saved profiles for two pools | P01-05, P01-08 | Passed | Two profiles with reviewed certificate pins for every lab host were saved to a profile store and read back by a fresh store; both were connected at once from their saved options with session-only passwords and reached their distinct pools; both were disconnected; one profile was removed and a fresh store reloaded with the other |
 | Chosen-host start, action diagnosis and home server | P03-04, P03-05, P03-06 | Passed | Every power action was diagnosed on the running guest (Start, Resume and Unpause unavailable, the rest available), once more while a clean shutdown was in flight (Start unavailable) and on the halted guest (only Start available); the server answered VM_BAD_POWER_STATE to the fresh validity check and the client reported the action as unavailable rather than attempting it. A chosen-host start on the other member was accepted, rechecked against the live host and refused by XAPI with VM_REQUIRES_SR because the guest's disks live on the resident host's local repository; the guest stayed halted and the refusal was recorded, not retried. A chosen-host start on the resident host succeeded and the guest ran there. The home server was set to the resident host and cleared again through the property editor, each verified on read-back |
 | Suspend and chosen-host resume | P03-03, P03-04, P04-01 | Passed | The running tool-less guest advertised suspend (its first boot earlier in the day had not, so the power matrix recorded it as unavailable), the fresh diagnosis agreed and the suspend completed. A chosen-host resume on the other member was rechecked against the live host and refused with VM_REQUIRES_SR, leaving the guest suspended. The chosen-host resume on the resident host succeeded, the guest ran there and the console delivered a stable frame afterwards |
+| Live property editors and snapshot metadata | P05-01, P05-07, P06-02, P06-03, P06-04, P06-09 | Passed after fixes, findings 13 and 14 | On the running guest the CPU scheduling weight and the dynamic memory range were changed and restored and read back; a live shadow multiplier edit was refused because XCP-ng 8.3.0 does not advertise it for this guest, and after finding 13 the refusal names the missing advertisement. While halted the vCPU maximum was raised, the cores-per-socket topology and the shadow multiplier were set, and after a start the host advertised the live vCPU change five seconds later and the live increase read back. A disk-only snapshot was created with a description, listed with it, renamed with a new description and deleted with its two disks. Restoring the vCPU maximum against the topology set earlier was refused by name (finding 14); the topology was reset, the counts and the multiplier restored, and the guest left running. An earlier attempt had left the guest halted with a topology its vCPU count could not satisfy (XAPI refused the start with VCPU_MAX_NOT_CORES_PER_SOCKET_MULTIPLE); the scenario now repairs that through the editor |
 
 ## Findings
 
@@ -184,6 +185,20 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    boot time is visible; the enable is now repeated every few seconds within the same
    restart bound instead of failing the exit from maintenance. Unit coverage was added for
    both.
+13. **A change the host does not advertise was reported as a stale editor.** The live
+   shadow multiplier and live vCPU guards failed when `changing_shadow_memory_live` or
+   `changing_VCPUs_live` was absent from the VM's allowed operations, and the refusal read
+   "VM properties changed since this editor opened", which sends the operator to reload an
+   editor that will refuse again. XCP-ng 8.3.0 never advertised the live shadow change for
+   the lab guest and advertised the live vCPU change only a few seconds after boot. The
+   guards now return a distinct refusal that names the missing advertisement; a changed
+   limit or count still reports the stale-editor conflict. Unit coverage was added.
+14. **The vCPU editor accepted a maximum the topology cannot boot.** `VM.set_VCPUs_max`
+   accepts any count, and a VM whose maximum is not a multiple of its `cores-per-socket`
+   platform value fails to start with VCPU_MAX_NOT_CORES_PER_SOCKET_MULTIPLE; an earlier
+   run of the scenario left the lab guest in that state. The vCPU maximum step now checks
+   the current topology, or the topology planned in the same edit, and refuses with a
+   message that points at the topology editor. Unit coverage was added.
 
 ## Console observation
 
