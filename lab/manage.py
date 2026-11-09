@@ -2,7 +2,9 @@
 """Create and control a disposable, isolated nested-XCP-ng libvirt lab."""
 
 import argparse
+import getpass
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
 import os
@@ -19,8 +21,9 @@ NAMESPACE = "https://github.com/z23/xenadmin-rs/lab"
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
-def run(*args, check=True):
-    return subprocess.run(args, check=check, text=True, capture_output=True, env={**os.environ, "LC_ALL": "C"})
+def run(*args, check=True, input=None):
+    return subprocess.run(args, check=check, text=True, capture_output=True, input=input,
+                          env={**os.environ, "LC_ALL": "C"})
 
 
 def virsh(*args, check=True):
@@ -47,6 +50,22 @@ def private_network(value):
     if not network.is_private or network.prefixlen != 24 or network.is_loopback or network.is_link_local:
         raise ValueError("Use a private /24 subnet reserved for this disposable lab")
     return str(network)
+
+
+def gateway(manifest):
+    return str(ipaddress.IPv4Network(manifest["subnet"]).network_address + 1)
+
+
+def installer(manifest):
+    """Image booted by `start --install` and the digest it must still match."""
+    unattended = manifest.get("unattended")
+    if unattended:
+        return Path(unattended["iso"]), unattended["iso_sha256"]
+    return Path(manifest["iso"]), manifest["iso_sha256"]
+
+
+def serial_log(directory, host):
+    return directory / f"{host['name']}-serial.log"
 
 
 def element(parent, tag, text=None, **attributes):
@@ -99,16 +118,18 @@ def domain_xml(manifest, host, directory, install=False):
     element(domain, "on_reboot", "restart")
     element(domain, "on_crash", "preserve")
     devices = element(domain, "devices")
-    for suffix, target in [("system", "vda"), ("data", "vdb")]:
+    # SATA keeps the installer's disk discovery and /dev/disk/by-id names conventional.
+    for suffix, target in [("system", "sda"), ("data", "sdb")]:
         disk = element(devices, "disk", type="file", device="disk")
         element(disk, "driver", name="qemu", type="qcow2", cache="none", discard="unmap")
         element(disk, "source", file=str(directory / f"{host['name']}-{suffix}.qcow2"))
-        element(disk, "target", dev=target, bus="virtio")
+        element(disk, "target", dev=target, bus="sata")
+        element(disk, "serial", f"lab-{suffix}")
     if install:
         cdrom = element(devices, "disk", type="file", device="cdrom")
         element(cdrom, "driver", name="qemu", type="raw")
-        element(cdrom, "source", file=manifest["iso"])
-        element(cdrom, "target", dev="sda", bus="sata")
+        element(cdrom, "source", file=str(installer(manifest)[0]))
+        element(cdrom, "target", dev="sdc", bus="sata")
         element(cdrom, "readonly")
     nic = element(devices, "interface", type="network")
     element(nic, "mac", address=host["mac"])
@@ -117,7 +138,9 @@ def domain_xml(manifest, host, directory, install=False):
     element(devices, "graphics", type="spice", autoport="yes", listen="127.0.0.1")
     video = element(devices, "video")
     element(video, "model", type="vga")
-    serial = element(devices, "serial", type="pty")
+    # Xen and dom0 both log to com1; keep that text in the lab directory for review.
+    serial = element(devices, "serial", type="file")
+    element(serial, "source", path=str(serial_log(directory, host)), append="on")
     element(serial, "target", port="0")
     return render(domain)
 
@@ -173,6 +196,15 @@ def load(directory):
             raise ValueError("Invalid host MAC")
         if ipaddress.IPv4Address(host["ip"]) not in ipaddress.IPv4Network(manifest["subnet"]):
             raise ValueError("Host address is outside the isolated lab network")
+    unattended = manifest.get("unattended")
+    if unattended is not None:
+        iso = Path(unattended["iso"])
+        if iso.parent != directory or not re.fullmatch(r"[0-9a-f]{64}", unattended["iso_sha256"]):
+            raise ValueError("Invalid unattended installer record")
+        if not 1024 <= int(unattended["port"]) <= 65535:
+            raise ValueError("Invalid answer file port")
+        if set(unattended) - {"iso", "iso_sha256", "port", "answerfile_url"}:
+            raise ValueError("Unexpected unattended installer fields")
     return directory, manifest
 
 
@@ -267,12 +299,20 @@ def control(args):
         check_subnet(manifest)
         for host in manifest["hosts"]:
             stopped(host)
-        if args.install and sha256(Path(manifest["iso"])) != manifest["iso_sha256"]:
-            raise ValueError("Installer changed since plan generation")
+        if args.install:
+            if sha256(Path(manifest["iso"])) != manifest["iso_sha256"]:
+                raise ValueError("Installer changed since plan generation")
+            image, digest = installer(manifest)
+            if sha256(image) != digest:
+                raise ValueError("Unattended installer changed since it was generated")
         active = virsh("net-list", "--name").stdout.splitlines()
         if manifest["name"] not in active:
             virsh("net-start", manifest["name"])
         for host in manifest["hosts"]:
+            log = serial_log(directory, host)
+            if log.is_symlink():
+                raise ValueError("Serial logs must not be symlinks")
+            log.touch(mode=0o600)
             path = directory / f"{host['name']}.xml"
             path.write_text(domain_xml(manifest, host, directory, args.install))
             virsh("define", str(path))
@@ -295,8 +335,161 @@ def control(args):
             print(host["name"], host["ip"], virsh("domstate", host["name"]).stdout.strip())
 
 
+def answerfile_xml(manifest, host, password_hash):
+    """Static-address fresh installation on the first SATA disk, answered without a console."""
+    subnet = ipaddress.IPv4Network(manifest["subnet"])
+    installation = ET.Element("installation", {"mode": "fresh", "sr-type": "ext"})
+    element(installation, "primary-disk", "sda", **{"guest-storage": "true"})
+    element(installation, "keymap", "us")
+    element(installation, "root-password", password_hash, type="hash")
+    element(installation, "source", type="local")
+    admin = element(installation, "admin-interface", hwaddr=host["mac"], proto="static")
+    element(admin, "ipaddr", host["ip"])
+    element(admin, "subnet", str(subnet.netmask))
+    element(admin, "gateway", gateway(manifest))
+    element(installation, "name-server", gateway(manifest))
+    element(installation, "hostname", host["name"])
+    element(installation, "timezone", "UTC")
+    return '<?xml version="1.0"?>\n' + render(installation)
+
+
+UNATTENDED_PARAMETERS = "answerfile={url} install atexit=poweroff"
+
+
+def unattended_isolinux(original, url):
+    """Add a default, prompt-free entry that fetches the answer file and powers off afterwards."""
+    lines = original.splitlines()
+    try:
+        label = lines.index("LABEL install")
+        append = next(line for line in lines[label + 1:] if line.strip().startswith("APPEND "))
+    except (ValueError, StopIteration):
+        raise ValueError("Installer boot configuration no longer has the expected install entry")
+    marker = " --- /install.img"
+    if not append.rstrip().endswith(marker):
+        raise ValueError("Installer boot configuration has an unexpected module layout")
+    entry = append.rstrip()[: -len(marker)] + " " + UNATTENDED_PARAMETERS.format(url=url) + marker
+    kernel = lines[label + 1]
+    header = []
+    for line in lines[:label]:
+        if line.startswith("DEFAULT "):
+            line = "DEFAULT unattended"
+        elif line.startswith("PROMPT "):
+            line = "PROMPT 0"
+        elif line.startswith("TIMEOUT "):
+            line = "TIMEOUT 10"
+        header.append(line)
+    return "\n".join(header + ["LABEL unattended", kernel, entry] + lines[label:]) + "\n"
+
+
+def unattended_grub(original, url):
+    lines = original.splitlines()
+    try:
+        start = lines.index('menuentry "install" {')
+        end = lines.index("}", start)
+    except ValueError:
+        raise ValueError("Installer UEFI configuration no longer has the expected install entry")
+    body = []
+    for line in lines[start + 1:end]:
+        if line.strip().startswith("module2 /boot/vmlinuz"):
+            line = line + " " + UNATTENDED_PARAMETERS.format(url=url)
+        body.append(line)
+    header = ["set timeout=3" if line.startswith("set timeout=") else line for line in lines[:start]]
+    return "\n".join(header + ['menuentry "unattended" {'] + body + ["}", ""] + lines[start:]) + "\n"
+
+
+def remaster(manifest, directory, url):
+    """Write a lab-only installer image whose only change is the boot menu."""
+    source = Path(manifest["iso"])
+    work = directory / "unattended"
+    work.mkdir(mode=0o700, exist_ok=True)
+    isolinux = run("bsdtar", "-xOf", str(source), "boot/isolinux/isolinux.cfg").stdout
+    grub = run("bsdtar", "-xOf", str(source), "EFI/xenserver/grub.cfg").stdout
+    (work / "isolinux.cfg").write_text(unattended_isolinux(isolinux, url))
+    (work / "grub.cfg").write_text(unattended_grub(grub, url))
+    target = directory / f"{manifest['name']}-install.iso"
+    if target.is_symlink():
+        raise ValueError("Unattended installer path must not be a symlink")
+    if target.exists():
+        target.unlink()
+    run("xorriso", "-indev", str(source), "-outdev", str(target), "-boot_image", "any", "replay",
+        "-map", str(work / "isolinux.cfg"), "/boot/isolinux/isolinux.cfg",
+        "-map", str(work / "grub.cfg"), "/EFI/xenserver/grub.cfg", "-end")
+    target.chmod(0o644)
+    return target
+
+
+def unattended(args):
+    """Generate per-host answer files and a boot-menu-only installer variant; no hypervisor change."""
+    directory, manifest = load(args.directory)
+    if sha256(Path(manifest["iso"])) != manifest["iso_sha256"]:
+        raise ValueError("Installer changed since plan generation")
+    password = os.environ.get("XENADMIN_LAB_ROOT_PASSWORD") or getpass.getpass("Lab-only root password: ")
+    if len(password) < 8 or password != password.strip():
+        raise ValueError("Use a lab-only root password of at least eight characters")
+    digest = run("openssl", "passwd", "-6", "-stdin", input=password + "\n").stdout.strip()
+    if not digest.startswith("$6$"):
+        raise ValueError("Could not hash the lab root password")
+    answerfiles = directory / "answerfiles"
+    answerfiles.mkdir(mode=0o700, exist_ok=True)
+    for host in manifest["hosts"]:
+        path = answerfiles / f"{host['ip']}.xml"
+        if path.is_symlink():
+            raise ValueError("Answer files must not be symlinks")
+        path.touch(mode=0o600)
+        path.write_text(answerfile_xml(manifest, host, digest))
+    url = f"http://{gateway(manifest)}:{args.port}/answerfile.xml"
+    image = remaster(manifest, directory, url)
+    manifest["unattended"] = {"iso": str(image), "iso_sha256": sha256(image), "port": args.port,
+                              "answerfile_url": url}
+    (directory / "lab.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    print(f"Wrote {len(manifest['hosts'])} answer files and {image.name}; serve them during start --install")
+
+
+def answerfile_handler(manifest, answerfiles):
+    hosts = {host["ip"] for host in manifest["hosts"]}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            client = self.client_address[0]
+            path = answerfiles / f"{client}.xml"
+            if client in hosts and self.path == "/answerfile.xml" and path.is_file():
+                body = path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/xml")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_error(404)
+
+        def log_message(self, format, *args):
+            print(self.client_address[0], format % args, flush=True)
+
+    return Handler
+
+
+def serve(args):
+    """Answer each lab host's installer from the isolated bridge address only."""
+    directory, manifest = load(args.directory)
+    if "unattended" not in manifest:
+        raise ValueError("Run unattended first")
+    if not check_owner(manifest):
+        raise ValueError("Lab network has not been defined; run prepare first")
+    if manifest["name"] not in virsh("net-list", "--name").stdout.splitlines():
+        virsh("net-start", manifest["name"])
+    address = (gateway(manifest), int(manifest["unattended"]["port"]))
+    server = ThreadingHTTPServer(address, answerfile_handler(manifest, directory / "answerfiles"))
+    print(f"Serving answer files at {manifest['unattended']['answerfile_url']}; stop with Ctrl-C", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
 def doctor():
-    for tool in ["virsh", "qemu-img", "virt-viewer"]:
+    for tool in ["virsh", "qemu-img", "virt-viewer", "xorriso", "bsdtar", "openssl"]:
         print(f"{tool}: {shutil.which(tool) or 'not installed'}")
     print(f"/dev/kvm accessible: {os.access('/dev/kvm', os.R_OK | os.W_OK)}")
     for vendor in ["intel", "amd"]:
@@ -371,6 +564,11 @@ def main():
     plan.add_argument("--memory-mib", type=int, default=8192)
     plan.add_argument("--vcpus", type=int, default=4)
     plan.add_argument("--disk-gib", type=int, default=64)
+    automatic = commands.add_parser("unattended", help="Write answer files and a boot-menu-only installer variant")
+    automatic.add_argument("--directory", required=True)
+    automatic.add_argument("--port", type=int, default=8000)
+    answer = commands.add_parser("serve", help="Serve the answer files on the lab bridge during start --install")
+    answer.add_argument("--directory", required=True)
     for name in ["prepare", "start", "stop", "status", "undefine"]:
         command = commands.add_parser(name)
         command.add_argument("--directory", required=True)
@@ -386,6 +584,10 @@ def main():
             draft(args)
         elif args.command == "plan":
             write_plan(args)
+        elif args.command == "unattended":
+            unattended(args)
+        elif args.command == "serve":
+            serve(args)
         else:
             control(args)
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError, ET.ParseError) as error:

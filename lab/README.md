@@ -14,7 +14,8 @@ matching names are rejected. `undefine` retains disk images and evidence.
 
 - An x86-64 workstation with accessible `/dev/kvm`, Intel VMX or AMD SVM exposed and
   nested virtualization enabled. The harness reports this state and does not change it.
-- QEMU, libvirt's system daemon, `virsh`, `qemu-img`, `ip`, and optionally `virt-viewer`.
+- QEMU, libvirt's system daemon, `virsh`, `qemu-img`, `ip`, and optionally `virt-viewer`;
+  unattended installation also needs `xorriso`, `bsdtar` and `openssl`.
   The operator must already have permission to manage system libvirt resources.
 - At least 16 GiB available RAM and eight schedulable vCPUs for the default two-host lab;
   each host gets 8 GiB, four vCPUs, a sparse 64 GiB system disk and a 32 GiB data disk.
@@ -62,6 +63,37 @@ After installation, shut down the guests, then start without `--install` to boot
 the system disks. Join the second host to the first using XCP-ng's normal pool-join
 workflow. This manual installer/pool setup is intentional: no root passwords or pool
 join credentials are persisted in the manifest or passed through command-line arguments.
+
+### Unattended installation
+
+The installer can instead answer itself from a per-host XML file served only on the
+isolated bridge. After `plan`, run:
+
+```sh
+python3 lab/manage.py unattended --directory /var/lib/libvirt/images/xenadmin-rs-lab
+```
+
+It prompts for a lab-only root password (or reads `XENADMIN_LAB_ROOT_PASSWORD`), stores
+only its SHA-512 crypt hash in `answerfiles/ADDRESS.xml` (mode `0600`), and writes a
+`NAME-install.iso` whose only change is a default boot entry carrying
+`answerfile=http://GATEWAY:PORT/answerfile.xml install atexit=poweroff`. Each answer file
+selects the host's reserved static address by MAC, installs on the first SATA disk with a
+local EXT repository and leaves the second disk untouched. The manifest records the
+derived image path, digest and URL, never the password. Requires `xorriso`, `bsdtar` and
+`openssl`; the original publisher-verified ISO is still checked on every install start.
+
+Serve the answer files from the bridge address, then boot the installers:
+
+```sh
+python3 lab/manage.py serve --directory /var/lib/libvirt/images/xenadmin-rs-lab &
+python3 lab/manage.py start --directory /var/lib/libvirt/images/xenadmin-rs-lab --install
+```
+
+The server answers only the manifest's host addresses. A workstation firewall must admit
+TCP on that port from the lab subnet to the bridge address. Each host powers off when its
+installation completes; `status` shows every host shut off. Stop the server, then `start`
+without `--install`. Installer and Xen console output is appended to `NAME-serial.log` in
+the lab directory for review.
 
 ```sh
 python3 lab/manage.py stop --directory /var/lib/libvirt/images/xenadmin-rs-lab

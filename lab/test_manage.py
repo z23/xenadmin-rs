@@ -119,6 +119,148 @@ class LabTests(unittest.TestCase):
             run.assert_not_called()
         self.assertFalse(target.exists())
 
+    def test_domains_use_sata_disks_file_serial_logs_and_the_selected_installer(self):
+        manage.write_plan(self.args)
+        directory, manifest = manage.load(self.plan)
+        host = manifest["hosts"][0]
+        domain = ET.fromstring(manage.domain_xml(manifest, host, directory, install=True))
+        disks = domain.findall("devices/disk[@device='disk']")
+        self.assertEqual([d.find("target").attrib["bus"] for d in disks], ["sata", "sata"])
+        self.assertEqual([d.find("target").attrib["dev"] for d in disks], ["sda", "sdb"])
+        self.assertEqual(domain.find("devices/disk[@device='cdrom']/source").attrib["file"], str(self.iso))
+        serial = domain.find("devices/serial")
+        self.assertEqual(serial.attrib["type"], "file")
+        self.assertEqual(serial.find("source").attrib["path"], str(directory / (host["name"] + "-serial.log")))
+        manifest["unattended"] = {"iso": str(directory / "lab.iso"), "iso_sha256": "a" * 64, "port": 8000,
+                                  "answerfile_url": "http://192.168.254.1:8000/answerfile.xml"}
+        domain = ET.fromstring(manage.domain_xml(manifest, host, directory, install=True))
+        self.assertEqual(domain.find("devices/disk[@device='cdrom']/source").attrib["file"], str(directory / "lab.iso"))
+
+    def test_answer_files_are_static_hashed_and_scoped_to_each_host(self):
+        manage.write_plan(self.args)
+        _, manifest = manage.load(self.plan)
+        host = manifest["hosts"][1]
+        document = manage.answerfile_xml(manifest, host, "$6$fixture$hash")
+        self.assertTrue(document.startswith('<?xml version="1.0"?>'))
+        root = ET.fromstring(document)
+        self.assertEqual(root.attrib, {"mode": "fresh", "sr-type": "ext"})
+        self.assertEqual(root.findtext("primary-disk"), "sda")
+        self.assertEqual(root.find("root-password").attrib["type"], "hash")
+        self.assertEqual(root.findtext("root-password"), "$6$fixture$hash")
+        self.assertEqual(root.find("source").attrib["type"], "local")
+        admin = root.find("admin-interface")
+        self.assertEqual(admin.attrib, {"hwaddr": host["mac"], "proto": "static"})
+        self.assertEqual(admin.findtext("ipaddr"), "192.168.254.12")
+        self.assertEqual(admin.findtext("subnet"), "255.255.255.0")
+        self.assertEqual(admin.findtext("gateway"), "192.168.254.1")
+        self.assertEqual(root.findtext("hostname"), host["name"])
+        self.assertIsNone(root.find("ntp-server"))
+
+    ISOLINUX = (
+        "SERIAL 0 115200\nDEFAULT install\nPROMPT 1\nTIMEOUT 50\n\nLABEL install\n\tKERNEL mboot.c32\n"
+        "\tAPPEND /boot/xen.gz dom0_mem=max:8192M console=com1,vga --- /boot/vmlinuz console=hvc0 console=tty0 --- /install.img\n"
+        "LABEL shell\n\tKERNEL mboot.c32\n\tAPPEND /boot/xen.gz --- /boot/vmlinuz bash-shell --- /install.img\n")
+    GRUB = (
+        'set default="0"\nset timeout=5\n\nmenuentry "install" {\n    multiboot2 /boot/xen.gz console=com1,vga\n'
+        '    module2 /boot/vmlinuz console=hvc0 console=tty0\n    module2 /install.img\n}\n\nmenuentry "shell" {\n'
+        '    multiboot2 /boot/xen.gz\n    module2 /boot/vmlinuz bash-shell\n    module2 /install.img\n}\n')
+
+    def test_boot_menus_gain_a_default_unattended_entry_and_keep_the_originals(self):
+        url = "http://192.168.254.1:8000/answerfile.xml"
+        isolinux = manage.unattended_isolinux(self.ISOLINUX, url)
+        self.assertIn("DEFAULT unattended\nPROMPT 0\nTIMEOUT 10\n", isolinux)
+        self.assertIn("LABEL unattended\n\tKERNEL mboot.c32\n\tAPPEND /boot/xen.gz dom0_mem=max:8192M console=com1,vga"
+                      " --- /boot/vmlinuz console=hvc0 console=tty0 answerfile=" + url +
+                      " install atexit=poweroff --- /install.img\nLABEL install\n", isolinux)
+        self.assertIn("LABEL shell", isolinux)
+        self.assertEqual(isolinux.count("answerfile="), 1)
+        grub = manage.unattended_grub(self.GRUB, url)
+        self.assertTrue(grub.startswith('set default="0"\nset timeout=3\n\nmenuentry "unattended" {\n'))
+        self.assertIn("    module2 /boot/vmlinuz console=hvc0 console=tty0 answerfile=" + url + " install atexit=poweroff\n", grub)
+        self.assertEqual(grub.count('menuentry "install" {'), 1)
+        self.assertEqual(grub.count("answerfile="), 1)
+        with self.assertRaisesRegex(ValueError, "install entry"):
+            manage.unattended_isolinux("DEFAULT other\n", url)
+        with self.assertRaisesRegex(ValueError, "module layout"):
+            manage.unattended_isolinux("LABEL install\n\tKERNEL mboot.c32\n\tAPPEND /boot/xen.gz --- /x\n", url)
+
+    def test_unattended_records_no_password_and_serves_only_known_hosts(self):
+        manage.write_plan(self.args)
+        directory, manifest = manage.load(self.plan)
+        image = directory / (manifest["name"] + "-install.iso")
+
+        def fake_run(*command, check=True, input=None):
+            if command[:3] == ("openssl", "passwd", "-6"):
+                self.assertEqual(input, "fixture-lab-secret\n")
+                return subprocess.CompletedProcess(command, 0, "$6$salt$digest\n", "")
+            if command[0] == "bsdtar":
+                text = self.ISOLINUX if command[-1].endswith("isolinux.cfg") else self.GRUB
+                return subprocess.CompletedProcess(command, 0, text, "")
+            if command[0] == "xorriso":
+                image.write_bytes(b"remastered")
+                return subprocess.CompletedProcess(command, 0, "", "")
+            raise AssertionError(command)
+
+        with patch.object(manage, "run", side_effect=fake_run), patch.object(manage, "virsh") as virsh, \
+                patch.dict(manage.os.environ, {"XENADMIN_LAB_ROOT_PASSWORD": "fixture-lab-secret"}):
+            manage.unattended(argparse.Namespace(directory=str(self.plan), port=8000))
+            virsh.assert_not_called()
+        text = (directory / "lab.json").read_text()
+        self.assertNotIn("fixture-lab-secret", text)
+        self.assertNotIn("$6$", text)
+        directory, manifest = manage.load(self.plan)
+        self.assertEqual(manifest["unattended"]["iso"], str(image))
+        self.assertEqual(manifest["unattended"]["iso_sha256"], hashlib.sha256(b"remastered").hexdigest())
+        answerfiles = directory / "answerfiles"
+        self.assertEqual(oct(answerfiles.stat().st_mode & 0o777), "0o700")
+        for host in manifest["hosts"]:
+            path = answerfiles / (host["ip"] + ".xml")
+            self.assertEqual(oct(path.stat().st_mode & 0o777), "0o600")
+            self.assertIn("$6$salt$digest", path.read_text())
+            self.assertNotIn("fixture-lab-secret", path.read_text())
+        self.assertIn("answerfile=http://192.168.254.1:8000/answerfile.xml install atexit=poweroff",
+                      (directory / "unattended" / "isolinux.cfg").read_text())
+        known = manifest["hosts"][0]["ip"]
+        handler = manage.answerfile_handler({"hosts": [{"ip": "127.0.0.1"}]}, answerfiles)
+        (answerfiles / "127.0.0.1.xml").write_text((answerfiles / (known + ".xml")).read_text())
+        import http.client
+        server = manage.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        import threading
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            client.request("GET", "/answerfile.xml")
+            reply = client.getresponse()
+            self.assertEqual(reply.status, 200)
+            self.assertIn(b"$6$salt$digest", reply.read())
+            client.request("GET", "/" + known + ".xml")
+            self.assertEqual(client.getresponse().status, 404)
+        finally:
+            server.shutdown()
+            server.server_close()
+        stranger = manage.answerfile_handler({"hosts": [{"ip": "192.0.2.9"}]}, answerfiles)
+        server = manage.ThreadingHTTPServer(("127.0.0.1", 0), stranger)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            client.request("GET", "/answerfile.xml")
+            self.assertEqual(client.getresponse().status, 404)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_tampered_unattended_record_is_rejected(self):
+        manage.write_plan(self.args)
+        path = self.plan / "lab.json"
+        manifest = json.loads(path.read_text())
+        manifest["unattended"] = {"iso": str(self.base / "elsewhere.iso"), "iso_sha256": "a" * 64, "port": 8000,
+                                  "answerfile_url": "http://192.168.254.1:8000/answerfile.xml"}
+        path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "unattended installer record"):
+            manage.load(self.plan)
+
 
 if __name__ == "__main__":
     unittest.main()
