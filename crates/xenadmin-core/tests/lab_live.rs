@@ -14732,7 +14732,10 @@ async fn lab_tools_guest_on_shared_storage() {
         .values()
         .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
     {
-        steps.push(json!({"step": "reuse the tools guest", "name": existing.name, "power_state": format!("{:?}", existing.power_state)}));
+        note(
+            &mut steps,
+            json!({"step": "reuse the tools guest", "name": existing.name, "power_state": format!("{:?}", existing.power_state)}),
+        );
         existing.id
     } else {
         // Import the bootable image as a raw disk on the shared repository.
@@ -14765,7 +14768,10 @@ async fn lab_tools_guest_on_shared_storage() {
             })
         })
         .await;
-        steps.push(json!({"step": "import the tools image onto the shared repository", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "read_back": imported}));
+        note(
+            &mut steps,
+            json!({"step": "import the tools image onto the shared repository", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "read_back": imported}),
+        );
         let vdi = c
             .latest()
             .inventory()
@@ -14811,7 +14817,10 @@ async fn lab_tools_guest_on_shared_storage() {
                 .is_some_and(|i| i.vms.contains_key(&vm))
         })
         .await;
-        steps.push(json!({"step": "create the tools guest", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": visible}));
+        note(
+            &mut steps,
+            json!({"step": "create the tools guest", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": visible}),
+        );
         let mut entry = device_op(
             &c,
             vm,
@@ -14832,13 +14841,13 @@ async fn lab_tools_guest_on_shared_storage() {
                 .is_some_and(|d| !d.is_empty())))
             .await
         );
-        steps.push(entry);
+        note(&mut steps, entry);
         vm
     };
     if c.latest().inventory().unwrap().vms[&vm].power_state != PowerState::Running {
         let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
         start["step"] = json!("start the tools guest");
-        steps.push(start);
+        note(&mut steps, start);
     }
     let agent = |c: &Connection| {
         c.latest().inventory().and_then(|i| {
@@ -14856,7 +14865,10 @@ async fn lab_tools_guest_on_shared_storage() {
     })
     .await;
     let (tools, networks, os) = agent(&c).unwrap_or_default();
-    steps.push(json!({"step": "guest agent reports tools and address", "read_back": reported, "tools_version": tools, "network_keys": networks.keys().collect::<Vec<_>>(), "os": os.get("name"), "host": c.latest().inventory().unwrap().vms[&vm].host.map(|h| inventory.hosts[&h].name.clone())}));
+    note(
+        &mut steps,
+        json!({"step": "guest agent reports tools and address", "read_back": reported, "tools_version": tools, "network_keys": networks.keys().collect::<Vec<_>>(), "os": os.get("name"), "host": c.latest().inventory().unwrap().vms[&vm].host.map(|h| inventory.hosts[&h].name.clone())}),
+    );
 
     // Hot plug with PV drivers present.
     let nic = c
@@ -14883,7 +14895,10 @@ async fn lab_tools_guest_on_shared_storage() {
         })
     })
     .await;
-    steps.push(json!({"step": "NIC hot unplug advertised", "read_back": hotplug, "allowed_operations": vif_view(&c).and_then(|v| v.allowed_operations)}));
+    note(
+        &mut steps,
+        json!({"step": "NIC hot unplug advertised", "read_back": hotplug, "allowed_operations": vif_view(&c).and_then(|v| v.allowed_operations)}),
+    );
     if hotplug {
         let mut entry = device_op(&c, vm, DeviceOperation::UnplugNic { vif }, 180).await;
         entry["step"] = json!("disconnect the NIC while running");
@@ -14892,7 +14907,7 @@ async fn lab_tools_guest_on_shared_storage() {
                 .is_some_and(|v| v.currently_attached == Some(false)))
             .await
         );
-        steps.push(entry);
+        note(&mut steps, entry);
         let mut entry = device_op(&c, vm, DeviceOperation::PlugNic { vif }, 180).await;
         entry["step"] = json!("reconnect the NIC while running");
         entry["read_back"] = json!(
@@ -14900,7 +14915,7 @@ async fn lab_tools_guest_on_shared_storage() {
                 .is_some_and(|v| v.currently_attached == Some(true)))
             .await
         );
-        steps.push(entry);
+        note(&mut steps, entry);
     }
 
     // Live migration on shared storage: disks stay where they are.
@@ -14982,7 +14997,10 @@ async fn lab_tools_guest_on_shared_storage() {
             })
         })
         .await;
-        steps.push(json!({"step": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed, "pool_migrate_advertised": advertised, "elapsed_ms": started.elapsed().as_millis() as u64, "progress_samples": progress, "destination": inventory.hosts[&destination].name}));
+        note(
+            &mut steps,
+            json!({"step": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed, "pool_migrate_advertised": advertised, "elapsed_ms": started.elapsed().as_millis() as u64, "progress_samples": progress, "destination": inventory.hosts[&destination].name}),
+        );
     }
     c.close().await;
     lab.record(
@@ -15041,7 +15059,10 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
             .and_then(|i| i.details.pool.as_ref().map(|p| p.administration.clone()))
     };
     let a = administration(&c).expect("pool administration");
-    steps.push(json!({"step": "HA before", "enabled": a.ha_enabled, "failures_to_tolerate": a.ha_failures_to_tolerate, "heartbeat_srs": a.heartbeat_srs.len(), "plan_exists_for": a.ha_plan_exists_for}));
+    note(
+        &mut steps,
+        json!({"step": "HA before", "enabled": a.ha_enabled, "failures_to_tolerate": a.ha_failures_to_tolerate, "heartbeat_srs": a.heartbeat_srs.len(), "plan_exists_for": a.ha_plan_exists_for}),
+    );
     if a.ha_enabled == Some(true) {
         let mut entry = resource_op(
             &c,
@@ -15058,7 +15079,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                 .is_some_and(|a| a.ha_enabled == Some(false)))
             .await
         );
-        steps.push(entry);
+        note(&mut steps, entry);
     }
     let failures_before = administration(&c)
         .and_then(|a| a.ha_failures_to_tolerate)
@@ -15085,7 +15106,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
             && a.heartbeat_srs.contains(&shared)))
         .await
     );
-    steps.push(entry);
+    note(&mut steps, entry);
     let enabled = administration(&c).is_some_and(|a| a.ha_enabled == Some(true));
 
     if enabled {
@@ -15137,7 +15158,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                         == Some(wire))
                     .await
                 );
-                steps.push(entry);
+                note(&mut steps, entry);
                 if label.starts_with("protect") {
                     // Tolerate one host failure while the guest is protected.
                     let mut entry = resource_op(
@@ -15160,7 +15181,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                     );
                     entry["plan_exists_for"] =
                         json!(administration(&c).and_then(|a| a.ha_plan_exists_for));
-                    steps.push(entry);
+                    note(&mut steps, entry);
                     let mut entry = resource_op(
                         &c,
                         "restore the tolerated failures",
@@ -15180,7 +15201,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                             == Some(failures_before)))
                         .await
                     );
-                    steps.push(entry);
+                    note(&mut steps, entry);
                 }
             }
         } else {
@@ -15204,7 +15225,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                 .is_some_and(|a| a.ha_enabled == Some(false)))
             .await
         );
-        steps.push(entry);
+        note(&mut steps, entry);
     }
     c.close().await;
     lab.record(
@@ -15261,7 +15282,7 @@ async fn lab_member_evacuation_of_the_tools_guest() {
     if guest.power_state != PowerState::Running {
         let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
         start["step"] = json!("start the tools guest");
-        steps.push(start);
+        note(&mut steps, start);
     }
     let resident = |c: &Connection| {
         c.latest()
@@ -15330,7 +15351,10 @@ async fn lab_member_evacuation_of_the_tools_guest() {
             resident(&c).is_some_and(|(s, h)| s == PowerState::Running && h == Some(member))
         })
         .await;
-        steps.push(json!({"step": "live-migrate the tools guest to the member", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed}));
+        note(
+            &mut steps,
+            json!({"step": "live-migrate the tools guest to the member", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed}),
+        );
     }
     let host_target = |c: &Connection| {
         c.latest()
@@ -15362,7 +15386,7 @@ async fn lab_member_evacuation_of_the_tools_guest() {
         .await
     );
     entry["vm_state"] = json!(resident(&c).map(|(s, h)| json!({"power_state": format!("{s:?}"), "host": h.map(|h| inventory.hosts[&h].name.clone())})));
-    steps.push(entry);
+    note(&mut steps, entry);
     let entered = c
         .latest()
         .inventory()
@@ -15385,7 +15409,7 @@ async fn lab_member_evacuation_of_the_tools_guest() {
                 .is_some_and(|i| i.hosts[&member].enabled))
             .await
         );
-        steps.push(entry);
+        note(&mut steps, entry);
     }
     c.close().await;
     lab.record(

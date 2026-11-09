@@ -19,8 +19,8 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 - Live harness: `crates/xenadmin-core/tests/lab_live.rs`, run with the manifest and a
   lab-only password file; targets come only from the manifest.
 - Lab appliances added on 2026-11-10 (see the [lab README](../../lab/README.md)): an
-  isolated storage network with one live-attached virtio NIC per host (a second waits for
-  each host's next restart), an Alpine Linux NFS appliance booted from a remastered Alpine
+  isolated storage network with one live-attached virtio NIC per host (a second appears
+  only after the host domain's next power cycle), an Alpine Linux NFS appliance booted from a remastered Alpine
   `virt` ISO that carries its packages and configuration offline and exports `/srv/nfs`
   with `sr`, `iso` and `heartbeat` directories on both lab networks, and a tools-equipped
   guest image (the same ISO with `xe-guest-utilities`) imported through the client. The
@@ -298,7 +298,12 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    worker's conflict path reloaded the row and replaced the detail, so whatever stopped the
    worker was lost. The conflict detail now carries that error (unit covered). The conflict
    did not recur in the fourth run, which passed end to end; the concurrent writer is not
-   identified and this remains a client observation rather than a host finding.
+   identified and this remains a client observation rather than a host finding. It recurred
+   once more on 2026-11-10, again on the exit from maintenance right after a member came back
+   (this time from a power cycle), and left the pool reservation unresolved so the run's
+   later operations were refused as "another operation is running or unresolved". With
+   `XENADMIN_DEV_RPC_TRACE=1` the journal now names the check that refused the save; the
+   next recurrence will show it.
 24. **VIF hot plug is not advertised on a running guest without PV drivers.** After the
    tool-less guest started, its new VIF reported currently_attached with `attach` as its only
    allowed operation, so the host offered neither plug nor unplug. The client refused the
@@ -311,7 +316,30 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    host to advertise `ratelimit`, was not offered and the scenario skipped it. XenCenter sets
    the ratelimit policy without that advertisement; whether the client should do the same is
    an open product decision, not a host fault.
-26. **A guest without PV drivers cannot be evacuated.** XCP-ng 8.3 reported the running
+27. **Host shutdown verification gave up before the coordinator noticed the member was
+   down.** The reviewed shutdown of the empty member ended OutcomeUnknown 11 s after the
+   host accepted the task, with "The host's fresh liveness does not match the reviewed
+   operation", although the domain powered off a moment later. The coordinator marks a
+   member offline only when its heartbeat lapses, so the verification now waits within the
+   connection's host-restart bound for liveness to drop, as the reboot verification already
+   waits for the new boot marker.
+28. **A hot-plugged NIC's interface record keeps its temporary device name.** XCP-ng named
+   the NIC added to a running host `side-7679-eth1`; the first attach of its interface
+   failed with PIF_CONFIGURATION_ERROR, a reviewed reboot made the attach succeed and the
+   toolstack then reported the interface attached with its static address, yet the
+   hypervisor counted no transmitted frames and the host could not reach the appliance
+   (SR_BACKEND_FAILURE_108). After a power cycle the second NIC was introduced as `eth2`,
+   which shows the kernel had renamed the first to `eth1` while its PIF record still said
+   `side-7679-eth1`, so the toolstack configured a device that no longer existed. The
+   client gained a reviewed "forget physical interface record" operation (non-management
+   physical interfaces without VLANs, bonds or tunnels; verified by the record's absence)
+   so that a rescan re-introduces the device under its current name.
+29. **Configuring an address does not attach a secondary interface.** PIF.reconfigure_ip
+   left the storage interface unattached on both hosts and the appliance unreachable until
+   the separate attach action ran. XenCenter plugs the interface after configuring it;
+   whether the client should do the same or keep the explicit attach is an open product
+   decision. The scenarios attach explicitly.
+ **A guest without PV drivers cannot be evacuated.** XCP-ng 8.3 reported the running
    diskless tool-less VM as preventing evacuation with VM_LACKS_FEATURE, so the member could
    not be evacuated through the pool. The client refused before any change; it had reported
    only that blockers existed, and now names the blocking VMs and the host's code in the
