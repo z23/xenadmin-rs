@@ -37,6 +37,13 @@ struct Lab {
 }
 
 impl Lab {
+    /// An endpoint in the lab subnet that nothing answers on (host .250), for dead-endpoint
+    /// scenarios; derived from the first host's address so no lab address is hard-coded.
+    fn unused_endpoint(&self) -> Endpoint {
+        let ip = &self.hosts[0].ip;
+        let prefix = ip.rsplit_once('.').expect("dotted address").0;
+        Endpoint::parse(&format!("https://{prefix}.250/")).expect("unused endpoint")
+    }
     fn load() -> Lab {
         let manifest = PathBuf::from(
             std::env::var("XENADMIN_LAB_MANIFEST")
@@ -12249,4 +12256,127 @@ async fn lab_home_server_placement_with_a_diskless_vm() {
             assert_eq!(step["read_back"], true, "{step}");
         }
     }
+}
+
+/// P01-04, P01-03: a connection whose profile endpoint no longer answers but which carries
+/// the pool identity and the verified members a Ready connection reports (as the desktop
+/// profile editor persists them) reaches Ready through a remembered member after the dead
+/// endpoint's failure is reported; without the pool identity the client keeps retrying the
+/// dead endpoint and never tries the members.
+#[tokio::test]
+#[ignore]
+async fn lab_remembered_member_fallback_after_endpoint_failure() {
+    use std::collections::BTreeSet;
+    use xenadmin_core::ConnectionState;
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let pool = c.latest().inventory().unwrap().pool_id;
+    let remembered: Vec<Endpoint> = c.latest().verified_members().to_vec();
+    let learned_through = c.latest().active_endpoint().map(|e| e.to_string());
+    c.close().await;
+    assert!(
+        !remembered.is_empty(),
+        "a Ready connection reports its verified members"
+    );
+    let dead = lab.unused_endpoint();
+    let mut pins = Vec::new();
+    for endpoint in &remembered {
+        let observation = inspect_result(endpoint)
+            .await
+            .expect("remembered member certificate");
+        pins.push((endpoint.clone(), observation.details.fingerprint.clone()));
+    }
+    let options_for = |expected_pool: Option<xenadmin_core::PoolId>| {
+        let mut options = ConnectionOptions::new(dead.clone());
+        options.request_timeout = Duration::from_secs(10);
+        options.expected_pool = expected_pool;
+        options.fallback_endpoints = remembered.clone();
+        for (endpoint, fingerprint) in &pins {
+            options.add_host_certificate(endpoint.clone(), fingerprint.clone());
+        }
+        options
+    };
+
+    // With the pool identity: the dead endpoint fails, a remembered member is tried.
+    let started = std::time::Instant::now();
+    let fallback = backend.connect(options_for(Some(pool)), lab.credentials());
+    let mut transitions: Vec<Value> = Vec::new();
+    let ready = tokio::time::timeout(deadline(240), async {
+        loop {
+            let s = fallback.latest();
+            let entry = json!({"state": format!("{:?}", s.state()), "endpoint": s.active_endpoint().map(|e| e.to_string()), "error": s.error(), "elapsed_ms": started.elapsed().as_millis() as u64});
+            let same = transitions.last().is_some_and(|t| {
+                t["state"] == entry["state"]
+                    && t["endpoint"] == entry["endpoint"]
+                    && t["error"] == entry["error"]
+            });
+            if !same {
+                transitions.push(entry);
+            }
+            if s.is_current() {
+                return true;
+            }
+            if s.state() == ConnectionState::Failed {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    let ready_after_ms = started.elapsed().as_millis() as u64;
+    let snapshot = fallback.latest();
+    let final_endpoint = snapshot.active_endpoint().map(|e| e.to_string());
+    let final_pool = snapshot.inventory().map(|i| i.pool_id);
+    let members_after = snapshot
+        .verified_members()
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>();
+    drop(snapshot);
+    fallback.close().await;
+
+    // Without the pool identity the members must not be tried: another pool could answer.
+    let unidentified = backend.connect(options_for(None), lab.credentials());
+    let mut states = BTreeSet::new();
+    let mut reached_ready = false;
+    let observe_until = std::time::Instant::now() + Duration::from_secs(45);
+    while std::time::Instant::now() < observe_until {
+        let s = unidentified.latest();
+        states.insert(format!("{:?}", s.state()));
+        if s.is_current() {
+            reached_ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let last_error = unidentified.latest().error().map(str::to_owned);
+    unidentified.close().await;
+
+    lab.record(
+        "remembered-member-fallback-after-endpoint-failure",
+        json!({"dead_endpoint": dead.to_string(), "remembered": remembered.iter().map(|e| e.to_string()).collect::<Vec<_>>(), "learned_through": learned_through,
+               "transitions": transitions, "ready": ready, "ready_after_ms": ready_after_ms, "final_endpoint": final_endpoint, "pool_matches": final_pool == Some(pool), "members_after": members_after,
+               "without_pool_identity": {"states": states, "reached_ready": reached_ready, "last_error": last_error}}),
+    );
+    assert!(
+        ready,
+        "the fallback connection did not reach Ready: {transitions:?}"
+    );
+    assert!(
+        remembered
+            .iter()
+            .any(|e| Some(e.to_string()) == final_endpoint),
+        "Ready through {final_endpoint:?}"
+    );
+    assert_eq!(final_pool, Some(pool));
+    assert!(
+        transitions
+            .iter()
+            .any(|t| t["error"].as_str().is_some_and(|e| !e.is_empty())),
+        "the dead endpoint's failure was never reported: {transitions:?}"
+    );
+    assert!(!reached_ready, "members were tried without a pool identity");
 }
