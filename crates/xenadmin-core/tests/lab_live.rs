@@ -11558,6 +11558,59 @@ async fn lab_dom0_memory_change_with_member_reboot() {
             );
             steps.push(entry);
         }
+        // A reboot re-enables the host on XCP-ng 8.3.0 while the client's maintenance
+        // marker stays (finding 12); exit maintenance (which accepts that state and clears
+        // the marker) and enter it again before each reviewed reboot.
+        if c.latest()
+            .inventory()
+            .is_some_and(|i| i.hosts[&member].enabled)
+        {
+            let mut entry = resource_op(
+                &c,
+                "exit maintenance after the reboot re-enabled the host",
+                ResourceCommand::Host {
+                    target: host_target(&c),
+                    operation: HostOperation::ExitMaintenance,
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(120, || {
+                    c.latest().inventory().is_some_and(|i| {
+                        i.hosts[&member].enabled
+                            && i.details
+                                .hosts
+                                .get(&member)
+                                .is_some_and(|h| h.maintenance_mode != Some(true))
+                    })
+                })
+                .await
+            );
+            steps.push(entry);
+            let mut entry = resource_op(
+                &c,
+                "re-enter maintenance before the reboot",
+                ResourceCommand::Host {
+                    target: host_target(&c),
+                    operation: HostOperation::EnterMaintenance {
+                        expected_enabled: true,
+                        resident_vms: Vec::new(),
+                    },
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(120, || {
+                    c.latest()
+                        .inventory()
+                        .is_some_and(|i| !i.hosts[&member].enabled)
+                })
+                .await
+            );
+            steps.push(entry);
+        }
         let boot_before = details(&c).and_then(|h| h.boot_time).expect("boot time");
         let started = std::time::Instant::now();
         let mut entry = resource_op(
