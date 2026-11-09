@@ -7527,3 +7527,370 @@ async fn lab_live_property_editors_and_snapshot_metadata() {
     );
     assert!(gone, "snapshot or its disks remain");
 }
+
+/// P03-09, P05-10: clone the guest's snapshot into a second VM, then run reviewed batch
+/// power actions over both VMs: a start of both halted VMs, a clean shutdown of both running
+/// VMs, a batch that names a wrong expected state (refused before any write) and a batch
+/// start of the guest alone; finally delete the clone with its disks and the source snapshot.
+#[tokio::test]
+#[ignore]
+async fn lab_batch_power_actions_over_two_vms() {
+    use xenadmin_core::{
+        BatchVmPower, PowerAction, PowerState, ResourceCommand, SnapshotName, VmCommand,
+        VmLifecycleOperation, VmPowerBatch,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let pool = inventory.pool_id;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut power = Vec::new();
+    if guest.power_state != PowerState::Running {
+        power.push(power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await);
+    }
+
+    // Leftovers of an earlier interrupted run go first, through the same reviewed workflows.
+    let mut leftovers = Vec::new();
+    for vm in inventory
+        .vms
+        .values()
+        .filter(|v| v.name.starts_with("lab-batch-clone-") && v.id != guest.id)
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        if vm.power_state == PowerState::Running {
+            power_to(&c, vm.id, PowerAction::CleanShutdown, PowerState::Halted).await;
+        }
+        let disks = disks_of(c.latest().inventory().unwrap(), vm.id);
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: c.latest().observe_vm(vm.id).unwrap(),
+                    operation: VmLifecycleOperation::Delete {
+                        expected_template: vm.is_template,
+                        disks,
+                        snapshots: Vec::new(),
+                    },
+                },
+            )
+            .expect("leftover deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        leftovers.push(json!({"vm": vm.name, "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    }
+    for snapshot in inventory
+        .snapshots
+        .for_vm(guest.id)
+        .filter(|s| s.name.starts_with("lab-batch-src-"))
+        .map(|s| s.id)
+        .collect::<Vec<_>>()
+    {
+        let disks = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(snapshot) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(guest.id, snapshot).unwrap(),
+                    disks,
+                },
+            )
+            .expect("leftover snapshot deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        leftovers.push(json!({"snapshot": snapshot.to_string(), "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    }
+
+    // A disk-only snapshot cloned into a halted second VM.
+    let source_name = format!("lab-batch-src-{stamp}");
+    let snapshot = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                name: SnapshotName::new(&source_name).unwrap(),
+            },
+        )
+        .expect("snapshot accepted");
+    let snapshot = wait_vm_outcome(&snapshot, 300).await;
+    assert_eq!(
+        snapshot.state,
+        OperationState::Succeeded,
+        "{}",
+        snapshot.detail
+    );
+    let source = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(id) = c.latest().inventory().and_then(|i| {
+                i.snapshots
+                    .for_vm(guest.id)
+                    .find(|s| s.name == source_name)
+                    .map(|s| s.id)
+            }) {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("source snapshot listed");
+    let clone_name = format!("lab-batch-clone-{stamp}");
+    let clone = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CloneSnapshot {
+                snapshot: c.latest().observe_snapshot(guest.id, source).unwrap(),
+                name: SnapshotName::new(&clone_name).unwrap(),
+                as_template: false,
+            },
+        )
+        .expect("clone accepted");
+    let clone = wait_vm_outcome(&clone, 600).await;
+    assert_eq!(clone.state, OperationState::Succeeded, "{}", clone.detail);
+    let clone_vm = tokio::time::timeout(deadline(120), async {
+        loop {
+            if let Some(vm) = c.latest().inventory().and_then(|i| {
+                i.vms
+                    .values()
+                    .find(|v| {
+                        v.name == clone_name
+                            && v.id != guest.id
+                            && v.allowed_actions.contains(&PowerAction::Start)
+                    })
+                    .cloned()
+            }) {
+                return vm;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("clone visible with Start offered");
+    power.push(power_to(&c, guest.id, PowerAction::CleanShutdown, PowerState::Halted).await);
+
+    let states = |ids: &[xenadmin_core::VmId]| -> Vec<String> {
+        let snapshot = c.latest();
+        let i = snapshot.inventory().unwrap();
+        ids.iter()
+            .map(|id| {
+                i.vms
+                    .get(id)
+                    .map(|v| format!("{:?}", v.power_state))
+                    .unwrap_or_else(|| "missing".into())
+            })
+            .collect()
+    };
+    let both = [guest.id, clone_vm.id];
+    let mut batches = Vec::new();
+    let run_batch = |action: PowerAction,
+                     items: Vec<(xenadmin_core::VmId, PowerState)>,
+                     expected_after: Option<PowerState>| {
+        let c = &c;
+        async move {
+            let ids = items.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+            // XAPI publishes a freshly started VM's allowed operations a few seconds after
+            // its power state; wait for every VM to advertise the action, as the UI would.
+            let waited = std::time::Instant::now();
+            let advertised = settle(120, || {
+                c.latest().inventory().is_some_and(|i| {
+                    ids.iter().all(|id| {
+                        i.vms
+                            .get(id)
+                            .is_some_and(|v| v.allowed_actions.contains(&action))
+                    })
+                })
+            })
+            .await;
+            let advertised_after_seconds = waited.elapsed().as_secs();
+            let before = states(&ids);
+            let command = ResourceCommand::PowerBatch {
+                pool: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                selection: VmPowerBatch {
+                    action,
+                    vms: items
+                        .iter()
+                        .map(|(vm, expected_state)| BatchVmPower {
+                            vm: *vm,
+                            expected_state: expected_state.clone(),
+                        })
+                        .collect(),
+                },
+            };
+            match c.submit_resource(OperationId::new(), command) {
+                Ok(operation) => {
+                    let row = wait_outcome(&operation, 600).await;
+                    let reached = match expected_after {
+                        Some(expected) => {
+                            settle(180, || {
+                                c.latest().inventory().is_some_and(|i| {
+                                    ids.iter().all(|id| {
+                                        i.vms.get(id).is_some_and(|v| v.power_state == expected)
+                                    })
+                                })
+                            })
+                            .await
+                        }
+                        None => true,
+                    };
+                    json!({
+                        "action": format!("{action:?}"), "vms": ids.len(), "accepted": true, "before": before,
+                        "advertised": advertised, "advertised_after_seconds": advertised_after_seconds,
+                        "state": format!("{:?}", row.state), "detail": row.detail, "reached": reached,
+                        "after": states(&ids),
+                        "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>(),
+                    })
+                }
+                Err(error) => {
+                    json!({"action": format!("{action:?}"), "vms": ids.len(), "accepted": false, "before": before, "error": error.to_string(), "after": states(&ids)})
+                }
+            }
+        }
+    };
+    batches.push(
+        run_batch(
+            PowerAction::Start,
+            both.iter().map(|id| (*id, PowerState::Halted)).collect(),
+            Some(PowerState::Running),
+        )
+        .await,
+    );
+    batches.push(
+        run_batch(
+            PowerAction::CleanShutdown,
+            both.iter().map(|id| (*id, PowerState::Running)).collect(),
+            Some(PowerState::Halted),
+        )
+        .await,
+    );
+    // Wrong expected state for the clone: the whole selection must be refused before any write.
+    let mut wrong = run_batch(
+        PowerAction::Start,
+        vec![
+            (guest.id, PowerState::Halted),
+            (clone_vm.id, PowerState::Running),
+        ],
+        None,
+    )
+    .await;
+    wrong["expected"] = json!("refused");
+    batches.push(wrong);
+    batches.push(
+        run_batch(
+            PowerAction::Start,
+            vec![(guest.id, PowerState::Halted)],
+            Some(PowerState::Running),
+        )
+        .await,
+    );
+
+    // Delete the clone with its disks and the source snapshot with its disks.
+    let clone_disks = disks_of(c.latest().inventory().unwrap(), clone_vm.id);
+    let deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: c.latest().observe_vm(clone_vm.id).unwrap(),
+                operation: VmLifecycleOperation::Delete {
+                    expected_template: false,
+                    disks: clone_disks.clone(),
+                    snapshots: Vec::new(),
+                },
+            },
+        )
+        .expect("clone deletion accepted");
+    let deletion = wait_vm_outcome(&deletion, 300).await;
+    let clone_gone = settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            !i.vms.contains_key(&clone_vm.id)
+                && clone_disks.iter().all(|d| !i.details.vdis.contains_key(d))
+        })
+    })
+    .await;
+    let snapshot_disks = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.snapshot == Some(source) && b.kind == "Disk")
+        .filter_map(|b| b.vdi)
+        .collect::<Vec<_>>();
+    let snapshot_deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(guest.id, source).unwrap(),
+                disks: snapshot_disks.clone(),
+            },
+        )
+        .expect("snapshot deletion accepted");
+    let snapshot_deletion = wait_vm_outcome(&snapshot_deletion, 300).await;
+    let snapshot_gone = settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.snapshots.get(&source).is_none()
+                && snapshot_disks
+                    .iter()
+                    .all(|d| !i.details.vdis.contains_key(d))
+        })
+    })
+    .await;
+    let history = c.resource_history().len();
+    c.close().await;
+    lab.record(
+        "batch-power-actions-over-two-vms",
+        json!({
+            "guest": guest.name, "clone": {"name": clone_name, "id": clone_vm.id.to_string(), "disks": clone_disks.len()},
+            "leftovers": leftovers, "power": power, "batches": batches, "resource_history_records": history,
+            "clone_deletion": {"state": format!("{:?}", deletion.state), "detail": deletion.detail, "gone_with_disks": clone_gone},
+            "snapshot_deletion": {"state": format!("{:?}", snapshot_deletion.state), "detail": snapshot_deletion.detail, "disks": snapshot_disks.len(), "gone_with_disks": snapshot_gone},
+        }),
+    );
+    for batch in &batches {
+        if batch["expected"] == "refused" {
+            assert!(
+                batch["accepted"] == false || batch["state"] == "Rejected",
+                "wrong expected state was not refused: {batch}"
+            );
+            assert_eq!(
+                batch["after"], batch["before"],
+                "a refused batch changed a power state: {batch}"
+            );
+        } else {
+            assert_eq!(batch["accepted"], true, "{batch}");
+            assert_eq!(batch["state"], "Succeeded", "{batch}");
+            assert_eq!(batch["reached"], true, "{batch}");
+        }
+    }
+    assert_eq!(
+        deletion.state,
+        OperationState::Succeeded,
+        "{}",
+        deletion.detail
+    );
+    assert!(clone_gone, "clone or its disks remain");
+    assert_eq!(
+        snapshot_deletion.state,
+        OperationState::Succeeded,
+        "{}",
+        snapshot_deletion.detail
+    );
+    assert!(snapshot_gone, "source snapshot or its disks remain");
+}
