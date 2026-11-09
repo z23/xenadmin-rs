@@ -41,6 +41,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Guest power matrix | P03-01, P03-02, P03-03 | Passed | Clean shutdown, start, pause, unpause, hard reboot, hard shutdown and start each completed with the expected power state. The tool-less live guest advertises no clean reboot, suspend or resume, and the client recorded those as unavailable rather than attempting them |
 | Reviewed deletions | P05-08, P08-08 | Passed | Six snapshots, each with its two exclusively owned disks, were deleted through the reviewed snapshot deletion and verified absent; the device-less guest left by the partial creation was deleted through the reviewed VM deletion with no disks selected |
 | Console across a hard reboot | P04-07 | Partly | The core console tunnel reported closure within about 200 ms of the hard reboot; once the guest was running again a reopened console delivered frames. The desktop's bounded automatic reconnect lives above the core facade and still needs a desktop-level run |
+| Live migration with storage relocation | P11-01, P11-03 | Passed after fixes | The running guest moved to another member with both disks relocated to that member's local repository through the client's own transfer network choice; the first attempts were refused by the client (no transfer network given) and then by the host (finding 4). Console relocation is recorded separately once member pins are in place |
 | Reviewed maintenance and ejection | P12-03, P13-02 | Passed | Member entered maintenance (disabled observed), reviewed ejection task completed, member left the coordinator's inventory and returned as a standalone pool with a new identity |
 
 ## Findings
@@ -66,6 +67,13 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    accepts the range pair for the combined limits setter and lets a halted, idle guest's
    vCPU setters reach the server; a running guest still needs the advertised capability.
    Unit coverage was added.
+
+4. **Same-pool migrations must not carry a VIF map.** `VM.assert_can_migrate` on XCP-ng
+   8.3.0 answers OPERATION_NOT_ALLOWED with "VIF mapping is not allowed for intra-pool
+   migration" for any VIF entry, including one that names the interface's current
+   network. The client sent identity placements as a map and was refused. It now sends an
+   empty VIF map for same-pool moves and refuses a real network change before dispatch;
+   the disk map is still required and still sent. Unit coverage was added.
 
 ## Console observation
 

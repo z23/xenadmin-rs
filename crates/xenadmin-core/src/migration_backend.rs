@@ -445,11 +445,17 @@ async fn validate_destinations(
             disks.insert(diskref, json!(sr));
         }
     }
-    let mut nics = serde_json::Map::new();
+    // XCP-ng 8.3.0 refuses any VIF entry in a same-pool migrate_send map, even one that
+    // names the interface's current network ("VIF mapping is not allowed for intra-pool
+    // migration"). Send identity placements as an empty map and refuse a real network
+    // change up front; cross-pool moves carry their mappings separately.
+    let nics = serde_json::Map::new();
     for p in &plan.operation.networks {
-        let (reference, _) = fresh(session, "VIF", p.vif.uuid()).await?;
+        let (_, vif) = fresh(session, "VIF", p.vif.uuid()).await?;
         let network = network_visible(session, p.destination_network, hostref, false).await?;
-        nics.insert(reference, json!(network));
+        if vif["network"] != network {
+            return Err(Error::UnsupportedMigration);
+        }
     }
     Ok((Value::Object(disks), Value::Object(nics)))
 }

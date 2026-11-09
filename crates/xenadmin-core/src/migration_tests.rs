@@ -343,17 +343,41 @@ async fn halted_storage_move_sets_home_host_without_starting_vm() {
     );
     assert_eq!(result.steps.len(), 2);
 }
+/// XCP-ng 8.3.0 refuses any VIF entry in a same-pool migration map, so identity placements
+/// are sent as an empty map and a real network change is refused before dispatch.
 #[tokio::test]
-async fn nic_mapping_is_applied_and_verified_without_replacing_interface() {
-    let (f, r, _) = fixture(true, false, Fault::None).await;
+async fn same_pool_nic_placement_sends_no_vif_map_and_refuses_network_changes() {
+    let (f, r, c) = fixture(true, true, Fault::None).await;
     let dir = tempfile::tempdir().unwrap();
-    let mut o = operation(true, false);
+    let result = execute(&f, dir.path(), operation(true, true)).await;
+    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    let sent = c
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|call| call["method"] == "Async.VM.migrate_send")
+        .cloned()
+        .expect("migration dispatched");
+    assert_eq!(
+        sent["params"][5],
+        serde_json::json!({}),
+        "VIF map must be empty"
+    );
+    assert!(
+        sent["params"][4].as_object().is_some_and(|m| !m.is_empty()),
+        "VDI map kept"
+    );
+
+    let (f, r2, c2) = fixture(true, true, Fault::None).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut o = operation(true, true);
     o.networks[0].destination_network = uuid(19).into();
     let result = execute(&f, dir.path(), o).await;
-    assert_eq!(result.state, OperationState::Succeeded, "{}", result.detail);
+    assert_ne!(result.state, OperationState::Succeeded);
+    assert_eq!(count(&c2, "Async.VM.migrate_send"), 0);
     assert_eq!(
-        r.lock().unwrap()["OpaqueRef:VIF:source"]["network"],
-        "OpaqueRef:network:destination"
+        r2.lock().unwrap()["OpaqueRef:VIF:source"]["network"],
+        r.lock().unwrap()["OpaqueRef:VIF:source"]["network"]
     );
 }
 #[tokio::test]
