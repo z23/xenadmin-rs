@@ -601,6 +601,31 @@ fn guest_image() -> PathBuf {
     )
 }
 
+/// Wait for a VM operation's outcome while sampling the progress it reports (P14-01).
+async fn wait_vm_outcome_sampled(
+    operation: &xenadmin_core::Operation,
+    seconds: u64,
+) -> (std::sync::Arc<xenadmin_core::OperationRecord>, Vec<f64>) {
+    let mut samples = Vec::new();
+    let row = tokio::time::timeout(deadline(seconds), async {
+        loop {
+            let row = operation.latest();
+            if let Some(progress) = row.progress
+                && samples.last() != Some(&progress)
+            {
+                samples.push(progress);
+            }
+            if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
+                return row;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("VM operation reached an outcome");
+    (row, samples)
+}
+
 async fn wait_vm_outcome(
     operation: &xenadmin_core::Operation,
     seconds: u64,
@@ -13069,7 +13094,7 @@ async fn lab_halted_guest_move_between_local_repositories() {
                 },
             )
             .expect("halted move accepted");
-        let row = wait_vm_outcome(&migration, 1800).await;
+        let (row, progress) = wait_vm_outcome_sampled(&migration, 1800).await;
         let placed = settle(300, || {
             disks_on(&c, sr)
                 && c.latest().inventory().is_some_and(|i| {
@@ -13077,7 +13102,7 @@ async fn lab_halted_guest_move_between_local_repositories() {
                 })
         })
         .await;
-        steps.push(json!({"step": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed, "elapsed_ms": started.elapsed().as_millis() as u64, "destination": inventory.hosts[&destination].name}));
+        steps.push(json!({"step": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed, "elapsed_ms": started.elapsed().as_millis() as u64, "destination": inventory.hosts[&destination].name, "progress_samples": progress}));
     }
     let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
     start["step"] = json!("start the guest");
@@ -13531,6 +13556,121 @@ async fn lab_tags_custom_fields_and_vapp_round_trip() {
         }
         if step.get("read_back").is_some() {
             assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P13-13: with TLS verification already enabled on the lab pool, the reviewed enable is
+/// refused by the fresh pool read; the pool secret is rotated with every host live and HA
+/// disabled, confirmed by the pool reporting no pending rotation, and the connection keeps
+/// serving a fresh inventory afterwards.
+#[tokio::test]
+#[ignore]
+async fn lab_pool_secret_rotation_and_tls_verification_state() {
+    use xenadmin_core::{PoolOperation, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let administration = inventory
+        .details
+        .pool
+        .as_ref()
+        .map(|p| p.administration.clone())
+        .expect("pool administration");
+    let mut steps = Vec::new();
+    steps.push(json!({"step": "pool security state", "tls_verification_enabled": administration.tls_verification_enabled, "secret_rotation_pending": administration.secret_rotation_pending, "ha_enabled": administration.ha_enabled, "hosts": inventory.hosts.len()}));
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let administration_of = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pool.as_ref().map(|p| p.administration.clone()))
+    };
+
+    let mut entry = resource_op(
+        &c,
+        "enable TLS verification",
+        ResourceCommand::Pool {
+            target: pool_target(&c),
+            operation: PoolOperation::EnableTlsVerification,
+        },
+        180,
+    )
+    .await;
+    if administration.tls_verification_enabled == Some(true) {
+        // Already enabled: the reviewed enable must be refused by the fresh pool read.
+        entry["expected_refusal"] = json!(true);
+    } else {
+        entry["read_back"] = json!(
+            settle(120, || administration_of(&c)
+                .is_some_and(|a| a.tls_verification_enabled == Some(true)))
+            .await
+        );
+    }
+    steps.push(entry);
+
+    let revision_before = inventory.revision;
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "rotate the pool secret",
+        ResourceCommand::Pool {
+            target: pool_target(&c),
+            operation: PoolOperation::RotateSecret,
+        },
+        600,
+    )
+    .await;
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    entry["read_back"] = json!(
+        settle(120, || administration_of(&c)
+            .is_some_and(|a| a.secret_rotation_pending == Some(false)))
+        .await
+    );
+    // The connection keeps serving fresh inventory after the rotation.
+    entry["inventory_advanced"] = json!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.revision > revision_before))
+        .await
+    );
+    entry["connection_current"] = json!(c.latest().is_current());
+    entry["hosts_live"] = json!(
+        c.latest()
+            .inventory()
+            .map(|i| i.hosts.values().filter(|h| h.enabled).count())
+    );
+    steps.push(entry);
+    c.close().await;
+    lab.record(
+        "pool-secret-rotation-and-tls-verification-state",
+        json!({"pool": inventory.pool_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert!(
+                step["accepted"] == false || step["state"] == "Rejected",
+                "{step}"
+            );
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+        if step.get("inventory_advanced").is_some() {
+            assert_eq!(step["inventory_advanced"], true, "{step}");
+            assert_eq!(step["connection_current"], true, "{step}");
         }
     }
 }

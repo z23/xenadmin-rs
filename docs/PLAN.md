@@ -109,8 +109,8 @@ a control-domain memory change with two member reboots, a NIC lifecycle whose ho
 the host did not advertise, a home-server placement across both pool hosts, an endpoint
 failover to a remembered verified member, a default-repository and repository-metadata
 round trip, a halted guest move between the local repositories, a member evacuation
-review refused by the host's blocker report and a tags, custom-field and vApp round trip,
-plus twenty host-behaviour findings that were
+review refused by the host's blocker report, a tags, custom-field and vApp round trip and a
+pool secret rotation, plus twenty host-behaviour findings that were
 fixed, six host observations, one client journal observation
 and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until
