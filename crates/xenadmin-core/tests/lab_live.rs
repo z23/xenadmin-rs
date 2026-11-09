@@ -2043,3 +2043,1311 @@ async fn lab_guest_settings_edits() {
         json!({"guest": guest.name, "edits": results}),
     );
 }
+
+/// Runs a libvirt domain command for a lab host. The step changes lab infrastructure, so it
+/// runs only when `XENADMIN_LAB_HOST_CONTROL=libvirt` names that authorisation explicitly.
+fn virsh(args: &[&str]) -> String {
+    assert_eq!(
+        std::env::var("XENADMIN_LAB_HOST_CONTROL").as_deref(),
+        Ok("libvirt"),
+        "set XENADMIN_LAB_HOST_CONTROL=libvirt to let the harness stop and start lab hosts"
+    );
+    let output = std::process::Command::new("virsh")
+        .args(["--connect", "qemu:///system"])
+        .args(args)
+        .output()
+        .expect("virsh runs");
+    assert!(
+        output.status.success(),
+        "virsh {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Samples a connection's visible state until `done`, keeping each change with its time.
+async fn state_timeline<F: Fn(&Connection) -> bool>(
+    connection: &Connection,
+    seconds: u64,
+    done: F,
+) -> (Vec<Value>, bool) {
+    let started = std::time::Instant::now();
+    let mut timeline = Vec::new();
+    let mut last = None;
+    let finished = tokio::time::timeout(deadline(seconds), async {
+        loop {
+            let snapshot = connection.latest();
+            let key = (
+                format!("{:?}", snapshot.state()),
+                snapshot.generation(),
+                snapshot.active_endpoint().map(|e| e.to_string()),
+                snapshot.error().map(str::to_string),
+            );
+            if last.as_ref() != Some(&key) {
+                timeline.push(json!({
+                    "at_ms": started.elapsed().as_millis() as u64,
+                    "state": key.0, "generation": key.1, "endpoint": key.2, "error": key.3,
+                }));
+                last = Some(key);
+            }
+            if done(connection) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .is_ok();
+    (timeline, finished)
+}
+
+/// Direct recovery, failure path: the coordinator loses power under a live read-write
+/// session. The client must leave Ready, refuse a write while stale, come back under a
+/// fresh generation once the host returns, and keep the write it completed before the
+/// outage without repeating it. The lab guest runs on the coordinator, so the outage halts
+/// it; the scenario starts it again through the recovered connection.
+#[tokio::test]
+#[ignore]
+async fn lab_coordinator_outage_under_live_session() {
+    use xenadmin_core::{PowerAction, PowerState, VmCommand, VmSettingEdit, VmSettingsPatch};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let coordinator = inventory.coordinator.expect("coordinator");
+    assert_eq!(
+        inventory.hosts[&coordinator].address, lab.hosts[0].ip,
+        "the first manifest host is expected to be the coordinator"
+    );
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // A completed write before the outage: it must survive untouched and unrepeated.
+    let probe = format!("Outage probe {stamp}");
+    let patch = VmSettingsPatch::new(vec![VmSettingEdit::Description {
+        previous: guest.description.clone(),
+        value: probe.clone(),
+    }])
+    .unwrap();
+    let operation = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                patch,
+            },
+        )
+        .expect("probe edit accepted");
+    let probe_outcome = wait_vm_outcome(&operation, 120).await;
+    assert_eq!(
+        probe_outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        probe_outcome.detail
+    );
+    assert!(
+        settle(60, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].description == probe))
+        .await
+    );
+    let generation_before = c.latest().generation();
+    let observed_before = c.latest().observe_vm(guest.id).unwrap();
+    let resource_records_before = c.resource_history().len();
+    let guest_state_before = format!(
+        "{:?}",
+        c.latest().inventory().unwrap().vms[&guest.id].power_state
+    );
+
+    // Outage: cut power to the coordinator's domain. (An ACPI shutdown request is ignored
+    // by the nested XCP-ng dom0: the host kept serving and the client rightly stayed Ready.)
+    let domain = lab.hosts[0].name.clone();
+    let shutdown_at = std::time::Instant::now();
+    virsh(&["destroy", &domain]);
+    let (stale_timeline, stale_seen) = state_timeline(&c, 300, |c| !c.latest().is_current()).await;
+    let stale_after_ms = shutdown_at.elapsed().as_millis() as u64;
+    assert!(
+        stale_seen,
+        "the connection stayed Ready after the coordinator shut down"
+    );
+    let stale_state = format!("{:?}", c.latest().state());
+
+    // A write while stale must be refused locally, before any request.
+    let refused = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm: observed_before,
+                patch: VmSettingsPatch::new(vec![VmSettingEdit::Description {
+                    previous: probe.clone(),
+                    value: format!("Must not apply {stamp}"),
+                }])
+                .unwrap(),
+            },
+        )
+        .err()
+        .map(|e| e.to_string());
+    assert!(
+        refused.is_some(),
+        "a write was accepted while the connection was stale"
+    );
+
+    // The domain is off; the recovery below is a real cold return.
+    let off = settle(60, || virsh(&["domstate", &domain]) == "shut off").await;
+    assert!(off, "coordinator domain did not shut off");
+    let off_after_ms = shutdown_at.elapsed().as_millis() as u64;
+    let (down_timeline, _) = state_timeline(&c, 20, |_| false).await;
+
+    // Return: start the domain and wait for a fresh generation.
+    let start_at = std::time::Instant::now();
+    virsh(&["start", &domain]);
+    let (recovery_timeline, recovered) = state_timeline(&c, 900, |c| {
+        let s = c.latest();
+        s.is_current() && s.generation() > generation_before
+    })
+    .await;
+    let ready_after_ms = start_at.elapsed().as_millis() as u64;
+    assert!(
+        recovered,
+        "connection did not recover under a fresh generation"
+    );
+    let generation_after = c.latest().generation();
+    let fresh = c.latest().inventory().unwrap().clone();
+    // The host's own truth after the power cut: XAPI acknowledges metadata writes from
+    // its in-memory database, so a coordinator power loss can discard a recent one. The
+    // client must show what the host now holds, never its own memory of the write.
+    let description_after = fresh.vms[&guest.id].description.clone();
+    let write_survived = description_after == probe;
+    let write_rolled_back = description_after == guest.description;
+    let guest_state_after = format!("{:?}", fresh.vms[&guest.id].power_state);
+
+    // The host shutdown halted the guest; start it again through the recovered session.
+    let restart = if fresh.vms[&guest.id].power_state == PowerState::Halted {
+        let start = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::Start,
+                },
+            )
+            .expect("start accepted after recovery");
+        let outcome = wait_vm_outcome(&start, 300).await;
+        let running = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running)
+        })
+        .await;
+        json!({"state": format!("{:?}", outcome.state), "detail": outcome.detail, "running": running})
+    } else {
+        json!({"skipped": guest_state_after})
+    };
+
+    lab.record(
+        "coordinator-outage-under-live-session",
+        json!({
+            "coordinator": lab.hosts[0].name,
+            "probe_write": {"state": format!("{:?}", probe_outcome.state), "value": probe, "survived_power_cut": write_survived, "rolled_back_to_previous": write_rolled_back},
+            "guest_power_before": guest_state_before,
+            "stale": {"detected_after_ms": stale_after_ms, "state": stale_state, "timeline": stale_timeline},
+            "write_while_stale": refused,
+            "domain_off_after_ms": off_after_ms,
+            "while_down": down_timeline,
+            "recovery": {"ready_after_ms": ready_after_ms, "generation_before": generation_before, "generation_after": generation_after, "timeline": recovery_timeline},
+            "description_after": description_after,
+            "guest_power_after": guest_state_after,
+            "guest_restart": restart,
+            "resource_records": {"before": resource_records_before, "after": c.resource_history().len()},
+        }),
+    );
+    assert!(
+        write_survived || write_rolled_back,
+        "the description is neither the completed write nor its predecessor: {description_after}"
+    );
+    assert_eq!(
+        c.resource_history().len(),
+        resource_records_before,
+        "the outage added resource operation records"
+    );
+    c.close().await;
+}
+
+/// The disk VDIs currently attached to a VM.
+fn disks_of(
+    inventory: &xenadmin_core::Inventory,
+    vm: xenadmin_core::VmId,
+) -> Vec<xenadmin_core::VdiId> {
+    inventory
+        .details
+        .vm_disks
+        .get(&vm)
+        .into_iter()
+        .flatten()
+        .filter_map(|vbd| inventory.details.vbds.get(vbd))
+        .filter(|b| b.kind == "Disk")
+        .filter_map(|b| b.vdi)
+        .collect()
+}
+
+/// Waits for a VM operation record to reach an outcome in a connection's history, keeping
+/// every state change seen on the way.
+async fn wait_history_outcome(
+    connection: &Connection,
+    id: OperationId,
+    seconds: u64,
+) -> (Option<xenadmin_core::OperationRecord>, Vec<Value>) {
+    let started = std::time::Instant::now();
+    let mut seen = Vec::new();
+    let mut last = None;
+    let _ = tokio::time::timeout(deadline(seconds), async {
+        loop {
+            let record = connection
+                .operation_history()
+                .iter()
+                .find(|r| r.id == id)
+                .cloned();
+            let key = record.as_ref().map(|r| (format!("{:?}", r.state), r.detail.clone()));
+            if key != last {
+                if let Some((state, detail)) = &key {
+                    seen.push(json!({"at_ms": started.elapsed().as_millis() as u64, "state": state, "detail": detail}));
+                }
+                last = key;
+            }
+            if record
+                .as_ref()
+                .is_some_and(|r| r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    let record = connection
+        .operation_history()
+        .iter()
+        .find(|r| r.id == id)
+        .cloned();
+    (record, seen)
+}
+
+/// Snapshot marker row, failure column: a snapshot create interrupted by the application
+/// closing mid-flight is reconciled on restart from the journal, never repeated, and the
+/// host ends with at most one snapshot of that name.
+#[tokio::test]
+#[ignore]
+async fn lab_interrupted_snapshot_create_resolves_on_restart() {
+    use xenadmin_core::{OperationControl, SnapshotName, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let name = format!("lab-interrupt-{stamp}");
+    let id = OperationId::new();
+    let guest_id;
+    let state_at_close;
+    {
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let c = connect(&lab, &backend, 0, false).await;
+        let guest = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .guests()
+            .find(|v| v.name.starts_with("lab-guest-"))
+            .expect("lab guest")
+            .clone();
+        guest_id = guest.id;
+        let operation = c
+            .submit(
+                id,
+                VmCommand::CreateSnapshot {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    name: SnapshotName::new(&name).unwrap(),
+                },
+            )
+            .expect("snapshot accepted");
+        // Let the request leave, then stop like an application exiting mid-operation.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        state_at_close = format!("{:?}", operation.latest().state);
+        c.close().await;
+        drop(backend);
+    }
+
+    // Same state directory, new process: the journal must reconcile, not replay.
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let (record, timeline) = wait_history_outcome(&c, id, 300).await;
+    let record = record.expect("interrupted record recovered into the history");
+    let mut recheck = None;
+    let record = if record.state == OperationState::OutcomeUnknown {
+        // A recheck starts a tracking worker; wait for the record to move before judging it.
+        let before = (format!("{:?}", record.state), record.detail.clone());
+        c.control_operation(id, OperationControl::Recheck)
+            .expect("recheck accepted");
+        let moved = settle(120, || {
+            c.operation_history()
+                .iter()
+                .find(|r| r.id == id)
+                .is_some_and(|r| (format!("{:?}", r.state), r.detail.clone()) != before)
+        })
+        .await;
+        let (after, more) = wait_history_outcome(&c, id, 300).await;
+        let message = c.latest().error().map(str::to_string);
+        recheck = Some(
+            json!({"before": before.1, "moved": moved, "timeline": more, "connection_message": message}),
+        );
+        after.expect("record after recheck")
+    } else {
+        record
+    };
+    // Host truth: never more than one snapshot of that name.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let matching = inventory
+        .snapshots
+        .for_vm(guest_id)
+        .filter(|s| s.name == name)
+        .map(|s| s.id)
+        .collect::<Vec<_>>();
+    assert!(
+        matching.len() <= 1,
+        "duplicate snapshots: {}",
+        matching.len()
+    );
+    if record.state == OperationState::Succeeded {
+        assert_eq!(matching.len(), 1, "succeeded record without its snapshot");
+    }
+
+    // Leave the lab as found.
+    let mut cleanup = Vec::new();
+    for snapshot in &matching {
+        let disks = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(*snapshot) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(guest_id, *snapshot).unwrap(),
+                    disks,
+                },
+            )
+            .expect("snapshot deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        cleanup.push(json!({"state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    }
+    lab.record(
+        "interrupted-snapshot-create",
+        json!({
+            "snapshot": name,
+            "state_at_close": state_at_close,
+            "recovered": {"state": format!("{:?}", record.state), "detail": record.detail, "timeline": timeline},
+            "recheck": recheck,
+            "snapshots_named": matching.len(),
+            "cleanup": cleanup,
+        }),
+    );
+    c.close().await;
+}
+
+/// P05-09, P08-05, P08-06, P08-08: a snapshot cloned to a new VM and to a template, the
+/// clone booted and its data-disk marker read back through the console, the clone
+/// converted to a template, and both templates deleted with their own disks.
+#[tokio::test]
+#[ignore]
+async fn lab_snapshot_clone_to_vm_and_template() {
+    use xenadmin_core::{PowerAction, PowerState, SnapshotName, VmCommand, VmLifecycleOperation};
+    let lab = Lab::load();
+    let gateway = std::env::var("XENADMIN_LAB_GATEWAY").unwrap_or_else(|_| "192.168.254.1".into());
+    let port: u16 = 8000;
+    let clone_ip =
+        std::env::var("XENADMIN_LAB_CLONE_IP").unwrap_or_else(|_| "192.168.254.101".into());
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // Leftovers of an earlier interrupted run go first, through the same reviewed deletions.
+    let mut leftovers = Vec::new();
+    for vm in inventory
+        .vms
+        .values()
+        .filter(|v| v.name.starts_with("lab-clone-") && v.id != guest.id)
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let disks = disks_of(c.latest().inventory().unwrap(), vm.id);
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: c.latest().observe_vm(vm.id).unwrap(),
+                    operation: VmLifecycleOperation::Delete {
+                        expected_template: vm.is_template,
+                        disks,
+                        snapshots: Vec::new(),
+                    },
+                },
+            )
+            .expect("leftover deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        leftovers.push(json!({"vm": vm.name, "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    }
+    for snapshot in inventory
+        .snapshots
+        .for_vm(guest.id)
+        .filter(|s| s.name.starts_with("lab-clone-src-"))
+        .map(|s| s.id)
+        .collect::<Vec<_>>()
+    {
+        let disks = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(snapshot) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(guest.id, snapshot).unwrap(),
+                    disks,
+                },
+            )
+            .expect("leftover snapshot deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        leftovers.push(json!({"snapshot": snapshot.to_string(), "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    }
+    if !leftovers.is_empty() {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let inventory = c.latest().inventory().unwrap().clone();
+    let vm_count_before = inventory.vms.len();
+
+    // Source snapshot.
+    let source_name = format!("lab-clone-src-{stamp}");
+    let snapshot = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                name: SnapshotName::new(&source_name).unwrap(),
+            },
+        )
+        .expect("snapshot accepted");
+    let outcome = wait_vm_outcome(&snapshot, 300).await;
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    let source = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(id) = c.latest().inventory().and_then(|i| {
+                i.snapshots
+                    .for_vm(guest.id)
+                    .find(|s| s.name == source_name)
+                    .map(|s| s.id)
+            }) {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("source snapshot visible");
+
+    // Clone to a new VM, then to a template.
+    let mut clones = Vec::new();
+    let mut created = Vec::new();
+    for (as_template, label) in [(false, "vm"), (true, "tpl")] {
+        let name = format!("lab-clone-{label}-{stamp}");
+        let operation = c
+            .submit(
+                OperationId::new(),
+                VmCommand::CloneSnapshot {
+                    snapshot: c.latest().observe_snapshot(guest.id, source).unwrap(),
+                    name: SnapshotName::new(&name).unwrap(),
+                    as_template,
+                },
+            )
+            .expect("clone accepted");
+        let outcome = wait_vm_outcome(&operation, 600).await;
+        let found = tokio::time::timeout(deadline(120), async {
+            loop {
+                if let Some(vm) = c.latest().inventory().and_then(|i| {
+                    i.vms
+                        .values()
+                        .find(|v| v.name == name && v.id != guest.id)
+                        .cloned()
+                }) {
+                    return vm;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{name} not visible: {}", outcome.detail));
+        let disks = settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| !disks_of(i, found.id).is_empty())
+        })
+        .await;
+        let inventory = c.latest().inventory().unwrap().clone();
+        clones.push(json!({
+            "name": name, "as_template": as_template, "state": format!("{:?}", outcome.state), "detail": outcome.detail,
+            "id": found.id.to_string(), "is_template": found.is_template, "power_state": format!("{:?}", found.power_state),
+            "disks": disks_of(&inventory, found.id).len(), "disks_visible": disks,
+        }));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert_eq!(found.is_template, as_template);
+        assert_ne!(found.id, guest.id);
+        created.push(found);
+    }
+    let clone = created[0].clone();
+    let template = created[1].clone();
+    let source_disks = disks_of(c.latest().inventory().unwrap(), guest.id);
+    let clone_disks = disks_of(c.latest().inventory().unwrap(), clone.id);
+    let shared_disks = clone_disks
+        .iter()
+        .filter(|d| source_disks.contains(d))
+        .map(|d| d.to_string())
+        .collect::<Vec<_>>();
+    let disk_sets = json!({
+        "source": source_disks.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
+        "clone": clone_disks.iter().map(|d| d.to_string()).collect::<Vec<_>>(),
+        "shared": shared_disks,
+    });
+
+    // Boot the clone and read the marker its data disk carries. A new VM's allowed
+    // actions arrive with a later event than its record, so wait for Start to be offered.
+    let start_offered = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&clone.id)
+                .is_some_and(|v| v.allowed_actions.contains(&PowerAction::Start))
+        })
+    })
+    .await;
+    assert!(start_offered, "the clone never offered Start");
+    let reports = report_listener(&format!("{gateway}:{port}")).await;
+    let start = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(clone.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("clone start accepted");
+    let start_outcome = wait_vm_outcome(&start, 300).await;
+    assert_eq!(
+        start_outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        start_outcome.detail
+    );
+    assert!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(
+                |i| i.vms[&clone.id].power_state == PowerState::Running
+            ))
+        .await
+    );
+    let console = c
+        .open_console(c.latest().observe_vm(clone.id).unwrap())
+        .expect("clone console");
+    guest_report_marker(&console, &gateway, port, &clone_ip, None).await;
+    let marker_reported = wait_report(&reports, "A", 120).await;
+    let reported = reports.received.lock().unwrap().clone();
+    drop(console);
+
+    // Halt the clone and convert it to a template.
+    let shutdown = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(clone.id).unwrap(),
+                action: PowerAction::CleanShutdown,
+            },
+        )
+        .expect("clone shutdown accepted");
+    let shutdown_outcome = wait_vm_outcome(&shutdown, 300).await;
+    assert_eq!(
+        shutdown_outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        shutdown_outcome.detail
+    );
+    assert!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(
+                |i| i.vms[&clone.id].power_state == PowerState::Halted
+            ))
+        .await
+    );
+    let convert = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: c.latest().observe_vm(clone.id).unwrap(),
+                operation: VmLifecycleOperation::ConvertToTemplate,
+            },
+        )
+        .expect("conversion accepted");
+    let convert_outcome = wait_vm_outcome(&convert, 300).await;
+    let converted = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms.get(&clone.id).is_some_and(|v| v.is_template))
+    })
+    .await;
+    assert_eq!(
+        convert_outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        convert_outcome.detail
+    );
+    assert!(converted, "clone did not become a template");
+
+    // Delete both templates with their own disks, then the source snapshot.
+    let mut deletions = Vec::new();
+    for target in [clone.id, template.id] {
+        let disks = disks_of(c.latest().inventory().unwrap(), target);
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: c.latest().observe_vm(target).unwrap(),
+                    operation: VmLifecycleOperation::Delete {
+                        expected_template: true,
+                        disks: disks.clone(),
+                        snapshots: Vec::new(),
+                    },
+                },
+            )
+            .expect("template deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        let gone = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                !i.vms.contains_key(&target)
+                    && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+            })
+        })
+        .await;
+        deletions.push(json!({"target": target.to_string(), "disks": disks.len(), "state": format!("{:?}", outcome.state), "detail": outcome.detail, "gone_with_disks": gone}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert!(gone);
+    }
+    let inventory = c.latest().inventory().unwrap().clone();
+    let snapshot_disks = inventory
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.snapshot == Some(source) && b.kind == "Disk")
+        .filter_map(|b| b.vdi)
+        .collect::<Vec<_>>();
+    let deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(guest.id, source).unwrap(),
+                disks: snapshot_disks,
+            },
+        )
+        .expect("source snapshot deletion accepted");
+    let snapshot_deletion = wait_vm_outcome(&deletion, 300).await;
+    let source_intact = c.latest().inventory().unwrap().vms.contains_key(&guest.id)
+        && disks_of(c.latest().inventory().unwrap(), guest.id) == source_disks;
+    let vm_count_after = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms.len() == vm_count_before)
+    })
+    .await;
+    reports.task.abort();
+    lab.record(
+        "snapshot-clone-to-vm-and-template",
+        json!({
+            "leftovers_removed_first": leftovers,
+            "source_snapshot": source_name,
+            "clones": clones,
+            "disk_sets": disk_sets,
+            "clone_marker": {"reported": marker_reported, "received": reported},
+            "clone_start": {"state": format!("{:?}", start_outcome.state), "detail": start_outcome.detail},
+            "convert_to_template": {"state": format!("{:?}", convert_outcome.state), "detail": convert_outcome.detail},
+            "deletions": deletions,
+            "source_snapshot_deletion": {"state": format!("{:?}", snapshot_deletion.state), "detail": snapshot_deletion.detail},
+            "source_guest_intact": source_intact,
+            "vm_count_restored": vm_count_after,
+        }),
+    );
+    assert!(source_intact);
+    assert!(
+        disk_sets["shared"].as_array().is_some_and(|v| v.is_empty()),
+        "the clone shared a disk with its source: {}",
+        disk_sets["shared"]
+    );
+    c.close().await;
+}
+
+/// P07-04, P07-06, P07-07, P07-08, P07-09: a scratch disk on the halted lab guest is
+/// renamed, repositioned, detached with its data kept, reattached, grown, copied to another
+/// member's local repository, the copy cleaned up and the scratch disk deleted. The guest's
+/// own image and data disks are never touched, and the guest is started again at the end.
+#[tokio::test]
+#[ignore]
+async fn lab_disk_lifecycle_on_halted_guest() {
+    use xenadmin_core::{
+        DeviceCommand, DeviceOperation, DeviceProperty, DiskOperation, OwnedDiskSource,
+        PowerAction, PowerState, ResourceCommand, ResourceTarget, ReviewedDisk, VmCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let original_disks = disks_of(&inventory, guest.id);
+    let mut steps = Vec::new();
+    let mib = 1024 * 1024;
+
+    async fn device(
+        c: &Connection,
+        vm: xenadmin_core::VmId,
+        operation: DeviceOperation,
+        seconds: u64,
+    ) -> std::sync::Arc<xenadmin_core::OperationRecord> {
+        let op = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Device(DeviceCommand {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    operation,
+                }),
+            )
+            .expect("device command accepted");
+        wait_vm_outcome(&op, seconds).await
+    }
+    fn step(
+        steps: &mut Vec<Value>,
+        label: &str,
+        record: &xenadmin_core::OperationRecord,
+        check: bool,
+    ) {
+        steps.push(json!({"step": label, "state": format!("{:?}", record.state), "detail": record.detail, "verified": check}));
+        assert_eq!(
+            record.state,
+            OperationState::Succeeded,
+            "{label}: {}",
+            record.detail
+        );
+        assert!(check, "{label}: host state did not read back");
+    }
+
+    // Halt the guest for the attachment changes.
+    let was_running = guest.power_state == PowerState::Running;
+    if was_running {
+        let shutdown = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Halted)
+        })
+        .await;
+        step(&mut steps, "clean shutdown", &outcome, halted);
+    }
+    let host = c.latest().inventory().unwrap().vms[&guest.id]
+        .host
+        .or(inventory.coordinator)
+        .expect("guest host");
+    let sr = local_sr_of(c.latest().inventory().unwrap(), host).expect("local repository");
+
+    // Scratch disk.
+    let scratch_name = format!("lab-scratch-{stamp}");
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::CreateDisk {
+            sr,
+            name: scratch_name.clone(),
+            size: 256 * mib,
+            device: "2".into(),
+        },
+        300,
+    )
+    .await;
+    let create_id = outcome.id;
+    let scratch = tokio::time::timeout(deadline(60), async {
+        loop {
+            let found = c.latest().inventory().and_then(|i| {
+                i.details
+                    .vdis
+                    .values()
+                    .find(|v| v.name == scratch_name)
+                    .map(|v| v.id)
+            });
+            if let Some(id) = found {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    step(
+        &mut steps,
+        "create 256 MiB scratch disk",
+        &outcome,
+        scratch.is_ok(),
+    );
+    let scratch = scratch.unwrap();
+    let vbd_of = |c: &Connection, vdi| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .vbds
+                .values()
+                .find(|b| b.vdi == Some(vdi) && b.vm == Some(guest.id))
+                .map(|b| (b.id, b.userdevice.clone()))
+        })
+    };
+    let (vbd, position) = vbd_of(&c, scratch).expect("scratch attachment");
+
+    // Rename and describe.
+    let renamed = format!("lab-scratch-renamed-{stamp}");
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::Property {
+            change: DeviceProperty::DiskMetadata {
+                vbd,
+                vdi: scratch,
+                previous_name: scratch_name.clone(),
+                previous_description: String::new(),
+                name: renamed.clone(),
+                description: "Scratch disk for the live disk lifecycle scenario".into(),
+            },
+        },
+        120,
+    )
+    .await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vdis
+                .get(&scratch)
+                .is_some_and(|v| v.name == renamed)
+        })
+    })
+    .await;
+    step(&mut steps, "rename disk", &outcome, check);
+
+    // Reposition.
+    let new_position = if position == "3" {
+        "4".to_string()
+    } else {
+        "3".to_string()
+    };
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::Property {
+            change: DeviceProperty::DiskPosition {
+                vbd,
+                vdi: scratch,
+                previous: position.clone(),
+                value: new_position.clone(),
+            },
+        },
+        120,
+    )
+    .await;
+    let check = settle(60, || {
+        vbd_of(&c, scratch).is_some_and(|(_, p)| p == new_position)
+    })
+    .await;
+    step(&mut steps, "change device position", &outcome, check);
+
+    // Detach, keeping the data; the VDI must survive without an attachment.
+    let (vbd, _) = vbd_of(&c, scratch).expect("scratch attachment");
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::DetachDisk { vbd, vdi: scratch },
+        120,
+    )
+    .await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details.vdis.contains_key(&scratch) && !i.details.vbds.contains_key(&vbd)
+        })
+    })
+    .await;
+    step(&mut steps, "detach without deleting", &outcome, check);
+
+    // Grow while detached, then copy to another member's local repository.
+    let reviewed = ReviewedDisk::from_inventory(c.latest().inventory().unwrap(), scratch)
+        .expect("reviewed disk");
+    let grow = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::Disk {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Disk(scratch))
+                    .unwrap(),
+                operation: DiskOperation::Grow {
+                    expected: reviewed,
+                    size: 512 * mib,
+                },
+            },
+        )
+        .expect("grow accepted");
+    let outcome = wait_outcome(&grow, 300).await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details.vdis.get(&scratch).and_then(|v| v.virtual_size) == Some(512 * mib)
+        })
+    })
+    .await;
+    steps.push(json!({"step": "grow to 512 MiB", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(check);
+
+    let other = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != host)
+        .expect("another member");
+    let destination =
+        local_sr_of(c.latest().inventory().unwrap(), other).expect("destination repository");
+    let copy_name = format!("lab-scratch-copy-{stamp}");
+    let reviewed = ReviewedDisk::from_inventory(c.latest().inventory().unwrap(), scratch)
+        .expect("reviewed disk");
+    let copy = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::Disk {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Disk(scratch))
+                    .unwrap(),
+                operation: DiskOperation::Copy {
+                    expected: reviewed,
+                    destination,
+                    name: copy_name.clone(),
+                },
+            },
+        )
+        .expect("copy accepted");
+    let copy_id = copy.latest().id;
+    let outcome = wait_outcome(&copy, 600).await;
+    let copied = tokio::time::timeout(deadline(60), async {
+        loop {
+            let found = c.latest().inventory().and_then(|i| {
+                i.details
+                    .vdis
+                    .values()
+                    .find(|v| v.name == copy_name && v.sr == Some(destination))
+                    .map(|v| v.id)
+            });
+            if let Some(id) = found {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    steps.push(json!({"step": "copy to another member's repository", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": copied.is_ok(), "destination": destination.to_string()}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    let copied = copied.expect("copy visible on the destination repository");
+
+    // Delete the detached copy through the owned-disk cleanup.
+    let reviewed = ReviewedDisk::from_inventory(c.latest().inventory().unwrap(), copied)
+        .expect("reviewed copy");
+    let cleanup = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::Disk {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Disk(copied))
+                    .unwrap(),
+                operation: DiskOperation::Cleanup {
+                    expected: reviewed,
+                    source: OwnedDiskSource::ResourceOperation(copy_id),
+                },
+            },
+        )
+        .expect("cleanup accepted");
+    let outcome = wait_outcome(&cleanup, 300).await;
+    let check = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| !i.details.vdis.contains_key(&copied))
+    })
+    .await;
+    steps.push(json!({"step": "delete the detached copy", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(check);
+
+    // Reattach (the new attachment does not own the disk, so deleting through it is
+    // refused by design), detach again, and delete the detached disk through its owner.
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::AttachDisk {
+            vdi: scratch,
+            device: "2".into(),
+            read_only: false,
+        },
+        120,
+    )
+    .await;
+    let check = settle(60, || vbd_of(&c, scratch).is_some()).await;
+    step(&mut steps, "reattach", &outcome, check);
+    let (vbd, _) = vbd_of(&c, scratch).expect("scratch attachment");
+    // The inventory does not yet know the new attachment's ownership, so the request is
+    // accepted for review and refused by the fresh host checks at dispatch.
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::DeleteDisk { vbd, vdi: scratch },
+        120,
+    )
+    .await;
+    let still_there = c
+        .latest()
+        .inventory()
+        .is_some_and(|i| i.details.vdis.contains_key(&scratch) && i.details.vbds.contains_key(&vbd));
+    steps.push(json!({"step": "delete through an attachment that does not own the disk", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "disk_and_attachment_kept": still_there}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Rejected,
+        "deletion through a non-owning attachment: {}",
+        outcome.detail
+    );
+    assert!(still_there, "the refused deletion changed the disk or its attachment");
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::DetachDisk { vbd, vdi: scratch },
+        120,
+    )
+    .await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details.vdis.contains_key(&scratch) && !i.details.vbds.contains_key(&vbd)
+        })
+    })
+    .await;
+    step(&mut steps, "detach again", &outcome, check);
+    let reviewed = ReviewedDisk::from_inventory(c.latest().inventory().unwrap(), scratch)
+        .expect("reviewed disk");
+    let cleanup = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::Disk {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Disk(scratch))
+                    .unwrap(),
+                operation: DiskOperation::Cleanup {
+                    expected: reviewed,
+                    source: OwnedDiskSource::VmOperation(create_id),
+                },
+            },
+        )
+        .expect("owned disk cleanup accepted");
+    let outcome = wait_outcome(&cleanup, 300).await;
+    let check = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| !i.details.vdis.contains_key(&scratch))
+    })
+    .await;
+    steps.push(json!({"step": "delete the detached disk through its creating operation", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(check);
+
+    // A second owned disk deleted together with its attachment.
+    let second_name = format!("lab-scratch-second-{stamp}");
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::CreateDisk {
+            sr,
+            name: second_name.clone(),
+            size: 64 * mib,
+            device: "2".into(),
+        },
+        300,
+    )
+    .await;
+    let second = tokio::time::timeout(deadline(60), async {
+        loop {
+            let found = c.latest().inventory().and_then(|i| {
+                i.details
+                    .vdis
+                    .values()
+                    .find(|v| v.name == second_name)
+                    .map(|v| v.id)
+            });
+            if let Some(id) = found {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    step(
+        &mut steps,
+        "create a second owned disk",
+        &outcome,
+        second.is_ok(),
+    );
+    let second = second.unwrap();
+    let owned = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vbds
+                .values()
+                .any(|b| b.vdi == Some(second) && b.owned && b.currently_attached == Some(false))
+        })
+    })
+    .await;
+    assert!(
+        owned,
+        "the creating attachment never showed as owning the disk"
+    );
+    let (vbd, _) = vbd_of(&c, second).expect("second attachment");
+    let outcome = device(
+        &c,
+        guest.id,
+        DeviceOperation::DeleteDisk { vbd, vdi: second },
+        120,
+    )
+    .await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            !i.details.vdis.contains_key(&second) && !i.details.vbds.contains_key(&vbd)
+        })
+    })
+    .await;
+    step(
+        &mut steps,
+        "delete disk with its owning attachment",
+        &outcome,
+        check,
+    );
+    let intact = disks_of(c.latest().inventory().unwrap(), guest.id) == original_disks;
+
+    // The lab's steady state is a running guest.
+    let start = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    let running = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running)
+    })
+    .await;
+    step(&mut steps, "start", &outcome, running);
+    lab.record(
+        "disk-lifecycle-on-halted-guest",
+        json!({"guest": guest.name, "steps": steps, "original_disks_intact": intact}),
+    );
+    assert!(intact, "the guest's original disks changed");
+    c.close().await;
+}

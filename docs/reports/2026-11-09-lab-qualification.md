@@ -50,6 +50,10 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | VM property edits | P06-01, P06-02, P06-04 | Passed | The description was edited on the running guest; maximum and startup vCPUs and all four memory limits were edited while halted; each setter was verified by a fresh read and the inventory read the new values back; the guest was started again |
 | Reviewed maintenance and ejection | P12-03, P13-02 | Passed | Member entered maintenance (disabled observed), reviewed ejection task completed, member left the coordinator's inventory and returned as a standalone pool with a new identity |
 | Native desktop session, no XO anywhere | P01-01, P04-02, P18-06, P19-02 | Passed, finding 6 | Cold start from the saved profile, session-password login through the connect dialog, inventory, UUID search, details and Open console in the Rune window; the embedded console rendered the guest, physical key events logged in as root, configured the guest's address and ran `wget` twice against a listener on the isolated bridge, which logged both requests from the guest including the data-disk marker A; shifted characters arrived correctly once Shift was sent as a physical key carrying its modifier mask. Pointer input was not exercised: the nested session has no pointer injection and a text-mode guest shows no pointer effect |
+| Coordinator power loss under a live session | P01-03, P19-05 | Passed, finding 7 | With the lab guest halted on the coordinator, the coordinator domain lost power; the client left Ready after 31 s with "The host did not respond within the request timeout", refused a write while stale before sending anything, retried with increasing backoff through nine generations, and was Ready again 147 s after the domain started, under generation 10, with no replayed or added operation records; the guest, halted by the crash, started again through the recovered session. An ACPI shutdown request sent to the nested dom0 earlier was ignored, and the client correctly stayed Ready while the host kept serving |
+| Snapshot clone to VM and template | P05-08, P05-09, P08-06, P08-08 | Passed after fix | A snapshot of the halted guest was cloned into a new VM and into a template, each with three disks of its own and none shared with the source; the new VM started, and its console typed commands that reported marker A from its copied data disk to the listener; the VM was shut down and converted to a template; both templates were deleted with their own disks and the source snapshot with its disks, leaving the guest's disks and the VM count as before. The first attempt stopped because the new VM never offered Start (finding 8). Leftovers of the interrupted attempts were removed first through the same reviewed deletions |
+| Interrupted snapshot create across a restart | P05-02, P19-04 | Passed | A snapshot create was cut off by closing the client 150 ms after submission, while its record was Tracking a host task; a new client on the same state directory recovered the record as OutcomeUnknown ("The connection was closed") and did not replay it; an operator recheck moved it to Tracking and then Succeeded ("Snapshot created and identity verified") in two seconds through the saved task reference; the host held exactly one snapshot of that name, which the reviewed deletion then removed |
+| Disk lifecycle on the halted guest | P07-04, P07-06, P07-07, P07-08, P07-09 | Passed | A 256 MiB scratch disk was created on the guest, renamed and described, moved to another device position, detached with its data kept, grown to 512 MiB while detached, copied to another member's local repository and the copy deleted through the owned-disk cleanup; after reattachment the deletion through the new, non-owning attachment was accepted for review and rejected at dispatch with the disk and attachment untouched, the disk was detached again and deleted through its creating operation; a second disk was deleted together with its owning attachment; the guest's own disks were unchanged and it was started again. The dispatch refusal reads "shared, attached elsewhere, or unsuitable" where the review screen would have said the attachment does not own the disk |
 
 ## Findings
 
@@ -103,6 +107,24 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    still reaches them, and a window built at its final size exposes every node. Both halves
    are upstream behaviour; the question is recorded in [sources](../SOURCES.md) and P18-06
    stays open.
+
+7. **A coordinator power loss discards recently acknowledged metadata.** XAPI answers
+   `VM.set_name_description` from its in-memory database and writes that database to disk
+   periodically, so a description change the coordinator had acknowledged about seventy
+   seconds before its power was cut was gone when the host returned, back at the previous
+   value. The client reported Succeeded at the time, which was true, and after reconnecting
+   it showed the host's current value rather than its own memory of the write. Nothing in
+   the client can prevent this; operators should know that metadata written shortly before
+   a coordinator crash may need to be repeated, and the client never repeats it on its own.
+
+8. **A template turned into a VM keeps the template's allowed operations.** After
+   `VM.clone` of a snapshot and `VM.set_is_a_template(false)`, XCP-ng 8.3.0 still lists
+   `provision` and no `start` for the new VM until `VM.update_allowed_operations` is called;
+   the client derives its Start control from that list and so never offered it. The snapshot
+   clone and the lifecycle clone-to-VM workflows now ask the host to recompute the list
+   right after the conversion, including on the recheck path that finds a conversion whose
+   reply was lost. A host that refuses the recompute is named in the step detail rather than
+   failing the clone. Unit coverage was added for both workflows.
 
 ## Console observation
 
