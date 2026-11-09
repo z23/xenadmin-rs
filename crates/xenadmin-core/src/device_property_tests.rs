@@ -249,6 +249,45 @@ async fn failed_second_qos_setter_retains_first_change_as_unknown_without_enabli
     assert_eq!(writes(&calls), 2);
 }
 #[tokio::test]
+async fn cbt_is_disabled_by_tracking_state_when_the_host_lists_no_disable_operation() {
+    let (fixture, records, calls) = fixture(Fault::None).await;
+    enrich(&records);
+    records
+        .lock()
+        .unwrap()
+        .get_mut("OpaqueRef:VDI:disk")
+        .unwrap()["allowed_operations"] = json!(["destroy"]);
+    let dir = tempfile::tempdir().unwrap();
+    let r = execute(
+        &fixture,
+        dir.path(),
+        command(Change::DisableCbt {
+            vbd: vbd(),
+            vdi: vdi(),
+        }),
+    )
+    .await;
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    assert_eq!(writes(&calls), 1);
+    records
+        .lock()
+        .unwrap()
+        .get_mut("OpaqueRef:VDI:disk")
+        .unwrap()["cbt_enabled"] = json!(false);
+    let r = execute(
+        &fixture,
+        dir.path(),
+        command(Change::DisableCbt {
+            vbd: vbd(),
+            vdi: vdi(),
+        }),
+    )
+    .await;
+    assert_eq!(r.state, OperationState::Rejected, "{}", r.detail);
+    assert_eq!(writes(&calls), 1);
+}
+
+#[tokio::test]
 async fn lost_cbt_reply_reconciles_the_same_disk_without_repeating_disable() {
     let (fixture, records, calls) = fixture(Fault::LostProperty).await;
     enrich(&records);

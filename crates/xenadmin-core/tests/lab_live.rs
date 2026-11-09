@@ -8199,7 +8199,7 @@ async fn lab_other_client_task_inspection_and_cancellation() {
         })
     })
     .await;
-    let after = placement(&first.latest().inventory().unwrap());
+    let after = placement(first.latest().inventory().unwrap());
     let mut returned = None;
     if after.as_ref().is_some_and(|(host, _)| *host == destination) {
         // The migration completed before the cancellation took effect; bring the guest back.
@@ -8438,5 +8438,362 @@ async fn lab_recovery_boot_override_and_restore() {
     assert!(
         !frame.starts_with("console refused"),
         "console refused during the recovery boot: {frame}"
+    );
+}
+
+async fn device_op(
+    c: &Connection,
+    vm: xenadmin_core::VmId,
+    operation: xenadmin_core::DeviceOperation,
+    seconds: u64,
+) -> Value {
+    match c.latest().observe_vm(vm).and_then(|target| {
+        c.submit(
+            OperationId::new(),
+            xenadmin_core::VmCommand::Device(xenadmin_core::DeviceCommand {
+                vm: target,
+                operation,
+            }),
+        )
+    }) {
+        Ok(operation) => {
+            let row = wait_vm_outcome(&operation, seconds).await;
+            json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                   "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+        }
+        Err(error) => json!({"accepted": false, "error": error.to_string()}),
+    }
+}
+
+/// P07-05, P06-07, P07-11, P06-10: on the running guest request an unplug and plug of the
+/// data disk attachment and set and restore the HA restart priority; while halted disable
+/// changed-block tracking on the data disk (enabled beforehand outside the client) and
+/// prepare, attach, verify and remove a NoCloud configuration drive; then start the guest.
+#[tokio::test]
+#[ignore]
+async fn lab_disk_plug_cbt_ha_priority_and_cloud_init_drive() {
+    use xenadmin_core::{
+        CloudInitInputs, CloudInitMedia, DeviceOperation, DeviceProperty, DiskOperation,
+        HaRestartPriority, OwnedDiskSource, PoolOperation, PowerAction, PowerState,
+        ResourceCommand, ReviewedDisk,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let id = guest.id;
+    let mut power = Vec::new();
+    if guest.power_state != PowerState::Running {
+        power.push(power_to(&c, id, PowerAction::Start, PowerState::Running).await);
+    }
+    let data_attachment = |i: &xenadmin_core::Inventory| {
+        i.details
+            .vbds
+            .values()
+            .find(|b| {
+                b.vm == Some(id)
+                    && b.kind == "Disk"
+                    && b.vdi
+                        .and_then(|v| i.details.vdis.get(&v))
+                        .is_some_and(|v| v.name.starts_with("lab-guest-data-"))
+            })
+            .cloned()
+    };
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let resident = inventory.vms[&id].host.expect("resident host");
+    let data = data_attachment(&inventory).expect("data disk attachment");
+    let data_vdi = data.vdi.expect("data disk");
+    let mut results = Vec::new();
+
+    // Running: unplug and plug the data disk attachment.
+    let before = json!({"currently_attached": data.currently_attached, "allowed_operations": data.allowed_operations});
+    let unplug = device_op(&c, id, DeviceOperation::UnplugDisk { vbd: data.id }, 180).await;
+    let detached = settle(30, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vbds
+                .get(&data.id)
+                .is_some_and(|b| b.currently_attached == Some(false))
+        })
+    })
+    .await;
+    results.push(json!({"step": "unplug data disk while running", "attachment_before": before, "outcome": unplug, "detached": detached}));
+    if detached {
+        let plug = device_op(&c, id, DeviceOperation::PlugDisk { vbd: data.id }, 180).await;
+        let attached = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details
+                    .vbds
+                    .get(&data.id)
+                    .is_some_and(|b| b.currently_attached == Some(true))
+            })
+        })
+        .await;
+        results.push(
+            json!({"step": "plug data disk while running", "outcome": plug, "attached": attached}),
+        );
+    }
+
+    // Running: HA restart priority set and restored through the pool workflow.
+    let current = c.latest().inventory().unwrap().details.vms[&id]
+        .ha_restart_priority
+        .clone()
+        .unwrap_or_default();
+    let expected = HaRestartPriority::parse(&current);
+    let mut ha = Vec::new();
+    if let Some(expected) = expected {
+        let target = if expected == HaRestartPriority::BestEffort {
+            HaRestartPriority::Restart
+        } else {
+            HaRestartPriority::BestEffort
+        };
+        for (label, from, to) in [("set", expected, target), ("restore", target, expected)] {
+            let entry = match c
+                .latest()
+                .observe_resource(ResourceTarget::Pool(pool))
+                .and_then(|observed| {
+                    c.submit_resource(
+                        OperationId::new(),
+                        ResourceCommand::Pool {
+                            target: observed,
+                            operation: PoolOperation::SetVmRestartPriority {
+                                vm: id,
+                                expected: from,
+                                priority: to,
+                            },
+                        },
+                    )
+                }) {
+                Ok(operation) => {
+                    let row = wait_outcome(&operation, 180).await;
+                    let wire = match to {
+                        HaRestartPriority::Disabled => "",
+                        HaRestartPriority::BestEffort => "best-effort",
+                        HaRestartPriority::Restart => "restart",
+                    };
+                    let read_back = settle(60, || {
+                        c.latest().inventory().is_some_and(|i| {
+                            i.details.vms.get(&id).is_some_and(|v| {
+                                v.ha_restart_priority.as_deref().unwrap_or_default() == wire
+                            })
+                        })
+                    })
+                    .await;
+                    json!({"step": label, "to": format!("{to:?}"), "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": read_back})
+                }
+                Err(error) => {
+                    json!({"step": label, "to": format!("{to:?}"), "accepted": false, "error": error.to_string()})
+                }
+            };
+            let stop = entry["accepted"] == false || entry["state"] != "Succeeded";
+            ha.push(entry);
+            if stop {
+                break;
+            }
+        }
+    } else {
+        ha.push(json!({"skipped": format!("unrecognised priority {current:?}")}));
+    }
+
+    // Halted: disable changed-block tracking, then the cloud-init drive.
+    power.push(halt_guest(&c, id).await);
+    let cbt_before = c.latest().inventory().unwrap().details.vdis[&data_vdi].cbt_enabled;
+    let cbt = if cbt_before == Some(true) {
+        let outcome = device_op(
+            &c,
+            id,
+            DeviceOperation::Property {
+                change: DeviceProperty::DisableCbt {
+                    vbd: data.id,
+                    vdi: data_vdi,
+                },
+            },
+            180,
+        )
+        .await;
+        let disabled = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details
+                    .vdis
+                    .get(&data_vdi)
+                    .is_some_and(|v| v.cbt_enabled == Some(false))
+            })
+        })
+        .await;
+        json!({"enabled_before": true, "outcome": outcome, "disabled": disabled})
+    } else {
+        json!({"enabled_before": cbt_before, "skipped": "changed-block tracking was not enabled on the data disk"})
+    };
+    let sr =
+        local_sr_of(c.latest().inventory().unwrap(), resident).expect("resident local repository");
+    let media = CloudInitMedia::prepare(
+        id,
+        CloudInitInputs::new(
+            "lab-guest".into(),
+            "#cloud-config\nhostname: lab-guest\n".into(),
+            None,
+        )
+        .expect("cloud-init inputs"),
+    )
+    .expect("cloud-init media");
+    let cloud_id = OperationId::new();
+    let cloud = match c
+        .latest()
+        .observe_vm(id)
+        .and_then(|target| c.prepare_cloud_init(cloud_id, target, sr, "2".into(), media))
+    {
+        Ok(operation) => {
+            let row = wait_outcome(&operation, 600).await;
+            json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                   "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+        }
+        Err(error) => json!({"accepted": false, "error": error.to_string()}),
+    };
+    let drive = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vbds
+                .values()
+                .any(|b| b.vm == Some(id) && b.userdevice == "2" && b.vdi.is_some())
+        })
+    })
+    .await
+    .then(|| {
+        let i = c.latest();
+        let i = i.inventory().unwrap();
+        i.details
+            .vbds
+            .values()
+            .find(|b| b.vm == Some(id) && b.userdevice == "2" && b.vdi.is_some())
+            .map(|b| {
+                let vdi = i.details.vdis.get(&b.vdi.unwrap());
+                (b.clone(), vdi.cloned())
+            })
+    })
+    .flatten();
+    let drive_json = drive.as_ref().map(|(b, v)| {
+        json!({"vbd": b.id.to_string(), "mode": b.mode, "kind": b.kind, "owned": b.owned, "bootable": b.bootable,
+               "vdi": v.as_ref().map(|v| json!({"id": v.id.to_string(), "name": v.name, "size": v.virtual_size, "read_only": v.read_only, "sr": v.sr.map(|s| s.to_string())}))})
+    });
+    let mut removal = Vec::new();
+    if let Some((vbd, Some(vdi))) = &drive {
+        let delete = device_op(
+            &c,
+            id,
+            DeviceOperation::DeleteDisk {
+                vbd: vbd.id,
+                vdi: vdi.id,
+            },
+            180,
+        )
+        .await;
+        let gone = settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| !i.details.vdis.contains_key(&vdi.id))
+        })
+        .await;
+        removal.push(json!({"step": "delete drive through the owning attachment", "outcome": delete, "gone": gone}));
+        if !gone {
+            let detach = device_op(
+                &c,
+                id,
+                DeviceOperation::DetachDisk {
+                    vbd: vbd.id,
+                    vdi: vdi.id,
+                },
+                180,
+            )
+            .await;
+            let detached = settle(60, || {
+                c.latest()
+                    .inventory()
+                    .is_some_and(|i| !i.details.vbds.contains_key(&vbd.id))
+            })
+            .await;
+            removal.push(json!({"step": "detach drive", "outcome": detach, "detached": detached}));
+            let cleanup = match ReviewedDisk::from_inventory(
+                c.latest().inventory().unwrap(),
+                vdi.id,
+            ) {
+                Some(reviewed) => match c
+                    .latest()
+                    .observe_resource(ResourceTarget::Disk(vdi.id))
+                    .and_then(|target| {
+                        c.submit_resource(
+                            OperationId::new(),
+                            ResourceCommand::Disk {
+                                target,
+                                operation: DiskOperation::Cleanup {
+                                    expected: reviewed,
+                                    source: OwnedDiskSource::ResourceOperation(cloud_id),
+                                },
+                            },
+                        )
+                    }) {
+                    Ok(operation) => {
+                        let row = wait_outcome(&operation, 300).await;
+                        json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+                    }
+                    Err(error) => json!({"accepted": false, "error": error.to_string()}),
+                },
+                None => json!({"accepted": false, "error": "disk could not be reviewed"}),
+            };
+            let gone = settle(60, || {
+                c.latest()
+                    .inventory()
+                    .is_some_and(|i| !i.details.vdis.contains_key(&vdi.id))
+            })
+            .await;
+            removal.push(json!({"step": "owned-disk cleanup", "outcome": cleanup, "gone": gone}));
+        }
+    }
+    power.push(power_to(&c, id, PowerAction::Start, PowerState::Running).await);
+    let drive_remains = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .vbds
+        .values()
+        .any(|b| b.vm == Some(id) && b.userdevice == "2");
+    c.close().await;
+    lab.record(
+        "disk-plug-cbt-ha-priority-and-cloud-init-drive",
+        json!({
+            "guest": guest.name, "attachment": results, "ha_priority": {"before": current, "steps": ha},
+            "changed_block_tracking": cbt, "cloud_init": {"operation": cloud, "drive": drive_json, "removal": removal, "drive_remains": drive_remains},
+            "power": power,
+        }),
+    );
+    for entry in &ha {
+        if entry.get("skipped").is_none() {
+            assert_eq!(entry["accepted"], true, "{entry}");
+            assert_eq!(entry["state"], "Succeeded", "{entry}");
+            assert_eq!(entry["read_back"], true, "{entry}");
+        }
+    }
+    if cbt.get("skipped").is_none() {
+        assert_eq!(cbt["outcome"]["state"], "Succeeded", "{cbt}");
+        assert_eq!(cbt["disabled"], true, "{cbt}");
+    }
+    assert_eq!(cloud["accepted"], true, "{cloud}");
+    assert_eq!(cloud["state"], "Succeeded", "{cloud}");
+    assert!(
+        drive_json.is_some(),
+        "cloud-init drive not visible at slot 2"
+    );
+    assert!(
+        !drive_remains,
+        "cloud-init drive remains attached: {removal:?}"
     );
 }

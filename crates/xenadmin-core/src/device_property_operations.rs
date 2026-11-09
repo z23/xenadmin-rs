@@ -307,7 +307,7 @@ pub(super) async fn plan(session: &Session, vm: VmId, change: &Change) -> Result
     let current = current(session, vm, change, false).await?;
     let (_, record) = subject(&current, change);
     match change {
-        Change::DisableCbt { .. } => permits(record, "disable_cbt")?,
+        Change::DisableCbt { .. } => crate::devices::permits_cbt_disable(record)?,
         Change::DiskPriority {
             previous, priority, ..
         } => {
@@ -387,7 +387,7 @@ pub(super) async fn prepare(
         .await?;
     }
     if step.field == Field::Cbt {
-        permits(record, "disable_cbt")?;
+        crate::devices::permits_cbt_disable(record)?;
     }
     if step.field == Field::QosAlgorithm {
         supported(record, step.value.as_str().ok_or(Error::DeviceConflict)?)?;
