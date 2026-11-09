@@ -9174,3 +9174,328 @@ async fn stable_frame_or_last(console: &xenadmin_core::Console, seconds: u64) ->
     .await;
     last
 }
+
+/// P13-04, P01-02, P01-04: hand the coordinator role to the member through the reviewed
+/// handover, watch the live session follow the host's coordinator redirect to the new
+/// coordinator under a new generation, log in through the former coordinator's address as
+/// a member alias, then hand the role back and follow it home; the guest is untouched.
+#[tokio::test]
+#[ignore]
+async fn lab_coordinator_handover_round_trip() {
+    use xenadmin_core::{
+        ConnectionState, OperationControl, PoolOperation, PowerState, ResourceCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator_of = |i: &xenadmin_core::Inventory| {
+        i.details
+            .pool
+            .as_ref()
+            .and_then(|p| p.administration.coordinator)
+    };
+    let current = coordinator_of(&inventory).expect("coordinator");
+    // The round trip starts and ends with the lab's first host as coordinator; an earlier
+    // interrupted run may have left the role elsewhere, so return it first.
+    let home = inventory
+        .hosts
+        .values()
+        .find(|h| h.address == lab.hosts[0].ip)
+        .map(|h| h.id)
+        .expect("first lab host");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != home && inventory.hosts[h].enabled)
+        .expect("an enabled member");
+    let address_of = |h: HostId| inventory.hosts[&h].address.clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let guest_host = guest.host;
+    let endpoint_now = || c.latest().active_endpoint().map(|e| e.to_string());
+    let before = json!({"coordinator": home.to_string(), "member": member.to_string(), "endpoint": endpoint_now(), "generation": c.latest().generation()});
+
+    let mut legs = Vec::new();
+    let mut plan = Vec::new();
+    if current != home {
+        plan.push(("return the role to the first host", current, home));
+    }
+    plan.extend([
+        ("handover to member", home, member),
+        ("handover back", member, home),
+    ]);
+    for (label, from, to) in plan {
+        let target_address = address_of(to);
+        let operation = c
+            .latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .and_then(|target| {
+                c.submit_resource(
+                    OperationId::new(),
+                    ResourceCommand::Pool {
+                        target,
+                        operation: PoolOperation::DesignateCoordinator {
+                            expected: from,
+                            host: to,
+                        },
+                    },
+                )
+            });
+        let started = std::time::Instant::now();
+        let followed_now = |c: &Connection| {
+            let snapshot = c.latest();
+            snapshot.state() == ConnectionState::Ready
+                && snapshot
+                    .active_endpoint()
+                    .is_some_and(|e| e.to_string().contains(&target_address))
+                && snapshot
+                    .inventory()
+                    .is_some_and(|i| coordinator_of(i) == Some(to))
+        };
+        let rejected =
+            |operation: &Result<xenadmin_core::ResourceOperation, xenadmin_core::Error>| {
+                operation.as_ref().map_or(true, |o| {
+                    matches!(
+                        o.latest().state,
+                        OperationState::Rejected | OperationState::Failed
+                    )
+                })
+            };
+        let (timeline, _) =
+            state_timeline(&c, 420, |c| followed_now(c) || rejected(&operation)).await;
+        let followed = followed_now(&c);
+        let outcome = match &operation {
+            Ok(operation) => {
+                let row = wait_outcome(operation, 120).await;
+                json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                       "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+            }
+            Err(error) => json!({"accepted": false, "error": error.to_string()}),
+        };
+        // The session is lost to the redirect while the handover is verified, so the
+        // record is left unknown; after reconnecting, the operator's recheck confirms it.
+        let rechecked = match &operation {
+            Ok(operation) if operation.latest().state == OperationState::OutcomeUnknown => {
+                let id = operation.latest().id;
+                let settled_first = settle(240, || {
+                    c.latest()
+                        .inventory()
+                        .is_some_and(|i| i.hosts.values().all(|h| h.enabled))
+                })
+                .await;
+                let requested = c
+                    .control_resource(id, OperationControl::Recheck)
+                    .map(|_| true)
+                    .map_err(|e| e.to_string());
+                let final_state = tokio::time::timeout(deadline(180), async {
+                    loop {
+                        if let Some(r) = c.resource_history().iter().find(|r| r.id == id)
+                            && (r.state.terminal()
+                                || r.state == OperationState::AcknowledgedUnknown)
+                        {
+                            return json!({"state": format!("{:?}", r.state), "detail": r.detail});
+                        }
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+                })
+                .await
+                .unwrap_or_else(|_| json!({"state": "still unresolved after the deadline"}));
+                json!({"hosts_enabled_first": settled_first, "requested": requested.is_ok(), "error": requested.err(), "after": final_state})
+            }
+            _ => json!({"skipped": "record was not unknown"}),
+        };
+        // Both toolstacks restart around a handover; let the pool settle before judging it.
+        let settled = settle(240, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.hosts.values().all(|h| h.enabled)
+                    && coordinator_of(i).is_some()
+                    && i.vms
+                        .get(&guest.id)
+                        .is_some_and(|v| v.power_state == PowerState::Running)
+            })
+        })
+        .await;
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        let after = c.latest();
+        let guest_untouched = after.inventory().is_some_and(|i| {
+            i.vms
+                .get(&guest.id)
+                .is_some_and(|v| v.power_state == PowerState::Running && v.host == guest_host)
+                && i.hosts.values().all(|h| h.enabled)
+        });
+        legs.push(json!({
+            "leg": label, "from": from.to_string(), "to": to.to_string(), "operation": outcome,
+            "followed_within_seconds": started.elapsed().as_secs(), "followed": followed, "settled": settled, "rechecked": rechecked, "timeline": timeline,
+            "endpoint_after": endpoint_now(), "generation_after": after.generation(),
+            "coordinator_after": after.inventory().and_then(|i| coordinator_of(i)).map(|h| h.to_string()),
+            "guest_untouched_and_hosts_enabled": guest_untouched,
+        }));
+        if label == "handover to member" {
+            // The former coordinator's address now answers as a member alias.
+            let alias_state = tempfile::tempdir().unwrap();
+            let alias_backend = Backend::with_state_directory(alias_state.path().into()).unwrap();
+            let alias = connect(&lab, &alias_backend, 0, true).await;
+            let snapshot = alias.latest();
+            legs.push(json!({
+                "leg": "member alias login through the former coordinator",
+                "requested": lab.hosts[0].ip, "endpoint": snapshot.active_endpoint().map(|e| e.to_string()),
+                "coordinator": snapshot.inventory().and_then(|i| coordinator_of(i)).map(|h| h.to_string()),
+                "state": format!("{:?}", snapshot.state()),
+            }));
+            alias.close().await;
+        }
+    }
+    c.close().await;
+    lab.record(
+        "coordinator-handover-round-trip",
+        json!({"before": before, "legs": legs}),
+    );
+    for leg in &legs {
+        if leg.get("followed").is_some() {
+            assert_eq!(leg["followed"], true, "{}", leg["leg"]);
+            assert_eq!(
+                leg["guest_untouched_and_hosts_enabled"], true,
+                "{}",
+                leg["leg"]
+            );
+            let final_state = leg["rechecked"]["after"]["state"]
+                .as_str()
+                .or(leg["operation"]["state"].as_str());
+            assert_eq!(
+                final_state,
+                Some("Succeeded"),
+                "{}: {}",
+                leg["leg"],
+                leg["rechecked"]
+            );
+        }
+    }
+}
+
+/// P13-12, P01-14, P01-01: reset the member's self-signed certificate through the reviewed
+/// pool security operation, observe the new fingerprint, show that a login pinned to the
+/// previous fingerprint is refused by TLS verification before any credential is sent, and
+/// log in again once the new fingerprint is pinned.
+#[tokio::test]
+#[ignore]
+async fn lab_member_certificate_reset_and_trust_replacement() {
+    use xenadmin_core::{ConnectionState, PoolOperation, PoolSecurityOperation, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member_index = (0..lab.hosts.len())
+        .find(|i| {
+            inventory
+                .hosts
+                .values()
+                .any(|h| h.id != coordinator && h.address == lab.hosts[*i].ip)
+        })
+        .expect("member endpoint");
+    let member = inventory
+        .hosts
+        .values()
+        .find(|h| h.address == lab.hosts[member_index].ip)
+        .map(|h| h.id)
+        .unwrap();
+    let endpoint = lab.endpoint(member_index);
+    let old = inspect(&endpoint).await.details.fingerprint.clone();
+    let reset = match c
+        .latest()
+        .observe_resource(ResourceTarget::Pool(pool))
+        .and_then(|target| {
+            c.submit_resource(
+                OperationId::new(),
+                ResourceCommand::Pool {
+                    target,
+                    operation: PoolOperation::Security(PoolSecurityOperation::ResetCertificate {
+                        host: member,
+                        expected: old.clone(),
+                    }),
+                },
+            )
+        }) {
+        Ok(operation) => {
+            let row = wait_outcome(&operation, 300).await;
+            json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                   "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+        }
+        Err(error) => json!({"accepted": false, "error": error.to_string()}),
+    };
+    let new = tokio::time::timeout(deadline(120), async {
+        loop {
+            if let Some(observation) = inspect_result(&endpoint).await
+                && observation.details.fingerprint != old
+            {
+                return observation.details.fingerprint;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .ok();
+
+    // A login pinned to the previous fingerprint must fail TLS verification.
+    let mut stale = ConnectionOptions::new(endpoint.clone());
+    stale.certificate_fingerprint = Some(old.clone());
+    stale.read_only = true;
+    let stale_connection = backend.connect(stale, lab.credentials());
+    let (stale_timeline, stale_failed) = state_timeline(&stale_connection, 90, |c| {
+        let snapshot = c.latest();
+        snapshot.state() == ConnectionState::Failed
+            || snapshot
+                .error()
+                .is_some_and(|e| e.contains("TLS verification failed"))
+    })
+    .await;
+    let stale_error = stale_connection.latest().error().map(str::to_string);
+    stale_connection.close().await;
+
+    // The same login succeeds once the new fingerprint is pinned (the member redirects to
+    // the coordinator, whose pin the harness supplies as well).
+    let replaced = match &new {
+        Some(_) => {
+            let fresh_state = tempfile::tempdir().unwrap();
+            let fresh_backend = Backend::with_state_directory(fresh_state.path().into()).unwrap();
+            let fresh = connect(&lab, &fresh_backend, member_index, true).await;
+            let snapshot = fresh.latest();
+            let entry = json!({"state": format!("{:?}", snapshot.state()), "endpoint": snapshot.active_endpoint().map(|e| e.to_string())});
+            fresh.close().await;
+            entry
+        }
+        None => json!({"skipped": "no new fingerprint observed"}),
+    };
+    c.close().await;
+    lab.record(
+        "member-certificate-reset-and-trust-replacement",
+        json!({
+            "member": member.to_string(), "endpoint": endpoint.to_string(),
+            "fingerprint_before": old.to_string(), "fingerprint_after": new.as_ref().map(|f| f.to_string()),
+            "reset": reset, "stale_pin": {"failed": stale_failed, "error": stale_error, "timeline": stale_timeline},
+            "new_pin": replaced,
+        }),
+    );
+    assert_eq!(reset["accepted"], true, "{reset}");
+    assert_eq!(reset["state"], "Succeeded", "{reset}");
+    assert!(new.is_some(), "the member's fingerprint did not change");
+    assert!(
+        stale_failed,
+        "login with the previous pin did not fail: {stale_timeline:?}"
+    );
+    assert_eq!(replaced["state"], "Ready", "{replaced}");
+}

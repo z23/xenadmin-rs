@@ -17,6 +17,9 @@ enum Fault {
     TaskFailure,
     TaskCancelled,
     VerifyFailure,
+    /// The previous coordinator keeps reporting itself for two reads after the handover
+    /// task completes, as a host does until its toolstack restarts as a member.
+    LateCoordinator,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 async fn fixture(fault: Fault) -> (Mock, Records) {
@@ -74,6 +77,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         if let Some(class)=method.strip_suffix(".get_record") && ["pool","host","VM","SR","PBD","VDI","host_metrics","VM_appliance"].contains(&class) {
             if fault==Fault::VerifyFailure&&writes.load(Ordering::SeqCst)>0&&class=="pool"&&verify.fetch_add(1,Ordering::SeqCst)==0 {return Some(RpcReply::Json(json!({"error":{"message":"RBAC_PERMISSION_DENIED","data":["private-secret"]}})));}
             let key=params[1].as_str().unwrap().strip_prefix("OpaqueRef:").unwrap();
+            if fault==Fault::LateCoordinator&&class=="pool"&&writes.load(Ordering::SeqCst)>0&&verify.fetch_add(1,Ordering::SeqCst)>=2 {let mut records=map.lock().unwrap();if let Some(pending)=records["pool"].get("pending_master").cloned() {records.get_mut("pool").unwrap()["master"]=pending;}}
             return Some(RpcReply::Json(json!({"result":map.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
         }
         if let Some(class)=method.strip_suffix(".get_all_records") && ["host","VM","PBD"].contains(&class) {
@@ -88,7 +92,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             match method {
                 "pool.set_migration_compression"=>records.get_mut("pool").unwrap()["migration_compression"]=params[2].clone(),
                 "Async.pool.set_https_only"=>records.get_mut("pool").unwrap()["https_only"]=params[2].clone(),
-                "Async.pool.designate_new_master"=>records.get_mut("pool").unwrap()["master"]=params[1].clone(),
+                "Async.pool.designate_new_master"=>{let p=records.get_mut("pool").unwrap();if fault==Fault::LateCoordinator {p["pending_master"]=params[1].clone();} else {p["master"]=params[1].clone();}},
                 "Async.pool.set_ha_host_failures_to_tolerate"=>records.get_mut("pool").unwrap()["ha_host_failures_to_tolerate"]=params[2].clone(),
                 "Async.pool.enable_ha"=>{assert_eq!(params[1],json!(["OpaqueRef:SR"]));assert_eq!(params[2],json!({}));let p=records.get_mut("pool").unwrap();p["ha_enabled"]=json!(true);p["ha_statefiles"]=json!(["99999999-9999-9999-9999-999999999999"]);},
                 "Async.pool.disable_ha"=>records.get_mut("pool").unwrap()["ha_enabled"]=json!(false),
@@ -113,6 +117,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
 async fn connect(mock: &Mock, backend: &Backend, readonly: bool) -> xenadmin_core::Connection {
     let mut options = ConnectionOptions::new(mock.endpoint.clone());
     options.read_only = readonly;
+    options.host_restart_wait = std::time::Duration::from_secs(4);
     let c = backend.connect(
         options,
         Credentials::new("fixture".into(), "fixture-password".into()),
@@ -237,6 +242,29 @@ async fn pool_ha_enable_checks_storage_then_verifies_heartbeat_and_explicit_disa
             .any(|m| m == "SR.assert_can_host_ha_statefile")
     );
     assert!(methods.iter().any(|m| m == "pool.ha_failover_plan_exists"));
+}
+#[tokio::test]
+async fn pool_handover_waits_for_the_previous_coordinator_to_step_down() {
+    let (mock, records) = fixture(Fault::LateCoordinator).await;
+    records.lock().unwrap().get_mut("host-other").unwrap()["enabled"] = json!(true);
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let r = finished(&submit(
+        &c,
+        PoolOperation::DesignateCoordinator {
+            expected: HostId::parse(HOST).unwrap(),
+            host: HostId::parse(OTHER).unwrap(),
+        },
+    ))
+    .await;
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    assert_eq!(mutations(&mock), 1);
+    assert_eq!(
+        records.lock().unwrap()["pool"]["master"],
+        json!("OpaqueRef:host-other")
+    );
+    c.close().await;
 }
 #[tokio::test]
 async fn pool_handover_and_ejection_are_explicit_and_guarded() {

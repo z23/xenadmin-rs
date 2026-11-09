@@ -351,7 +351,7 @@ pub(super) async fn verify(
             "pool operation completion evidence unavailable; no write will be replayed",
         ));
     }
-    let (_, fresh) = xapi::read(session, record.target).await?;
+    let (_, mut fresh) = xapi::read(session, record.target).await?;
     let matched = match operation(record)? {
         PoolOperation::Join { .. } => return Err(Error::InvalidResourceCommand),
         PoolOperation::Security(_) => return super::security::verify(session, record).await,
@@ -359,8 +359,29 @@ pub(super) async fn verify(
             fresh["migration_compression"] == *enabled
         }
         PoolOperation::SetHttpsOnly { enabled, .. } => fresh["https_only"] == *enabled,
-        PoolOperation::DesignateCoordinator { host, .. } => {
-            coordinator(session, &fresh).await? == *host
+        PoolOperation::DesignateCoordinator { expected, host } => {
+            // The task completes on the previous coordinator, which still reports itself
+            // as the coordinator until its toolstack restarts as a member; keep reading
+            // within the restart bound rather than calling the unchanged record a
+            // conflict. The session usually loses the host in between and the operator's
+            // recheck on the new coordinator then confirms the handover.
+            let wait = session.options().host_restart_wait;
+            let interval = (wait / 10).clamp(
+                std::time::Duration::from_millis(100),
+                std::time::Duration::from_secs(2),
+            );
+            let started = std::time::Instant::now();
+            loop {
+                let current = coordinator(session, &fresh).await?;
+                if current == *host {
+                    break true;
+                }
+                if current != *expected || started.elapsed() >= wait {
+                    break false;
+                }
+                tokio::time::sleep(interval).await;
+                fresh = xapi::read(session, record.target).await?.1;
+            }
         }
         PoolOperation::SetHaFailuresToTolerate { failures, .. } => {
             number(&fresh["ha_host_failures_to_tolerate"]) == Some(*failures)
