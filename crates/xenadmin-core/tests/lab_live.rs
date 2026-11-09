@@ -12380,3 +12380,692 @@ async fn lab_remembered_member_fallback_after_endpoint_failure() {
     );
     assert!(!reached_ready, "members were tried without a pool identity");
 }
+
+/// P09-10, P09-11, P09-08: move the pool's default repository to the other host's local
+/// repository and back, each read back from the pool details, with a stale default
+/// expectation refused in between; rename the member's local repository and its description
+/// and restore both; rescan it.
+#[tokio::test]
+#[ignore]
+async fn lab_default_storage_and_repository_metadata_round_trip() {
+    use xenadmin_core::{ResourceCommand, SrId};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let member_sr = local_sr_of(&inventory, member).expect("member local repository");
+    let coordinator_sr =
+        local_sr_of(&inventory, coordinator).expect("coordinator local repository");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let default_of = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pool
+                .as_ref()
+                .map(|p| (p.default_sr, p.default_sr_known))
+        })
+    };
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let (original_default, known) = default_of(&c).expect("pool details");
+    assert!(known, "the pool's default repository must be known");
+    let original_default = original_default.expect("the pool has a default repository");
+    let other = if original_default == member_sr {
+        coordinator_sr
+    } else {
+        member_sr
+    };
+    steps.push(json!({"step": "pool defaults", "original_default": original_default.to_string(), "other": other.to_string()}));
+
+    let mut entry = resource_op(
+        &c,
+        "set default storage to the other local repository",
+        ResourceCommand::SetDefaultStorage {
+            pool: pool_target(&c),
+            sr: other,
+            expected_default: Some(original_default),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(settle(60, || default_of(&c) == Some((Some(other), true))).await);
+    steps.push(entry);
+    // A review that still believes the previous default is current and asks for a change
+    // must be refused by the fresh pool read, not applied.
+    let mut entry = resource_op(
+        &c,
+        "stale default expectation",
+        ResourceCommand::SetDefaultStorage {
+            pool: pool_target(&c),
+            sr: other,
+            expected_default: Some(original_default),
+        },
+        60,
+    )
+    .await;
+    entry["expected_refusal"] = json!(true);
+    steps.push(entry);
+    let mut entry = resource_op(
+        &c,
+        "restore default storage",
+        ResourceCommand::SetDefaultStorage {
+            pool: pool_target(&c),
+            sr: original_default,
+            expected_default: Some(other),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || default_of(&c)
+            == Some((Some(original_default), true)))
+        .await
+    );
+    steps.push(entry);
+
+    // Repository name and description.
+    let metadata_of = |c: &Connection, sr: SrId| {
+        c.latest().inventory().and_then(|i| {
+            let details = i.details.storage.get(&sr)?;
+            let name = i
+                .storage
+                .iter()
+                .find(|s| SrId::from(s.uuid) == sr)?
+                .name
+                .clone();
+            Some((name, details.description.clone()))
+        })
+    };
+    let sr_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Storage(member_sr))
+            .unwrap()
+    };
+    let (name, description) = metadata_of(&c, member_sr).expect("member repository metadata");
+    let renamed = format!("lab-repo-{stamp}");
+    let new_description = "Renamed by the live storage scenario".to_string();
+    let mut entry = resource_op(
+        &c,
+        "rename the member repository and its description",
+        ResourceCommand::RenameMetadata {
+            target: sr_target(&c),
+            expected_name: name.clone(),
+            expected_description: description.clone(),
+            name: renamed.clone(),
+            description: new_description.clone(),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || metadata_of(&c, member_sr).as_ref()
+            == Some(&(renamed.clone(), new_description.clone())))
+        .await
+    );
+    steps.push(entry);
+    let mut entry = resource_op(
+        &c,
+        "restore the member repository metadata",
+        ResourceCommand::RenameMetadata {
+            target: sr_target(&c),
+            expected_name: renamed.clone(),
+            expected_description: new_description.clone(),
+            name: name.clone(),
+            description: description.clone(),
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || metadata_of(&c, member_sr).as_ref()
+            == Some(&(name.clone(), description.clone())))
+        .await
+    );
+    steps.push(entry);
+
+    let entry = resource_op(
+        &c,
+        "rescan the member repository",
+        ResourceCommand::ScanStorage { sr: sr_target(&c) },
+        180,
+    )
+    .await;
+    steps.push(entry);
+    c.close().await;
+    lab.record(
+        "default-storage-and-repository-metadata-round-trip",
+        json!({"member": inventory.hosts[&member].name, "member_repository": name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert!(
+                step["accepted"] == false || step["state"] == "Rejected",
+                "{step}"
+            );
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// Create a diskless VM from the generic template on the coordinator's local repository and
+/// the management network; returns its identity and the recorded step.
+async fn create_diskless_vm(
+    c: &Connection,
+    inventory: &xenadmin_core::Inventory,
+    name: &str,
+    description: &str,
+) -> (xenadmin_core::VmId, Value) {
+    use xenadmin_core::{GuestFirmware, VmCommand, VmLifecycleOperation};
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let sr = local_sr_of(inventory, coordinator).expect("coordinator local repository");
+    let template = inventory
+        .vms
+        .values()
+        .find(|v| v.is_template && v.name == "Other install media")
+        .expect("generic template");
+    let network = inventory
+        .details
+        .pifs
+        .values()
+        .find(|p| p.host == Some(coordinator) && p.management == Some(true))
+        .and_then(|p| p.network)
+        .expect("management network");
+    let create = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: c.latest().observe_vm(template.id).unwrap(),
+                operation: VmLifecycleOperation::Create {
+                    name: name.to_string(),
+                    description: description.to_string(),
+                    sr,
+                    network,
+                    iso: None,
+                    vcpus: 1,
+                    memory: 512 * 1024 * 1024,
+                    disk_size: None,
+                    firmware: GuestFirmware::Bios,
+                    bios_host: None,
+                },
+            },
+        )
+        .expect("creation accepted");
+    let outcome = wait_vm_outcome(&create, 300).await;
+    let vm = outcome.created_vm.expect("created VM identity");
+    let visible = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms.contains_key(&vm))
+    })
+    .await;
+    (
+        vm,
+        json!({"step": "create diskless VM", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": visible}),
+    )
+}
+
+/// Delete a VM record (no disks, no snapshots) and wait for it to leave the inventory.
+async fn delete_vm_record(c: &Connection, vm: xenadmin_core::VmId) -> Value {
+    use xenadmin_core::{VmCommand, VmLifecycleOperation};
+    let operation = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: c.latest().observe_vm(vm).unwrap(),
+                operation: VmLifecycleOperation::Delete {
+                    expected_template: false,
+                    disks: Vec::new(),
+                    snapshots: Vec::new(),
+                },
+            },
+        )
+        .expect("deletion accepted");
+    let outcome = wait_vm_outcome(&operation, 300).await;
+    let gone = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| !i.vms.contains_key(&vm))
+    })
+    .await;
+    json!({"step": "delete the record", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": gone})
+}
+
+/// P12-04, P11-01, P12-03: place a diskless VM on the member through its home server, refuse
+/// a maintenance review whose resident set is stale, enter maintenance with the VM reviewed
+/// as the member's resident guest so the client evacuates it, verify it running on the
+/// coordinator with the member disabled, exit maintenance, then halt and delete the VM.
+#[tokio::test]
+#[ignore]
+async fn lab_member_evacuation_of_a_diskless_vm() {
+    use xenadmin_core::{
+        HostOperation, PowerAction, PowerState, ResourceCommand, VmCommand, VmSettingEdit,
+        VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    assert!(
+        !inventory
+            .vms
+            .values()
+            .any(|v| v.host == Some(member) && !v.is_control_domain),
+        "the member must start empty"
+    );
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    for leftover in inventory
+        .vms
+        .values()
+        .filter(|v| v.name.starts_with("lab-evac-") && !v.is_template)
+    {
+        if leftover.power_state != PowerState::Halted {
+            halt_guest(&c, leftover.id).await;
+        }
+        let mut entry = delete_vm_record(&c, leftover.id).await;
+        entry["step"] = json!("delete leftover VM");
+        steps.push(entry);
+    }
+    let name = format!("lab-evac-{stamp}");
+    let (vm, created) = create_diskless_vm(
+        &c,
+        &inventory,
+        &name,
+        "Disposable diskless VM for the member evacuation scenario",
+    )
+    .await;
+    steps.push(created);
+    let patch = VmSettingsPatch::new(vec![VmSettingEdit::HomeHost {
+        previous: c.latest().inventory().unwrap().details.vms[&vm].affinity,
+        value: Some(member),
+    }])
+    .unwrap();
+    let home = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                patch,
+            },
+        )
+        .expect("home server edit accepted");
+    let row = wait_vm_outcome(&home, 120).await;
+    steps.push(json!({"step": "set home server to the member", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail}));
+    let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+    start["step"] = json!("start on the member");
+    start["read_back"] = json!(
+        settle(60, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&vm].host == Some(member)))
+        .await
+    );
+    steps.push(start);
+
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let resident = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.vms.get(&vm).map(|v| (v.power_state.clone(), v.host)))
+    };
+    // A review that believes the member is empty must be refused by the fresh guest check.
+    let mut entry = resource_op(
+        &c,
+        "enter maintenance with a stale empty resident set",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::EnterMaintenance {
+                expected_enabled: true,
+                resident_vms: Vec::new(),
+            },
+        },
+        120,
+    )
+    .await;
+    entry["expected_refusal"] = json!(true);
+    entry["member_still_enabled"] = json!(c.latest().inventory().unwrap().hosts[&member].enabled);
+    entry["vm_still_on_member"] = json!(resident(&c).is_some_and(|(_, h)| h == Some(member)));
+    steps.push(entry);
+
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "enter maintenance evacuating the diskless VM",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::EnterMaintenance {
+                expected_enabled: true,
+                resident_vms: vec![vm],
+            },
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(120, || {
+            resident(&c).is_some_and(|(state, host)| {
+                state == PowerState::Running && host == Some(coordinator)
+            }) && c
+                .latest()
+                .inventory()
+                .is_some_and(|i| !i.hosts[&member].enabled)
+        })
+        .await
+    );
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    entry["resident_host"] = json!(
+        resident(&c)
+            .and_then(|(_, h)| h)
+            .map(|h| inventory.hosts[&h].name.clone())
+    );
+    steps.push(entry);
+
+    let mut entry = resource_op(
+        &c,
+        "exit maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::ExitMaintenance,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.hosts[&member].enabled))
+        .await
+    );
+    steps.push(entry);
+    let mut halt = halt_guest(&c, vm).await;
+    halt["step"] = json!("halt on the coordinator");
+    steps.push(halt);
+    steps.push(delete_vm_record(&c, vm).await);
+    c.close().await;
+    lab.record(
+        "member-evacuation-of-a-diskless-vm",
+        json!({"vm": name, "member": inventory.hosts[&member].name, "coordinator": inventory.hosts[&coordinator].name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert!(
+                step["accepted"] == false || step["state"] == "Rejected",
+                "{step}"
+            );
+            assert_eq!(step["member_still_enabled"], true, "{step}");
+            assert_eq!(step["vm_still_on_member"], true, "{step}");
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P11-02, P11-03: move the halted lab guest, with both of its disks, from the
+/// coordinator's local repository to the member's and back through the reviewed same-pool
+/// move, verifying the disks' repository placement and the guest's cleared residency after
+/// each move, then start the guest where it belongs. A move whose expected host is stale is
+/// refused first. Any lab-created snapshot is deleted beforehand because the client refuses
+/// storage moves while snapshots exist.
+#[tokio::test]
+#[ignore]
+async fn lab_halted_guest_move_between_local_repositories() {
+    use xenadmin_core::{PowerAction, PowerState, VmCommand, VmMigration};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let vm = guest.id;
+    let mut steps = Vec::new();
+
+    // Lab-created snapshots block a storage move; remove them through the reviewed deletion.
+    for snapshot in inventory
+        .snapshots
+        .for_vm(vm)
+        .filter(|s| s.name.starts_with("lab-"))
+        .map(|s| (s.id, s.name.clone()))
+        .collect::<Vec<_>>()
+    {
+        let current = c.latest().inventory().unwrap().clone();
+        let disks = current
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(snapshot.0) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(vm, snapshot.0).unwrap(),
+                    disks,
+                },
+            )
+            .expect("leftover snapshot deletion accepted");
+        let outcome = wait_vm_outcome(&deletion, 300).await;
+        let gone = settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.snapshots.for_vm(vm).all(|s| s.id != snapshot.0))
+        })
+        .await;
+        steps.push(json!({"step": "delete leftover snapshot", "name": snapshot.1, "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": gone}));
+    }
+    if guest.power_state != PowerState::Halted {
+        let mut halt = halt_guest(&c, vm).await;
+        halt["step"] = json!("halt the guest");
+        steps.push(halt);
+    }
+    let home = c.latest().inventory().unwrap().vms[&vm]
+        .host
+        .or(Some(coordinator));
+    let disks_on = |c: &Connection, sr: xenadmin_core::SrId| {
+        c.latest().inventory().is_some_and(|i| {
+            let placed = i
+                .details
+                .vm_disks
+                .get(&vm)
+                .map(|vbds| {
+                    vbds.iter()
+                        .filter_map(|b| i.details.vbds.get(b))
+                        .filter(|b| b.kind == "Disk")
+                        .filter_map(|b| b.vdi)
+                        .filter_map(|v| i.details.vdis.get(&v))
+                        .map(|v| v.sr == Some(sr))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            placed.len() == 2 && placed.iter().all(|p| *p)
+        })
+    };
+    let halted_plan = |c: &Connection, destination: HostId| -> VmMigration {
+        let current = c.latest().inventory().unwrap().clone();
+        let mut plan = migration_plan(&current, vm, destination);
+        plan.live = false;
+        plan.expected_host = current.vms[&vm].host;
+        plan.expected_affinity = current.details.vms[&vm].affinity;
+        plan
+    };
+    let member_sr = local_sr_of(&inventory, member).expect("member local repository");
+    let coordinator_sr =
+        local_sr_of(&inventory, coordinator).expect("coordinator local repository");
+    let source_sr = {
+        let current = c.latest().inventory().unwrap().clone();
+        let plan = migration_plan(&current, vm, member);
+        assert_eq!(plan.disks.len(), 2, "expected the image and data disks");
+        plan.disks[0].expected_sr
+    };
+    let (first_destination, first_sr, back_destination, back_sr) = if source_sr == member_sr {
+        (coordinator, coordinator_sr, member, member_sr)
+    } else {
+        (member, member_sr, coordinator, coordinator_sr)
+    };
+    steps.push(json!({"step": "placement before", "source_repository": source_sr.to_string(), "first_destination": inventory.hosts[&first_destination].name}));
+
+    // A review whose expected host is stale must be refused by the fresh guest read.
+    let mut stale = halted_plan(&c, first_destination);
+    stale.expected_host = Some(first_destination);
+    let refusal = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                operation: stale,
+            },
+        )
+        .map(|op| async move { wait_vm_outcome(&op, 120).await });
+    let entry = match refusal {
+        Ok(pending) => {
+            let row = pending.await;
+            json!({"step": "move with a stale expected host", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "expected_refusal": true})
+        }
+        Err(error) => {
+            json!({"step": "move with a stale expected host", "accepted": false, "error": error.to_string(), "expected_refusal": true})
+        }
+    };
+    steps.push(entry);
+
+    for (label, destination, sr) in [
+        (
+            "move the halted guest to the other repository",
+            first_destination,
+            first_sr,
+        ),
+        ("move the halted guest back", back_destination, back_sr),
+    ] {
+        let plan = halted_plan(&c, destination);
+        let started = std::time::Instant::now();
+        let migration = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Migrate {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    operation: plan,
+                },
+            )
+            .expect("halted move accepted");
+        let row = wait_vm_outcome(&migration, 1800).await;
+        let placed = settle(300, || {
+            disks_on(&c, sr)
+                && c.latest().inventory().is_some_and(|i| {
+                    i.vms[&vm].power_state == PowerState::Halted && i.vms[&vm].host.is_none()
+                })
+        })
+        .await;
+        steps.push(json!({"step": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed, "elapsed_ms": started.elapsed().as_millis() as u64, "destination": inventory.hosts[&destination].name}));
+    }
+    let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+    start["step"] = json!("start the guest");
+    start["resident_host"] = json!(
+        c.latest().inventory().unwrap().vms[&vm]
+            .host
+            .map(|h| inventory.hosts[&h].name.clone())
+    );
+    start["home_before"] = json!(home.map(|h| inventory.hosts[&h].name.clone()));
+    steps.push(start);
+    c.close().await;
+    lab.record(
+        "halted-guest-move-between-local-repositories",
+        json!({"guest": guest.name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert!(
+                step["accepted"] == false || step["state"] == "Rejected",
+                "{step}"
+            );
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
