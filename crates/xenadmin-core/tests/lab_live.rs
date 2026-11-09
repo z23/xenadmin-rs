@@ -4439,3 +4439,144 @@ async fn lab_xva_export_and_import_across_pools() {
     home.close().await;
     away.close().await;
 }
+
+/// P12-03 and P13-03: the pool's name and description are edited and restored, and a
+/// member is disabled and enabled again, each change read back from the inventory.
+#[tokio::test]
+#[ignore]
+async fn lab_pool_metadata_and_host_enable() {
+    use xenadmin_core::{ResourceCommand, ResourceTarget};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    // The reviewed name is the pool's own label, empty on a fresh XCP-ng installation,
+    // not the inventory's display name.
+    let original_name = inventory
+        .details
+        .pool
+        .as_ref()
+        .map(|p| p.name.clone())
+        .unwrap_or_default();
+    let original_description = inventory
+        .details
+        .pool
+        .as_ref()
+        .map(|p| p.description.clone())
+        .unwrap_or_default();
+
+    async fn rename(
+        c: &Connection,
+        pool: xenadmin_core::PoolId,
+        from: (&str, &str),
+        to: (&str, &str),
+        seconds: u64,
+    ) -> (OperationState, String, bool) {
+        let operation = c
+            .submit_resource(
+                OperationId::new(),
+                ResourceCommand::RenameMetadata {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Pool(pool))
+                        .unwrap(),
+                    expected_name: from.0.into(),
+                    expected_description: from.1.into(),
+                    name: to.0.into(),
+                    description: to.1.into(),
+                },
+            )
+            .expect("rename accepted");
+        let outcome = wait_outcome(&operation, seconds).await;
+        let check = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.pool_name == to.0
+                    && i.details
+                        .pool
+                        .as_ref()
+                        .is_some_and(|p| p.description == to.1)
+            })
+        })
+        .await;
+        (outcome.state.clone(), outcome.detail.clone(), check)
+    }
+    // The client never sets an empty label, so a pool XCP-ng left unnamed keeps a lasting
+    // name afterwards; a named pool is renamed and then restored.
+    let lasting = if original_name.is_empty() {
+        "lab-pool".to_string()
+    } else {
+        original_name.clone()
+    };
+    let temporary = (
+        format!("lab-pool-{stamp}"),
+        format!("Renamed by the live harness at {stamp}"),
+    );
+    let (state, detail, check) = rename(
+        &c,
+        inventory.pool_id,
+        (&original_name, &original_description),
+        (&temporary.0, &temporary.1),
+        120,
+    )
+    .await;
+    steps.push(json!({"step": "rename pool", "from": original_name, "state": format!("{state:?}"), "detail": detail, "verified": check}));
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    assert!(check);
+    let (state, detail, check) = rename(
+        &c,
+        inventory.pool_id,
+        (&temporary.0, &temporary.1),
+        (&lasting, &original_description),
+        120,
+    )
+    .await;
+    steps.push(json!({"step": if original_name.is_empty() { "give the unnamed pool a lasting name" } else { "restore pool name" }, "to": lasting, "state": format!("{state:?}"), "detail": detail, "verified": check}));
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    assert!(check);
+
+    // Disable and enable a member that does not host the guest.
+    let coordinator = inventory.coordinator.expect("coordinator");
+    let member = *inventory
+        .hosts
+        .keys()
+        .find(|h| **h != coordinator)
+        .expect("a member");
+    for enabled in [false, true] {
+        let operation = c
+            .submit_resource(
+                OperationId::new(),
+                ResourceCommand::SetHostEnabled {
+                    host: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Host(member))
+                        .unwrap(),
+                    expected_enabled: !enabled,
+                    enabled,
+                },
+            )
+            .expect("host enable change accepted");
+        let outcome = wait_outcome(&operation, 120).await;
+        let check = settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.hosts[&member].enabled == enabled)
+        })
+        .await;
+        steps.push(json!({"step": if enabled { "enable member" } else { "disable member" }, "host": inventory.hosts[&member].name, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert!(check);
+    }
+    lab.record("pool-metadata-and-host-enable", json!({"steps": steps}));
+    c.close().await;
+}

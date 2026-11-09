@@ -59,6 +59,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Cross-pool copy with both pools connected | P01-06, P11-04, P13-02 | Passed | The third host was ejected again through the reviewed ejection and returned as a standalone pool; one client held the two-host pool and the standalone pool at once; the halted guest was copied across pools over the lab network to the standalone host's local repository with its NIC mapped to the same-named network, in 18 s, with new VM, disk and MAC identities and the source guest retained; the copy started on the other pool and its console typed commands that reported marker A from the copied data disk; the copy was shut down and deleted with both disks, and the guest was started again on its own pool |
 | Cross-pool move round trip | P11-04 | Passed after fixes | The halted guest was moved from its pool to the standalone host and back (and once more each way after an interrupted attempt left it on the standalone host), each leg in 25 to 35 s with both disks relocated, the VM UUID preserved by XAPI, the source pool verified empty of the VM, its attachments and its disks, and the destination verified with the reviewed placement; the guest started again on its home pool. The first attempts ended unknown or refused (findings 9 and 10) |
 | XVA export and import across pools | P11-06 | Passed | The halted guest was exported uncompressed to a 74.6 MB XVA file on the workstation in 5.5 s (the allocated blocks of its 68 MiB image and 1 GiB data disks) with the export verified against the saved file; the file was imported into the standalone pool's local repository in 2.5 s as a new VM with two disks whose identities and storage were verified; the import was deleted with its disks, the file removed and the guest started again |
+| Pool name and member enable state | P13-03, P12-03 | Passed after fix | The pool XCP-ng had left unnamed was renamed through the client once the review expected its empty label (finding 11); the client refuses to set an empty name by design, so the lab pool keeps a lasting name and later runs rename and restore it; the second member was disabled and enabled again with each state read back |
 
 ## Findings
 
@@ -146,6 +147,14 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    released source disks on that pool changed the set and the move back was refused with
    "reopen this review". Only identities that appear after the review can be mistaken for a
    transfer's result, so the preflight now refuses on arrivals alone. Unit coverage was added.
+
+11. **A pool that was never named could not be renamed or dissolved.** XCP-ng leaves a
+   fresh pool's `name_label` empty, and the inventory shows "Unnamed" in its place. The
+   desktop's rename editor and the dissolution review carried that placeholder as the
+   expected name, so the host's fresh-record check refused the edit as "changed since
+   review". The inventory now also carries the pool's own label, the reviews expect that,
+   and the editor keeps showing the placeholder. Unit coverage was added for the empty
+   label and for the placeholder being refused.
 
 ## Console observation
 
