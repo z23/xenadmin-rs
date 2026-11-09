@@ -11414,3 +11414,230 @@ async fn lab_checkpoint_restore_resumes_memory_state() {
     );
     assert!(gone, "checkpoint or its disks remain");
 }
+
+/// P12-08, P12-03, P12-05: raise the member's control-domain memory through the reviewed
+/// editor, reboot the member through maintenance so the new allocation takes effect, read
+/// the control domain's actual memory after the boot, restore the previous value with a
+/// second reboot and bring the member out of maintenance.
+#[tokio::test]
+#[ignore]
+async fn lab_dom0_memory_change_with_member_reboot() {
+    use xenadmin_core::{HostOperation, MemoryLimits, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("member");
+    assert!(
+        !inventory
+            .vms
+            .values()
+            .any(|v| v.host == Some(member) && !v.is_control_domain),
+        "the member must not host guests"
+    );
+    let dom0 = inventory.details.hosts[&member]
+        .control_domain
+        .expect("control domain");
+    let limits_of = |i: &xenadmin_core::Inventory| {
+        let d = i.details.vms.get(&dom0)?;
+        Some(MemoryLimits {
+            static_min: d.memory_static_min?,
+            dynamic_min: d.memory_dynamic_min?,
+            dynamic_max: d.memory_dynamic_max?,
+            static_max: d.memory_static_max?,
+        })
+    };
+    let actual_of = |i: &xenadmin_core::Inventory| {
+        i.details
+            .vms
+            .get(&dom0)
+            .and_then(|d| d.metrics)
+            .and_then(|m| i.details.vm_metrics.get(&m))
+            .and_then(|m| m.memory_actual)
+    };
+    let original = limits_of(&inventory).expect("control-domain limits");
+    let desired = original.static_max + 128 * 1024 * 1024;
+    let mut steps = Vec::new();
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let details = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.hosts.get(&member).cloned())
+    };
+
+    let mut entry = resource_op(
+        &c,
+        "set control-domain memory",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::SetDom0Memory {
+                control_domain: dom0,
+                expected: original.clone(),
+                memory: desired,
+            },
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || c.latest().inventory().is_some_and(|i| limits_of(i)
+            .is_some_and(|l| l.static_max == desired
+                && l.dynamic_max == desired
+                && l.dynamic_min == desired)))
+        .await
+    );
+    entry["actual_before_reboot"] = json!(actual_of(c.latest().inventory().unwrap()));
+    steps.push(entry);
+
+    let mut entry = resource_op(
+        &c,
+        "enter maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::EnterMaintenance {
+                expected_enabled: true,
+                resident_vms: Vec::new(),
+            },
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| !i.hosts[&member].enabled))
+        .await
+    );
+    steps.push(entry);
+
+    for (label, back_to) in [
+        ("reboot with the new allocation", None),
+        (
+            "reboot after restoring the allocation",
+            Some(original.clone()),
+        ),
+    ] {
+        if let Some(limits) = &back_to {
+            let current = limits_of(c.latest().inventory().unwrap()).expect("current limits");
+            let mut entry = resource_op(
+                &c,
+                "restore control-domain memory",
+                ResourceCommand::Host {
+                    target: host_target(&c),
+                    operation: HostOperation::SetDom0Memory {
+                        control_domain: dom0,
+                        expected: current,
+                        memory: limits.static_max,
+                    },
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(60, || c.latest().inventory().is_some_and(
+                    |i| limits_of(i).is_some_and(|l| l.static_max == limits.static_max)
+                ))
+                .await
+            );
+            steps.push(entry);
+        }
+        let boot_before = details(&c).and_then(|h| h.boot_time).expect("boot time");
+        let started = std::time::Instant::now();
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::Reboot {
+                    expected_boot_time: boot_before.clone(),
+                },
+            },
+            900,
+        )
+        .await;
+        let rebooted = settle(900, || {
+            details(&c)
+                .and_then(|h| h.boot_time)
+                .is_some_and(|t| t != boot_before)
+        })
+        .await;
+        let live = settle(300, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details
+                    .hosts
+                    .get(&member)
+                    .and_then(|h| h.metrics)
+                    .and_then(|m| i.details.host_metrics.get(&m))
+                    .and_then(|m| m.live)
+                    == Some(true)
+            })
+        })
+        .await;
+        let expected_actual = back_to.as_ref().map(|l| l.static_max).unwrap_or(desired);
+        let settled = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                actual_of(i).is_some_and(|a| a.abs_diff(expected_actual) <= expected_actual / 20)
+            })
+        })
+        .await;
+        entry["boot_time_changed"] = json!(rebooted);
+        entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+        entry["host_live"] = json!(live);
+        entry["expected_actual"] = json!(expected_actual);
+        entry["actual_after_boot"] = json!(actual_of(c.latest().inventory().unwrap()));
+        entry["actual_within_five_percent"] = json!(settled);
+        entry["limits_after_boot"] = json!(limits_of(c.latest().inventory().unwrap()).map(|l| json!({"static_min": l.static_min, "dynamic_min": l.dynamic_min, "dynamic_max": l.dynamic_max, "static_max": l.static_max})));
+        steps.push(entry);
+    }
+
+    let mut entry = resource_op(
+        &c,
+        "exit maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::ExitMaintenance,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.hosts[&member].enabled))
+        .await
+    );
+    steps.push(entry);
+    c.close().await;
+    lab.record("dom0-memory-change-with-member-reboot", json!({"member": inventory.hosts[&member].name, "control_domain": dom0.to_string(),
+        "original": {"static_min": original.static_min, "dynamic_min": original.dynamic_min, "dynamic_max": original.dynamic_max, "static_max": original.static_max},
+        "desired": desired, "steps": steps}));
+    for step in &steps {
+        assert_eq!(step["accepted"], true, "{step}");
+        assert_eq!(step["state"], "Succeeded", "{step}");
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+        if step.get("boot_time_changed").is_some() {
+            assert_eq!(step["boot_time_changed"], true, "{step}");
+            assert_eq!(step["actual_within_five_percent"], true, "{step}");
+        }
+    }
+}
