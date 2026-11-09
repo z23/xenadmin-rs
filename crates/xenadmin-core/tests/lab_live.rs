@@ -455,11 +455,26 @@ async fn lab_form_pool_by_reviewed_join() {
             lab.credentials(),
         )
         .expect("join accepted for review");
+    // The joining host restarts its toolstack, which can drop the source connection
+    // before the reply arrives. The durable record then surfaces through the
+    // destination's history after recovery, so watch both.
+    let join_id = operation.latest().id;
     let outcome = tokio::time::timeout(deadline(600), async {
         loop {
             let row = operation.latest();
             if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
                 return row;
+            }
+            if let Some(row) = destination
+                .resource_history()
+                .iter()
+                .find(|r| {
+                    r.id == join_id
+                        && (r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+                })
+                .cloned()
+            {
+                return std::sync::Arc::new(row);
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -823,4 +838,297 @@ async fn lab_guest_provisioning() {
         "console": {"width": frame.0, "height": frame.1, "bytes": frame.2, "state": frame.3},
     }));
     assert!(attached, "guest does not show two disks");
+}
+
+/// Types one line into a guest console as RFB key events. Printable ASCII keysyms equal
+/// the character codes; QEMU applies any shift state itself. Ends with Return.
+async fn type_line(console: &xenadmin_core::Console, text: &str) {
+    use xenadmin_core::ConsoleInput;
+    for ch in text.chars() {
+        assert!(
+            ch.is_ascii() && !ch.is_ascii_control(),
+            "ASCII only: {ch:?}"
+        );
+        let keysym = ch as u32;
+        console
+            .input(ConsoleInput::Key { keysym, down: true })
+            .unwrap();
+        console
+            .input(ConsoleInput::Key {
+                keysym,
+                down: false,
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    console
+        .input(ConsoleInput::Key {
+            keysym: 0xff0d,
+            down: true,
+        })
+        .unwrap();
+    console
+        .input(ConsoleInput::Key {
+            keysym: 0xff0d,
+            down: false,
+        })
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+}
+
+fn frame_digest(frame: &xenadmin_core::ConsoleFrame) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(frame.width.to_le_bytes());
+    hasher.update(frame.height.to_le_bytes());
+    hasher.update(&frame.rgba);
+    format!("{:x}", hasher.finalize())
+}
+
+/// A tiny listener on the lab bridge address that records guest reports. The guest calls
+/// `wget http://GATEWAY:PORT/report/VALUE`; nothing else is served.
+struct Reports {
+    received: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for Reports {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+async fn report_listener(address: &str) -> Reports {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind(address)
+        .await
+        .expect("bind report listener");
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = received.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let sink = sink.clone();
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(stream);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_ok()
+                    && let Some(path) = line.split_whitespace().nth(1)
+                    && let Some(value) = path.strip_prefix("/report/")
+                {
+                    sink.lock().unwrap().push(value.to_string());
+                }
+                let mut stream = reader.into_inner();
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n",
+                    )
+                    .await;
+                let _ = stream.shutdown().await;
+            });
+        }
+    });
+    Reports { received, task }
+}
+
+async fn stable_frame(console: &xenadmin_core::Console, seconds: u64) -> String {
+    tokio::time::timeout(deadline(seconds), async {
+        let mut last = String::new();
+        let mut same = 0;
+        loop {
+            if let Some(frame) = &console.latest().frame {
+                let digest = frame_digest(frame);
+                if digest == last {
+                    same += 1;
+                    if same >= 6 {
+                        return digest;
+                    }
+                } else {
+                    same = 0;
+                    last = digest;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .expect("console frame settled")
+}
+
+async fn wait_report(reports: &Reports, value: &str, seconds: u64) -> bool {
+    settle(seconds, || {
+        reports.received.lock().unwrap().iter().any(|v| v == value)
+    })
+    .await
+}
+
+/// Logs into the live Alpine guest, gives it a static lab address, mounts the data disk and
+/// reports the marker file's content to the workstation listener.
+async fn guest_report_marker(
+    console: &xenadmin_core::Console,
+    gateway: &str,
+    port: u16,
+    guest_ip: &str,
+) {
+    stable_frame(console, 180).await;
+    type_line(console, "root").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    type_line(console, "ip link set eth0 up").await;
+    type_line(console, &format!("ip addr add {guest_ip}/24 dev eth0")).await;
+    type_line(console, "d=/dev/xvdb; [ -b $d ] || d=/dev/sdb").await;
+    type_line(
+        console,
+        "mount $d /mnt || (mkfs.ext4 -q -F $d && mount $d /mnt)",
+    )
+    .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    type_line(console, "[ -f /mnt/marker ] || echo A > /mnt/marker; sync").await;
+    type_line(
+        console,
+        &format!("wget -q -O- http://{gateway}:{port}/report/$(cat /mnt/marker)"),
+    )
+    .await;
+}
+
+/// P04-02, P05-02, P05-03, P05-04, P19-04, P19-06: console keyboard input, a disk snapshot,
+/// a marker change, reviewed restore with shutdown and restart, and the marker reading its
+/// snapshot value again, each confirmed by the guest reporting over the isolated network.
+#[tokio::test]
+#[ignore]
+async fn lab_guest_console_and_snapshot_restore() {
+    use xenadmin_core::{PowerState, SnapshotName, SnapshotWorkflow, VmCommand};
+    let lab = Lab::load();
+    let gateway = std::env::var("XENADMIN_LAB_GATEWAY").unwrap_or_else(|_| "192.168.254.1".into());
+    let port: u16 = 8000;
+    let guest_ip =
+        std::env::var("XENADMIN_LAB_GUEST_IP").unwrap_or_else(|_| "192.168.254.100".into());
+    let reports = report_listener(&format!("{gateway}:{port}")).await;
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest from lab_guest_provisioning")
+        .clone();
+
+    let console = c
+        .open_console(c.latest().observe_vm(guest.id).unwrap())
+        .expect("console");
+    guest_report_marker(&console, &gateway, port, &guest_ip).await;
+    let reported_a = wait_report(&reports, "A", 90).await;
+    let frame_after_login = console.latest().frame.as_ref().map(|f| frame_digest(f));
+
+    // Disk snapshot while running, then change the marker.
+    let snapshot_name = format!(
+        "lab-marker-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    );
+    let snapshot = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                name: SnapshotName::new(&snapshot_name).unwrap(),
+            },
+        )
+        .expect("snapshot accepted");
+    let snapshot_outcome = wait_vm_outcome(&snapshot, 300).await;
+    assert_eq!(
+        snapshot_outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        snapshot_outcome.detail
+    );
+    let snapshot_id = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(id) = c.latest().inventory().and_then(|i| {
+                i.snapshots
+                    .for_vm(guest.id)
+                    .find(|s| s.name == snapshot_name)
+                    .map(|s| s.id)
+            }) {
+                return id;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    })
+    .await
+    .expect("snapshot visible");
+    type_line(&console, "echo B > /mnt/marker; sync").await;
+    type_line(
+        &console,
+        &format!("wget -q -O- http://{gateway}:{port}/report/$(cat /mnt/marker)"),
+    )
+    .await;
+    let reported_b = wait_report(&reports, "B", 60).await;
+    console.close();
+
+    // Reviewed restore: clean shutdown, revert, start again.
+    let restore = c
+        .submit(
+            OperationId::new(),
+            VmCommand::SnapshotWorkflow {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: SnapshotWorkflow::Restore {
+                    snapshot: snapshot_id,
+                    expected_state: PowerState::Running,
+                    checkpoint: false,
+                    shutdown: true,
+                    start_after: true,
+                },
+            },
+        )
+        .expect("restore accepted");
+    let restore_outcome = wait_vm_outcome(&restore, 600).await;
+    assert_eq!(
+        restore_outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        restore_outcome.detail
+    );
+    assert!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .and_then(|i| i
+                .vms
+                .get(&guest.id)
+                .map(|v| v.power_state == PowerState::Running))
+            .unwrap_or(false))
+        .await
+    );
+
+    // The live guest boots fresh; the data disk must read the snapshot's marker again.
+    reports.received.lock().unwrap().clear();
+    let console = c
+        .open_console(c.latest().observe_vm(guest.id).unwrap())
+        .expect("console after restore");
+    guest_report_marker(&console, &gateway, port, &guest_ip).await;
+    let restored = wait_report(&reports, "A", 90).await;
+    let late_b = reports.received.lock().unwrap().iter().any(|v| v == "B");
+    console.close();
+    c.close().await;
+    lab.record("guest-console-and-snapshot-restore", json!({
+        "guest": {"name": guest.name, "id": guest.id.to_string()},
+        "console_frame_after_login": frame_after_login,
+        "marker_reported_before_snapshot": reported_a,
+        "snapshot": {"state": format!("{:?}", snapshot_outcome.state), "detail": snapshot_outcome.detail, "id": snapshot_id.to_string()},
+        "marker_reported_after_change": reported_b,
+        "restore": {"state": format!("{:?}", restore_outcome.state), "detail": restore_outcome.detail,
+                    "steps": restore_outcome.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()},
+        "marker_reported_after_restore": restored,
+        "changed_marker_seen_after_restore": late_b,
+        "reports": reports.received.lock().unwrap().clone(),
+    }));
+    assert!(
+        reported_a,
+        "guest never reported marker A (console input or guest network)"
+    );
+    assert!(reported_b, "guest never reported the changed marker B");
+    assert!(restored && !late_b, "restored disk did not read marker A");
 }

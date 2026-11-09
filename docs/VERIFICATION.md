@@ -122,3 +122,21 @@ exact host versions and permitted actions. Never substitute a production pool fo
 The ordinary check script also runs the vendored RFB wire tests and isolated fake Secret
 Service fixtures. It renders only synthetic scenes. User-provided screenshots and private
 inventories must not appear in artifacts, fixtures, reports or releases.
+
+## Live lab scenarios
+
+`crates/xenadmin-core/tests/lab_live.rs` holds ignored integration tests that drive the
+core facade against the disposable lab. They take every target from the harness manifest
+and refuse to run without it, read the lab-only root password from a file, and write
+sanitized JSON evidence under the manifest directory, never into the repository:
+
+```sh
+XENADMIN_LAB_MANIFEST=/var/lib/libvirt/images/xenadmin-rs-lab/lab.json \
+XENADMIN_LAB_PASSWORD_FILE=/path/to/lab-root-password \
+XENADMIN_LAB_GUEST_IMAGE=/path/to/alpine-virt-x86_64.iso \
+cargo test -p xenadmin-core --test lab_live -- --ignored --test-threads=1
+```
+
+`XENADMIN_DEV_RPC_TRACE=1` prints failed XAPI method names and sanitized error codes to
+stderr during these runs; it never prints parameters, tokens or payloads. Scenario results
+and host findings are recorded in the dated qualification reports under `reports/`.
