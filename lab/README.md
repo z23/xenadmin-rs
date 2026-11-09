@@ -139,9 +139,12 @@ content. A completed fixture test is not evidence of a completed live scenario.
 
 The isolated lab has no internet access and the workstation needs no privileges beyond
 libvirt, so the optional pieces below are built on the workstation and carried into the lab
-as images. Package files are downloaded on the workstation once (Alpine `main` and
-`community` for the Alpine release matching the ISO) into a directory outside the source
-tree; the Alpine ISO is checked against the publisher's SHA-256 before every build.
+as images. `python3 lab/alpine_closure.py --iso ALPINE.iso --branch v3.24 --out DIR ROOTS...`
+downloads the requested Alpine packages and their dependency closure once (skipping what the
+ISO already bundles) into a directory outside the source tree; the appliance needs
+`nfs-utils nfs-utils-openrc rpcbind rpcbind-openrc e2fsprogs util-linux-misc` and the guest
+image needs `xe-guest-utilities`. The Alpine ISO is checked against the publisher's SHA-256
+before every build.
 
 - `storage-network --directory DIR --subnet 192.168.253.0/24 --nics 2` defines an isolated
   storage network (no DHCP, no forwarding) and adds virtio NICs to every lab host. One NIC

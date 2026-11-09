@@ -187,8 +187,19 @@ mkdir -p {export}
 if mount -t ext4 "$DEV" {export}; then
     log "mounted $DEV at {export}"
     for d in sr iso heartbeat; do mkdir -p {export}/$d; chmod 1777 {export}/$d; done
-    rc-service rpcbind start
-    rc-service nfs start && log "exports: $(exportfs | tr '\\n' ' ')"
+    log "nfsd module: $(modprobe nfsd 2>&1 && echo loaded)"
+    log "rpcbind: $(rc-service rpcbind start 2>&1 | tr '\\n' ' ' | cut -c1-300)"
+    if ! out=$(rc-service nfs start 2>&1); then
+        log "nfs service: $(echo "$out" | tr '\\n' ' ' | cut -c1-200)"
+        log "statd: $(rc-service rpc.statd start 2>&1 | tr '\\n' ' ' | cut -c1-200) $(grep -i statd /var/log/messages 2>/dev/null | tail -n 2 | tr '\\n' ' ' | cut -c1-300)"
+        # NFSv4 and plain v3 mounts need nfsd and mountd only; lock recovery notification is
+        # not needed for the lab repositories, so bring the daemons up directly.
+        exportfs -r && rpc.nfsd 8 && rpc.mountd && log "nfsd and mountd started directly"
+    else
+        log "nfs service started"
+    fi
+    log "rpc: $(rpcinfo -p 2>/dev/null | awk '{print $5}' | sort -u | tr '\\n' ' ')"
+    log "exports: $(exportfs 2>&1 | tr '\\n' ' ' | cut -c1-300)"
 else
     log "mount failed for $DEV"
 fi

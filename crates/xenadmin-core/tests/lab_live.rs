@@ -14921,3 +14921,406 @@ async fn lab_tools_guest_on_shared_storage() {
         }
     }
 }
+
+/// P13-05, P06-07: enable HA on the pool with the shared NFS repository as its heartbeat
+/// store, protect the tools guest with the restart priority, raise the tolerated host
+/// failures to one and read every value back, then restore the priority and tolerance and
+/// disable HA. HA left enabled by an interrupted run is disabled first; the scenario always
+/// records before asserting so an unexpected end state leaves evidence.
+#[tokio::test]
+#[ignore]
+async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
+    use xenadmin_core::{HaRestartPriority, PoolOperation, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let shared: xenadmin_core::SrId = inventory
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| s.uuid.into())
+        .expect("the shared NFS repository from the storage scenario");
+    let guest = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+        .cloned();
+    let mut steps = Vec::new();
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let administration = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pool.as_ref().map(|p| p.administration.clone()))
+    };
+    let a = administration(&c).expect("pool administration");
+    steps.push(json!({"step": "HA before", "enabled": a.ha_enabled, "failures_to_tolerate": a.ha_failures_to_tolerate, "heartbeat_srs": a.heartbeat_srs.len(), "plan_exists_for": a.ha_plan_exists_for}));
+    if a.ha_enabled == Some(true) {
+        let mut entry = resource_op(
+            &c,
+            "disable HA left by an earlier run",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::DisableHa,
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(180, || administration(&c)
+                .is_some_and(|a| a.ha_enabled == Some(false)))
+            .await
+        );
+        steps.push(entry);
+    }
+    let failures_before = administration(&c)
+        .and_then(|a| a.ha_failures_to_tolerate)
+        .unwrap_or(0);
+
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "enable HA with the shared repository as heartbeat store",
+        ResourceCommand::Pool {
+            target: pool_target(&c),
+            operation: PoolOperation::EnableHa {
+                heartbeat_srs: vec![shared],
+                expected_failures: failures_before,
+            },
+        },
+        900,
+    )
+    .await;
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    entry["read_back"] = json!(
+        settle(300, || administration(&c).is_some_and(|a| a.ha_enabled
+            == Some(true)
+            && a.heartbeat_srs.contains(&shared)))
+        .await
+    );
+    steps.push(entry);
+    let enabled = administration(&c).is_some_and(|a| a.ha_enabled == Some(true));
+
+    if enabled {
+        if let Some(guest) = &guest {
+            let priority_of = |c: &Connection| {
+                c.latest().inventory().and_then(|i| {
+                    i.details
+                        .vms
+                        .get(&guest.id)
+                        .and_then(|d| d.ha_restart_priority.clone())
+                })
+            };
+            let from = priority_of(&c)
+                .as_deref()
+                .and_then(HaRestartPriority::parse)
+                .unwrap_or(HaRestartPriority::Disabled);
+            for (label, expected, priority, wire) in [
+                (
+                    "protect the tools guest with the restart priority",
+                    from,
+                    HaRestartPriority::Restart,
+                    "restart",
+                ),
+                (
+                    "remove the tools guest's restart priority",
+                    HaRestartPriority::Restart,
+                    from,
+                    "",
+                ),
+            ] {
+                let mut entry = resource_op(
+                    &c,
+                    label,
+                    ResourceCommand::Pool {
+                        target: pool_target(&c),
+                        operation: PoolOperation::SetVmRestartPriority {
+                            vm: guest.id,
+                            expected,
+                            priority,
+                        },
+                    },
+                    300,
+                )
+                .await;
+                entry["read_back"] = json!(
+                    settle(120, || priority_of(&c)
+                        .as_deref()
+                        .map(|p| if p == "restart" { "restart" } else { "" })
+                        == Some(wire))
+                    .await
+                );
+                steps.push(entry);
+                if label.starts_with("protect") {
+                    // Tolerate one host failure while the guest is protected.
+                    let mut entry = resource_op(
+                        &c,
+                        "tolerate one host failure",
+                        ResourceCommand::Pool {
+                            target: pool_target(&c),
+                            operation: PoolOperation::SetHaFailuresToTolerate {
+                                expected: failures_before,
+                                failures: 1,
+                            },
+                        },
+                        300,
+                    )
+                    .await;
+                    entry["read_back"] = json!(
+                        settle(120, || administration(&c)
+                            .is_some_and(|a| a.ha_failures_to_tolerate == Some(1)))
+                        .await
+                    );
+                    entry["plan_exists_for"] =
+                        json!(administration(&c).and_then(|a| a.ha_plan_exists_for));
+                    steps.push(entry);
+                    let mut entry = resource_op(
+                        &c,
+                        "restore the tolerated failures",
+                        ResourceCommand::Pool {
+                            target: pool_target(&c),
+                            operation: PoolOperation::SetHaFailuresToTolerate {
+                                expected: 1,
+                                failures: failures_before,
+                            },
+                        },
+                        300,
+                    )
+                    .await;
+                    entry["read_back"] = json!(
+                        settle(120, || administration(&c).is_some_and(|a| a
+                            .ha_failures_to_tolerate
+                            == Some(failures_before)))
+                        .await
+                    );
+                    steps.push(entry);
+                }
+            }
+        } else {
+            steps
+                .push(json!({"step": "restart priority", "skipped": "no tools guest on the pool"}));
+        }
+        let started = std::time::Instant::now();
+        let mut entry = resource_op(
+            &c,
+            "disable HA",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::DisableHa,
+            },
+            900,
+        )
+        .await;
+        entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+        entry["read_back"] = json!(
+            settle(300, || administration(&c)
+                .is_some_and(|a| a.ha_enabled == Some(false)))
+            .await
+        );
+        steps.push(entry);
+    }
+    c.close().await;
+    lab.record(
+        "ha-enable-with-shared-heartbeat-and-protected-guest",
+        json!({"heartbeat_repository": shared.to_string(), "guest": guest.as_ref().map(|g| g.name.clone()), "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P12-04, P12-03, P11-01: with the tools guest running on shared storage, move it to the
+/// member by a live migration without storage, enter maintenance on the member with the guest
+/// reviewed as its resident so the client evacuates it, verify the guest running on the
+/// coordinator with the member disabled, then exit maintenance.
+#[tokio::test]
+#[ignore]
+async fn lab_member_evacuation_of_the_tools_guest() {
+    use xenadmin_core::{
+        DiskPlacement, HostOperation, NicPlacement, PowerAction, PowerState, ResourceCommand,
+        VmCommand, VmMigration,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let guest = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+        .cloned()
+        .expect("the tools guest from the shared-storage scenario");
+    let vm = guest.id;
+    let mut steps = Vec::new();
+    if guest.power_state != PowerState::Running {
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!("start the tools guest");
+        steps.push(start);
+    }
+    let resident = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.vms.get(&vm).map(|v| (v.power_state.clone(), v.host)))
+    };
+    if resident(&c).is_some_and(|(_, h)| h != Some(member)) {
+        let now = c.latest().inventory().unwrap().clone();
+        let disks = now.details.vm_disks[&vm]
+            .iter()
+            .filter_map(|b| now.details.vbds.get(b))
+            .filter(|b| b.kind == "Disk")
+            .filter_map(|b| {
+                let vdi = b.vdi?;
+                let sr = now.details.vdis.get(&vdi)?.sr?;
+                Some(DiskPlacement {
+                    vdi,
+                    expected_sr: sr,
+                    destination_sr: sr,
+                })
+            })
+            .collect::<Vec<_>>();
+        let networks = now
+            .details
+            .vifs
+            .values()
+            .filter(|v| v.vm == Some(vm))
+            .filter_map(|v| {
+                let network = v.network?;
+                Some(NicPlacement {
+                    vif: v.id,
+                    expected_network: network,
+                    destination_network: network,
+                })
+            })
+            .collect::<Vec<_>>();
+        settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details.vms.get(&vm).is_some_and(|d| {
+                    d.allowed_operations
+                        .as_ref()
+                        .is_some_and(|ops| ops.iter().any(|op| op == "pool_migrate"))
+                })
+            })
+        })
+        .await;
+        let migration = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Migrate {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    operation: VmMigration {
+                        destination: member,
+                        expected_host: now.vms[&vm].host,
+                        expected_affinity: None,
+                        live: true,
+                        disks,
+                        networks,
+                        transfer_network: None,
+                    },
+                },
+            )
+            .expect("migration accepted");
+        let row = wait_vm_outcome(&migration, 900).await;
+        let placed = settle(120, || {
+            resident(&c).is_some_and(|(s, h)| s == PowerState::Running && h == Some(member))
+        })
+        .await;
+        steps.push(json!({"step": "live-migrate the tools guest to the member", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed}));
+    }
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "enter maintenance evacuating the tools guest",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::EnterMaintenance {
+                expected_enabled: true,
+                resident_vms: vec![vm],
+            },
+        },
+        900,
+    )
+    .await;
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    entry["read_back"] = json!(
+        settle(180, || {
+            resident(&c).is_some_and(|(s, h)| s == PowerState::Running && h == Some(coordinator))
+                && c.latest()
+                    .inventory()
+                    .is_some_and(|i| !i.hosts[&member].enabled)
+        })
+        .await
+    );
+    entry["vm_state"] = json!(resident(&c).map(|(s, h)| json!({"power_state": format!("{s:?}"), "host": h.map(|h| inventory.hosts[&h].name.clone())})));
+    steps.push(entry);
+    let entered = c
+        .latest()
+        .inventory()
+        .is_some_and(|i| !i.hosts[&member].enabled);
+    if entered {
+        let mut entry = resource_op(
+            &c,
+            "exit maintenance",
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::ExitMaintenance,
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || c
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.hosts[&member].enabled))
+            .await
+        );
+        steps.push(entry);
+    }
+    c.close().await;
+    lab.record(
+        "member-evacuation-of-the-tools-guest",
+        json!({"guest": guest.name, "member": inventory.hosts[&member].name, "coordinator": inventory.hosts[&coordinator].name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
