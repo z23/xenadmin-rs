@@ -52,7 +52,7 @@ class LabTests(unittest.TestCase):
         self.assertFalse(document["forwarding"])
         self.assertEqual(document["hosts"], 3)
         self.assertFalse((directory / "lab.json").exists())
-        self.assertIn("Pending", (directory / "ACCEPTANCE.md").read_text())
+        self.assertIn("# Disposable lab acceptance record", (directory / "ACCEPTANCE.md").read_text())
         with self.assertRaises(OSError):
             manage.load(directory)
         with self.assertRaisesRegex(ValueError, "never overwritten"):
