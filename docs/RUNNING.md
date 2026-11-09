@@ -169,7 +169,10 @@ The check script uses isolated temporary state and local protocol fixtures. It r
 the demo and connection dialog under `artifacts/`. Packaging writes a release archive to
 the same ignored directory.
 Archives also include declared dependency licenses, supplied notices, and embedded-font
-notices under `third-party/`.
+notices under `third-party/`. `./scripts/package.sh --appimage` also downloads the pinned
+AppImage inputs into `target/package-tools`, verifies each against its recorded hash, and
+retries a transient mirror error a few times before refusing the build; CI caches that
+directory keyed on the input list.
 
 To run an extracted archive, execute `bin/xenadmin-rs` inside it. Optional local
 installation, upgrades, retained versions, removal and AppImage use are described in
