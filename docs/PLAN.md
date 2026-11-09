@@ -92,12 +92,13 @@ native desktop session with console keyboard input on a lab that has no XO servi
 coordinator power loss under a live session, a snapshot create interrupted by a client restart,
 snapshot clones to VM and template, the halted-guest disk lifecycle, member login and pool
 sharing, internal network and NIC lifecycle, cross-pool copy and move round trips to a
-standalone pool, XVA export and import, pool rename and member enable, plus eleven
-host-behaviour findings that were fixed, one host durability observation and one open upstream
-accessibility finding. Member failover, the remaining interruption paths, OVF transfers,
-storage administration, pointer and Orca qualification and an XO-managed VM remain
-qualification gates. Milestones remain open until their retained workflows and relevant
-acceptance checks pass.
+standalone pool, XVA and OVA export and import, pool rename, member enable, toolstack restart
+and reboot, a memory checkpoint, CD drive and guest tools media, local repository creation,
+forget, introduce and destroy, and the concurrent-edit, interrupted-edit and interrupted-restore
+paths, plus twelve host-behaviour findings that were fixed, one host durability observation and
+one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
+qualification and an XO-managed VM remain qualification gates. Milestones remain open until
+their retained workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols
 

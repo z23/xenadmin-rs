@@ -6452,3 +6452,75 @@ async fn lab_interrupted_snapshot_restore_recovers_without_replay() {
     assert!(running, "the guest is not running at the end");
     c.close().await;
 }
+
+/// P01-05 and P01-08: two saved profiles for the two pools are persisted in a profile
+/// store, both are connected from their saved options at once with session-only passwords,
+/// both are disconnected, one profile is removed and the store reloads with the other.
+#[tokio::test]
+#[ignore]
+async fn lab_saved_profiles_connect_all_and_remove() {
+    use xenadmin_core::{ConnectionProfile, ProfileStore};
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let mut store = ProfileStore::open(state.path().join("profiles")).expect("profile store");
+    let mut ids = Vec::new();
+    for (index, label) in [(0usize, "Lab pool"), (2usize, "Standalone host")] {
+        let mut profile = ConnectionProfile::new(label.into(), lab.endpoint(index), "root".into());
+        profile
+            .accept_certificate(&inspect(&lab.endpoint(index)).await)
+            .expect("own certificate accepted");
+        for other in 0..lab.hosts.len() {
+            if other != index
+                && let Some(observation) = inspect_result(&lab.endpoint(other)).await
+            {
+                profile
+                    .accept_certificate(&observation)
+                    .expect("member certificate accepted");
+            }
+        }
+        ids.push(profile.id);
+        store.save(profile).expect("profile saved");
+    }
+    drop(store);
+
+    // A fresh store sees both; connect all from their saved options.
+    let store = ProfileStore::open(state.path().join("profiles")).expect("profile store");
+    let saved = store
+        .profiles()
+        .map(|p| json!({"name": p.name, "endpoint": p.endpoint.to_string()}))
+        .collect::<Vec<_>>();
+    assert_eq!(store.profiles().count(), 2);
+    let mut connections = Vec::new();
+    for profile in store.profiles() {
+        let options = profile.options().expect("profile options");
+        let connection = backend.connect(options, lab.credentials());
+        connection
+            .wait_ready(deadline(90))
+            .await
+            .unwrap_or_else(|e| panic!("{} did not become ready: {e}", profile.name));
+        connections.push((profile.name.clone(), connection));
+    }
+    let pools = connections.iter().map(|(name, c)| json!({"profile": name, "pool": c.latest().inventory().unwrap().pool_id.to_string(), "hosts": c.latest().inventory().unwrap().hosts.len()})).collect::<Vec<_>>();
+    let distinct = connections[0].1.latest().inventory().unwrap().pool_id
+        != connections[1].1.latest().inventory().unwrap().pool_id;
+    for (_, c) in &connections {
+        c.close().await;
+    }
+    let disconnected = connections.iter().all(|(_, c)| !c.latest().is_current());
+    drop(store);
+
+    // Remove one profile; the store reloads with the other.
+    let mut store = ProfileStore::open(state.path().join("profiles")).expect("profile store");
+    let removed = store.remove(ids[1]).expect("remove");
+    drop(store);
+    let store = ProfileStore::open(state.path().join("profiles")).expect("profile store");
+    let remaining = store.profiles().map(|p| p.name.clone()).collect::<Vec<_>>();
+    lab.record(
+        "saved-profiles-connect-all-and-remove",
+        json!({"saved": saved, "connected": pools, "distinct_pools": distinct, "disconnected": disconnected, "removed": removed, "remaining": remaining}),
+    );
+    assert!(distinct && disconnected && removed);
+    assert_eq!(remaining, vec!["Lab pool".to_string()]);
+}
