@@ -11843,43 +11843,51 @@ async fn lab_nic_plug_edit_and_rate_limit() {
     let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
     start["step"] = json!("start the guest");
     steps.push(start);
-    let attached = settle(90, || {
-        vif_view(&c, vif).is_some_and(|v| {
-            v.currently_attached == Some(true)
-                && v.allowed_operations
+    let attached = settle(60, || {
+        vif_view(&c, vif).is_some_and(|v| v.currently_attached == Some(true))
+    })
+    .await;
+    let nic = vif_view(&c, vif).expect("NIC after start");
+    let hotplug = nic
+        .allowed_operations
+        .as_deref()
+        .is_some_and(|ops| ops.iter().any(|o| o == "unplug"));
+    steps.push(json!({"step": "NIC attached after start", "read_back": attached, "currently_attached": nic.currently_attached, "allowed_operations": nic.allowed_operations, "unplug_advertised": hotplug}));
+    if hotplug {
+        let mut entry = device_op(&c, vm, DeviceOperation::UnplugNic { vif }, 180).await;
+        entry["step"] = json!("disconnect the NIC while running");
+        entry["read_back"] = json!(
+            settle(60, || vif_view(&c, vif)
+                .is_some_and(|v| v.currently_attached == Some(false)))
+            .await
+        );
+        steps.push(entry);
+        let plug_advertised = settle(30, || {
+            vif_view(&c, vif).is_some_and(|v| {
+                v.allowed_operations
                     .as_deref()
-                    .is_some_and(|ops| ops.iter().any(|o| o == "unplug"))
+                    .is_some_and(|ops| ops.iter().any(|o| o == "plug"))
+            })
         })
-    })
-    .await;
-    steps.push(
-        json!({"step": "NIC attached after start with unplug advertised", "read_back": attached}),
-    );
-    let mut entry = device_op(&c, vm, DeviceOperation::UnplugNic { vif }, 180).await;
-    entry["step"] = json!("disconnect the NIC while running");
-    entry["read_back"] = json!(
-        settle(60, || vif_view(&c, vif)
-            .is_some_and(|v| v.currently_attached == Some(false)))
-        .await
-    );
-    steps.push(entry);
-    let plug_advertised = settle(30, || {
-        vif_view(&c, vif).is_some_and(|v| {
-            v.allowed_operations
-                .as_deref()
-                .is_some_and(|ops| ops.iter().any(|o| o == "plug"))
-        })
-    })
-    .await;
-    let mut entry = device_op(&c, vm, DeviceOperation::PlugNic { vif }, 180).await;
-    entry["step"] = json!("reconnect the NIC while running");
-    entry["plug_advertised_first"] = json!(plug_advertised);
-    entry["read_back"] = json!(
-        settle(60, || vif_view(&c, vif)
-            .is_some_and(|v| v.currently_attached == Some(true)))
-        .await
-    );
-    steps.push(entry);
+        .await;
+        let mut entry = device_op(&c, vm, DeviceOperation::PlugNic { vif }, 180).await;
+        entry["step"] = json!("reconnect the NIC while running");
+        entry["plug_advertised_first"] = json!(plug_advertised);
+        entry["read_back"] = json!(
+            settle(60, || vif_view(&c, vif)
+                .is_some_and(|v| v.currently_attached == Some(true)))
+            .await
+        );
+        steps.push(entry);
+    } else {
+        // XAPI advertises VIF plug and unplug on a running VM only when the guest's PV
+        // drivers support them; the tool-less guest never does, so the client must refuse
+        // and name the missing advertisement.
+        let mut entry = device_op(&c, vm, DeviceOperation::UnplugNic { vif }, 60).await;
+        entry["step"] = json!("disconnect the NIC while running (not advertised by the host)");
+        entry["expected_refusal"] = json!(true);
+        steps.push(entry);
+    }
 
     // Halt, then move the NIC to the management network with a replacement MAC.
     let mut halt = halt_guest(&c, vm).await;
@@ -11912,8 +11920,8 @@ async fn lab_nic_plug_edit_and_rate_limit() {
     );
     steps.push(entry);
     let nic = nic_by_device(&c, "1").expect("edited NIC");
+    steps.push(json!({"step": "nic after edit", "recreated": nic.id != vif, "mac": nic.mac}));
     let vif = nic.id;
-    steps.push(json!({"step": "nic after edit", "same_record": vif == existing[0].id || vif == nic.id, "recreated": nic.id != existing[0].id, "mac": nic.mac}));
 
     // Rate limit when the host advertises the algorithm.
     if nic
@@ -12014,6 +12022,220 @@ async fn lab_nic_plug_edit_and_rate_limit() {
     lab.record(
         "nic-plug-edit-and-rate-limit",
         json!({"guest": guest.name, "network": name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert_eq!(step["state"], "Rejected", "{step}");
+            assert!(
+                step["detail"]
+                    .as_str()
+                    .is_some_and(|d| d.contains("does not advertise this operation")),
+                "{step}"
+            );
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P06-06, P03-04, P08-02, P08-08: create a diskless VM from the generic template, pin its
+/// home server to the member and start it without a chosen host so the pool places it there,
+/// halt it, move the home server to the coordinator and start it again, halt it, clear the
+/// home server and delete the record. A leftover VM from an interrupted run is deleted first.
+#[tokio::test]
+#[ignore]
+async fn lab_home_server_placement_with_a_diskless_vm() {
+    use xenadmin_core::{
+        GuestFirmware, PowerAction, PowerState, VmCommand, VmLifecycleOperation, VmSettingEdit,
+        VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let sr = local_sr_of(&inventory, coordinator).expect("coordinator local repository");
+    let template = inventory
+        .vms
+        .values()
+        .find(|v| v.is_template && v.name == "Other install media")
+        .expect("generic template")
+        .clone();
+    let network = inventory
+        .details
+        .pifs
+        .values()
+        .find(|p| p.host == Some(coordinator) && p.management == Some(true))
+        .and_then(|p| p.network)
+        .expect("management network");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let delete_record = |c: &Connection, vm: xenadmin_core::VmId| {
+        let operation = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: c.latest().observe_vm(vm).unwrap(),
+                    operation: VmLifecycleOperation::Delete {
+                        expected_template: false,
+                        disks: Vec::new(),
+                        snapshots: Vec::new(),
+                    },
+                },
+            )
+            .expect("deletion accepted");
+        async move { wait_vm_outcome(&operation, 300).await }
+    };
+
+    for leftover in inventory
+        .vms
+        .values()
+        .filter(|v| v.name.starts_with("lab-place-") && !v.is_template)
+    {
+        if leftover.power_state != PowerState::Halted {
+            halt_guest(&c, leftover.id).await;
+        }
+        let outcome = delete_record(&c, leftover.id).await;
+        let gone = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| !i.vms.contains_key(&leftover.id))
+        })
+        .await;
+        steps.push(json!({"step": "delete leftover VM", "name": leftover.name, "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": gone}));
+    }
+
+    let name = format!("lab-place-{stamp}");
+    let create = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: c.latest().observe_vm(template.id).unwrap(),
+                operation: VmLifecycleOperation::Create {
+                    name: name.clone(),
+                    description: "Disposable diskless VM for the home-server placement scenario"
+                        .into(),
+                    sr,
+                    network,
+                    iso: None,
+                    vcpus: 1,
+                    memory: 512 * 1024 * 1024,
+                    disk_size: None,
+                    firmware: GuestFirmware::Bios,
+                    bios_host: None,
+                },
+            },
+        )
+        .expect("creation accepted");
+    let outcome = wait_vm_outcome(&create, 300).await;
+    let vm = outcome.created_vm.expect("created VM identity");
+    let visible = settle(60, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms.contains_key(&vm))
+    })
+    .await;
+    steps.push(json!({"step": "create diskless VM", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": visible}));
+    let affinity_of = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .vms
+                .get(&vm)
+                .map(|d| (d.affinity, d.affinity_known))
+        })
+    };
+    let resident = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.vms.get(&vm).map(|v| (v.power_state.clone(), v.host)))
+    };
+
+    for (label, value) in [
+        ("member", Some(member)),
+        ("coordinator", Some(coordinator)),
+        ("cleared", None),
+    ] {
+        let current = affinity_of(&c).map(|a| a.0).unwrap_or(None);
+        if current != value {
+            let patch = VmSettingsPatch::new(vec![VmSettingEdit::HomeHost {
+                previous: current,
+                value,
+            }])
+            .unwrap();
+            let operation = c
+                .submit(
+                    OperationId::new(),
+                    VmCommand::Configure {
+                        vm: c.latest().observe_vm(vm).unwrap(),
+                        patch,
+                    },
+                )
+                .expect("home server edit accepted");
+            let row = wait_vm_outcome(&operation, 120).await;
+            let applied = settle(60, || affinity_of(&c) == Some((value, true))).await;
+            steps.push(json!({"step": format!("set home server to the {label}"), "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": applied}));
+        } else {
+            steps.push(json!({"step": format!("home server already {label}"), "skipped": true}));
+        }
+        let Some(expected) = value else {
+            continue;
+        };
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!(format!("start without a chosen host, home server {label}"));
+        let placed = settle(60, || {
+            resident(&c)
+                .is_some_and(|(state, host)| state == PowerState::Running && host == Some(expected))
+        })
+        .await;
+        start["placed_on_home_server"] = json!(placed);
+        start["resident_host"] = json!(
+            resident(&c)
+                .and_then(|(_, h)| h)
+                .map(|h| inventory.hosts[&h].name.clone())
+        );
+        start["read_back"] = json!(placed);
+        steps.push(start);
+        let mut halt = halt_guest(&c, vm).await;
+        halt["step"] = json!(format!("halt on the {label}"));
+        steps.push(halt);
+    }
+
+    let outcome = delete_record(&c, vm).await;
+    let gone = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| !i.vms.contains_key(&vm))
+    })
+    .await;
+    steps.push(json!({"step": "delete the record", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": gone}));
+    c.close().await;
+    lab.record(
+        "home-server-placement-with-a-diskless-vm",
+        json!({"vm": name, "member": inventory.hosts[&member].name, "coordinator": inventory.hosts[&coordinator].name, "steps": steps}),
     );
     for step in &steps {
         if step.get("accepted").is_some() {

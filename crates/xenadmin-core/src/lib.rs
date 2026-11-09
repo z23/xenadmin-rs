@@ -417,6 +417,10 @@ pub enum Error {
     JournalFull,
     #[error("The requested action is unavailable for this VM")]
     UnavailableAction,
+    #[error(
+        "The host does not advertise this operation for the device in its current state. Connecting or disconnecting a device while the VM runs needs guest tools that support it"
+    )]
+    DeviceNotAdvertised,
     #[error("This connection is read-only")]
     ReadOnly,
     #[error("The operation ID was already used for a different request")]

@@ -425,10 +425,14 @@ fn permits(record: &Value, operation: &str) -> Result<(), Error> {
     let Some(operations) = record["allowed_operations"].as_array() else {
         return Err(Error::UnavailableAction);
     };
-    if operations.iter().any(|entry| !entry.is_string())
-        || !operations.iter().any(|entry| entry == operation)
-    {
+    if operations.iter().any(|entry| !entry.is_string()) {
         return Err(Error::UnavailableAction);
+    }
+    if !operations.iter().any(|entry| entry == operation) {
+        // The record is well formed and the host simply does not offer this operation
+        // now (a running tool-less guest never advertises NIC plug or unplug). Name that,
+        // instead of the generic unavailable-action text.
+        return Err(Error::DeviceNotAdvertised);
     }
     if let Some(current) = record.get("current_operations")
         && current

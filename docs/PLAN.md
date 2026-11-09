@@ -105,8 +105,9 @@ scheduled-snapshot policy lifecycle, the inventory tables with the certificate o
 force shutdown reviewed against another client's task, a UEFI creation from an ISO library
 image, a memory checkpoint restore, a second native desktop session covering the
 tables, search, the changed-certificate review, the host console and the screenshot export,
-and a control-domain memory change with two member reboots, plus twenty host-behaviour
-findings that were fixed, three host observations, one client journal observation
+a control-domain memory change with two member reboots, a NIC lifecycle whose hot unplug
+the host did not advertise and a home-server placement across both pool hosts, plus twenty
+host-behaviour findings that were fixed, five host observations, one client journal observation
 and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.

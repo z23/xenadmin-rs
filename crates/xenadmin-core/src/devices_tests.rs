@@ -224,6 +224,36 @@ async fn foreign_devices_busy_devices_and_non_iso_media_are_rejected_without_dis
 }
 
 #[tokio::test]
+async fn nic_unplug_the_host_does_not_advertise_is_refused_with_that_reason() {
+    let (server, records, requests) = fixture().await;
+    let session = server.session().await;
+    change(
+        &records,
+        "OpaqueRef:VIF:nic",
+        "currently_attached",
+        json!(true),
+    );
+    // A running guest without PV drivers never advertises VIF plug or unplug.
+    change(
+        &records,
+        "OpaqueRef:VIF:nic",
+        "allowed_operations",
+        json!(["attach"]),
+    );
+    assert!(matches!(
+        prepare_operation(&session, vm(), &DeviceOperation::UnplugNic { vif: nic() }).await,
+        Err(Error::DeviceNotAdvertised)
+    ));
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r["method"] != "Async.VIF.unplug")
+    );
+}
+
+#[tokio::test]
 async fn disk_growth_checks_current_size_every_consumer_and_halted_state() {
     let (server, records, requests) = fixture().await;
     let session = server.session().await;
