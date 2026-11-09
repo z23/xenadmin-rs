@@ -12667,6 +12667,8 @@ async fn delete_vm_record(c: &Connection, vm: xenadmin_core::VmId) -> Value {
 /// a maintenance review whose resident set is stale, enter maintenance with the VM reviewed
 /// as the member's resident guest so the client evacuates it, verify it running on the
 /// coordinator with the member disabled, exit maintenance, then halt and delete the VM.
+/// When the host reports the VM as preventing evacuation, that refusal is the recorded
+/// outcome and the member must be left enabled and unchanged.
 #[tokio::test]
 #[ignore]
 async fn lab_member_evacuation_of_a_diskless_vm() {
@@ -12776,8 +12778,10 @@ async fn lab_member_evacuation_of_a_diskless_vm() {
     )
     .await;
     entry["expected_refusal"] = json!(true);
-    entry["member_still_enabled"] = json!(c.latest().inventory().unwrap().hosts[&member].enabled);
+    let after = c.latest().inventory().unwrap().clone();
+    entry["member_still_enabled"] = json!(after.hosts[&member].enabled);
     entry["vm_still_on_member"] = json!(resident(&c).is_some_and(|(_, h)| h == Some(member)));
+    entry["vm_state"] = json!(resident(&c).map(|(s, h)| json!({"power_state": format!("{s:?}"), "host": h.map(|h| after.hosts[&h].name.clone())})));
     steps.push(entry);
 
     let started = std::time::Instant::now();
@@ -12806,41 +12810,81 @@ async fn lab_member_evacuation_of_a_diskless_vm() {
         .await
     );
     entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
-    entry["resident_host"] = json!(
-        resident(&c)
-            .and_then(|(_, h)| h)
-            .map(|h| inventory.hosts[&h].name.clone())
+    entry["vm_state"] = json!(resident(&c).map(|(s, h)| json!({"power_state": format!("{s:?}"), "host": h.map(|h| inventory.hosts[&h].name.clone())})));
+    entry["member_enabled"] = json!(c.latest().inventory().unwrap().hosts[&member].enabled);
+    entry["vm_allowed_actions"] = json!(
+        c.latest().inventory().unwrap().vms[&vm]
+            .allowed_actions
+            .iter()
+            .map(|a| format!("{a:?}"))
+            .collect::<Vec<_>>()
     );
     steps.push(entry);
+    // A host that reports the VM as a blocker refuses the evacuation before any change; that
+    // report is the recorded outcome on a lab whose guests cannot be live-migrated.
+    let blocked = steps.last().is_some_and(|e| {
+        e["state"] == "Rejected"
+            && e["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("prevent evacuation"))
+    });
+    if let Some(last) = steps.last_mut() {
+        last["blocked_by_host_report"] = json!(blocked);
+    }
 
-    let mut entry = resource_op(
-        &c,
-        "exit maintenance",
-        ResourceCommand::Host {
-            target: host_target(&c),
-            operation: HostOperation::ExitMaintenance,
-        },
-        300,
-    )
-    .await;
-    entry["read_back"] = json!(
-        settle(120, || c
-            .latest()
-            .inventory()
-            .is_some_and(|i| i.hosts[&member].enabled))
-        .await
-    );
-    steps.push(entry);
-    let mut halt = halt_guest(&c, vm).await;
-    halt["step"] = json!("halt on the coordinator");
-    steps.push(halt);
-    steps.push(delete_vm_record(&c, vm).await);
+    if !blocked {
+        let mut entry = resource_op(
+            &c,
+            "exit maintenance",
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::ExitMaintenance,
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || c
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.hosts[&member].enabled))
+            .await
+        );
+        steps.push(entry);
+    }
+    // Record first, then clean up: a surprising end state must still leave evidence.
+    steps.push(json!({"step": "state before cleanup", "vm_state": resident(&c).map(|(s, h)| json!({"power_state": format!("{s:?}"), "host": h.map(|h| inventory.hosts[&h].name.clone())}))}));
+    if resident(&c).is_some_and(|(s, _)| s == PowerState::Running) {
+        let shutdown = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    action: PowerAction::HardShutdown,
+                },
+            )
+            .expect("hard shutdown accepted");
+        let row = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            resident(&c).is_some_and(|(s, _)| s == PowerState::Halted)
+        })
+        .await;
+        steps.push(json!({"step": "hard shutdown after the evacuation", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": halted}));
+    }
+    if resident(&c).is_some_and(|(s, _)| s == PowerState::Halted) {
+        steps.push(delete_vm_record(&c, vm).await);
+    }
     c.close().await;
     lab.record(
         "member-evacuation-of-a-diskless-vm",
         json!({"vm": name, "member": inventory.hosts[&member].name, "coordinator": inventory.hosts[&coordinator].name, "steps": steps}),
     );
     for step in &steps {
+        if step["blocked_by_host_report"] == true {
+            assert_eq!(step["state"], "Rejected", "{step}");
+            assert_eq!(step["member_enabled"], true, "{step}");
+            continue;
+        }
         if step.get("expected_refusal").is_some() {
             assert!(
                 step["accepted"] == false || step["state"] == "Rejected",

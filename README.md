@@ -16,10 +16,12 @@ multiple saved connections, optional keyring credentials and an embedded RFB con
 No Xen Orchestra service is used.
 
 Local protocol and TLS fixtures, Rune widget interactions, headless rendering, and a native
-window smoke test pass. **Live-host qualification has started** against a disposable nested
-XCP-ng 8.3.0 lab, including a native desktop session that logged in and typed into a guest
-console with no XO service present; see the
-[first live qualification report](docs/reports/2026-11-09-lab-qualification.md)
+window smoke test pass. **Live-host qualification is under way** against a disposable nested
+XCP-ng 8.3.0 lab with no XO service present: more than fifty recorded scenarios cover power,
+snapshots and checkpoints, devices, storage and networking, host maintenance and reboots,
+coordinator handover, a changed member certificate, endpoint failover and two native desktop
+sessions, and twenty host-behaviour findings were fixed along the way; see the
+[live qualification report](docs/reports/2026-11-09-lab-qualification.md)
 for what passed, what was fixed and what remains open.
 See the [initial alpha results and gaps](docs/reports/2026-11-07-alpha.md).
 Version 0.1.1 adds a connection-wide certificate-validation opt-out and fixes inventory

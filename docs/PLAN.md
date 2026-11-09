@@ -107,8 +107,8 @@ image, a memory checkpoint restore, a second native desktop session covering the
 tables, search, the changed-certificate review, the host console and the screenshot export,
 a control-domain memory change with two member reboots, a NIC lifecycle whose hot unplug
 the host did not advertise, a home-server placement across both pool hosts, an endpoint
-failover to a remembered verified member and a default-repository and repository-metadata
-round trip, plus twenty
+failover to a remembered verified member, a default-repository and repository-metadata
+round trip and a halted guest move between the local repositories, plus twenty
 host-behaviour findings that were fixed, five host observations, one client journal observation
 and one open upstream accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until

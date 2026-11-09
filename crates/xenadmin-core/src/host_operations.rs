@@ -279,10 +279,23 @@ async fn evacuation(
             vec![json!(host_ref)],
         )
         .await?;
-    require(
-        blockers.as_object().is_some_and(|map| map.is_empty()),
-        "The host reports VMs that prevent evacuation; resolve their migration restrictions before retrying",
-    )?;
+    let blockers = blockers
+        .as_object()
+        .ok_or(Error::Protocol("evacuation blocker report unavailable"))?;
+    if !blockers.is_empty() {
+        // Name the VMs and the host's reason so the operator can act on them.
+        let mut names = Vec::new();
+        for vm_ref in blockers.keys().take(5) {
+            let name = session
+                .call("VM.get_name_label", vec![json!(vm_ref)])
+                .await
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unnamed VM".into());
+            names.push(name);
+        }
+        return Err(Error::EvacuationBlocked(blocker_summary(blockers, &names)));
+    }
     for id in expected {
         let (vm_ref, _) = read(session, "VM", id.uuid()).await?;
         let possible = session
@@ -991,5 +1004,52 @@ pub(crate) async fn verify(
             Ok(())
         }
         Kind::PoolAutostart | Kind::Forget => Err(Error::InvalidResourceCommand),
+    }
+}
+
+/// Summarize the host's evacuation blocker report: up to five "VM: ERROR_CODE" entries with
+/// sanitized codes and control characters removed from names, plus a count of the rest.
+fn blocker_summary(blockers: &serde_json::Map<String, Value>, names: &[String]) -> String {
+    let mut parts = blockers
+        .values()
+        .zip(names)
+        .map(|(value, name)| {
+            let code = value
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(Value::as_str)
+                .map(crate::xapi::safe_error_code)
+                .unwrap_or("UNKNOWN_API_ERROR");
+            let name: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
+            format!("{name}: {code}")
+        })
+        .collect::<Vec<_>>();
+    if blockers.len() > names.len() {
+        parts.push(format!("and {} more", blockers.len() - names.len()));
+    }
+    parts.join("; ")
+}
+
+#[cfg(test)]
+mod blocker_summary_tests {
+    use super::*;
+
+    #[test]
+    fn blocker_summary_names_vms_and_sanitizes_codes() {
+        let blockers: serde_json::Map<String, Value> = serde_json::from_value(json!({
+            "OpaqueRef:a": ["VM_LACKS_FEATURE", "OpaqueRef:a"],
+            "OpaqueRef:b": ["bad code; with text"],
+            "OpaqueRef:c": [],
+        }))
+        .unwrap();
+        let names = vec!["lab-evac\u{7}\n".to_string(), "second".to_string()];
+        assert_eq!(
+            blocker_summary(&blockers, &names),
+            "lab-evac: VM_LACKS_FEATURE; second: UNKNOWN_API_ERROR; and 1 more"
+        );
+        assert_eq!(
+            Error::EvacuationBlocked("x: VM_LACKS_FEATURE".into()).to_string(),
+            "The host reports VMs that prevent evacuation (x: VM_LACKS_FEATURE); resolve their migration restrictions before retrying"
+        );
     }
 }
