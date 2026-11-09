@@ -42,6 +42,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Reviewed deletions | P05-08, P08-08 | Passed | Six snapshots, each with its two exclusively owned disks, were deleted through the reviewed snapshot deletion and verified absent; the device-less guest left by the partial creation was deleted through the reviewed VM deletion with no disks selected |
 | Console across a hard reboot | P04-07 | Partly | The core console tunnel reported closure within about 200 ms of the hard reboot; once the guest was running again a reopened console delivered frames. The desktop's bounded automatic reconnect lives above the core facade and still needs a desktop-level run |
 | Live migration with storage relocation | P11-01, P11-03, P11-05 | Passed after fixes | The running guest moved to another member and back with both disks relocated to each member's local repository over the client's chosen transfer network; the first attempts were refused by the client (no transfer network given) and then by the host (finding 4). With every member's certificate pinned, the console opened on the destination host delivered frames; without the member pin the tunnel was refused, as designed |
+| Guest and host metrics | P14-07, P14-08 | Passed after fix | Direct RRD subscriptions for the running guest (44 advertised sources) and its host (68) delivered 120-sample series at a five-second step for CPU, memory and disk-queue sources; the first attempt failed on the data-source listing (finding 5) |
 | Reviewed maintenance and ejection | P12-03, P13-02 | Passed | Member entered maintenance (disabled observed), reviewed ejection task completed, member left the coordinator's inventory and returned as a standalone pool with a new identity |
 
 ## Findings
@@ -74,6 +75,14 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    network. The client sent identity placements as a map and was refused. It now sends an
    empty VIF map for same-pool moves and refuses a real network change before dispatch;
    the disk map is still required and still sent. Unit coverage was added.
+
+5. **JSON-RPC replies can contain bare non-finite numbers.** `VM.get_data_sources` and
+   `host.get_data_sources` on XCP-ng 8.3.0 return `Infinity` and `-Infinity` as bare
+   tokens, which strict JSON rejects, so every metrics subscription failed with "invalid
+   JSON" before any RRD request. The client now replaces bare `NaN`, `Infinity` and
+   `-Infinity` tokens outside string literals with `null` when a reply does not parse
+   strictly; the metrics decoder already treated absent limits as unknown. Unit coverage
+   was added.
 
 ## Console observation
 

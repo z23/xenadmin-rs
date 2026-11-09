@@ -1729,3 +1729,317 @@ async fn lab_console_reconnect_after_hard_reboot() {
     );
     assert!(frame_after_reopen, "no frame after reopening the console");
 }
+
+/// Writes a saved connection profile for the lab coordinator, with every member's
+/// certificate pinned, into `XENADMIN_LAB_DESKTOP_STATE` so the real desktop can cold-start
+/// from a saved endpoint. The password is never stored; the desktop prompts for it.
+#[tokio::test]
+#[ignore]
+async fn lab_write_desktop_profile() {
+    use xenadmin_core::{ConnectionProfile, ProfileStore};
+    let lab = Lab::load();
+    let directory = PathBuf::from(
+        std::env::var("XENADMIN_LAB_DESKTOP_STATE").expect("XENADMIN_LAB_DESKTOP_STATE"),
+    );
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut store = ProfileStore::open(directory.clone()).expect("profile store");
+    let mut profile = ConnectionProfile::new("Lab pool".into(), lab.endpoint(0), "root".into());
+    for (index, host) in lab.hosts.iter().enumerate() {
+        let endpoint = lab.endpoint(index);
+        let observation = inspect_result(&endpoint)
+            .await
+            .unwrap_or_else(|| panic!("{} certificate", host.name));
+        profile.host_certificates.insert(
+            endpoint.to_string(),
+            observation.details.fingerprint.clone(),
+        );
+    }
+    let pins = profile.host_certificates.len();
+    store.save(profile).expect("profile saved");
+    eprintln!(
+        "wrote profile with {pins} member pins to {}",
+        directory.display()
+    );
+}
+
+/// P14-07, P14-08: direct RRD metrics for the running lab guest and its host; records the
+/// advertised sources and whether bounded sample series arrive within the ten-minute window.
+#[tokio::test]
+#[ignore]
+async fn lab_metrics_guest_and_host() {
+    use xenadmin_core::{MetricTarget, MetricsOptions, MetricsState, MetricsWindow, PowerState};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, true).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest")
+        .clone();
+    let host = guest.host.expect("resident host");
+    let mut results = Vec::new();
+    for target in [MetricTarget::Vm(guest.id), MetricTarget::Host(host)] {
+        let observed = c
+            .latest()
+            .observe_metrics(target)
+            .expect("metrics target observed");
+        let metrics = c
+            .subscribe_metrics(
+                observed,
+                MetricsOptions {
+                    window: MetricsWindow::TenMinutes,
+                    sources: Vec::new(),
+                },
+            )
+            .expect("metrics subscription accepted");
+        let first = tokio::time::timeout(deadline(120), async {
+            loop {
+                let snapshot = metrics.latest();
+                if !matches!(snapshot.state, MetricsState::Loading) {
+                    return snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("metrics left the loading state");
+        let chosen: Vec<String> = first
+            .sources
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| s.name.clone())
+            .filter(|n| {
+                n.starts_with("cpu")
+                    || n.starts_with("memory")
+                    || n.contains("vif")
+                    || n.contains("vbd")
+                    || n.contains("pif")
+            })
+            .take(6)
+            .collect();
+        metrics.close();
+        let metrics = c
+            .subscribe_metrics(
+                observed,
+                MetricsOptions {
+                    window: MetricsWindow::TenMinutes,
+                    sources: chosen.clone(),
+                },
+            )
+            .expect("metrics subscription with sources accepted");
+        let with_samples = tokio::time::timeout(deadline(180), async {
+            loop {
+                let snapshot = metrics.latest();
+                if snapshot.series.iter().any(|s| !s.samples.is_empty())
+                    || matches!(snapshot.state, MetricsState::Failed)
+                {
+                    return snapshot;
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        })
+        .await
+        .expect("metrics samples or failure");
+        results.push(json!({
+            "target": format!("{target:?}"),
+            "initial_state": format!("{:?}", first.state), "initial_error": first.error,
+            "advertised_sources": first.sources.len(),
+            "source_examples": first.sources.iter().take(8).map(|s| json!({"name": s.name, "units": s.units, "enabled": s.enabled})).collect::<Vec<_>>(),
+            "requested": chosen,
+            "state": format!("{:?}", with_samples.state), "error": with_samples.error,
+            "sample_step_seconds": with_samples.sample_step_seconds,
+            "series": with_samples.series.iter().map(|s| json!({"source": s.source, "samples": s.samples.len()})).collect::<Vec<_>>(),
+        }));
+        assert!(
+            with_samples.series.iter().any(|s| !s.samples.is_empty()),
+            "{target:?}: no samples ({:?})",
+            with_samples.error
+        );
+        metrics.close();
+    }
+    c.close().await;
+    lab.record("metrics-guest-and-host", json!({"targets": results}));
+}
+
+/// P06-01, P06-02, P06-04: reviewed metadata edits on the running guest, then vCPU and
+/// memory edits while halted, each read back from the inventory; the guest is started again.
+#[tokio::test]
+#[ignore]
+async fn lab_guest_settings_edits() {
+    use xenadmin_core::{
+        MemoryLimits, PowerAction, PowerState, VmCommand, VmSettingEdit, VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut results = Vec::new();
+
+    // Metadata while running.
+    let new_description = format!("Renamed by the live harness at {stamp}");
+    let patch = VmSettingsPatch::new(vec![VmSettingEdit::Description {
+        previous: guest.description.clone(),
+        value: new_description.clone(),
+    }])
+    .unwrap();
+    let operation = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                patch,
+            },
+        )
+        .expect("metadata edit accepted");
+    let outcome = wait_vm_outcome(&operation, 120).await;
+    let applied = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&guest.id)
+                .is_some_and(|v| v.description == new_description)
+        })
+    })
+    .await;
+    results.push(json!({"edit": "description", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": applied}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(applied);
+
+    // Halt, then vCPUs and memory.
+    if c.latest().inventory().unwrap().vms[&guest.id].power_state == PowerState::Running {
+        let shutdown = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        assert!(
+            settle(120, || c
+                .latest()
+                .inventory()
+                .is_some_and(
+                    |i| i.vms[&guest.id].power_state == PowerState::Halted
+                ))
+            .await
+        );
+    }
+    let details = c.latest().inventory().unwrap().details.vms[&guest.id].clone();
+    let previous = MemoryLimits {
+        static_min: details.memory_static_min.expect("static min"),
+        dynamic_min: details.memory_dynamic_min.expect("dynamic min"),
+        dynamic_max: details.memory_dynamic_max.expect("dynamic max"),
+        static_max: details.memory_static_max.expect("static max"),
+    };
+    let mib = 1024 * 1024;
+    let target_memory = if previous.static_max == 768 * mib {
+        640 * mib
+    } else {
+        768 * mib
+    };
+    let target_cpus = if details.vcpus_max == Some(2) { 1 } else { 2 };
+    let patch = VmSettingsPatch::new(vec![
+        VmSettingEdit::Cpus {
+            previous_max: details.vcpus_max.expect("vcpus max"),
+            previous_startup: details.vcpus_at_startup.expect("vcpus startup"),
+            max: target_cpus,
+            startup: target_cpus,
+        },
+        VmSettingEdit::Memory {
+            previous: previous.clone(),
+            value: MemoryLimits {
+                static_min: previous.static_min,
+                dynamic_min: target_memory,
+                dynamic_max: target_memory,
+                static_max: target_memory,
+            },
+        },
+    ])
+    .unwrap();
+    let operation = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                patch,
+            },
+        )
+        .expect("resource edit accepted");
+    let outcome = wait_vm_outcome(&operation, 120).await;
+    let applied = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details.vms.get(&guest.id).is_some_and(|d| {
+                d.vcpus_max == Some(target_cpus)
+                    && d.memory_static_max == Some(target_memory)
+                    && d.memory_dynamic_max == Some(target_memory)
+            })
+        })
+    })
+    .await;
+    results.push(json!({"edit": "cpus+memory", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "read_back": applied,
+                        "steps": outcome.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state)})).collect::<Vec<_>>(),
+                        "cpus": target_cpus, "memory_bytes": target_memory}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(applied, "resources did not read back");
+
+    let start = c
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(
+                |i| i.vms[&guest.id].power_state == PowerState::Running
+            ))
+        .await
+    );
+    c.close().await;
+    lab.record(
+        "guest-settings-edits",
+        json!({"guest": guest.name, "edits": results}),
+    );
+}

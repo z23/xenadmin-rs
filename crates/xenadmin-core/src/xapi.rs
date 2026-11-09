@@ -229,8 +229,7 @@ impl Session {
             }
             bytes.extend_from_slice(&chunk);
         }
-        let value: Value =
-            serde_json::from_slice(&bytes).map_err(|_| Error::Protocol("invalid JSON"))?;
+        let value: Value = parse_rpc_json(&bytes)?;
         if value.get("id").and_then(Value::as_u64) != Some(id)
             || value.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
         {
@@ -504,6 +503,59 @@ impl Session {
         .await?;
         Ok((reference, destination))
     }
+}
+
+/// XCP-ng 8.3.0 writes non-finite floats into JSON-RPC replies as the bare tokens `NaN`,
+/// `Infinity` and `-Infinity` (for example in `VM.get_data_sources` records), which strict
+/// JSON rejects. Replace those tokens outside string literals with `null` before parsing so
+/// callers see an absent value rather than a protocol failure. The bytes are otherwise
+/// untouched and the replacement never happens inside strings.
+pub(crate) fn parse_rpc_json(bytes: &[u8]) -> Result<Value, Error> {
+    if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        return Ok(value);
+    }
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    let mut in_string = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            out.push(b);
+            if b == b'\\' && i + 1 < bytes.len() {
+                out.push(bytes[i + 1]);
+                i += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == b'"' {
+            in_string = true;
+            out.push(b);
+            i += 1;
+            continue;
+        }
+        let rest = &bytes[i..];
+        let token = [&b"-Infinity"[..], b"Infinity", b"NaN"]
+            .into_iter()
+            .find(|token| rest.starts_with(token))
+            .filter(|token| {
+                !rest
+                    .get(token.len())
+                    .is_some_and(|next| next.is_ascii_alphanumeric() || *next == b'_')
+            });
+        if let Some(token) = token {
+            out.extend_from_slice(b"null");
+            i += token.len();
+            continue;
+        }
+        out.push(b);
+        i += 1;
+    }
+    serde_json::from_slice(&out).map_err(|_| Error::Protocol("invalid JSON"))
 }
 
 /// `XENADMIN_DEV_RPC_TRACE=1` prints failed method names and sanitized error codes to
@@ -1145,6 +1197,25 @@ fn storage_number(record: &Value, key: &str, field: &'static str) -> Result<Opti
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn non_finite_bare_tokens_become_null_only_outside_strings() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"result":[{"name":"cpu","min":0.0,"max":Infinity,"value":NaN,"note":"Infinity NaN -Infinity","floor":-Infinity,"units":"NaNometer"}]}"#;
+        let value = super::parse_rpc_json(body).unwrap();
+        let record = &value["result"][0];
+        assert_eq!(record["min"], 0.0);
+        assert!(record["max"].is_null());
+        assert!(record["value"].is_null());
+        assert!(record["floor"].is_null());
+        assert_eq!(record["note"], "Infinity NaN -Infinity");
+        assert_eq!(record["units"], "NaNometer");
+        assert!(super::parse_rpc_json(br#"{"a":Infinityx}"#).is_err());
+        assert!(super::parse_rpc_json(b"not json").is_err());
+        assert_eq!(
+            super::parse_rpc_json(br#"{"escaped":"a\"Infinity\"b"}"#).unwrap()["escaped"],
+            "a\"Infinity\"b"
+        );
+    }
+
     use super::*;
     #[test]
     fn snapshot_results_require_one_bounded_xml_value_and_a_non_null_reference() {
