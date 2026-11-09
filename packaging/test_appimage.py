@@ -70,13 +70,22 @@ class AppImagePackaging(unittest.TestCase):
                 self.assertEqual(len(calls), 3)
                 self.assertEqual(slept, list(appimage.RETRY_DELAYS[:2]))
                 appimage.urllib.request.urlopen, calls = opener([gateway(404), data])
-                with self.assertRaises(urllib.error.HTTPError):
+                with self.assertRaises(ValueError):
                     fetch(root, 'other', desc)
                 self.assertEqual(len(calls), 1)
                 appimage.urllib.request.urlopen, calls = opener([gateway(502)] * (len(appimage.RETRY_DELAYS) + 1))
-                with self.assertRaises(urllib.error.HTTPError):
+                with self.assertRaises(ValueError):
                     fetch(root, 'other', desc)
                 self.assertEqual(len(calls), len(appimage.RETRY_DELAYS) + 1)
+                mirrored = dict(desc, mirrors=['https://example.invalid/mirror'])
+                appimage.urllib.request.urlopen, calls = opener([gateway(504)] * (len(appimage.RETRY_DELAYS) + 1) + [data])
+                self.assertEqual(fetch(root, 'mirrored', mirrored).read_bytes(), data)
+                self.assertEqual(calls[-1], 'https://example.invalid/mirror')
+                self.assertEqual(len(calls), len(appimage.RETRY_DELAYS) + 2)
+                appimage.urllib.request.urlopen, calls = opener([gateway(404), b'tampered bytes'])
+                with self.assertRaises(ValueError):
+                    fetch(root, 'other', mirrored)
+                self.assertEqual(len(calls), 2)
                 appimage.urllib.request.urlopen, calls = opener([b'tampered bytes', data])
                 with self.assertRaises(ValueError):
                     fetch(root, 'other', desc)

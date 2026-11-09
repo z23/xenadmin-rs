@@ -31,7 +31,7 @@ def transient(error):
     return isinstance(error, (urllib.error.URLError, TimeoutError))
 
 
-def download(url):
+def download(name, url):
     request = urllib.request.Request(url, headers={'User-Agent': 'xenadmin-rs-packaging'})
     for attempt, delay in enumerate((*RETRY_DELAYS, None)):
         try:
@@ -40,7 +40,7 @@ def download(url):
         except (urllib.error.URLError, TimeoutError) as error:
             if delay is None or not transient(error):
                 raise
-            print(f'Packaging input fetch failed (attempt {attempt + 1}): {error}; retrying in {delay}s', flush=True)
+            print(f'Packaging input {name} fetch failed (attempt {attempt + 1}): {error}; retrying in {delay}s', flush=True)
             _sleep(delay)
     raise AssertionError('unreachable')
 
@@ -52,7 +52,18 @@ def fetch(cache, name, descriptor):
         if digest(path) != descriptor['sha256']:
             raise ValueError(f"Cached packaging input changed: {name}")
         return path
-    data = download(descriptor['url'])
+    # Every source must serve the pinned bytes; a mirror only changes who answers.
+    sources = [descriptor['url'], *descriptor.get('mirrors', [])]
+    data = None
+    for url in sources:
+        try:
+            data = download(name, url)
+            break
+        except (urllib.error.URLError, TimeoutError) as error:
+            print(f'Packaging input {name} unavailable from {url}: {error}', flush=True)
+            failure = error
+    if data is None:
+        raise ValueError(f"Packaging input {name} unavailable from {len(sources)} source(s): {failure}")
     if len(data) > MAX_INPUT or hashlib.sha256(data).hexdigest() != descriptor['sha256']:
         raise ValueError(f"Packaging input hash or size mismatch: {name}")
     atomic(path, data)

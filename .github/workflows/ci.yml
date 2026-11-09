@@ -33,12 +33,22 @@ jobs:
             artifacts/*.json
           if-no-files-found: ignore
       - name: Reuse verified AppImage packaging inputs
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: target/package-tools
-          key: package-tools-${{ hashFiles('packaging/appimage-inputs.json') }}
+          key: package-tools-${{ hashFiles('packaging/appimage-inputs.json') }}-${{ github.run_id }}
+          restore-keys: |
+            package-tools-${{ hashFiles('packaging/appimage-inputs.json') }}-
       - name: Build portable archive and AppImage
         run: ./scripts/package.sh --appimage
+      - name: Keep verified packaging inputs for the next run
+        # Inputs are hash-verified on every use, so saving a partial set after a failed
+        # download leaves the next run fewer upstream fetches, never different bytes.
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/package-tools
+          key: package-tools-${{ hashFiles('packaging/appimage-inputs.json') }}-${{ github.run_id }}
       - name: Keep versioned Linux packages
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
