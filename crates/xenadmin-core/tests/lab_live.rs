@@ -4253,3 +4253,189 @@ async fn lab_cross_pool_move_round_trip() {
     home.close().await;
     away.close().await;
 }
+
+/// P11-06: the halted guest is exported to an XVA file on the workstation, the file is
+/// imported into the standalone pool as a new VM with its own disks, the import is deleted
+/// with those disks, the file is removed and the guest is started again.
+#[tokio::test]
+#[ignore]
+async fn lab_xva_export_and_import_across_pools() {
+    use xenadmin_core::{
+        ExportSource, PowerAction, PowerState, ResourceTarget, TransferAction, TransferFile,
+        TransferRequest, VmCommand, VmLifecycleOperation, XvaCompression,
+    };
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let home = connect(&lab, &backend, 0, false).await;
+    let away = connect(&lab, &backend, 2, false).await;
+    let home_inventory = home.latest().inventory().unwrap().clone();
+    let away_inventory = away.latest().inventory().unwrap().clone();
+    assert_ne!(
+        home_inventory.pool_id, away_inventory.pool_id,
+        "the third host must be a separate pool"
+    );
+    let guest = home_inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-"))
+        .expect("lab guest")
+        .clone();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    if guest.power_state == PowerState::Running {
+        let shutdown = home
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: home.latest().observe_vm(guest.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .expect("shutdown accepted");
+        let outcome = wait_vm_outcome(&shutdown, 300).await;
+        let halted = settle(120, || {
+            home.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Halted)
+        })
+        .await;
+        steps.push(json!({"step": "clean shutdown", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": halted}));
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+    }
+
+    // Export.
+    let directory = lab.evidence.parent().unwrap().join("transfers");
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("lab-guest-{stamp}.xva"));
+    let started = std::time::Instant::now();
+    let export = home
+        .transfer(
+            OperationId::new(),
+            home.latest()
+                .observe_resource(ResourceTarget::Pool(home_inventory.pool_id))
+                .unwrap(),
+            TransferRequest {
+                action: TransferAction::ExportXva {
+                    source: ExportSource::Vm {
+                        vm: guest.id,
+                        expected_template: false,
+                    },
+                    compression: XvaCompression::Uncompressed,
+                },
+                file: TransferFile::destination(&path).expect("export destination"),
+            },
+        )
+        .expect("export accepted");
+    let outcome = wait_outcome(&export, 1800).await;
+    let size = std::fs::metadata(&path).map(|m| m.len()).ok();
+    steps.push(json!({"step": "export XVA", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "bytes": size}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(size.is_some_and(|s| s > 0), "export file missing");
+
+    // Import into the other pool.
+    let destination_host = away_inventory
+        .coordinator
+        .or_else(|| away_inventory.hosts.keys().next().copied())
+        .expect("destination host");
+    let sr = local_sr_of(&away_inventory, destination_host).expect("destination repository");
+    let started = std::time::Instant::now();
+    let import = away
+        .transfer(
+            OperationId::new(),
+            away.latest()
+                .observe_resource(ResourceTarget::Pool(away_inventory.pool_id))
+                .unwrap(),
+            TransferRequest {
+                action: TransferAction::ImportXva { sr },
+                file: TransferFile::source(&path).expect("inspect archive"),
+            },
+        )
+        .expect("import accepted");
+    let outcome = wait_outcome(&import, 1800).await;
+    let imported = outcome.transfer_created.vms.first().copied();
+    let visible = settle(120, || {
+        imported.is_some_and(|id| {
+            away.latest()
+                .inventory()
+                .is_some_and(|i| i.vms.get(&id).is_some_and(|v| v.name == guest.name))
+        })
+    })
+    .await;
+    let imported_disks = imported.map(|id| disks_of(away.latest().inventory().unwrap(), id).len());
+    steps.push(json!({"step": "import XVA", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "created_vms": outcome.transfer_created.vms.len(), "created_disks": outcome.transfer_created.disks.len(), "visible": visible, "disks": imported_disks}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(
+        visible,
+        "the imported VM did not appear on the destination pool"
+    );
+    let imported = imported.unwrap();
+    assert_ne!(imported, guest.id, "the import must be a new VM");
+
+    // Delete the import with its disks, remove the file, start the guest.
+    let disks = disks_of(away.latest().inventory().unwrap(), imported);
+    let deletion = away
+        .submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: away.latest().observe_vm(imported).unwrap(),
+                operation: VmLifecycleOperation::Delete {
+                    expected_template: false,
+                    disks: disks.clone(),
+                    snapshots: Vec::new(),
+                },
+            },
+        )
+        .expect("deletion accepted");
+    let outcome = wait_vm_outcome(&deletion, 300).await;
+    let gone = settle(120, || {
+        away.latest().inventory().is_some_and(|i| {
+            !i.vms.contains_key(&imported) && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+        })
+    })
+    .await;
+    steps.push(json!({"step": "delete the import with its disks", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "disks": disks.len(), "gone": gone}));
+    let removed = std::fs::remove_file(&path).is_ok();
+    let start = home
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: home.latest().observe_vm(guest.id).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .expect("start accepted");
+    let outcome = wait_vm_outcome(&start, 300).await;
+    let running = settle(120, || {
+        home.latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&guest.id].power_state == PowerState::Running)
+    })
+    .await;
+    steps.push(json!({"step": "start", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": running}));
+    lab.record(
+        "xva-export-and-import-across-pools",
+        json!({"guest": guest.name, "file_removed": removed, "steps": steps}),
+    );
+    assert!(gone && running);
+    home.close().await;
+    away.close().await;
+}
