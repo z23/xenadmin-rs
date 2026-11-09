@@ -292,9 +292,7 @@ async fn recovered_late_secret_receipt_preserves_acknowledgement_and_never_sets_
         })
         .await;
         if acknowledge {
-            peer.control_resource(op.latest().id, OperationControl::AcknowledgeUnknown)
-                .unwrap();
-            history(&peer, op.latest().id, |r| r.state.terminal()).await;
+            acknowledge_unknown(&peer, op.latest().id, 5).await;
         }
         release.notify_one();
         let r = history(&c, op.latest().id, |r| r.host_power_secret.is_some()).await;

@@ -317,18 +317,7 @@ async fn late_management_bond_receipt_preserves_recovered_state_without_opening_
         .await
         .unwrap();
         if acknowledge {
-            recovered
-                .control_resource(op.latest().id, OperationControl::AcknowledgeUnknown)
-                .unwrap();
-            tokio::time::timeout(deadline(5), async {
-                while !recovered.resource_history().iter().any(|r| {
-                    r.id == op.latest().id && r.state == OperationState::AcknowledgedUnknown
-                }) {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
+            acknowledge_unknown(&recovered, op.latest().id, 5).await;
         }
         recovered.close().await;
         let logins = mock.logins.load(Ordering::Relaxed);

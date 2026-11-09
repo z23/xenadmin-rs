@@ -262,9 +262,7 @@ async fn late_password_completion_after_recovery_retains_receipt_without_login_o
         let id = op.latest().id;
         history(&peer, id, |r| r.state == OperationState::OutcomeUnknown).await;
         if acknowledge {
-            peer.control_resource(id, OperationControl::AcknowledgeUnknown)
-                .unwrap();
-            history(&peer, id, |r| r.state.terminal()).await;
+            acknowledge_unknown(&peer, id, 5).await;
         }
         let logins = count(&m, "session.login_with_password");
         release.notify_one();

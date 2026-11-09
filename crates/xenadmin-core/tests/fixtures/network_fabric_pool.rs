@@ -423,10 +423,7 @@ async fn late_completion_keeps_owned_ids_without_resuming_suffix_after_recovery_
         .await
         .unwrap();
         if ack {
-            c2.control_resource(unknown.id, OperationControl::AcknowledgeUnknown)
-                .unwrap();
-            let r = changed(&c2, &unknown).await;
-            assert_eq!(r.state, OperationState::AcknowledgedUnknown);
+            acknowledge_unknown(&c2, unknown.id, 5).await;
         }
         c2.close().await;
         records.lock().unwrap().remove("_pool_hold");

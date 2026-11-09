@@ -1,5 +1,8 @@
+#[path = "fixtures/acknowledge.rs"]
+mod acknowledge;
 #[path = "fixtures/crashdump_deletion.rs"]
 mod crashdump_deletion;
+use acknowledge::acknowledge_unknown;
 #[path = "fixtures/deadlines.rs"]
 mod deadlines;
 use deadlines::deadline;

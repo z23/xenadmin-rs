@@ -615,18 +615,7 @@ async fn late_task_receipts_survive_recovery_and_acknowledgement_without_old_wor
         let recovered = connect(&f.source, &recovered_backend, false).await;
         history_state(&recovered, op.latest().id, OperationState::OutcomeUnknown).await;
         if acknowledge {
-            recovered
-                .control_resource(
-                    op.latest().id,
-                    xenadmin_core::OperationControl::AcknowledgeUnknown,
-                )
-                .unwrap();
-            history_state(
-                &recovered,
-                op.latest().id,
-                OperationState::AcknowledgedUnknown,
-            )
-            .await;
+            acknowledge_unknown(&recovered, op.latest().id, 5).await;
         }
         let task_reads = count(&f.source, "task.get_record");
         f.release.notify_one();

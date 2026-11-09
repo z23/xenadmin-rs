@@ -617,19 +617,7 @@ async fn late_success_receipts_keep_new_ids_after_recovery_and_acknowledgement_w
         .unwrap();
         let id = op.latest().id;
         if acknowledge {
-            c2.control_resource(id, OperationControl::AcknowledgeUnknown)
-                .unwrap();
-            tokio::time::timeout(deadline(5), async {
-                while !c2
-                    .resource_history()
-                    .iter()
-                    .any(|r| r.id == id && r.state == OperationState::AcknowledgedUnknown)
-                {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .unwrap();
+            acknowledge_unknown(&c2, id, 5).await;
         }
         // The recovered instance's own read-only tracker may legitimately establish
         // success once the task completes. Close it first so only the original

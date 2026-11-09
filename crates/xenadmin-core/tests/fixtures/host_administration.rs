@@ -417,23 +417,7 @@ async fn delayed_host_receipt_after_recovery_never_runs_the_next_change() {
             )
         });
         if acknowledge {
-            connection
-                .control_resource(id, OperationControl::AcknowledgeUnknown)
-                .unwrap();
-            tokio::time::timeout(deadline(4), async {
-                loop {
-                    if connection
-                        .resource_history()
-                        .iter()
-                        .any(|r| r.id == id && r.state == OperationState::AcknowledgedUnknown)
-                    {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
+            acknowledge_unknown(&connection, id, 4).await;
         }
         release.notify_one();
         let outcome = done(&operation).await;

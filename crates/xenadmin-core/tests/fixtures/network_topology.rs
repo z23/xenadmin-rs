@@ -536,15 +536,7 @@ async fn late_vlan_task_receipts_survive_recovery_without_reviving_original_work
         // race that observer's intervening Verifying state.
         state(&recovered, op.latest().id, OperationState::OutcomeUnknown).await;
         if acknowledge {
-            recovered
-                .control_resource(op.latest().id, OperationControl::AcknowledgeUnknown)
-                .unwrap();
-            state(
-                &recovered,
-                op.latest().id,
-                OperationState::AcknowledgedUnknown,
-            )
-            .await;
+            acknowledge_unknown(&recovered, op.latest().id, 5).await;
         }
         // Retire the recovery reader so subsequent reads can only come from the original worker.
         recovered.close().await;
