@@ -23,6 +23,7 @@ pub(super) fn populate(inventory: &mut Inventory) {
         ha_enabled: Some(false),
         igmp_snooping_enabled: Some(false),
         id: inventory.pool_id,
+        name: inventory.pool_name.clone(),
         description: "Synthetic pool for isolated UI tests".into(),
         default_sr: inventory.storage.first().map(|sr| SrId::from(sr.uuid)),
         default_sr_known: true,

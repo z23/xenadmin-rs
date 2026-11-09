@@ -543,6 +543,10 @@ pub struct PoolDetails {
     #[serde(default)]
     pub igmp_snooping_enabled: Option<bool>,
     pub id: PoolId,
+    /// The pool's own name label, which XCP-ng leaves empty on a fresh installation; the
+    /// inventory's display name substitutes a placeholder, so reviews must expect this one.
+    #[serde(default)]
+    pub name: String,
     pub description: String,
     pub default_sr: Option<SrId>,
     pub default_sr_known: bool,

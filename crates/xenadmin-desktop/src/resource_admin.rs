@@ -60,12 +60,15 @@ pub(super) struct Editor {
     review: Option<Review>,
     error: Option<String>,
 }
+/// The reviewed name and description: the object's own labels as the host holds them. A
+/// pool's label is empty on a fresh XCP-ng installation while the inventory shows a
+/// placeholder, so the review must expect the empty label or the host refuses the edit.
 fn metadata(inventory: &Inventory, target: ResourceTarget) -> Option<(String, String)> {
     match target {
-        ResourceTarget::Pool(id) if id == inventory.pool_id => Some((
-            inventory.pool_name.clone(),
-            inventory.details.pool.as_ref()?.description.clone(),
-        )),
+        ResourceTarget::Pool(id) if id == inventory.pool_id => {
+            let pool = inventory.details.pool.as_ref()?;
+            Some((pool.name.clone(), pool.description.clone()))
+        }
         ResourceTarget::Host(id) => Some((
             inventory.hosts.get(&id)?.name.clone(),
             inventory.details.hosts.get(&id)?.description.clone(),
@@ -207,7 +210,7 @@ fn open(s: &mut State, target: ResourceTarget, kind: Kind) {
             target,
             observed,
             pool: inventory.pool_id,
-            label: name.clone(),
+            label: display_name(inventory, target).unwrap_or_else(|| name.clone()),
             expected_name: name.clone(),
             expected_description: description.clone(),
             expected_mtu,

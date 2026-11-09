@@ -36,7 +36,7 @@ impl PoolDissolve {
         }
         let operation = Self {
             coordinator,
-            expected_name: inventory.pool_name.clone(),
+            expected_name: pool.name.clone(),
             expected_description: pool.description.clone(),
             members: inventory
                 .hosts

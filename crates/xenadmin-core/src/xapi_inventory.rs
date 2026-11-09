@@ -219,6 +219,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             ha_enabled: record["ha_enabled"].as_bool(),
             igmp_snooping_enabled: record["igmp_snooping_enabled"].as_bool(),
             id: id(record).ok()?,
+            name: string(record, "name_label"),
             description: string(record, "name_description"),
             default_sr,
             default_sr_known: record["default_SR"] == "OpaqueRef:NULL" || default_sr.is_some(),

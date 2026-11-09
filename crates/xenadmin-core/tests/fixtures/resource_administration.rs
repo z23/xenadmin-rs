@@ -238,6 +238,19 @@ fn rename(
         description: description.into(),
     }
 }
+fn rename_pool(
+    connection: &xenadmin_core::Connection,
+    expected_name: &str,
+    name: &str,
+) -> ResourceCommand {
+    ResourceCommand::RenameMetadata {
+        target: connection.latest().observe_resource(pool()).unwrap(),
+        expected_name: expected_name.into(),
+        expected_description: "Pool description".into(),
+        name: name.into(),
+        description: "Pool description".into(),
+    }
+}
 async fn rechecked(
     connection: &xenadmin_core::Connection,
     id: OperationId,
@@ -285,6 +298,45 @@ async fn metadata_edits_report_verified_and_partial_steps() {
         connection.close().await;
     }
 }
+/// XCP-ng leaves a fresh pool's label empty and the inventory shows a placeholder for it;
+/// the review must carry the empty label, and the placeholder must be refused as stale.
+#[tokio::test]
+async fn unnamed_pool_is_renamed_against_its_empty_label_not_the_placeholder() {
+    let (mock, records) = fixture(Fault::None).await;
+    records.lock().unwrap().get_mut("pool").unwrap()["name_label"] = json!("");
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = connection(&mock, &backend, false).await;
+    let inventory = connection.latest().inventory().unwrap().clone();
+    assert_eq!(inventory.pool_name, "Unnamed");
+    assert_eq!(inventory.details.pool.as_ref().unwrap().name, "");
+    let placeholder = connection
+        .submit_resource(
+            OperationId::new(),
+            rename_pool(&connection, &inventory.pool_name, "Named pool"),
+        )
+        .unwrap();
+    assert_eq!(
+        finish_resource(&placeholder).await.state,
+        OperationState::Rejected
+    );
+    let reviewed = connection
+        .submit_resource(
+            OperationId::new(),
+            rename_pool(&connection, "", "Named pool"),
+        )
+        .unwrap();
+    let outcome = finish_resource(&reviewed).await;
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert_eq!(records.lock().unwrap()["pool"]["name_label"], "Named pool");
+    connection.close().await;
+}
+
 #[tokio::test]
 async fn lost_metadata_reply_reserves_pool_and_reconciles_without_replay() {
     let (mock, _) = fixture(Fault::DropRename).await;
