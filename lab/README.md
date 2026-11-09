@@ -167,6 +167,8 @@ before every build.
   ISO into `guest-tools.iso` with `xe-guest-utilities`, a guest-agent OpenRC service and DHCP
   on `eth0`. The image stays isohybrid so the client can import it as a bootable disk; a guest
   built from it reports PV drivers, its address and clean shutdown support to the pool.
+  The lab network's DHCP serves guests from `.200` to `.249`; an existing network gets that
+  range with `virsh net-update NETWORK add ip-dhcp-range RANGE_XML --live --config`.
 
 None of this creates accounts or credentials: the appliance and the guest have no passwords
 and are reachable only on the isolated lab networks.

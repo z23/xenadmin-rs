@@ -91,6 +91,9 @@ def network_xml(manifest):
     subnet = ipaddress.IPv4Network(manifest["subnet"])
     ip = element(network, "ip", address=str(subnet.network_address + 1), netmask=str(subnet.netmask))
     dhcp = element(ip, "dhcp")
+    # Guests on the pool network lease from the top of the subnet; hosts, the appliance and
+    # guest static addresses stay below it.
+    element(dhcp, "range", start=str(subnet.network_address + 200), end=str(subnet.broadcast_address - 6))
     for host in manifest["hosts"]:
         element(dhcp, "host", mac=host["mac"], name=host["name"], ip=host["ip"])
     return render(network)
