@@ -13674,3 +13674,282 @@ async fn lab_pool_secret_rotation_and_tls_verification_state() {
         }
     }
 }
+
+/// P15-02, P14-10, P15-06: place the lab guest in a folder, move it to another folder and
+/// take it out, register and remove an empty folder; refuse a message dismissal whose review
+/// digest is stale and dismiss the pool's oldest server message (or record that none exist);
+/// apply a two-VM description batch over the running guest and a halted diskless VM, read
+/// both back and restore them with a second batch.
+#[tokio::test]
+#[ignore]
+async fn lab_folders_message_dismissal_and_bulk_description_batch() {
+    use std::collections::BTreeSet;
+    use xenadmin_core::{
+        BatchVmProperties, OrganizationChange, OrganizationObjectId, PowerState, ResourceCommand,
+        VmPropertiesBatch, VmSettingEdit, VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let vm = guest.id;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let object_of = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .organization
+                .objects
+                .iter()
+                .find(|o| o.id == OrganizationObjectId::Vm(vm))
+                .cloned()
+        })
+    };
+
+    // Folders.
+    let original_folder = object_of(&c).and_then(|o| o.folder);
+    let first = format!("/lab/folder-{stamp}");
+    let second = format!("/lab/moved-{stamp}");
+    for (label, previous, value) in [
+        (
+            "place the guest in a folder",
+            original_folder.clone(),
+            Some(first.clone()),
+        ),
+        (
+            "move the guest to another folder",
+            Some(first.clone()),
+            Some(second.clone()),
+        ),
+        (
+            "take the guest out of its folder",
+            Some(second.clone()),
+            original_folder.clone(),
+        ),
+    ] {
+        let mut entry = organization_op(
+            &c,
+            pool,
+            label,
+            OrganizationObjectId::Vm(vm),
+            OrganizationChange::Folder {
+                previous,
+                value: value.clone(),
+            },
+        )
+        .await;
+        entry["read_back"] =
+            json!(settle(60, || object_of(&c).is_some_and(|o| o.folder == value)).await);
+        steps.push(entry);
+    }
+    let empty_folders_of = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.organization.empty_folders.clone())
+    };
+    let empty_previous = empty_folders_of(&c).unwrap_or_default();
+    let empty = format!("/lab/empty-{stamp}");
+    let mut with_empty = empty_previous.clone();
+    with_empty.push(empty.clone());
+    for (label, previous, value, present) in [
+        (
+            "register an empty folder",
+            empty_previous.clone(),
+            with_empty.clone(),
+            true,
+        ),
+        (
+            "remove the empty folder",
+            with_empty.clone(),
+            empty_previous.clone(),
+            false,
+        ),
+    ] {
+        let mut entry = organization_op(
+            &c,
+            pool,
+            label,
+            OrganizationObjectId::Pool(pool),
+            OrganizationChange::EmptyFolders { previous, value },
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(60, || empty_folders_of(&c)
+                .is_some_and(|f| f.contains(&empty) == present))
+            .await
+        );
+        steps.push(entry);
+    }
+
+    // Server messages.
+    let messages = c.latest().inventory().unwrap().details.messages.clone();
+    steps.push(json!({"step": "server messages", "count": messages.len(), "names": messages.values().map(|m| m.name.clone()).collect::<BTreeSet<_>>()}));
+    if let Some(oldest) = messages
+        .values()
+        .min_by_key(|m| m.timestamp.clone())
+        .cloned()
+    {
+        let target = |c: &Connection| {
+            c.latest()
+                .observe_resource(ResourceTarget::Message(oldest.id))
+                .unwrap()
+        };
+        let mut entry = resource_op(
+            &c,
+            "dismiss a message with a stale review digest",
+            ResourceCommand::DismissMessage {
+                message: target(&c),
+                expected_digest: [0u8; 32],
+            },
+            60,
+        )
+        .await;
+        entry["expected_refusal"] = json!(true);
+        entry["still_present"] = json!(
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.details.messages.contains_key(&oldest.id))
+        );
+        steps.push(entry);
+        let mut entry = resource_op(
+            &c,
+            "dismiss the oldest message",
+            ResourceCommand::DismissMessage {
+                message: target(&c),
+                expected_digest: oldest.review_digest(),
+            },
+            120,
+        )
+        .await;
+        entry["message"] = json!({"name": oldest.name, "class": oldest.object_class, "timestamp": oldest.timestamp});
+        entry["read_back"] = json!(
+            settle(60, || c
+                .latest()
+                .inventory()
+                .is_some_and(|i| !i.details.messages.contains_key(&oldest.id)))
+            .await
+        );
+        steps.push(entry);
+    } else {
+        steps.push(
+            json!({"step": "message dismissal", "skipped": "the pool has no server messages"}),
+        );
+    }
+
+    // Two-VM description batch.
+    let (other, created) = create_diskless_vm(
+        &c,
+        &inventory,
+        &format!("lab-batch-{stamp}"),
+        "Disposable diskless VM for the bulk properties scenario",
+    )
+    .await;
+    steps.push(created);
+    let description_of = |c: &Connection, id: xenadmin_core::VmId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.vms.get(&id).map(|v| v.description.clone()))
+    };
+    let guest_state = c.latest().inventory().unwrap().vms[&vm].power_state.clone();
+    let previous = (
+        description_of(&c, vm).expect("guest description"),
+        description_of(&c, other).expect("diskless VM description"),
+    );
+    let marker = format!("lab-batch-{stamp}");
+    let selection = |from: (String, String), to: (String, String)| VmPropertiesBatch {
+        vms: vec![
+            BatchVmProperties {
+                vm,
+                expected_state: guest_state.clone(),
+                patch: VmSettingsPatch::new(vec![VmSettingEdit::Description {
+                    previous: from.0,
+                    value: to.0,
+                }])
+                .unwrap(),
+            },
+            BatchVmProperties {
+                vm: other,
+                expected_state: PowerState::Halted,
+                patch: VmSettingsPatch::new(vec![VmSettingEdit::Description {
+                    previous: from.1,
+                    value: to.1,
+                }])
+                .unwrap(),
+            },
+        ],
+    };
+    let mut entry = resource_op(
+        &c,
+        "batch description edit over two VMs",
+        ResourceCommand::PropertiesBatch {
+            pool: pool_target(&c),
+            selection: selection(previous.clone(), (marker.clone(), marker.clone())),
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || description_of(&c, vm).as_deref()
+            == Some(marker.as_str())
+            && description_of(&c, other).as_deref()
+                == Some(marker.as_str()))
+        .await
+    );
+    steps.push(entry);
+    let mut entry = resource_op(
+        &c,
+        "batch restore of both descriptions",
+        ResourceCommand::PropertiesBatch {
+            pool: pool_target(&c),
+            selection: selection((marker.clone(), marker.clone()), previous.clone()),
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || description_of(&c, vm).as_deref()
+            == Some(previous.0.as_str())
+            && description_of(&c, other).as_deref()
+                == Some(previous.1.as_str()))
+        .await
+    );
+    steps.push(entry);
+    steps.push(delete_vm_record(&c, other).await);
+    c.close().await;
+    lab.record(
+        "folders-message-dismissal-and-bulk-description-batch",
+        json!({"guest": guest.name, "folders": [first, second, empty], "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            assert!(
+                step["accepted"] == false || step["state"] == "Rejected",
+                "{step}"
+            );
+            assert_eq!(step["still_present"], true, "{step}");
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
