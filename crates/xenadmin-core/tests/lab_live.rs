@@ -984,7 +984,7 @@ async fn stable_frame(console: &xenadmin_core::Console, seconds: u64) -> String 
 fn save_frame(lab: &Lab, console: &xenadmin_core::Console, label: &str) -> Option<String> {
     let frame = console.latest().frame.clone()?;
     let mut data = format!("P6\n{} {}\n255\n", frame.width, frame.height).into_bytes();
-    for pixel in frame.rgba.chunks_exact(4) {
+    for pixel in frame.rgba.as_chunks::<4>().0 {
         data.extend_from_slice(&pixel[..3]);
     }
     let stamp = SystemTime::now()
