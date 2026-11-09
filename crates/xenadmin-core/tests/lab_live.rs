@@ -16234,3 +16234,395 @@ async fn lab_member_storage_bond_round_trip() {
         }
     }
 }
+
+/// P12-03, P12-05: put the empty member into maintenance and shut it down through the
+/// reviewed shutdown, confirming the host goes offline. The operator then powers the lab
+/// domain back on (a device defined for the next start needs a real power cycle, not an OS
+/// reboot); `lab_member_return_and_second_storage_nic` records the return.
+#[tokio::test]
+#[ignore]
+async fn lab_member_shutdown_through_maintenance() {
+    use xenadmin_core::{HostOperation, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator)
+        .expect("member");
+    let member_name = inventory.hosts[&member].name.clone();
+    assert!(
+        !inventory
+            .vms
+            .values()
+            .any(|v| v.host == Some(member) && !v.is_control_domain),
+        "the member must not host guests"
+    );
+    let mut steps = Vec::new();
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let details = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.hosts.get(&member).cloned())
+    };
+    let live = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .hosts
+                .get(&member)
+                .and_then(|h| h.metrics)
+                .and_then(|m| i.details.host_metrics.get(&m))
+                .and_then(|m| m.live)
+        })
+    };
+    if details(&c).and_then(|h| h.maintenance_mode) == Some(true) {
+        let entry = resource_op(
+            &c,
+            "clear the leftover maintenance marker",
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::ExitMaintenance,
+            },
+            300,
+        )
+        .await;
+        note(&mut steps, entry);
+    }
+    let enabled = c.latest().inventory().unwrap().hosts[&member].enabled;
+    let mut entry = resource_op(
+        &c,
+        "enter maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::EnterMaintenance {
+                expected_enabled: enabled,
+                resident_vms: Vec::new(),
+            },
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || details(&c).and_then(|h| h.maintenance_mode)
+            == Some(true))
+        .await
+    );
+    note(&mut steps, entry);
+    let boot_before = details(&c).and_then(|h| h.boot_time).expect("boot time");
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "shut the member down",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::Shutdown {
+                expected_boot_time: boot_before,
+            },
+        },
+        900,
+    )
+    .await;
+    entry["read_back"] = json!(settle(600, || live(&c) == Some(false)).await);
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    entry["enabled_after"] = json!(c.latest().inventory().unwrap().hosts[&member].enabled);
+    note(&mut steps, entry);
+    c.close().await;
+    lab.record(
+        "member-shutdown-through-maintenance",
+        json!({"member": member_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P19-05, P12-03, P10-04, P10-09, P09-06: after the operator powers the shut-down member's
+/// domain back on, wait for it to report live, clear the maintenance marker the restart left
+/// behind, rescan its interfaces and confirm both storage NICs by MAC (the second one appears
+/// only after a real power cycle), make sure the first carries the static storage address
+/// and is attached, and attach the shared repository on the member.
+#[tokio::test]
+#[ignore]
+async fn lab_member_return_and_second_storage_nic() {
+    use xenadmin_core::{
+        HostOperation, Ipv4Configuration, Ipv4Mode, NetworkOperation, PifIdentity, ResourceCommand,
+        StorageOperation,
+    };
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("the manifest records a storage network");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator)
+        .expect("member");
+    let member_name = inventory.hosts[&member].name.clone();
+    let lab_index = lab
+        .hosts
+        .iter()
+        .position(|h| h.name == member_name)
+        .expect("member in the manifest");
+    let macs = storage
+        .host_nics
+        .get(&member_name)
+        .cloned()
+        .unwrap_or_default();
+    assert!(macs.len() >= 2, "two storage NICs recorded for the member");
+    let prefix = storage
+        .subnet
+        .split('/')
+        .next()
+        .and_then(|a| a.rsplit_once('.'))
+        .map(|(p, _)| p.to_string())
+        .expect("storage subnet prefix");
+    let address = format!("{prefix}.{}", 11 + lab_index);
+    let mut steps = Vec::new();
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let details = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.hosts.get(&member).cloned())
+    };
+    let live = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .hosts
+                .get(&member)
+                .and_then(|h| h.metrics)
+                .and_then(|m| i.details.host_metrics.get(&m))
+                .and_then(|m| m.live)
+        })
+    };
+    let pif_by_mac = |c: &Connection, mac: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pifs
+                .values()
+                .find(|p| p.host == Some(member) && p.mac.eq_ignore_ascii_case(mac))
+                .cloned()
+        })
+    };
+    let started = std::time::Instant::now();
+    let back = settle(900, || live(&c) == Some(true)).await;
+    note(
+        &mut steps,
+        json!({"step": "member live after the power cycle", "read_back": back, "elapsed_ms": started.elapsed().as_millis() as u64, "enabled": c.latest().inventory().unwrap().hosts[&member].enabled, "maintenance_marker": details(&c).and_then(|h| h.maintenance_mode)}),
+    );
+    if details(&c).and_then(|h| h.maintenance_mode) == Some(true) {
+        let mut entry = resource_op(
+            &c,
+            "exit maintenance",
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::ExitMaintenance,
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || c
+                .latest()
+                .inventory()
+                .is_some_and(|i| i.hosts[&member].enabled))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    let mut entry = resource_op(
+        &c,
+        "rescan physical interfaces",
+        ResourceCommand::Network {
+            target: host_target(&c),
+            operation: NetworkOperation::ScanInterfaces,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] =
+        json!(settle(120, || macs.iter().all(|m| pif_by_mac(&c, m).is_some())).await);
+    note(&mut steps, entry);
+    note(
+        &mut steps,
+        json!({"step": "storage interfaces", "pifs": macs.iter().map(|m| pif_by_mac(&c, m).map(|p| json!({"device": p.device, "mode": p.ip_configuration_mode, "ip": p.ip, "attached": p.currently_attached}))).collect::<Vec<_>>()}),
+    );
+    let Some(first) = pif_by_mac(&c, &macs[0]) else {
+        lab.record(
+            "member-return-and-second-storage-nic",
+            json!({"member": member_name, "failed": "first storage NIC missing", "steps": steps}),
+        );
+        panic!("first storage NIC missing: {steps:?}");
+    };
+    if !(first.ip_configuration_mode == "Static" && first.ip == address) {
+        let before = Ipv4Configuration {
+            mode: match first.ip_configuration_mode.as_str() {
+                "DHCP" => Ipv4Mode::Dhcp,
+                "Static" => Ipv4Mode::Static,
+                _ => Ipv4Mode::None,
+            },
+            address: first.ip.clone(),
+            netmask: first.netmask.clone(),
+            gateway: first.gateway.clone(),
+            dns: first.dns.clone(),
+        };
+        let mut entry = resource_op(
+            &c,
+            "configure the static storage address",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(first.id))
+                    .unwrap(),
+                operation: NetworkOperation::ConfigureIpv4 {
+                    expected: PifIdentity::from_inventory(&first).expect("interface identity"),
+                    before,
+                    configuration: Ipv4Configuration {
+                        mode: Ipv4Mode::Static,
+                        address: address.clone(),
+                        netmask: "255.255.255.0".into(),
+                        gateway: String::new(),
+                        dns: String::new(),
+                    },
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || pif_by_mac(&c, &macs[0]).is_some_and(|p| p.ip
+                == address
+                && p.ip_configuration_mode == "Static"))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    let first = pif_by_mac(&c, &macs[0]).expect("first storage NIC");
+    if first.currently_attached != Some(true) {
+        let mut entry = resource_op(
+            &c,
+            "attach the storage interface",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(first.id))
+                    .unwrap(),
+                operation: NetworkOperation::SetAttached {
+                    expected: PifIdentity::from_inventory(&first).expect("interface identity"),
+                    expected_attached: false,
+                    attached: true,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || pif_by_mac(&c, &macs[0])
+                .is_some_and(|p| p.currently_attached == Some(true)))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    if let Some(sr) = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| xenadmin_core::SrId::from(s.uuid))
+    {
+        let member_pbd = |c: &Connection| {
+            c.latest().inventory().and_then(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .find(|p| p.sr == Some(sr) && p.host == Some(member))
+                    .map(|p| (p.id, p.currently_attached))
+            })
+        };
+        match member_pbd(&c) {
+            Some((_, Some(true))) => note(
+                &mut steps,
+                json!({"step": "shared repository on the member", "already_attached": true}),
+            ),
+            Some((pbd, _)) => {
+                let mut entry = resource_op(
+                    &c,
+                    "attach the shared repository on the member",
+                    ResourceCommand::Storage {
+                        target: c
+                            .latest()
+                            .observe_resource(ResourceTarget::Pbd(pbd))
+                            .unwrap(),
+                        operation: StorageOperation::SetAttached {
+                            sr,
+                            host: member,
+                            expected_attached: false,
+                            attached: true,
+                        },
+                    },
+                    600,
+                )
+                .await;
+                entry["read_back"] = json!(
+                    settle(180, || member_pbd(&c).is_some_and(|(_, a)| a == Some(true))).await
+                );
+                note(&mut steps, entry);
+            }
+            None => note(
+                &mut steps,
+                json!({"step": "shared repository on the member", "skipped": "no attachment record"}),
+            ),
+        }
+    }
+    c.close().await;
+    lab.record(
+        "member-return-and-second-storage-nic",
+        json!({"member": member_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}

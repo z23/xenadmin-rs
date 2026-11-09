@@ -103,7 +103,7 @@ def storage_network(args):
                     raise
                 manage.virsh("attach-interface", host["name"], "network", storage["network"],
                              "--model", "virtio", "--mac", mac, "--config")
-                print(host["name"], mac, "attached for the next start only:",
+                print(host["name"], mac, "attached for the next domain start only (a power cycle, not an OS reboot):",
                       error.stderr.strip().splitlines()[-1] if error.stderr else "live attach refused")
 
 

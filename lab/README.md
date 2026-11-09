@@ -148,9 +148,11 @@ before every build.
 
 - `storage-network --directory DIR --subnet 192.168.253.0/24 --nics 2` defines an isolated
   storage network (no DHCP, no forwarding) and adds virtio NICs to every lab host. One NIC
-  hot-plugs into a running host; further NICs wait for the host's next restart because the
-  q35 machine has no spare PCIe slots, and the command says so. The MACs are recorded in the
-  manifest so reruns are idempotent.
+  hot-plugs into a running host; further NICs wait for the domain's next start because the
+  q35 machine has no spare PCIe slots, and the command says so. A reboot of the XCP-ng host
+  from inside is not enough: the device appears only after the libvirt domain is powered off
+  (for example through the client's reviewed host shutdown) and started again with `virsh
+  start`. The MACs are recorded in the manifest so reruns are idempotent.
 - `nas-image --directory DIR --alpine-iso ISO --sha256 DIGEST --apks DIR` remasters the Alpine
   `virt` ISO into `nas.iso`: a root overlay (static addresses on both lab networks, exports,
   boot services, a start script) and an `/extra` directory holding `nfs-utils` and its
