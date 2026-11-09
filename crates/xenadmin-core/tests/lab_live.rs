@@ -6190,3 +6190,265 @@ async fn lab_interrupted_description_edit_resolves_on_restart() {
     );
     c.close().await;
 }
+
+/// Snapshot marker, failure column: a reviewed restore (shutdown, revert, start) is cut
+/// off by closing the client while it is under way; the restarted client recovers the
+/// workflow record without submitting its remaining steps, a recheck reports the saved
+/// step evidence, and the operator finishes by starting the guest.
+#[tokio::test]
+#[ignore]
+async fn lab_interrupted_snapshot_restore_recovers_without_replay() {
+    use xenadmin_core::{
+        OperationControl, PowerAction, PowerState, SnapshotName, SnapshotWorkflow, VmCommand,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let name = format!("lab-restore-interrupt-{stamp}");
+    let id = OperationId::new();
+    let (guest_id, snapshot_id, state_at_close) = {
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let c = connect(&lab, &backend, 0, false).await;
+        let guest = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .guests()
+            .find(|v| v.name.starts_with("lab-guest-"))
+            .expect("lab guest")
+            .clone();
+        for leftover in c
+            .latest()
+            .inventory()
+            .unwrap()
+            .snapshots
+            .for_vm(guest.id)
+            .filter(|s| s.name.starts_with("lab-restore-interrupt-"))
+            .map(|s| s.id)
+            .collect::<Vec<_>>()
+        {
+            let disks = c
+                .latest()
+                .inventory()
+                .map(|i| {
+                    i.details
+                        .vbds
+                        .values()
+                        .filter(|b| b.snapshot == Some(leftover) && b.kind == "Disk")
+                        .filter_map(|b| b.vdi)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let deletion = c
+                .submit(
+                    OperationId::new(),
+                    VmCommand::DeleteSnapshot {
+                        snapshot: c.latest().observe_snapshot(guest.id, leftover).unwrap(),
+                        disks,
+                    },
+                )
+                .expect("leftover deletion accepted");
+            wait_vm_outcome(&deletion, 300).await;
+        }
+        if guest.power_state != PowerState::Running {
+            let start = c
+                .submit(
+                    OperationId::new(),
+                    VmCommand::Power {
+                        vm: c.latest().observe_vm(guest.id).unwrap(),
+                        action: PowerAction::Start,
+                    },
+                )
+                .expect("start accepted");
+            wait_vm_outcome(&start, 300).await;
+            assert!(
+                settle(120, || c
+                    .latest()
+                    .inventory()
+                    .is_some_and(
+                        |i| i.vms[&guest.id].power_state == PowerState::Running
+                    ))
+                .await
+            );
+        }
+        let snapshot = c
+            .submit(
+                OperationId::new(),
+                VmCommand::CreateSnapshot {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    name: SnapshotName::new(&name).unwrap(),
+                },
+            )
+            .expect("snapshot accepted");
+        let outcome = wait_vm_outcome(&snapshot, 300).await;
+        assert_eq!(
+            outcome.state,
+            OperationState::Succeeded,
+            "{}",
+            outcome.detail
+        );
+        let snapshot_id = tokio::time::timeout(deadline(60), async {
+            loop {
+                if let Some(id) = c.latest().inventory().and_then(|i| {
+                    i.snapshots
+                        .for_vm(guest.id)
+                        .find(|s| s.name == name)
+                        .map(|s| s.id)
+                }) {
+                    return id;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("snapshot visible");
+        let restore = c
+            .submit(
+                id,
+                VmCommand::SnapshotWorkflow {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    operation: SnapshotWorkflow::Restore {
+                        snapshot: snapshot_id,
+                        expected_state: PowerState::Running,
+                        checkpoint: false,
+                        shutdown: true,
+                        start_after: true,
+                    },
+                },
+            )
+            .expect("restore accepted");
+        // Let the first step (the clean shutdown) get under way, then stop like a crash.
+        settle(30, || {
+            !matches!(
+                restore.latest().state,
+                OperationState::Preparing | OperationState::Verifying
+            )
+        })
+        .await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let state_at_close = format!("{:?}", restore.latest().state);
+        c.close().await;
+        (guest.id, snapshot_id, state_at_close)
+    };
+
+    // Same state directory, new process: the workflow is recovered, never resumed.
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let (record, timeline) = wait_history_outcome(&c, id, 300).await;
+    let record = record.unwrap_or_else(|| {
+        let history = c
+            .operation_history()
+            .iter()
+            .map(|r| format!("{} {:?} {}", r.id, r.state, r.detail))
+            .collect::<Vec<_>>();
+        panic!("interrupted workflow {id} not recovered; history after restart: {history:?}")
+    });
+    let mut recheck = None;
+    let record = if record.state == OperationState::OutcomeUnknown {
+        let before = (format!("{:?}", record.state), record.detail.clone());
+        c.control_operation(id, OperationControl::Recheck)
+            .expect("recheck accepted");
+        let moved = settle(120, || {
+            c.operation_history()
+                .iter()
+                .find(|r| r.id == id)
+                .is_some_and(|r| (format!("{:?}", r.state), r.detail.clone()) != before)
+        })
+        .await;
+        let (after, more) = wait_history_outcome(&c, id, 300).await;
+        recheck = Some(
+            json!({"before": before.1, "moved": moved, "timeline": more, "steps": after.as_ref().map(|r| r.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>())}),
+        );
+        after.expect("record after recheck")
+    } else {
+        record
+    };
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let power_after_recovery = format!(
+        "{:?}",
+        c.latest().inventory().unwrap().vms[&guest_id].power_state
+    );
+    // An unresolved workflow holds the guest; the operator acknowledges it to go on.
+    let mut acknowledged = json!(null);
+    if record.state == OperationState::OutcomeUnknown {
+        c.control_operation(id, OperationControl::AcknowledgeUnknown)
+            .expect("acknowledgement accepted");
+        let done = settle(120, || {
+            c.operation_history()
+                .iter()
+                .find(|r| r.id == id)
+                .is_some_and(|r| r.state == OperationState::AcknowledgedUnknown)
+        })
+        .await;
+        acknowledged = json!({"acknowledged": done});
+        assert!(done, "the unknown workflow was not acknowledged");
+    }
+
+    // The operator finishes: start the guest if the interrupted workflow left it halted.
+    let mut finish = json!(null);
+    if c.latest().inventory().unwrap().vms[&guest_id].power_state != PowerState::Running {
+        let start = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(guest_id).unwrap(),
+                    action: PowerAction::Start,
+                },
+            )
+            .expect("start accepted");
+        let outcome = wait_vm_outcome(&start, 300).await;
+        let running = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest_id].power_state == PowerState::Running)
+        })
+        .await;
+        finish = json!({"state": format!("{:?}", outcome.state), "detail": outcome.detail, "running": running});
+    }
+    let running = c
+        .latest()
+        .inventory()
+        .is_some_and(|i| i.vms[&guest_id].power_state == PowerState::Running);
+
+    // Remove the snapshot.
+    let disks = c
+        .latest()
+        .inventory()
+        .map(|i| {
+            i.details
+                .vbds
+                .values()
+                .filter(|b| b.snapshot == Some(snapshot_id) && b.kind == "Disk")
+                .filter_map(|b| b.vdi)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let deletion = c
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: c.latest().observe_snapshot(guest_id, snapshot_id).unwrap(),
+                disks,
+            },
+        )
+        .expect("snapshot deletion accepted");
+    let cleanup = wait_vm_outcome(&deletion, 300).await;
+    lab.record(
+        "interrupted-snapshot-restore",
+        json!({
+            "state_at_close": state_at_close,
+            "recovered": {"state": format!("{:?}", record.state), "detail": record.detail, "timeline": timeline, "steps": record.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()},
+            "recheck": recheck,
+            "guest_power_after_recovery": power_after_recovery,
+            "acknowledgement": acknowledged,
+            "operator_finish": finish,
+            "guest_running_at_end": running,
+            "cleanup": {"state": format!("{:?}", cleanup.state), "detail": cleanup.detail},
+        }),
+    );
+    assert!(running, "the guest is not running at the end");
+    c.close().await;
+}
