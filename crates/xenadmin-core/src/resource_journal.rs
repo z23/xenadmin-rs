@@ -440,10 +440,10 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 1));
             }
             if old.batch_parent != record.batch_parent {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 2));
             }
             if old.storage_graph_plan.as_ref().is_some_and(|p| {
                 record
@@ -451,7 +451,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 3));
             }
             if old.storage_maintenance_plan.as_ref().is_some_and(|p| {
                 record
@@ -459,7 +459,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 4));
             }
             if old.crashdump_deletion.as_ref().is_some_and(|p| {
                 record
@@ -467,7 +467,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 5));
             }
             if old.snapshot_preview_plan.as_ref().is_some_and(|p| {
                 record
@@ -475,7 +475,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 6));
             }
             if old.root_password_plan.as_ref().is_some_and(|p| {
                 record
@@ -498,7 +498,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 7));
             }
             if old.pool != record.pool || old.target != record.target || old.action != record.action
             {
@@ -510,7 +510,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !p.accepts(n))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 8));
             }
             if old.management_network_plan.as_ref().is_some_and(|p| {
                 record
@@ -518,14 +518,14 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|next| !p.accepts(next))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 9));
             }
             if old
                 .disk_plan
                 .as_ref()
                 .is_some_and(|p| record.disk_plan.as_ref().is_none_or(|n| !n.extends(p)))
             {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 10));
             }
             if old.network_fabric_plan.as_ref().is_some_and(|p| {
                 record
@@ -533,7 +533,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.follows(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 11));
             }
             if old.network_topology_plan.as_ref().is_some_and(|p| {
                 record
@@ -541,7 +541,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !p.accepts(n))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 12));
             }
             if old.workflow_batch_plan.as_ref().is_some_and(|p| {
                 record
@@ -549,7 +549,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 13));
             }
             if old.power_batch_plan.as_ref().is_some_and(|p| {
                 record
@@ -557,7 +557,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 14));
             }
             if old.properties_batch_plan.as_ref().is_some_and(|p| {
                 record
@@ -565,7 +565,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !n.extends(p))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 15));
             }
             if old.cloud_init_plan.as_ref().is_some_and(|p| {
                 record
@@ -573,10 +573,10 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !p.accepts(n))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 16));
             }
             if !crate::transfer::valid_update(&old, record) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 17));
             }
             if old.cross_pool_plan.as_ref().is_some_and(|p| {
                 record
@@ -586,7 +586,7 @@ impl Journal {
             }) || (matches!(record.action, ResourceAction::CrossPoolVm(_))
                 && !cross_created_contains(&record.transfer_created, &old.transfer_created))
             {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 18));
             }
             if old.snapshot_policy_evidence.as_ref().is_some_and(|e| {
                 record
@@ -594,7 +594,7 @@ impl Journal {
                     .as_ref()
                     .is_none_or(|n| !e.accepts(n))
             }) {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 19));
             }
             if (old.state.terminal() && old.state != record.state)
                 || (old.task.is_some() && old.task != record.task)
@@ -629,10 +629,10 @@ impl Journal {
                 || (old.baseline_networks.is_some()
                     && old.baseline_networks != record.baseline_networks)
             {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(record.id, 20));
             }
         } else if record.revision != 0 {
-            return Err(Error::JournalChanged);
+            return Err(journal_conflict(record.id, 21));
         }
         let mut payload = serde_json::to_value(&record).map_err(|_| Error::Journal)?;
         if let Some(plan) = &record.workflow_batch_plan {
@@ -765,7 +765,7 @@ impl Journal {
         let payload = serde_json::to_string(&payload).map_err(|_| Error::Journal)?;
         let changed=self.0.execute("INSERT INTO resource_operations(id,pool,payload,task,result_reference,terminal,revision) VALUES(?1,?2,?3,?4,?5,?6,?7+1) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,task=excluded.task,result_reference=excluded.result_reference,terminal=excluded.terminal,revision=excluded.revision WHERE resource_operations.revision=?7 AND (resource_operations.terminal=0 OR excluded.terminal=1)",params![record.id.to_string(),record.pool.to_string(),payload,record.task,record.result_reference,record.state.terminal(),record.revision]).map_err(|_|Error::Journal)?;
         if changed != 1 {
-            return Err(Error::JournalChanged);
+            return Err(journal_conflict(record.id, 22));
         }
         record.revision += 1;
         Ok(())
@@ -1272,4 +1272,13 @@ impl Journal {
         }
         Err(Error::JournalChanged)
     }
+}
+
+/// Journal conflicts are legitimate (another writer touched the row) but hard to diagnose
+/// from the record alone; with `XENADMIN_DEV_RPC_TRACE=1` the failing check is named.
+fn journal_conflict(id: OperationId, site: u32) -> Error {
+    if crate::xapi::rpc_trace_enabled() {
+        eprintln!("xenadmin journal trace: resource {id} conflict at check {site}");
+    }
+    Error::JournalChanged
 }

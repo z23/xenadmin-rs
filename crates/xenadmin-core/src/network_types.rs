@@ -183,6 +183,12 @@ pub enum NetworkOperation {
         enabled: bool,
     },
     ScanInterfaces,
+    /// Forget a physical interface record whose device the host no longer presents under
+    /// that name (a hot-plugged NIC keeps its temporary `side-N-ethX` name in the record
+    /// while the kernel renames the device at boot); a rescan then re-introduces it.
+    ForgetInterface {
+        expected: PifIdentity,
+    },
     SetAttached {
         expected: PifIdentity,
         expected_attached: bool,
@@ -249,6 +255,7 @@ impl NetworkOperation {
             NetworkOperation::SetInterfacePurpose { .. } => "Async.PIF.set_other_config",
             NetworkOperation::SetUnplugProtection { .. } => "Async.PIF.set_disallow_unplug",
             NetworkOperation::ScanInterfaces => "Async.PIF.scan",
+            NetworkOperation::ForgetInterface { .. } => "Async.PIF.forget",
             NetworkOperation::SetAttached { attached: true, .. } => "Async.PIF.plug",
             NetworkOperation::SetAttached {
                 attached: false, ..
@@ -275,6 +282,7 @@ impl NetworkOperation {
             Self::SetInterfacePurpose { .. } => "Set interface purpose",
             Self::SetUnplugProtection { .. } => "Set interface unplug protection",
             Self::ScanInterfaces => "Scan physical interfaces",
+            Self::ForgetInterface { .. } => "Forget physical interface record",
             Self::SetAttached { attached: true, .. } => "Plug host interface",
             Self::SetAttached {
                 attached: false, ..
@@ -336,6 +344,7 @@ impl NetworkOperation {
                 enabled,
             } => pif && !expected.management && before != enabled,
             Self::ScanInterfaces => matches!(target, ResourceTarget::Host(_)),
+            Self::ForgetInterface { expected } => pif && !expected.management,
             Self::SetAttached {
                 expected,
                 expected_attached,
@@ -441,6 +450,33 @@ mod tests {
         assert!(config.valid());
         config.dns = "credential@example.invalid".into();
         assert!(!config.valid());
+    }
+    #[test]
+    fn forgetting_an_interface_record_requires_a_non_management_pif_target() {
+        let pif = ResourceTarget::Pif(PifId::from(uuid::Uuid::new_v4()));
+        let mut identity = PifIdentity {
+            host: HostId::from(uuid::Uuid::new_v4()),
+            network: NetworkId::from(uuid::Uuid::new_v4()),
+            device: "side-7679-eth1".into(),
+            mac: "02:00:00:00:00:02".into(),
+            management: false,
+        };
+        let forget = NetworkOperation::ForgetInterface {
+            expected: identity.clone(),
+        };
+        assert!(forget.validate(pif).is_ok());
+        assert_eq!(forget.method(), "Async.PIF.forget");
+        assert!(
+            forget
+                .validate(ResourceTarget::Host(HostId::from(uuid::Uuid::new_v4())))
+                .is_err()
+        );
+        identity.management = true;
+        assert!(
+            NetworkOperation::ForgetInterface { expected: identity }
+                .validate(pif)
+                .is_err()
+        );
     }
     #[test]
     fn management_unplug_and_address_reconfiguration_are_refused_by_core() {

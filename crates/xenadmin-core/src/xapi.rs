@@ -560,7 +560,7 @@ pub(crate) fn parse_rpc_json(bytes: &[u8]) -> Result<Value, Error> {
 
 /// `XENADMIN_DEV_RPC_TRACE=1` prints failed method names and sanitized error codes to
 /// stderr for lab diagnosis. Parameters, session tokens and payloads are never printed.
-fn rpc_trace_enabled() -> bool {
+pub(crate) fn rpc_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var_os("XENADMIN_DEV_RPC_TRACE").is_some_and(|v| v == "1"))
 }

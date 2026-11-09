@@ -16627,18 +16627,28 @@ async fn lab_member_return_and_second_storage_nic() {
     }
 }
 
-/// P04-12 (diagnostic use): open the member's control-domain text console through the
-/// client, log in with the lab-only root password, and capture frames of the dom0 view of
-/// its network devices, addresses, interface records, bridges and interface-rename rules.
-/// Frames are saved next to the evidence files for review; nothing is changed on the host.
+/// P10-04, P10-09, P09-02, P09-06: repair the member's storage path. Probe the appliance's
+/// exports through the member; when the host cannot reach it although its storage interface
+/// record says attached, forget that record, rescan so the kernel's current device is
+/// introduced again, configure and attach it, and probe once more; then attach the shared
+/// repository on the member. A member that already reaches the appliance only records that.
 #[tokio::test]
 #[ignore]
-async fn lab_member_dom0_network_diagnostic() {
+async fn lab_member_storage_interface_repair() {
+    use xenadmin_core::{
+        Ipv4Configuration, Ipv4Mode, NetworkOperation, NfsVersion, PifIdentity, ResourceCommand,
+        StorageDiscoveryResult, StorageOperation, StorageQuery,
+    };
     let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("the manifest records a storage network");
     let state = tempfile::tempdir().unwrap();
     let backend = Backend::with_state_directory(state.path().into()).unwrap();
     let c = connect(&lab, &backend, 0, false).await;
     let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
     let coordinator = inventory
         .details
         .pool
@@ -16649,74 +16659,266 @@ async fn lab_member_dom0_network_diagnostic() {
         .hosts
         .keys()
         .copied()
-        .find(|h| *h != coordinator)
-        .expect("member");
-    let control_domain = inventory.details.hosts[&member]
-        .control_domain
-        .expect("control domain");
-    let console = c
-        .open_host_console(
-            c.latest()
-                .observe_resource(ResourceTarget::Host(member))
-                .unwrap(),
-            control_domain,
-        )
-        .expect("host console");
-    let connected = tokio::time::timeout(deadline(60), async {
-        loop {
-            let snapshot = console.latest();
-            if snapshot.state == xenadmin_core::ConsoleState::Connected && snapshot.frame.is_some()
-            {
-                return true;
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let member_name = inventory.hosts[&member].name.clone();
+    let lab_index = lab
+        .hosts
+        .iter()
+        .position(|h| h.name == member_name)
+        .expect("member in the manifest");
+    let macs = storage
+        .host_nics
+        .get(&member_name)
+        .cloned()
+        .unwrap_or_default();
+    assert!(!macs.is_empty(), "storage NICs recorded for the member");
+    let prefix = storage
+        .subnet
+        .split('/')
+        .next()
+        .and_then(|a| a.rsplit_once('.'))
+        .map(|(p, _)| p.to_string())
+        .expect("storage subnet prefix");
+    let address = format!("{prefix}.{}", 11 + lab_index);
+    let mut steps = Vec::new();
+    let pif_by_mac = |c: &Connection, mac: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pifs
+                .values()
+                .find(|p| p.host == Some(member) && p.mac.eq_ignore_ascii_case(mac))
+                .cloned()
+        })
+    };
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let probe = |c: &Connection| {
+        let probe = c
+            .discover_storage(
+                c.latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                StorageQuery::NfsExports {
+                    host: member,
+                    server: storage.nas_ip.clone(),
+                    version: NfsVersion::Automatic,
+                },
+            )
+            .expect("probe accepted");
+        async move {
+            let result = tokio::time::timeout(deadline(180), async {
+                loop {
+                    if let Some(result) = probe.latest() {
+                        break result;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .expect("probe answered");
+            match result {
+                Ok(StorageDiscoveryResult::NfsExports(rows)) => {
+                    Ok(rows.into_iter().map(|r| r.path).collect::<Vec<_>>())
+                }
+                Ok(_) => Err("unexpected discovery result".to_string()),
+                Err(e) => Err(e),
             }
-            if let xenadmin_core::ConsoleState::Failed(_) = &snapshot.state {
-                return false;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
-    })
-    .await
-    .unwrap_or(false);
-    assert!(connected, "member host console did not connect");
-    stable_frame_or_last(&console, 20).await;
-    let mut frames = Vec::new();
-    frames.push(save_frame(&lab, &console, "diag-0-login"));
-    type_line(&console, "root").await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    type_line(&console, &lab.password).await;
-    tokio::time::sleep(Duration::from_secs(4)).await;
-    frames.push(save_frame(&lab, &console, "diag-1-shell"));
-    for (label, command) in [
-        ("2-links", "clear; ip -br link"),
-        ("3-addrs", "clear; ip -br addr"),
-        (
-            "4-pifs",
-            "clear; xe pif-list host-name-label=$(hostname) params=device,MAC,IP,currently-attached,network-name-label",
-        ),
-        (
-            "5-ovs",
-            "clear; ovs-vsctl show | grep -E 'Bridge|Port|Interface' | head -28",
-        ),
-        (
-            "6-rename",
-            "clear; cat /etc/sysconfig/network-scripts/interface-rename-data/dynamic-rules.json | head -30",
-        ),
-        (
-            "7-ifcfg",
-            "clear; ls /etc/sysconfig/network-scripts/; tail -n 20 /var/log/daemon.log | cut -c1-150",
-        ),
-    ] {
-        type_line(&console, command).await;
-        tokio::time::sleep(Duration::from_secs(4)).await;
-        frames.push(save_frame(&lab, &console, &format!("diag-{label}")));
+    };
+    let first = pif_by_mac(&c, &macs[0]).expect("storage interface record");
+    note(
+        &mut steps,
+        json!({"step": "storage interface before", "device": first.device, "mode": first.ip_configuration_mode, "ip": first.ip, "attached": first.currently_attached}),
+    );
+    let before = probe(&c).await;
+    note(
+        &mut steps,
+        json!({"step": "probe the appliance through the member", "exports": before.as_ref().ok(), "error": before.as_ref().err(), "reachable": before.is_ok()}),
+    );
+    if before.is_err() {
+        // Forget the record, rescan, configure and attach the re-introduced interface.
+        let mut entry = resource_op(
+            &c,
+            "forget the storage interface record",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(first.id))
+                    .unwrap(),
+                operation: NetworkOperation::ForgetInterface {
+                    expected: PifIdentity::from_inventory(&first).expect("interface identity"),
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(60, || c
+                .latest()
+                .inventory()
+                .is_some_and(|i| !i.details.pifs.contains_key(&first.id)))
+            .await
+        );
+        note(&mut steps, entry);
+        let mut entry = resource_op(
+            &c,
+            "rescan physical interfaces",
+            ResourceCommand::Network {
+                target: host_target(&c),
+                operation: NetworkOperation::ScanInterfaces,
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(settle(120, || pif_by_mac(&c, &macs[0]).is_some()).await);
+        note(&mut steps, entry);
+        let Some(fresh) = pif_by_mac(&c, &macs[0]) else {
+            lab.record("member-storage-interface-repair", json!({"member": member_name, "failed": "interface not re-introduced", "steps": steps}));
+            panic!("interface not re-introduced: {steps:?}");
+        };
+        note(
+            &mut steps,
+            json!({"step": "storage interface re-introduced", "device": fresh.device, "mode": fresh.ip_configuration_mode, "attached": fresh.currently_attached, "all_storage_pifs": macs.iter().map(|m| pif_by_mac(&c, m).map(|p| p.device)).collect::<Vec<_>>()}),
+        );
+        let mut entry = resource_op(
+            &c,
+            "configure the static storage address",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(fresh.id))
+                    .unwrap(),
+                operation: NetworkOperation::ConfigureIpv4 {
+                    expected: PifIdentity::from_inventory(&fresh).expect("interface identity"),
+                    before: Ipv4Configuration {
+                        mode: match fresh.ip_configuration_mode.as_str() {
+                            "DHCP" => Ipv4Mode::Dhcp,
+                            "Static" => Ipv4Mode::Static,
+                            _ => Ipv4Mode::None,
+                        },
+                        address: fresh.ip.clone(),
+                        netmask: fresh.netmask.clone(),
+                        gateway: fresh.gateway.clone(),
+                        dns: fresh.dns.clone(),
+                    },
+                    configuration: Ipv4Configuration {
+                        mode: Ipv4Mode::Static,
+                        address: address.clone(),
+                        netmask: "255.255.255.0".into(),
+                        gateway: String::new(),
+                        dns: String::new(),
+                    },
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || pif_by_mac(&c, &macs[0]).is_some_and(|p| p.ip
+                == address
+                && p.ip_configuration_mode == "Static"))
+            .await
+        );
+        note(&mut steps, entry);
+        let fresh = pif_by_mac(&c, &macs[0]).expect("storage interface");
+        let mut entry = resource_op(
+            &c,
+            "attach the storage interface",
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(fresh.id))
+                    .unwrap(),
+                operation: NetworkOperation::SetAttached {
+                    expected: PifIdentity::from_inventory(&fresh).expect("interface identity"),
+                    expected_attached: false,
+                    attached: true,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || pif_by_mac(&c, &macs[0])
+                .is_some_and(|p| p.currently_attached == Some(true)))
+            .await
+        );
+        note(&mut steps, entry);
+        let after = probe(&c).await;
+        note(
+            &mut steps,
+            json!({"step": "probe the appliance through the member after the repair", "exports": after.as_ref().ok(), "error": after.as_ref().err(), "read_back": after.is_ok()}),
+        );
     }
-    type_line(&console, "clear; exit").await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    console.close();
+    if let Some(sr) = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| xenadmin_core::SrId::from(s.uuid))
+    {
+        let member_pbd = |c: &Connection| {
+            c.latest().inventory().and_then(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .find(|p| p.sr == Some(sr) && p.host == Some(member))
+                    .map(|p| (p.id, p.currently_attached))
+            })
+        };
+        match member_pbd(&c) {
+            Some((_, Some(true))) => note(
+                &mut steps,
+                json!({"step": "shared repository on the member", "already_attached": true}),
+            ),
+            Some((pbd, _)) => {
+                let mut entry = resource_op(
+                    &c,
+                    "attach the shared repository on the member",
+                    ResourceCommand::Storage {
+                        target: c
+                            .latest()
+                            .observe_resource(ResourceTarget::Pbd(pbd))
+                            .unwrap(),
+                        operation: StorageOperation::SetAttached {
+                            sr,
+                            host: member,
+                            expected_attached: false,
+                            attached: true,
+                        },
+                    },
+                    600,
+                )
+                .await;
+                entry["read_back"] = json!(
+                    settle(180, || member_pbd(&c).is_some_and(|(_, a)| a == Some(true))).await
+                );
+                note(&mut steps, entry);
+            }
+            None => note(
+                &mut steps,
+                json!({"step": "shared repository on the member", "skipped": "no attachment record"}),
+            ),
+        }
+    }
     c.close().await;
     lab.record(
-        "member-dom0-network-diagnostic",
-        json!({"member": inventory.hosts[&member].name, "frames": frames}),
+        "member-storage-interface-repair",
+        json!({"member": member_name, "appliance": storage.nas_ip, "steps": steps}),
     );
-    eprintln!("frames: {frames:?}");
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
 }

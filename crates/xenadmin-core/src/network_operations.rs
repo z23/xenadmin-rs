@@ -167,6 +167,19 @@ pub(super) async fn arguments(
             args.push(json!(purpose.as_str()));
         }
         NetworkOperation::ScanInterfaces => {}
+        NetworkOperation::ForgetInterface { expected } => {
+            pif_identity(session, &fresh, expected).await?;
+            nonmanagement(&fresh)?;
+            if fresh["physical"] != true
+                || number(&fresh["VLAN"]) != Some(-1)
+                || fresh["bond_slave_of"] != "OpaqueRef:NULL"
+            {
+                return Err(Error::ResourceInUse);
+            }
+            empty(&fresh, "bond_master_of")?;
+            empty(&fresh, "VLAN_slave_of")?;
+            empty(&fresh, "tunnel_access_PIF_of")?;
+        }
         NetworkOperation::SetAttached {
             expected,
             expected_attached,
@@ -472,7 +485,9 @@ pub(super) async fn verify(
     }
     if matches!(
         op,
-        NetworkOperation::DeleteVlan { .. } | NetworkOperation::DeleteBond { .. }
+        NetworkOperation::DeleteVlan { .. }
+            | NetworkOperation::DeleteBond { .. }
+            | NetworkOperation::ForgetInterface { .. }
     ) {
         return match xapi::read(session, record.target).await {
             Err(Error::Api(code)) if code == "UUID_INVALID" => Ok(None),
@@ -517,6 +532,7 @@ pub(super) async fn verify(
             fresh["disallow_unplug"].as_bool() == Some(*enabled)
         }
         NetworkOperation::ScanInterfaces => true,
+        NetworkOperation::ForgetInterface { .. } => unreachable!(),
         NetworkOperation::SetAttached {
             expected, attached, ..
         } => {

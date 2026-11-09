@@ -918,7 +918,26 @@ pub(crate) async fn verify(
                 step.task_succeeded,
                 "Shutdown delivery is unresolved; an offline host alone does not prove shutdown",
             )?;
-            live(session, &host, false).await
+            // The coordinator marks a member offline only once its heartbeat lapses, so a
+            // host that still reports live right after the task is not a failed shutdown.
+            // Wait within the connection's restart bound for liveness to drop.
+            let wait = session.options().host_restart_wait;
+            let started = std::time::Instant::now();
+            let mut current = host;
+            loop {
+                if live(session, &current, false).await.is_ok() {
+                    return Ok(());
+                }
+                if started.elapsed() >= wait {
+                    return Err(Error::HostPrerequisite(
+                        "The host still reports live after the shutdown task; verify its power state",
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5).min(wait)).await;
+                if let Ok((_, fresh_host, _)) = self::host(session, record).await {
+                    current = fresh_host;
+                }
+            }
         }
         Kind::PowerOn => live(session, &host, true).await,
         Kind::PowerMode => {
