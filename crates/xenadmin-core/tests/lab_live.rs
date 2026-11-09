@@ -131,6 +131,26 @@ async fn inspect(endpoint: &Endpoint) -> xenadmin_core::CertificateObservation {
     .expect("certificate observed")
 }
 
+/// Inspection that tolerates an unreachable member instead of panicking.
+async fn inspect_result(endpoint: &Endpoint) -> Option<xenadmin_core::CertificateObservation> {
+    let task = CertificateInspectionTask::start(
+        ConnectionOptions::new(endpoint.clone()),
+        endpoint.clone(),
+        None,
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Some(outcome) = task.take_result() {
+                return outcome.ok();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 async fn pinned_options(endpoint: &Endpoint) -> (ConnectionOptions, CertificateFingerprint) {
     let observation = inspect(endpoint).await;
     let fingerprint = observation.details.fingerprint.clone();
@@ -141,6 +161,17 @@ async fn pinned_options(endpoint: &Endpoint) -> (ConnectionOptions, CertificateF
 
 async fn connect(lab: &Lab, backend: &Backend, index: usize, read_only: bool) -> Connection {
     let (mut options, _) = pinned_options(&lab.endpoint(index)).await;
+    // Consoles and redirects reach other members directly, so pin every reachable member's
+    // certificate as an additional verified host, as the desktop profile editor records.
+    for other in 0..lab.hosts.len() {
+        if other == index {
+            continue;
+        }
+        let endpoint = lab.endpoint(other);
+        if let Some(observation) = inspect_result(&endpoint).await {
+            options.add_host_certificate(endpoint, observation.details.fingerprint.clone());
+        }
+    }
     options.read_only = read_only;
     let connection = backend.connect(options, lab.credentials());
     connection
@@ -621,7 +652,7 @@ async fn lab_guest_provisioning() {
         .details
         .pifs
         .values()
-        .find(|p| p.host == Some(coordinator) && p.management_purpose.is_some())
+        .find(|p| p.host == Some(coordinator) && p.management == Some(true))
         .and_then(|p| p.network)
         .or_else(|| {
             inventory
@@ -1509,7 +1540,7 @@ async fn lab_guest_live_migration_with_storage() {
         .details
         .pifs
         .values()
-        .find(|p| p.host == Some(destination) && p.management_purpose.is_some())
+        .find(|p| p.host == Some(destination) && p.management == Some(true))
         .and_then(|p| p.network)
         .expect("destination management network");
     let migration = c
@@ -1558,16 +1589,21 @@ async fn lab_guest_live_migration_with_storage() {
             {
                 return true;
             }
+            if matches!(snapshot.state, xenadmin_core::ConsoleState::Failed(_)) {
+                return false;
+            }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     })
     .await
     .unwrap_or(false);
+    let console_state = format!("{:?}", console.latest().state);
     console.close();
     c.close().await;
     lab.record(
         "guest-live-migration-with-storage",
         json!({
+            "console_state": console_state,
             "guest": guest.name, "from": source_host.to_string(), "to": destination.to_string(),
             "destination_repository": SrId::to_string(&destination_sr),
             "operation": {"state": format!("{:?}", outcome.state), "detail": outcome.detail},
