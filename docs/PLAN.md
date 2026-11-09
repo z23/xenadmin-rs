@@ -99,9 +99,10 @@ paths, chosen-host start and resume with per-action diagnosis and home server ed
 live property editors with snapshot metadata, two-VM power batches, an other-client task
 cancellation, a recovery boot override, the disk attachment, HA priority, changed-block
 tracking and cloud-init drive editors, host and pool setting round trips, the host text
-console and Ctrl+Alt+Delete, a coordinator handover round trip and a member certificate reset,
-plus sixteen host-behaviour findings that were fixed, two host observations and one open
-upstream accessibility finding. Member failover, shared storage, pointer and Orca
+console and Ctrl+Alt+Delete, a coordinator handover round trip, a member certificate reset,
+host backup and support bundle downloads and the template lifecycle, plus seventeen
+host-behaviour findings that were fixed, two host observations and one open upstream
+accessibility finding. Member failover, shared storage, pointer and Orca
 qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
 

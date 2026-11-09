@@ -9499,3 +9499,388 @@ async fn lab_member_certificate_reset_and_trust_replacement() {
     );
     assert_eq!(replaced["state"], "Ready", "{replaced}");
 }
+
+/// P12-12, P12-14, P08-01, P08-04, P08-05, P08-07: download the member's private
+/// configuration backup and a support bundle of its advertised categories (both removed
+/// again once measured); with the guest halted, fast-clone it into a custom template, edit
+/// the template's metadata, full-copy a VM from the template onto the resident host's local
+/// repository, then delete the VM and the template with their disks and start the guest.
+#[tokio::test]
+#[ignore]
+async fn lab_host_archives_and_template_lifecycle() {
+    use xenadmin_core::{
+        HostArchiveOperation, PowerAction, PowerState, TransferAction, TransferFile,
+        TransferRequest, VmCommand, VmCopyMode, VmLifecycleOperation,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("member");
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let resident = guest.host.expect("resident host");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let directory = lab.evidence.parent().unwrap().join("transfers");
+    std::fs::create_dir_all(&directory).unwrap();
+
+    // Host support overview, then the private backup and a support bundle.
+    let overview = match c
+        .latest()
+        .observe_resource(ResourceTarget::Host(member))
+        .and_then(|o| c.host_support(o))
+    {
+        Ok(query) => tokio::time::timeout(deadline(120), async {
+            loop {
+                if let Some(result) = query.latest() {
+                    return result.map_err(|e| e.to_string());
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .unwrap_or(Err("no overview within the deadline".into())),
+        Err(error) => Err(error.to_string()),
+    };
+    let overview_json = match &overview {
+        Ok(o) => {
+            json!({"version": o.version, "capabilities": o.capabilities.iter().map(|c| json!({"key": c.key, "privacy": c.privacy, "default": c.default_selected})).collect::<Vec<_>>(),
+                        "capabilities_error": o.capabilities_error, "crashdumps": o.crashdumps.len(), "crashdumps_error": o.crashdumps_error})
+        }
+        Err(e) => json!({"error": e}),
+    };
+    let version = inventory.hosts[&member].version.clone();
+    let mut archives = Vec::new();
+    let entries = overview
+        .as_ref()
+        .ok()
+        .map(|o| {
+            let selected = o
+                .capabilities
+                .iter()
+                .filter(|c| c.default_selected)
+                .map(|c| c.key.clone())
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                o.capabilities
+                    .iter()
+                    .take(2)
+                    .map(|c| c.key.clone())
+                    .collect()
+            } else {
+                selected
+            }
+        })
+        .unwrap_or_default();
+    for (label, operation) in [
+        ("host configuration backup", HostArchiveOperation::Backup),
+        (
+            "support bundle",
+            HostArchiveOperation::Support {
+                entries: entries.clone(),
+            },
+        ),
+    ] {
+        let path = directory.join(format!("lab-{}-{stamp}.archive", label.replace(' ', "-")));
+        let started = std::time::Instant::now();
+        let entry = match c
+            .latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .and_then(|target| {
+                c.transfer(
+                    OperationId::new(),
+                    target,
+                    TransferRequest {
+                        action: TransferAction::Host {
+                            host: member,
+                            expected_version: version.clone(),
+                            operation,
+                        },
+                        file: TransferFile::destination(&path).expect("archive destination"),
+                    },
+                )
+            }) {
+            Ok(operation) => {
+                let row = wait_outcome(&operation, 900).await;
+                let size = std::fs::metadata(&path).map(|m| m.len()).ok();
+                let removed = std::fs::remove_file(&path).is_ok();
+                json!({"archive": label, "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "bytes": size, "elapsed_ms": started.elapsed().as_millis() as u64, "removed_after_measuring": removed,
+                       "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+            }
+            Err(error) => json!({"archive": label, "accepted": false, "error": error.to_string()}),
+        };
+        archives.push(entry);
+    }
+
+    // An archive that did not succeed leaves an unresolved infrastructure operation that
+    // blocks VM work by design; record what happened before touching the guest.
+    if archives.iter().any(|a| a["state"] != "Succeeded") {
+        for entry in std::fs::read_dir(&directory)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".xenadmin-transfer-")
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        c.close().await;
+        lab.record(
+            "host-archives-and-template-lifecycle",
+            json!({"member": member.to_string(), "support_overview": overview_json, "support_entries": entries, "archives": archives, "template_lifecycle": "not attempted"}),
+        );
+        panic!("an archive transfer did not succeed: {archives:?}");
+    }
+
+    // Template lifecycle on the halted guest.
+    let mut power = Vec::new();
+    if c.latest().inventory().unwrap().vms[&guest.id].power_state == PowerState::Running {
+        power.push(halt_guest(&c, guest.id).await);
+    }
+    let lifecycle = |source: xenadmin_core::VmId, operation: VmLifecycleOperation, seconds: u64| {
+        let c = &c;
+        async move {
+            match c.latest().observe_vm(source).and_then(|target| {
+                c.submit(
+                    OperationId::new(),
+                    VmCommand::Lifecycle {
+                        source: target,
+                        operation,
+                    },
+                )
+            }) {
+                Ok(operation) => {
+                    let row = wait_vm_outcome(&operation, seconds).await;
+                    json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                           "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
+                }
+                Err(error) => json!({"accepted": false, "error": error.to_string()}),
+            }
+        }
+    };
+    let find_named = |name: &str, template: bool| {
+        let snapshot = c.latest();
+        snapshot.inventory().and_then(|i| {
+            i.vms
+                .values()
+                .find(|v| v.name == name && v.is_template == template && v.id != guest.id)
+                .cloned()
+        })
+    };
+    let mut steps = Vec::new();
+    // Leftovers of an interrupted run go first, through the same reviewed deletions.
+    for vm in inventory
+        .vms
+        .values()
+        .filter(|v| {
+            (v.name.starts_with("lab-template-") || v.name.starts_with("lab-from-template-"))
+                && v.id != guest.id
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        if vm.power_state == PowerState::Running {
+            halt_guest(&c, vm.id).await;
+        }
+        let disks = disks_of(c.latest().inventory().unwrap(), vm.id);
+        let outcome = lifecycle(
+            vm.id,
+            VmLifecycleOperation::Delete {
+                expected_template: vm.is_template,
+                disks,
+                snapshots: Vec::new(),
+            },
+            300,
+        )
+        .await;
+        steps.push(json!({"step": "delete leftover", "name": vm.name, "outcome": outcome}));
+    }
+    let template_name = format!("lab-template-{stamp}");
+    let outcome = lifecycle(
+        guest.id,
+        VmLifecycleOperation::Clone {
+            name: template_name.clone(),
+            expected_template: false,
+            mode: VmCopyMode::Fast,
+            as_template: true,
+        },
+        600,
+    )
+    .await;
+    let template = tokio::time::timeout(deadline(60), async {
+        loop {
+            if let Some(t) = find_named(&template_name, true) {
+                return t;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .ok();
+    let template_disks = template
+        .as_ref()
+        .map(|t| disks_of(c.latest().inventory().unwrap(), t.id))
+        .unwrap_or_default();
+    let guest_disks = disks_of(c.latest().inventory().unwrap(), guest.id);
+    steps.push(json!({"step": "fast clone to template", "outcome": outcome, "template": template.as_ref().map(|t| t.id.to_string()), "disks": template_disks.len(),
+                      "disks_shared_with_guest": template_disks.iter().filter(|d| guest_disks.contains(d)).count()}));
+    let mut created_vm = None;
+    if let Some(template) = &template {
+        let renamed = format!("{template_name}-edited");
+        let outcome = lifecycle(
+            template.id,
+            VmLifecycleOperation::EditTemplate {
+                name: renamed.clone(),
+                description: "Edited by the live harness".into(),
+            },
+            180,
+        )
+        .await;
+        let read_back = settle(60, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.vms.get(&template.id).is_some_and(|v| {
+                    v.name == renamed && v.description == "Edited by the live harness"
+                })
+            })
+        })
+        .await;
+        steps.push(
+            json!({"step": "edit template metadata", "outcome": outcome, "read_back": read_back}),
+        );
+        let sr = local_sr_of(c.latest().inventory().unwrap(), resident)
+            .expect("resident local repository");
+        let vm_name = format!("lab-from-template-{stamp}");
+        let started = std::time::Instant::now();
+        let outcome = lifecycle(
+            template.id,
+            VmLifecycleOperation::Clone {
+                name: vm_name.clone(),
+                expected_template: true,
+                mode: VmCopyMode::Full { sr },
+                as_template: false,
+            },
+            900,
+        )
+        .await;
+        let vm = tokio::time::timeout(deadline(60), async {
+            loop {
+                if let Some(v) = find_named(&vm_name, false) {
+                    return v;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .ok();
+        let vm_disks = vm
+            .as_ref()
+            .map(|v| disks_of(c.latest().inventory().unwrap(), v.id))
+            .unwrap_or_default();
+        let on_sr = {
+            let snapshot = c.latest();
+            let i = snapshot.inventory().unwrap();
+            vm_disks
+                .iter()
+                .all(|d| i.details.vdis.get(d).and_then(|v| v.sr) == Some(sr))
+        };
+        steps.push(json!({"step": "full copy from template to VM", "outcome": outcome, "elapsed_ms": started.elapsed().as_millis() as u64, "vm": vm.as_ref().map(|v| v.id.to_string()),
+                          "disks": vm_disks.len(), "disks_on_chosen_repository": on_sr, "disks_shared_with_template": vm_disks.iter().filter(|d| template_disks.contains(d)).count()}));
+        created_vm = vm;
+    }
+    if let Some(vm) = &created_vm {
+        let disks = disks_of(c.latest().inventory().unwrap(), vm.id);
+        let outcome = lifecycle(
+            vm.id,
+            VmLifecycleOperation::Delete {
+                expected_template: false,
+                disks: disks.clone(),
+                snapshots: Vec::new(),
+            },
+            300,
+        )
+        .await;
+        let gone = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                !i.vms.contains_key(&vm.id) && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+            })
+        })
+        .await;
+        steps.push(
+            json!({"step": "delete the VM with its disks", "outcome": outcome, "gone": gone}),
+        );
+    }
+    if let Some(template) = &template {
+        let disks = disks_of(c.latest().inventory().unwrap(), template.id);
+        let outcome = lifecycle(
+            template.id,
+            VmLifecycleOperation::Delete {
+                expected_template: true,
+                disks: disks.clone(),
+                snapshots: Vec::new(),
+            },
+            300,
+        )
+        .await;
+        let gone = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                !i.vms.contains_key(&template.id)
+                    && disks.iter().all(|d| !i.details.vdis.contains_key(d))
+            })
+        })
+        .await;
+        steps.push(
+            json!({"step": "delete the template with its disks", "outcome": outcome, "gone": gone}),
+        );
+    }
+    let guest_disks_after = disks_of(c.latest().inventory().unwrap(), guest.id);
+    power.push(power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await);
+    c.close().await;
+    lab.record(
+        "host-archives-and-template-lifecycle",
+        json!({"member": member.to_string(), "guest": guest.name, "support_overview": overview_json, "support_entries": entries, "archives": archives,
+               "template_lifecycle": steps, "guest_disks_intact": guest_disks_after == guest_disks, "power": power}),
+    );
+    for archive in &archives {
+        assert_eq!(archive["accepted"], true, "{archive}");
+        assert_eq!(archive["state"], "Succeeded", "{archive}");
+        assert!(
+            archive["bytes"].as_u64().is_some_and(|b| b > 0),
+            "{archive}"
+        );
+    }
+    for step in &steps {
+        assert_eq!(step["outcome"]["accepted"], true, "{step}");
+        assert_eq!(step["outcome"]["state"], "Succeeded", "{step}");
+        if step.get("gone").is_some() {
+            assert_eq!(step["gone"], true, "{step}");
+        }
+    }
+    assert!(
+        template.is_some() && created_vm.is_some(),
+        "template or VM not visible"
+    );
+    assert_eq!(guest_disks_after, guest_disks, "guest disks changed");
+}

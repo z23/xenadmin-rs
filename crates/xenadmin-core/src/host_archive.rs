@@ -258,19 +258,28 @@ fn scan_inner(
             }
         }
         let name = path(&entry.path_bytes())?;
-        if !names.insert(name.clone()) && !entry.header().entry_type().is_dir() {
+        let kind = entry.header().entry_type();
+        // XCP-ng's host backup repeats a few names as hard links to themselves (files on
+        // the vfat EFI partition that tar sees twice). A hard link whose target is a name
+        // already in the archive adds nothing on restore and is accepted; any other
+        // repeated non-directory name is still malformed.
+        let repeated_hard_link = kind.is_hard_link()
+            && names.contains(&name)
+            && entry
+                .link_name_bytes()
+                .as_deref()
+                .map(path)
+                .transpose()?
+                .is_some_and(|target| names.contains(&target));
+        if !names.insert(name.clone()) && !kind.is_dir() && !repeated_hard_link {
             return Err(Error::TransferArchive);
         }
         name_bytes = name_bytes
             .checked_add(name.len())
             .filter(|n| *n <= 16 * 1024 * 1024)
             .ok_or(Error::TransferLimit)?;
-        if mode == Mode::Restore {
-            graph.insert(
-                &name,
-                entry.header().entry_type(),
-                entry.link_name_bytes().as_deref(),
-            )?;
+        if mode == Mode::Restore && !repeated_hard_link {
+            graph.insert(&name, kind, entry.link_name_bytes().as_deref())?;
         }
         let size = entry.size();
         logical = logical
@@ -367,6 +376,50 @@ mod tests {
         let mut trailing = support.clone();
         trailing.push(1);
         assert!(scan(&trailing[..], host, "8.3.0", false).is_err());
+    }
+    #[test]
+    fn hard_links_repeating_a_known_name_are_accepted_but_repeated_files_are_not() {
+        let host = HostId::from(uuid::Uuid::from_u128(2));
+        let inventory = format!("INSTALLATION_UUID='{host}'\nPRODUCT_VERSION='8.3.0'\n");
+        let build = |second_is_link: bool| {
+            let mut builder = tar::Builder::new(Vec::new());
+            let mut h = tar::Header::new_gnu();
+            h.set_size(inventory.len() as u64);
+            h.set_mode(0o600);
+            h.set_cksum();
+            builder
+                .append_data(&mut h, "./etc/xensource-inventory", inventory.as_bytes())
+                .unwrap();
+            let mut h = tar::Header::new_gnu();
+            h.set_size(1);
+            h.set_mode(0o700);
+            h.set_cksum();
+            builder
+                .append_data(&mut h, "./boot/efi/EFI/BOOT/BOOTX64.EFI", &b"x"[..])
+                .unwrap();
+            let mut h = tar::Header::new_gnu();
+            if second_is_link {
+                h.set_entry_type(tar::EntryType::Link);
+                h.set_link_name("./boot/efi/EFI/BOOT/BOOTX64.EFI").unwrap();
+                h.set_size(0);
+            } else {
+                h.set_size(1);
+            }
+            h.set_mode(0o700);
+            h.set_cksum();
+            if second_is_link {
+                builder
+                    .append_data(&mut h, "./boot/efi/EFI/BOOT/BOOTX64.EFI", std::io::empty())
+                    .unwrap();
+            } else {
+                builder
+                    .append_data(&mut h, "./boot/efi/EFI/BOOT/BOOTX64.EFI", &b"y"[..])
+                    .unwrap();
+            }
+            builder.into_inner().unwrap()
+        };
+        assert!(scan(&build(true)[..], host, "8.3.0", true).is_ok());
+        assert!(scan(&build(false)[..], host, "8.3.0", true).is_err());
     }
     #[test]
     fn extension_bodies_and_paths_are_bounded_without_extraction() {
