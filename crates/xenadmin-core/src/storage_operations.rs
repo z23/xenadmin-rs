@@ -169,7 +169,10 @@ async fn removable(
         return Err(Error::ResourceConflict);
     }
     empty_current(sr)?;
-    if sr["is_tools_sr"] != false || sr["local_cache_enabled"] != false {
+    // A repository that was some host's local cache is refused below while a host still
+    // binds it; the flag alone must not keep a dead host's local storage from being
+    // forgotten (lab finding 37).
+    if sr["is_tools_sr"] != false {
         return Err(Error::StorageInUse);
     }
     let (_, pool) = xapi::read(session, ResourceTarget::Pool(record.pool)).await?;

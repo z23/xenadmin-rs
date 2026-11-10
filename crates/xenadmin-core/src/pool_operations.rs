@@ -106,6 +106,36 @@ async fn no_resident_guests(session: &Session, host_ref: &str) -> Result<(), Err
     }
     Ok(())
 }
+/// The interface a host reaches its heartbeat repository through must come up before XAPI
+/// starts, or the host cannot rejoin the pool after a reboot while HA is armed (lab finding
+/// 36): the management interface always does; any other interface needs unplug protection.
+async fn heartbeat_interface_persistent(
+    session: &Session,
+    host_ref: &str,
+    server: std::net::Ipv4Addr,
+) -> Result<(), Error> {
+    let pifs = all(session, "PIF", 1024).await?;
+    for pif in pifs.values().filter(|p| p["host"] == host_ref) {
+        let address = pif["IP"]
+            .as_str()
+            .and_then(|v| v.parse::<std::net::Ipv4Addr>().ok());
+        let mask = pif["netmask"]
+            .as_str()
+            .and_then(|v| v.parse::<std::net::Ipv4Addr>().ok());
+        let (Some(address), Some(mask)) = (address, mask) else {
+            continue;
+        };
+        let same_subnet =
+            u32::from(address) & u32::from(mask) == u32::from(server) & u32::from(mask);
+        if same_subnet && pif["management"] != true && pif["disallow_unplug"] != true {
+            return Err(Error::HostPrerequisite(
+                "A heartbeat repository is reached over a storage interface without unplug protection, so a rebooted host could not rejoin the pool; protect that interface first",
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn heartbeat_arguments(session: &Session, srs: &[SrId]) -> Result<Vec<Value>, Error> {
     let hosts = all(session, "host", 256).await?;
     if hosts.len() < 2 {
@@ -131,7 +161,15 @@ async fn heartbeat_arguments(session: &Session, srs: &[SrId]) -> Result<Vec<Valu
             if pbd["SR"] != sr_ref || pbd["currently_attached"] != true {
                 return Err(Error::UnavailableAction);
             }
-            attached.insert(reference(&pbd["host"])?);
+            let host_ref = reference(&pbd["host"])?;
+            let server = ["server", "target"]
+                .iter()
+                .find_map(|key| pbd["device_config"][key].as_str())
+                .and_then(|v| v.parse::<std::net::Ipv4Addr>().ok());
+            if let Some(server) = server {
+                heartbeat_interface_persistent(session, &host_ref, server).await?;
+            }
+            attached.insert(host_ref);
         }
         if hosts.keys().any(|host| !attached.contains(host)) {
             return Err(Error::UnavailableAction);

@@ -184,3 +184,17 @@ fn cancellation_interrupts_scanning_empty_gzip_members_before_a_tar_header() {
     ));
     assert_eq!(reader.count, 8);
 }
+
+#[test]
+fn accepts_omitted_leading_and_trailing_chunks() {
+    // Ref:10 keeps only its middle chunk; Ref:2 has no chunk at all: an all-zero disk. Both
+    // are how sparse appliance exports arrive (lab finding 39).
+    let mut entries = vec![("ova.xml".to_string(), metadata())];
+    let data = vec![9; CHUNK as usize];
+    entries.push(("Ref:10/00000001".into(), data.clone()));
+    entries.push((
+        "Ref:10/00000001.xxhash".into(),
+        format!("{:016X}", xxhash_rust::xxh64::xxh64(&data, 0)).into_bytes(),
+    ));
+    check(&archive(&entries)).unwrap();
+}

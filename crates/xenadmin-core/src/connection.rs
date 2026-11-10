@@ -1720,12 +1720,43 @@ async fn run(
                                         .options()
                                         .connection_route(&session.options().endpoint)
                                         .ok();
+                                    // Every pool member whose certificate this connection can
+                                    // already verify is a remembered endpoint for failover,
+                                    // so a coordinator loss can be followed to a surviving
+                                    // member that takes over (lab finding 35).
+                                    let pins = options.host_certificates();
+                                    let members = inventory
+                                        .hosts
+                                        .values()
+                                        .filter_map(|h| {
+                                            let address = h.address.trim_matches(['[', ']']);
+                                            if address.is_empty() {
+                                                return None;
+                                            }
+                                            let text = if address.contains(':') {
+                                                format!("https://[{address}]/")
+                                            } else {
+                                                format!("https://{address}/")
+                                            };
+                                            let endpoint = crate::Endpoint::parse(&text).ok()?;
+                                            (options.accept_invalid_certificates
+                                                || pins.contains_key(&endpoint.to_string()))
+                                            .then_some(endpoint)
+                                        })
+                                        .take(128)
+                                        .collect::<Vec<_>>();
                                     for endpoint in [&options.endpoint, &session.options().endpoint]
+                                        .into_iter()
+                                        .chain(members.iter())
                                     {
-                                        if !snapshot.verified_members.contains(endpoint) {
+                                        if snapshot.verified_members.len() < 128
+                                            && !snapshot.verified_members.contains(endpoint)
+                                        {
                                             snapshot.verified_members.push(endpoint.clone());
                                         }
-                                        if !options.fallback_endpoints.contains(endpoint) {
+                                        if options.fallback_endpoints.len() < 128
+                                            && !options.fallback_endpoints.contains(endpoint)
+                                        {
                                             options.fallback_endpoints.push(endpoint.clone());
                                         }
                                     }

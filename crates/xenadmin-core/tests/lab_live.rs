@@ -275,7 +275,27 @@ async fn pinned_options(endpoint: &Endpoint) -> (ConnectionOptions, CertificateF
     (options, fingerprint)
 }
 
+/// The manifest index the default (first-host) endpoint resolves to: `XENADMIN_LAB_ENDPOINT_INDEX`
+/// redirects it, for example to the surviving coordinator while the first host is reinstalled.
+fn default_endpoint_index(lab: &Lab) -> usize {
+    std::env::var("XENADMIN_LAB_ENDPOINT_INDEX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|i| *i < lab.hosts.len())
+        .unwrap_or(0)
+}
+
 async fn connect(lab: &Lab, backend: &Backend, index: usize, read_only: bool) -> Connection {
+    let index = if index == 0 {
+        default_endpoint_index(lab)
+    } else {
+        index
+    };
+    connect_at(lab, backend, index, read_only).await
+}
+
+/// Connects to exactly the manifest host at `index`, ignoring the default-endpoint override.
+async fn connect_at(lab: &Lab, backend: &Backend, index: usize, read_only: bool) -> Connection {
     let (mut options, _) = pinned_options(&lab.endpoint(index)).await;
     // Consoles and redirects reach other members directly, so pin every reachable member's
     // certificate as an additional verified host, as the desktop profile editor records.
@@ -558,14 +578,15 @@ async fn lab_form_pool_by_reviewed_join() {
     assert!(lab.hosts.len() >= 2, "join needs two hosts");
     let state = tempfile::tempdir().unwrap();
     let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let destination_index = default_endpoint_index(&lab);
     let destination = connect(&lab, &backend, 0, false).await;
     let before = inventory_summary(&destination);
     let source_index = std::env::var("XENADMIN_LAB_JOIN_SOURCE")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
-        .filter(|i| (1..lab.hosts.len()).contains(i))
-        .unwrap_or(1);
-    let source = connect(&lab, &backend, source_index, false).await;
+        .filter(|i| *i < lab.hosts.len() && *i != destination_index)
+        .unwrap_or(if destination_index == 0 { 1 } else { 0 });
+    let source = connect_at(&lab, &backend, source_index, false).await;
     let source_inventory = source.latest().inventory().unwrap().clone();
     let destination_inventory = destination.latest().inventory().unwrap().clone();
     if source_inventory.hosts.len() != 1
@@ -592,7 +613,7 @@ async fn lab_form_pool_by_reviewed_join() {
             .observe_resource(ResourceTarget::Pool(destination_inventory.pool_id))
             .unwrap(),
         destination_coordinator,
-        destination_address: lab.hosts[0].ip.clone(),
+        destination_address: lab.hosts[destination_index].ip.clone(),
     };
     let operation = source
         .join_pool(
@@ -17590,15 +17611,20 @@ async fn remove_repository(
         );
         note(steps, entry);
     }
+    let expected_disks = c
+        .latest()
+        .inventory()
+        .and_then(|i| i.details.sr_disks.get(&sr).cloned())
+        .unwrap_or_default();
     let operation = if destroy {
         StorageOperation::Destroy {
             expected_name: expected_name.to_string(),
-            expected_disks: Vec::new(),
+            expected_disks,
         }
     } else {
         StorageOperation::Forget {
             expected_name: expected_name.to_string(),
-            expected_disks: Vec::new(),
+            expected_disks,
         }
     };
     let mut entry = resource_op(
@@ -17815,8 +17841,9 @@ async fn lab_iscsi_chap_repository_with_transient_credentials() {
 #[ignore]
 async fn lab_coordinator_loss_with_ha_member_takeover() {
     use xenadmin_core::{
-        ConnectionState, DiskPlacement, HaRestartPriority, NicPlacement, PoolOperation,
-        PowerAction, PowerState, ResourceCommand, VmCommand, VmMigration,
+        ConnectionState, DiskPlacement, HaRestartPriority, NetworkOperation, NicPlacement,
+        PifIdentity, PoolOperation, PowerAction, PowerState, ResourceCommand, VmCommand,
+        VmMigration,
     };
     let lab = Lab::load();
     let state = tempfile::tempdir().unwrap();
@@ -17948,10 +17975,73 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
             json!({"step": "move the tools guest onto the coordinator", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed}),
         );
     }
+    // Finding 36: the storage interfaces that carry the heartbeat repository must be kept
+    // attached at boot, or a rebooted host cannot rejoin the pool while HA is armed.
+    let shared_server: std::net::Ipv4Addr = lab
+        .storage
+        .as_ref()
+        .and_then(|s| s.nas_ip.parse().ok())
+        .expect("appliance storage address");
+    let heartbeat_pifs = inventory
+        .details
+        .pifs
+        .values()
+        .filter(|p| {
+            let (Ok(ip), Ok(mask)) = (
+                p.ip.parse::<std::net::Ipv4Addr>(),
+                p.netmask.parse::<std::net::Ipv4Addr>(),
+            ) else {
+                return false;
+            };
+            p.management != Some(true)
+                && (u32::from(ip) & u32::from(mask)) == (u32::from(shared_server) & u32::from(mask))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let unplug_protected = |c: &Connection, pif: xenadmin_core::PifId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pifs.get(&pif).and_then(|p| p.disallow_unplug))
+    };
+    let mut protected = Vec::new();
+    for pif in &heartbeat_pifs {
+        if pif.disallow_unplug == Some(true) {
+            continue;
+        }
+        let host_name = pif
+            .host
+            .and_then(|h| inventory.hosts.get(&h))
+            .map(|h| h.name.clone())
+            .unwrap_or_default();
+        let mut entry = resource_op(
+            &c,
+            &format!(
+                "protect the heartbeat interface {} on {host_name} from unplug",
+                pif.device
+            ),
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(pif.id))
+                    .unwrap(),
+                operation: NetworkOperation::SetUnplugProtection {
+                    expected: PifIdentity::from_inventory(pif).expect("interface identity"),
+                    before: false,
+                    enabled: true,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] =
+            json!(settle(120, || unplug_protected(&c, pif.id) == Some(true)).await);
+        note(&mut steps, entry);
+        protected.push(pif.id);
+    }
     let a = administration(&c).expect("pool administration");
     note(
         &mut steps,
-        json!({"step": "HA before", "enabled": a.ha_enabled, "failures_to_tolerate": a.ha_failures_to_tolerate, "heartbeat_srs": a.heartbeat_srs.len()}),
+        json!({"step": "HA before", "enabled": a.ha_enabled, "failures_to_tolerate": a.ha_failures_to_tolerate, "heartbeat_srs": a.heartbeat_srs.len(), "heartbeat_interfaces": heartbeat_pifs.len()}),
     );
     let failures_before = a.ha_failures_to_tolerate.unwrap_or(0);
     if a.ha_enabled != Some(true) {
@@ -18077,22 +18167,46 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
     );
 
     // Return: the old coordinator boots and rejoins as a member of the surviving coordinator.
+    // A host that has not rejoined after fifteen minutes is reset once more, and that is
+    // recorded: the first attempt on this lab left XAPI down on the returning host.
     let start_at = std::time::Instant::now();
     virsh(&["start", &domain]);
-    let returned = settle(900, || {
-        live(&c, coordinator) == Some(true)
+    let rejoined = |c: &Connection| {
+        live(c, coordinator) == Some(true)
             && c.latest()
                 .inventory()
                 .is_some_and(|i| i.coordinator == Some(member) && i.hosts[&coordinator].enabled)
-    })
-    .await;
+    };
+    let mut returned = settle(900, || rejoined(&c)).await;
+    let mut resets = 0;
+    if !returned {
+        virsh(&["reset", &domain]);
+        resets += 1;
+        returned = settle(900, || rejoined(&c)).await;
+    }
     note(
         &mut steps,
-        json!({"step": "old coordinator returns as a member", "read_back": returned, "after_ms": start_at.elapsed().as_millis() as u64,
-               "coordinator_now": c.latest().inventory().and_then(|i| i.coordinator).map(|h| h.to_string())}),
+        json!({"step": "old coordinator returns as a member", "read_back": returned, "after_ms": start_at.elapsed().as_millis() as u64, "resets": resets,
+               "coordinator_now": c.latest().inventory().and_then(|i| i.coordinator).and_then(|h| inventory.hosts.get(&h).map(|x| x.name.clone()))}),
     );
 
-    // Restore: disable HA, drop the priority we added, hand the coordinator role back.
+    // Restore: disable HA, drop the priority we added, hand the coordinator role back. A
+    // connection that never became current again is recorded as such rather than unwrapped.
+    let current = settle(300, || c.latest().is_current()).await;
+    if !current {
+        note(
+            &mut steps,
+            json!({"step": "restore", "skipped": "connection not current", "read_back": false, "state": format!("{:?}", c.latest().state()), "error": c.latest().error()}),
+        );
+        c.close().await;
+        lab.record(
+            "coordinator-loss-with-ha-member-takeover",
+            json!({"coordinator": lab.hosts[0].name, "member": inventory.hosts[&member].name, "steps": steps}),
+        );
+        panic!(
+            "the connection never became current again; the lab needs manual restoration: {steps:?}"
+        );
+    }
     let mut entry = resource_op(
         &c,
         "disable HA",
@@ -18154,6 +18268,44 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
     entry["followed_after_ms"] = json!(handover_at.elapsed().as_millis() as u64);
     entry["endpoint_after"] = json!(c.latest().active_endpoint().map(|e| e.to_string()));
     note(&mut steps, entry);
+
+    // Restore the storage interfaces' unplug protection to the lab baseline.
+    for pif in protected {
+        let Some(current) = c
+            .latest()
+            .inventory()
+            .and_then(|i| i.details.pifs.get(&pif).cloned())
+        else {
+            continue;
+        };
+        let host_name = current
+            .host
+            .and_then(|h| inventory.hosts.get(&h))
+            .map(|h| h.name.clone())
+            .unwrap_or_default();
+        let mut entry = resource_op(
+            &c,
+            &format!(
+                "remove the unplug protection of {} on {host_name}",
+                current.device
+            ),
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(pif))
+                    .unwrap(),
+                operation: NetworkOperation::SetUnplugProtection {
+                    expected: PifIdentity::from_inventory(&current).expect("interface identity"),
+                    before: true,
+                    enabled: false,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(settle(120, || unplug_protected(&c, pif) == Some(false)).await);
+        note(&mut steps, entry);
+    }
 
     // Baseline: the tools guest back on the coordinator, the local-storage guest running.
     if placement(&c).map(|p| p.0) == Some(Some(member)) {
@@ -19035,6 +19187,329 @@ async fn lab_directory_join_subjects_and_roles() {
     }
 }
 
+/// Lab repair, P12-14 and P09-09: after a coordinator that cannot rejoin, recover through
+/// the surviving coordinator: disable HA, delete the records of guests whose disks live on
+/// the dead host's local storage (those disks are unreachable), forget the dead host once its
+/// domain is verified off at the hypervisor, and forget its local repositories. The lab
+/// tooling then reinstalls that host and the join scenario brings it back.
+#[tokio::test]
+#[ignore]
+async fn lab_forget_dead_coordinator_through_survivor() {
+    use std::collections::BTreeSet;
+    use xenadmin_core::{
+        HostOperation, PoolOperation, ResourceCommand, StorageOperation, VmCommand,
+        VmLifecycleOperation,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 1, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let survivor = inventory.coordinator.expect("coordinator");
+    assert_eq!(
+        inventory.hosts[&survivor].address, lab.hosts[1].ip,
+        "the second manifest host must be the surviving coordinator"
+    );
+    let Some(dead) = inventory
+        .hosts
+        .iter()
+        .find(|(_, h)| h.address == lab.hosts[0].ip)
+        .map(|(id, _)| *id)
+    else {
+        eprintln!("no record of the first manifest host remains; nothing to forget");
+        return;
+    };
+    let dead_name = inventory.hosts[&dead].name.clone();
+    let mut steps = Vec::new();
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let administration = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pool.as_ref().map(|p| p.administration.clone()))
+    };
+    let live = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .hosts
+                .get(&dead)
+                .and_then(|h| h.metrics)
+                .and_then(|m| i.details.host_metrics.get(&m))
+                .and_then(|m| m.live)
+        })
+    };
+    note(
+        &mut steps,
+        json!({"step": "before", "dead": dead_name, "live": live(&c), "enabled": inventory.hosts[&dead].enabled, "ha_enabled": administration(&c).and_then(|a| a.ha_enabled)}),
+    );
+    if administration(&c).and_then(|a| a.ha_enabled) == Some(true) {
+        let mut entry = resource_op(
+            &c,
+            "disable HA",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::DisableHa,
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(180, || administration(&c)
+                .is_some_and(|a| a.ha_enabled == Some(false)))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    // The dead host's domain is verified off at the hypervisor; it is reinstalled afterwards.
+    let domain = lab.hosts[0].name.clone();
+    if virsh(&["domstate", &domain]) != "shut off" {
+        virsh(&["destroy", &domain]);
+    }
+    let off = settle(60, || virsh(&["domstate", &domain]) == "shut off").await;
+    note(
+        &mut steps,
+        json!({"step": "dead coordinator powered off at the hypervisor", "read_back": off}),
+    );
+    // Guests whose disks live on the dead host's local repositories: their records only.
+    let dead_srs = inventory
+        .details
+        .pbds
+        .values()
+        .filter(|p| p.host == Some(dead))
+        .filter_map(|p| p.sr)
+        .filter(|sr| inventory.details.storage.get(sr).and_then(|d| d.shared) != Some(true))
+        .collect::<BTreeSet<_>>();
+    let on_dead = |vm: xenadmin_core::VmId| {
+        inventory.details.vm_disks.get(&vm).is_some_and(|vbds| {
+            vbds.iter()
+                .filter_map(|b| inventory.details.vbds.get(b))
+                .filter(|b| b.kind == "Disk")
+                .filter_map(|b| b.vdi)
+                .filter_map(|v| inventory.details.vdis.get(&v))
+                .filter_map(|d| d.sr)
+                .any(|sr| dead_srs.contains(&sr))
+        })
+    };
+    for vm in inventory
+        .vms
+        .values()
+        .filter(|v| !v.is_control_domain && on_dead(v.id))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let snapshots = inventory
+            .snapshots
+            .for_vm(vm.id)
+            .map(|s| s.id)
+            .collect::<Vec<_>>();
+        let mut entry = match c.submit(
+            OperationId::new(),
+            VmCommand::Lifecycle {
+                source: c.latest().observe_vm(vm.id).unwrap(),
+                operation: VmLifecycleOperation::Delete {
+                    expected_template: vm.is_template,
+                    disks: Vec::new(),
+                    snapshots: snapshots
+                        .iter()
+                        .map(|id| xenadmin_core::SnapshotDeletionSelection {
+                            snapshot: *id,
+                            disks: Vec::new(),
+                        })
+                        .collect(),
+                },
+            },
+        ) {
+            Ok(op) => {
+                let row = wait_vm_outcome(&op, 300).await;
+                json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+            }
+            Err(e) => json!({"accepted": false, "error": e.to_string()}),
+        };
+        entry["step"] = json!(format!(
+            "delete the record of {} whose disks are on the dead host",
+            vm.name
+        ));
+        entry["snapshots"] = json!(snapshots.len());
+        entry["read_back"] = json!(
+            settle(120, || c
+                .latest()
+                .inventory()
+                .is_some_and(|i| !i.vms.contains_key(&vm.id)))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    let mut entry = resource_op(
+        &c,
+        &format!("forget the dead coordinator {dead_name}"),
+        ResourceCommand::Host {
+            target: c
+                .latest()
+                .observe_resource(ResourceTarget::Host(dead))
+                .unwrap(),
+            operation: HostOperation::ForgetDeadHost {
+                verified_power_off: off,
+            },
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| !i.hosts.contains_key(&dead)))
+        .await
+    );
+    note(&mut steps, entry);
+    for sr in dead_srs {
+        let Some(now) = c.latest().inventory().cloned() else {
+            break;
+        };
+        let Some(summary) = now
+            .storage
+            .iter()
+            .find(|s| xenadmin_core::SrId::from(s.uuid) == sr)
+            .cloned()
+        else {
+            continue;
+        };
+        let attached = now
+            .details
+            .pbds
+            .values()
+            .filter(|p| p.sr == Some(sr))
+            .count();
+        let disks = now.details.sr_disks.get(&sr).cloned().unwrap_or_default();
+        // XAPI recomputes a repository's advertised operations lazily after its host is
+        // destroyed; give it a moment before the reviewed forget (observation 38).
+        let advertised = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details
+                    .storage
+                    .get(&sr)
+                    .and_then(|d| d.allowed_operations.as_ref())
+                    .is_some_and(|ops| ops.iter().any(|o| o == "forget"))
+            })
+        })
+        .await;
+        let mut entry = resource_op(
+            &c,
+            &format!("forget the dead host's repository {}", summary.name),
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Storage(sr))
+                    .unwrap(),
+                operation: StorageOperation::Forget {
+                    expected_name: summary.name.clone(),
+                    expected_disks: disks.clone(),
+                },
+            },
+            300,
+        )
+        .await;
+        entry["attachments_left"] = json!(attached);
+        entry["disks"] = json!(disks.len());
+        entry["forget_advertised"] = json!(advertised);
+        entry["read_back"] = json!(
+            settle(120, || c.latest().inventory().is_some_and(|i| {
+                !i.storage
+                    .iter()
+                    .any(|s| xenadmin_core::SrId::from(s.uuid) == sr)
+            }))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    c.close().await;
+    lab.record(
+        "forget-dead-coordinator-through-survivor",
+        json!({"dead": dead_name, "survivor": inventory.hosts[&survivor].name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// Lab utility, P12-11: hand the coordinator role to the first manifest host when another
+/// host holds it after a recovery, through the reviewed handover, and follow it.
+#[tokio::test]
+#[ignore]
+async fn lab_designate_first_host_coordinator() {
+    use xenadmin_core::{ConnectionState, PoolOperation, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let current = inventory.coordinator.expect("coordinator");
+    let first = inventory
+        .hosts
+        .iter()
+        .find(|(_, h)| h.address == lab.hosts[0].ip)
+        .map(|(id, _)| *id)
+        .expect("the first manifest host is in the pool");
+    let mut steps = Vec::new();
+    if current == first {
+        note(
+            &mut steps,
+            json!({"step": "hand the coordinator role to the first manifest host", "skipped": "already the coordinator"}),
+        );
+    } else {
+        let started = std::time::Instant::now();
+        let mut entry = resource_op(
+            &c,
+            "hand the coordinator role to the first manifest host",
+            ResourceCommand::Pool {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                operation: PoolOperation::DesignateCoordinator {
+                    expected: current,
+                    host: first,
+                },
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(600, || {
+                let s = c.latest();
+                s.state() == ConnectionState::Ready
+                    && s.inventory().is_some_and(|i| i.coordinator == Some(first))
+            })
+            .await
+        );
+        entry["followed_after_ms"] = json!(started.elapsed().as_millis() as u64);
+        entry["endpoint_after"] = json!(c.latest().active_endpoint().map(|e| e.to_string()));
+        note(&mut steps, entry);
+    }
+    c.close().await;
+    lab.record("designate-first-host-coordinator", json!({"steps": steps}));
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
 /// P09-04, P09-06, P09-08, P09-09: create an ISO library over NFS on the lab appliance's
 /// `/srv/nfs/iso` export through the coordinator, confirm it is listed as a shared ISO
 /// repository attached on both hosts, rescan it and read back its image list (the images
@@ -19170,14 +19645,14 @@ async fn iso_library_round_trip(transport: &str) {
                         .values()
                         .filter(|p| p.sr == Some(sr))
                         .collect::<Vec<_>>();
-                    a.len() == 2 && a.iter().all(|p| p.currently_attached == Some(true))
+                    a.len() == i.hosts.len() && a.iter().all(|p| p.currently_attached == Some(true))
                 }
         })
     })
     .await;
     note(
         &mut steps,
-        json!({"step": "shared ISO library attached on both hosts", "read_back": listed, "library": library(&c)}),
+        json!({"step": "shared ISO library attached on every host", "read_back": listed, "library": library(&c)}),
     );
     let mut entry = resource_op(
         &c,

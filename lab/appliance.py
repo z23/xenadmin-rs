@@ -348,7 +348,7 @@ if mount -t ext4 "$DEV" {export}; then
     log "iso images: $(ls {export}/iso 2>/dev/null | tr '\\n' ' ' | cut -c1-200)"
     # The same library over SMB 3 for guests (no accounts on the appliance).
     if rc-service samba start >/dev/null 2>&1; then
-        log "smb: $(smbclient -N -L localhost 2>/dev/null | grep -c ' Disk ') shares"
+        log "smb: $(testparm -s 2>/dev/null | grep -c '^\\[iso\\]') iso share, port $(netstat -tln 2>/dev/null | grep -c ':445 ')"
     else
         log "smb failed: $(rc-service samba start 2>&1 | tail -n 2 | tr '\\n' ' ')"
     fi

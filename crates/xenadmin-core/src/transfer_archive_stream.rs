@@ -169,16 +169,23 @@ fn stream(
             if cancel() {
                 return Err(Error::Closed);
             }
+            // Omitted chunks are all-zero blocks, including a disk's leading or trailing
+            // ones: its sequence ends when the next member belongs to another disk or the
+            // archive ends (lab finding 39).
+            if !next.as_ref().is_some_and(|h| {
+                h.name
+                    .strip_prefix(disk.as_str())
+                    .is_some_and(|r| r.starts_with('/'))
+            }) {
+                break;
+            }
             let current = next.take().ok_or(Error::TransferArchive)?;
             let (prefix, suffix) = current.name.split_once('/').ok_or(Error::TransferArchive)?;
             if prefix != disk || suffix.len() != 8 || !suffix.bytes().all(|b| b.is_ascii_digit()) {
                 return invalid();
             }
             let index: u64 = suffix.parse().map_err(|_| Error::TransferArchive)?;
-            if index > last
-                || previous.is_none() && index != 0
-                || previous.is_some_and(|p| index <= p)
-            {
+            if index > last || previous.is_some_and(|p| index <= p) {
                 return invalid();
             }
             let length = (size - index * CHUNK).min(CHUNK);
