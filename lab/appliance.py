@@ -327,8 +327,10 @@ if mount -t ext4 "$DEV" {export}; then
         t() {{ out=$(targetcli "$@" 2>&1) || log "targetcli failed: $(echo "$*" | sed 's/password=[^ ]*/password=***/') -> $(echo "$out" | head -n 2 | tr '\\n' ' ' | cut -c1-240)"; }}
         t /backstores/fileio create lun0 {export}/iscsi/lun0.img
         t /backstores/fileio create lun1 {export}/iscsi/lun1.img
-        t /backstores/fileio/lun0 set wwn vpd_unit_serial={{serial0}}
-        t /backstores/fileio/lun1 set wwn vpd_unit_serial={{serial1}}
+        # The unit serial fixes each LUN's SCSI identity across boots; this targetcli offers
+        # no wwn group, so it is written through configfs before the LUN is mapped.
+        for p in /sys/kernel/config/target/core/fileio_*/lun0/wwn/vpd_unit_serial; do echo "{{serial0}}" > "$p" 2>/dev/null || log "serial for lun0 refused"; done
+        for p in /sys/kernel/config/target/core/fileio_*/lun1/wwn/vpd_unit_serial; do echo "{{serial1}}" > "$p" 2>/dev/null || log "serial for lun1 refused"; done
         t /iscsi create {{open_iqn}}
         t /iscsi/{{open_iqn}}/tpg1/luns create /backstores/fileio/lun0
         t /iscsi/{{open_iqn}}/tpg1 set attribute authentication=0 generate_node_acls=1 demo_mode_write_protect=0 cache_dynamic_acls=1
@@ -355,7 +357,8 @@ if mount -t ext4 "$DEV" {export}; then
     log "iso images: $(ls {export}/iso 2>/dev/null | tr '\\n' ' ' | cut -c1-200)"
     # The same library over SMB 3 for guests (no accounts on the appliance).
     if rc-service samba start >/dev/null 2>&1; then
-        log "smb: $(testparm -s 2>/dev/null | grep -c '^\\[iso\\]') iso share, port $(netstat -tln 2>/dev/null | grep -c ':445 ')"
+        sleep 2
+        log "smb: listening on $(netstat -tln 2>/dev/null | grep -c ':445 ') socket(s)"
     else
         log "smb failed: $(rc-service samba start 2>&1 | tail -n 2 | tr '\\n' ' ')"
     fi

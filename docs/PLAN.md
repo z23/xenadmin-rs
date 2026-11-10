@@ -118,8 +118,9 @@ bond round trip and a member power cycle, iSCSI target discovery with an LVM-ove
 repository on both hosts and a CHAP-protected repository created with transient credentials
 and removed, a member multipath round trip with two active iSCSI paths and ISO libraries over NFS and SMB 3 listing a seeded image, plus twenty-two host-behaviour findings that were
 fixed, eight host observations, one client journal observation, a fixed client verification
-finding, two fixed client storage findings, two open client decisions and one open upstream accessibility finding. Member
-failover, pointer and Orca qualification and an XO-managed VM remain qualification gates. Milestones remain open until
+finding, two fixed client storage findings, two open client decisions and one open upstream accessibility finding. The M2 recovery
+gate was recorded on 2026-11-11 with the Xen Orchestra appliance imported through the client.
+Member failover with HA, pointer and Orca qualification remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols

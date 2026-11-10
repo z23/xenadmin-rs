@@ -19630,6 +19630,94 @@ async fn lab_reattach_shared_repositories() {
     }
 }
 
+/// Lab utility: cleanly shut down every running guest whose disks live on a shared
+/// repository, before the appliance that serves them is restarted; `lab_start_lab_guests`
+/// starts the lab guests again afterwards.
+#[tokio::test]
+#[ignore]
+async fn lab_shut_down_shared_storage_guests() {
+    use std::collections::BTreeSet;
+    use xenadmin_core::{PowerAction, PowerState};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let shared = inventory
+        .details
+        .storage
+        .iter()
+        .filter(|(_, d)| d.shared == Some(true))
+        .map(|(id, _)| *id)
+        .collect::<BTreeSet<_>>();
+    let on_shared = |vm: xenadmin_core::VmId| {
+        inventory.details.vm_disks.get(&vm).is_some_and(|vbds| {
+            vbds.iter()
+                .filter_map(|b| inventory.details.vbds.get(b))
+                .filter(|b| b.kind == "Disk")
+                .filter_map(|b| b.vdi)
+                .filter_map(|v| inventory.details.vdis.get(&v))
+                .filter_map(|d| d.sr)
+                .any(|sr| shared.contains(&sr))
+        })
+    };
+    // `XENADMIN_LAB_SHUTDOWN_ALL=1` includes guests on local storage, before a host power cycle.
+    let all = std::env::var("XENADMIN_LAB_SHUTDOWN_ALL").is_ok_and(|v| v == "1");
+    let mut power = Vec::new();
+    for vm in inventory
+        .guests()
+        .filter(|v| v.power_state == PowerState::Running && (all || on_shared(v.id)))
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let mut entry = power_to(&c, vm.id, PowerAction::CleanShutdown, PowerState::Halted).await;
+        if entry["reached"] != true {
+            entry = power_to(&c, vm.id, PowerAction::HardShutdown, PowerState::Halted).await;
+        }
+        entry["vm"] = json!(vm.name);
+        note(&mut power, entry);
+    }
+    c.close().await;
+    lab.record("shut-down-shared-storage-guests", json!({"power": power}));
+    for entry in &power {
+        assert_eq!(entry["reached"], true, "{entry}");
+    }
+}
+
+/// Lab utility: start every halted lab guest (the provisioned guest, the tools guest and the
+/// Xen Orchestra appliance).
+#[tokio::test]
+#[ignore]
+async fn lab_start_lab_guests() {
+    use xenadmin_core::{PowerAction, PowerState};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let mut power = Vec::new();
+    for vm in inventory
+        .guests()
+        .filter(|v| {
+            v.power_state == PowerState::Halted
+                && (v.name.starts_with("lab-guest-")
+                    || v.name.starts_with("lab-tools-")
+                    || v.name == "XOA")
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+    {
+        let mut entry = power_to(&c, vm.id, PowerAction::Start, PowerState::Running).await;
+        entry["vm"] = json!(vm.name);
+        note(&mut power, entry);
+    }
+    c.close().await;
+    lab.record("start-lab-guests", json!({"power": power}));
+    for entry in &power {
+        assert_eq!(entry["reached"], true, "{entry}");
+    }
+}
+
 /// P09-04, P09-06, P09-08, P09-09: create an ISO library over NFS on the lab appliance's
 /// `/srv/nfs/iso` export through the coordinator, confirm it is listed as a shared ISO
 /// repository attached on both hosts, rescan it and read back its image list (the images

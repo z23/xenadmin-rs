@@ -75,7 +75,7 @@ class ApplianceTests(unittest.TestCase):
             mode = tar.getmember("etc/lab-chap").mode
         self.assertIn(f"/iscsi create {nas['iscsi']['open_iqn']}", start)
         self.assertIn("authentication=1", start)
-        self.assertIn(f"/backstores/fileio/lun0 set wwn vpd_unit_serial={nas['iscsi']['serials'][0]}", start)
+        self.assertIn(f"lun0/wwn/vpd_unit_serial; do echo \"{nas['iscsi']['serials'][0]}\"", start)
         self.assertEqual(nas["iscsi"]["serials"], appliance.ensure_nas(m)["iscsi"]["serials"])
         self.assertIn("truncate -s 20G", start)
         self.assertEqual(chap, "labchap s3cret\n")

@@ -36,10 +36,9 @@ reboots and power cycles, coordinator handover and endpoint failover, together w
 thirty-four findings: host behaviours the client now handles, host observations, client fixes
 and a few open product decisions. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md).
 
-Still open before a usable release: an XO-managed VM in the lab for the recovery gate,
-member failover, the failure and interruption paths of most workflows, a directory service,
-real-seat desktop checks (Wayland and X11 input, clipboard, Orca) and installation on clean
-target systems. See the [implementation plan](docs/PLAN.md) for the gates.
+Still open before a usable release: member failover with HA, the failure and interruption
+paths of most workflows, a directory service, real-seat desktop checks (Wayland and X11
+input, clipboard, Orca) and installation on clean target systems. See the [implementation plan](docs/PLAN.md) for the gates.
 
 ## Run it
 
@@ -79,8 +78,9 @@ the optional installer and removal.
 - [Design decision](docs/DECISION.md) compares the architecture alternatives.
 
 The recovery release acceptance gate is to locate, start, and use the console of an XO VM
-with XO unreachable. The disposable lab exists and the console workflow has run on it with
-no XO present; the gate still needs an XO-managed VM, which the lab does not yet contain.
+with XO unreachable. It was recorded on the disposable lab on 2026-11-11 with the Xen
+Orchestra appliance imported through the client: XO shut down and unreachable, the VM located,
+started and consoled through the direct host connection, and XO answering again afterwards.
 
 ## Release history
 
