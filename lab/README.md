@@ -139,7 +139,8 @@ The harness reads its inputs from the environment: `XENADMIN_LAB_MANIFEST` (the 
 `XENADMIN_LAB_PASSWORD_FILE` (the lab-only root password), `XENADMIN_LAB_EVIDENCE_DIR`
 (defaults to `evidence/` beside the manifest), `XENADMIN_LAB_HOST_CONTROL=libvirt` (lets a
 scenario cut and restore a host's power through libvirt), `XENADMIN_LAB_CHAP_FILE` and
-`XENADMIN_LAB_DC_FILE` (the private appliance secrets), `XENADMIN_LAB_XOA_XVA` (a downloaded
+`XENADMIN_LAB_DC_FILE` (the private appliance secrets), `XENADMIN_LAB_GUEST_IMAGE` (the
+isohybrid Alpine image the provisioning scenario imports), `XENADMIN_LAB_XOA_XVA` (a downloaded
 Xen Orchestra appliance image for the recovery gate), `XENADMIN_LAB_ENDPOINT_INDEX` (sends
 the default first-host endpoint to another manifest host, for example the surviving
 coordinator while the first host is reinstalled) and `XENADMIN_LAB_JOIN_SOURCE` (the host

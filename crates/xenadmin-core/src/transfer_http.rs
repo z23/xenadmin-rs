@@ -167,16 +167,24 @@ fn redirected(
     // Some hosts retain no query in Location. Reconstruct our original fixed query below.
     Endpoint::parse(&target[..url::Position::BeforePath]).map_err(|_| Error::TransferEndpoint)
 }
+/// A transfer may legitimately run for hours; the request and the wait for an upload's reply
+/// share this bound, and cancellation ends either sooner.
+const TRANSFER_REQUEST_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+const UPLOAD_RESPONSE_WAIT: Duration = TRANSFER_REQUEST_TIMEOUT;
+
 fn client(
     session: &Session,
     endpoint: Endpoint,
     identity: Option<&crate::CertificateFingerprint>,
 ) -> Result<reqwest::Client, Error> {
     let mut options = session.options().for_endpoint(endpoint);
-    options.request_timeout = Duration::from_secs(24 * 60 * 60);
+    options.request_timeout = TRANSFER_REQUEST_TIMEOUT;
     options.client_with_peer_identity(identity)
 }
 fn error(error: reqwest::Error) -> Error {
+    if std::env::var_os("XENADMIN_DEV_RPC_TRACE").is_some() {
+        eprintln!("xenadmin transfer trace: transport error {error:?}");
+    }
     crate::xapi::transport_error(error.without_url())
 }
 async fn status(response: reqwest::Response) -> Result<reqwest::Response, Error> {
@@ -243,7 +251,11 @@ pub(crate) async fn run(
         let mut response = status(response).await?;
         let mut reply = 0usize;
         loop {
-            let chunk = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=tokio::time::timeout(Duration::from_secs(60),response.chunk())=>result.map_err(|_|Error::Timeout)?.map_err(error)?};
+            // The host answers an upload's headers at once and says nothing more until it has
+            // consumed the whole body and finished the import, which can take far longer than a
+            // minute for a large image (lab finding 40); the wait is bounded by the transfer
+            // request timeout and by cancellation, not by an idle limit.
+            let chunk = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=tokio::time::timeout(UPLOAD_RESPONSE_WAIT,response.chunk())=>result.map_err(|_|Error::Timeout)?.map_err(error)?};
             let Some(chunk) = chunk else { break };
             reply = reply
                 .checked_add(chunk.len())

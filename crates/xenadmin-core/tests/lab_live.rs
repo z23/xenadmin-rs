@@ -18528,7 +18528,9 @@ async fn lab_xo_vm_recovery_gate() {
             &mut steps,
             json!({"step": "import the Xen Orchestra appliance", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail,
                    "elapsed_ms": started.elapsed().as_millis() as u64, "read_back": visible,
-                   "image_bytes": std::fs::metadata(&image).map(|m| m.len()).ok(), "created_vms": outcome.transfer_created.vms.len()}),
+                   "image_bytes": std::fs::metadata(&image).map(|m| m.len()).ok(), "created_vms": outcome.transfer_created.vms.len(),
+                   "transfer": format!("{:?}", outcome.transfer),
+                   "steps": outcome.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()}),
         );
         imported.expect("imported XO VM")
     };

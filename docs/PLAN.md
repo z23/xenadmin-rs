@@ -116,7 +116,7 @@ appliances added on 2026-11-10, a shared NFS repository on both hosts with HA, a
 guest with NIC hot plug, shared-storage live migration and a real member evacuation, a storage
 bond round trip and a member power cycle, iSCSI target discovery with an LVM-over-iSCSI
 repository on both hosts and a CHAP-protected repository created with transient credentials
-and removed, a member multipath round trip with two active iSCSI paths and an ISO library over NFS, plus twenty-two host-behaviour findings that were
+and removed, a member multipath round trip with two active iSCSI paths and ISO libraries over NFS and SMB 3 listing a seeded image, plus twenty-two host-behaviour findings that were
 fixed, eight host observations, one client journal observation, a fixed client verification
 finding, two fixed client storage findings, two open client decisions and one open upstream accessibility finding. Member
 failover, pointer and Orca qualification and an XO-managed VM remain qualification gates. Milestones remain open until
