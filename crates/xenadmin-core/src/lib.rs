@@ -372,6 +372,8 @@ pub enum Error {
     Http(u16),
     #[error("XAPI refused the request: {0}")]
     Api(String),
+    #[error("The signed-in role does not allow {0}; the request was not sent")]
+    RoleDenied(String),
     #[error(
         "This pool member redirects to {0}. Connect to that endpoint after verifying its certificate"
     )]

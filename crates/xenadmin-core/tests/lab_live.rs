@@ -18267,6 +18267,31 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
     );
     entry["followed_after_ms"] = json!(handover_at.elapsed().as_millis() as u64);
     entry["endpoint_after"] = json!(c.latest().active_endpoint().map(|e| e.to_string()));
+    // The handover restarts both toolstacks and can close the connection before the reply;
+    // the operator path rechecks the durable record once the pool is visible again.
+    if entry["state"] == "OutcomeUnknown"
+        && let Some(id) = c
+            .resource_history()
+            .iter()
+            .find(|r| r.state == OperationState::OutcomeUnknown)
+            .map(|r| r.id)
+        && c.control_resource(id, xenadmin_core::OperationControl::Recheck)
+            .is_ok()
+    {
+        settle(300, || {
+            c.resource_history()
+                .iter()
+                .any(|r| r.id == id && r.state.terminal())
+        })
+        .await;
+        if let Some(row) = c.resource_history().iter().find(|r| r.id == id) {
+            entry["recheck_state"] = json!(format!("{:?}", row.state));
+            entry["recheck_detail"] = json!(row.detail);
+            if row.state == OperationState::Succeeded {
+                entry["state"] = json!("Succeeded");
+            }
+        }
+    }
     note(&mut steps, entry);
 
     // Restore the storage interfaces' unplug protection to the lab baseline.
@@ -18309,6 +18334,17 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
 
     // Baseline: the tools guest back on the coordinator, the local-storage guest running.
     if placement(&c).map(|p| p.0) == Some(Some(member)) {
+        // The restarted toolstacks advertise the guest's operations again a little later.
+        settle(180, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details.vms.get(&guest.id).is_some_and(|d| {
+                    d.allowed_operations
+                        .as_ref()
+                        .is_some_and(|ops| ops.iter().any(|op| op == "pool_migrate"))
+                })
+            })
+        })
+        .await;
         let migration = migrate(&c, coordinator).expect("migration accepted");
         let row = wait_vm_outcome(&migration, 900).await;
         let placed = settle(120, || {
@@ -19032,11 +19068,14 @@ async fn lab_directory_join_subjects_and_roles() {
             }
         }
 
-        // 5. Connect as the directory user: Ready with read-only permissions, a write refused.
+        // 5. Connect as the directory user from a second backend (one authenticated owner per
+        // pool and backend): Ready with read-only permissions, a write refused.
         let (mut options, _) = pinned_options(&lab.endpoint(0)).await;
         options.request_timeout = Duration::from_secs(60);
         let user_login = format!("{}\\{}", dir.netbios, dir.user);
-        let as_user = backend.connect(
+        let user_state = tempfile::tempdir().unwrap();
+        let user_backend = Backend::with_state_directory(user_state.path().into()).unwrap();
+        let as_user = user_backend.connect(
             options,
             Credentials::new(user_login.clone(), user_password.clone()),
         );
@@ -19057,33 +19096,42 @@ async fn lab_directory_join_subjects_and_roles() {
                 .map(|v| (v.id, v.description.clone()))
         });
         drop(snapshot);
+        // The read-only session's write must not reach the host: refused at submission or
+        // rejected by the client's permission preflight before any request.
         let refused = if let Some((id, description)) = guest {
             match as_user.latest().observe_vm(id) {
-                Ok(vm) => as_user
-                    .submit(
-                        OperationId::new(),
-                        VmCommand::Configure {
-                            vm,
-                            patch: VmSettingsPatch::new(vec![VmSettingEdit::Description {
-                                previous: description.clone(),
-                                value: format!("{description} (must not apply)"),
-                            }])
-                            .unwrap(),
-                        },
-                    )
-                    .map(
-                        |op| json!({"accepted": true, "state": format!("{:?}", op.latest().state)}),
-                    )
-                    .unwrap_or_else(|e| json!({"accepted": false, "error": e.to_string()})),
-                Err(e) => json!({"accepted": false, "error": e.to_string()}),
+                Ok(vm) => match as_user.submit(
+                    OperationId::new(),
+                    VmCommand::Configure {
+                        vm,
+                        patch: VmSettingsPatch::new(vec![VmSettingEdit::Description {
+                            previous: description.clone(),
+                            value: format!("{description} (must not apply)"),
+                        }])
+                        .unwrap(),
+                    },
+                ) {
+                    Ok(op) => {
+                        let row = wait_vm_outcome(&op, 120).await;
+                        let unchanged = settle(30, || {
+                            as_user.latest().inventory().is_some_and(|i| {
+                                i.vms.get(&id).is_some_and(|v| v.description == description)
+                            })
+                        })
+                        .await;
+                        json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "refused": row.state != OperationState::Succeeded && unchanged})
+                    }
+                    Err(e) => json!({"accepted": false, "error": e.to_string(), "refused": true}),
+                },
+                Err(e) => json!({"accepted": false, "error": e.to_string(), "refused": true}),
             }
         } else {
-            json!({"skipped": "no lab guest"})
+            json!({"skipped": "no lab guest", "refused": false})
         };
         as_user.close().await;
         note(
             &mut steps,
-            json!({"step": "connect as the directory user", "read_back": ready.is_ok() && state == "Ready" && refused["accepted"] == false,
+            json!({"step": "connect as the directory user", "read_back": ready.is_ok() && state == "Ready" && refused["refused"] == true,
                    "login": user_login, "state": state, "error": error, "permissions": permissions, "write_attempt": refused}),
         );
 

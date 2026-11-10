@@ -136,9 +136,15 @@ impl PermissionRequirements {
             denied_methods,
         }
     }
+    /// Refuses locally, naming the denied methods; the host's token stays in the text so the
+    /// reason is recognisable, and the wording says that nothing was sent (lab observation 41).
     pub(crate) fn guard(&self, permissions: &SessionPermissions) -> Result<(), Error> {
-        if self.assess(permissions).decision.is_denied() {
-            Err(Error::Api("RBAC_PERMISSION_DENIED".into()))
+        let assessment = self.assess(permissions);
+        if assessment.decision.is_denied() {
+            Err(Error::RoleDenied(format!(
+                "{} (RBAC_PERMISSION_DENIED)",
+                assessment.denied_methods.join(", ")
+            )))
         } else {
             Ok(())
         }
@@ -226,7 +232,9 @@ impl SessionPermissions {
     }
     pub(crate) fn guard(&self, method: &str) -> Result<(), Error> {
         if self.method(method).is_denied() {
-            Err(Error::Api("RBAC_PERMISSION_DENIED".into()))
+            Err(Error::RoleDenied(format!(
+                "{method} (RBAC_PERMISSION_DENIED)"
+            )))
         } else {
             Ok(())
         }

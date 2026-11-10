@@ -124,6 +124,8 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Pool recovery from a dead coordinator through the survivor | P12-11, P13-05, P09-09 | Passed with lab repair, observations 37 and 38 | Through the surviving coordinator the client disabled HA, deleted the record of the guest whose disks were on the dead host's local storage (no disks, no snapshots left), and forgot the dead host after its domain was verified off at the hypervisor. The client's forget of the dead host's three repositories stayed refused because XAPI never advertised forget for them; `SR.forget` was issued directly as a lab repair after moving the pool default repository to the shared NFS one. Evidence: 1794314951-forget-dead-coordinator-through-survivor.json |
 | Reinstalled host rejoins by reviewed join | P13-02, P19-05 | Passed | The forgotten host was reinstalled unattended by the lab tooling (answer file fetched once, fresh host identity, XCP-ng 8.3.0 standalone) and joined into the survivor's pool through the client's reviewed join from its own connection; the member appeared on the destination and the source connection reconnected as it restarted its toolstack. Its storage interface was then configured and the shared NFS repository attached through the storage scenario, and the coordinator role was handed back to it through the reviewed handover, whose reply was lost in the toolstack restart and rechecked from the durable record. Evidence: 1794315795-form-pool-reviewed-join.json, 1794316007-designate-first-host-coordinator.json |
 | Recovery gate: the XO VM located, started and consoled with XO unreachable | M2 gate, P11-06, P03-01, P04-01, P06-03 | Passed on the fourth attempt, findings 39 and 40 | The Xen Orchestra appliance image (1.9 GB, downloaded from the vendor) was imported through the client onto the shared NFS repository (173 s), sized to 2 GiB for the lab host while halted, and started; its agent reported an address and XO answered over HTTP from the workstation 25 s later. A clean shutdown through the agent made XO unreachable; with XO down the VM was located by name and description through the direct host connection, started, its console opened with a frame saved, and XO answered again 28 s after the start. The first three attempts failed in the client's XVA verifier and upload reply wait (findings 39 and 40). The appliance stays in the lab; it does not yet manage the pool. Evidence: 1794317428-xo-vm-recovery-gate.json, frame 1794317423-console-xo-vm-console.ppm |
+| Coordinator loss with HA: member takeover, rerun | P01-04, P13-05, P13-06, P19-05, P10-09, P13-04 | Passed on the rerun (harness refinements noted) | With both hosts' heartbeat storage interfaces protected from unplug first, HA enabled on the shared NFS repository (33 s) with the tools guest protected and resident on the coordinator, the coordinator's domain was destroyed. The connection went stale in 30 s, followed the member as coordinator through its remembered member endpoint 155 s after the cut, and found the protected guest already restarted there by HA. The old coordinator, started again, rejoined as a member in 173 s with no further reset. HA was disabled, the coordinator role handed back (reply lost in the toolstack restart and rechecked from the durable record), the unplug protection removed and the local-storage guest the power cut had halted started again; the tools guest's move back was refused once because the restarted toolstack had not yet advertised migrate, which the scenario now waits for. Evidence: 1794318589-coordinator-loss-with-ha-member-takeover.json |
+| Directory service: join, subjects, roles, directory login and leave | P13-09, P13-10, P13-11, P10-08 | Passed on the third attempt (harness fixes) | With the Samba domain controller appliance up, both hosts' management interfaces were pointed at it for DNS through the management-network reconfiguration (addresses retained), the pool joined the lab domain with transient administrator credentials (6 s, both hosts reporting AD and the realm), the test user and group were resolved by their domain names and granted access (XCP-ng 8.3 created both subjects with no roles), the user was given the read-only role, and a connection as that user from a second client instance became Ready with the read-only role's 1348 permissions while its description edit was refused by the client's own permission guard before any request reached the host, worded as a host refusal (observation 41), and the guest stayed unchanged. The subjects were removed, the pool left the domain removing its machine accounts (1.3 s), and the DNS was restored. The first attempt reused the root connection's backend for the directory login, which the one-owner-per-pool rule refused; the second checked the refusal at submission rather than at the operation's outcome. Evidence: 1794318832-directory-join-subjects-and-roles.json |
 
 ## Findings
 
@@ -413,7 +415,8 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    minutes (the host's own messages: master transition, host failed, protected guest restarted
    on the survivor). The connection now remembers every pool host whose certificate it can
    verify through its pinned host certificates (or the connection-wide opt-out) as a
-   verified member and failover endpoint.
+   verified member and failover endpoint; on the rerun the connection followed the member
+   155 s after the cut.
 36. **A heartbeat repository on a storage network strands a rebooted host.** The HA
    heartbeat repository was the NFS repository reached over each host's storage interface,
    which XAPI configures only after it starts. When the old coordinator booted again with HA
@@ -423,7 +426,8 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    cycles. Enabling HA now refuses a heartbeat repository that a host reaches over a storage
    interface without unplug protection, naming the fix, and the takeover scenario protects
    those interfaces first. The stranded host was recovered by forgetting it through the
-   survivor, reinstalling it unattended and rejoining it.
+   survivor, reinstalling it unattended and rejoining it; on the rerun, with the interfaces
+   protected, the old coordinator rejoined in 173 s.
 37. **A dead host's local-cache repository could not be forgotten.** The storage forget and
    destroy guards refused any repository flagged as a local cache, even after the host that
    used it had been forgotten and no host bound it. The guard now refuses only while a host
@@ -446,6 +450,12 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    the host reported a premature end of stream; three attempts, including one after the sparse
    chunk fix, ended the same way. The reply wait is now bounded by the transfer request
    timeout and by cancellation rather than by an idle limit.
+41. **A local permission refusal was worded as a host refusal.** The read-only directory
+   session's write was stopped by the client's own permission guard, which never sent the
+   request (no such call in the RPC trace), but the outcome read "XAPI refused the request:
+   RBAC_PERMISSION_DENIED" as if the host had answered. The guard now reports that the
+   signed-in role does not allow the method and that nothing was sent. XCP-ng 8.3 also creates
+   directory subjects with no roles, so a new subject can do nothing until a role is granted.
 
 ## Console observation
 
