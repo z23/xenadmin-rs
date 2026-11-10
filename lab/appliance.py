@@ -216,16 +216,24 @@ if mount -t ext4 "$DEV" {export}; then
         mkdir -p {export}/iscsi
         for n in 0 1; do [ -f {export}/iscsi/lun$n.img ] || truncate -s {{lun_gib}}G {export}/iscsi/lun$n.img; done
         mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
+        # targetcli's backstore view asks the system bus for user-space handlers; give it one.
+        mkdir -p /run/dbus && dbus-uuidgen --ensure >/dev/null 2>&1 && dbus-daemon --system --fork >/dev/null 2>&1
         rc-service targetcli start >/dev/null 2>&1
-        t() {{ targetcli "$@" >/dev/null 2>&1 || log "targetcli failed: $*"; }}
+        PORTALS="{{portals}}"
+        # Log failures with the command masked of any secret and the first lines of the error.
+        t() {{ out=$(targetcli "$@" 2>&1) || log "targetcli failed: $(echo "$*" | sed 's/password=[^ ]*/password=***/') -> $(echo "$out" | head -n 2 | tr '\\n' ' ' | cut -c1-240)"; }}
         t /backstores/fileio create lun0 {export}/iscsi/lun0.img
         t /backstores/fileio create lun1 {export}/iscsi/lun1.img
         t /iscsi create {{open_iqn}}
         t /iscsi/{{open_iqn}}/tpg1/luns create /backstores/fileio/lun0
         t /iscsi/{{open_iqn}}/tpg1 set attribute authentication=0 generate_node_acls=1 demo_mode_write_protect=0 cache_dynamic_acls=1
+        t /iscsi/{{open_iqn}}/tpg1/portals delete 0.0.0.0 3260
+        for a in $PORTALS; do t /iscsi/{{open_iqn}}/tpg1/portals create $a 3260; done
         t /iscsi create {{chap_iqn}}
         t /iscsi/{{chap_iqn}}/tpg1/luns create /backstores/fileio/lun1
         t /iscsi/{{chap_iqn}}/tpg1 set attribute authentication=1 generate_node_acls=1 demo_mode_write_protect=0 cache_dynamic_acls=1
+        t /iscsi/{{chap_iqn}}/tpg1/portals delete 0.0.0.0 3260
+        for a in $PORTALS; do t /iscsi/{{chap_iqn}}/tpg1/portals create $a 3260; done
         if [ -s /etc/lab-chap ]; then
             t /iscsi/{{chap_iqn}}/tpg1 set auth userid="$(cut -d' ' -f1 /etc/lab-chap)" password="$(cut -d' ' -f2 /etc/lab-chap)"
         fi
@@ -238,7 +246,7 @@ else
     log "mount failed for $DEV"
 fi
 log "ready {nas['ip']}{' ' + nas['storage_ip'] if 'storage_ip' in nas else ''}"
-""".replace("{open_iqn}", iscsi.get("open_iqn", "iqn.lab:open")).replace("{chap_iqn}", iscsi.get("chap_iqn", "iqn.lab:chap")).replace("{lun_gib}", str(iscsi.get("lun_gib", 20)))
+""".replace("{portals}", " ".join([nas["ip"]] + ([nas["storage_ip"]] if "storage_ip" in nas else []))).replace("{open_iqn}", iscsi.get("open_iqn", "iqn.lab:open")).replace("{chap_iqn}", iscsi.get("chap_iqn", "iqn.lab:chap")).replace("{lun_gib}", str(iscsi.get("lun_gib", 20)))
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         _tar_entry(tar, "etc/.default_boot_services", "")
@@ -249,6 +257,8 @@ log "ready {nas['ip']}{' ' + nas['storage_ip'] if 'storage_ip' in nas else ''}"
         _tar_entry(tar, "etc/local.d/nas.start", start, mode=0o755)
         _tar_entry(tar, "etc/runlevels/boot/networking", link="/etc/init.d/networking")
         _tar_entry(tar, "etc/runlevels/default/local", link="/etc/init.d/local")
+        # targetcli 2.1.5x talks to a targetclid daemon unless told otherwise.
+        _tar_entry(tar, "etc/target/targetcli.conf", "[global]\ndaemon_use = False\n")
         if chap:
             _tar_entry(tar, "etc/lab-chap", f"{chap[0]} {chap[1]}\n", mode=0o600)
     return buffer.getvalue()

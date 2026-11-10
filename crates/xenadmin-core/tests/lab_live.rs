@@ -17183,3 +17183,702 @@ async fn lab_tools_guest_start() {
     }
     c.close().await;
 }
+
+/// P09-02, P09-03, P09-06, P09-08: discover the appliance's iSCSI targets and the open
+/// target's LUN through the coordinator, confirm the CHAP-protected target refuses an
+/// unauthenticated LUN probe, create (or reuse) a shared LVM-over-iSCSI repository on the
+/// open target and confirm both hosts attach it, detach and reattach it on the member, and
+/// rescan it. The repository is kept for the multipath scenario.
+#[tokio::test]
+#[ignore]
+async fn lab_iscsi_targets_and_lvm_repository() {
+    use xenadmin_core::{
+        NfsVersion, ResourceCommand, StorageAllocation, StorageDiscoveryResult, StorageLocation,
+        StorageOperation, StorageQuery,
+    };
+    let _ = NfsVersion::Automatic;
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("storage network in the manifest");
+    let iscsi = storage
+        .iscsi
+        .as_ref()
+        .expect("iSCSI targets in the manifest");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator && inventory.hosts[h].enabled)
+        .expect("enabled member");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let discover = |c: &Connection, query: StorageQuery| {
+        let probe = c
+            .discover_storage(
+                c.latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                query,
+            )
+            .expect("probe accepted");
+        async move {
+            tokio::time::timeout(deadline(240), async {
+                loop {
+                    if let Some(result) = probe.latest() {
+                        break result;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            })
+            .await
+            .expect("probe answered")
+        }
+    };
+    let targets = discover(
+        &c,
+        StorageQuery::IscsiTargets {
+            host: coordinator,
+            portal: storage.nas_ip.clone(),
+            port: iscsi.port,
+        },
+    )
+    .await;
+    let iqns = match &targets {
+        Ok(StorageDiscoveryResult::IscsiTargets(rows)) => Some(
+            rows.iter()
+                .map(|t| json!({"iqn": t.iqn, "portal": t.portal, "port": t.port}))
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    };
+    note(
+        &mut steps,
+        json!({"step": "discover iSCSI targets", "targets": iqns, "error": targets.as_ref().err(), "read_back": iqns.as_ref().is_some_and(|t| t.iter().any(|x| x["iqn"] == iscsi.open_iqn))}),
+    );
+    let luns = discover(
+        &c,
+        StorageQuery::IscsiLuns {
+            host: coordinator,
+            portal: storage.nas_ip.clone(),
+            port: iscsi.port,
+            target_iqn: iscsi.open_iqn.clone(),
+        },
+    )
+    .await;
+    let lun_rows = match &luns {
+        Ok(StorageDiscoveryResult::IscsiLuns(rows)) => Some(rows.iter().map(|l| json!({"scsi_id": l.scsi_id, "lun": l.lun, "size_bytes": l.size_bytes, "vendor": l.vendor})).collect::<Vec<_>>()),
+        _ => None,
+    };
+    note(
+        &mut steps,
+        json!({"step": "discover the open target's LUNs", "luns": lun_rows, "error": luns.as_ref().err(), "read_back": lun_rows.as_ref().is_some_and(|l| !l.is_empty())}),
+    );
+    let refused = discover(
+        &c,
+        StorageQuery::IscsiLuns {
+            host: coordinator,
+            portal: storage.nas_ip.clone(),
+            port: iscsi.port,
+            target_iqn: iscsi.chap_iqn.clone(),
+        },
+    )
+    .await;
+    note(
+        &mut steps,
+        json!({"step": "unauthenticated LUN probe of the CHAP target", "error": refused.as_ref().err(), "expected_refusal": true, "refused": refused.is_err()}),
+    );
+    let scsi_id = match &luns {
+        Ok(StorageDiscoveryResult::IscsiLuns(rows)) => rows.first().map(|l| l.scsi_id.clone()),
+        _ => None,
+    };
+    let Some(scsi_id) = scsi_id else {
+        lab.record(
+            "iscsi-targets-and-lvm-repository",
+            json!({"appliance": storage.nas_ip, "failed": "no LUN discovered", "steps": steps}),
+        );
+        panic!("no LUN discovered: {steps:?}");
+    };
+
+    let find_sr = |c: &Connection, prefix: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.storage
+                .iter()
+                .find(|s| s.name.starts_with(prefix) && !s.name.starts_with("lab-iscsi-chap"))
+                .map(|s| (xenadmin_core::SrId::from(s.uuid), s.name.clone()))
+        })
+    };
+    let attachments = |c: &Connection, sr: xenadmin_core::SrId| {
+        c.latest()
+            .inventory()
+            .map(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .filter(|p| p.sr == Some(sr))
+                    .map(|p| (p.id, p.host, p.currently_attached))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let (sr, sr_name) = if let Some(existing) = find_sr(&c, "lab-iscsi-") {
+        note(
+            &mut steps,
+            json!({"step": "create LVM-over-iSCSI repository", "reused": existing.1}),
+        );
+        existing
+    } else {
+        let name = format!("lab-iscsi-{stamp}");
+        let mut entry = resource_op(
+            &c,
+            "create LVM-over-iSCSI repository",
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                operation: StorageOperation::Create {
+                    host: coordinator,
+                    name: name.clone(),
+                    description: "Shared LVM-over-iSCSI repository on the lab appliance".into(),
+                    location: StorageLocation::Iscsi {
+                        portal: storage.nas_ip.clone(),
+                        port: iscsi.port,
+                        target_iqn: iscsi.open_iqn.clone(),
+                        scsi_id: scsi_id.clone(),
+                        allocation: StorageAllocation::DriverDefault,
+                    },
+                    hba_device: None,
+                    local_device: None,
+                },
+            },
+            900,
+        )
+        .await;
+        entry["read_back"] = json!(settle(180, || find_sr(&c, &name).is_some()).await);
+        note(&mut steps, entry);
+        match find_sr(&c, &name) {
+            Some(found) => found,
+            None => {
+                lab.record("iscsi-targets-and-lvm-repository", json!({"appliance": storage.nas_ip, "failed": "repository not listed", "steps": steps}));
+                panic!("repository not listed: {steps:?}");
+            }
+        }
+    };
+    let shared = settle(240, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .storage
+                .get(&sr)
+                .is_some_and(|d| d.shared == Some(true))
+        }) && attachments(&c, sr).len() == 2
+            && attachments(&c, sr).iter().all(|(_, _, a)| *a == Some(true))
+    })
+    .await;
+    note(
+        &mut steps,
+        json!({"step": "repository attached on both hosts", "repository": sr_name, "read_back": shared, "kind": c.latest().inventory().unwrap().storage.iter().find(|s| xenadmin_core::SrId::from(s.uuid) == sr).map(|s| s.kind.clone()), "attachments": attachments(&c, sr).iter().map(|(_, h, a)| json!({"host": h.map(|h| inventory.hosts[&h].name.clone()), "attached": a})).collect::<Vec<_>>()}),
+    );
+    for (label, attached) in [
+        ("detach the repository on the member", false),
+        ("reattach the repository on the member", true),
+    ] {
+        let Some((pbd, _, _)) = attachments(&c, sr)
+            .into_iter()
+            .find(|(_, h, _)| *h == Some(member))
+        else {
+            break;
+        };
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pbd(pbd))
+                    .unwrap(),
+                operation: StorageOperation::SetAttached {
+                    sr,
+                    host: member,
+                    expected_attached: !attached,
+                    attached,
+                },
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(180, || attachments(&c, sr)
+                .iter()
+                .any(|(_, h, a)| *h == Some(member) && *a == Some(attached)))
+            .await
+        );
+        if entry["state"] == "Rejected"
+            && entry["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("in use"))
+        {
+            entry["expected_refusal"] = json!(true);
+            note(&mut steps, entry);
+            break;
+        }
+        note(&mut steps, entry);
+    }
+    let entry = resource_op(
+        &c,
+        "rescan the repository",
+        ResourceCommand::ScanStorage {
+            sr: c
+                .latest()
+                .observe_resource(ResourceTarget::Storage(sr))
+                .unwrap(),
+        },
+        300,
+    )
+    .await;
+    note(&mut steps, entry);
+    c.close().await;
+    lab.record(
+        "iscsi-targets-and-lvm-repository",
+        json!({"appliance": storage.nas_ip, "repository": sr_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("expected_refusal").is_some() {
+            if step.get("refused").is_some() {
+                assert_eq!(step["refused"], true, "{step}");
+            } else {
+                assert_eq!(step["state"], "Rejected", "{step}");
+            }
+            continue;
+        }
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P09-03 (CHAP): probe the CHAP-protected target's LUN with transient credentials, create a
+/// shared LVM-over-iSCSI repository on it through the authenticated path and confirm both
+/// hosts attach it with credentials required, then detach it everywhere and destroy it so no
+/// CHAP material stays on the pool.
+#[tokio::test]
+#[ignore]
+async fn lab_iscsi_chap_repository_with_transient_credentials() {
+    use xenadmin_core::{
+        ResourceCommand, StorageAllocation, StorageCredentials, StorageDiscoveryResult,
+        StorageLocation, StorageOperation, StorageQuery,
+    };
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("storage network in the manifest");
+    let iscsi = storage
+        .iscsi
+        .as_ref()
+        .expect("iSCSI targets in the manifest");
+    let Some((user, secret)) = iscsi.chap.clone() else {
+        eprintln!("XENADMIN_LAB_CHAP_FILE not set; skipping");
+        return;
+    };
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let probe = c
+        .discover_authenticated_storage(
+            c.latest()
+                .observe_resource(ResourceTarget::Pool(pool))
+                .unwrap(),
+            StorageQuery::IscsiLuns {
+                host: coordinator,
+                portal: storage.nas_ip.clone(),
+                port: iscsi.port,
+                target_iqn: iscsi.chap_iqn.clone(),
+            },
+            StorageCredentials::chap(user.clone(), secret.clone()),
+        )
+        .expect("authenticated probe accepted");
+    let result = tokio::time::timeout(deadline(240), async {
+        loop {
+            if let Some(result) = probe.latest() {
+                break result;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .expect("probe answered");
+    let scsi_id = match &result {
+        Ok(StorageDiscoveryResult::IscsiLuns(rows)) => rows.first().map(|l| l.scsi_id.clone()),
+        _ => None,
+    };
+    note(
+        &mut steps,
+        json!({"step": "authenticated LUN probe of the CHAP target", "error": result.as_ref().err(), "read_back": scsi_id.is_some(), "luns": match &result { Ok(StorageDiscoveryResult::IscsiLuns(rows)) => rows.len(), _ => 0 }}),
+    );
+    let Some(scsi_id) = scsi_id else {
+        lab.record(
+            "iscsi-chap-repository",
+            json!({"failed": "no LUN discovered with credentials", "steps": steps}),
+        );
+        panic!("no LUN discovered with credentials: {steps:?}");
+    };
+    let name = format!("lab-iscsi-chap-{stamp}");
+    let find_sr = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.storage
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| xenadmin_core::SrId::from(s.uuid))
+        })
+    };
+    let attachments = |c: &Connection, sr: xenadmin_core::SrId| {
+        c.latest()
+            .inventory()
+            .map(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .filter(|p| p.sr == Some(sr))
+                    .map(|p| (p.id, p.host, p.currently_attached, p.requires_credentials))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let started = std::time::Instant::now();
+    let create = c
+        .submit_authenticated_storage(
+            OperationId::new(),
+            c.latest()
+                .observe_resource(ResourceTarget::Pool(pool))
+                .unwrap(),
+            StorageOperation::Create {
+                host: coordinator,
+                name: name.clone(),
+                description: "CHAP-protected LVM-over-iSCSI repository on the lab appliance".into(),
+                location: StorageLocation::Iscsi {
+                    portal: storage.nas_ip.clone(),
+                    port: iscsi.port,
+                    target_iqn: iscsi.chap_iqn.clone(),
+                    scsi_id,
+                    allocation: StorageAllocation::DriverDefault,
+                },
+                hba_device: None,
+                local_device: None,
+            },
+            StorageCredentials::chap(user, secret),
+        )
+        .expect("authenticated creation accepted");
+    let row = wait_outcome(&create, 900).await;
+    let listed = settle(180, || find_sr(&c).is_some()).await;
+    note(
+        &mut steps,
+        json!({"step": "create the CHAP repository with transient credentials", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "read_back": listed,
+        "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state)})).collect::<Vec<_>>()}),
+    );
+    if let Some(sr) = find_sr(&c) {
+        let both = settle(240, || {
+            attachments(&c, sr).len() == 2
+                && attachments(&c, sr)
+                    .iter()
+                    .all(|(_, _, a, _)| *a == Some(true))
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "CHAP repository attached on both hosts", "read_back": both, "attachments": attachments(&c, sr).iter().map(|(_, h, a, cred)| json!({"host": h.map(|h| inventory.hosts[&h].name.clone()), "attached": a, "requires_credentials": cred})).collect::<Vec<_>>()}),
+        );
+        // Leave nothing behind: detach everywhere, then destroy.
+        for (pbd, host, attached, _) in attachments(&c, sr) {
+            if attached != Some(true) {
+                continue;
+            }
+            let Some(host) = host else { continue };
+            let mut entry = resource_op(
+                &c,
+                &format!(
+                    "detach the CHAP repository on {}",
+                    inventory.hosts[&host].name
+                ),
+                ResourceCommand::Storage {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Pbd(pbd))
+                        .unwrap(),
+                    operation: StorageOperation::SetAttached {
+                        sr,
+                        host,
+                        expected_attached: true,
+                        attached: false,
+                    },
+                },
+                600,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(180, || attachments(&c, sr)
+                    .iter()
+                    .any(|(p, _, a, _)| *p == pbd && *a == Some(false)))
+                .await
+            );
+            note(&mut steps, entry);
+        }
+        let mut entry = resource_op(
+            &c,
+            "destroy the CHAP repository",
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Storage(sr))
+                    .unwrap(),
+                operation: StorageOperation::Destroy {
+                    expected_name: name.clone(),
+                    expected_disks: Vec::new(),
+                },
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(settle(120, || find_sr(&c).is_none()).await);
+        note(&mut steps, entry);
+    }
+    c.close().await;
+    lab.record(
+        "iscsi-chap-repository",
+        json!({"appliance": storage.nas_ip, "repository": name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P09-12, P12-03: with the member empty and in maintenance, enable standard multipathing on
+/// it through the reviewed complete-host flow (detach every attachment, set the mode and the
+/// dmp handler, replug), confirm the host reports multipathing with the dmp handler and that
+/// the iSCSI attachment reports its paths across the appliance's two portals, then disable
+/// multipathing the same way and leave maintenance.
+#[tokio::test]
+#[ignore]
+async fn lab_member_multipath_round_trip() {
+    use xenadmin_core::{HostOperation, ResourceCommand, ReviewedPbd, StorageGraph};
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("storage network in the manifest");
+    let iscsi = storage
+        .iscsi
+        .as_ref()
+        .expect("iSCSI targets in the manifest");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator)
+        .expect("member");
+    let member_name = inventory.hosts[&member].name.clone();
+    assert!(
+        !inventory
+            .vms
+            .values()
+            .any(|v| v.host == Some(member) && !v.is_control_domain),
+        "the member must not host guests"
+    );
+    let mut steps = Vec::new();
+    let host_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Host(member))
+            .unwrap()
+    };
+    let details = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.hosts.get(&member).cloned())
+    };
+    let iscsi_paths = |c: &Connection| {
+        c.latest().inventory().map(|i| {
+            i.details
+                .pbds
+                .values()
+                .filter(|p| p.host == Some(member))
+                .filter(|p| i.details.storage.get(&p.sr.unwrap_or(xenadmin_core::SrId::from(uuid::Uuid::nil()))).is_some())
+                .filter_map(|p| {
+                    let sr = i.storage.iter().find(|s| Some(xenadmin_core::SrId::from(s.uuid)) == p.sr)?;
+                    (sr.kind == "lvmoiscsi").then(|| json!({"repository": sr.name, "multipathed": p.multipathed, "paths": p.paths.iter().map(|x| json!({"device": x.device, "active": x.active, "maximum": x.maximum})).collect::<Vec<_>>()}))
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    note(
+        &mut steps,
+        json!({"step": "multipath before", "multipathing": details(&c).and_then(|h| h.multipathing), "standard_handler": details(&c).and_then(|h| h.standard_multipath_handler), "portals": [storage.nas_ip.clone(), storage.nas_lab_ip.clone()], "port": iscsi.port, "iscsi_attachments": iscsi_paths(&c)}),
+    );
+
+    if details(&c).and_then(|h| h.maintenance_mode) == Some(true) {
+        let entry = resource_op(
+            &c,
+            "clear the leftover maintenance marker",
+            ResourceCommand::Host {
+                target: host_target(&c),
+                operation: HostOperation::ExitMaintenance,
+            },
+            300,
+        )
+        .await;
+        note(&mut steps, entry);
+    }
+    let enabled = c.latest().inventory().unwrap().hosts[&member].enabled;
+    let mut entry = resource_op(
+        &c,
+        "enter maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::EnterMaintenance {
+                expected_enabled: enabled,
+                resident_vms: Vec::new(),
+            },
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || details(&c).and_then(|h| h.maintenance_mode)
+            == Some(true))
+        .await
+    );
+    note(&mut steps, entry);
+
+    for (label, enable) in [
+        ("enable standard multipathing on the member", true),
+        ("disable multipathing on the member", false),
+    ] {
+        let now = c.latest().inventory().unwrap().clone();
+        let attachments = now
+            .details
+            .pbds
+            .values()
+            .filter(|p| p.host == Some(member))
+            .filter_map(|p| ReviewedPbd::from_inventory(&now, p.id))
+            .collect::<Vec<_>>();
+        let host_details = now.details.hosts[&member].clone();
+        let started = std::time::Instant::now();
+        let mut entry = resource_op(
+            &c,
+            label,
+            ResourceCommand::StorageGraph {
+                target: host_target(&c),
+                operation: StorageGraph::Multipath {
+                    host: member,
+                    expected: host_details.multipathing.unwrap_or(false),
+                    expected_handler: host_details.standard_multipath_handler.unwrap_or(false),
+                    enabled: enable,
+                    attachments: attachments.clone(),
+                },
+            },
+            1200,
+        )
+        .await;
+        entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+        entry["attachments_reviewed"] = json!(attachments.len());
+        entry["read_back"] = json!(
+            settle(300, || {
+                details(&c).is_some_and(|h| h.multipathing == Some(enable))
+                    && c.latest().inventory().is_some_and(|i| {
+                        i.details
+                            .pbds
+                            .values()
+                            .filter(|p| p.host == Some(member))
+                            .all(|p| p.currently_attached == Some(true))
+                    })
+            })
+            .await
+        );
+        entry["multipathing_after"] = json!(details(&c).and_then(|h| h.multipathing));
+        entry["standard_handler_after"] =
+            json!(details(&c).and_then(|h| h.standard_multipath_handler));
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        entry["iscsi_attachments_after"] = json!(iscsi_paths(&c));
+        note(&mut steps, entry);
+    }
+
+    let mut entry = resource_op(
+        &c,
+        "exit maintenance",
+        ResourceCommand::Host {
+            target: host_target(&c),
+            operation: HostOperation::ExitMaintenance,
+        },
+        300,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(120, || c
+            .latest()
+            .inventory()
+            .is_some_and(|i| i.hosts[&member].enabled))
+        .await
+    );
+    note(&mut steps, entry);
+    c.close().await;
+    lab.record(
+        "member-multipath-round-trip",
+        json!({"member": member_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
