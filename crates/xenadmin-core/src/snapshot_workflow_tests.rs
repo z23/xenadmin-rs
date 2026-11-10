@@ -2,6 +2,17 @@ use super::*;
 use crate::{PowerState, SnapshotId, SnapshotWorkflow, xapi::inventory_tests::Fixture};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Mutex};
+
+/// Fixture waits only poll for an outcome; `XENADMIN_TEST_TIME_SCALE` stretches them on
+/// slow or loaded runners the same way the live-lab fixtures stretch theirs.
+fn scaled_deadline(seconds: u64) -> Duration {
+    let scale = std::env::var("XENADMIN_TEST_TIME_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| (1..=64).contains(v))
+        .unwrap_or(1);
+    Duration::from_secs(seconds * scale)
+}
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 type Calls = Arc<Mutex<Vec<Value>>>;
 fn uuid(n: u128) -> String {
@@ -148,7 +159,7 @@ async fn execute(f: &Fixture, path: &Path, op: SnapshotWorkflow) -> OperationRec
     );
     let (tx, _rx) = mpsc::channel(128);
     tokio::time::timeout(
-        Duration::from_secs(5),
+        scaled_deadline(5),
         request.run(
             Arc::new(f.session().await),
             Some("OpaqueRef:VM:parent".into()),
@@ -165,7 +176,7 @@ async fn recheck(f: &Fixture, path: &Path, record: OperationRecord) -> Operation
     let id = record.id;
     let (tx, _rx) = mpsc::channel(128);
     tokio::time::timeout(
-        Duration::from_secs(5),
+        scaled_deadline(5),
         MutationRequest::tracking(record).run(
             Arc::new(f.session().await),
             None,
