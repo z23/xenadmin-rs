@@ -19495,10 +19495,128 @@ async fn lab_designate_first_host_coordinator() {
         );
         entry["followed_after_ms"] = json!(started.elapsed().as_millis() as u64);
         entry["endpoint_after"] = json!(c.latest().active_endpoint().map(|e| e.to_string()));
+        // The handover restarts both toolstacks and can close the connection before the
+        // reply; the operator path rechecks the durable record once the pool is visible.
+        if entry["state"] == "OutcomeUnknown" {
+            let id = c
+                .resource_history()
+                .iter()
+                .find(|r| r.state == OperationState::OutcomeUnknown)
+                .map(|r| r.id);
+            if let Some(id) = id
+                && c.control_resource(id, xenadmin_core::OperationControl::Recheck)
+                    .is_ok()
+            {
+                settle(300, || {
+                    c.resource_history()
+                        .iter()
+                        .any(|r| r.id == id && r.state.terminal())
+                })
+                .await;
+                if let Some(row) = c.resource_history().iter().find(|r| r.id == id) {
+                    entry["recheck_state"] = json!(format!("{:?}", row.state));
+                    entry["recheck_detail"] = json!(row.detail);
+                    if row.state == OperationState::Succeeded {
+                        entry["state"] = json!("Succeeded");
+                    }
+                }
+            }
+        }
         note(&mut steps, entry);
     }
     c.close().await;
     lab.record("designate-first-host-coordinator", json!({"steps": steps}));
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// Lab utility, P09-06: attach every shared block or NFS repository that a host has left
+/// detached (for example after a host rejoined the pool), waiting for the host to advertise
+/// plug first.
+#[tokio::test]
+#[ignore]
+async fn lab_reattach_shared_repositories() {
+    use xenadmin_core::{ResourceCommand, StorageOperation};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let mut steps = Vec::new();
+    let detached = inventory
+        .details
+        .pbds
+        .values()
+        .filter(|p| p.currently_attached == Some(false))
+        .filter_map(|p| {
+            let sr = p.sr?;
+            let kind = inventory
+                .storage
+                .iter()
+                .find(|s| xenadmin_core::SrId::from(s.uuid) == sr)
+                .map(|s| s.kind.clone())?;
+            (matches!(kind.as_str(), "nfs" | "lvmoiscsi" | "lvmohba")
+                && inventory.details.storage.get(&sr).and_then(|d| d.shared) == Some(true))
+            .then_some((p.id, p.host?, sr, kind))
+        })
+        .collect::<Vec<_>>();
+    for (pbd, host, sr, kind) in detached {
+        let name = inventory
+            .storage
+            .iter()
+            .find(|s| xenadmin_core::SrId::from(s.uuid) == sr)
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let advertised = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details
+                    .storage
+                    .get(&sr)
+                    .and_then(|d| d.allowed_operations.as_ref())
+                    .is_some_and(|ops| ops.iter().any(|o| o == "plug"))
+            })
+        })
+        .await;
+        let mut entry = resource_op(
+            &c,
+            &format!("attach {name} ({kind}) on {}", inventory.hosts[&host].name),
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pbd(pbd))
+                    .unwrap(),
+                operation: StorageOperation::SetAttached {
+                    sr,
+                    host,
+                    expected_attached: false,
+                    attached: true,
+                },
+            },
+            600,
+        )
+        .await;
+        entry["plug_advertised"] = json!(advertised);
+        entry["read_back"] = json!(
+            entry["state"] == "Succeeded"
+                && settle(180, || c.latest().inventory().is_some_and(|i| {
+                    i.details
+                        .pbds
+                        .get(&pbd)
+                        .is_some_and(|p| p.currently_attached == Some(true))
+                }))
+                .await
+        );
+        note(&mut steps, entry);
+    }
+    c.close().await;
+    lab.record("reattach-shared-repositories", json!({"steps": steps}));
     for step in &steps {
         if step.get("accepted").is_some() {
             assert_eq!(step["accepted"], true, "{step}");

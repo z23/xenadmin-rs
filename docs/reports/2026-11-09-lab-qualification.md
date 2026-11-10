@@ -119,6 +119,9 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | CHAP-protected iSCSI repository with transient credentials | P09-02, P09-03, P09-06, P09-09 | Passed on the second attempt, finding 31 | The CHAP target's LUN was discovered through the coordinator with credentials supplied only for that request; a shared LVM-over-iSCSI repository was created on it through the authenticated flow (temporary Secret created, storage provisioned, Secret removed, 13 s), verified attached on both hosts with attachments that require credentials, detached on the member and then on the coordinator once the host advertised unplug, and destroyed. The first attempt's coordinator detach, submitted right after creation, was refused by the client's repository guard with a VM-worded message (finding 31); the repository it left behind was removed by the rerun's leftover cleanup. Evidence: 1794277742-iscsi-chap-repository.json (first attempt 1794277360-iscsi-chap-repository.json) |
 | Member multipath round trip | P09-12, P12-03, P09-06 | Passed on the fourth attempt, findings 32, 33, 34 | With the member empty and in maintenance, standard multipathing was enabled through the reviewed complete-host flow: five attachments detached, the host policy and dmp handler set and the same five replugged (11.6 s) while the local-cache attachment stayed attached; the member read back multipathing with the dmp handler and its LVM-over-iSCSI attachment reported two active paths of two across the appliance's two portals; multipathing was then disabled the same way (11.0 s, paths no longer reported) and the member left maintenance. The first three attempts were refused by the HA guard, refused by the local-cache guard and left outcome-unknown by the configuration check (findings 32, 33, 34); the final run first reattached the two attachments and reverted the enable that the third attempt had left behind. Evidence: 1794280183-member-multipath-round-trip.json (earlier attempts 1794278122, 1794278659 and 1794279839) |
 | ISO library over NFS | P09-04, P09-06, P09-08, P09-09 | Passed | An ISO library on the appliance's `/srv/nfs/iso` export was created through the coordinator (1.3 s), read back as a shared `iso` repository attached on both hosts with no images, rescanned, detached on the member and then the coordinator once unplug was advertised, and forgotten; the export holds no images yet, so image listing and attachment of an ISO to a guest from a library remain open. Evidence: 1794280427-iso-library-over-nfs.json |
+| Coordinator loss with HA: member takeover | P01-04, P12-10, P12-05, P12-11 | Failed on the client side, findings 35 and 36 | With HA on the shared NFS repository, the tools guest protected on the coordinator and one failure tolerated, the coordinator's domain was destroyed. The connection went stale in 31 s, but its remembered-member list held only its own endpoint, so it never followed the member; XCP-ng elected the member within two minutes and HA restarted the protected guest there within three (the pool's own messages). The old coordinator, started again with HA armed, never rejoined: its storage interface was not brought up before XAPI, so the heartbeat repository was unreachable and XAPI never started, through two power cycles. Evidence: the pool messages and hypervisor counters recorded in findings 35 and 36; the run produced no record because its restore phase unwrapped a non-current connection, which the scenario now records instead |
+| Pool recovery from a dead coordinator through the survivor | P12-14, P12-10, P09-09, P05-06 | Passed with lab repair, observations 37 and 38 | Through the surviving coordinator the client disabled HA, deleted the record of the guest whose disks were on the dead host's local storage (no disks, no snapshots left), and forgot the dead host after its domain was verified off at the hypervisor. The client's forget of the dead host's three repositories stayed refused because XAPI never advertised forget for them; `SR.forget` was issued directly as a lab repair after moving the pool default repository to the shared NFS one. Evidence: 1794314951-forget-dead-coordinator-through-survivor.json |
+| Reinstalled host rejoins by reviewed join | P13-02, P12-05 | Passed | The forgotten host was reinstalled unattended by the lab tooling (answer file fetched once, fresh host identity, XCP-ng 8.3.0 standalone) and joined into the survivor's pool through the client's reviewed join from its own connection; the member appeared on the destination and the source connection reconnected as it restarted its toolstack. Evidence: 1794315795-form-pool-reviewed-join.json |
 
 ## Findings
 
@@ -401,6 +404,39 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    exit from maintenance in the same session. The check now also accepts an iSCSI attachment
    whose configuration matches the reviewed one without `multihomelist` (unit covered), and
    the scenario reattaches anything an earlier attempt left detached before it starts.
+35. **The client remembered no member endpoint for failover.** A Ready connection recorded
+   only the endpoints it had actually used as verified members, so when the coordinator lost
+   power with HA armed the reconnect loop had nothing but the dead endpoint to try, although
+   the member's certificate was pinned and the member took over as coordinator within three
+   minutes (the host's own messages: master transition, host failed, protected guest restarted
+   on the survivor). The connection now remembers every pool host whose certificate it can
+   verify through its pinned host certificates (or the connection-wide opt-out) as a
+   verified member and failover endpoint.
+36. **A heartbeat repository on a storage network strands a rebooted host.** The HA
+   heartbeat repository was the NFS repository reached over each host's storage interface,
+   which XAPI configures only after it starts. When the old coordinator booted again with HA
+   armed, its storage interface never came up (zero transmitted packets at the hypervisor),
+   the HA daemon could not reach the statefile, and XAPI never finished starting: the host sat
+   at its configuration console with no network and never rejoined, through two power
+   cycles. Enabling HA now refuses a heartbeat repository that a host reaches over a storage
+   interface without unplug protection, naming the fix, and the takeover scenario protects
+   those interfaces first. The stranded host was recovered by forgetting it through the
+   survivor, reinstalling it unattended and rejoining it.
+37. **A dead host's local-cache repository could not be forgotten.** The storage forget and
+   destroy guards refused any repository flagged as a local cache, even after the host that
+   used it had been forgotten and no host bound it. The guard now refuses only while a host
+   still names the repository as its cache (unit covered).
+38. **Forgetting a host leaves its repositories' advertised operations stale.** After
+   `host.destroy` the dead host's local repositories kept advertising attach and detach
+   operations and never advertised forget, so the client's reviewed forget stayed refused;
+   XAPI's `SR.forget` accepted them directly. The recovery utility waits for the
+   advertisement and records it; the lab repair used the direct call and is noted as such.
+39. **A sparse appliance export ends a disk's chunk sequence early.** The Xen Orchestra
+   appliance image omits every all-zero chunk, including the trailing ones of its 20 GiB disk,
+   so the client's XVA stream verifier reached the end of the archive while still expecting
+   chunks and left the import outcome-unknown after streaming 1.9 GB. The verifier now ends a
+   disk's sequence when the next member belongs to another disk or the archive ends, and
+   accepts an omitted first chunk (unit covered).
 
 ## Console observation
 

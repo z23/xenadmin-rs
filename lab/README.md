@@ -135,6 +135,17 @@ content. A completed fixture test is not evidence of a completed live scenario.
 8. Export only sanitized reports. Private screenshots, inventories, passwords, private
    keys, packet captures and guest disk images stay outside the repository.
 
+The harness reads its inputs from the environment: `XENADMIN_LAB_MANIFEST` (the manifest),
+`XENADMIN_LAB_PASSWORD_FILE` (the lab-only root password), `XENADMIN_LAB_EVIDENCE_DIR`
+(defaults to `evidence/` beside the manifest), `XENADMIN_LAB_HOST_CONTROL=libvirt` (lets a
+scenario cut and restore a host's power through libvirt), `XENADMIN_LAB_CHAP_FILE` and
+`XENADMIN_LAB_DC_FILE` (the private appliance secrets), `XENADMIN_LAB_XOA_XVA` (a downloaded
+Xen Orchestra appliance image for the recovery gate), `XENADMIN_LAB_ENDPOINT_INDEX` (sends
+the default first-host endpoint to another manifest host, for example the surviving
+coordinator while the first host is reinstalled) and `XENADMIN_LAB_JOIN_SOURCE` (the host
+the join scenario joins into the default endpoint's pool). Secrets are read from files, never
+from the command line, and never recorded.
+
 ## Optional appliances
 
 The isolated lab has no internet access and the workstation needs no privileges beyond
@@ -165,7 +176,10 @@ before every build.
   an open target and a CHAP-protected one, each a 20 GiB sparse file on the data disk, on
   every appliance address. `--chap-file FILE` names a private one-line `user secret` file
   that is baked into the image only; the manifest records the target names, never the
-  secret. The package set then also needs `targetcli targetcli-openrc`.
+  secret. The package set then also needs `targetcli targetcli-openrc`. Each LUN's backstore
+  unit serial is pinned from the manifest (`nas.iscsi.serials`), because the kernel target
+  would otherwise generate a new serial, and so a new SCSI identity, at every boot of the
+  diskless appliance and strand every repository built on the LUN.
 - `--seed-iso FILE` (repeatable) ships ISO images on the appliance ISO; at boot they are
   copied once into `/srv/nfs/iso`, so the library exports and the SMB share below list them.
   The same export is served as the guest-readable SMB 3 share `//APPLIANCE/iso` (no accounts,
