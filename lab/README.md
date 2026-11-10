@@ -166,6 +166,11 @@ before every build.
   every appliance address. `--chap-file FILE` names a private one-line `user secret` file
   that is baked into the image only; the manifest records the target names, never the
   secret. The package set then also needs `targetcli targetcli-openrc`.
+- `--seed-iso FILE` (repeatable) ships ISO images on the appliance ISO; at boot they are
+  copied once into `/srv/nfs/iso`, so the library exports and the SMB share below list them.
+  The same export is served as the guest-readable SMB 3 share `//APPLIANCE/iso` (no accounts,
+  `map to guest`, SMB 3.0 minimum) for the SMB ISO-library rows; the package set then also
+  needs `samba-server samba-server-openrc`.
 - `nas start|status|stop|undefine --directory DIR` manages the appliance VM (1 GiB, one
   vCPU, a 64 GiB sparse data disk, NICs on the lab and storage networks). `status` prints the
   last appliance log lines.
@@ -176,8 +181,25 @@ before every build.
   The lab network's DHCP serves guests from `.200` to `.249`; an existing network gets that
   range with `virsh net-update NETWORK add ip-dhcp-range RANGE_XML --live --config`.
 
-None of this creates accounts or credentials: the appliance and the guest have no passwords
-and are reachable only on the isolated lab networks.
+- `dc-image --directory DIR --alpine-iso ISO --sha256 DIGEST --apks DIR --dc-file FILE`
+  remasters the Alpine `standard` ISO into `dc.iso`, a Samba Active Directory domain
+  controller for the directory-service rows: realm `lab.xenadmin.test`, NetBIOS domain
+  `XENADMINLAB`, host name `dc` at `.21` on the lab network with Samba's internal DNS. On
+  first boot it provisions the domain onto its 8 GiB data disk and creates the test account
+  `labuser` in the group `labadmins`; later boots reuse the provisioned domain. The package
+  set needs `samba-dc samba-server-openrc samba-client samba-winbind krb5 bind-tools
+  e2fsprogs util-linux-misc`. `--dc-file` names a private one-line file holding the
+  administrator password and the test user's password (alphanumeric, with upper and lower
+  case and a digit for the domain's complexity policy); it is baked into the image only and
+  the manifest records the realm and account names, never the passwords. The harness reads
+  the same file through `XENADMIN_LAB_DC_FILE`. Pool hosts must use the controller as their
+  DNS server to join; the directory scenario sets and restores that through the client.
+- `dc start|status|stop|undefine --directory DIR` manages the controller VM (1 GiB, one
+  vCPU, one NIC on the lab network).
+
+Apart from the domain controller's lab-only accounts, none of this creates accounts or
+credentials: the NFS appliance and the guest have no passwords, and everything is reachable
+only on the isolated lab networks.
 
 ## Cleanup and local tests
 

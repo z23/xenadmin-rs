@@ -41,6 +41,8 @@ struct LabStorage {
     nas_lab_ip: String,
     /// iSCSI target names and port offered by the appliance, when built with them.
     iscsi: Option<LabIscsi>,
+    /// ISO images the appliance seeds into its library export.
+    seed_isos: Vec<String>,
 }
 
 struct LabIscsi {
@@ -51,6 +53,17 @@ struct LabIscsi {
     chap: Option<(String, String)>,
 }
 
+/// The Samba Active Directory controller recorded in the manifest by `lab/manage.py dc-image`.
+struct LabDirectory {
+    ip: String,
+    realm: String,
+    netbios: String,
+    user: String,
+    group: String,
+    /// Administrator and test-user passwords from `XENADMIN_LAB_DC_FILE`, never recorded.
+    passwords: Option<(String, String)>,
+}
+
 struct Lab {
     id: String,
     hosts: Vec<LabHost>,
@@ -58,6 +71,7 @@ struct Lab {
     evidence: PathBuf,
     storage: Option<LabStorage>,
     guest_tools_image: Option<PathBuf>,
+    directory: Option<LabDirectory>,
 }
 
 impl Lab {
@@ -126,6 +140,14 @@ impl Lab {
                 .as_str()
                 .expect("appliance lab address")
                 .to_string(),
+            seed_isos: document["nas"]["seed_isos"]
+                .as_array()
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|x| x.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
             iscsi: document["nas"]["iscsi"].as_object().map(|i| LabIscsi {
                 open_iqn: i["open_iqn"].as_str().expect("open target").to_string(),
                 chap_iqn: i["chap_iqn"].as_str().expect("chap target").to_string(),
@@ -142,6 +164,18 @@ impl Lab {
         let guest_tools_image = document["guest_tools_image"]["path"]
             .as_str()
             .map(PathBuf::from);
+        let directory = document["dc"].as_object().map(|d| LabDirectory {
+            ip: d["ip"].as_str().expect("controller address").to_string(),
+            realm: d["realm"].as_str().expect("realm").to_string(),
+            netbios: d["netbios"].as_str().expect("netbios domain").to_string(),
+            user: d["user"].as_str().expect("test user").to_string(),
+            group: d["group"].as_str().expect("test group").to_string(),
+            passwords: std::env::var("XENADMIN_LAB_DC_FILE").ok().and_then(|path| {
+                let text = std::fs::read_to_string(path).ok()?;
+                let mut words = text.split_whitespace();
+                Some((words.next()?.to_string(), words.next()?.to_string()))
+            }),
+        });
         let password_file = std::env::var("XENADMIN_LAB_PASSWORD_FILE")
             .expect("XENADMIN_LAB_PASSWORD_FILE must name the lab-only root password file");
         let password = std::fs::read_to_string(password_file)
@@ -162,6 +196,7 @@ impl Lab {
             evidence,
             storage,
             guest_tools_image,
+            directory,
         }
     }
     fn endpoint(&self, index: usize) -> Endpoint {
@@ -17769,14 +17804,1258 @@ async fn lab_iscsi_chap_repository_with_transient_credentials() {
     }
 }
 
+/// P01-04, P12-10, P12-05, P12-11: with HA enabled on the shared heartbeat repository and the
+/// tools guest protected and resident on the coordinator, cut power to the coordinator's
+/// domain under a live session. The surviving member must take over as coordinator, the
+/// client must follow it through a remembered member endpoint without operator input, and
+/// HA must restart the protected guest on the survivor. Then start the old coordinator again,
+/// confirm it rejoins as a member, disable HA, hand the coordinator role back, restore the
+/// guest placement and restart the local-storage guest the power cut halted.
+#[tokio::test]
+#[ignore]
+async fn lab_coordinator_loss_with_ha_member_takeover() {
+    use xenadmin_core::{
+        ConnectionState, DiskPlacement, HaRestartPriority, NicPlacement, PoolOperation,
+        PowerAction, PowerState, ResourceCommand, VmCommand, VmMigration,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory.coordinator.expect("coordinator");
+    assert_eq!(
+        inventory.hosts[&coordinator].address, lab.hosts[0].ip,
+        "the first manifest host is expected to be the coordinator"
+    );
+    let member = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != coordinator)
+        .expect("member");
+    let shared: xenadmin_core::SrId = inventory
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| s.uuid.into())
+        .expect("the shared NFS repository");
+    let guest = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+        .cloned()
+        .expect("tools guest");
+    let local_guest = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .cloned();
+    let mut steps = Vec::new();
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let administration = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pool.as_ref().map(|p| p.administration.clone()))
+    };
+    let live = |c: &Connection, host: HostId| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .hosts
+                .get(&host)
+                .and_then(|h| h.metrics)
+                .and_then(|m| i.details.host_metrics.get(&m))
+                .and_then(|m| m.live)
+        })
+    };
+    let priority_of = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .vms
+                .get(&guest.id)
+                .and_then(|d| d.ha_restart_priority.clone())
+        })
+    };
+    let placement = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.vms
+                .get(&guest.id)
+                .map(|v| (v.host, v.power_state.clone()))
+        })
+    };
+    let migrate = |c: &Connection, destination: HostId| {
+        let now = c.latest().inventory().unwrap().clone();
+        let disks = now.details.vm_disks[&guest.id]
+            .iter()
+            .filter_map(|b| now.details.vbds.get(b))
+            .filter(|b| b.kind == "Disk")
+            .filter_map(|b| {
+                let vdi = b.vdi?;
+                let sr = now.details.vdis.get(&vdi)?.sr?;
+                Some(DiskPlacement {
+                    vdi,
+                    expected_sr: sr,
+                    destination_sr: sr,
+                })
+            })
+            .collect::<Vec<_>>();
+        let networks = now
+            .details
+            .vifs
+            .values()
+            .filter(|v| v.vm == Some(guest.id))
+            .filter_map(|v| {
+                let network = v.network?;
+                Some(NicPlacement {
+                    vif: v.id,
+                    expected_network: network,
+                    destination_network: network,
+                })
+            })
+            .collect::<Vec<_>>();
+        c.submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: c.latest().observe_vm(guest.id).unwrap(),
+                operation: VmMigration {
+                    destination,
+                    expected_host: now.vms[&guest.id].host,
+                    expected_affinity: None,
+                    live: true,
+                    disks,
+                    networks,
+                    transfer_network: None,
+                },
+            },
+        )
+    };
+
+    // The protected guest must be resident on the coordinator so that HA has to restart it.
+    if guest.host != Some(coordinator) {
+        let migration = migrate(&c, coordinator).expect("migration accepted");
+        let row = wait_vm_outcome(&migration, 900).await;
+        let placed = settle(120, || {
+            placement(&c) == Some((Some(coordinator), PowerState::Running))
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "move the tools guest onto the coordinator", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed}),
+        );
+    }
+    let a = administration(&c).expect("pool administration");
+    note(
+        &mut steps,
+        json!({"step": "HA before", "enabled": a.ha_enabled, "failures_to_tolerate": a.ha_failures_to_tolerate, "heartbeat_srs": a.heartbeat_srs.len()}),
+    );
+    let failures_before = a.ha_failures_to_tolerate.unwrap_or(0);
+    if a.ha_enabled != Some(true) {
+        let started = std::time::Instant::now();
+        let mut entry = resource_op(
+            &c,
+            "enable HA with the shared repository as heartbeat store",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::EnableHa {
+                    heartbeat_srs: vec![shared],
+                    expected_failures: failures_before,
+                },
+            },
+            900,
+        )
+        .await;
+        entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+        entry["read_back"] = json!(
+            settle(300, || administration(&c)
+                .is_some_and(|a| a.ha_enabled == Some(true)))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    let priority_before = priority_of(&c)
+        .as_deref()
+        .and_then(HaRestartPriority::parse)
+        .unwrap_or(HaRestartPriority::Disabled);
+    if priority_before != HaRestartPriority::Restart {
+        let mut entry = resource_op(
+            &c,
+            "protect the tools guest with the restart priority",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::SetVmRestartPriority {
+                    vm: guest.id,
+                    expected: priority_before,
+                    priority: HaRestartPriority::Restart,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] =
+            json!(settle(120, || priority_of(&c).as_deref() == Some("restart")).await);
+        note(&mut steps, entry);
+    }
+    let failures_now = administration(&c)
+        .and_then(|a| a.ha_failures_to_tolerate)
+        .unwrap_or(0);
+    if failures_now < 1 {
+        let mut entry = resource_op(
+            &c,
+            "tolerate one host failure",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::SetHaFailuresToTolerate {
+                    expected: failures_now,
+                    failures: 1,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(120, || administration(&c)
+                .is_some_and(|a| a.ha_failures_to_tolerate == Some(1)))
+            .await
+        );
+        entry["plan_exists_for"] = json!(administration(&c).and_then(|a| a.ha_plan_exists_for));
+        note(&mut steps, entry);
+    }
+    let armed = steps.iter().all(|s| {
+        s.get("accepted").is_none_or(|_| s["state"] == "Succeeded")
+            && s.get("read_back").is_none_or(|r| *r == true)
+    });
+    if !armed {
+        lab.record(
+            "coordinator-loss-with-ha-member-takeover",
+            json!({"failed": "HA preparation", "steps": steps}),
+        );
+        panic!("HA preparation failed: {steps:?}");
+    }
+
+    // Outage: cut power to the coordinator's domain under the live session.
+    let generation_before = c.latest().generation();
+    let endpoint_before = c.latest().active_endpoint().map(|e| e.to_string());
+    let remembered = c
+        .latest()
+        .verified_members()
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>();
+    let domain = lab.hosts[0].name.clone();
+    let cut_at = std::time::Instant::now();
+    virsh(&["destroy", &domain]);
+    let (stale_timeline, stale_seen) = state_timeline(&c, 300, |c| !c.latest().is_current()).await;
+    let stale_after_ms = cut_at.elapsed().as_millis() as u64;
+    let (takeover_timeline, followed) = state_timeline(&c, 1200, |c| {
+        let s = c.latest();
+        s.is_current() && s.inventory().is_some_and(|i| i.coordinator == Some(member))
+    })
+    .await;
+    let followed_after_ms = cut_at.elapsed().as_millis() as u64;
+    let endpoint_after = c.latest().active_endpoint().map(|e| e.to_string());
+    let generation_after = c.latest().generation();
+    let restarted = settle(900, || {
+        placement(&c) == Some((Some(member), PowerState::Running))
+    })
+    .await;
+    let restarted_after_ms = cut_at.elapsed().as_millis() as u64;
+    note(
+        &mut steps,
+        json!({"step": "coordinator power cut", "stale_seen": stale_seen, "stale_after_ms": stale_after_ms,
+               "followed_member_as_coordinator": followed, "followed_after_ms": followed_after_ms,
+               "endpoint_before": endpoint_before, "endpoint_after": endpoint_after, "remembered_members": remembered,
+               "generation_before": generation_before, "generation_after": generation_after,
+               "protected_guest_restarted_on_member": restarted, "restarted_after_ms": restarted_after_ms,
+               "old_coordinator_live": live(&c, coordinator),
+               "old_coordinator_enabled": c.latest().inventory().map(|i| i.hosts[&coordinator].enabled),
+               "timeline": {"stale": stale_timeline, "takeover": takeover_timeline}}),
+    );
+
+    // Return: the old coordinator boots and rejoins as a member of the surviving coordinator.
+    let start_at = std::time::Instant::now();
+    virsh(&["start", &domain]);
+    let returned = settle(900, || {
+        live(&c, coordinator) == Some(true)
+            && c.latest()
+                .inventory()
+                .is_some_and(|i| i.coordinator == Some(member) && i.hosts[&coordinator].enabled)
+    })
+    .await;
+    note(
+        &mut steps,
+        json!({"step": "old coordinator returns as a member", "read_back": returned, "after_ms": start_at.elapsed().as_millis() as u64,
+               "coordinator_now": c.latest().inventory().and_then(|i| i.coordinator).map(|h| h.to_string())}),
+    );
+
+    // Restore: disable HA, drop the priority we added, hand the coordinator role back.
+    let mut entry = resource_op(
+        &c,
+        "disable HA",
+        ResourceCommand::Pool {
+            target: pool_target(&c),
+            operation: PoolOperation::DisableHa,
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(180, || administration(&c)
+            .is_some_and(|a| a.ha_enabled == Some(false)))
+        .await
+    );
+    note(&mut steps, entry);
+    if priority_before != HaRestartPriority::Restart {
+        let mut entry = resource_op(
+            &c,
+            "remove the tools guest's restart priority",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::SetVmRestartPriority {
+                    vm: guest.id,
+                    expected: HaRestartPriority::Restart,
+                    priority: priority_before,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] =
+            json!(settle(120, || priority_of(&c).as_deref() != Some("restart")).await);
+        note(&mut steps, entry);
+    }
+    let handover_at = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "hand the coordinator role back",
+        ResourceCommand::Pool {
+            target: pool_target(&c),
+            operation: PoolOperation::DesignateCoordinator {
+                expected: member,
+                host: coordinator,
+            },
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(600, || {
+            let s = c.latest();
+            s.state() == ConnectionState::Ready
+                && s.inventory()
+                    .is_some_and(|i| i.coordinator == Some(coordinator))
+        })
+        .await
+    );
+    entry["followed_after_ms"] = json!(handover_at.elapsed().as_millis() as u64);
+    entry["endpoint_after"] = json!(c.latest().active_endpoint().map(|e| e.to_string()));
+    note(&mut steps, entry);
+
+    // Baseline: the tools guest back on the coordinator, the local-storage guest running.
+    if placement(&c).map(|p| p.0) == Some(Some(member)) {
+        let migration = migrate(&c, coordinator).expect("migration accepted");
+        let row = wait_vm_outcome(&migration, 900).await;
+        let placed = settle(120, || {
+            placement(&c) == Some((Some(coordinator), PowerState::Running))
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "move the tools guest back onto the coordinator", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed}),
+        );
+    }
+    if let Some(local) = local_guest
+        && c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms[&local.id].power_state == PowerState::Halted)
+    {
+        let start = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: c.latest().observe_vm(local.id).unwrap(),
+                    action: PowerAction::Start,
+                },
+            )
+            .expect("start accepted");
+        let row = wait_vm_outcome(&start, 300).await;
+        let running = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&local.id].power_state == PowerState::Running)
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "start the local-storage guest halted by the power cut", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": running}),
+        );
+    }
+    c.close().await;
+    lab.record(
+        "coordinator-loss-with-ha-member-takeover",
+        json!({"coordinator": lab.hosts[0].name, "member": inventory.hosts[&member].name, "steps": steps}),
+    );
+    assert!(
+        stale_seen,
+        "the connection stayed current after the coordinator lost power"
+    );
+    assert!(
+        followed,
+        "the client did not follow the member that took over as coordinator"
+    );
+    assert!(
+        restarted,
+        "HA did not restart the protected guest on the member"
+    );
+    assert!(returned, "the old coordinator did not return as a member");
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// Plain HTTP probe of a Xen Orchestra web endpoint from the workstation: reachable when
+/// the server answers with a status line, with the page title when the body carries it.
+async fn xo_probe(address: &str) -> Value {
+    let address = address.to_owned();
+    tokio::task::spawn_blocking(move || {
+        use std::io::{Read, Write};
+        let target = format!("{address}:80");
+        let Some(socket) = std::net::ToSocketAddrs::to_socket_addrs(&target)
+            .ok()
+            .and_then(|mut a| a.next())
+        else {
+            return json!({"reachable": false, "error": "unresolvable"});
+        };
+        let mut stream =
+            match std::net::TcpStream::connect_timeout(&socket, Duration::from_secs(5)) {
+                Ok(s) => s,
+                Err(e) => return json!({"reachable": false, "error": e.to_string()}),
+            };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+        if let Err(e) =
+            stream.write_all(format!("GET / HTTP/1.0\r\nHost: {address}\r\n\r\n").as_bytes())
+        {
+            return json!({"reachable": false, "error": e.to_string()});
+        }
+        let mut body = Vec::new();
+        let _ = stream.take(65536).read_to_end(&mut body);
+        let text = String::from_utf8_lossy(&body);
+        let status = text.lines().next().unwrap_or_default().to_owned();
+        let title = text
+            .split("<title>")
+            .nth(1)
+            .and_then(|t| t.split("</title>").next())
+            .map(|t| t.trim().to_owned());
+        json!({"reachable": status.starts_with("HTTP/"), "status": status, "title": title, "bytes": body.len()})
+    })
+    .await
+    .unwrap_or_else(|e| json!({"reachable": false, "error": e.to_string()}))
+}
+
+/// The first IPv4 address the XO appliance's guest agent reports.
+fn xo_address(c: &Connection, xo: xenadmin_core::VmId) -> Option<String> {
+    c.latest().inventory().and_then(|i| {
+        let g = i.details.vms.get(&xo)?.guest_metrics?;
+        let m = i.details.guest_metrics.get(&g)?;
+        m.networks
+            .iter()
+            .filter(|(k, _)| k.ends_with("/ip") || k.contains("/ipv4/"))
+            .map(|(_, v)| v.clone())
+            .find(|v| v.parse::<std::net::Ipv4Addr>().is_ok())
+    })
+}
+
+/// Polls the appliance's web endpoint until it is reachable (or not, when `expect` is
+/// false) within `seconds`; without a reported address, "unreachable" is immediate.
+async fn xo_reachable_within(
+    c: &Connection,
+    xo: xenadmin_core::VmId,
+    seconds: u64,
+    expect: bool,
+) -> Value {
+    let started = std::time::Instant::now();
+    let mut last = json!(null);
+    let ok = tokio::time::timeout(deadline(seconds), async {
+        loop {
+            if let Some(a) = xo_address(c, xo) {
+                last = xo_probe(&a).await;
+                if last["reachable"] == expect {
+                    return true;
+                }
+            } else if !expect {
+                last = json!({"reachable": false, "error": "no address reported"});
+                return true;
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    json!({"as_expected": ok, "after_ms": started.elapsed().as_millis() as u64, "address": xo_address(c, xo), "probe": last})
+}
+
+/// M2 recovery gate, P11-09, P03-01, P06-01: import the Xen Orchestra appliance image onto
+/// the shared repository (reused if a VM named XOA already exists), size it for the lab host,
+/// start it and confirm XO answers over HTTP from the workstation. Then shut it down so XO is
+/// unreachable and, through the direct host connection only, locate the XO VM by name and
+/// description, start it, open its console and confirm XO answers again. The appliance stays
+/// running for later scenarios.
+#[tokio::test]
+#[ignore]
+async fn lab_xo_vm_recovery_gate() {
+    use xenadmin_core::{
+        MemoryLimits, PowerAction, PowerState, TransferAction, TransferFile, TransferRequest,
+        VmCommand, VmSettingEdit, VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    let Ok(image) = std::env::var("XENADMIN_LAB_XOA_XVA") else {
+        eprintln!("XENADMIN_LAB_XOA_XVA not set; skipping");
+        return;
+    };
+    let image = std::path::PathBuf::from(image);
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let shared: xenadmin_core::SrId = inventory
+        .storage
+        .iter()
+        .find(|s| s.name.starts_with("lab-nfs-"))
+        .map(|s| s.uuid.into())
+        .expect("the shared NFS repository");
+    let mut steps = Vec::new();
+    let find_xo = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.guests()
+                .find(|v| v.name == "XOA" && !v.is_template)
+                .map(|v| (v.id, v.description.clone(), v.host, v.power_state.clone()))
+        })
+    };
+    let xo = if let Some((id, _, _, _)) = find_xo(&c) {
+        note(
+            &mut steps,
+            json!({"step": "import the Xen Orchestra appliance", "reused": id.to_string()}),
+        );
+        id
+    } else {
+        let started = std::time::Instant::now();
+        let import = c
+            .transfer(
+                OperationId::new(),
+                c.latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                TransferRequest {
+                    action: TransferAction::ImportXva { sr: shared },
+                    file: TransferFile::source(&image).expect("inspect archive"),
+                },
+            )
+            .expect("import accepted");
+        let outcome = wait_outcome(&import, 3600).await;
+        let imported = outcome.transfer_created.vms.first().copied();
+        let visible = settle(120, || {
+            imported.is_some_and(|id| {
+                c.latest()
+                    .inventory()
+                    .is_some_and(|i| i.vms.get(&id).is_some_and(|v| v.name == "XOA"))
+            })
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "import the Xen Orchestra appliance", "accepted": true, "state": format!("{:?}", outcome.state), "detail": outcome.detail,
+                   "elapsed_ms": started.elapsed().as_millis() as u64, "read_back": visible,
+                   "image_bytes": std::fs::metadata(&image).map(|m| m.len()).ok(), "created_vms": outcome.transfer_created.vms.len()}),
+        );
+        imported.expect("imported XO VM")
+    };
+
+    // The appliance ships with 4 GiB; the nested lab hosts have 8 GiB, so size it down while halted.
+    let target: u64 = 2 * 1024 * 1024 * 1024;
+    let details = c.latest().inventory().unwrap().details.vms[&xo].clone();
+    if find_xo(&c).map(|x| x.3) == Some(PowerState::Halted)
+        && details.memory_static_max.is_some_and(|m| m > target)
+    {
+        let previous = MemoryLimits {
+            static_min: details.memory_static_min.unwrap_or(target),
+            dynamic_min: details.memory_dynamic_min.unwrap_or(target),
+            dynamic_max: details.memory_dynamic_max.unwrap_or(target),
+            static_max: details.memory_static_max.unwrap_or(target),
+        };
+        let patch = VmSettingsPatch::new(vec![VmSettingEdit::Memory {
+            previous: previous.clone(),
+            value: MemoryLimits {
+                static_min: previous.static_min.min(target),
+                dynamic_min: target,
+                dynamic_max: target,
+                static_max: target,
+            },
+        }])
+        .unwrap();
+        let edit = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Configure {
+                    vm: c.latest().observe_vm(xo).unwrap(),
+                    patch,
+                },
+            )
+            .expect("memory edit accepted");
+        let row = wait_vm_outcome(&edit, 300).await;
+        let read = settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.details.vms[&xo].memory_static_max == Some(target))
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "size the appliance for the lab host", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": read, "previous_static_max": previous.static_max, "static_max": target}),
+        );
+    }
+    let mut power = Vec::new();
+
+    // XO up: start the appliance if needed and wait for its web endpoint.
+    if find_xo(&c).map(|x| x.3) == Some(PowerState::Halted) {
+        power.push(power_to(&c, xo, PowerAction::Start, PowerState::Running).await);
+    }
+    let up = xo_reachable_within(&c, xo, 900, true).await;
+    note(
+        &mut steps,
+        json!({"step": "XO answers over HTTP", "read_back": up["as_expected"], "probe": up}),
+    );
+
+    // XO unreachable: a clean shutdown through the guest agent, hard if not advertised.
+    let shutdown = power_to(&c, xo, PowerAction::CleanShutdown, PowerState::Halted).await;
+    let clean = shutdown["reached"] == true;
+    power.push(shutdown);
+    if !clean {
+        power.push(power_to(&c, xo, PowerAction::HardShutdown, PowerState::Halted).await);
+    }
+    let down = xo_reachable_within(&c, xo, 120, false).await;
+    note(
+        &mut steps,
+        json!({"step": "XO unreachable after the shutdown", "read_back": down["as_expected"], "clean_shutdown": clean, "probe": down}),
+    );
+
+    // The gate: with XO down, locate the XO VM through the direct connection, start it,
+    // open its console and wait for XO to answer again.
+    let located = find_xo(&c);
+    note(
+        &mut steps,
+        json!({"step": "locate the XO VM with XO unreachable", "read_back": located.as_ref().is_some_and(|(_, d, _, _)| d.contains("Xen Orchestra")),
+               "name": "XOA", "description": located.as_ref().map(|x| x.1.clone()), "power_state": located.as_ref().map(|x| format!("{:?}", x.3))}),
+    );
+    let start_at = std::time::Instant::now();
+    power.push(power_to(&c, xo, PowerAction::Start, PowerState::Running).await);
+    let (console_state, frame_file) = match c
+        .latest()
+        .observe_vm(xo)
+        .map_err(|e| e.to_string())
+        .and_then(|target| c.open_console(target).map_err(|e| e.to_string()))
+    {
+        Ok(console) => {
+            let got = tokio::time::timeout(deadline(120), async {
+                loop {
+                    let snapshot = console.latest();
+                    if snapshot.state == xenadmin_core::ConsoleState::Connected
+                        && snapshot.frame.is_some()
+                    {
+                        return true;
+                    }
+                    if matches!(snapshot.state, xenadmin_core::ConsoleState::Failed(_)) {
+                        return false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap_or(false);
+            // Give the appliance a moment to draw its boot output, then keep that frame.
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            let digest = console
+                .latest()
+                .frame
+                .as_ref()
+                .map(|frame| frame_digest(frame))
+                .unwrap_or_default();
+            let saved = got
+                .then(|| save_frame(&lab, &console, "xo-vm-console"))
+                .flatten();
+            let state = format!("{:?}", console.latest().state);
+            console.close();
+            (
+                json!({"connected": got, "state": state, "frame_digest": digest}),
+                saved,
+            )
+        }
+        Err(error) => (json!({"connected": false, "error": error}), None),
+    };
+    let back = xo_reachable_within(&c, xo, 900, true).await;
+    note(
+        &mut steps,
+        json!({"step": "start the XO VM, open its console and wait for XO", "read_back": back["as_expected"] == true && console_state["connected"] == true,
+               "console": console_state, "console_frame_file": frame_file, "probe": back, "recovered_after_ms": start_at.elapsed().as_millis() as u64}),
+    );
+    c.close().await;
+    lab.record(
+        "xo-vm-recovery-gate",
+        json!({"vm": xo.to_string(), "image": image.file_name().map(|f| f.to_string_lossy().into_owned()), "power": power, "steps": steps}),
+    );
+    for entry in power.iter().filter(|e| e["action"] == "Start") {
+        assert_eq!(entry["reached"], true, "{entry}");
+    }
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// The pool's security overview through a fresh inspection.
+async fn security_overview(
+    c: &Connection,
+    pool: xenadmin_core::PoolId,
+) -> Result<xenadmin_core::SecurityOverview, String> {
+    use xenadmin_core::{PoolSecurityQuery, PoolSecurityResult};
+    let target = c
+        .latest()
+        .observe_resource(ResourceTarget::Pool(pool))
+        .map_err(|e| e.to_string())?;
+    let discovery = c
+        .inspect_pool_security(target, PoolSecurityQuery::Overview)
+        .map_err(|e| e.to_string())?;
+    match security_result(&discovery, 120).await? {
+        PoolSecurityResult::Overview(o) => Ok(o),
+        other => Err(format!("unexpected result {other:?}")),
+    }
+}
+
+/// Waits for a pool security inspection to answer.
+async fn security_result(
+    discovery: &xenadmin_core::PoolSecurityDiscovery,
+    seconds: u64,
+) -> Result<xenadmin_core::PoolSecurityResult, String> {
+    tokio::time::timeout(deadline(seconds), async {
+        loop {
+            if let Some(result) = discovery.latest() {
+                return result;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("security inspection timed out".into()))
+}
+
+/// P13-09, P13-10, P13-11, P10-11: point both pool hosts' management interfaces at the lab
+/// domain controller for DNS, join the pool to the lab Active Directory with transient
+/// administrator credentials, resolve the test user and group, grant them access, make the
+/// user read-only, connect as that user and confirm a write is refused, then remove the
+/// subjects, leave the directory removing the machine accounts, and restore the DNS. Leftover
+/// subjects or a joined pool from an earlier attempt are cleaned up first.
+#[tokio::test]
+#[ignore]
+async fn lab_directory_join_subjects_and_roles() {
+    use xenadmin_core::{
+        ConnectionState, Credentials, ManagementInterface, ManagementNetworkOperation,
+        PoolOperation, PoolSecurityOperation, PoolSecurityQuery, PoolSecurityResult,
+        PoolSensitiveChange, ResourceCommand, VmCommand, VmSettingEdit, VmSettingsPatch,
+    };
+    let lab = Lab::load();
+    let Some(dir) = lab.directory.as_ref() else {
+        eprintln!("no domain controller in the manifest; skipping");
+        return;
+    };
+    let Some((admin_password, user_password)) = dir.passwords.clone() else {
+        eprintln!("XENADMIN_LAB_DC_FILE not set; skipping");
+        return;
+    };
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let mut steps = Vec::new();
+    let pool_target = |c: &Connection| {
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap()
+    };
+    let summary = |o: &xenadmin_core::SecurityOverview| {
+        json!({"directory_hosts": o.directory_hosts.iter().map(|h| json!({"host": inventory.hosts.get(&h.host).map(|x| x.name.clone()), "auth_type": h.auth_type, "service_name": h.service_name})).collect::<Vec<_>>(),
+               "subjects": o.subjects.iter().map(|s| json!({"name": s.name, "roles": s.roles.iter().map(|r| o.roles.iter().find(|x| x.id == *r).map(|x| x.name.clone())).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+               "roles": o.roles.iter().map(|r| r.name.clone()).collect::<Vec<_>>(), "rbac_available": o.rbac_available, "errors": o.errors})
+    };
+
+    // 1. DNS: each host's management interface points at the controller (restored at the end).
+    let management = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .map(|i| {
+                i.details
+                    .pifs
+                    .values()
+                    .filter(|p| p.management == Some(true))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let dns_of = |c: &Connection, pif: xenadmin_core::PifId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pifs.get(&pif).map(|p| p.dns.clone()))
+    };
+    let mut restore = Vec::new();
+    for pif in management(&c) {
+        let Some(host) = pif.host else { continue };
+        let host_name = inventory.hosts[&host].name.clone();
+        let interface = ManagementInterface::from_inventory(&pif).expect("management interface");
+        if interface.ipv4.dns == dir.ip {
+            note(
+                &mut steps,
+                json!({"step": format!("point {host_name} at the controller for DNS"), "skipped": "already set"}),
+            );
+            restore.push((host, interface));
+            continue;
+        }
+        let mut configuration = interface.ipv4.clone();
+        configuration.dns = dir.ip.clone();
+        let mut entry = resource_op(
+            &c,
+            &format!("point {host_name} at the controller for DNS"),
+            ResourceCommand::ManagementNetwork {
+                host: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Host(host))
+                    .unwrap(),
+                operation: Box::new(ManagementNetworkOperation::ConfigureIpv4 {
+                    interface: interface.clone(),
+                    configuration,
+                }),
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(180, || dns_of(&c, pif.id).as_deref()
+                == Some(dir.ip.as_str()))
+            .await
+        );
+        entry["dns_before"] = json!(interface.ipv4.dns);
+        note(&mut steps, entry);
+        restore.push((host, interface));
+    }
+
+    // 2. Leftovers: subjects or a joined pool from an earlier attempt.
+    let before = security_overview(&c, pool)
+        .await
+        .expect("security overview");
+    note(
+        &mut steps,
+        json!({"step": "security before", "overview": summary(&before)}),
+    );
+    for subject in &before.subjects {
+        let mut entry = resource_op(
+            &c,
+            &format!("remove leftover subject {}", subject.name),
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::Security(PoolSecurityOperation::RemoveSubject {
+                    subject: subject.id,
+                    expected_identifier: subject.identifier.clone(),
+                    expected_roles: subject.roles.clone(),
+                }),
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(true);
+        note(&mut steps, entry);
+    }
+    let before = security_overview(&c, pool)
+        .await
+        .expect("security overview");
+    if before.directory_hosts.iter().any(|h| h.auth_type == "AD") {
+        let entry = resource_op(
+            &c,
+            "leave the directory joined by an earlier attempt",
+            ResourceCommand::PoolSensitive {
+                target: pool_target(&c),
+                change: PoolSensitiveChange::LeaveDirectory {
+                    expected_hosts: before.directory_hosts.clone(),
+                    credentials: Credentials::new("Administrator".into(), admin_password.clone()),
+                },
+            },
+            600,
+        )
+        .await;
+        note(&mut steps, entry);
+    }
+
+    // 3. Join with transient administrator credentials.
+    let before = security_overview(&c, pool)
+        .await
+        .expect("security overview");
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "join the lab Active Directory",
+        ResourceCommand::PoolSensitive {
+            target: pool_target(&c),
+            change: PoolSensitiveChange::JoinDirectory {
+                domain: dir.realm.clone(),
+                expected_hosts: before.directory_hosts.clone(),
+                credentials: Credentials::new("Administrator".into(), admin_password.clone()),
+            },
+        },
+        900,
+    )
+    .await;
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    let joined = security_overview(&c, pool)
+        .await
+        .expect("security overview");
+    entry["read_back"] = json!(
+        !joined.directory_hosts.is_empty()
+            && joined
+                .directory_hosts
+                .iter()
+                .all(|h| h.auth_type == "AD" && h.service_name.eq_ignore_ascii_case(&dir.realm))
+    );
+    entry["overview"] = summary(&joined);
+    let joined_ok = entry["state"] == "Succeeded" && entry["read_back"] == true;
+    note(&mut steps, entry);
+
+    let mut user_subject = None;
+    if joined_ok {
+        // 4. Resolve and add the user and the group, then make the user read-only.
+        let read_only = joined
+            .roles
+            .iter()
+            .find(|r| r.name == "read-only")
+            .map(|r| r.id);
+        let pool_admin = joined
+            .roles
+            .iter()
+            .find(|r| r.name == "pool-admin")
+            .map(|r| r.id);
+        for (kind, name) in [("user", dir.user.clone()), ("group", dir.group.clone())] {
+            let query = format!("{}\\{}", dir.netbios, name);
+            let resolved = match c
+                .inspect_pool_security(
+                    pool_target(&c),
+                    PoolSecurityQuery::ResolveSubject {
+                        name: query.clone(),
+                    },
+                )
+                .map_err(|e| e.to_string())
+            {
+                Ok(d) => security_result(&d, 120).await,
+                Err(e) => Err(e),
+            };
+            let (identifier, resolved_name) = match &resolved {
+                Ok(PoolSecurityResult::Subject {
+                    identifier, name, ..
+                }) => (Some(identifier.clone()), Some(name.clone())),
+                _ => (None, None),
+            };
+            note(
+                &mut steps,
+                json!({"step": format!("resolve the {kind} {query}"), "read_back": identifier.is_some(), "name": resolved_name, "identifier": identifier, "error": resolved.as_ref().err()}),
+            );
+            let Some(identifier) = identifier else {
+                continue;
+            };
+            let mut entry = resource_op(
+                &c,
+                &format!("grant the {kind} access"),
+                ResourceCommand::Pool {
+                    target: pool_target(&c),
+                    operation: PoolOperation::Security(PoolSecurityOperation::AddSubject {
+                        identifier: identifier.clone(),
+                    }),
+                },
+                300,
+            )
+            .await;
+            let now = security_overview(&c, pool)
+                .await
+                .expect("security overview");
+            let subject = now
+                .subjects
+                .iter()
+                .find(|s| s.identifier == identifier)
+                .cloned();
+            entry["read_back"] = json!(subject.is_some());
+            entry["roles_after_creation"] = json!(subject.as_ref().map(|s| {
+                s.roles
+                    .iter()
+                    .map(|r| {
+                        now.roles
+                            .iter()
+                            .find(|x| x.id == *r)
+                            .map(|x| x.name.clone())
+                    })
+                    .collect::<Vec<_>>()
+            }));
+            note(&mut steps, entry);
+            if kind == "user" {
+                user_subject = subject;
+            }
+        }
+        if let (Some(subject), Some(read_only), Some(pool_admin)) =
+            (user_subject.clone(), read_only, pool_admin)
+        {
+            let mut roles = subject.roles.clone();
+            for (label, role, grant) in [
+                ("grant the user the read-only role", read_only, true),
+                ("remove the user's pool-admin role", pool_admin, false),
+            ] {
+                if grant == roles.contains(&role) {
+                    note(
+                        &mut steps,
+                        json!({"step": label, "skipped": "already in that state"}),
+                    );
+                    continue;
+                }
+                let mut entry = resource_op(
+                    &c,
+                    label,
+                    ResourceCommand::Pool {
+                        target: pool_target(&c),
+                        operation: PoolOperation::Security(
+                            PoolSecurityOperation::ChangeSubjectRole {
+                                subject: subject.id,
+                                expected_identifier: subject.identifier.clone(),
+                                expected_roles: roles.clone(),
+                                role,
+                                grant,
+                            },
+                        ),
+                    },
+                    300,
+                )
+                .await;
+                let now = security_overview(&c, pool)
+                    .await
+                    .expect("security overview");
+                let after = now
+                    .subjects
+                    .iter()
+                    .find(|s| s.id == subject.id)
+                    .map(|s| s.roles.clone())
+                    .unwrap_or_default();
+                entry["read_back"] = json!(after.contains(&role) == grant);
+                entry["roles_after"] = json!(
+                    after
+                        .iter()
+                        .map(|r| now
+                            .roles
+                            .iter()
+                            .find(|x| x.id == *r)
+                            .map(|x| x.name.clone()))
+                        .collect::<Vec<_>>()
+                );
+                note(&mut steps, entry);
+                roles = after;
+            }
+        }
+
+        // 5. Connect as the directory user: Ready with read-only permissions, a write refused.
+        let (mut options, _) = pinned_options(&lab.endpoint(0)).await;
+        options.request_timeout = Duration::from_secs(60);
+        let user_login = format!("{}\\{}", dir.netbios, dir.user);
+        let as_user = backend.connect(
+            options,
+            Credentials::new(user_login.clone(), user_password.clone()),
+        );
+        let ready = as_user
+            .wait_ready(deadline(180))
+            .await
+            .map_err(|e| e.to_string());
+        let snapshot = as_user.latest();
+        let state = format!("{:?}", snapshot.state());
+        let error = snapshot.error().map(str::to_owned);
+        let permissions = {
+            let p = snapshot.session_permissions();
+            json!({"roles": p.roles(), "permission_count": p.permission_count()})
+        };
+        let guest = snapshot.inventory().and_then(|i| {
+            i.guests()
+                .find(|v| v.name.starts_with("lab-guest-"))
+                .map(|v| (v.id, v.description.clone()))
+        });
+        drop(snapshot);
+        let refused = if let Some((id, description)) = guest {
+            match as_user.latest().observe_vm(id) {
+                Ok(vm) => as_user
+                    .submit(
+                        OperationId::new(),
+                        VmCommand::Configure {
+                            vm,
+                            patch: VmSettingsPatch::new(vec![VmSettingEdit::Description {
+                                previous: description.clone(),
+                                value: format!("{description} (must not apply)"),
+                            }])
+                            .unwrap(),
+                        },
+                    )
+                    .map(
+                        |op| json!({"accepted": true, "state": format!("{:?}", op.latest().state)}),
+                    )
+                    .unwrap_or_else(|e| json!({"accepted": false, "error": e.to_string()})),
+                Err(e) => json!({"accepted": false, "error": e.to_string()}),
+            }
+        } else {
+            json!({"skipped": "no lab guest"})
+        };
+        as_user.close().await;
+        note(
+            &mut steps,
+            json!({"step": "connect as the directory user", "read_back": ready.is_ok() && state == "Ready" && refused["accepted"] == false,
+                   "login": user_login, "state": state, "error": error, "permissions": permissions, "write_attempt": refused}),
+        );
+
+        // 6. Remove the subjects and leave the directory, removing the machine accounts.
+        let now = security_overview(&c, pool)
+            .await
+            .expect("security overview");
+        for subject in &now.subjects {
+            let mut entry = resource_op(
+                &c,
+                &format!("remove the subject {}", subject.name),
+                ResourceCommand::Pool {
+                    target: pool_target(&c),
+                    operation: PoolOperation::Security(PoolSecurityOperation::RemoveSubject {
+                        subject: subject.id,
+                        expected_identifier: subject.identifier.clone(),
+                        expected_roles: subject.roles.clone(),
+                    }),
+                },
+                300,
+            )
+            .await;
+            let after = security_overview(&c, pool)
+                .await
+                .expect("security overview");
+            entry["read_back"] = json!(!after.subjects.iter().any(|s| s.id == subject.id));
+            note(&mut steps, entry);
+        }
+        let now = security_overview(&c, pool)
+            .await
+            .expect("security overview");
+        let started = std::time::Instant::now();
+        let mut entry = resource_op(
+            &c,
+            "leave the directory and remove the machine accounts",
+            ResourceCommand::PoolSensitive {
+                target: pool_target(&c),
+                change: PoolSensitiveChange::LeaveDirectory {
+                    expected_hosts: now.directory_hosts.clone(),
+                    credentials: Credentials::new("Administrator".into(), admin_password.clone()),
+                },
+            },
+            900,
+        )
+        .await;
+        entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+        let left = security_overview(&c, pool)
+            .await
+            .expect("security overview");
+        entry["read_back"] = json!(left.directory_hosts.iter().all(|h| h.auth_type.is_empty()));
+        entry["overview"] = summary(&left);
+        note(&mut steps, entry);
+    }
+
+    // 7. Restore the hosts' DNS.
+    for (host, interface) in restore {
+        if interface.ipv4.dns == dir.ip {
+            continue;
+        }
+        let host_name = inventory.hosts[&host].name.clone();
+        let current = management(&c)
+            .into_iter()
+            .find(|p| p.id == interface.pif)
+            .and_then(|p| ManagementInterface::from_inventory(&p));
+        let Some(current) = current else { continue };
+        let mut entry = resource_op(
+            &c,
+            &format!("restore {host_name}'s DNS"),
+            ResourceCommand::ManagementNetwork {
+                host: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Host(host))
+                    .unwrap(),
+                operation: Box::new(ManagementNetworkOperation::ConfigureIpv4 {
+                    interface: current,
+                    configuration: interface.ipv4.clone(),
+                }),
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            settle(180, || dns_of(&c, interface.pif)
+                == Some(interface.ipv4.dns.clone()))
+            .await
+        );
+        note(&mut steps, entry);
+    }
+    let _ = ConnectionState::Ready;
+    c.close().await;
+    lab.record(
+        "directory-join-subjects-and-roles",
+        json!({"controller": dir.ip, "realm": dir.realm, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
 /// P09-04, P09-06, P09-08, P09-09: create an ISO library over NFS on the lab appliance's
 /// `/srv/nfs/iso` export through the coordinator, confirm it is listed as a shared ISO
-/// repository attached on both hosts, rescan it and read back its image list, then detach it
-/// everywhere, coordinator last, and forget it. A library left by an earlier attempt is
-/// forgotten first.
+/// repository attached on both hosts, rescan it and read back its image list (the images
+/// the appliance seeds must be listed), then detach it everywhere, coordinator last, and
+/// forget it. A library left by an earlier attempt is forgotten first.
 #[tokio::test]
 #[ignore]
 async fn lab_iso_library_over_nfs() {
+    iso_library_round_trip("nfs").await;
+}
+
+/// P09-04, P09-06, P09-08, P09-09: the same round trip over the appliance's guest-readable
+/// SMB 3 share `//APPLIANCE/iso`, created through the explicit SMB 3.0 path without
+/// credentials.
+#[tokio::test]
+#[ignore]
+async fn lab_iso_library_over_smb() {
+    iso_library_round_trip("smb").await;
+}
+
+async fn iso_library_round_trip(transport: &str) {
     use xenadmin_core::{NfsVersion, ResourceCommand, StorageLocation, StorageOperation};
     let lab = Lab::load();
     let storage = lab
@@ -17812,7 +19091,7 @@ async fn lab_iso_library_over_nfs() {
         );
         remove_repository(&c, &inventory, sr, &leftover, false, &mut steps).await;
     }
-    let name = format!("lab-iso-{stamp}");
+    let name = format!("lab-iso-{transport}-{stamp}");
     let find_sr = |c: &Connection| {
         c.latest().inventory().and_then(|i| {
             i.storage
@@ -17821,10 +19100,23 @@ async fn lab_iso_library_over_nfs() {
                 .map(|s| xenadmin_core::SrId::from(s.uuid))
         })
     };
+    let location = if transport == "smb" {
+        StorageLocation::IsoSmb {
+            server: storage.nas_ip.clone(),
+            share: "iso".into(),
+            path: String::new(),
+        }
+    } else {
+        StorageLocation::IsoNfs {
+            server: storage.nas_ip.clone(),
+            path: "/srv/nfs/iso".into(),
+            version: NfsVersion::Automatic,
+        }
+    };
     let started = std::time::Instant::now();
     let mut entry = resource_op(
         &c,
-        "create the ISO library over NFS",
+        &format!("create the ISO library over {}", transport.to_uppercase()),
         ResourceCommand::Storage {
             target: c
                 .latest()
@@ -17833,12 +19125,8 @@ async fn lab_iso_library_over_nfs() {
             operation: StorageOperation::Create {
                 host: coordinator,
                 name: name.clone(),
-                description: "ISO library on the lab appliance".into(),
-                location: StorageLocation::IsoNfs {
-                    server: storage.nas_ip.clone(),
-                    path: "/srv/nfs/iso".into(),
-                    version: NfsVersion::Automatic,
-                },
+                description: format!("ISO library on the lab appliance over {transport}"),
+                location,
                 hba_device: None,
                 local_device: None,
             },
@@ -17851,7 +19139,7 @@ async fn lab_iso_library_over_nfs() {
     note(&mut steps, entry);
     let Some(sr) = find_sr(&c) else {
         lab.record(
-            "iso-library-over-nfs",
+            &format!("iso-library-over-{transport}"),
             json!({"appliance": storage.nas_ip, "failed": "library not listed", "steps": steps}),
         );
         panic!("library not listed: {steps:?}");
@@ -17865,6 +19153,7 @@ async fn lab_iso_library_over_nfs() {
                 "shared": d.and_then(|d| d.shared),
                 "attachments": i.details.pbds.values().filter(|p| p.sr == Some(sr)).map(|p| json!({"host": p.host.and_then(|h| i.hosts.get(&h)).map(|h| h.name.clone()), "attached": p.currently_attached})).collect::<Vec<_>>(),
                 "images": i.details.sr_disks.get(&sr).map_or(0, Vec::len),
+                "image_names": i.details.sr_disks.get(&sr).map(|v| v.iter().filter_map(|d| i.details.vdis.get(d).map(|x| x.name.clone())).collect::<Vec<_>>()),
             })
         })
     };
@@ -17902,12 +19191,33 @@ async fn lab_iso_library_over_nfs() {
         300,
     )
     .await;
+    let seeded = settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            let names = i
+                .details
+                .sr_disks
+                .get(&sr)
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|d| i.details.vdis.get(d).map(|x| x.name.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            storage
+                .seed_isos
+                .iter()
+                .all(|seed| names.iter().any(|n| n == seed))
+        })
+    })
+    .await;
     entry["library"] = json!(library(&c));
+    entry["read_back"] = json!(seeded);
+    entry["expected_images"] = json!(storage.seed_isos);
     note(&mut steps, entry);
     remove_repository(&c, &inventory, sr, &name, false, &mut steps).await;
     c.close().await;
     lab.record(
-        "iso-library-over-nfs",
+        &format!("iso-library-over-{transport}"),
         json!({"appliance": storage.nas_ip, "repository": name, "steps": steps}),
     );
     for step in &steps {

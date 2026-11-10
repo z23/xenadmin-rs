@@ -1,4 +1,5 @@
 import ipaddress
+import pathlib
 import json
 import tarfile
 import io
@@ -50,6 +51,20 @@ class ApplianceTests(unittest.TestCase):
         self.assertTrue(link.issym())
         self.assertEqual(link.linkname, "/etc/init.d/local")
 
+    def test_nas_overlay_seeds_the_iso_export_and_shares_it_over_smb3(self):
+        m = manifest()
+        appliance.ensure_nas(m)
+        with tarfile.open(fileobj=io.BytesIO(appliance.nas_overlay(m)), mode="r:gz") as tar:
+            start = tar.extractfile("etc/local.d/nas.start").read().decode()
+            smb = tar.extractfile("etc/samba/smb.conf").read().decode()
+            conf = tar.extractfile("etc/conf.d/samba").read().decode()
+        self.assertIn("/media/*/extra-iso", start)
+        self.assertIn("rc-service samba start", start)
+        self.assertIn("path = /srv/nfs/iso", smb)
+        self.assertIn("guest ok = yes", smb)
+        self.assertIn("server min protocol = SMB3_00", smb)
+        self.assertEqual(conf, 'daemon_list="smbd"\n')
+
     def test_nas_overlay_brings_up_iscsi_targets_and_keeps_the_chap_secret_private(self):
         m = manifest()
         nas = appliance.ensure_nas(m)
@@ -64,6 +79,31 @@ class ApplianceTests(unittest.TestCase):
         self.assertEqual(chap, "labchap s3cret\n")
         self.assertEqual(mode & 0o777, 0o600)
         self.assertNotIn("s3cret", json.dumps(m))
+
+    def test_dc_overlay_provisions_the_domain_once_and_keeps_the_passwords_private(self):
+        m = manifest()
+        dc = appliance.ensure_dc(m)
+        self.assertEqual(dc["ip"], "192.168.254.21")
+        with tarfile.open(fileobj=io.BytesIO(appliance.dc_overlay(m, ("Adm1nSecretXYZ", "Us3rSecretXYZ"))), mode="r:gz") as tar:
+            start = tar.extractfile("etc/local.d/dc.start").read().decode()
+            hosts = tar.extractfile("etc/hosts").read().decode()
+            conf = tar.extractfile("etc/conf.d/samba").read().decode()
+            secret = tar.extractfile("etc/lab-dc").read().decode()
+            mode = tar.getmember("etc/lab-dc").mode
+        self.assertIn("--realm=LAB.XENADMIN.TEST --domain=XENADMINLAB --server-role=dc", start)
+        self.assertIn("--host-ip=192.168.254.21", start)
+        self.assertIn("sam.ldb", start)
+        self.assertIn("samba-tool user create labuser", start)
+        self.assertIn("192.168.254.21 dc.lab.xenadmin.test dc", hosts)
+        self.assertEqual(conf, 'daemon_list="samba"\n')
+        self.assertEqual(secret, "Adm1nSecretXYZ Us3rSecretXYZ\n")
+        self.assertEqual(mode & 0o777, 0o600)
+        self.assertNotIn("Adm1nSecretXYZ", start)
+        self.assertNotIn("Adm1nSecretXYZ", json.dumps(m))
+        dc["iso"] = "/tmp/lab/dc.iso"
+        xml = appliance.dc_domain_xml(m, pathlib.Path("/tmp/lab"))
+        self.assertIn('serial>lab-dc<', xml)
+        self.assertEqual(xml.count("<interface"), 1)
 
     def test_guest_overlay_ships_the_agent_service_and_dhcp(self):
         with tarfile.open(fileobj=io.BytesIO(appliance.guest_overlay()), mode="r:gz") as tar:

@@ -22,8 +22,9 @@ from pathlib import Path
 
 import manage
 
-COMMANDS = {"storage-network", "nas-image", "nas", "guest-image"}
+COMMANDS = {"storage-network", "nas-image", "nas", "guest-image", "dc-image", "dc"}
 NAS_IP_OFFSET = 20
+DC_IP_OFFSET = 21
 
 
 def _mac():
@@ -161,6 +162,103 @@ def _interfaces(entries):
     return "\n".join(lines)
 
 
+def ensure_dc(manifest):
+    """Manifest entry for the Samba Active Directory domain controller appliance."""
+    dc = manifest.get("dc")
+    if dc is None:
+        subnet = ipaddress.IPv4Network(manifest["subnet"])
+        dc = manifest["dc"] = {
+            "name": manifest["name"] + "-dc",
+            "uuid": str(uuid.uuid4()),
+            "mac": _mac(),
+            "ip": str(subnet.network_address + DC_IP_OFFSET),
+            "memory_mib": 1024,
+            "data_gib": 8,
+            "realm": "lab.xenadmin.test",
+            "netbios": "XENADMINLAB",
+            "user": "labuser",
+            "group": "labadmins",
+        }
+    return dc
+
+
+def dc_overlay(manifest, secrets):
+    """Alpine diskless overlay for the Samba AD domain controller; applied by the initramfs at
+    every boot. `secrets` is the (administrator password, test user password) pair that is
+    baked into the image only. The domain is provisioned once onto the data disk."""
+    dc = manifest["dc"]
+    lab = ipaddress.IPv4Network(manifest["subnet"])
+    realm = dc["realm"]
+    interfaces = [("eth0", {"mode": "static", "address": dc["ip"], "netmask": str(lab.netmask)})]
+    start = f"""#!/bin/sh
+# Runs on every boot of the diskless appliance: install the packages shipped on the ISO,
+# provision the domain once onto the data disk and start Samba as a domain controller.
+log() {{ echo "lab-dc: $*" > /dev/console; logger -t lab-dc "$*" 2>/dev/null; }}
+EXTRA=$(ls -d /media/*/extra 2>/dev/null | head -n 1)
+if out=$(apk add --allow-untrusted --force-non-repository "$EXTRA"/*.apk 2>&1); then
+    log "packages installed"
+else
+    log "package installation failed: $(echo "$out" | grep -v '^(' | tail -n 4 | tr '\n' ' ')"
+fi
+DEV=$(findfs LABEL=labdc 2>/dev/null || echo /dev/vda)
+if ! blkid "$DEV" | grep -q 'TYPE="ext4"'; then
+    mkfs.ext4 -q -F -L labdc "$DEV" && log "formatted $DEV"
+fi
+mkdir -p /var/lib/samba
+if ! mount -t ext4 "$DEV" /var/lib/samba; then
+    log "mount failed for $DEV"
+    exit 0
+fi
+ADMIN=$(cut -d' ' -f1 /etc/lab-dc)
+USERPW=$(cut -d' ' -f2 /etc/lab-dc)
+# Secrets never reach the log: failures are reported with any line holding one removed.
+quiet() {{ grep -v -e "$ADMIN" -e "$USERPW" | tail -n 3 | tr '\n' ' ' | cut -c1-300; }}
+if [ ! -f /var/lib/samba/private/sam.ldb ]; then
+    rm -f /etc/samba/smb.conf
+    if out=$(samba-tool domain provision --use-rfc2307 --realm={realm.upper()} --domain={dc['netbios']} --server-role=dc --dns-backend=SAMBA_INTERNAL --host-name=dc --host-ip={dc['ip']} --adminpass="$ADMIN" 2>&1); then
+        log "domain {realm} provisioned"
+    else
+        log "provision failed: $(echo "$out" | quiet)"
+    fi
+    cp /etc/samba/smb.conf /var/lib/samba/lab-smb.conf 2>/dev/null
+fi
+[ -f /etc/samba/smb.conf ] || cp /var/lib/samba/lab-smb.conf /etc/samba/smb.conf
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf 2>/dev/null
+if out=$(rc-service samba start 2>&1); then
+    log "samba started"
+else
+    log "samba failed: $(echo "$out" | quiet)"
+fi
+sleep 5
+if ! samba-tool user show {dc['user']} >/dev/null 2>&1; then
+    if out=$(samba-tool user create {dc['user']} "$USERPW" --given-name=Lab --surname=User 2>&1); then
+        log "user {dc['user']} created"
+    else
+        log "user creation failed: $(echo "$out" | quiet)"
+    fi
+    if samba-tool group add {dc['group']} >/dev/null 2>&1 && samba-tool group addmembers {dc['group']} {dc['user']} >/dev/null 2>&1; then
+        log "group {dc['group']} created with {dc['user']}"
+    fi
+fi
+log "dns: $(host -t SRV _ldap._tcp.dc._msdcs.{realm} 127.0.0.1 2>&1 | tail -n 1 | cut -c1-160)"
+log "ready {dc['ip']} {realm}"
+"""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        _tar_entry(tar, "etc/.default_boot_services", "")
+        _tar_entry(tar, "etc/hostname", "dc\n")
+        _tar_entry(tar, "etc/hosts", f"127.0.0.1 localhost\n{dc['ip']} dc.{realm} dc\n")
+        _tar_entry(tar, "etc/resolv.conf", f"search {realm}\nnameserver 127.0.0.1\n")
+        _tar_entry(tar, "etc/network/interfaces", _interfaces(interfaces))
+        _tar_entry(tar, "etc/apk/world", "alpine-base\ne2fsprogs\n")
+        _tar_entry(tar, "etc/conf.d/samba", 'daemon_list="samba"\n')
+        _tar_entry(tar, "etc/local.d/dc.start", start, mode=0o755)
+        _tar_entry(tar, "etc/runlevels/boot/networking", link="/etc/init.d/networking")
+        _tar_entry(tar, "etc/runlevels/default/local", link="/etc/init.d/local")
+        _tar_entry(tar, "etc/lab-dc", f"{secrets[0]} {secrets[1]}\n", mode=0o600)
+    return buffer.getvalue()
+
+
 def nas_overlay(manifest, chap=None):
     """Alpine diskless overlay for the NFS/iSCSI appliance; applied by the initramfs at every
     boot. `chap` is an optional "user secret" pair that is baked into the image only."""
@@ -242,6 +340,18 @@ if mount -t ext4 "$DEV" {export}; then
         log "iscsi: kernel target modules unavailable on this kernel"
     fi
     log "exports: $(exportfs 2>&1 | tr '\\n' ' ' | cut -c1-300)"
+    # ISO images shipped on the appliance ISO seed the library export once.
+    SEED=$(ls -d /media/*/extra-iso 2>/dev/null | head -n 1)
+    if [ -n "$SEED" ]; then
+        for f in "$SEED"/*; do [ -f "{export}/iso/$(basename "$f")" ] || cp "$f" {export}/iso/; done
+    fi
+    log "iso images: $(ls {export}/iso 2>/dev/null | tr '\\n' ' ' | cut -c1-200)"
+    # The same library over SMB 3 for guests (no accounts on the appliance).
+    if rc-service samba start >/dev/null 2>&1; then
+        log "smb: $(smbclient -N -L localhost 2>/dev/null | grep -c ' Disk ') shares"
+    else
+        log "smb failed: $(rc-service samba start 2>&1 | tail -n 2 | tr '\\n' ' ')"
+    fi
 else
     log "mount failed for $DEV"
 fi
@@ -259,10 +369,30 @@ log "ready {nas['ip']}{' ' + nas['storage_ip'] if 'storage_ip' in nas else ''}"
         _tar_entry(tar, "etc/runlevels/default/local", link="/etc/init.d/local")
         # targetcli 2.1.5x talks to a targetclid daemon unless told otherwise.
         _tar_entry(tar, "etc/target/targetcli.conf", "[global]\ndaemon_use = False\n")
+        _tar_entry(tar, "etc/conf.d/samba", 'daemon_list="smbd"\n')
+        _tar_entry(tar, "etc/samba/smb.conf", SMB_CONF.replace("{export}", export))
         if chap:
             _tar_entry(tar, "etc/lab-chap", f"{chap[0]} {chap[1]}\n", mode=0o600)
     return buffer.getvalue()
 
+
+SMB_CONF = """[global]
+   server role = standalone server
+   workgroup = XENADMINLAB
+   server string = lab appliance
+   security = user
+   map to guest = Bad User
+   server min protocol = SMB3_00
+   log level = 1
+   disable netbios = yes
+   smb ports = 445
+
+[iso]
+   path = {export}/iso
+   guest ok = yes
+   read only = yes
+   browseable = yes
+"""
 
 GUEST_SERVICE = """#!/sbin/openrc-run
 description="XCP-ng guest agent"
@@ -312,9 +442,9 @@ def _console_cfg(text):
     return text.replace("quiet", "quiet console=tty0 console=ttyS0,115200", 1)
 
 
-def remaster(alpine_iso, digest, apks, overlay, overlay_name, output):
-    """Add an overlay, an /extra package directory and serial console parameters to the
-    Alpine ISO, keeping its El Torito and isohybrid boot records."""
+def remaster(alpine_iso, digest, apks, overlay, overlay_name, output, seeds=()):
+    """Add an overlay, an /extra package directory, optional /extra-iso seed files and serial
+    console parameters to the Alpine ISO, keeping its El Torito and isohybrid boot records."""
     if manage.sha256(Path(alpine_iso)) != digest:
         raise ValueError("Alpine ISO does not match the trusted digest")
     apks = Path(apks)
@@ -328,6 +458,13 @@ def remaster(alpine_iso, digest, apks, overlay, overlay_name, output):
         extra.mkdir()
         for file in files:
             shutil.copy2(file, extra / file.name)
+        seed_dir = work / "extra-iso"
+        seed_dir.mkdir()
+        for seed in seeds:
+            seed = Path(seed)
+            if not seed.is_file():
+                raise ValueError(f"Seed image {seed} is not a file")
+            shutil.copy2(seed, seed_dir / seed.name)
         for name, target in (("syslinux.cfg", "/boot/syslinux/syslinux.cfg"), ("grub.cfg", "/boot/grub/grub.cfg")):
             manage.run("xorriso", "-osirrox", "on", "-indev", str(alpine_iso), "-extract", target, str(work / name))
             (work / name).chmod(0o644)
@@ -340,6 +477,7 @@ def remaster(alpine_iso, digest, apks, overlay, overlay_name, output):
             "-overwrite", "on",
             "-map", str(work / "overlay.tar.gz"), f"/{overlay_name}.apkovl.tar.gz",
             "-map", str(extra), "/extra",
+            *(["-map", str(seed_dir), "/extra-iso"] if seeds else []),
             "-map", str(work / "syslinux.cfg"), "/boot/syslinux/syslinux.cfg",
             "-map", str(work / "grub.cfg"), "/boot/grub/grub.cfg",
         )
@@ -357,7 +495,9 @@ def nas_image(args):
             raise ValueError("The CHAP file must hold one alphanumeric user name and one secret")
         chap = (words[0], words[1])
     output = directory / "nas.iso"
-    digest = remaster(args.alpine_iso, args.sha256, args.apks, nas_overlay(manifest, chap), nas["name"], output)
+    seeds = [Path(x).expanduser() for x in (args.seed_iso or [])]
+    digest = remaster(args.alpine_iso, args.sha256, args.apks, nas_overlay(manifest, chap), nas["name"], output, seeds)
+    nas["seed_isos"] = [x.name for x in seeds]
     nas["iso"] = str(output)
     nas["iso_sha256"] = digest
     nas["alpine_iso_sha256"] = args.sha256
@@ -374,8 +514,35 @@ def guest_image(args):
     print("Built", output, digest)
 
 
+def dc_image(args):
+    directory, manifest = manage.load(args.directory)
+    dc = ensure_dc(manifest)
+    words = Path(args.dc_file).expanduser().read_text().split()
+    if len(words) != 2 or not all(w.isalnum() and 8 <= len(w) <= 64 for w in words):
+        raise ValueError("The DC file must hold the administrator and test-user passwords, alphanumeric, 8 to 64 characters")
+    output = directory / "dc.iso"
+    digest = remaster(args.alpine_iso, args.sha256, args.apks, dc_overlay(manifest, (words[0], words[1])), dc["name"], output)
+    dc["iso"] = str(output)
+    dc["iso_sha256"] = digest
+    dc["alpine_iso_sha256"] = args.sha256
+    save(directory, manifest)
+    print("Built", output, digest)
+
+
 def nas_domain_xml(manifest, directory):
     nas = manifest["nas"]
+    nics = [(nas["mac"], manifest["name"])] + (
+        [(nas["storage_mac"], manifest["storage"]["network"])] if "storage" in manifest else []
+    )
+    return _domain_xml(manifest, directory, nas, nics, "lab-nfs")
+
+
+def dc_domain_xml(manifest, directory):
+    dc = manifest["dc"]
+    return _domain_xml(manifest, directory, dc, [(dc["mac"], manifest["name"])], "lab-dc")
+
+
+def _domain_xml(manifest, directory, nas, nics, data_serial):
     domain = manage.ET.Element("domain", {"type": "kvm"})
     manage.element(domain, "name", nas["name"])
     manage.element(domain, "uuid", nas["uuid"])
@@ -404,10 +571,8 @@ def nas_domain_xml(manifest, directory):
     manage.element(data, "driver", name="qemu", type="qcow2", cache="none", discard="unmap")
     manage.element(data, "source", file=str(directory / f"{nas['name']}-data.qcow2"))
     manage.element(data, "target", dev="vda", bus="virtio")
-    manage.element(data, "serial", "lab-nfs")
-    for mac, network in [(nas["mac"], manifest["name"])] + (
-        [(nas["storage_mac"], manifest["storage"]["network"])] if "storage" in manifest else []
-    ):
+    manage.element(data, "serial", data_serial)
+    for mac, network in nics:
         nic = manage.element(devices, "interface", type="network")
         manage.element(nic, "mac", address=mac)
         manage.element(nic, "source", network=network)
@@ -422,10 +587,18 @@ def nas_domain_xml(manifest, directory):
 
 
 def nas(args):
+    _appliance(args, "nas", "nas-image", nas_domain_xml, "lab-nas:")
+
+
+def dc(args):
+    _appliance(args, "dc", "dc-image", dc_domain_xml, "lab-dc:")
+
+
+def _appliance(args, key, image_command, domain_xml, log_tag):
     directory, manifest = manage.load(args.directory)
-    if "nas" not in manifest or "iso" not in manifest["nas"]:
-        raise ValueError("Build the appliance image first with nas-image")
-    nas = manifest["nas"]
+    if key not in manifest or "iso" not in manifest[key]:
+        raise ValueError(f"Build the appliance image first with {image_command}")
+    nas = manifest[key]
     defined = manage.virsh("list", "--all", "--name").stdout.splitlines()
     if args.action == "start":
         # libvirt chowns an in-use image to the QEMU user, so the check belongs to start only.
@@ -438,7 +611,7 @@ def nas(args):
         log = directory / f"{nas['name']}-serial.log"
         log.touch(mode=0o600)
         path = directory / f"{nas['name']}.xml"
-        path.write_text(nas_domain_xml(manifest, directory))
+        path.write_text(domain_xml(manifest, directory))
         manage.virsh("define", str(path))
         if manage.virsh("domstate", nas["name"]).stdout.strip() != "running":
             manage.virsh("start", nas["name"])
@@ -456,7 +629,7 @@ def nas(args):
         print(nas["name"], nas["ip"], nas.get("storage_ip", ""), state)
         log = directory / f"{nas['name']}-serial.log"
         if log.exists():
-            lines = [l for l in log.read_text(errors="replace").splitlines() if "lab-nas:" in l]
+            lines = [l for l in log.read_text(errors="replace").splitlines() if log_tag in l]
             for line in lines[-8:]:
                 print("  ", line.strip())
 
@@ -474,10 +647,19 @@ def add_commands(commands):
         image.add_argument("--sha256", required=True, help="Trusted Alpine ISO checksum from the publisher")
         image.add_argument("--apks", required=True, help="Directory of .apk files downloaded on the workstation")
         if name == "nas-image":
+            image.add_argument("--seed-iso", action="append", help="ISO image file copied into the appliance's /srv/nfs/iso export on boot (repeatable)")
             image.add_argument("--chap-file", help="Private file with one line 'user secret' for the CHAP-protected iSCSI target; baked into the image only, never recorded")
-    appliance = commands.add_parser("nas", help="Start, stop, inspect or undefine the NFS appliance")
-    appliance.add_argument("action", choices=["start", "stop", "status", "undefine"])
-    appliance.add_argument("--directory", required=True)
+    image = commands.add_parser("dc-image", help="Build the Samba Active Directory domain controller ISO from the Alpine standard ISO and a directory of its packages")
+    image.add_argument("--directory", required=True)
+    image.add_argument("--alpine-iso", required=True)
+    image.add_argument("--sha256", required=True, help="Trusted Alpine ISO checksum from the publisher")
+    image.add_argument("--apks", required=True, help="Directory of .apk files downloaded on the workstation")
+    image.add_argument("--dc-file", required=True, help="Private file with one line 'administrator-password user-password'; baked into the image only")
+    for name, helptext in (("nas", "Start, stop, inspect or undefine the NFS appliance"),
+                           ("dc", "Start, stop, inspect or undefine the domain controller appliance")):
+        appliance = commands.add_parser(name, help=helptext)
+        appliance.add_argument("action", choices=["start", "stop", "status", "undefine"])
+        appliance.add_argument("--directory", required=True)
 
 
 def run(args):
@@ -489,3 +671,7 @@ def run(args):
         guest_image(args)
     elif args.command == "nas":
         nas(args)
+    elif args.command == "dc-image":
+        dc_image(args)
+    elif args.command == "dc":
+        dc(args)
