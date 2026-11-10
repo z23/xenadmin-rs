@@ -79,8 +79,9 @@ the optional installer and removal.
 
 The recovery release acceptance gate is to locate, start, and use the console of an XO VM
 with XO unreachable. It was recorded on the disposable lab on 2026-11-11 with the Xen
-Orchestra appliance imported through the client: XO shut down and unreachable, the VM located,
-started and consoled through the direct host connection, and XO answering again afterwards.
+Orchestra appliance imported through the client and managing the pool: XO shut down and
+unreachable, the VM located, started and consoled through the direct host connection, and XO
+answering again afterwards.
 
 ## Release history
 
