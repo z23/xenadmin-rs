@@ -9,46 +9,37 @@ The client requires a reachable XAPI service and the user's host permissions.
 
 ## Project status
 
-Development alpha. The Cargo workspace builds a Rune desktop application and a read-only
-host probe. It implements direct XAPI login, event inventory, VM power tasks, durable
-operation tracking, snapshot listing/creation/restore, VM properties and device controls,
-multiple saved connections, optional keyring credentials and an embedded RFB console.
+Development alpha, workspace version 0.17.0, no release published yet. The Cargo workspace
+builds the Rune desktop application, a read-only host probe and a small sandbox helper.
 No Xen Orchestra service is used.
 
-Local protocol and TLS fixtures, Rune widget interactions, headless rendering, and a native
-window smoke test pass. **Live-host qualification is under way** against a disposable nested
-XCP-ng 8.3.0 lab with no XO service present: more than fifty recorded scenarios cover power,
-snapshots and checkpoints, devices, storage and networking, host maintenance and reboots,
-coordinator handover, a changed member certificate, endpoint failover and two native desktop
-sessions, and twenty host-behaviour findings were fixed along the way; see the
-[live qualification report](docs/reports/2026-11-09-lab-qualification.md)
-for what passed, what was fixed and what remains open.
-See the [initial alpha results and gaps](docs/reports/2026-11-07-alpha.md).
-Version 0.1.1 adds a connection-wide certificate-validation opt-out and fixes inventory
-bootstrap with unknown storage sizes; see the [connection fix report](docs/reports/2026-11-07-connection-fixes.md).
-Version 0.1.2 strengthens interrupted-operation recovery and adds resume/unpause controls;
-see the [recovery foundation report](docs/reports/2026-11-07-recovery-foundation.md).
-Version 0.2.0 adds per-VM snapshot views, disk-snapshot creation, and guarded restore;
-see the [snapshot report](docs/reports/2026-11-07-snapshots.md) and [feature comparison](docs/PARITY.md).
-Version 0.2.1 keeps unavailable power actions visible with an explanation; see the
-[UX verification](docs/reports/2026-11-08-operations-ux.md). The
-[full parity checklist](docs/PARITY.md) distinguishes implemented, partial, missing and
-unqualified workflows, with priorities and reference-source evidence.
+Implemented scope, as reviewed operations with durable partial and unknown outcomes:
+saved and concurrent connections with certificate trust, credentials and endpoint failover;
+event-driven inventory; VM power, properties, devices, consoles, snapshots, checkpoints and
+schedules; VM creation from templates, cloning and deletion; storage and network lifecycle
+including local, NFS, iSCSI and CHAP repositories, ISO libraries, VLANs, bonds, multipathing
+and management addressing; import, export, conversion and same- or cross-pool migration;
+host and pool administration including maintenance, HA, pool join and dissolution, security
+and host backups; metrics, tasks and alerts; organization, saved searches, tags, folders,
+vApps and bulk actions; a portable archive and an AppImage. The
+[retained parity ledger](docs/PARITY-IMPLEMENTATION.md) tracks all 202 retained rows and is
+the completion authority; an implemented row is not a qualified workflow until its live,
+failure and interruption paths are recorded.
 
-Version 0.3.0 adds connection/profile ownership, device inventory and actions, reviewed VM
-properties, chosen-host start/resume, memory checkpoints and console controls. See the
-[implementation and verification report](docs/reports/2026-11-08-parity-foundations.md)
-and [retained parity ledger](docs/PARITY-IMPLEMENTATION.md). The complete parity plan is
-still in progress.
+Verification so far. The offline suite (core, protocol, TLS and Rune fixtures) runs in CI.
+Live qualification runs against a disposable nested XCP-ng 8.3.0 lab that has no XO service:
+the [live qualification report](docs/reports/2026-11-09-lab-qualification.md) records
+more than seventy scenarios, including two native desktop sessions, covering connections and
+recovery, power and consoles, snapshots and checkpoints, devices, storage and networking,
+shared NFS and iSCSI repositories with HA, live migration and evacuation, host maintenance,
+reboots and power cycles, coordinator handover and endpoint failover, together with
+thirty-four findings: host behaviours the client now handles, host observations, client fixes
+and a few open product decisions. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md).
 
-Version 0.4.0 adds snapshot-to-VM/template cloning, reviewed snapshot deletion, richer
-resource details and private live-client development inspection. It also preserves host
-administrative block messages and removes the demonstration entry from normal navigation.
-See the [verification report](docs/reports/2026-11-08-development-and-snapshots.md).
-
-Version 0.6.0 adds reviewed VLAN/bond and storage administration, same-pool migration,
-pool task/alert activity, and live VM resource settings. See the
-[checkpoint report](docs/reports/2026-11-08-checkpoint-0.6.md) for verification and limitations.
+Still open before a usable release: an XO-managed VM in the lab for the recovery gate,
+member failover, the failure and interruption paths of most workflows, a directory service,
+real-seat desktop checks (Wayland and X11 input, clipboard, Orca) and installation on clean
+target systems. See the [implementation plan](docs/PLAN.md) for the gates.
 
 ## Run it
 
@@ -70,13 +61,17 @@ The demo cannot issue host actions.
 
 The [running guide](docs/RUNNING.md) covers Linux dependencies, certificate trust,
 the host probe, local state, checks, and packaging. `./scripts/check.sh` runs the local
-checks; `./scripts/package.sh` builds a release archive under `artifacts/`.
+checks; `./scripts/package.sh` builds a release archive under `artifacts/`. The
+[installation guide](docs/INSTALLATION.md) covers the portable archive, the AppImage,
+the optional installer and removal.
 
 ## Start here
 
 - [Implementation plan](docs/PLAN.md) defines the milestones and their acceptance gates.
 - [Retained parity ledger](docs/PARITY-IMPLEMENTATION.md) tracks all 202 retained rows.
-- [Disposable lab](lab/README.md) documents the isolated nested KVM harness.
+- [Live qualification report](docs/reports/2026-11-09-lab-qualification.md) and
+  [lab acceptance](lab/ACCEPTANCE.md) record what the disposable lab has verified.
+- [Disposable lab](lab/README.md) documents the isolated nested KVM harness and its appliances.
 - [Architecture](docs/ARCHITECTURE.md) defines ownership, state, and the UI contract.
 - [Feature scope](docs/FEATURES.md) maps management workflows to milestones.
 - [Verification](docs/VERIFICATION.md) defines the evidence required to ship.
@@ -84,19 +79,42 @@ checks; `./scripts/package.sh` builds a release archive under `artifacts/`.
 - [Design decision](docs/DECISION.md) compares the architecture alternatives.
 
 The recovery release acceptance gate is to locate, start, and use the console of an XO VM
-with XO unreachable. The designated disposable lab now exists and the console workflow has
-run on it with no XO present; the gate still needs an XO-managed VM, which the lab does not
-yet contain.
-Later releases extend snapshot workflows and add VM creation, migration, storage and network administration,
-metrics, and import and export.
+with XO unreachable. The disposable lab exists and the console workflow has run on it with
+no XO present; the gate still needs an XO-managed VM, which the lab does not yet contain.
+
+## Release history
+
+No tag or binary has been published. Development checkpoints freeze source locally and
+record their verification:
+
+- 0.1 to 0.2: [alpha results](docs/reports/2026-11-07-alpha.md),
+  [connection fixes](docs/reports/2026-11-07-connection-fixes.md),
+  [recovery foundation](docs/reports/2026-11-07-recovery-foundation.md),
+  [snapshots](docs/reports/2026-11-07-snapshots.md) and
+  [operations UX](docs/reports/2026-11-08-operations-ux.md).
+- 0.3 and 0.4: [parity foundations](docs/reports/2026-11-08-parity-foundations.md) and
+  [development inspection and snapshot cloning](docs/reports/2026-11-08-development-and-snapshots.md).
+- 0.5 to 0.9.1: checkpoints [0.5](docs/reports/2026-11-08-checkpoint-0.5.md),
+  [0.6](docs/reports/2026-11-08-checkpoint-0.6.md), [0.7](docs/reports/2026-11-08-checkpoint-0.7.md),
+  [0.8](docs/reports/2026-11-08-checkpoint-0.8.md) and [0.9.1](docs/reports/2026-11-08-checkpoint-0.9.1.md),
+  the last adding the ownership-checked installer and AppImage.
+- 0.10 to 0.16: checkpoints [0.10](docs/reports/2026-11-08-checkpoint-0.10.md),
+  [0.11](docs/reports/2026-11-08-checkpoint-0.11.md), [0.12](docs/reports/2026-11-08-checkpoint-0.12.md),
+  [0.13](docs/reports/2026-11-08-checkpoint-0.13.md), [0.14](docs/reports/2026-11-08-checkpoint-0.14.md),
+  [0.15](docs/reports/2026-11-08-checkpoint-0.15.md) and [0.16](docs/reports/2026-11-08-checkpoint-0.16.md).
+- 0.17 (current): live lab qualification; see the
+  [live qualification report](docs/reports/2026-11-09-lab-qualification.md).
+
+The per-increment reports under `docs/reports/` are linked from the ledger rows they verify.
 
 ## Development
 
 The workspace pins Rust 1.99.1 and Rune
 `f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`; `Cargo.lock` pins the dependency graph.
 `xenadmin-core` owns protocol and operation behavior without Rune dependencies.
-`xenadmin-desktop` adapts snapshots and console frames to Rune. `host-probe` consumes the
-same core through its public facade.
+`xenadmin-desktop` adapts snapshots and console frames to Rune. `xenadmin-process` is the
+post-fork helper for the offline image sandbox. `host-probe` consumes the same core
+through its public facade.
 
 The project uses the MIT license for original work. Binary archives include supplied
 dependency and embedded-font notices. This is an independent project, not an official
@@ -104,13 +122,3 @@ XCP-ng or Vates application.
 
 Use `./scripts/dev.sh` to enable private local inspection of the running desktop, and
 `./scripts/inspect.sh` to query it. See [development diagnostics](docs/DEVELOPMENT.md).
-
-Version 0.8.0 adds reviewed pool joining, snapshot restore orchestration and schedules,
-VM home-host and device properties, OVF/OVA transfers, guided storage discovery, and
-cross-pool saved searches. Concurrent cancellation/recovery fixes preserve uncertain outcomes.
-See the [checkpoint report](docs/reports/2026-11-08-checkpoint-0.8.md) for verification and remaining scope.
-
-Version 0.9.1 packages certificate inspection/proxy options, authenticated storage, NoCloud drives,
-cross-pool transfers, desktop options/help, saved graph presets and private resource reports.
-It includes an ownership-checked installer and AppImage. See the
-[checkpoint evidence and limitations](docs/reports/2026-11-08-checkpoint-0.9.1.md).
