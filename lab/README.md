@@ -135,6 +135,16 @@ content. A completed fixture test is not evidence of a completed live scenario.
 8. Export only sanitized reports. Private screenshots, inventories, passwords, private
    keys, packet captures and guest disk images stay outside the repository.
 
+Recovery utilities in the harness (ignored tests like the scenarios) put the lab back
+together through the client after a failed experiment: `lab_forget_dead_coordinator_through_survivor`
+(disable HA, delete the guests whose disks were on the dead host, forget it and its
+repositories through the surviving coordinator), `lab_designate_first_host_coordinator`,
+`lab_reattach_shared_repositories`, `lab_shut_down_shared_storage_guests` (with
+`XENADMIN_LAB_SHUTDOWN_ALL=1` for every guest, before a host power cycle) and
+`lab_start_lab_guests`. A host that must be reinstalled boots from a definition built from
+its current domain with the unattended installer attached, while `manage.py serve` answers
+its installer; the join scenario then brings it back.
+
 The harness reads its inputs from the environment: `XENADMIN_LAB_MANIFEST` (the manifest),
 `XENADMIN_LAB_PASSWORD_FILE` (the lab-only root password), `XENADMIN_LAB_EVIDENCE_DIR`
 (defaults to `evidence/` beside the manifest), `XENADMIN_LAB_HOST_CONTROL=libvirt` (lets a
