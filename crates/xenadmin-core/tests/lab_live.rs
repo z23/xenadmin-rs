@@ -35,8 +35,20 @@ struct LabStorage {
     subnet: String,
     /// Host name to the MACs of its virtio NICs on the isolated storage network.
     host_nics: std::collections::BTreeMap<String, Vec<String>>,
-    /// The NFS appliance's address on the storage network (falls back to its lab address).
+    /// The appliance's address on the storage network (falls back to its lab address).
     nas_ip: String,
+    /// The appliance's address on the lab network (a second iSCSI portal).
+    nas_lab_ip: String,
+    /// iSCSI target names and port offered by the appliance, when built with them.
+    iscsi: Option<LabIscsi>,
+}
+
+struct LabIscsi {
+    open_iqn: String,
+    chap_iqn: String,
+    port: u16,
+    /// Lab-only CHAP user and secret from `XENADMIN_LAB_CHAP_FILE`, never recorded.
+    chap: Option<(String, String)>,
 }
 
 struct Lab {
@@ -110,6 +122,22 @@ impl Lab {
                 .or(document["nas"]["ip"].as_str())
                 .expect("appliance address")
                 .to_string(),
+            nas_lab_ip: document["nas"]["ip"]
+                .as_str()
+                .expect("appliance lab address")
+                .to_string(),
+            iscsi: document["nas"]["iscsi"].as_object().map(|i| LabIscsi {
+                open_iqn: i["open_iqn"].as_str().expect("open target").to_string(),
+                chap_iqn: i["chap_iqn"].as_str().expect("chap target").to_string(),
+                port: i["port"].as_u64().unwrap_or(3260) as u16,
+                chap: std::env::var("XENADMIN_LAB_CHAP_FILE")
+                    .ok()
+                    .and_then(|path| {
+                        let text = std::fs::read_to_string(path).ok()?;
+                        let mut words = text.split_whitespace();
+                        Some((words.next()?.to_string(), words.next()?.to_string()))
+                    }),
+            }),
         });
         let guest_tools_image = document["guest_tools_image"]["path"]
             .as_str()
@@ -17102,4 +17130,56 @@ async fn lab_tools_guest_clean_reboot_and_address() {
             assert_eq!(step["read_back"], true, "{step}");
         }
     }
+}
+
+/// Utility: cleanly shut the tools guest down through the client (its agent makes the
+/// clean operations available) so the appliance can be restarted without guest I/O.
+#[tokio::test]
+#[ignore]
+async fn lab_tools_guest_clean_shutdown() {
+    use xenadmin_core::{PowerAction, PowerState};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let Some(guest) = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+        .cloned()
+    else {
+        eprintln!("no tools guest");
+        return;
+    };
+    if guest.power_state == PowerState::Running {
+        let outcome = power_to(&c, guest.id, PowerAction::CleanShutdown, PowerState::Halted).await;
+        eprintln!("clean shutdown: {outcome}");
+    } else {
+        eprintln!("tools guest already {:?}", guest.power_state);
+    }
+    c.close().await;
+}
+
+/// Utility: start the tools guest if it is halted.
+#[tokio::test]
+#[ignore]
+async fn lab_tools_guest_start() {
+    use xenadmin_core::{PowerAction, PowerState};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    if let Some(guest) = inventory
+        .vms
+        .values()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+        .cloned()
+        && guest.power_state != PowerState::Running
+    {
+        let outcome = power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await;
+        eprintln!("start: {outcome}");
+    }
+    c.close().await;
 }

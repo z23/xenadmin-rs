@@ -123,6 +123,14 @@ def ensure_nas(manifest):
         }
     if "storage" in manifest and "storage_ip" not in nas:
         nas["storage_ip"] = str(ipaddress.IPv4Network(manifest["storage"]["subnet"]).network_address + NAS_IP_OFFSET)
+    if "iscsi" not in nas:
+        short = manifest["id"].replace("-", "")[:8]
+        nas["iscsi"] = {
+            "open_iqn": f"iqn.2026-11.rs.xenadmin.lab:{short}.open",
+            "chap_iqn": f"iqn.2026-11.rs.xenadmin.lab:{short}.chap",
+            "lun_gib": 20,
+            "port": 3260,
+        }
     return nas
 
 
@@ -153,9 +161,11 @@ def _interfaces(entries):
     return "\n".join(lines)
 
 
-def nas_overlay(manifest):
-    """Alpine diskless overlay for the NFS appliance; applied by the initramfs at every boot."""
+def nas_overlay(manifest, chap=None):
+    """Alpine diskless overlay for the NFS/iSCSI appliance; applied by the initramfs at every
+    boot. `chap` is an optional "user secret" pair that is baked into the image only."""
     nas = manifest["nas"]
+    iscsi = nas.get("iscsi", {})
     lab = ipaddress.IPv4Network(manifest["subnet"])
     interfaces = [("eth0", {"mode": "static", "address": nas["ip"], "netmask": str(lab.netmask)})]
     networks = [str(lab)]
@@ -200,12 +210,35 @@ if mount -t ext4 "$DEV" {export}; then
         log "nfs service started"
     fi
     log "rpc: $(rpcinfo -p 2>/dev/null | awk '{{print $5}}' | sort -u | tr '\\n' ' ')"
+    # iSCSI targets through the kernel target (LIO): one open, one CHAP-protected, each
+    # backed by a sparse file on the data disk and offered on every address.
+    if modprobe target_core_mod 2>/dev/null && modprobe iscsi_target_mod 2>/dev/null; then
+        mkdir -p {export}/iscsi
+        for n in 0 1; do [ -f {export}/iscsi/lun$n.img ] || truncate -s {{lun_gib}}G {export}/iscsi/lun$n.img; done
+        mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
+        rc-service targetcli start >/dev/null 2>&1
+        t() {{ targetcli "$@" >/dev/null 2>&1 || log "targetcli failed: $*"; }}
+        t /backstores/fileio create lun0 {export}/iscsi/lun0.img
+        t /backstores/fileio create lun1 {export}/iscsi/lun1.img
+        t /iscsi create {{open_iqn}}
+        t /iscsi/{{open_iqn}}/tpg1/luns create /backstores/fileio/lun0
+        t /iscsi/{{open_iqn}}/tpg1 set attribute authentication=0 generate_node_acls=1 demo_mode_write_protect=0 cache_dynamic_acls=1
+        t /iscsi create {{chap_iqn}}
+        t /iscsi/{{chap_iqn}}/tpg1/luns create /backstores/fileio/lun1
+        t /iscsi/{{chap_iqn}}/tpg1 set attribute authentication=1 generate_node_acls=1 demo_mode_write_protect=0 cache_dynamic_acls=1
+        if [ -s /etc/lab-chap ]; then
+            t /iscsi/{{chap_iqn}}/tpg1 set auth userid="$(cut -d' ' -f1 /etc/lab-chap)" password="$(cut -d' ' -f2 /etc/lab-chap)"
+        fi
+        log "iscsi: $(targetcli ls /iscsi 1 2>/dev/null | grep -c iqn) targets, portals $(targetcli ls /iscsi/{{open_iqn}}/tpg1/portals 1 2>/dev/null | grep -c ':')"
+    else
+        log "iscsi: kernel target modules unavailable on this kernel"
+    fi
     log "exports: $(exportfs 2>&1 | tr '\\n' ' ' | cut -c1-300)"
 else
     log "mount failed for $DEV"
 fi
 log "ready {nas['ip']}{' ' + nas['storage_ip'] if 'storage_ip' in nas else ''}"
-"""
+""".replace("{open_iqn}", iscsi.get("open_iqn", "iqn.lab:open")).replace("{chap_iqn}", iscsi.get("chap_iqn", "iqn.lab:chap")).replace("{lun_gib}", str(iscsi.get("lun_gib", 20)))
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         _tar_entry(tar, "etc/.default_boot_services", "")
@@ -216,6 +249,8 @@ log "ready {nas['ip']}{' ' + nas['storage_ip'] if 'storage_ip' in nas else ''}"
         _tar_entry(tar, "etc/local.d/nas.start", start, mode=0o755)
         _tar_entry(tar, "etc/runlevels/boot/networking", link="/etc/init.d/networking")
         _tar_entry(tar, "etc/runlevels/default/local", link="/etc/init.d/local")
+        if chap:
+            _tar_entry(tar, "etc/lab-chap", f"{chap[0]} {chap[1]}\n", mode=0o600)
     return buffer.getvalue()
 
 
@@ -305,8 +340,14 @@ def remaster(alpine_iso, digest, apks, overlay, overlay_name, output):
 def nas_image(args):
     directory, manifest = manage.load(args.directory)
     nas = ensure_nas(manifest)
+    chap = None
+    if args.chap_file:
+        words = Path(args.chap_file).expanduser().read_text().split()
+        if len(words) != 2 or not all(w.isalnum() for w in words) or not (1 <= len(words[1]) <= 64):
+            raise ValueError("The CHAP file must hold one alphanumeric user name and one secret")
+        chap = (words[0], words[1])
     output = directory / "nas.iso"
-    digest = remaster(args.alpine_iso, args.sha256, args.apks, nas_overlay(manifest), nas["name"], output)
+    digest = remaster(args.alpine_iso, args.sha256, args.apks, nas_overlay(manifest, chap), nas["name"], output)
     nas["iso"] = str(output)
     nas["iso_sha256"] = digest
     nas["alpine_iso_sha256"] = args.sha256
@@ -422,6 +463,8 @@ def add_commands(commands):
         image.add_argument("--alpine-iso", required=True)
         image.add_argument("--sha256", required=True, help="Trusted Alpine ISO checksum from the publisher")
         image.add_argument("--apks", required=True, help="Directory of .apk files downloaded on the workstation")
+        if name == "nas-image":
+            image.add_argument("--chap-file", help="Private file with one line 'user secret' for the CHAP-protected iSCSI target; baked into the image only, never recorded")
     appliance = commands.add_parser("nas", help="Start, stop, inspect or undefine the NFS appliance")
     appliance.add_argument("action", choices=["start", "stop", "status", "undefine"])
     appliance.add_argument("--directory", required=True)

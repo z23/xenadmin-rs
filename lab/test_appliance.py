@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import tarfile
 import io
 import unittest
@@ -48,6 +49,21 @@ class ApplianceTests(unittest.TestCase):
         self.assertEqual(start.mode & 0o111, 0o111)
         self.assertTrue(link.issym())
         self.assertEqual(link.linkname, "/etc/init.d/local")
+
+    def test_nas_overlay_brings_up_iscsi_targets_and_keeps_the_chap_secret_private(self):
+        m = manifest()
+        nas = appliance.ensure_nas(m)
+        self.assertTrue(nas["iscsi"]["open_iqn"].endswith(".open"))
+        with tarfile.open(fileobj=io.BytesIO(appliance.nas_overlay(m, ("labchap", "s3cret"))), mode="r:gz") as tar:
+            start = tar.extractfile("etc/local.d/nas.start").read().decode()
+            chap = tar.extractfile("etc/lab-chap").read().decode()
+            mode = tar.getmember("etc/lab-chap").mode
+        self.assertIn(f"/iscsi create {nas['iscsi']['open_iqn']}", start)
+        self.assertIn("authentication=1", start)
+        self.assertIn("truncate -s 20G", start)
+        self.assertEqual(chap, "labchap s3cret\n")
+        self.assertEqual(mode & 0o777, 0o600)
+        self.assertNotIn("s3cret", json.dumps(m))
 
     def test_guest_overlay_ships_the_agent_service_and_dhcp(self):
         with tarfile.open(fileobj=io.BytesIO(appliance.guest_overlay()), mode="r:gz") as tar:

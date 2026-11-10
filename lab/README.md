@@ -160,6 +160,12 @@ before every build.
   ISO, formats its data disk on first use, mounts it at `/srv/nfs` and exports `/srv/nfs`,
   `/srv/nfs/sr`, `/srv/nfs/iso` and `/srv/nfs/heartbeat` to both lab subnets. Progress is
   written to the serial console, which libvirt logs next to the host serial logs.
+- The same image offers two iSCSI targets through the kernel target when built from the
+  Alpine `standard` ISO (its `lts` kernel has the LIO modules; the `virt` kernel does not):
+  an open target and a CHAP-protected one, each a 20 GiB sparse file on the data disk, on
+  every appliance address. `--chap-file FILE` names a private one-line `user secret` file
+  that is baked into the image only; the manifest records the target names, never the
+  secret. The package set then also needs `targetcli targetcli-openrc`.
 - `nas start|status|stop|undefine --directory DIR` manages the appliance VM (1 GiB, one
   vCPU, a 64 GiB sparse data disk, NICs on the lab and storage networks). `status` prints the
   last appliance log lines.
