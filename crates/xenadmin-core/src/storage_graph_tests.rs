@@ -98,6 +98,12 @@ pub(super) fn rpc(
         let key = p[1].as_str().unwrap();
         let plug = method.ends_with(".plug");
         d.get_mut(key).unwrap()["currently_attached"] = json!(plug);
+        // Like the iSCSI driver, persist the discovered portal list on a plug.
+        let sr_ref = d[key]["SR"].as_str().unwrap().to_owned();
+        if plug && d[&sr_ref]["type"] == "lvmoiscsi" {
+            d.get_mut(key).unwrap()["device_config"]["multihomelist"] =
+                json!("192.0.2.10:3260,192.0.2.11:3260");
+        }
         let n = d
             .keys()
             .filter(|k| k.starts_with("OpaqueRef:task:g"))
@@ -148,7 +154,10 @@ async fn fixture(fault: &str, auth: bool) -> Fixture {
         let mut d = f.records.lock().unwrap();
         d.insert("fixture:graph".into(), json!(fault));
         d.get_mut("OpaqueRef:pool:p").unwrap()["ha_enabled"] = json!(false);
-        d.get_mut("OpaqueRef:pool:p").unwrap()["ha_statefiles"] = json!([]);
+        // A pool whose HA was disabled keeps its statefile listed (XCP-ng 8.3).
+        d.get_mut("OpaqueRef:pool:p").unwrap()["ha_statefiles"] =
+            json!(["OpaqueRef:VDI:statefile"]);
+        d.get_mut("OpaqueRef:pool:p").unwrap()["current_operations"] = json!({});
         for (key, id, pbds) in [
             ("OpaqueRef:host:h", 3, json!(["OpaqueRef:PBD:p"])),
             ("OpaqueRef:host:j", 6, json!([])),
@@ -189,6 +198,7 @@ fn attachment(auth: bool) -> ReviewedPbd {
             version: NfsVersion::Automatic,
         }),
         requires_credentials: auth,
+        local_cache: false,
     }
 }
 fn repair(auth: bool) -> StorageGraph {
@@ -679,4 +689,152 @@ async fn incomplete_disk_graph_refuses_before_any_detachment() {
         assert_eq!(f.count("Async.PBD.unplug"), 0);
         assert_eq!(f.count("host.set_multipathing"), 0);
     }
+}
+#[tokio::test]
+async fn repository_detach_refusals_name_the_repository_reason() {
+    for (case, expected) in [
+        (
+            "busy",
+            "The repository has running operations, or their availability is unknown",
+        ),
+        (
+            "unadvertised",
+            "The host no longer advertises the reviewed storage operation",
+        ),
+    ] {
+        let f = fixture("", false).await;
+        {
+            let mut d = f.records.lock().unwrap();
+            let sr = d.get_mut("OpaqueRef:SR:s").unwrap();
+            if case == "busy" {
+                sr["current_operations"] = json!({"OpaqueRef:task:scan": "scan"});
+            } else {
+                sr["allowed_operations"] = json!(["plug"]);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (o, r) = resources::channel(
+            OperationId::new(),
+            ObservedResource {
+                pool: uuid(1).into(),
+                generation: 1,
+                target: ResourceTarget::Pbd(uuid(5).into()),
+            },
+            ResourceAction::Storage(crate::StorageOperation::SetAttached {
+                sr: uuid(4).into(),
+                host: uuid(3).into(),
+                expected_attached: true,
+                attached: false,
+            }),
+            tokio::runtime::Handle::current(),
+        );
+        run(&f, dir.path(), r).await;
+        let r = (*o.latest()).clone();
+        assert_eq!(r.state, OperationState::Rejected, "{case}: {}", r.detail);
+        assert_eq!(r.detail, expected, "{case}");
+        assert_eq!(f.count("Async.PBD.unplug"), 0);
+    }
+}
+#[tokio::test]
+async fn multipath_refuses_enabled_ha_or_a_pool_operation_but_not_a_leftover_statefile() {
+    for (case, expected) in [
+        (
+            "enabled",
+            "Disable HA separately before multipath maintenance",
+        ),
+        (
+            "busy",
+            "Wait for the pool's active operation before multipath maintenance",
+        ),
+    ] {
+        let f = fixture("", false).await;
+        {
+            let mut d = f.records.lock().unwrap();
+            let pool = d.get_mut("OpaqueRef:pool:p").unwrap();
+            if case == "enabled" {
+                pool["ha_enabled"] = json!(true);
+            } else {
+                pool["current_operations"] = json!({"OpaqueRef:task:ha": "ha_enable"});
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let r = execute(&f, dir.path(), multipath()).await;
+        assert_eq!(r.state, OperationState::Rejected, "{case}: {}", r.detail);
+        assert_eq!(r.detail, expected, "{case}");
+        assert_eq!(f.count("Async.PBD.unplug"), 0);
+    }
+}
+#[tokio::test]
+async fn multipath_keeps_the_reviewed_local_cache_attachment_attached() {
+    let f = fixture("", false).await;
+    let mut op = multipath();
+    {
+        let mut d = f.records.lock().unwrap();
+        // XCP-ng's thin-provisioned local storage is the host's local-cache repository.
+        d.get_mut("OpaqueRef:host:h").unwrap()["local_cache_sr"] = json!("OpaqueRef:SR:s");
+        d.get_mut("OpaqueRef:SR:s").unwrap()["local_cache_enabled"] = json!(true);
+        let mut sr = d["OpaqueRef:SR:s"].clone();
+        sr["uuid"] = json!(uuid(7));
+        sr["PBDs"] = json!(["OpaqueRef:PBD:q"]);
+        sr["local_cache_enabled"] = json!(false);
+        d.insert("OpaqueRef:SR:q".into(), sr);
+        let mut p = d["OpaqueRef:PBD:p"].clone();
+        p["uuid"] = json!(uuid(8));
+        p["SR"] = json!("OpaqueRef:SR:q");
+        d.insert("OpaqueRef:PBD:q".into(), p);
+        d.get_mut("OpaqueRef:host:h").unwrap()["PBDs"] =
+            json!(["OpaqueRef:PBD:p", "OpaqueRef:PBD:q"]);
+        if let StorageGraph::Multipath { attachments, .. } = &mut op {
+            attachments[0].local_cache = true;
+            let mut p = attachment(false);
+            p.pbd = uuid(8).into();
+            p.sr = uuid(7).into();
+            attachments.push(p)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let r = execute(&f, dir.path(), op).await;
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    assert_eq!(f.count("Async.PBD.unplug"), 1);
+    assert_eq!(f.count("Async.PBD.plug"), 1);
+    assert_eq!(f.count("host.set_multipathing"), 1);
+    assert_eq!(r.storage_graph.len(), 1);
+    assert_eq!(r.storage_graph[0].sr, uuid(7).into());
+    let d = f.records.lock().unwrap();
+    assert_eq!(d["OpaqueRef:PBD:p"]["currently_attached"], true);
+    assert_eq!(d["OpaqueRef:PBD:q"]["currently_attached"], true);
+    assert_eq!(d["OpaqueRef:host:h"]["local_cache_sr"], "OpaqueRef:SR:s");
+}
+#[tokio::test]
+async fn multipath_tolerates_the_iscsi_driver_persisting_its_portal_list() {
+    let f = fixture("", false).await;
+    let mut op = multipath();
+    {
+        let mut d = f.records.lock().unwrap();
+        let sr = d.get_mut("OpaqueRef:SR:s").unwrap();
+        sr["type"] = json!("lvmoiscsi");
+        let p = d.get_mut("OpaqueRef:PBD:p").unwrap();
+        p["device_config"] = json!({"target":"192.0.2.10","port":"3260","targetIQN":"iqn.2026-11.test:fixture","SCSIid":"3600fixture"});
+        if let StorageGraph::Multipath { attachments, .. } = &mut op {
+            attachments[0].location = Some(StorageLocation::Iscsi {
+                portal: "192.0.2.10".into(),
+                port: 3260,
+                target_iqn: "iqn.2026-11.test:fixture".into(),
+                scsi_id: "3600fixture".into(),
+                allocation: crate::StorageAllocation::DriverDefault,
+            });
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let r = execute(&f, dir.path(), op).await;
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    assert_eq!(f.count("Async.PBD.unplug"), 1);
+    assert_eq!(f.count("Async.PBD.plug"), 1);
+    assert_eq!(r.storage_graph.len(), 1);
+    assert!(r.storage_graph[0].attached && r.storage_graph[0].verified);
+    let d = f.records.lock().unwrap();
+    assert_eq!(
+        d["OpaqueRef:PBD:p"]["device_config"]["multihomelist"],
+        "192.0.2.10:3260,192.0.2.11:3260"
+    );
 }

@@ -13,17 +13,25 @@ pub struct ReviewedPbd {
     pub attached: bool,
     pub location: Option<StorageLocation>,
     pub requires_credentials: bool,
+    /// The host's local-cache repository; multipath maintenance keeps it attached because
+    /// multipathing only affects block storage replugs and XAPI drops the cache binding on
+    /// unplug.
+    #[serde(default)]
+    pub local_cache: bool,
 }
 impl ReviewedPbd {
     pub fn from_inventory(i: &Inventory, pbd: PbdId) -> Option<Self> {
         let p = i.details.pbds.get(&pbd)?;
+        let host = p.host?;
+        let sr = p.sr?;
         Some(Self {
             pbd,
-            host: p.host?,
-            sr: p.sr?,
+            host,
+            sr,
             attached: p.currently_attached?,
             location: p.location.clone(),
             requires_credentials: p.requires_credentials,
+            local_cache: i.details.hosts.get(&host).and_then(|h| h.local_cache_sr) == Some(sr),
         })
     }
     fn valid(&self) -> bool {
@@ -305,7 +313,7 @@ impl Plan {
             } => {
                 let mut a = attachments
                     .iter()
-                    .filter(|p| p.attached)
+                    .filter(|p| p.attached && !p.local_cache)
                     .collect::<Vec<_>>();
                 a.sort_by_key(|p| p.sr);
                 let mut k = a.iter().map(|p| Kind::Unplug(p.pbd)).collect::<Vec<_>>();

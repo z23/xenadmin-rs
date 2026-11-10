@@ -17476,6 +17476,112 @@ async fn lab_iscsi_targets_and_lvm_repository() {
     }
 }
 
+/// Detach a repository on every host, members first and the coordinator last, waiting for
+/// the host to advertise `unplug` before each detach, then destroy it; every step is recorded
+/// with the wait and whether the detach was advertised when it was submitted.
+async fn remove_repository(
+    c: &Connection,
+    inventory: &xenadmin_core::Inventory,
+    sr: xenadmin_core::SrId,
+    expected_name: &str,
+    steps: &mut Vec<Value>,
+) {
+    use xenadmin_core::{ResourceCommand, StorageOperation};
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator);
+    let attachments = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .map(|i| {
+                i.details
+                    .pbds
+                    .values()
+                    .filter(|p| p.sr == Some(sr))
+                    .map(|p| (p.id, p.host, p.currently_attached))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let unplug_advertised = |c: &Connection| {
+        c.latest()
+            .inventory()
+            .and_then(|i| {
+                i.details
+                    .storage
+                    .get(&sr)
+                    .and_then(|d| d.allowed_operations.clone())
+            })
+            .is_some_and(|ops| ops.iter().any(|op| op == "unplug"))
+    };
+    let mut attached = attachments(c)
+        .into_iter()
+        .filter(|(_, _, a)| *a == Some(true))
+        .collect::<Vec<_>>();
+    attached.sort_by_key(|(_, host, _)| host.is_some() && *host == coordinator);
+    for (pbd, host, _) in attached {
+        let Some(host) = host else { continue };
+        let waited = std::time::Instant::now();
+        let advertised = settle(120, || unplug_advertised(c)).await;
+        let mut entry = resource_op(
+            c,
+            &format!("detach {expected_name} on {}", inventory.hosts[&host].name),
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pbd(pbd))
+                    .unwrap(),
+                operation: StorageOperation::SetAttached {
+                    sr,
+                    host,
+                    expected_attached: true,
+                    attached: false,
+                },
+            },
+            600,
+        )
+        .await;
+        entry["unplug_advertised"] = json!(advertised);
+        entry["waited_ms"] = json!(waited.elapsed().as_millis() as u64);
+        entry["read_back"] = json!(
+            entry["state"] == "Succeeded"
+                && settle(180, || attachments(c)
+                    .iter()
+                    .any(|(p, _, a)| *p == pbd && *a == Some(false)))
+                .await
+        );
+        note(steps, entry);
+    }
+    let mut entry = resource_op(
+        c,
+        &format!("destroy {expected_name}"),
+        ResourceCommand::Storage {
+            target: c
+                .latest()
+                .observe_resource(ResourceTarget::Storage(sr))
+                .unwrap(),
+            operation: StorageOperation::Destroy {
+                expected_name: expected_name.to_string(),
+                expected_disks: Vec::new(),
+            },
+        },
+        600,
+    )
+    .await;
+    entry["read_back"] = json!(
+        entry["state"] == "Succeeded"
+            && settle(120, || c.latest().inventory().is_some_and(|i| {
+                !i.storage
+                    .iter()
+                    .any(|s| xenadmin_core::SrId::from(s.uuid) == sr)
+            }))
+            .await
+    );
+    note(steps, entry);
+}
+
 /// P09-03 (CHAP): probe the CHAP-protected target's LUN with transient credentials, create a
 /// shared LVM-over-iSCSI repository on it through the authenticated path and confirm both
 /// hosts attach it with credentials required, then detach it everywhere and destroy it so no
@@ -17484,8 +17590,8 @@ async fn lab_iscsi_targets_and_lvm_repository() {
 #[ignore]
 async fn lab_iscsi_chap_repository_with_transient_credentials() {
     use xenadmin_core::{
-        ResourceCommand, StorageAllocation, StorageCredentials, StorageDiscoveryResult,
-        StorageLocation, StorageOperation, StorageQuery,
+        StorageAllocation, StorageCredentials, StorageDiscoveryResult, StorageLocation,
+        StorageOperation, StorageQuery,
     };
     let lab = Lab::load();
     let storage = lab
@@ -17516,6 +17622,19 @@ async fn lab_iscsi_chap_repository_with_transient_credentials() {
         .unwrap()
         .as_secs();
     let mut steps = Vec::new();
+    let leftovers = inventory
+        .storage
+        .iter()
+        .filter(|s| s.name.starts_with("lab-iscsi-chap-"))
+        .map(|s| (xenadmin_core::SrId::from(s.uuid), s.name.clone()))
+        .collect::<Vec<_>>();
+    for (sr, leftover) in leftovers {
+        note(
+            &mut steps,
+            json!({"step": "remove a repository left by an earlier attempt", "repository": leftover}),
+        );
+        remove_repository(&c, &inventory, sr, &leftover, &mut steps).await;
+    }
     let probe = c
         .discover_authenticated_storage(
             c.latest()
@@ -17620,59 +17739,7 @@ async fn lab_iscsi_chap_repository_with_transient_credentials() {
             &mut steps,
             json!({"step": "CHAP repository attached on both hosts", "read_back": both, "attachments": attachments(&c, sr).iter().map(|(_, h, a, cred)| json!({"host": h.map(|h| inventory.hosts[&h].name.clone()), "attached": a, "requires_credentials": cred})).collect::<Vec<_>>()}),
         );
-        // Leave nothing behind: detach everywhere, then destroy.
-        for (pbd, host, attached, _) in attachments(&c, sr) {
-            if attached != Some(true) {
-                continue;
-            }
-            let Some(host) = host else { continue };
-            let mut entry = resource_op(
-                &c,
-                &format!(
-                    "detach the CHAP repository on {}",
-                    inventory.hosts[&host].name
-                ),
-                ResourceCommand::Storage {
-                    target: c
-                        .latest()
-                        .observe_resource(ResourceTarget::Pbd(pbd))
-                        .unwrap(),
-                    operation: StorageOperation::SetAttached {
-                        sr,
-                        host,
-                        expected_attached: true,
-                        attached: false,
-                    },
-                },
-                600,
-            )
-            .await;
-            entry["read_back"] = json!(
-                settle(180, || attachments(&c, sr)
-                    .iter()
-                    .any(|(p, _, a, _)| *p == pbd && *a == Some(false)))
-                .await
-            );
-            note(&mut steps, entry);
-        }
-        let mut entry = resource_op(
-            &c,
-            "destroy the CHAP repository",
-            ResourceCommand::Storage {
-                target: c
-                    .latest()
-                    .observe_resource(ResourceTarget::Storage(sr))
-                    .unwrap(),
-                operation: StorageOperation::Destroy {
-                    expected_name: name.clone(),
-                    expected_disks: Vec::new(),
-                },
-            },
-            600,
-        )
-        .await;
-        entry["read_back"] = json!(settle(120, || find_sr(&c).is_none()).await);
-        note(&mut steps, entry);
+        remove_repository(&c, &inventory, sr, &name, &mut steps).await;
     }
     c.close().await;
     lab.record(
@@ -17698,7 +17765,9 @@ async fn lab_iscsi_chap_repository_with_transient_credentials() {
 #[tokio::test]
 #[ignore]
 async fn lab_member_multipath_round_trip() {
-    use xenadmin_core::{HostOperation, ResourceCommand, ReviewedPbd, StorageGraph};
+    use xenadmin_core::{
+        HostOperation, ResourceCommand, ReviewedPbd, StorageGraph, StorageOperation,
+    };
     let lab = Lab::load();
     let storage = lab
         .storage
@@ -17762,6 +17831,51 @@ async fn lab_member_multipath_round_trip() {
         json!({"step": "multipath before", "multipathing": details(&c).and_then(|h| h.multipathing), "standard_handler": details(&c).and_then(|h| h.standard_multipath_handler), "portals": [storage.nas_ip.clone(), storage.nas_lab_ip.clone()], "port": iscsi.port, "iscsi_attachments": iscsi_paths(&c)}),
     );
 
+    // Recover from an earlier attempt: reattach anything left detached on the member before
+    // the round trip, which expects every member attachment attached.
+    let detached = c
+        .latest()
+        .inventory()
+        .map(|i| {
+            i.details
+                .pbds
+                .values()
+                .filter(|p| p.host == Some(member) && p.currently_attached == Some(false))
+                .filter_map(|p| Some((p.id, p.sr?)))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (pbd, sr) in detached {
+        let mut entry = resource_op(
+            &c,
+            &format!("reattach {sr} left detached by an earlier attempt"),
+            ResourceCommand::Storage {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pbd(pbd))
+                    .unwrap(),
+                operation: StorageOperation::SetAttached {
+                    sr,
+                    host: member,
+                    expected_attached: false,
+                    attached: true,
+                },
+            },
+            600,
+        )
+        .await;
+        entry["read_back"] = json!(
+            entry["state"] == "Succeeded"
+                && settle(120, || c.latest().inventory().is_some_and(|i| {
+                    i.details
+                        .pbds
+                        .get(&pbd)
+                        .is_some_and(|p| p.currently_attached == Some(true))
+                }))
+                .await
+        );
+        note(&mut steps, entry);
+    }
     if details(&c).and_then(|h| h.maintenance_mode) == Some(true) {
         let entry = resource_op(
             &c,
@@ -17796,10 +17910,18 @@ async fn lab_member_multipath_round_trip() {
     );
     note(&mut steps, entry);
 
-    for (label, enable) in [
-        ("enable standard multipathing on the member", true),
-        ("disable multipathing on the member", false),
-    ] {
+    // If an earlier attempt left multipathing enabled, disable it first so the round trip
+    // starts from the host's normal state.
+    let mut toggles = Vec::new();
+    if details(&c).and_then(|h| h.multipathing) == Some(true) {
+        toggles.push((
+            "disable multipathing left enabled by an earlier attempt",
+            false,
+        ));
+    }
+    toggles.push(("enable standard multipathing on the member", true));
+    toggles.push(("disable multipathing on the member", false));
+    for (label, enable) in toggles {
         let now = c.latest().inventory().unwrap().clone();
         let attachments = now
             .details
@@ -17828,6 +17950,13 @@ async fn lab_member_multipath_round_trip() {
         .await;
         entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
         entry["attachments_reviewed"] = json!(attachments.len());
+        entry["kept_attached"] = json!(
+            attachments
+                .iter()
+                .filter(|a| a.local_cache)
+                .map(|a| a.sr.to_string())
+                .collect::<Vec<_>>()
+        );
         entry["read_back"] = json!(
             settle(300, || {
                 details(&c).is_some_and(|h| h.multipathing == Some(enable))

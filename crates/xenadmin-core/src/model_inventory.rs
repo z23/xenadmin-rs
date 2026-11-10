@@ -202,6 +202,9 @@ pub struct HostDetails {
     /// Some(false): absent; Some(true): standard dmp; None: unknown or custom.
     #[serde(default)]
     pub standard_multipath_handler: Option<bool>,
+    /// Repository the host uses for local caching, when XAPI reports one.
+    #[serde(default)]
+    pub local_cache_sr: Option<SrId>,
     pub description: String,
     pub hostname: String,
     pub metrics: Option<HostMetricsId>,

@@ -26,13 +26,20 @@ explicitly distinguishes this retained identity from a verified connection. No p
 an unverified creation.
 
 From Host administration, **Multipathing with storage reconnection** captures every PBD on
-one already-disabled, empty maintenance host (maximum 64). HA must be off. The backend
-checks the complete host/PBD/SR/VDI/VBD/VM graph and configuration fingerprints before the
-first detach and again through the sequence. Active/reserved consumers of affected iSCSI or
-HBA storage anywhere in the pool refuse maintenance. Local-cache and metadata-replication
-repositories are refused. Only originally attached PBDs are unplugged, the modern
-`host.set_multipathing` policy and standard `dmp` handler are changed, and that same subset
-is plugged again. Originally detached PBDs remain detached. Other host settings are preserved.
+one already-disabled, empty maintenance host (maximum 64). HA must be off and the pool must
+have no operation in progress; a statefile that XCP-ng leaves listed after HA is disabled
+does not count (lab finding 32). The backend checks the complete host/PBD/SR/VDI/VBD/VM graph
+and configuration fingerprints before the first detach and again through the sequence.
+Active/reserved consumers of affected iSCSI or HBA storage anywhere in the pool refuse
+maintenance. Metadata-replication repositories are refused. The host's local-cache
+repository (XCP-ng's thin-provisioned local storage by default) is reviewed as kept attached
+rather than refused since 2026-11-10 (lab finding 33): multipathing only affects block-storage
+replugs, and the refusal had blocked every stock XCP-ng host. Only the other originally
+attached PBDs are unplugged, the modern `host.set_multipathing` policy and standard `dmp`
+handler are changed, and that same subset is plugged again. Originally detached PBDs remain
+detached. Other host settings are preserved. On the replug the iSCSI driver persists the
+portal list it discovered as `multihomelist`; the configuration hash check accepts an iSCSI
+attachment that matches the reviewed configuration without that one key (lab finding 34).
 
 Each mutation has a durable dispatch marker and positive receipt. Async task UUIDs must be
 new relative to the baseline and unique within the workflow. Lost replies, task failure,

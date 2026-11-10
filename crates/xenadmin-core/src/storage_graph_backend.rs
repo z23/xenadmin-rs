@@ -11,7 +11,7 @@ fn require(ok: bool, msg: &'static str) -> Result<(), Error> {
     if ok {
         Ok(())
     } else {
-        Err(Error::Protocol(msg))
+        Err(Error::StoragePrerequisite(msg))
     }
 }
 fn idle(v: &Value) -> Result<(), Error> {
@@ -57,11 +57,27 @@ fn config(v: &Value) -> Result<&serde_json::Map<String, Value>, Error> {
     )?;
     Ok(m)
 }
-fn fingerprint(v: &Value) -> Result<String, Error> {
+fn digest(m: &serde_json::Map<String, Value>) -> Result<String, Error> {
     Ok(format!(
         "{:x}",
-        Sha256::digest(serde_json::to_vec(config(v)?).map_err(|_| Error::ResourceConflict)?)
+        Sha256::digest(serde_json::to_vec(m).map_err(|_| Error::ResourceConflict)?)
     ))
+}
+fn fingerprint(v: &Value) -> Result<String, Error> {
+    digest(config(v)?)
+}
+/// The iSCSI driver persists the portal list it discovers on a multipath plug as
+/// `multihomelist` in the attachment configuration (lab finding 34). That bookkeeping is not
+/// an operator change, so a reviewed hash may also match the configuration without it.
+fn fingerprint_without_discovery(v: &Value, sr: &Value) -> Result<Option<String>, Error> {
+    if sr["type"] != "lvmoiscsi" {
+        return Ok(None);
+    }
+    let mut m = config(v)?.clone();
+    if m.remove("multihomelist").is_none() {
+        return Ok(None);
+    }
+    digest(&m).map(Some)
 }
 fn secret_keys() -> [&'static str; 3] {
     [
@@ -147,7 +163,8 @@ fn attachment(
     )?;
     if let Some(hash) = hash {
         require(
-            fingerprint(v)? == hash,
+            fingerprint(v)? == hash
+                || fingerprint_without_discovery(v, sr)?.as_deref() == Some(hash),
             "Reviewed attachment configuration changed",
         )?;
     }
@@ -367,11 +384,16 @@ async fn multipath_graph(
     };
     let pool = super::disk::pool(s, r.pool).await?;
     require(
-        pool["ha_enabled"] == false
-            && pool["ha_statefiles"]
-                .as_array()
-                .is_some_and(|a| a.is_empty()),
+        pool["ha_enabled"] == false,
         "Disable HA separately before multipath maintenance",
+    )?;
+    // XCP-ng keeps the statefile disk listed in `ha_statefiles` after HA is disabled; an
+    // enable or disable still in progress shows in the pool's current operations instead.
+    require(
+        pool["current_operations"]
+            .as_object()
+            .is_some_and(|m| m.is_empty()),
+        "Wait for the pool's active operation before multipath maintenance",
     )?;
     let (h, v) = host(s, *id, true).await?;
     require(
@@ -449,10 +471,17 @@ async fn multipath_graph(
             p.configuration.get(&a.pbd).map(String::as_str),
         )?;
         crate::storage_local::attachment_graph(&sr, &pbd_ref)?;
-        require(
-            sr["local_cache_enabled"] == false && v["local_cache_sr"] != sr_ref,
-            "Storage used for local caching cannot be detached by this workflow",
-        )?;
+        if a.local_cache {
+            require(
+                v["local_cache_sr"] == sr_ref,
+                "The reviewed local-cache repository changed; review the host again",
+            )?;
+        } else {
+            require(
+                sr["local_cache_enabled"] == false && v["local_cache_sr"] != sr_ref,
+                "Storage used for local caching must be reviewed as kept attached",
+            )?;
+        }
         let block = matches!(sr["type"].as_str(), Some("lvmoiscsi" | "lvmohba"));
         let expected_disks = disks
             .iter()

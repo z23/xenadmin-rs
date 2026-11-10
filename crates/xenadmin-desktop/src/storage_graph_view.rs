@@ -311,11 +311,13 @@ fn review_body(i: &Inventory, op: &StorageGraph, k: &Kit) -> El {
             enabled,
             attachments,
         } => {
-            body=body.child(caption(format!("{} ({host})\nMultipathing: {expected} → {enabled}\nHandler: {} → {}",host_name(i,*host),if *expected_handler{"dmp"}else{"absent"},if *enabled{"dmp"}else{"absent"}),k).wrap_anywhere()).child(caption("Disconnects every originally attached repository, changes the host policy, then reconnects exactly that subset. Originally detached connections remain detached. The backend requires a disabled, empty maintenance host, HA off and no active/reserved iSCSI or HBA storage consumers across the pool. Storage used for caching or metadata replication is refused.",k).wrap());
+            body=body.child(caption(format!("{} ({host})\nMultipathing: {expected} → {enabled}\nHandler: {} → {}",host_name(i,*host),if *expected_handler{"dmp"}else{"absent"},if *enabled{"dmp"}else{"absent"}),k).wrap_anywhere()).child(caption("Disconnects every originally attached repository except the host's local-cache one, changes the host policy, then reconnects exactly that subset. Originally detached connections remain detached. The backend requires a disabled, empty maintenance host, HA off and no active/reserved iSCSI or HBA storage consumers across the pool. Storage used for caching or metadata replication is refused.",k).wrap());
             for p in attachments {
                 body = body.child(attachment_line(i, p, k)).child(
                     caption(
-                        if p.attached {
+                        if p.local_cache {
+                            "Local-cache repository: kept attached, multipathing does not affect it"
+                        } else if p.attached {
                             "Disconnect, then reconnect after the policy change"
                         } else {
                             "Preserve detached state"

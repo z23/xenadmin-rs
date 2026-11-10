@@ -777,6 +777,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                             .is_none_or(|value| value.is_string())
                     }),
                     multipathing: record["multipathing"].as_bool(),
+                    local_cache_sr: refs.link("sr", &record["local_cache_sr"]),
                     standard_multipath_handler: record["other_config"].as_object().and_then(|m| {
                         match m.get("multipathhandle") {
                             None => Some(false),

@@ -115,6 +115,9 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Tools guest on shared storage: import, agent, hot plug, live migration | P11-09, P08-02, P06-11, P07-14, P11-01, P14-01 | Passed | The remastered Alpine image with xe-guest-utilities was imported as a raw disk onto the shared repository, a VM was created there and booted from it, and the guest agent reported its tools version to the pool (no address yet: the guest booted before the lab network served leases). With PV drivers present the host advertised NIC unplug, the client disconnected and reconnected the running guest's NIC, and the guest live-migrated to the member and back without storage transfer in 4.3 s each way with the task's progress sampled. Evidence: 1794268116-tools-guest-on-shared-storage.json |
 | Member storage bond round trip | P10-05, P10-09, P09-06 | Passed | On the member both storage NICs were freed (the repository detach was refused by the in-use guard and left attached), a bond network was created and an active-backup bond of the two NICs formed on it (`bond0`), switched to balance-slb and back, given the static storage address and left attached with the repository still reachable over it; then the bond's address was cleared, the bond detached and destroyed, the bond network deleted, and the first NIC's address restored and re-attached. Evidence: 1794267920-member-storage-bond-round-trip.json |
 | Tools guest clean reboot and reported address | P03-01, P06-11 | Passed | With the guest agent present the client advertised the clean reboot, which completed in 4.3 s with a new start time; after the restart the agent reported its tools version again and, now that the lab network serves leases, the guest's IPv4 and IPv6 addresses. Evidence: 1794268322-tools-guest-clean-reboot-and-address.json |
+| iSCSI discovery and LVM-over-iSCSI repository | P09-02, P09-03, P09-06, P09-08 | Passed | Through the coordinator the appliance's two targets were discovered on both of its portals (four target records), the open target's single 20 GiB LUN was enumerated with its SCSI identity and vendor, and an unauthenticated LUN probe of the CHAP-protected target was refused by the host (SR_BACKEND_FAILURE_68); a shared LVM-over-iSCSI repository was created on the open LUN, verified attached on both hosts, detached and reattached on the member through its attachment, and rescanned; it stays for the multipath scenario. Evidence: 1794277021-iscsi-targets-and-lvm-repository.json |
+| CHAP-protected iSCSI repository with transient credentials | P09-02, P09-03, P09-06, P09-09 | Passed on the second attempt, finding 31 | The CHAP target's LUN was discovered through the coordinator with credentials supplied only for that request; a shared LVM-over-iSCSI repository was created on it through the authenticated flow (temporary Secret created, storage provisioned, Secret removed, 13 s), verified attached on both hosts with attachments that require credentials, detached on the member and then on the coordinator once the host advertised unplug, and destroyed. The first attempt's coordinator detach, submitted right after creation, was refused by the client's repository guard with a VM-worded message (finding 31); the repository it left behind was removed by the rerun's leftover cleanup. Evidence: 1794277742-iscsi-chap-repository.json (first attempt 1794277360-iscsi-chap-repository.json) |
+| Member multipath round trip | P09-12, P12-03, P09-06 | Passed on the fourth attempt, findings 32, 33, 34 | With the member empty and in maintenance, standard multipathing was enabled through the reviewed complete-host flow: five attachments detached, the host policy and dmp handler set and the same five replugged (11.6 s) while the local-cache attachment stayed attached; the member read back multipathing with the dmp handler and its LVM-over-iSCSI attachment reported two active paths of two across the appliance's two portals; multipathing was then disabled the same way (11.0 s, paths no longer reported) and the member left maintenance. The first three attempts were refused by the HA guard, refused by the local-cache guard and left outcome-unknown by the configuration check (findings 32, 33, 34); the final run first reattached the two attachments and reverted the enable that the third attempt had left behind. Evidence: 1794280183-member-multipath-round-trip.json (earlier attempts 1794278122, 1794278659 and 1794279839) |
 
 ## Findings
 
@@ -324,6 +327,13 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    host to advertise `ratelimit`, was not offered and the scenario skipped it. XenCenter sets
    the ratelimit policy without that advertisement; whether the client should do the same is
    an open product decision, not a host fault.
+26. **A guest without PV drivers cannot be evacuated.** XCP-ng 8.3 reported the running
+   diskless tool-less VM as preventing evacuation with VM_LACKS_FEATURE, so the member could
+   not be evacuated through the pool. The client refused before any change; it had reported
+   only that blockers existed, and now names the blocking VMs and the host's code in the
+   refusal (unit covered). An evacuation that actually moves a guest needs shared storage or
+   a tools-equipped guest, neither of which the lab had then; the later tools-guest
+   evacuation on the shared NFS repository is recorded above.
 27. **Host shutdown verification gave up before the coordinator noticed the member was
    down.** The reviewed shutdown of the empty member ended OutcomeUnknown 11 s after the
    host accepted the task, with "The host's fresh liveness does not match the reviewed
@@ -353,12 +363,43 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    runs none of them. The guard is conservative rather than wrong, and the scenarios record
    the refusal. Whether per-host detach should be offered when the host has no consumers is
    an open product decision.
- **A guest without PV drivers cannot be evacuated.** XCP-ng 8.3 reported the running
-   diskless tool-less VM as preventing evacuation with VM_LACKS_FEATURE, so the member could
-   not be evacuated through the pool. The client refused before any change; it had reported
-   only that blockers existed, and now names the blocking VMs and the host's code in the
-   refusal (unit covered). An evacuation that actually moves a guest needs shared storage or
-   a tools-equipped guest, neither of which the lab has.
+31. **A repository refusal spoke of a VM and did not say why.** Submitted a few seconds
+   after the CHAP repository was created, the coordinator detach was refused by the client's
+   own repository guard, which rejects an attachment change while the repository reports an
+   operation in progress or when the host no longer advertises the action; both paths
+   returned the generic action error whose text reads "unavailable for this VM", so the
+   record did not say which. The repository guards now return a storage prerequisite error
+   naming the reason (unit covered), the scenario waits for the host to advertise unplug and
+   detaches the coordinator last, and the rerun passed in 38 s.
+32. **Disabling HA leaves the statefile listed.** After `pool.disable_ha` XCP-ng 8.3 reports
+   `ha_enabled` false and advertises `ha_enable` again, but `pool.ha_statefiles` still names
+   the "Statefile for HA" disk on the heartbeat repository. The multipath maintenance guard
+   required both HA off and an empty statefile list, so it refused the member with HA
+   disabled, and it reported that refusal as an invalid XAPI response. The guard now requires
+   HA off and no pool operation in progress, which is where an HA enable or disable in flight
+   actually shows, and every storage-graph precondition now reports as a storage prerequisite
+   (unit covered). Destroying or forgetting the heartbeat repository, and deleting the
+   leftover statefile disk, stay refused by the client's dependency guards while the pool
+   lists it; whether to offer that cleanup is an open product decision.
+33. **A stock XCP-ng host's local storage is its local-cache repository.** Both pool hosts
+   report `local_cache_sr` pointing at their thin-provisioned local EXT repository with
+   `local_cache_enabled` set, as the installer leaves it. The multipath flow refused any host
+   with such an attachment, so it could not run on either host. The reference XenAdmin action
+   unplugs every attached PBD including that one; this client instead marks the attachment as
+   the host's local cache in the review and keeps it attached, because multipathing only
+   affects block-storage replugs and detaching the cache repository is not needed. The host
+   must still report the same local-cache binding at execution (unit covered).
+34. **The iSCSI driver rewrites the attachment configuration on a multipath plug.** When the
+   member's LVM-over-iSCSI attachment was plugged with multipathing on, the driver persisted
+   the portal list it discovered as `multihomelist` ("192.168.253.20:3260,192.168.254.20:3260")
+   in `PBD.device_config`; the coordinator's attachment, plugged without multipathing, has no
+   such key. The flow's configuration hash check treated that as a reviewed-configuration
+   change and left the operation outcome-unknown after two of five replugs, with the member
+   in maintenance and its NFS and tools-ISO attachments detached; nothing was compensated, as
+   designed, and the pool-wide unresolved-operation guard then refused the disable and the
+   exit from maintenance in the same session. The check now also accepts an iSCSI attachment
+   whose configuration matches the reviewed one without `multihomelist` (unit covered), and
+   the scenario reattaches anything an earlier attempt left detached before it starts.
 
 ## Console observation
 

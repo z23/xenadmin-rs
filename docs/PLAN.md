@@ -114,9 +114,11 @@ secret rotation, a folders, message-dismissal and description-batch round trip a
 move refused while a snapshot existed, a verified snapshot XVA export and, on the lab
 appliances added on 2026-11-10, a shared NFS repository on both hosts with HA, a tools-equipped
 guest with NIC hot plug, shared-storage live migration and a real member evacuation, a storage
-bond round trip and a member power cycle, plus twenty host-behaviour findings that were
+bond round trip and a member power cycle, iSCSI target discovery with an LVM-over-iSCSI
+repository on both hosts and a CHAP-protected repository created with transient credentials
+and removed, a member multipath round trip with two active iSCSI paths, plus twenty-two host-behaviour findings that were
 fixed, eight host observations, one client journal observation, a fixed client verification
-finding, two open client decisions and one open upstream accessibility finding. Member
+finding, two fixed client storage findings, two open client decisions and one open upstream accessibility finding. Member
 failover, pointer and Orca qualification and an XO-managed VM remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
 

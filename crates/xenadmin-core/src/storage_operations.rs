@@ -21,7 +21,9 @@ fn array<'a>(value: &'a Value, field: &str) -> Result<&'a Vec<Value>, Error> {
 fn empty_current(value: &Value) -> Result<(), Error> {
     match value["current_operations"].as_object() {
         Some(ops) if ops.is_empty() => Ok(()),
-        _ => Err(Error::UnavailableAction),
+        _ => Err(Error::StoragePrerequisite(
+            "The repository has running operations, or their availability is unknown",
+        )),
     }
 }
 fn allowed(value: &Value, action: &str) -> Result<(), Error> {
@@ -31,7 +33,9 @@ fn allowed(value: &Value, action: &str) -> Result<(), Error> {
     {
         Ok(())
     } else {
-        Err(Error::UnavailableAction)
+        Err(Error::StoragePrerequisite(
+            "The host no longer advertises the reviewed storage operation",
+        ))
     }
 }
 async fn by_ref(session: &Session, class: &str, reference: &Value) -> Result<Value, Error> {

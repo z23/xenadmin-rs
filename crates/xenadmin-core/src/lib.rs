@@ -256,6 +256,8 @@ pub enum Error {
     InvalidResourceCommand,
     #[error("{0}")]
     HostPrerequisite(&'static str),
+    #[error("{0}")]
+    StoragePrerequisite(&'static str),
     #[error(
         "The host reports VMs that prevent evacuation ({0}); resolve their migration restrictions before retrying"
     )]
