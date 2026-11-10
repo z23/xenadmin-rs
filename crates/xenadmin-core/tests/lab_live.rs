@@ -17477,13 +17477,14 @@ async fn lab_iscsi_targets_and_lvm_repository() {
 }
 
 /// Detach a repository on every host, members first and the coordinator last, waiting for
-/// the host to advertise `unplug` before each detach, then destroy it; every step is recorded
+/// the host to advertise `unplug` before each detach, then destroy or forget it; every step is recorded
 /// with the wait and whether the detach was advertised when it was submitted.
 async fn remove_repository(
     c: &Connection,
     inventory: &xenadmin_core::Inventory,
     sr: xenadmin_core::SrId,
     expected_name: &str,
+    destroy: bool,
     steps: &mut Vec<Value>,
 ) {
     use xenadmin_core::{ResourceCommand, StorageOperation};
@@ -17554,18 +17555,29 @@ async fn remove_repository(
         );
         note(steps, entry);
     }
+    let operation = if destroy {
+        StorageOperation::Destroy {
+            expected_name: expected_name.to_string(),
+            expected_disks: Vec::new(),
+        }
+    } else {
+        StorageOperation::Forget {
+            expected_name: expected_name.to_string(),
+            expected_disks: Vec::new(),
+        }
+    };
     let mut entry = resource_op(
         c,
-        &format!("destroy {expected_name}"),
+        &format!(
+            "{} {expected_name}",
+            if destroy { "destroy" } else { "forget" }
+        ),
         ResourceCommand::Storage {
             target: c
                 .latest()
                 .observe_resource(ResourceTarget::Storage(sr))
                 .unwrap(),
-            operation: StorageOperation::Destroy {
-                expected_name: expected_name.to_string(),
-                expected_disks: Vec::new(),
-            },
+            operation,
         },
         600,
     )
@@ -17633,7 +17645,7 @@ async fn lab_iscsi_chap_repository_with_transient_credentials() {
             &mut steps,
             json!({"step": "remove a repository left by an earlier attempt", "repository": leftover}),
         );
-        remove_repository(&c, &inventory, sr, &leftover, &mut steps).await;
+        remove_repository(&c, &inventory, sr, &leftover, true, &mut steps).await;
     }
     let probe = c
         .discover_authenticated_storage(
@@ -17739,11 +17751,163 @@ async fn lab_iscsi_chap_repository_with_transient_credentials() {
             &mut steps,
             json!({"step": "CHAP repository attached on both hosts", "read_back": both, "attachments": attachments(&c, sr).iter().map(|(_, h, a, cred)| json!({"host": h.map(|h| inventory.hosts[&h].name.clone()), "attached": a, "requires_credentials": cred})).collect::<Vec<_>>()}),
         );
-        remove_repository(&c, &inventory, sr, &name, &mut steps).await;
+        remove_repository(&c, &inventory, sr, &name, true, &mut steps).await;
     }
     c.close().await;
     lab.record(
         "iscsi-chap-repository",
+        json!({"appliance": storage.nas_ip, "repository": name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P09-04, P09-06, P09-08, P09-09: create an ISO library over NFS on the lab appliance's
+/// `/srv/nfs/iso` export through the coordinator, confirm it is listed as a shared ISO
+/// repository attached on both hosts, rescan it and read back its image list, then detach it
+/// everywhere, coordinator last, and forget it. A library left by an earlier attempt is
+/// forgotten first.
+#[tokio::test]
+#[ignore]
+async fn lab_iso_library_over_nfs() {
+    use xenadmin_core::{NfsVersion, ResourceCommand, StorageLocation, StorageOperation};
+    let lab = Lab::load();
+    let storage = lab
+        .storage
+        .as_ref()
+        .expect("storage network in the manifest");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let pool = inventory.pool_id;
+    let coordinator = inventory
+        .details
+        .pool
+        .as_ref()
+        .and_then(|p| p.administration.coordinator)
+        .expect("coordinator");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    let leftovers = inventory
+        .storage
+        .iter()
+        .filter(|s| s.name.starts_with("lab-iso-"))
+        .map(|s| (xenadmin_core::SrId::from(s.uuid), s.name.clone()))
+        .collect::<Vec<_>>();
+    for (sr, leftover) in leftovers {
+        note(
+            &mut steps,
+            json!({"step": "forget a library left by an earlier attempt", "repository": leftover}),
+        );
+        remove_repository(&c, &inventory, sr, &leftover, false, &mut steps).await;
+    }
+    let name = format!("lab-iso-{stamp}");
+    let find_sr = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.storage
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| xenadmin_core::SrId::from(s.uuid))
+        })
+    };
+    let started = std::time::Instant::now();
+    let mut entry = resource_op(
+        &c,
+        "create the ISO library over NFS",
+        ResourceCommand::Storage {
+            target: c
+                .latest()
+                .observe_resource(ResourceTarget::Pool(pool))
+                .unwrap(),
+            operation: StorageOperation::Create {
+                host: coordinator,
+                name: name.clone(),
+                description: "ISO library on the lab appliance".into(),
+                location: StorageLocation::IsoNfs {
+                    server: storage.nas_ip.clone(),
+                    path: "/srv/nfs/iso".into(),
+                    version: NfsVersion::Automatic,
+                },
+                hba_device: None,
+                local_device: None,
+            },
+        },
+        600,
+    )
+    .await;
+    entry["elapsed_ms"] = json!(started.elapsed().as_millis() as u64);
+    entry["read_back"] = json!(settle(180, || find_sr(&c).is_some()).await);
+    note(&mut steps, entry);
+    let Some(sr) = find_sr(&c) else {
+        lab.record(
+            "iso-library-over-nfs",
+            json!({"appliance": storage.nas_ip, "failed": "library not listed", "steps": steps}),
+        );
+        panic!("library not listed: {steps:?}");
+    };
+    let library = |c: &Connection| {
+        c.latest().inventory().map(|i| {
+            let d = i.details.storage.get(&sr);
+            json!({
+                "kind": i.storage.iter().find(|s| xenadmin_core::SrId::from(s.uuid) == sr).map(|s| s.kind.clone()),
+                "content_type": d.map(|d| d.content_type.clone()),
+                "shared": d.and_then(|d| d.shared),
+                "attachments": i.details.pbds.values().filter(|p| p.sr == Some(sr)).map(|p| json!({"host": p.host.and_then(|h| i.hosts.get(&h)).map(|h| h.name.clone()), "attached": p.currently_attached})).collect::<Vec<_>>(),
+                "images": i.details.sr_disks.get(&sr).map_or(0, Vec::len),
+            })
+        })
+    };
+    let listed = settle(240, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .storage
+                .get(&sr)
+                .is_some_and(|d| d.shared == Some(true) && d.content_type == "iso")
+                && {
+                    let a = i
+                        .details
+                        .pbds
+                        .values()
+                        .filter(|p| p.sr == Some(sr))
+                        .collect::<Vec<_>>();
+                    a.len() == 2 && a.iter().all(|p| p.currently_attached == Some(true))
+                }
+        })
+    })
+    .await;
+    note(
+        &mut steps,
+        json!({"step": "shared ISO library attached on both hosts", "read_back": listed, "library": library(&c)}),
+    );
+    let mut entry = resource_op(
+        &c,
+        "rescan the library",
+        ResourceCommand::ScanStorage {
+            sr: c
+                .latest()
+                .observe_resource(ResourceTarget::Storage(sr))
+                .unwrap(),
+        },
+        300,
+    )
+    .await;
+    entry["library"] = json!(library(&c));
+    note(&mut steps, entry);
+    remove_repository(&c, &inventory, sr, &name, false, &mut steps).await;
+    c.close().await;
+    lab.record(
+        "iso-library-over-nfs",
         json!({"appliance": storage.nas_ip, "repository": name, "steps": steps}),
     );
     for step in &steps {
