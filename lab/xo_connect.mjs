@@ -16,7 +16,7 @@ const [email, password] = readFileSync(process.env.XENADMIN_LAB_XO_FILE, "utf8")
 const rootPassword = readFileSync(process.env.XENADMIN_LAB_PASSWORD_FILE, "utf8").split("\n")[0].trim();
 const FACTORY = { email: "admin@admin.net", password: "admin" };
 
-const ws = new WebSocket(`ws://${xoa}/api/`);
+const ws = new WebSocket(`${process.env.XENADMIN_LAB_XO_SCHEME ?? "wss"}://${xoa}/api/`);
 let nextId = 1;
 const pending = new Map();
 ws.addEventListener("message", (event) => {

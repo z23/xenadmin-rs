@@ -18243,9 +18243,8 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
         note(&mut steps, entry);
     }
     let handover_at = std::time::Instant::now();
-    let mut entry = resource_op(
-        &c,
-        "hand the coordinator role back",
+    let handover = c.submit_resource(
+        OperationId::new(),
         ResourceCommand::Pool {
             target: pool_target(&c),
             operation: PoolOperation::DesignateCoordinator {
@@ -18253,9 +18252,16 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
                 host: coordinator,
             },
         },
-        600,
-    )
-    .await;
+    );
+    let mut entry = match &handover {
+        Ok(operation) => {
+            let row = wait_outcome(operation, 600).await;
+            json!({"step": "hand the coordinator role back", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail})
+        }
+        Err(error) => {
+            json!({"step": "hand the coordinator role back", "accepted": false, "error": error.to_string()})
+        }
+    };
     entry["read_back"] = json!(
         settle(600, || {
             let s = c.latest();
@@ -18267,18 +18273,26 @@ async fn lab_coordinator_loss_with_ha_member_takeover() {
     );
     entry["followed_after_ms"] = json!(handover_at.elapsed().as_millis() as u64);
     entry["endpoint_after"] = json!(c.latest().active_endpoint().map(|e| e.to_string()));
-    // The handover restarts both toolstacks and can close the connection before the reply;
-    // the operator path rechecks the durable record once the pool is visible again.
-    if entry["state"] == "OutcomeUnknown"
-        && let Some(id) = c
-            .resource_history()
-            .iter()
-            .find(|r| r.state == OperationState::OutcomeUnknown)
-            .map(|r| r.id)
-        && c.control_resource(id, xenadmin_core::OperationControl::Recheck)
-            .is_ok()
+    // The handover restarts both toolstacks and loses the reply; once every host is enabled
+    // again, the operator's recheck confirms the durable record without repeating anything.
+    let hosts_enabled = settle(300, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.hosts.values().all(|h| h.enabled))
+    })
+    .await;
+    entry["hosts_enabled_after_ms"] = json!(handover_at.elapsed().as_millis() as u64);
+    if let Ok(operation) = &handover
+        && entry["state"] == "OutcomeUnknown"
+        && hosts_enabled
     {
-        settle(300, || {
+        let id = operation.latest().id;
+        let requested = c
+            .control_resource(id, xenadmin_core::OperationControl::Recheck)
+            .map_err(|e| e.to_string());
+        entry["recheck_requested"] = json!(requested.is_ok());
+        entry["recheck_error"] = json!(requested.err());
+        settle(180, || {
             c.resource_history()
                 .iter()
                 .any(|r| r.id == id && r.state.terminal())

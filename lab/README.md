@@ -221,6 +221,16 @@ before every build.
   DNS server to join; the directory scenario sets and restores that through the client.
 - `dc start|status|stop|undefine --directory DIR` manages the controller VM (1 GiB, one
   vCPU, one NIC on the lab network).
+- The Xen Orchestra appliance for the recovery gate is the vendor's own image (downloaded
+  from `https://xoa.io/xva`, 1.9 GB) imported through the client by the gate scenario, named
+  `XOA`, sized to 2 GiB and left running on the shared NFS repository. `node lab/xo_connect.mjs
+  XOA_ADDRESS COORDINATOR_ADDRESS` then makes it manage the pool over its API: it rotates the
+  factory account to the lab account in the private file named by `XENADMIN_LAB_XO_FILE`
+  (one line `email password`) on first use, adds the coordinator with the lab root password
+  from `XENADMIN_LAB_PASSWORD_FILE`, and waits for the connection. The appliance presents its
+  own self-signed certificate, so the script is run with `NODE_TLS_REJECT_UNAUTHORIZED=0` on
+  this isolated network only. Nothing in the client depends on XO; this only makes the gate's
+  XO VM a VM that XO itself manages.
 
 Apart from the domain controller's lab-only accounts, none of this creates accounts or
 credentials: the NFS appliance and the guest have no passwords, and everything is reachable
