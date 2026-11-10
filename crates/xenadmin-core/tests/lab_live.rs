@@ -17749,7 +17749,7 @@ async fn lab_member_multipath_round_trip() {
                 .pbds
                 .values()
                 .filter(|p| p.host == Some(member))
-                .filter(|p| i.details.storage.get(&p.sr.unwrap_or(xenadmin_core::SrId::from(uuid::Uuid::nil()))).is_some())
+                .filter(|p| p.sr.is_some_and(|sr| i.details.storage.contains_key(&sr)))
                 .filter_map(|p| {
                     let sr = i.storage.iter().find(|s| Some(xenadmin_core::SrId::from(s.uuid)) == p.sr)?;
                     (sr.kind == "lvmoiscsi").then(|| json!({"repository": sr.name, "multipathed": p.multipathed, "paths": p.paths.iter().map(|x| json!({"device": x.device, "active": x.active, "maximum": x.maximum})).collect::<Vec<_>>()}))
