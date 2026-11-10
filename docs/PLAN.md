@@ -120,7 +120,7 @@ and removed, a member multipath round trip with two active iSCSI paths and ISO l
 fixed, eight host observations, one client journal observation, a fixed client verification
 finding, two fixed client storage findings, two open client decisions and one open upstream accessibility finding. The M2 recovery
 gate was recorded on 2026-11-11 with the Xen Orchestra appliance imported through the client.
-Member failover with HA, pointer and Orca qualification remain qualification gates. Milestones remain open until
+Member failover with HA was recorded the same day: the client followed the surviving member and the old coordinator rejoined. Pointer and Orca qualification remain qualification gates. Milestones remain open until
 their retained workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols

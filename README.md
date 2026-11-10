@@ -36,9 +36,9 @@ reboots and power cycles, coordinator handover and endpoint failover, together w
 thirty-four findings: host behaviours the client now handles, host observations, client fixes
 and a few open product decisions. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md).
 
-Still open before a usable release: member failover with HA, the failure and interruption
-paths of most workflows, a directory service, real-seat desktop checks (Wayland and X11
-input, clipboard, Orca) and installation on clean target systems. See the [implementation plan](docs/PLAN.md) for the gates.
+Still open before a usable release: the failure and interruption paths of most workflows,
+real-seat desktop checks (Wayland and X11 input, clipboard, Orca) and installation on clean
+target systems. Member failover with HA and a directory service were recorded on 2026-11-11. See the [implementation plan](docs/PLAN.md) for the gates.
 
 ## Run it
 
