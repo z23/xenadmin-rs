@@ -282,19 +282,19 @@ It cannot operate XAPI when the host toolstack itself is unavailable.
 
 ## Next acceptance task
 
-The disposable lab exists and the recovery workflow has been run on it, so the next tasks
-are the ones a nested compositor on the development workstation cannot settle:
+Leaving alpha means that someone other than the operator can install the client and rely
+on it for recovery and routine VM work on XCP-ng 8.3, with its limits written down. The
+list below is the minimum for that, with its state on 2026-11-11.
 
-1. A real-seat session with the packaged client: Wayland input and clipboard, a standalone
-   X server with a window manager, Orca, a non-US layout, the wheel's direction in a
-   graphical guest, and the native file dialogs. Record it as the M0 and M3 desktop evidence.
-2. Clean-system installation on Arch and on Ubuntu 24.04, with a software Vulkan driver on
-   one of them, cold-started without internet or XO.
-3. The interruption and failure paths of the M2 workflow that the lab can produce: an XO
-   outage caused by a network fault, a console lost mid-input, a start whose reply is lost.
-   The [traceability report](reports/2026-11-11-verification-traceability.md) lists which
-   core scenarios still rest on fixtures alone.
-4. The decisions recorded as open in the live report: four product decisions, the upstream
-   accessibility finding, and whether M0's generated bindings are built or deferred.
+| Item | State |
+| --- | --- |
+| Draw the supported boundary: the core with live evidence (connections and trust, inventory, power, console, snapshots, metrics, activity) as supported, the rest labelled experimental; settle the four product decisions and the generated-bindings deferral | Open: the operator's decision |
+| Failure paths for that core on the lab | Recorded: a clean shutdown, a start, a snapshot create and a restore interrupted by a client restart; a coordinator power loss; a console across a reboot and a migration. Open: a console dropped while input is held, an XO outage caused by the network, a session that expires without an outage |
+| Tests for the core scenarios that had none | V02 and V10 now have fixture tests and V06 and V20 their missing assertions; V03, V08 and V09 remain partial ([traceability](reports/2026-11-11-verification-traceability.md)) |
+| Explain the two journal anomalies | Done: finding 23 was the client refusing its own repeated enable and is fixed and rerun live; the missing restore record was the scenario closing before admission |
+| Clean-machine installs with software rendering | Done on untouched Ubuntu 24.04 and Arch images ([report](reports/2026-11-11-clean-install.md)); nobody has used the window there |
+| A notice for hosts outside the qualified release | Done |
+| One real-seat pass | The operator's session covered the window, resizing, a real inventory and console typing. Open: a pointer in a graphical guest, clipboard, a standalone X server, and whether screen-reader support is a documented gap |
+| Release mechanics | A [changelog](../CHANGELOG.md) with known issues and the stored-format rule, a tag-triggered workflow that leaves a draft release (not yet run), and a first [performance baseline](reports/2026-11-11-performance-baseline.md). Pushing the first tag is the operator's decision |
 
 Publishing a tag or binary is a separate decision; nothing has been published.

@@ -116,6 +116,13 @@ Check formatting, Clippy, unit/protocol tests, deterministic UI fixtures, and re
 once the workspace exists. Release reports link the actual CI run and lab evidence.
 Do not add empty CI jobs or placeholder tests that claim these checks already pass.
 
+A release starts from a tag. Pushing `vX.Y.Z` runs the release workflow, which requires
+the tag to name the workspace version and the [changelog](../CHANGELOG.md) to have an
+entry for it that is no longer marked in development, repeats the check script on the
+tagged commit, builds the archive and AppImage from it and leaves a draft release holding
+them and their checksums. A person publishes the draft. The workflow has not run yet: no
+tag has been pushed.
+
 
 ## Expanded parity qualification
 

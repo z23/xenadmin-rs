@@ -30,7 +30,7 @@ failure and interruption paths are recorded.
 Verification so far. The offline suite (core, protocol, TLS and Rune fixtures) runs in CI.
 Live qualification runs against a disposable nested XCP-ng 8.3.0 lab:
 the [live qualification report](docs/reports/2026-11-09-lab-qualification.md) records
-eighty-eight scenarios, including three driven desktop sessions, the last with the packaged
+ninety scenarios, including three driven desktop sessions, the last with the packaged
 AppImage, and one operator session on a real seat, covering connections and recovery, power and consoles, snapshots and checkpoints,
 devices, storage and networking, shared NFS and iSCSI repositories with HA, live migration
 and evacuation, host maintenance, reboots and power cycles, coordinator handover and
@@ -41,10 +41,10 @@ decisions. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md), and th
 maps the core verification scenarios to their evidence.
 
 Still open before a usable release: the failure and interruption paths of most workflows,
-a real-seat desktop session (the desktop runs so far used a nested compositor with injected
-keyboard and pointer input, so clipboard, Orca, non-US layouts and a standalone X server are
-unverified), software rendering, installation on clean target systems and every host version
-other than 8.3.0. See the [implementation plan](docs/PLAN.md) for the gates.
+the parts of a real desktop session nobody has exercised (a pointer in a graphical guest,
+clipboard, Orca, non-US layouts, a standalone X server) and every host version other than
+8.3.0. The [implementation plan](docs/PLAN.md) lists the minimum for leaving alpha and
+where each item stands.
 
 ## Run it
 
@@ -72,10 +72,15 @@ the optional installer and removal.
 
 ## Start here
 
+- [Changelog](CHANGELOG.md) lists what changed, the known issues of each build and the
+  stored formats it reads.
 - [Implementation plan](docs/PLAN.md) defines the milestones and their acceptance gates.
 - [Retained parity ledger](docs/PARITY-IMPLEMENTATION.md) tracks all 202 retained rows.
 - [Live qualification report](docs/reports/2026-11-09-lab-qualification.md) and
   [lab acceptance](lab/ACCEPTANCE.md) record what the disposable lab has verified.
+- [Clean-install report](docs/reports/2026-11-11-clean-install.md) and
+  [performance baseline](docs/reports/2026-11-11-performance-baseline.md) record the first
+  installs outside the workstation and a first synthetic measurement.
 - [Disposable lab](lab/README.md) documents the isolated nested KVM harness and its appliances.
 - [Architecture](docs/ARCHITECTURE.md) defines ownership, state, and the UI contract.
 - [Feature scope](docs/FEATURES.md) maps management workflows to milestones.

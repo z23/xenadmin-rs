@@ -15,7 +15,21 @@ available. GPU drivers and desktop libraries are supplied by the operating syste
 
 Ubuntu 24.04 is the build baseline in CI. A build made on a newer distribution can require
 its newer glibc; wrapping that build in an AppImage does not lower its runtime requirements.
-Clean Ubuntu, real Wayland/X11, Orca and multi-monitor qualification are separate gates.
+The CI-built packages have been installed and started on untouched Ubuntu 24.04 and Arch
+images with only these packages added
+([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-11-clean-install.md)):
+
+```sh
+# Ubuntu 24.04
+sudo apt-get install libvulkan1 mesa-vulkan-drivers libwayland-client0 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1
+# Arch
+sudo pacman -S --needed vulkan-icd-loader vulkan-swrast wayland libxkbcommon libxkbcommon-x11 fontconfig
+```
+
+`mesa-vulkan-drivers` and `vulkan-swrast` supply the software Vulkan driver, which is
+enough on a machine with no GPU; a hardware driver replaces it where there is one. Without
+any Vulkan driver the client stops with a message saying so. Real Wayland/X11 sessions,
+Orca and multi-monitor qualification are separate gates.
 
 ## Portable archive
 
@@ -47,8 +61,10 @@ xenadmin-rs-install activate VERSION-MANIFEST_HASH
 ```
 
 Selecting an older executable does not downgrade operation journals or preferences.
-Only select a version whose release notes explicitly permit reading the current state
-schema. Keep a state-directory backup and resolve active/uncertain operations before
+The journal and the profile store carry a format number: a release migrates every older
+format and refuses a newer one, leaving the file as it found it. Only select a version
+whose [changelog](https://github.com/z23/xenadmin-rs/blob/main/CHANGELOG.md) entry lists
+the same stored formats as the one you are leaving. Keep a state-directory backup and resolve active/uncertain operations before
 attempting a version rollback. The installer preserves all application state and never
 starts or closes a client automatically.
 
