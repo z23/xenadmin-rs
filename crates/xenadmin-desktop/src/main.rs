@@ -1736,6 +1736,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
+    let root = if experimental_dialog_open(s) {
+        rune_kit::root(root, [experimental_notice(s, &k)])
+    } else {
+        root
+    };
     let root = root
         .key("application")
         .on_layout_tx(|s: &mut State, rect, _| {
@@ -1755,6 +1760,86 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 
 /// Says so when a connected host is not of the product line this client has been run
 /// against. It restricts nothing: the operator decides what to do on such a host.
+/// Whether the dialog in front belongs to an area outside the supported core, which
+/// docs/FEATURES.md lists under "Supported and experimental". The checks follow the order
+/// in which `view` layers the dialogs, front to back, so the answer is about the one the
+/// person is looking at.
+fn experimental_dialog_open(s: &State) -> bool {
+    // Each entry: whether that dialog is open, and whether its area is experimental.
+    let front_to_back = [
+        (s.failure_help.is_some(), false),
+        (external_tools::is_open(s), true),
+        (s.console_windows.show, false),
+        (s.application_panel.is_some(), false),
+        (s.information.is_some(), false),
+        (s.guest_tools.is_some(), true),
+        (s.snapshot_inspection.is_some(), false),
+        (s.bulk_properties.is_some(), true),
+        (s.bulk_export.is_some(), true),
+        (s.bulk_move.is_some(), true),
+        (s.bulk_delete.is_some(), true),
+        (s.bulk_power.is_some(), false),
+        (s.searches.is_some(), false),
+        (s.workspace.show_manager, false),
+        (s.show_connect, false),
+        (s.alarms_workspace.is_some(), true),
+        (s.snapshot_policy_workspace.is_some(), true),
+        (s.host_power.is_some(), true),
+        (s.host_support.is_some(), true),
+        (s.storage_graph.is_some(), true),
+        (s.local_conversion.show, true),
+        (s.host_monitoring.is_some(), true),
+        (s.host_workspace.is_some(), true),
+        (s.network_workspace.is_some(), true),
+        (s.appliances.is_some(), true),
+        (s.organization.is_some(), true),
+        (s.activity.show, false),
+        (s.disk_workspace.is_some(), true),
+        (s.storage_editor.is_some(), true),
+        (s.pool_security.is_some(), true),
+        (s.pool_dissolve_editor.is_some(), true),
+        (s.pool_editor.is_some(), true),
+        (s.resource_editor.is_some(), true),
+        (s.cloud_init.show, true),
+        (s.transfers.show, true),
+        (s.cross_pool.show, true),
+        (s.vm_recovery.is_some(), true),
+        (s.vm_migration.is_some(), true),
+        (s.vm_lifecycle.is_some(), true),
+        (s.placement.is_some(), true),
+        (s.properties.is_some(), true),
+        (s.snapshot_dialog.is_some(), false),
+    ];
+    front_to_back
+        .iter()
+        .find(|(open, _)| *open)
+        .is_some_and(|(_, experimental)| *experimental)
+}
+
+/// A strip above an experimental dialog, in the margin every dialog leaves at the top of
+/// the window. It takes no input and covers nothing a dialog draws.
+fn experimental_notice(s: &State, k: &Kit) -> El {
+    let width = (s.window_width - 16.0).clamp(200.0, 620.0);
+    el().w(width)
+        .absolute(((s.window_width - width) / 2.0).max(0.0), 3.0)
+        .center()
+        .child(
+            el().px(10.0)
+                .py(2.0)
+                .radius(6.0)
+                .fill(k.c.warning.bg)
+                .border(1.0, k.c.warning.border)
+                .child(
+                    text("Experimental: it has worked on a test lab; how it fails is not yet proven.")
+                        .font(k.ty.text_small)
+                        .color(k.c.warning.fg),
+                ),
+        )
+        .role("status")
+        .label("Experimental area")
+        .key("experimental-notice")
+}
+
 fn unqualified_hosts_notice(s: &State) -> Option<String> {
     let inventory = s.inventory.as_ref()?;
     let mut hosts = inventory
@@ -3192,6 +3277,43 @@ mod tests {
         );
         rt.frame(0.0);
         assert!(rt.find("host-version-notice").is_some());
+    }
+
+    #[test]
+    fn dialogs_outside_the_supported_core_carry_the_experimental_notice() {
+        let shows = |open: fn(&mut State)| {
+            let mut state = init();
+            demo(&mut state);
+            open(&mut state);
+            let mut rt = rune::Runtime::new(
+                state,
+                view,
+                (1440.0, 900.0),
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            rt.frame(0.0);
+            rt.find("experimental-notice").is_some()
+        };
+        assert!(!shows(|_| {}), "the main window");
+        assert!(shows(host_admin::scene), "host administration");
+        assert!(shows(vm_lifecycle::scene), "VM creation");
+        assert!(shows(bulk_delete::scene), "bulk deletion");
+        assert!(!shows(activity::scene), "activity");
+        assert!(!shows(bulk_power::scene), "batch power");
+        assert!(!shows(vm_snapshots::restore_scene), "snapshot restore");
+        // A supported dialog in front of an experimental one decides.
+        assert!(
+            !shows(|s| {
+                host_admin::scene(s);
+                activity::scene(s);
+                s.failure_help = None;
+                s.show_connect = true;
+            }),
+            "the connection dialog over host administration"
+        );
     }
 
     #[test]

@@ -514,7 +514,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                             }
                             let text = clipboard.text();
                             s.console_ui.message =
-                                Some("Clipboard text sent to the console.".into());
+                                Some("Clipboard text sent. The guest receives it only if its tools support clipboard exchange.".into());
                             send(s, ConsoleInput::Clipboard(text.to_owned()));
                         });
                     })
@@ -551,7 +551,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     if let Some(message) = &s.console_ui.message {
         result = result.child(caption(message, k).wrap());
     }
-    result.child(canvas).child(caption("Click the console to type. Focus loss releases input. In Actual size, Shift+wheel pans the view. Clipboard text is limited to 256 KiB; Unicode requires guest support.", k).wrap())
+    result.child(canvas).child(caption("Click the console to type. Focus loss releases input. In Actual size, Shift+wheel pans the view. Clipboard exchange is experimental: it needs guest tools that support it and has not worked with the Linux guests tried. Text is limited to 256 KiB.", k).wrap())
 }
 fn wheel_steps(remainder: &mut f32, delta: f32, precise: bool) -> i32 {
     if !delta.is_finite() || delta == 0.0 {

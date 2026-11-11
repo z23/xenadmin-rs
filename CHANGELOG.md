@@ -21,6 +21,10 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
   plus, minus or 0. Detached console windows are not scaled yet.
 - A notice names any connected host that is not XCP-ng 8.3, the only product line the
   client has been run against. It restricts nothing.
+- The supported part of the client is now stated: connections and trust, the inventory, VM
+  power, the console's display, keyboard and pointer, snapshots, performance charts and
+  activity. Everything else is experimental, and each of its dialogs carries a notice
+  saying so ([feature scope](docs/FEATURES.md)).
 
 ### Fixed
 
@@ -45,6 +49,11 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
   the loss, while the new session was still loading its own.
 - The refusal of a toolstack restart while tasks are unfinished now says that an open
   console counts as one.
+- A saved password could not be read or written while the desktop's password store was
+  locked, even when the store has no password of its own and opens for any application
+  that asks. The client now asks. It does not open a store's own unlock dialog.
+- After "Send clipboard" the console said the text had been sent, which read as success
+  whether or not the guest could receive it.
 
 ### Known issues
 
@@ -52,13 +61,15 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
 - Children scrolled or resized out of view and back are missing from the accessibility
   tree until their container is rebuilt, and controls below a dialog's fold are outside the
   Tab order until the dialog is scrolled (findings 6 and 22 of the
-  [live report](docs/reports/2026-11-09-lab-qualification.md)). Screen reader use is
-  unverified.
+  [live report](docs/reports/2026-11-09-lab-qualification.md)). Screen readers are not
+  supported.
+- Clipboard exchange with a guest is experimental. It needs guest tools that implement
+  it, did not work with the Linux guests tried, and is unverified with a guest that has
+  such tools.
 - Only XCP-ng 8.3.0 has been exercised, on nested virtualization. Most workflows have a
   recorded successful path and no recorded failure or interruption path.
 - Not verified: the wheel's direction and dragging in a graphical guest (the operator
-  confirmed pointer movement and clicks there), clipboard exchange with a guest,
-  non-US keyboard layouts, a standalone X server, and a person using the client on a
+  confirmed pointer movement and clicks there), non-US keyboard layouts, a standalone X server, and a person using the client on a
   freshly installed system (installation, software rendering and an offline start there
   are recorded in the [clean-install report](docs/reports/2026-11-11-clean-install.md)).
 
