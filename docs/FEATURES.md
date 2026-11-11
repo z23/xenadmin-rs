@@ -45,6 +45,43 @@ Milestone order and dependencies are defined in the [implementation plan](PLAN.m
 | Cross-pool migration | M6 | Qualified version/storage/network combinations, progress and partial-failure handling |
 | Expanded compatibility | M6 | Each additional host version, distribution, or architecture has recorded evidence |
 
+## Supported and experimental
+
+Decided by the operator on 2026-11-11, for XCP-ng 8.3 with the client running as a Wayland
+application.
+
+Supported means that a workflow has recorded live evidence of its successful path and of a
+failure or interruption path, and that a defect in it holds a release back:
+
+- connection profiles, certificate trust, saved credentials, pool discovery through a
+  member, and recovery after a lost session or a lost coordinator;
+- the live inventory with its navigation and search;
+- VM power actions, singly and as a batch;
+- the VM and host console: display, keyboard and pointer;
+- snapshots: create, inspect, restore and delete;
+- performance charts;
+- activity: progress, unknown outcomes, recheck, acknowledgement and history.
+
+Everything else in the [ledger](PARITY-IMPLEMENTATION.md) is experimental. It is
+implemented, in most cases with a recorded successful run on the lab, but how it fails is
+mostly unrecorded, and it may change or be withdrawn. The desktop shows a notice above
+every dialog of an experimental area. Inside the supported areas two things are
+experimental as well: clipboard exchange with a guest, which has not worked with the Linux
+guests tried and is unverified with a guest whose tools support it, and clones and exports
+made from a snapshot.
+
+Not supported: screen readers. The accessibility tree has known gaps (findings 6 and 22 of
+the [live report](reports/2026-11-09-lab-qualification.md)) and no screen reader has been
+used with the client. Hosts other than XCP-ng 8.3 are not qualified, and the client says so
+when it meets one.
+
+The four product decisions the live report had left open (findings 25, 29, 30 and 32) all
+concern experimental areas and stay as they are: no VIF rate limit unless the host
+advertises it, an explicit attach after a secondary interface is given an address, a
+pool-wide guard on detaching a shared repository, and no clean-up of a heartbeat
+repository's leftovers. Each is to be looked at again when its area is proposed for
+support.
+
 ## Availability boundary
 
 Direct access means the application can operate without an XO service, account, plugin,

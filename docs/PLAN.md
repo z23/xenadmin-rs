@@ -117,9 +117,9 @@ guest with NIC hot plug, shared-storage live migration and a real member evacuat
 bond round trip and a member power cycle, iSCSI target discovery with an LVM-over-iSCSI
 repository on both hosts and a CHAP-protected repository created with transient credentials
 and removed, a member multipath round trip with two active iSCSI paths and ISO libraries
-over NFS and SMB 3 listing a seeded image. The report numbers fifty-two findings and
+over NFS and SMB 3 listing a seeded image. The report numbers fifty-four findings and
 observations: host behaviours the client now handles, host observations, client fixes, four
-open product decisions and one open upstream accessibility finding; it owns that list.
+product decisions since settled and one open upstream accessibility finding; it owns that list.
 
 The M2 recovery gate was recorded on 2026-11-11 with the Xen Orchestra appliance imported
 through the client and managing the pool, first through the core facade and then through
@@ -288,7 +288,7 @@ list below is the minimum for that, with its state on 2026-11-11.
 
 | Item | State |
 | --- | --- |
-| Draw the supported boundary: the core with live evidence (connections and trust, inventory, power, console, snapshots, metrics, activity) as supported, the rest labelled experimental; settle the four product decisions and the generated-bindings deferral | Open: the operator's decision |
+| Draw the supported boundary: the core with live evidence (connections and trust, inventory, power, console, snapshots, metrics, activity) as supported, the rest labelled experimental; settle the four product decisions and the generated-bindings deferral | Done on 2026-11-11: the operator agreed the boundary, now in the [feature scope](FEATURES.md), and the desktop marks every experimental dialog; the four product decisions stay as they are while their areas are experimental. The generated-bindings deferral has not been put to the operator |
 | Failure paths for that core on the lab | Recorded: a clean shutdown, a start, a snapshot create and a restore interrupted by a client restart; a coordinator power loss; a console across a reboot and a migration; XO unreachable with its VM running, by a detached NIC; a session closed on the host with no outage, with and without the user's access remaining; a console lost while a modifier key is held, by a migration and by a toolstack restart, through the core facade (the desktop's own reconnect was not driven with a key held) |
 | Tests for the core scenarios that had none | Done: V02, V03, V08, V09 and V10 have fixture tests for their stated observations and V06 and V20 their missing assertions ([traceability](reports/2026-11-11-verification-traceability.md)) |
 | Explain the two journal anomalies | Done: finding 23 was the client refusing its own repeated enable and is fixed and rerun live; the missing restore record was the scenario closing before admission |

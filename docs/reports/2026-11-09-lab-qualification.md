@@ -151,6 +151,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Session closed on the host with no outage | P01-03, P13-10, V05 | Passed after the finding 51 fix | Inside the directory scenario, with the read-only directory user connected from a second client instance. First, lab tooling acting as another administrator closed the user's sessions on the host (`session.logout_subject_identifier`) while the user kept its access: the user's client reported the host's SESSION_INVALID, signed in again by itself and was Ready under the next generation 1.5 s later with the read-only role, and it then showed a description edit made by the administrator and its restoration, so events arrived on the new session. Second, the user's subject was removed through the client, the user's own subject last so that its group no longer gave it access. In the first run that removal left the user's client Ready (finding 51) and only the tooling's logout stopped it. In the rerun with the fix the removal itself closed the sessions: the user's client reported SESSION_INVALID, tried to sign in again and stopped at Failed with the host's SESSION_AUTHORIZATION_FAILED 10.5 s later, and stayed there for the 30 s it was watched. Both times the subjects were removed, the pool left the domain and the DNS was restored. The session was closed by an administrator's call; a session that times out by itself was not waited for. Evidence: 1794363295- and 1794363655-directory-join-subjects-and-roles.json |
 | Console connection lost while a modifier key is held | P04-02, P04-07, V19 | Passed in five runs; one earlier run with a cruder check is unexplained | At the tools guest's login prompt the harness read the character the screen drew for a plain `d` and for the same key with Shift, pressed Shift without releasing it and live-migrated the guest through the client. The console connection failed under the held key when the migration completed (4.3 s), and on a new console to the migrated guest a plain `d` read as lower case. With Shift held again, lab tooling acting as another administrator restarted the toolstack of the guest's host; the console failed 1.3 s later, the toolstack was back after 14 s, and a plain `d` on a new console again read as lower case. The guest was left holding the key in neither case, in every one of the five runs, and was migrated back each time. Before that check existed, three runs used a cruder sign of a held Ctrl, a restart of the login program on a plain `d`: two showed none, and one showed a restart after the migration, which did not recur once Ctrl had been released by hand. That sign cannot tell a held Ctrl from a login program that restarted for another reason, and the result was not reproduced; its cause is undetermined. The client sends nothing on a new console to release keys that a lost one left held, as the reference client does not, so a guest that did keep one would keep it until that key is pressed again. Only a Linux guest with guest tools was tried. Evidence: 1794364927-, 1794365011-, 1794365084-, 1794365155- and 1794365234-console-lost-while-a-modifier-is-held.json; the unexplained run is 1794364650- |
 | Graphical guest and pointer presses | P11-09, P08-02, P03-01, P04-02, P04-04 | Passed through the core facade; pointer movement and clicks then confirmed by the operator on a real seat | The lab had no guest with a graphical desktop. GParted Live 1.8.1-6 (an isohybrid live image; its SHA-256 matched the publisher's checksum file fetched over HTTPS, the signature was not checked) was imported through the client as a raw disk (3.8 s), a guest `lab-desktop-1794365323` with 1 GiB was created from the generic template with that disk alone and started, and Return sent at intervals accepted the image's keymap, language and mode prompts: the console showed the GParted window on a desktop at 800 by 600. The operator opened the same console from the desktop client during that boot, so some pointer input in that run was theirs. Two presses were then sent through the client's console, each aimed by a person at a control in a saved frame: on the Close button of an information dialog at (592, 455), after which the frame showed the guest's own pointer arrow at that point and the dialog gone; and on the View menu title at (132, 32), after which the arrow was on the title and the menu open beneath it. The guest draws its pointer into the frame, so the frames show where the guest believes the pointer is. This shows the console's pointer coordinates and button reaching a desktop guest; it does not show the desktop client's own mapping from a window to those coordinates for this guest, which the earlier pointer row covers for another guest. The operator then used this guest's console from the 0.18.0 desktop client in their own Wayland session and reported that the pointer moved and that clicks worked; they did not report on the wheel, on dragging or on how exactly the pointer sat under their hand. The guest is left running. Evidence: 1794365524-desktop-guest-provisioning.json, 1794365577- and 1794365608-desktop-guest-pointer-press.json with their frames |
+| Operator follow-up on a real seat | P14-07, P04-06, P01-10, P18-06 | Charts confirmed; findings 53 and 54 | From the 0.18.0 desktop client in their own Wayland session, after the earlier fixes, the operator reported that the performance charts draw and update without error, which closes the recheck that findings 49 and 50 had left open; that clipboard exchange with a guest does not appear to work (finding 54); and, after restarting their session's keyring daemon to repair an earlier side effect of this qualification, that a saved password could not be read because the store was locked (finding 53, fixed). They decided that screen readers are not supported in this release and agreed the supported and experimental boundary now recorded in the feature scope. The guests, pools and text involved were not recorded |
 
 ## Findings
 
@@ -373,8 +374,8 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 25. **XCP-ng 8.3 records no supported VIF QoS algorithm.** The new VIF's
    qos_supported_algorithms was empty, so the client's rate-limit editor, which requires the
    host to advertise `ratelimit`, was not offered and the scenario skipped it. XenCenter sets
-   the ratelimit policy without that advertisement; whether the client should do the same is
-   an open product decision, not a host fault.
+   the ratelimit policy without that advertisement. The operator decided on 2026-11-11 to
+   leave this as it is while VM devices are experimental; it is not a host fault.
 26. **A guest without PV drivers cannot be evacuated.** XCP-ng 8.3 reported the running
    diskless tool-less VM as preventing evacuation with VM_LACKS_FEATURE, so the member could
    not be evacuated through the pool. The client refused before any change; it had reported
@@ -402,15 +403,15 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    so that a rescan re-introduces the device under its current name.
 29. **Configuring an address does not attach a secondary interface.** PIF.reconfigure_ip
    left the storage interface unattached on both hosts and the appliance unreachable until
-   the separate attach action ran. XenCenter plugs the interface after configuring it;
-   whether the client should do the same or keep the explicit attach is an open product
-   decision. The scenarios attach explicitly.
+   the separate attach action ran. XenCenter plugs the interface after configuring it. The
+   operator decided on 2026-11-11 to keep the explicit attach while network administration
+   is experimental. The scenarios attach explicitly.
 30. **The repository detach guard is pool-wide.** The client refuses to detach a shared
    repository on one host while any running guest in the pool uses a disk on it, even when
    that guest runs elsewhere; XAPI itself permits unplugging the attachment of a host that
    runs none of them. The guard is conservative rather than wrong, and the scenarios record
-   the refusal. Whether per-host detach should be offered when the host has no consumers is
-   an open product decision.
+   the refusal. The operator decided on 2026-11-11 to keep the pool-wide guard while
+   storage administration is experimental.
 31. **A repository refusal spoke of a VM and did not say why.** Submitted a few seconds
    after the CHAP repository was created, the coordinator detach was refused by the client's
    own repository guard, which rejects an attachment change while the repository reports an
@@ -428,7 +429,8 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    actually shows, and every storage-graph precondition now reports as a storage prerequisite
    (unit covered). Destroying or forgetting the heartbeat repository, and deleting the
    leftover statefile disk, stay refused by the client's dependency guards while the pool
-   lists it; whether to offer that cleanup is an open product decision.
+   lists it. The operator decided on 2026-11-11 not to offer that cleanup while storage
+   administration is experimental.
 33. **A stock XCP-ng host's local storage is its local-cache repository.** Both pool hosts
    report `local_cache_sr` pointing at their thin-provisioned local EXT repository with
    `local_cache_enabled` set, as the installer leaves it. The multipath flow refused any host
@@ -583,6 +585,27 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    "Finish pending pool tasks before restarting the toolstack", which sent the operator
    looking for a task. It now adds that an open VM or host console counts as one. The
    guard itself is unchanged.
+53. **A password store with no password of its own stayed "locked".** The operator's
+   desktop keeps its keyring without a password. Such a keyring reports itself locked after
+   its daemon starts and opens at once, with no prompt, for the first application that
+   asks. The client never asked: it read the locked state and told the operator to unlock
+   the store in a password manager, which that desktop does not have. The client now asks
+   the store to unlock whatever it found locked and reads the state again. A store that
+   wants its password answers with a prompt of its own, which the client dismisses and
+   never starts, so that case still ends in the locked notice and no dialog opens that the
+   operator did not ask for (fixture covered). Both cases were then run against a real
+   GNOME keyring daemon on a private bus with private data: a passwordless keyring that
+   began locked was written, read and cleared, and a password-protected one that had been
+   locked refused all three while the daemon went on answering. The keyring's own unlock
+   dialog is not offered from the client.
+54. **Clipboard exchange with a guest did not work for the operator.** The client sends and
+   receives clipboard text as console cut-text messages, as the reference client does. A
+   guest receives them only through guest tools that implement clipboard exchange; the
+   lab's Linux guests have none, and which guests the operator tried was not recorded. The
+   console had said "Clipboard text sent to the console", which read as success. It now
+   says that the guest receives the text only if its tools support the exchange, and the
+   feature is recorded as experimental. Whether it works with a guest that has such tools
+   is unverified; the client has no way to type clipboard text as keystrokes.
 
 ## Console observation
 
