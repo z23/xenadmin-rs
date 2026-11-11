@@ -6525,6 +6525,14 @@ async fn lab_interrupted_snapshot_restore_recovers_without_replay() {
             .iter()
             .map(|r| format!("{} {:?} {}", r.id, r.state, r.detail))
             .collect::<Vec<_>>();
+        // One early attempt ended here and left nothing to diagnose it with. Keep what the
+        // interrupted client last saw and what the guest is doing before failing.
+        lab.record(
+            "interrupted-snapshot-restore-not-recovered",
+            json!({"operation": id.to_string(), "state_at_close": &state_at_close,
+                   "timeline": &timeline, "history_after_restart": &history,
+                   "guest_power": c.latest().inventory().and_then(|i| i.vms.get(&guest_id).map(|vm| format!("{:?}", vm.power_state)))}),
+        );
         panic!("interrupted workflow {id} not recovered; history after restart: {history:?}")
     });
     let mut recheck = None;
