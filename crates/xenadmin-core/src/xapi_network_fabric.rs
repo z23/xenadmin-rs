@@ -3,6 +3,9 @@ use crate::{
     NetworkFabricInventory, NetworkPciDevice, NetworkSriov, NetworkTunnel, SdnController,
     SdnControllerConfiguration, SriovConfigurationMode, TunnelProtocol,
 };
+use xenadmin_xapi::records::{
+    NetworkSriovRecord, PciRecord, PifRecord, PoolRecord, SdnControllerRecord, TunnelRecord,
+};
 
 fn text(record: &Value, field: &str, limit: usize) -> Option<String> {
     record[field]
@@ -11,13 +14,14 @@ fn text(record: &Value, field: &str, limit: usize) -> Option<String> {
         .map(str::to_owned)
 }
 fn controller(record: &Value) -> Option<SdnControllerConfiguration> {
-    let port = integer(&record["port"], "controller port").ok()??;
-    match record["protocol"].as_str()? {
+    let view = SdnControllerRecord::new(record);
+    let port = integer(view.port(), "controller port").ok()??;
+    match view.protocol().as_str()? {
         "ssl" => Some(SdnControllerConfiguration::Ssl {
-            address: record["address"].as_str()?.parse().ok()?,
+            address: view.address().as_str()?.parse().ok()?,
             port: u16::try_from(port).ok().filter(|port| *port != 0)?,
         }),
-        "pssl" if record["address"] == "" && port == 0 => {
+        "pssl" if *view.address() == "" && port == 0 => {
             Some(SdnControllerConfiguration::PassiveSsl)
         }
         _ => None,
@@ -29,7 +33,8 @@ pub(super) fn decode(
     states: &mut BTreeMap<String, ClassAvailability>,
 ) -> NetworkFabricInventory {
     let controllers = records(store, "sdn_controller", states, |record| {
-        let id = id(&record["uuid"])?;
+        let view = SdnControllerRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             SdnController {
@@ -39,8 +44,11 @@ pub(super) fn decode(
         ))
     });
     let tunnels = records(store, "tunnel", states, |record| {
-        let id = id(&record["uuid"])?;
-        let status = record["status"]
+        let view = TunnelRecord::new(record);
+        let id = id(view.uuid())?;
+        let status = view
+            .status()
+            .value()
             .as_object()
             .filter(|map| map.len() <= 32 && map.values().all(Value::is_string));
         let active = status
@@ -55,9 +63,9 @@ pub(super) fn decode(
             id,
             NetworkTunnel {
                 id,
-                transport: refs.link("pif", &record["transport_PIF"]),
-                access: refs.link("pif", &record["access_PIF"]),
-                protocol: record["protocol"].as_str().and_then(TunnelProtocol::parse),
+                transport: refs.link("pif", view.transport_pif()),
+                access: refs.link("pif", view.access_pif()),
+                protocol: view.protocol().as_str().and_then(TunnelProtocol::parse),
                 controller_active: active,
                 controller_error: status.map(|map| {
                     map.get("error")
@@ -68,27 +76,30 @@ pub(super) fn decode(
         ))
     });
     let sriovs = records(store, "network_sriov", states, |record| {
-        let id = id(&record["uuid"])?;
+        let view = NetworkSriovRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             NetworkSriov {
                 id,
-                physical: refs.link("pif", &record["physical_PIF"]),
-                logical: refs.link("pif", &record["logical_PIF"]),
-                requires_reboot: boolean(&record["requires_reboot"])?,
-                mode: record["configuration_mode"]
+                physical: refs.link("pif", view.physical_pif()),
+                logical: refs.link("pif", view.logical_pif()),
+                requires_reboot: boolean(view.requires_reboot())?,
+                mode: view
+                    .configuration_mode()
                     .as_str()
                     .and_then(SriovConfigurationMode::parse),
             },
         ))
     });
     let pci_devices = records(store, "pci", states, |record| {
-        let id = id(&record["uuid"])?;
+        let view = PciRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             NetworkPciDevice {
                 id,
-                host: refs.link("host", &record["host"]),
+                host: refs.link("host", view.host()),
                 address: text(record, "pci_id", 64),
                 vendor_id: text(record, "vendor_id", 16),
                 device_id: text(record, "device_id", 16),
@@ -104,12 +115,14 @@ pub(super) fn decode(
         ..Default::default()
     };
     for (_, record) in store.class("pif") {
-        if let (Ok(id), Some(pci)) = (id(&record["uuid"]), refs.link("pci", &record["PCI"])) {
+        let view = PifRecord::new(record);
+        if let (Ok(id), Some(pci)) = (id(view.uuid()), refs.link("pci", view.pci())) {
             result.pif_pci.insert(id, pci);
         }
     }
     result.pool_sriov_restricted = store.class("pool").next().and_then(|(_, p)| {
-        match p["restrictions"]["restrict_network_sriov"].as_str()? {
+        let view = PoolRecord::new(p);
+        match view.restrictions()["restrict_network_sriov"].as_str()? {
             "true" => Some(true),
             "false" => Some(false),
             _ => None,

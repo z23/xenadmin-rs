@@ -2,6 +2,7 @@ use super::*;
 use crate::model::*;
 use std::collections::BTreeSet;
 use uuid::Uuid;
+use xenadmin_xapi::FieldValue;
 use xenadmin_xapi::records::{
     BondRecord, HostMetricsRecord, MessageRecord, NetworkRecord, PbdRecord, PifMetricsRecord,
     PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VlanRecord,
@@ -32,26 +33,30 @@ impl References {
         }
         Self { classes, snapshots }
     }
-    fn link<T: From<Uuid>>(&self, class: &str, reference: &Value) -> Option<T> {
+    fn link<T: From<Uuid>>(&self, class: &str, reference: FieldValue<'_>) -> Option<T> {
+        self.linked(class, reference.value())
+    }
+    /// The object a reference names, for a reference that is an element of a field.
+    fn linked<T: From<Uuid>>(&self, class: &str, reference: &Value) -> Option<T> {
         self.classes
             .get(class)?
             .get(reference.as_str()?)
             .copied()
             .map(T::from)
     }
-    fn vm(&self, reference: &Value) -> Option<VmId> {
+    fn vm(&self, reference: FieldValue<'_>) -> Option<VmId> {
         if self.snapshots.contains(reference.as_str()?) {
             return None;
         }
         self.link("vm", reference)
     }
-    fn snapshot(&self, reference: &Value) -> Option<crate::SnapshotId> {
+    fn snapshot(&self, reference: FieldValue<'_>) -> Option<crate::SnapshotId> {
         if !self.snapshots.contains(reference.as_str()?) {
             return None;
         }
         self.link("vm", reference)
     }
-    fn snapshot_parent(&self, value: &Value) -> crate::SnapshotParent {
+    fn snapshot_parent(&self, value: FieldValue<'_>) -> crate::SnapshotParent {
         if value == "OpaqueRef:NULL" {
             crate::SnapshotParent::Root
         } else if let Some(id) = self.snapshot(value) {
@@ -62,29 +67,29 @@ impl References {
             crate::SnapshotParent::Unresolved
         }
     }
-    fn links<T: From<Uuid>>(&self, class: &str, references: &Value) -> Vec<T> {
+    fn links<T: From<Uuid>>(&self, class: &str, references: FieldValue<'_>) -> Vec<T> {
         references
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|r| self.link(class, r))
+            .filter_map(|r| self.linked(class, r))
             .collect()
     }
 }
 
-fn id<T: From<Uuid>>(uuid: &Value) -> Result<T, Error> {
+fn id<T: From<Uuid>>(uuid: FieldValue<'_>) -> Result<T, Error> {
     required(uuid)?
         .parse::<Uuid>()
         .map(T::from)
         .map_err(|_| Error::Protocol("invalid optional inventory UUID"))
 }
-fn text_option(value: &Value) -> Option<String> {
+fn text_option(value: FieldValue<'_>) -> Option<String> {
     value
         .as_str()
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
-fn map_bool(other_config: &Value, key: &str) -> Option<bool> {
+fn map_bool(other_config: FieldValue<'_>, key: &str) -> Option<bool> {
     match other_config.as_object()?.get(key) {
         None => Some(false),
         Some(value) => match value.as_str()? {
@@ -106,14 +111,14 @@ pub(crate) fn decode_server_message(record: &Value) -> Result<ServerMessage, Err
         body: string(view.body()),
     })
 }
-fn strings(value: &Value) -> Option<Vec<String>> {
+fn strings(value: FieldValue<'_>) -> Option<Vec<String>> {
     value
         .as_array()?
         .iter()
         .map(|v| v.as_str().map(str::to_owned))
         .collect()
 }
-fn string_map(value: &Value) -> BTreeMap<String, String> {
+fn string_map(value: FieldValue<'_>) -> BTreeMap<String, String> {
     value
         .as_object()
         .into_iter()
@@ -122,7 +127,7 @@ fn string_map(value: &Value) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn blocked_operations(value: &Value) -> BTreeMap<String, String> {
+fn blocked_operations(value: FieldValue<'_>) -> BTreeMap<String, String> {
     value
         .as_object()
         .into_iter()
@@ -173,11 +178,11 @@ pub(super) fn power_availability(record: &Value, action: crate::PowerAction) -> 
     }
     .power_availability(action, true)
 }
-fn size(value: &Value, field: &'static str) -> Result<Option<u64>, Error> {
+fn size(value: FieldValue<'_>, field: &'static str) -> Result<Option<u64>, Error> {
     storage_number(value, field)
 }
-fn boolean(value: &Value) -> Result<Option<bool>, Error> {
-    match value {
+fn boolean(value: FieldValue<'_>) -> Result<Option<bool>, Error> {
+    match value.value() {
         Value::Null => Ok(None),
         Value::Bool(value) => Ok(Some(*value)),
         _ => Err(Error::Protocol("invalid optional inventory boolean")),
@@ -273,7 +278,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             NetworkDetails {
-                purposes: crate::network_service::purposes(view.purpose()),
+                purposes: crate::network_service::purposes(view.purpose().value()),
                 automatic: view.other_config()["automatic"].as_str().map(str::to_owned),
                 automatic_known: view
                     .other_config()
@@ -462,18 +467,21 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             StorageAttachment {
                 id,
                 location: crate::storage::safe_location_for_kind(
-                    view.device_config(),
-                    view.sr().as_str().and_then(|reference| {
+                    view.device_config().value(),
+                    view.sr().value().as_str().and_then(|reference| {
                         SrRecord::new(store.records.get("sr")?.get(reference)?)
                             .type_()
+                            .value()
                             .as_str()
                     }),
                 ),
-                requires_credentials: crate::storage::requires_credentials(view.device_config()),
+                requires_credentials: crate::storage::requires_credentials(
+                    view.device_config().value(),
+                ),
                 multipathed: view.other_config()["multipathed"]
                     .as_str()
                     .and_then(|s| s.parse().ok()),
-                paths: crate::storage::path_counts(view.other_config()),
+                paths: crate::storage::path_counts(view.other_config().value()),
                 host: refs.link("host", view.host()),
                 sr: refs.link("sr", view.sr()),
                 currently_attached: boolean(view.currently_attached())?,
@@ -593,7 +601,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 vms_known: view
                     .vms()
                     .as_array()
-                    .is_some_and(|v| v.iter().all(|r| refs.vm(r).is_some())),
+                    .is_some_and(|v| v.iter().all(|r| refs.vm(FieldValue::of(r)).is_some())),
                 id,
                 name: label(view.name_label()),
                 description: string(view.name_description()),
@@ -602,7 +610,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter_map(|r| refs.vm(r))
+                    .filter_map(|r| refs.vm(FieldValue::of(r)))
                     .collect(),
                 allowed_operations: strings(view.allowed_operations()),
             },
@@ -617,7 +625,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 vms_known: view
                     .vms()
                     .as_array()
-                    .is_some_and(|v| v.iter().all(|r| refs.vm(r).is_some())),
+                    .is_some_and(|v| v.iter().all(|r| refs.vm(FieldValue::of(r)).is_some())),
                 last_run_time: view.last_run_time().as_str().map(str::to_owned),
                 id,
                 name: label(view.name_label()),
@@ -632,7 +640,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter_map(|r| refs.vm(r))
+                    .filter_map(|r| refs.vm(FieldValue::of(r)))
                     .collect(),
             },
         ))
@@ -689,12 +697,14 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 VmDetails {
                     snapshot_parent: refs.snapshot_parent(view.parent()),
                     domain_type: text_option(view.domain_type()),
-                    cores_per_socket: text_option(&view.platform()["cores-per-socket"]),
+                    cores_per_socket: text_option(FieldValue::of(
+                        &view.platform()["cores-per-socket"],
+                    )),
                     topology_known: view
                         .platform()
                         .as_object()
                         .is_some_and(|m| m.get("cores-per-socket").is_none_or(Value::is_string)),
-                    cpu_weight: text_option(&view.vcpus_params()["weight"]),
+                    cpu_weight: text_option(FieldValue::of(&view.vcpus_params()["weight"])),
                     cpu_weight_known: view
                         .vcpus_params()
                         .as_object()
@@ -714,7 +724,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                         .flatten()
                         .filter_map(|(task, operation)| {
                             operation.as_str().map(|operation| RunningOperation {
-                                task: refs.link("task", &json!(task)),
+                                task: refs.linked("task", &json!(task)),
                                 operation: operation.into(),
                             })
                         })
@@ -739,9 +749,9 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     memory_target: size(view.memory_target(), "VM.memory_target")
                         .ok()
                         .flatten(),
-                    boot_order: text_option(&view.hvm_boot_params()["order"]),
+                    boot_order: text_option(FieldValue::of(&view.hvm_boot_params()["order"])),
                     boot_policy: text_option(view.hvm_boot_policy()),
-                    firmware: text_option(&view.hvm_boot_params()["firmware"])
+                    firmware: text_option(FieldValue::of(&view.hvm_boot_params()["firmware"]))
                         .or_else(|| crate::guest_boot::firmware(record).map(str::to_owned)),
                     secure_boot: crate::guest_boot::policy(record),
                     bios_identity_empty: view.bios_strings().as_object().map(|v| v.is_empty()),
@@ -791,7 +801,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     current_operations: view.current_operations().as_object().map(|ops| {
                         ops.iter()
                             .map(|(task, operation)| RunningOperation {
-                                task: refs.link("task", &Value::String(task.clone())),
+                                task: refs.linked("task", &Value::String(task.clone())),
                                 operation: operation.as_str().unwrap_or("Unknown").into(),
                             })
                             .collect()
@@ -892,7 +902,11 @@ fn pool_administration(
 ) -> crate::PoolAdministration {
     let view = PoolRecord::new(record);
     let number = |value: &Value| value.as_u64().or_else(|| value.as_str()?.parse().ok());
-    let statefiles = view.ha_statefiles().as_array().filter(|v| v.len() <= 64);
+    let statefiles = view
+        .ha_statefiles()
+        .value()
+        .as_array()
+        .filter(|v| v.len() <= 64);
     let heartbeat_srs: Option<Vec<SrId>> = statefiles.and_then(|values| {
         values
             .iter()
@@ -900,7 +914,7 @@ fn pool_administration(
                 let vdi = store
                     .class("vdi")
                     .find(|(reference, r)| {
-                        value.as_str() == Some(*reference) || VdiRecord::new(r).uuid() == value
+                        value.as_str() == Some(*reference) || *VdiRecord::new(r).uuid() == *value
                     })?
                     .1;
                 refs.link("sr", VdiRecord::new(vdi).sr())
@@ -910,8 +924,8 @@ fn pool_administration(
     crate::PoolAdministration {
         coordinator: refs.link("host", view.master()),
         ha_enabled: view.ha_enabled().as_bool(),
-        ha_failures_to_tolerate: number(view.ha_host_failures_to_tolerate()),
-        ha_plan_exists_for: number(view.ha_plan_exists_for()),
+        ha_failures_to_tolerate: number(view.ha_host_failures_to_tolerate().value()),
+        ha_plan_exists_for: number(view.ha_plan_exists_for().value()),
         ha_overcommitted: view.ha_overcommitted().as_bool(),
         ha_allow_overcommit: view.ha_allow_overcommit().as_bool(),
         ha_timeout_known: view
@@ -1043,7 +1057,7 @@ fn decode_alarms(store: &Store, refs: &References, result: &mut InventoryDetails
                     match record["is_control_domain"].as_bool() {
                         Some(false) => {}
                         Some(true) => {
-                            dom0 = refs.link("host", &record["resident_on"]);
+                            dom0 = refs.link("host", FieldValue::of(&record["resident_on"]));
                             if dom0.is_none()
                                 || !store.class("host").any(|(r, h)| {
                                     Some(r.as_str()) == record["resident_on"].as_str()

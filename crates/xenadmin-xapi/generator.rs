@@ -226,8 +226,8 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
 
     out.push_str(
         "/// A view of a record for every class: one method for each field, which returns the\n\
-         /// value as the host sent it, or null when the record does not carry the field.\n\
-         pub mod records {\n    use serde_json::Value;\n",
+         /// field as the host sent it, null when the record does not carry it.\n\
+         pub mod records {\n    use super::FieldValue;\n    use serde_json::Value;\n",
     );
     for class in &classes {
         let name = view(&class.name);
@@ -244,8 +244,8 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
         for field in &class.fields {
             let _ = write!(
                 out,
-                "        /// `{field}`: `{kind}`, {qualifier}.\n        pub fn {method}(self) -> &'a Value {{\n            \
-                 &self.0[{literal}]\n        }}\n",
+                "        /// `{field}`: `{kind}`, {qualifier}.\n        pub fn {method}(self) -> FieldValue<'a> {{\n            \
+                 FieldValue(&self.0[{literal}])\n        }}\n",
                 field = field.name,
                 kind = field.kind,
                 qualifier = field.qualifier,

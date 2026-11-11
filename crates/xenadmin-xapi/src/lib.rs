@@ -42,6 +42,38 @@ pub struct Enumeration {
     pub values: &'static [&'static str],
 }
 
+/// One field of a record, as the host sent it: null when the record does not carry it.
+///
+/// A field is not a record. Code that reads a field takes this type, so a whole record
+/// cannot be handed to it by mistake. It dereferences to the JSON value for reading.
+#[derive(Clone, Copy, Debug)]
+pub struct FieldValue<'a>(&'a serde_json::Value);
+impl<'a> FieldValue<'a> {
+    /// A value that did not come through a record view: a key inside a map-valued field,
+    /// or a read by key where the record's class is not known.
+    pub fn of(value: &'a serde_json::Value) -> Self {
+        Self(value)
+    }
+    /// The value with the record's lifetime, for a result that outlives this field.
+    pub fn value(self) -> &'a serde_json::Value {
+        self.0
+    }
+}
+impl std::ops::Deref for FieldValue<'_> {
+    type Target = serde_json::Value;
+    fn deref(&self) -> &serde_json::Value {
+        self.0
+    }
+}
+impl<T> PartialEq<T> for FieldValue<'_>
+where
+    serde_json::Value: PartialEq<T>,
+{
+    fn eq(&self, other: &T) -> bool {
+        self.0 == other
+    }
+}
+
 /// The upstream tag, commit and digest of the description the bindings were generated from.
 pub const SOURCE: &str = include_str!("../data/SOURCE");
 
@@ -89,10 +121,15 @@ mod tests {
         assert_eq!(vm.uuid(), "u");
         assert_eq!(vm.power_state(), enumerations::vm_power_state::HALTED);
         assert_eq!(vm.vcpus_max(), 2);
-        assert_eq!(*vm.is_a_snapshot(), false);
+        assert_eq!(vm.is_a_snapshot(), false);
         assert!(vm.snapshot_of().is_null());
         assert!(records::HostRecord::new(&Value::Null).enabled().is_null());
         assert_eq!(vm.record(), &record);
+        // A field reads like the value and keeps the record's lifetime when asked.
+        let name: &str = vm.uuid().value().as_str().unwrap();
+        assert_eq!(name, "u");
+        assert_eq!(FieldValue::of(&record["VCPUs_max"]), 2);
+        assert_eq!(vm.vcpus_max().as_u64(), Some(2));
         // A field whose name is a Rust keyword keeps its meaning with an underscore.
         assert_eq!(
             records::VdiRecord::new(&json!({"type": "user"})).type_(),
@@ -135,8 +172,8 @@ mod tests {
         assert!(out.contains("Message { name: \"get\", parameters: &[], result: \"string\", state: \"Published_s\" },"));
         assert!(out.contains("pub struct ARecord<'a>(&'a Value);"));
         assert!(out.contains("pub struct BThingRecord<'a>(&'a Value);"));
-        assert!(out.contains("pub fn type_(self) -> &'a Value {"));
-        assert!(out.contains("pub fn max_size(self) -> &'a Value {"));
+        assert!(out.contains("pub fn type_(self) -> FieldValue<'a> {"));
+        assert!(out.contains("pub fn max_size(self) -> FieldValue<'a> {"));
         assert!(out.contains("pub const ON: &str = \"on\";"));
         assert!(out.contains("pub const ON_: &str = \"On\";"));
         assert!(out.contains("pub const _9P: &str = \"9p\";"));

@@ -65,15 +65,23 @@ depends on the description alone and is sorted.
   for each field of that class. A read through a view says which class it is of, and a
   field the class lacks has no method. The methods return the value as sent, so bounds
   and the refusal of malformed values stay with the core's decoders.
+- A type for one field of a record, `FieldValue`, which every view method returns and
+  which reads as the JSON value it wraps. The core's readers of a field take that type,
+  so a whole record handed to one of them does not compile.
 - Constants for every enumeration value, such as the four VM power states.
 
 ## Use in the core so far
 
-- The event decoder, the power and snapshot checks and the inventory decoder read their
-  records through the generated views: 331 reads in those files, where a field that its
-  class lacks does not compile. The 86 reads by key that remain there are keys inside
-  map-valued fields, the JSON-RPC envelope, loops that handle several classes at once,
-  and two decoders (network fabric and management topology) that have not been moved.
+- The event decoder, the power and snapshot checks, the inventory decoder and the
+  network fabric and management topology decoders read their records through the
+  generated views, where a field that its class lacks does not compile. Those four files
+  read a value by key in 309 places before the move and in 102 now (the count
+  is defined under "What follows"). What remains by key there are keys inside map-valued
+  fields, the JSON-RPC envelope and loops that handle several classes at once.
+- The readers those decoders share (a required string, a label, a size, a reference and
+  the like) take a `FieldValue`. A read that has no view, such as a key inside
+  `other_config`, wraps its value by hand with `FieldValue::of`, which is visible where
+  it is done.
 - VM power states are compared with the generated constants in the event decoder.
 - `xapi_conformance_tests.rs` checks every string of the form `Class.name` or
   `Async.Class.name` in the core against the catalogue: a call must be a message of that
@@ -92,20 +100,24 @@ What the move found:
   setting could never be shown or changed. The read did not compile against the pool's
   view (finding 55 of the live report).
 
-What the move did not protect against: the readers that take a field's value still take
+What the views alone did not protect against: a reader that takes a field's value took
 a JSON value, as a whole record is. One call that passed the record where its UUID was
-expected compiled, and a test caught it. Typed values, step 3 below, are what remove
-that.
+expected compiled, and a test caught it. `FieldValue` closed that: the same call, put
+back as a check, is refused by the compiler ("expected `FieldValue`, found `&Value`").
+A field of the wrong class or the wrong meaning passed to a reader still compiles;
+typed values, step 3 below, narrow that further.
 
 ## What follows, in order
 
-Measured on 2026-11-11, the core reads 254 distinct keys in 2,069 places; 190 are field
-names somewhere in the description and 64 are keys inside map-valued fields, parts of the
-JSON-RPC envelope or the client's own structures.
+The count used here is of indexes by a string literal on an expression (`record["key"]`)
+in the core's sources outside its test files, which is how a field is read without a
+view. Before the move the core had 2,094 of them over 252 distinct keys; on 2026-11-11
+it has 1,886 over 246. Not all of them are fields: some are keys inside
+map-valued fields, parts of the JSON-RPC envelope or the client's own structures.
 
-1. The remaining decoders move onto views: network fabric, management topology and the
-   loops that handle several classes, then the operation modules, which hold most of the
-   1,883 reads by key still in the core.
+1. The loops that handle several classes at once, then the operation modules, which hold
+   nearly all of the reads by key still in the core. The largest are the VM lifecycle
+   backend, network operations and the storage graph backend.
 2. Enumeration constants replace the remaining literal values.
 3. Typed values: generated readers that turn a field into its Rust type, with the core's
    bounds applied to the result.

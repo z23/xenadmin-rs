@@ -20,9 +20,10 @@ Nothing has changed in what the client does yet.
   XAPI bindings, generated from the upstream API description, are under the LGPL 2.1
   with a linking exception. Their licence and a notice of their source are under
   `third-party/xenadmin-xapi-VERSION/`. Everything else stays under the MIT licence.
-- Inside, the core's event and inventory decoders read records through those generated
-  bindings, and every call and field the client names is checked against the generated
-  catalogue.
+- Inside, the core's event, inventory, network fabric and management topology decoders
+  read records through those generated bindings, and every call and field the client
+  names is checked against the generated catalogue. A field read through them has a type
+  of its own, so code that expects one field cannot be given a whole record.
 
 ### Fixed
 

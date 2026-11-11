@@ -1,6 +1,7 @@
 use super::*;
 use crate::{ClassAvailability, ManagementTopology, PifId};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{BondRecord, PifRecord, VlanRecord};
 
 pub(crate) struct ManagementTopologyRecords {
     store: Store,
@@ -86,10 +87,11 @@ impl ManagementTopologyRecords {
         let mut vlan_by_child: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         let mut vlans_by_parent: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
         for (r, b) in &store.records["bond"] {
-            let master = reference(&b["master"], "pif", &store, false)?.unwrap();
-            let slaves = references(&b["slaves"], "pif", &store)?;
+            let view = BondRecord::new(b);
+            let master = reference(view.master().value(), "pif", &store, false)?.unwrap();
+            let slaves = references(view.slaves().value(), "pif", &store)?;
             require(
-                reference(&b["primary_slave"], "pif", &store, false)?
+                reference(view.primary_slave().value(), "pif", &store, false)?
                     .is_some_and(|p| slaves.contains(p)),
             )?;
             masters_by_pif.entry(master).or_default().insert(r);
@@ -98,19 +100,21 @@ impl ManagementTopologyRecords {
             }
         }
         for (r, v) in &store.records["vlan"] {
-            let parent = reference(&v["tagged_PIF"], "pif", &store, false)?.unwrap();
-            let child = reference(&v["untagged_PIF"], "pif", &store, false)?.unwrap();
+            let view = VlanRecord::new(v);
+            let parent = reference(view.tagged_pif().value(), "pif", &store, false)?.unwrap();
+            let child = reference(view.untagged_pif().value(), "pif", &store, false)?.unwrap();
             vlans_by_parent.entry(parent).or_default().insert(r);
             vlan_by_child.entry(child).or_default().insert(r);
         }
         let empty = BTreeSet::new();
         for (r, p) in &store.records["pif"] {
-            reference(&p["host"], "host", &store, false)?;
-            reference(&p["network"], "network", &store, false)?;
-            let masters = references(&p["bond_master_of"], "bond", &store)?;
-            let member = reference(&p["bond_slave_of"], "bond", &store, true)?;
-            let vlan = reference(&p["VLAN_master_of"], "vlan", &store, true)?;
-            let vlans = references(&p["VLAN_slave_of"], "vlan", &store)?;
+            let view = PifRecord::new(p);
+            reference(view.host().value(), "host", &store, false)?;
+            reference(view.network().value(), "network", &store, false)?;
+            let masters = references(view.bond_master_of().value(), "bond", &store)?;
+            let member = reference(view.bond_slave_of().value(), "bond", &store, true)?;
+            let vlan = reference(view.vlan_master_of().value(), "vlan", &store, true)?;
+            let vlans = references(view.vlan_slave_of().value(), "vlan", &store)?;
             require(
                 &masters == masters_by_pif.get(r.as_str()).unwrap_or(&empty)
                     && &member.into_iter().collect::<BTreeSet<_>>()
@@ -127,7 +131,9 @@ impl ManagementTopologyRecords {
             ] {
                 require(p[field].as_array().is_some_and(|v| v.len() <= 1024))?;
             }
-            let config = p["other_config"]
+            let config = view
+                .other_config()
+                .value()
                 .as_object()
                 .filter(|v| v.len() <= 1024)
                 .ok_or(Error::Protocol("Management topology metadata unavailable"))?;
@@ -145,22 +151,25 @@ impl ManagementTopologyRecords {
         ))?;
         for id in t.pifs.keys() {
             let (_, p) = self.pif(*id)?;
-            for field in [
-                "tunnel_access_PIF_of",
-                "tunnel_transport_PIF_of",
-                "sriov_physical_PIF_of",
-                "sriov_logical_PIF_of",
+            let p = PifRecord::new(p);
+            for uses in [
+                p.tunnel_access_pif_of(),
+                p.tunnel_transport_pif_of(),
+                p.sriov_physical_pif_of(),
+                p.sriov_logical_pif_of(),
             ] {
-                require(p[field].as_array().is_some_and(|v| v.is_empty()))?;
+                require(uses.as_array().is_some_and(|v| v.is_empty()))?;
             }
             let network = self.store.records["network"]
-                .get(p["network"].as_str().unwrap())
+                .get(p.network().as_str().unwrap())
+                .map(NetworkRecord::new)
                 .ok_or(Error::ResourceConflict)?;
             require(
-                network["managed"] == true
-                    && network["MTU"]
+                network.managed() == true
+                    && network
+                        .mtu()
                         .as_u64()
-                        .or_else(|| network["MTU"].as_str()?.parse().ok())
+                        .or_else(|| network.mtu().as_str()?.parse().ok())
                         == Some(1500),
             )?;
         }
@@ -170,7 +179,8 @@ impl ManagementTopologyRecords {
         self.pifs()
             .iter()
             .find(|(_, v)| {
-                v["uuid"]
+                PifRecord::new(v)
+                    .uuid()
                     .as_str()
                     .and_then(|v| v.parse::<uuid::Uuid>().ok())
                     == Some(id.uuid())

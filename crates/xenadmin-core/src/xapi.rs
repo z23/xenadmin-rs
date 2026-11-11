@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use xenadmin_xapi::{
+    FieldValue,
     enumerations::vm_power_state,
     records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord, VmRecord},
 };
@@ -833,7 +834,7 @@ impl Store {
             ));
         }
         let pool = pools[0].1;
-        let pool_id = PoolId::parse(required(&pool["uuid"])?)
+        let pool_id = PoolId::parse(required(FieldValue::of(&pool["uuid"]))?)
             .map_err(|_| Error::Protocol("invalid pool UUID"))?;
         let mut host_refs = BTreeMap::new();
         let mut hosts = BTreeMap::new();
@@ -1093,6 +1094,7 @@ pub(crate) fn opaque_reference(value: &Value) -> Result<String, Error> {
 pub(crate) fn snapshot_task_result(task: &Value) -> Result<String, Error> {
     let xml = TaskRecord::new(task)
         .result()
+        .value()
         .as_str()
         .filter(|value| value.len() <= 4096)
         .ok_or(Error::Protocol("missing or oversized snapshot result"))?;
@@ -1159,7 +1161,7 @@ pub(crate) async fn verify_created_snapshot(
 }
 
 fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
-    Ok(match required(&record["power_state"])? {
+    Ok(match required(FieldValue::of(&record["power_state"]))? {
         vm_power_state::RUNNING => PowerState::Running,
         vm_power_state::HALTED => PowerState::Halted,
         vm_power_state::PAUSED => PowerState::Paused,
@@ -1168,42 +1170,44 @@ fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
     })
 }
 
-// The readers below take a field's value, as a record view or an index gives it. A field
-// the record does not carry is null there, which each reader treats as absent.
-fn required(value: &Value) -> Result<&str, Error> {
+// The readers below take one field of a record, as a record view gives it. A field the
+// record does not carry is null there, which each reader treats as absent. A whole record
+// is another type and cannot be passed.
+fn required(value: FieldValue<'_>) -> Result<&str, Error> {
     value
+        .value()
         .as_str()
         .ok_or(Error::Protocol("missing required inventory field"))
 }
-fn string(value: &Value) -> String {
+fn string(value: FieldValue<'_>) -> String {
     value.as_str().unwrap_or_default().into()
 }
-fn label(name_label: &Value) -> String {
+fn label(name_label: FieldValue<'_>) -> String {
     name_label
         .as_str()
         .filter(|v| !v.is_empty())
         .unwrap_or("Unnamed")
         .into()
 }
-fn integer(value: &Value, field: &'static str) -> Result<Option<i64>, Error> {
+fn integer(value: FieldValue<'_>, field: &'static str) -> Result<Option<i64>, Error> {
     let invalid = || Error::InventoryNumber {
         field,
         expected: "a signed 64-bit integer",
     };
-    match value {
+    match value.value() {
         Value::Null => Ok(None),
         Value::Number(n) => n.as_i64().map(Some).ok_or_else(invalid),
         Value::String(n) => n.parse::<i64>().map(Some).map_err(|_| invalid()),
         _ => Err(invalid()),
     }
 }
-fn number(value: &Value, field: &'static str) -> Result<u64, Error> {
+fn number(value: FieldValue<'_>, field: &'static str) -> Result<u64, Error> {
     u64::try_from(integer(value, field)?.unwrap_or(0)).map_err(|_| Error::InventoryNumber {
         field,
         expected: "a non-negative integer",
     })
 }
-fn storage_number(value: &Value, field: &'static str) -> Result<Option<u64>, Error> {
+fn storage_number(value: FieldValue<'_>, field: &'static str) -> Result<Option<u64>, Error> {
     match integer(value, field)? {
         None | Some(-1) => Ok(None),
         Some(value) => u64::try_from(value)
