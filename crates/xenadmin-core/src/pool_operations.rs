@@ -5,6 +5,7 @@ use super::{
 use crate::{Error, HaRestartPriority, HostId, PoolOperation, SrId, VmId, xapi::Session};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::HostRecord;
 
 pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&PoolOperation, Error> {
     match &record.action {
@@ -14,6 +15,20 @@ pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&PoolOperati
 }
 fn number(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
+}
+/// Whether the pool's hosts accept HTTPS only: XAPI keeps the setting on each host and has
+/// no pool field for it, so the pool has a value only where every host agrees.
+async fn https_only(session: &Session) -> Result<Option<bool>, Error> {
+    let hosts = session.call("host.get_all_records", vec![]).await?;
+    let mut values = hosts
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(_, host)| HostRecord::new(host).https_only().as_bool());
+    Ok(match values.next() {
+        Some(Some(first)) if values.all(|host| host == Some(first)) => Some(first),
+        _ => None,
+    })
 }
 fn reference(value: &Value) -> Result<String, Error> {
     xapi::reply_reference(value)
@@ -210,7 +225,9 @@ pub(super) async fn arguments(
             Ok(vec![json!(pool_ref), json!(enabled)])
         }
         PoolOperation::SetHttpsOnly { expected, enabled } => {
-            expect(&fresh, "https_only", json!(expected))?;
+            if https_only(session).await? != Some(*expected) {
+                return Err(Error::ResourceConflict);
+            }
             Ok(vec![json!(pool_ref), json!(enabled)])
         }
         PoolOperation::DesignateCoordinator { expected, host } => {
@@ -396,7 +413,7 @@ pub(super) async fn verify(
         PoolOperation::SetMigrationCompression { enabled, .. } => {
             fresh["migration_compression"] == *enabled
         }
-        PoolOperation::SetHttpsOnly { enabled, .. } => fresh["https_only"] == *enabled,
+        PoolOperation::SetHttpsOnly { enabled, .. } => https_only(session).await? == Some(*enabled),
         PoolOperation::DesignateCoordinator { expected, host } => {
             // The task completes on the previous coordinator, which still reports itself
             // as the coordinator until its toolstack restarts as a member; keep reading

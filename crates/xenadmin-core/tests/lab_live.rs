@@ -19960,6 +19960,93 @@ async fn lab_typed_text_reaches_the_guest_exactly() {
     assert!(reported, "the guest did not report the typed bytes");
 }
 
+/// P13-13: the pool's HTTPS-only setting, which XAPI keeps on each host. The client shows
+/// the hosts' common value, turns it on through the reviewed pool operation, reads it back
+/// from the hosts and turns it off again. A plain HTTP connection to the coordinator from
+/// the workstation is tried at each stage as a check from outside the client.
+#[tokio::test]
+#[ignore]
+async fn lab_pool_https_only_round_trip() {
+    use xenadmin_core::{PoolOperation, ResourceCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let pool = c.latest().inventory().unwrap().pool_id;
+    let shown = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.details
+                .pool
+                .as_ref()
+                .and_then(|p| p.administration.https_only)
+        })
+    };
+    let plain_http = |address: String| async move {
+        tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Write};
+            let Ok(socket) = format!("{address}:80").parse::<std::net::SocketAddr>() else {
+                return json!({"error": "bad address"});
+            };
+            match std::net::TcpStream::connect_timeout(&socket, Duration::from_secs(5)) {
+                Ok(mut stream) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let _ = stream.write_all(b"GET / HTTP/1.0\r\n\r\n");
+                    let mut reply = [0_u8; 64];
+                    let read = stream.read(&mut reply).unwrap_or(0);
+                    let line = String::from_utf8_lossy(&reply[..read]);
+                    json!({"connected": true, "status": line.lines().next().unwrap_or_default()})
+                }
+                Err(error) => json!({"connected": false, "error": error.to_string()}),
+            }
+        })
+        .await
+        .unwrap_or_else(|e| json!({"error": e.to_string()}))
+    };
+    let coordinator = lab.hosts[0].ip.clone();
+    let mut steps = Vec::new();
+    let before = shown(&c);
+    note(
+        &mut steps,
+        json!({"step": "the client shows the hosts' common setting", "read_back": before == Some(false),
+               "https_only": before, "plain_http": plain_http(coordinator.clone()).await}),
+    );
+    if before == Some(false) {
+        for (label, expected, enabled) in [
+            ("turn HTTPS-only access on", false, true),
+            ("turn HTTPS-only access off again", true, false),
+        ] {
+            let mut entry = resource_op(
+                &c,
+                label,
+                ResourceCommand::Pool {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Pool(pool))
+                        .unwrap(),
+                    operation: PoolOperation::SetHttpsOnly { expected, enabled },
+                },
+                300,
+            )
+            .await;
+            entry["read_back"] = json!(settle(60, || shown(&c) == Some(enabled)).await);
+            entry["https_only"] = json!(shown(&c));
+            entry["plain_http"] = plain_http(coordinator.clone()).await;
+            note(&mut steps, entry);
+        }
+    }
+    c.close().await;
+    lab.record("pool-https-only-round-trip", json!({"steps": steps}));
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
 /// The pool's security overview through a fresh inspection.
 async fn security_overview(
     c: &Connection,

@@ -26,15 +26,15 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
     let records: Records = Arc::new(Mutex::new(BTreeMap::from([
         (
             "pool".into(),
-            json!({"uuid":POOL,"name_label":"Fixture pool","master":"OpaqueRef:host","current_operations":{},"allowed_operations":["ha_enable","ha_disable","designate_new_master","tls_verification_enable"],"migration_compression":false,"https_only":false,"ha_enabled":false,"ha_host_failures_to_tolerate":"0","ha_plan_exists_for":"0","ha_overcommitted":false,"ha_allow_overcommit":false,"ha_statefiles":[],"ha_configuration":{},"other_config":{"keep":"preserve"},"tls_verification_enabled":false,"is_psr_pending":false}),
+            json!({"uuid":POOL,"name_label":"Fixture pool","master":"OpaqueRef:host","current_operations":{},"allowed_operations":["ha_enable","ha_disable","designate_new_master","tls_verification_enable"],"migration_compression":false,"ha_enabled":false,"ha_host_failures_to_tolerate":"0","ha_plan_exists_for":"0","ha_overcommitted":false,"ha_allow_overcommit":false,"ha_statefiles":[],"ha_configuration":{},"other_config":{"keep":"preserve"},"tls_verification_enabled":false,"is_psr_pending":false}),
         ),
         (
             "host".into(),
-            json!({"uuid":HOST,"name_label":"Coordinator","enabled":true,"address":"192.0.2.10","metrics":"OpaqueRef:host_metrics","current_operations":{}}),
+            json!({"uuid":HOST,"name_label":"Coordinator","enabled":true,"address":"192.0.2.10","metrics":"OpaqueRef:host_metrics","current_operations":{},"https_only":false}),
         ),
         (
             "host-other".into(),
-            json!({"uuid":OTHER,"name_label":"Member","enabled":false,"address":"192.0.2.11","metrics":"OpaqueRef:host_metrics","current_operations":{}}),
+            json!({"uuid":OTHER,"name_label":"Member","enabled":false,"address":"192.0.2.11","metrics":"OpaqueRef:host_metrics","current_operations":{},"https_only":false}),
         ),
         ("host_metrics".into(), json!({"live":true})),
         (
@@ -91,7 +91,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             writes.fetch_add(1,Ordering::SeqCst);let mut records=map.lock().unwrap();
             match method {
                 "pool.set_migration_compression"=>records.get_mut("pool").unwrap()["migration_compression"]=params[2].clone(),
-                "Async.pool.set_https_only"=>records.get_mut("pool").unwrap()["https_only"]=params[2].clone(),
+                "Async.pool.set_https_only"=>for host in ["host","host-other"] {records.get_mut(host).unwrap()["https_only"]=params[2].clone();},
                 "Async.pool.designate_new_master"=>{let p=records.get_mut("pool").unwrap();if fault==Fault::LateCoordinator {p["pending_master"]=params[1].clone();} else {p["master"]=params[1].clone();}},
                 "Async.pool.set_ha_host_failures_to_tolerate"=>records.get_mut("pool").unwrap()["ha_host_failures_to_tolerate"]=params[2].clone(),
                 "Async.pool.enable_ha"=>{assert_eq!(params[1],json!(["OpaqueRef:SR"]));assert_eq!(params[2],json!({}));let p=records.get_mut("pool").unwrap();p["ha_enabled"]=json!(true);p["ha_statefiles"]=json!(["99999999-9999-9999-9999-999999999999"]);},
