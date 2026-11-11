@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use xenadmin_xapi::records::{HostRecord, PbdRecord, PifRecord, SrRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{
+    HostRecord, PbdRecord, PifRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Disk {
@@ -263,20 +265,25 @@ pub(crate) async fn graph(session: &Session, vmref: &str, r: &Value) -> Result<G
     for reference in refs(r, "VBDs")? {
         let v = read(session, "VBD", &reference).await?;
         idle(&v)?;
-        if v["VM"] != vmref {
+        if VbdRecord::new(&v).vm() != vmref {
             return Err(Error::MigrationConflict);
         }
         let kind = text(&v, "type")?;
         if kind != "Disk" && kind != "CD" {
             return Err(Error::UnsupportedMigration);
         }
-        let disk = if v["empty"] == true {
-            if v["VDI"] != "OpaqueRef:NULL" || kind != "CD" {
+        let disk = if VbdRecord::new(&v).empty() == true {
+            if VbdRecord::new(&v).vdi() != "OpaqueRef:NULL" || kind != "CD" {
                 return Err(Error::MigrationConflict);
             }
             None
-        } else if v["empty"] == false {
-            let d = read(session, "VDI", &snapshots::reference(&v["VDI"])?).await?;
+        } else if VbdRecord::new(&v).empty() == false {
+            let d = read(
+                session,
+                "VDI",
+                &snapshots::reference(&VbdRecord::new(&v).vdi())?,
+            )
+            .await?;
             idle(&d)?;
             if VdiRecord::new(&d).missing() != false || VdiRecord::new(&d).managed() != true {
                 return Err(Error::UnsupportedMigration);
@@ -302,18 +309,28 @@ pub(crate) async fn graph(session: &Session, vmref: &str, r: &Value) -> Result<G
             kind,
             mode: text(&v, "mode")?,
             device: text(&v, "userdevice")?,
-            owner: v["other_config"]["owner"].as_str().is_some(),
-            bootable: v["bootable"].as_bool().ok_or(Error::MigrationConflict)?,
+            owner: VbdRecord::new(&v).other_config()["owner"]
+                .as_str()
+                .is_some(),
+            bootable: VbdRecord::new(&v)
+                .bootable()
+                .as_bool()
+                .ok_or(Error::MigrationConflict)?,
         });
     }
     let mut nics = vec![];
     for reference in refs(r, "VIFs")? {
         let v = read(session, "VIF", &reference).await?;
         idle(&v)?;
-        if v["VM"] != vmref {
+        if VifRecord::new(&v).vm() != vmref {
             return Err(Error::MigrationConflict);
         }
-        let network = read(session, "network", &snapshots::reference(&v["network"])?).await?;
+        let network = read(
+            session,
+            "network",
+            &snapshots::reference(&VifRecord::new(&v).network())?,
+        )
+        .await?;
         nics.push(Nic {
             id: id(&v)?,
             network: id(&network)?,
@@ -739,7 +756,9 @@ pub(crate) async fn prepare_affinity(session: &Session, plan: &Plan) -> Result<P
 /// Record individually verified replacement disks even when another part of migration failed.
 pub(crate) async fn observed_disks(session: &Session, plan: &Plan) -> Result<Vec<VdiId>, Error> {
     let (vmref, r) = fresh(session, "VM", plan.vm.uuid()).await?;
-    if r["is_a_template"] != false || r["is_a_snapshot"] != false || r["is_control_domain"] != false
+    if VmRecord::new(&r).is_a_template() != false
+        || VmRecord::new(&r).is_a_snapshot() != false
+        || VmRecord::new(&r).is_control_domain() != false
     {
         return Err(Error::MigrationConflict);
     }
@@ -773,9 +792,9 @@ pub(crate) async fn observed_disks(session: &Session, plan: &Plan) -> Result<Vec
             continue;
         }
         let (_, r) = fresh(session, "VDI", d.id.uuid()).await?;
-        if r["sharable"] != false
-            || r["read_only"] != false
-            || r["is_a_snapshot"] != false
+        if VdiRecord::new(&r).sharable() != false
+            || VdiRecord::new(&r).read_only() != false
+            || VdiRecord::new(&r).is_a_snapshot() != false
             || refs(&r, "VBDs")?.len() != 1
         {
             continue;

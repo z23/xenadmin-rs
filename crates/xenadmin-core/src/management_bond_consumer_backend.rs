@@ -220,11 +220,12 @@ impl Graph {
         )?;
         let v = s.call("VM.get_record", vec![json!(reference)]).await?;
         require(
-            v["is_control_domain"] == false,
+            VmRecord::new(&v).is_control_domain() == false,
             "Control-domain network changes require a separate workflow",
         )?;
         require(
-            v["scheduled_to_be_resident_on"]
+            VmRecord::new(&v)
+                .scheduled_to_be_resident_on()
                 .as_str()
                 .is_some_and(|r| r == "OpaqueRef:NULL")
                 && idle(&v),
@@ -237,7 +238,7 @@ impl Graph {
             .map(|(r, _)| r.clone())
             .collect::<BTreeSet<_>>();
         require(
-            refs(&v["VIFs"])? == interfaces,
+            refs(&VmRecord::new(&v).vifs())? == interfaces,
             "Guest VM interface membership is inconsistent",
         )?;
         Ok(v)

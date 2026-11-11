@@ -574,7 +574,10 @@ pub(super) async fn verify(
                 let (_, v, fresh) = read(session, expected.id).await?;
                 if !same(&fresh, expected)
                     || crate::snapshot_policy_support::clock_seconds(
-                        v["last_run_time"].as_str().ok_or(Error::ResourceConflict)?,
+                        VmssRecord::new(&v)
+                            .last_run_time()
+                            .as_str()
+                            .ok_or(Error::ResourceConflict)?,
                     )? <= crate::snapshot_policy_support::clock_seconds(
                         e.last_run.as_deref().ok_or(Error::ResourceConflict)?,
                     )?
@@ -624,7 +627,7 @@ pub(super) async fn verify(
                 return Err(Error::ResourceConflict);
             }
             let (_, v) = vm(session, *id).await?;
-            if v["snapshot_schedule"]
+            if VmRecord::new(&v).snapshot_schedule()
                 != if *join {
                     reference.as_str()
                 } else {

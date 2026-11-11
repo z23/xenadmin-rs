@@ -488,16 +488,17 @@ pub(super) async fn verify(
                 "storage creation result identity unavailable; no write was repeated",
             ))?;
             let fresh = by_ref(session, "SR", &json!(reference)).await?;
-            let id = fresh["uuid"]
+            let id = SrRecord::new(&fresh)
+                .uuid()
                 .as_str()
                 .and_then(|id| SrId::parse(id).ok())
                 .ok_or(Error::Protocol("created storage UUID unavailable"))?;
             if baseline.srs.contains(&id)
-                || fresh["name_label"] != *name
-                || fresh["name_description"] != *description
-                || fresh["type"] != location.kind()
-                || fresh["content_type"] != location.content_type()
-                || fresh["shared"] != location.shared()
+                || SrRecord::new(&fresh).name_label() != *name
+                || SrRecord::new(&fresh).name_description() != *description
+                || SrRecord::new(&fresh).type_() != location.kind()
+                || SrRecord::new(&fresh).content_type() != location.content_type()
+                || SrRecord::new(&fresh).shared() != location.shared()
             {
                 return Err(Error::ResourceConflict);
             }
@@ -552,7 +553,8 @@ pub(super) async fn verify(
                 "attachment creation result identity unavailable; no write was repeated",
             ))?;
             let fresh = by_ref(session, "PBD", &json!(reference)).await?;
-            let id = fresh["uuid"]
+            let id = PbdRecord::new(&fresh)
+                .uuid()
                 .as_str()
                 .and_then(|id| PbdId::parse(id).ok())
                 .ok_or(Error::Protocol("created attachment UUID unavailable"))?;
@@ -566,9 +568,12 @@ pub(super) async fn verify(
                 }
                 crate::storage_local::attachment_graph(&sr_record, reference)?;
             }
-            if fresh["currently_attached"] != false
+            if PbdRecord::new(&fresh).currently_attached() != false
                 || baseline.pbds.contains(&id)
-                || !config_matches(&fresh["device_config"], &location.device_config())
+                || !config_matches(
+                    &PbdRecord::new(&fresh).device_config(),
+                    &location.device_config(),
+                )
             {
                 return Err(Error::ResourceConflict);
             }

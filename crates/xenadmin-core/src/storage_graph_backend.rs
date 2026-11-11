@@ -7,7 +7,9 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{
+    HostRecord, PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord,
+};
 fn require(ok: bool, msg: &'static str) -> Result<(), Error> {
     if ok {
         Ok(())
@@ -406,7 +408,8 @@ async fn multipath_graph(
     )?;
     let (h, v) = host(s, *id, true).await?;
     require(
-        v["enabled"] == false && v["other_config"]["MAINTENANCE_MODE"] == "true",
+        HostRecord::new(&v).enabled() == false
+            && HostRecord::new(&v).other_config()["MAINTENANCE_MODE"] == "true",
         "Host must already be disabled and in maintenance",
     )?;
     let mode = if done(p, &Kind::Mode, after) {
@@ -414,8 +417,13 @@ async fn multipath_graph(
     } else {
         *expected
     };
-    require(v["multipathing"] == mode, "Host multipathing mode changed")?;
-    let handler = v["other_config"]
+    require(
+        HostRecord::new(&v).multipathing() == mode,
+        "Host multipathing mode changed",
+    )?;
+    let handler = HostRecord::new(&v)
+        .other_config()
+        .value()
         .as_object()
         .ok_or(Error::ResourceConflict)?
         .get("multipathhandle");
@@ -445,7 +453,7 @@ async fn multipath_graph(
         "Complete host storage attachment graph changed",
     )?;
     require(
-        v["PBDs"].as_array().is_some_and(|a| {
+        HostRecord::new(&v).pbds().as_array().is_some_and(|a| {
             a.len() == attachments.len()
                 && a.iter().all(|v| {
                     v.as_str()
@@ -483,12 +491,13 @@ async fn multipath_graph(
         crate::storage_local::attachment_graph(&sr, &pbd_ref)?;
         if a.local_cache {
             require(
-                v["local_cache_sr"] == sr_ref,
+                HostRecord::new(&v).local_cache_sr() == sr_ref,
                 "The reviewed local-cache repository changed; review the host again",
             )?;
         } else {
             require(
-                SrRecord::new(&sr).local_cache_enabled() == false && v["local_cache_sr"] != sr_ref,
+                SrRecord::new(&sr).local_cache_enabled() == false
+                    && HostRecord::new(&v).local_cache_sr() != sr_ref,
                 "Storage used for local caching must be reviewed as kept attached",
             )?;
         }

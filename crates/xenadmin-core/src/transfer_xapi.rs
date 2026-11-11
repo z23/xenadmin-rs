@@ -3,7 +3,9 @@ use crate::{Endpoint, NetworkId, VdiId, xapi::Session};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use xenadmin_xapi::records::{HostRecord, PbdRecord, SrRecord, TaskRecord, VbdRecord, VmRecord};
+use xenadmin_xapi::records::{
+    HostRecord, PbdRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord, VmRecord,
+};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Baseline {
     pub vms: Vec<Uuid>,
@@ -152,7 +154,9 @@ pub(crate) async fn prepare(
                 let vms = records(s, "VM").await?;
                 if vms
                     .iter()
-                    .filter(|(_, v)| VmRecord::new(v).suspend_vdi() == r["suspend_VDI"])
+                    .filter(|(_, v)| {
+                        VmRecord::new(v).suspend_vdi() == VmRecord::new(&r).suspend_vdi()
+                    })
                     .map(|(k, _)| k)
                     .collect::<Vec<_>>()
                     != vec![&reference]
@@ -161,14 +165,15 @@ pub(crate) async fn prepare(
                 }
             }
             idle(&r)?;
-            if r["is_control_domain"] != false
-                || r["power_state"]
+            if VmRecord::new(&r).is_control_domain() != false
+                || VmRecord::new(&r).power_state()
                     != if matches!(source, ExportSource::Checkpoint { .. }) {
                         "Suspended"
                     } else {
                         "Halted"
                     }
-                || r["blocked_operations"]
+                || VmRecord::new(&r)
+                    .blocked_operations()
                     .as_object()
                     .is_some_and(|v| v.contains_key("export"))
                 || !crate::xapi::advertises(&r, "export")
@@ -247,25 +252,28 @@ pub(crate) async fn created(
     let mut graph_memory = BTreeSet::new();
     let mut names = vec![];
     for (reference, r) in &vms {
-        if r["other_config"]["import_task"] != task {
+        if VmRecord::new(r).other_config()["import_task"] != task {
             continue;
         }
         let uuid = id(r)?;
-        if baseline.vms.contains(&uuid) || r["is_control_domain"] != false {
+        if baseline.vms.contains(&uuid) || VmRecord::new(r).is_control_domain() != false {
             return Err(Error::TransferConflict);
         }
         if complete {
             idle(r)?;
-            if !matches!(r["power_state"].as_str(), Some("Halted" | "Suspended"))
-                || r["is_a_snapshot"] != false
+            if !matches!(
+                VmRecord::new(r).power_state().as_str(),
+                Some("Halted" | "Suspended")
+            ) || VmRecord::new(r).is_a_snapshot() != false
             {
                 return Err(Error::TransferConflict);
             }
         }
-        let template = r["is_a_template"]
+        let template = VmRecord::new(r)
+            .is_a_template()
             .as_bool()
             .ok_or(Error::TransferConflict)?;
-        let memory = match r["suspend_VDI"].as_str() {
+        let memory = match VmRecord::new(r).suspend_vdi().as_str() {
             Some(reference) if !matches!(reference, "OpaqueRef:NULL" | "Ref:NULL") => {
                 if !graph_memory.insert(reference.to_owned()) {
                     return Err(Error::TransferConflict);
@@ -275,11 +283,12 @@ pub(crate) async fn created(
             }
             _ => None,
         };
-        if complete && ((r["power_state"] == "Suspended") != memory.is_some()) {
+        if complete && ((VmRecord::new(r).power_state() == "Suspended") != memory.is_some()) {
             return Err(Error::TransferConflict);
         }
         names.push((
-            r["name_label"]
+            VmRecord::new(r)
+                .name_label()
                 .as_str()
                 .ok_or(Error::TransferConflict)?
                 .to_owned(),
@@ -299,15 +308,15 @@ pub(crate) async fn created(
         }
     }
     for (reference, r) in &disks {
-        let tagged = r["sm_config"]["import_task"] == task;
+        let tagged = VdiRecord::new(r).sm_config()["import_task"] == task;
         if !tagged && !graph_disks.contains(reference) && !graph_memory.contains(reference) {
             continue;
         }
         let uuid = id(r)?;
-        let memory = r["type"] == "suspend";
+        let memory = VdiRecord::new(r).type_() == "suspend";
         if baseline.disks.contains(&uuid)
-            || (!memory && r["type"] != "user")
-            || r["managed"] != true
+            || (!memory && VdiRecord::new(r).type_() != "user")
+            || VdiRecord::new(r).managed() != true
             || (memory
                 && (!graph_memory.contains(reference)
                     || graph_disks.contains(reference)
@@ -319,14 +328,14 @@ pub(crate) async fn created(
         {
             return Err(Error::TransferConflict);
         }
-        let sr = crate::snapshots::reference(&r["SR"])?;
+        let sr = crate::snapshots::reference(&VdiRecord::new(r).sr())?;
         let sr = s.call("SR.get_record", vec![json!(sr)]).await?;
         if id(&sr)? != destination.uuid() {
             return Err(Error::TransferConflict);
         }
         if complete {
             idle(r)?;
-            if r["missing"] != false {
+            if VdiRecord::new(r).missing() != false {
                 return Err(Error::TransferConflict);
             }
         }

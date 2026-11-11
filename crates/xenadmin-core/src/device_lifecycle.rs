@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::records::{NetworkRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 
 const MARKER: &str = "xenadmin-rs-operation";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -531,7 +531,7 @@ pub(crate) async fn plan(
             device,
         } => {
             let (_, record) = fresh(session, "SR", sr.uuid()).await?;
-            if record["content_type"] == "iso" {
+            if SrRecord::new(&record).content_type() == "iso" {
                 return Err(Error::DeviceConflict);
             }
             permits(&record, "vdi_create")?;
@@ -757,7 +757,7 @@ pub(crate) async fn prepare_step(
         Step::GuestTools(_) | Step::Property(_) => unreachable!(),
         Step::CreateDisk { sr, name, size } => {
             let (sr_ref, record) = fresh(session, "SR", sr.uuid()).await?;
-            if record["content_type"] == "iso" {
+            if SrRecord::new(&record).content_type() == "iso" {
                 return Err(Error::DeviceConflict);
             }
             permits(&record, "vdi_create")?;
@@ -786,7 +786,7 @@ pub(crate) async fn prepare_step(
                 let (reference, record) = fresh(session, "VDI", id.uuid()).await?;
                 if !ordinary_disk(&record)
                     || !refs(&record, "VBDs")?.is_empty()
-                    || (!*read_only && record["read_only"] != false)
+                    || (!*read_only && VdiRecord::new(&record).read_only() != false)
                 {
                     return Err(Error::DeviceInUse);
                 }
@@ -822,7 +822,7 @@ pub(crate) async fn prepare_step(
                 .as_object()
                 .ok_or(Error::DeviceConflict)?
                 .values()
-                .any(|record| record["suspend_VDI"] == reference)
+                .any(|record| VmRecord::new(record).suspend_vdi() == reference)
             {
                 return Err(Error::DeviceInUse);
             }

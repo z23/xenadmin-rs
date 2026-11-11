@@ -393,10 +393,10 @@ pub(crate) async fn identify(
         Kind::Guest { guest: g } => {
             let (_, v) = guest(s, &checked, g).await?;
             let expected = &p.summary.guests[g];
-            if v["name_label"] != expected.name
-                || v["name_description"] != expected.description
-                || number(&v["VCPUs_max"]) != Some(u64::from(expected.cpus))
-                || number(&v["VCPUs_at_startup"]) != Some(u64::from(expected.cpus))
+            if VmRecord::new(&v).name_label() != expected.name
+                || VmRecord::new(&v).name_description() != expected.description
+                || number(&VmRecord::new(&v).vcpus_max()) != Some(u64::from(expected.cpus))
+                || number(&VmRecord::new(&v).vcpus_at_startup()) != Some(u64::from(expected.cpus))
                 || [
                     "memory_static_min",
                     "memory_static_max",
@@ -405,10 +405,10 @@ pub(crate) async fn identify(
                 ]
                 .iter()
                 .any(|k| number(&v[*k]) != Some(expected.memory_bytes))
-                || v["HVM_boot_policy"] != "BIOS order"
-                || v["HVM_boot_params"]["order"] != "dc"
-                || v["platform"]["secureboot"] != "false"
-                || v["HVM_boot_params"]["firmware"]
+                || VmRecord::new(&v).hvm_boot_policy() != "BIOS order"
+                || VmRecord::new(&v).hvm_boot_params()["order"] != "dc"
+                || VmRecord::new(&v).platform()["secureboot"] != "false"
+                || VmRecord::new(&v).hvm_boot_params()["firmware"]
                     != if expected.firmware == GuestFirmware::Uefi {
                         "uefi"
                     } else {

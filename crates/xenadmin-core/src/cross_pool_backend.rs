@@ -340,13 +340,13 @@ async fn source(
 ) -> Result<(String, Value, m::Graph, Shape), Error> {
     let (reference, record) = m::fresh(session, "VM", operation.vm.uuid()).await?;
     require(
-        record["is_a_template"] == false
-            && record["is_a_snapshot"] == false
-            && record["is_control_domain"] == false,
+        VmRecord::new(&record).is_a_template() == false
+            && VmRecord::new(&record).is_a_snapshot() == false
+            && VmRecord::new(&record).is_control_domain() == false,
         "Choose an ordinary VM; templates, snapshots and control domains cannot use this transfer",
     )?;
     require(
-        record["power_state"]
+        VmRecord::new(&record).power_state()
             == if operation.mode.live() {
                 "Running"
             } else {
@@ -360,8 +360,10 @@ async fn source(
         "The host does not currently allow cross-pool migration",
     )?;
     require(
-        m::nullable_host(session, &record["resident_on"]).await? == operation.expected_host
-            && m::nullable_host(session, &record["affinity"]).await? == operation.expected_affinity,
+        m::nullable_host(session, &VmRecord::new(&record).resident_on()).await?
+            == operation.expected_host
+            && m::nullable_host(session, &VmRecord::new(&record).affinity()).await?
+                == operation.expected_affinity,
         "The VM resident or home host changed",
     )?;
     for field in ["snapshots", "VGPUs", "attached_PCIs", "VUSBs"] {
@@ -388,7 +390,8 @@ async fn source(
         )?;
     }
     require(
-        record["ha_always_run"] == false && record["ha_restart_priority"] == "",
+        VmRecord::new(&record).ha_always_run() == false
+            && VmRecord::new(&record).ha_restart_priority() == "",
         "Disable VM HA protection separately before transfer",
     )?;
     let graph = m::graph(session, &reference, &record).await?;
@@ -454,11 +457,11 @@ async fn source(
         let (_, record) = m::fresh(session, "VDI", disk.id.uuid()).await?;
         require(
             disk.kind == "user"
-                && record["read_only"] == false
-                && record["sharable"] == false
-                && record["is_a_snapshot"] == false
-                && record["cbt_enabled"] == false
-                && record["on_boot"] == "persist",
+                && VdiRecord::new(&record).read_only() == false
+                && VdiRecord::new(&record).sharable() == false
+                && VdiRecord::new(&record).is_a_snapshot() == false
+                && VdiRecord::new(&record).cbt_enabled() == false
+                && VdiRecord::new(&record).on_boot() == "persist",
             "Shared, snapshot, CBT or reset-on-boot disks cannot use this transfer",
         )?;
         let consumers = m::refs(&record, "VBDs")?;

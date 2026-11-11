@@ -1,5 +1,6 @@
 use super::*;
 use crate::{DeviceProperty as Change, DeviceQos, DiskAccess};
+use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Field {
@@ -98,7 +99,10 @@ async fn current(
     if !verify {
         let (_, v) = fresh(session, "VM", vm.uuid()).await?;
         idle(&v)?;
-        if !matches!(v["power_state"].as_str(), Some("Halted" | "Running")) {
+        if !matches!(
+            VmRecord::new(&v).power_state().as_str(),
+            Some("Halted" | "Running")
+        ) {
             return Err(Error::UnavailableAction);
         }
     }
@@ -125,10 +129,10 @@ async fn current(
     };
     let (vr, v) = fresh(session, "VBD", vbd.uuid()).await?;
     let (reference, record) = fresh(session, "VDI", vdi.uuid()).await?;
-    if v["VM"] != vm_ref
-        || v["VDI"] != reference
-        || v["type"] != "Disk"
-        || (!verify && change.requires_halted() && v["currently_attached"] != false)
+    if VbdRecord::new(&v).vm() != vm_ref
+        || VbdRecord::new(&v).vdi() != reference
+        || VbdRecord::new(&v).type_() != "Disk"
+        || (!verify && change.requires_halted() && VbdRecord::new(&v).currently_attached() != false)
         || !ordinary_disk(&record)
         || refs(&record, "VBDs")? != vec![vr.clone()]
     {
@@ -142,7 +146,7 @@ async fn current(
             value: DiskAccess::ReadWrite,
             ..
         }
-    ) && record["read_only"] != false
+    ) && VdiRecord::new(&record).read_only() != false
     {
         return Err(Error::DeviceInUse);
     }

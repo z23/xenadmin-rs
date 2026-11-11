@@ -753,7 +753,8 @@ pub(crate) async fn prepare(
                 }
                 Change::Memory(value) => {
                     permits_memory_limits(&r)?;
-                    let min = number(&r["memory_static_min"]).ok_or(Error::VmLifecycleConflict)?;
+                    let min = number(&VmRecord::new(&r).memory_static_min())
+                        .ok_or(Error::VmLifecycleConflict)?;
                     if min > value {
                         return Err(Error::InvalidVmLifecycle);
                     }
@@ -789,7 +790,7 @@ pub(crate) async fn prepare(
                     if crate::guest_boot::firmware(&r) != Some("uefi") {
                         return Err(Error::UnsupportedVmLifecycle);
                     }
-                    let mut params = string_map(&r["platform"])?;
+                    let mut params = string_map(&VmRecord::new(&r).platform())?;
                     params.insert("secureboot".into(), json!(value.to_string()));
                     Ok(call(
                         "VM.set_platform",
@@ -802,7 +803,7 @@ pub(crate) async fn prepare(
                         return Err(Error::UnsupportedVmLifecycle);
                     }
                     firmware_safe(&r, value)?;
-                    let mut params = string_map(&r["HVM_boot_params"])?;
+                    let mut params = string_map(&VmRecord::new(&r).hvm_boot_params())?;
                     params.insert(
                         "firmware".into(),
                         json!(match value {
@@ -865,10 +866,10 @@ pub(crate) async fn prepare(
             let (vm_ref, _) = target(session, plan, vm).await?;
             let (vbd_ref, r) = fresh(session, "VBD", vbd.uuid()).await?;
             let (image_ref, _) = fresh(session, "VDI", image.uuid()).await?;
-            if r["VM"] != vm_ref
-                || r["VDI"] != image_ref
-                || r["type"] != "CD"
-                || r["currently_attached"] != false
+            if VbdRecord::new(&r).vm() != vm_ref
+                || VbdRecord::new(&r).vdi() != image_ref
+                || VbdRecord::new(&r).type_() != "CD"
+                || VbdRecord::new(&r).currently_attached() != false
             {
                 return Err(Error::VmLifecycleConflict);
             }
@@ -943,11 +944,11 @@ pub(crate) async fn prepare(
             if !refs(&r, "VBDs")?.is_empty()
                 || (!snapshot && !ordinary_disk(&r))
                 || (snapshot
-                    && (r["is_a_snapshot"] != true
-                        || r["type"] != "user"
-                        || r["sharable"] != false
-                        || r["managed"] != true
-                        || r["missing"] != false))
+                    && (VdiRecord::new(&r).is_a_snapshot() != true
+                        || VdiRecord::new(&r).type_() != "user"
+                        || VdiRecord::new(&r).sharable() != false
+                        || VdiRecord::new(&r).managed() != true
+                        || VdiRecord::new(&r).missing() != false))
             {
                 return Err(Error::DeviceInUse);
             }
@@ -1389,9 +1390,10 @@ pub(crate) async fn verify(
             let (_, r) = fresh(session, "VM", vm.uuid()).await?;
             let (hr, _) = fresh(session, "host", host.uuid()).await?;
             Ok(ordinary(&r)
-                && r["power_state"] == "Halted"
-                && r["affinity"] == hr
-                && plan.bios_identity.as_ref() == Some(&string_map(&r["bios_strings"])?))
+                && VmRecord::new(&r).power_state() == "Halted"
+                && VmRecord::new(&r).affinity() == hr
+                && plan.bios_identity.as_ref()
+                    == Some(&string_map(&VmRecord::new(&r).bios_strings())?))
         }
         Step::Set { vm, change } => {
             let Some((_, r)) = snapshots::optional_record(session, "VM", &vm.to_string()).await?
@@ -1402,8 +1404,8 @@ pub(crate) async fn verify(
                 return Ok(false);
             }
             let changed = match &change {
-                Change::Name(value) => r["name_label"] == *value,
-                Change::Description(value) => r["name_description"] == *value,
+                Change::Name(value) => VmRecord::new(&r).name_label() == *value,
+                Change::Description(value) => VmRecord::new(&r).name_description() == *value,
                 _ => false,
             };
             if changed && let Some(metadata) = &mut plan.metadata {
@@ -1414,9 +1416,9 @@ pub(crate) async fn verify(
                 }
             }
             Ok(match change {
-                Change::Name(value) => r["name_label"] == value,
-                Change::Description(value) => r["name_description"] == value,
-                Change::Template(value) => r["is_a_template"] == value,
+                Change::Name(value) => VmRecord::new(&r).name_label() == value,
+                Change::Description(value) => VmRecord::new(&r).name_description() == value,
+                Change::Template(value) => VmRecord::new(&r).is_a_template() == value,
                 Change::Memory(value) => [
                     "memory_static_max",
                     "memory_dynamic_min",
@@ -1424,29 +1426,33 @@ pub(crate) async fn verify(
                 ]
                 .iter()
                 .all(|k| number(&r[*k]) == Some(value)),
-                Change::VcpuMax(value) => number(&r["VCPUs_max"]) == Some(value),
-                Change::VcpuStartup(value) => number(&r["VCPUs_at_startup"]) == Some(value),
+                Change::VcpuMax(value) => number(&VmRecord::new(&r).vcpus_max()) == Some(value),
+                Change::VcpuStartup(value) => {
+                    number(&VmRecord::new(&r).vcpus_at_startup()) == Some(value)
+                }
                 Change::SecureBoot(value) => {
                     crate::guest_boot::firmware(&r) == Some("uefi")
                         && crate::guest_boot::policy(&r) == Some(value)
                 }
                 Change::Firmware(value) => {
-                    r["HVM_boot_params"]["firmware"]
+                    VmRecord::new(&r).hvm_boot_params()["firmware"]
                         == match value {
                             GuestFirmware::Bios => "bios",
                             GuestFirmware::Uefi | GuestFirmware::SecureUefi => "uefi",
                             GuestFirmware::Inherited => return Err(Error::InvalidVmLifecycle),
                         }
                 }
-                Change::RemoveProvisionDisks => r["other_config"].get("disks").is_none(),
+                Change::RemoveProvisionDisks => {
+                    VmRecord::new(&r).other_config().get("disks").is_none()
+                }
             })
         }
         Step::Provision { vm } => {
             let (_, r) = fresh(session, "VM", vm.uuid()).await?;
             Ok(plan.evidence[index].completed
-                && r["is_a_template"] == false
-                && r["power_state"] == "Halted"
-                && r["other_config"].get("disks").is_none())
+                && VmRecord::new(&r).is_a_template() == false
+                && VmRecord::new(&r).power_state() == "Halted"
+                && VmRecord::new(&r).other_config().get("disks").is_none())
         }
         Step::ConfigureDevices { .. } => Ok(plan.evidence[index].completed),
         Step::RefreshAllowedOperations { .. } => Ok(plan.evidence[index].completed),
@@ -1499,7 +1505,7 @@ pub(crate) async fn verify(
         Step::EjectIso { vm, vbd, .. } => {
             let (vm_ref, _) = fresh(session, "VM", vm.uuid()).await?;
             let (_, r) = fresh(session, "VBD", vbd.uuid()).await?;
-            Ok(r["VM"] == vm_ref && r["empty"] == true)
+            Ok(VbdRecord::new(&r).vm() == vm_ref && VbdRecord::new(&r).empty() == true)
         }
         Step::ClaimDisk { vm, vbd, disk } => {
             let (vm_ref, _) = fresh(session, "VM", vm.uuid()).await?;
@@ -1535,16 +1541,20 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
     let mut graph = Graph::default();
     for vbd in refs(vm, "VBDs")? {
         let v = session.call("VBD.get_record", vec![json!(vbd)]).await?;
-        let slot = v["userdevice"]
+        let slot = VbdRecord::new(&v)
+            .userdevice()
             .as_str()
             .ok_or(Error::VmLifecycleConflict)?
             .to_owned();
         if graph.disks.contains_key(&slot) || graph.cds.contains_key(&slot) {
             return Err(Error::VmLifecycleConflict);
         }
-        if v["type"] == "Disk" {
+        if VbdRecord::new(&v).type_() == "Disk" {
             let d = session
-                .call("VDI.get_record", vec![json!(reference(&v["VDI"])?)])
+                .call(
+                    "VDI.get_record",
+                    vec![json!(reference(&VbdRecord::new(&v).vdi())?)],
+                )
                 .await?;
             let sr = session
                 .call(
@@ -1558,15 +1568,22 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
                     size: number(&VdiRecord::new(&d).virtual_size())
                         .ok_or(Error::VmLifecycleConflict)?,
                     sr: id(&sr)?,
-                    mode: v["mode"].as_str().ok_or(Error::VmLifecycleConflict)?.into(),
+                    mode: VbdRecord::new(&v)
+                        .mode()
+                        .as_str()
+                        .ok_or(Error::VmLifecycleConflict)?
+                        .into(),
                 },
             );
-        } else if v["type"] == "CD" {
-            let image = if v["empty"] == true {
+        } else if VbdRecord::new(&v).type_() == "CD" {
+            let image = if VbdRecord::new(&v).empty() == true {
                 None
             } else {
                 let disk = session
-                    .call("VDI.get_record", vec![json!(reference(&v["VDI"])?)])
+                    .call(
+                        "VDI.get_record",
+                        vec![json!(reference(&VbdRecord::new(&v).vdi())?)],
+                    )
                     .await?;
                 Some(id(&disk)?)
             };

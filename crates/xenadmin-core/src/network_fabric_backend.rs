@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use xenadmin_xapi::records::{HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord};
+use xenadmin_xapi::records::{
+    HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord, PoolRecord, VmRecord,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
@@ -380,10 +382,13 @@ impl Fresh {
                     .current_operations()
                     .as_object()
                     .is_none_or(|v| !v.is_empty())
-                || self.raw["vm"]
+                || self.raw["vm"].values().any(|v| {
+                    VmRecord::new(v).resident_on() == host_ref
+                        && VmRecord::new(v).is_control_domain() != true
+                })
+                || self.raw["pool"]
                     .values()
-                    .any(|v| v["resident_on"] == host_ref && v["is_control_domain"] != true)
-                || self.raw["pool"].values().any(|p| p["ha_enabled"] != false)
+                    .any(|p| PoolRecord::new(p).ha_enabled() != false)
             {
                 return Err(Error::Protocol(
                     "SR-IOV changes require a disabled evacuated host and disabled pool HA",
