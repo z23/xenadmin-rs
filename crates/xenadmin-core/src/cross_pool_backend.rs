@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::records::{PifRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Shape {
@@ -302,7 +303,7 @@ fn shape(record: &Value) -> Result<Shape, Error> {
             })
     };
     require(
-        record["HVM_boot_policy"] == "BIOS order",
+        VmRecord::new(record).hvm_boot_policy() == "BIOS order",
         "This cross-pool workflow supports ordinary HVM guests",
     )?;
     Ok(Shape {
@@ -511,17 +512,18 @@ async fn destinations(
     let mut transfer_address_matches = false;
     for pif in m::refs(&network_record, "PIFs")? {
         let pif = m::read(destination, "PIF", &pif).await?;
-        let address_matches = if pif["primary_address_type"] == "IPv6" {
-            pif["IPv6"].as_array().is_some_and(|ips| {
+        let address_matches = if PifRecord::new(&pif).primary_address_type() == "IPv6" {
+            PifRecord::new(&pif).ipv6().as_array().is_some_and(|ips| {
                 ips.iter()
                     .filter_map(Value::as_str)
                     .any(|ip| ip.split('/').next() == Some(operation.transfer_address.as_str()))
             })
         } else {
-            pif["IP"] == operation.transfer_address
+            PifRecord::new(&pif).ip() == operation.transfer_address
         };
-        transfer_address_matches |=
-            pif["host"] == host && pif["currently_attached"] == true && address_matches;
+        transfer_address_matches |= PifRecord::new(&pif).host() == host
+            && PifRecord::new(&pif).currently_attached() == true
+            && address_matches;
     }
     require(
         transfer_address_matches,
@@ -727,9 +729,9 @@ pub(crate) async fn identify(
     let id: VmId = m::id(&record)?;
     plan.fresh("VM", id.uuid())?;
     require(
-        record["is_control_domain"] == false
-            && record["is_a_snapshot"] == false
-            && record["is_a_template"] == false,
+        VmRecord::new(&record).is_control_domain() == false
+            && VmRecord::new(&record).is_a_snapshot() == false
+            && VmRecord::new(&record).is_a_template() == false,
         "Migration task returned an unexpected guest class",
     )?;
     require(
@@ -756,7 +758,7 @@ pub(crate) async fn verify_destination(
     m::idle(&record)?;
     require(
         shape(&record)? == plan.shape
-            && record["power_state"]
+            && VmRecord::new(&record).power_state()
                 == if plan.operation.mode.live() {
                     "Running"
                 } else {
@@ -765,7 +767,7 @@ pub(crate) async fn verify_destination(
         "The destination guest configuration or state is not yet verified",
     )?;
     require(
-        m::nullable_host(destination, &record["resident_on"]).await?
+        m::nullable_host(destination, &VmRecord::new(&record).resident_on()).await?
             == if plan.operation.mode.live() {
                 Some(plan.operation.destination_host)
             } else {
@@ -823,7 +825,9 @@ pub(crate) async fn verify_destination(
                 let (_, disk) = m::fresh(destination, "VDI", new.id.uuid()).await?;
                 let consumers = m::refs(&disk, "VBDs")?;
                 require(
-                    consumers.len() == 1 && disk["read_only"] == false && disk["sharable"] == false,
+                    consumers.len() == 1
+                        && VdiRecord::new(&disk).read_only() == false
+                        && VdiRecord::new(&disk).sharable() == false,
                     "Destination disk has unexpected consumers or access",
                 )?;
                 let block = m::read(destination, "VBD", &consumers[0]).await?;

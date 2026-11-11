@@ -4,6 +4,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{HostRecord, PoolRecord, SrRecord, VmRecord};
 
 struct JoinSpec {
     source: PoolId,
@@ -100,19 +101,20 @@ async fn live(session: &Session, host: &Value) -> Result<(), Error> {
 async fn destination(session: &Session, spec: &JoinSpec) -> Result<Vec<HostId>, Error> {
     let record = pool(session, spec.destination).await?;
     require(
-        record["ha_enabled"] == false,
+        PoolRecord::new(&record).ha_enabled() == false,
         "Disable HA separately before reviewing a pool join",
     )?;
     idle(&record)?;
     let (ids, hosts) = host_ids(session).await?;
-    let master = xapi::reply_reference(&record["master"])?;
+    let master = xapi::reply_reference(&PoolRecord::new(&record).master())?;
     let host = hosts.get(&master).ok_or(Error::Stale)?;
     require(
-        host["uuid"] == spec.coordinator.to_string() && host["address"] == spec.address,
+        HostRecord::new(host).uuid() == spec.coordinator.to_string()
+            && HostRecord::new(host).address() == spec.address,
         "Destination coordinator or address changed; reopen the join review",
     )?;
     require(
-        host["enabled"] == true,
+        HostRecord::new(host).enabled() == true,
         "Destination coordinator must be enabled",
     )?;
     idle(host)?;
@@ -122,7 +124,7 @@ async fn destination(session: &Session, spec: &JoinSpec) -> Result<Vec<HostId>, 
 async fn source(session: &Session, spec: &JoinSpec) -> Result<(), Error> {
     let record = pool(session, spec.source).await?;
     require(
-        record["ha_enabled"] == false,
+        PoolRecord::new(&record).ha_enabled() == false,
         "Disable HA separately before reviewing a pool join",
     )?;
     idle(&record)?;
@@ -143,12 +145,12 @@ async fn source(session: &Session, spec: &JoinSpec) -> Result<(), Error> {
         "This host does not advertise pool joining",
     )?;
     for vm in discovery::records(session, "VM", 10_000).await?.values() {
-        match vm["is_control_domain"].as_bool() {
+        match VmRecord::new(vm).is_control_domain().as_bool() {
             Some(true) => {}
             Some(false) => {
                 require(
-                    vm["power_state"] == "Halted"
-                        && vm["scheduled_to_be_resident_on"] == "OpaqueRef:NULL",
+                    VmRecord::new(vm).power_state() == "Halted"
+                        && VmRecord::new(vm).scheduled_to_be_resident_on() == "OpaqueRef:NULL",
                     "All source guests must already be halted and unscheduled before joining",
                 )?;
                 idle(vm)?;
@@ -158,7 +160,8 @@ async fn source(session: &Session, spec: &JoinSpec) -> Result<(), Error> {
     }
     for sr in discovery::records(session, "SR", 10_000).await?.values() {
         require(
-            sr["shared"] == false || (sr["shared"] == true && sr["is_tools_sr"] == true),
+            SrRecord::new(sr).shared() == false
+                || (SrRecord::new(sr).shared() == true && SrRecord::new(sr).is_tools_sr() == true),
             "Detach shared storage separately before reviewing a pool join",
         )?;
         idle(sr)?;

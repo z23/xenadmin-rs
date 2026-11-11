@@ -5,6 +5,7 @@ use crate::{
     storage_auth::{CleanupPlan, CleanupStep},
 };
 use backend::require;
+use xenadmin_xapi::records::TaskRecord;
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -240,7 +241,7 @@ impl ResourceRequest {
                 .call("task.get_record", vec![json!(reference)])
                 .await?;
             require(
-                backend::task_uuid(&task)? == id && task["status"] == "success",
+                backend::task_uuid(&task)? == id && TaskRecord::new(&task).status() == "success",
                 "Storage task identity changed before cleanup",
             )?;
             session.call("task.destroy", vec![json!(reference)]).await?;
@@ -289,7 +290,7 @@ impl ResourceRequest {
             if !self.auth_merge(journal).await? {
                 return Ok(false);
             }
-            match task["status"].as_str() {
+            match TaskRecord::new(&task).status().as_str() {
                 Some("success") => {
                     self.record.result_reference = Some(crate::xapi::snapshot_task_result(&task)?);
                     self.record

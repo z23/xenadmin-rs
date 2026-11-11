@@ -1,6 +1,7 @@
 use crate::{Error, HostId, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{HostRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryLimits {
@@ -117,20 +118,22 @@ impl VmSettingsPatch {
         self.target == SettingsTarget::CustomTemplate
     }
     pub(crate) fn target_guard(&self, r: &Value) -> Result<(), Error> {
-        if r["is_a_template"] != self.is_template()
-            || r["is_a_snapshot"] != false
-            || r["is_control_domain"] != false
+        if VmRecord::new(r).is_a_template() != self.is_template()
+            || VmRecord::new(r).is_a_snapshot() != false
+            || VmRecord::new(r).is_control_domain() != false
         {
             return Err(Error::Stale);
         }
-        if r["current_operations"]
+        if VmRecord::new(r)
+            .current_operations()
             .as_object()
             .is_none_or(|v| !v.is_empty())
         {
             return Err(Error::SettingsConflict);
         }
         if self.is_template()
-            && (r["power_state"] != "Halted" || !crate::guest_boot::custom_template(r))
+            && (VmRecord::new(r).power_state() != "Halted"
+                || !crate::guest_boot::custom_template(r))
         {
             return Err(Error::UnavailableAction);
         }
@@ -276,15 +279,24 @@ impl VmSettingsPatch {
             .iter()
             .any(|edit| matches!(edit, VmSettingEdit::HomeHost { .. }))
         {
-            let reference = record["affinity"].as_str().ok_or(Error::SettingsConflict)?;
+            let reference = VmRecord::new(&record)
+                .affinity()
+                .value()
+                .as_str()
+                .ok_or(Error::SettingsConflict)?;
             record["affinity"] = if reference == "OpaqueRef:NULL" {
                 Value::Null
             } else {
                 let host = session
                     .call("host.get_record", vec![json!(reference)])
                     .await?;
-                let id = HostId::parse(host["uuid"].as_str().ok_or(Error::SettingsConflict)?)
-                    .map_err(|_| Error::SettingsConflict)?;
+                let id = HostId::parse(
+                    HostRecord::new(&host)
+                        .uuid()
+                        .as_str()
+                        .ok_or(Error::SettingsConflict)?,
+                )
+                .map_err(|_| Error::SettingsConflict)?;
                 json!(id)
             };
         }
@@ -530,8 +542,8 @@ enum SettingsGuard {
 }
 impl SettingsGuard {
     fn preflight(&self, record: &Value) -> Result<(), Error> {
-        let halted = record["power_state"] == "Halted";
-        let running = record["power_state"] == "Running";
+        let halted = VmRecord::new(record).power_state() == "Halted";
+        let running = VmRecord::new(record).power_state() == "Running";
         if !halted && !running {
             return Err(Error::UnavailableAction);
         }
@@ -549,29 +561,33 @@ impl SettingsGuard {
             Self::SecureBoot => halted && crate::guest_boot::firmware(record) == Some("uefi"),
             Self::EmptyTemplateFirmware => {
                 halted
-                    && record["is_a_template"] == true
+                    && VmRecord::new(record).is_a_template() == true
                     && crate::guest_boot::custom_template(record)
                     && crate::guest_boot::is_hvm(record)
-                    && record["VBDs"].as_array().is_some_and(Vec::is_empty)
+                    && VmRecord::new(record)
+                        .vbds()
+                        .as_array()
+                        .is_some_and(Vec::is_empty)
                     && crate::guest_boot::policy(record) == Some(false)
             }
             Self::LiveCpus(max) => {
                 running
-                    && integer(&record["VCPUs_max"]) == Some(*max)
+                    && integer(&VmRecord::new(record).vcpus_max()) == Some(*max)
                     && crate::xapi::advertises(record, "changing_VCPUs_live")
             }
             Self::DynamicMemory(min, max) => {
-                integer(&record["memory_static_min"]) == Some(*min)
-                    && integer(&record["memory_static_max"]) == Some(*max)
+                integer(&VmRecord::new(record).memory_static_min()) == Some(*min)
+                    && integer(&VmRecord::new(record).memory_static_max()) == Some(*max)
                     && crate::xapi::advertises(record, "changing_dynamic_range")
             }
             Self::Topology(cores) => {
                 halted
-                    && integer(&record["VCPUs_max"]).is_some_and(|v| v >= *cores && v % cores == 0)
+                    && integer(&VmRecord::new(record).vcpus_max())
+                        .is_some_and(|v| v >= *cores && v % cores == 0)
             }
             Self::CpuCount(max, planned) => {
                 let cores = planned.or_else(|| {
-                    record["platform"]["cores-per-socket"]
+                    VmRecord::new(record).platform()["cores-per-socket"]
                         .as_str()
                         .and_then(|c| c.parse::<u64>().ok())
                 });
@@ -586,9 +602,10 @@ impl SettingsGuard {
                     running && crate::xapi::advertises(record, "changing_shadow_memory_live")
                 } else {
                     halted && crate::xapi::advertises(record, "changing_shadow_memory")
-                }) && match record["domain_type"].as_str() {
+                }) && match VmRecord::new(record).domain_type().as_str() {
                     Some("hvm") => true,
-                    None | Some("unspecified") => record["HVM_boot_policy"]
+                    None | Some("unspecified") => VmRecord::new(record)
+                        .hvm_boot_policy()
                         .as_str()
                         .is_some_and(|p| !p.is_empty()),
                     _ => false,
@@ -692,7 +709,7 @@ impl SettingsStep {
         if self.map_key.is_some() && !record[&self.fields[0]].is_object() {
             return Err(Error::SettingsConflict);
         }
-        if self.requires_halted && record["power_state"] != "Halted" {
+        if self.requires_halted && VmRecord::new(record).power_state() != "Halted" {
             return Err(Error::SettingsRequiresHaltedVm);
         }
         if let Some(guard) = &self.guard {

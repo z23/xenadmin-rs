@@ -1,6 +1,7 @@
 //! Driver-qualified allocation and destructive HBA selection checks.
 use crate::{DiscoveredHbaDevice, Error, StorageLocation, storage_discovery, xapi::Session};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::HostRecord;
 
 pub(crate) async fn allocation_capability(
     session: &Session,
@@ -53,10 +54,11 @@ pub(crate) async fn hba_creation(
         return Err(Error::InvalidResourceCommand);
     }
     let host_record = session.call("host.get_record", vec![json!(host)]).await?;
-    if host_record["uuid"] != host_id.to_string() {
+    if HostRecord::new(&host_record).uuid() != host_id.to_string() {
         return Err(Error::Stale);
     }
-    if !host_record["current_operations"]
+    if !HostRecord::new(&host_record)
+        .current_operations()
         .as_object()
         .is_some_and(|v| v.is_empty())
     {

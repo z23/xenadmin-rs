@@ -2,6 +2,7 @@ use crate::{Error, OperationId, ResourceAction, ResourceOperationRecord, SecretI
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeSet, net::IpAddr};
+use xenadmin_xapi::records::HostRecord;
 use zeroize::Zeroizing;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,8 +112,11 @@ pub struct HostPowerSecretEvidence {
 }
 
 pub(crate) fn configuration(record: &Value) -> Option<HostPowerConfiguration> {
-    let mode = record["power_on_mode"].as_str()?;
-    let config = record["power_on_config"].as_object()?;
+    let mode = HostRecord::new(record).power_on_mode().value().as_str()?;
+    let config = HostRecord::new(record)
+        .power_on_config()
+        .value()
+        .as_object()?;
     let (settings, secret) = match mode {
         "" if config.is_empty() => (HostPowerSettings::Disabled, None),
         "wake-on-lan" if config.is_empty() => (HostPowerSettings::WakeOnLan, None),

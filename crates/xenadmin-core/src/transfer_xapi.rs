@@ -3,6 +3,7 @@ use crate::{Endpoint, NetworkId, VdiId, xapi::Session};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::records::{HostRecord, PbdRecord, SrRecord, TaskRecord, VbdRecord, VmRecord};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Baseline {
     pub vms: Vec<Uuid>,
@@ -125,7 +126,9 @@ pub(crate) async fn prepare(
                     expected_template,
                 } => {
                     let (r, v) = fresh(s, "VM", vm.uuid()).await?;
-                    if v["is_a_template"] != *expected_template || v["is_a_snapshot"] != false {
+                    if VmRecord::new(&v).is_a_template() != *expected_template
+                        || VmRecord::new(&v).is_a_snapshot() != false
+                    {
                         return Err(Error::TransferConflict);
                     }
                     (r, v)
@@ -136,7 +139,9 @@ pub(crate) async fn prepare(
                 } => {
                     let (parent, _) = fresh(s, "VM", parent.uuid()).await?;
                     let (r, v) = fresh(s, "VM", snapshot.uuid()).await?;
-                    if v["is_a_snapshot"] != true || v["snapshot_of"] != parent {
+                    if VmRecord::new(&v).is_a_snapshot() != true
+                        || VmRecord::new(&v).snapshot_of() != parent
+                    {
                         return Err(Error::TransferConflict);
                     }
                     (r, v)
@@ -147,7 +152,7 @@ pub(crate) async fn prepare(
                 let vms = records(s, "VM").await?;
                 if vms
                     .iter()
-                    .filter(|(_, v)| v["suspend_VDI"] == r["suspend_VDI"])
+                    .filter(|(_, v)| VmRecord::new(v).suspend_vdi() == r["suspend_VDI"])
                     .map(|(k, _)| k)
                     .collect::<Vec<_>>()
                     != vec![&reference]
@@ -205,7 +210,9 @@ pub(crate) async fn prepare(
     })
 }
 pub(crate) fn result(task: &Value) -> Result<Vec<String>, Error> {
-    let xml = task["result"]
+    let xml = TaskRecord::new(task)
+        .result()
+        .value()
         .as_str()
         .filter(|s| s.len() <= 64 * 1024)
         .ok_or(Error::TransferConflict)?;
@@ -283,11 +290,11 @@ pub(crate) async fn created(
         result.vms.push(VmId::from(uuid));
         for vbd in refs(r, "VBDs")? {
             let a = s.call("VBD.get_record", vec![json!(vbd)]).await?;
-            if a["VM"] != *reference {
+            if VbdRecord::new(&a).vm() != *reference {
                 return Err(Error::TransferConflict);
             }
-            if a["type"] == "Disk" && a["empty"] == false {
-                graph_disks.insert(crate::snapshots::reference(&a["VDI"])?);
+            if VbdRecord::new(&a).type_() == "Disk" && VbdRecord::new(&a).empty() == false {
+                graph_disks.insert(crate::snapshots::reference(&VbdRecord::new(&a).vdi())?);
             }
         }
     }
@@ -306,9 +313,9 @@ pub(crate) async fn created(
                     || graph_disks.contains(reference)
                     || !refs(r, "VBDs")?.is_empty()))
             || (memory
-                && vms
-                    .iter()
-                    .any(|(vm, v)| v["suspend_VDI"] == *reference && !found.contains(vm)))
+                && vms.iter().any(|(vm, v)| {
+                    VmRecord::new(v).suspend_vdi() == *reference && !found.contains(vm)
+                }))
         {
             return Err(Error::TransferConflict);
         }
@@ -325,7 +332,12 @@ pub(crate) async fn created(
         }
         for attachment in refs(r, "VBDs")? {
             let a = s.call("VBD.get_record", vec![json!(attachment)]).await?;
-            if !found.contains(a["VM"].as_str().ok_or(Error::TransferConflict)?) {
+            if !found.contains(
+                VbdRecord::new(&a)
+                    .vm()
+                    .as_str()
+                    .ok_or(Error::TransferConflict)?,
+            ) {
                 return Err(Error::TransferConflict);
             }
         }
@@ -410,26 +422,32 @@ pub(crate) async fn storage_route(
         .collect::<Result<BTreeSet<_>, _>>()?;
     let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
     idle(&r)?;
-    if r["content_type"] != "user" || (write && !crate::xapi::advertises(&r, "vdi_create")) {
+    if SrRecord::new(&r).content_type() != "user"
+        || (write && !crate::xapi::advertises(&r, "vdi_create"))
+    {
         return Err(Error::UnavailableAction);
     }
     let mut candidates = vec![];
     for p in refs(&r, "PBDs")? {
         let p = s.call("PBD.get_record", vec![json!(p)]).await?;
-        if p["SR"] != reference {
+        if PbdRecord::new(&p).sr() != reference {
             return Err(Error::TransferConflict);
         }
-        if p["currently_attached"] == true {
-            let h = crate::snapshots::reference(&p["host"])?;
+        if PbdRecord::new(&p).currently_attached() == true {
+            let h = crate::snapshots::reference(&PbdRecord::new(&p).host())?;
             let host = hosts.get(&h).ok_or(Error::TransferConflict)?;
-            if host["enabled"] == true {
+            if HostRecord::new(host).enabled() == true {
                 candidates.push((h, host));
             }
         }
     }
     candidates.sort_by_key(|(r, _)| r != pool["master"].as_str().unwrap_or_default());
     let (_, host) = candidates.first().ok_or(Error::UnavailableAction)?;
-    let address = host["address"].as_str().ok_or(Error::TransferEndpoint)?;
+    let address = HostRecord::new(host)
+        .address()
+        .value()
+        .as_str()
+        .ok_or(Error::TransferEndpoint)?;
     let mut endpoint = s.options().endpoint.clone();
     let original = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
     if original.host_str() != Some(address) {

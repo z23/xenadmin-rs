@@ -10,6 +10,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::records::{TaskRecord, VmRecord, VmssRecord};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Evidence {
@@ -52,7 +53,8 @@ fn op(record: &ResourceOperationRecord) -> Result<&Op, Error> {
     }
 }
 fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, Error> {
-    let map = r["schedule"]
+    let map = VmssRecord::new(r)
+        .schedule()
         .as_object()
         .ok_or(Error::ResourceConflict)?
         .iter()
@@ -63,26 +65,38 @@ fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, 
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let config = SnapshotPolicyConfig {
-        name: r["name_label"]
+        name: VmssRecord::new(r)
+            .name_label()
             .as_str()
             .ok_or(Error::ResourceConflict)?
             .into(),
-        description: r["name_description"]
+        description: VmssRecord::new(r)
+            .name_description()
             .as_str()
             .ok_or(Error::ResourceConflict)?
             .into(),
-        kind: match r["type"].as_str() {
+        kind: match VmssRecord::new(r).type_().as_str() {
             Some("snapshot") => ScheduledSnapshotKind::Disk,
             Some("checkpoint") => ScheduledSnapshotKind::Checkpoint,
             _ => return Err(Error::UnavailableAction),
         },
-        retained: r["retained_snapshots"]
+        retained: VmssRecord::new(r)
+            .retained_snapshots()
             .as_u64()
-            .or_else(|| r["retained_snapshots"].as_str()?.parse().ok())
+            .or_else(|| {
+                VmssRecord::new(r)
+                    .retained_snapshots()
+                    .as_str()?
+                    .parse()
+                    .ok()
+            })
             .and_then(|n| n.try_into().ok())
             .ok_or(Error::ResourceConflict)?,
         schedule: SnapshotSchedule::decode(
-            r["frequency"].as_str().ok_or(Error::ResourceConflict)?,
+            VmssRecord::new(r)
+                .frequency()
+                .as_str()
+                .ok_or(Error::ResourceConflict)?,
             &map,
         )?,
     };
@@ -90,7 +104,10 @@ fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, 
     Ok(State {
         id,
         config,
-        enabled: r["enabled"].as_bool().ok_or(Error::ResourceConflict)?,
+        enabled: VmssRecord::new(r)
+            .enabled()
+            .as_bool()
+            .ok_or(Error::ResourceConflict)?,
         members,
     })
 }
@@ -131,13 +148,14 @@ async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
             .await?,
     )?;
     let v = session.call("VM.get_record", vec![json!(&r)]).await?;
-    if v["uuid"] != id.to_string() {
+    if VmRecord::new(&v).uuid() != id.to_string() {
         return Err(Error::Stale);
     }
-    if v["is_a_template"] != false
-        || v["is_a_snapshot"] != false
-        || v["is_control_domain"] != false
-        || !v["current_operations"]
+    if VmRecord::new(&v).is_a_template() != false
+        || VmRecord::new(&v).is_a_snapshot() != false
+        || VmRecord::new(&v).is_control_domain() != false
+        || !VmRecord::new(&v)
+            .current_operations()
             .as_object()
             .is_some_and(|m| m.is_empty())
     {
@@ -304,7 +322,8 @@ pub(super) async fn prepare(
             return Err(Error::ResourceConflict);
         }
         evidence.last_run = Some(
-            record["last_run_time"]
+            VmssRecord::new(&record)
+                .last_run_time()
                 .as_str()
                 .ok_or(Error::ResourceConflict)?
                 .to_owned(),
@@ -384,7 +403,7 @@ pub(super) async fn arguments(
                 return Err(Error::ResourceConflict);
             }
             let (vr, v) = vm(session, *id).await?;
-            if v["snapshot_schedule"]
+            if VmRecord::new(&v).snapshot_schedule()
                 != if *join {
                     "OpaqueRef:NULL"
                 } else {
@@ -427,7 +446,7 @@ async fn snapshot_ids(
     let (pr, _, _) = read(session, state.id).await?;
     for id in &state.members {
         let (vr, v) = vm(session, *id).await?;
-        if v["snapshot_schedule"] != pr {
+        if VmRecord::new(&v).snapshot_schedule() != pr {
             return Err(Error::ResourceConflict);
         }
         if validate {
@@ -438,7 +457,9 @@ async fn snapshot_ids(
                 )
                 .await?;
         }
-        let refs = v["snapshots"]
+        let refs = VmRecord::new(&v)
+            .snapshots()
+            .value()
             .as_array()
             .filter(|v| v.len() <= 10_000)
             .ok_or(Error::ResourceConflict)?;
@@ -447,12 +468,15 @@ async fn snapshot_ids(
             let snap = session
                 .call("VM.get_record", vec![json!(xapi::reply_reference(sr)?)])
                 .await?;
-            if snap["is_a_snapshot"] != true || snap["snapshot_of"] != vr {
+            if VmRecord::new(&snap).is_a_snapshot() != true
+                || VmRecord::new(&snap).snapshot_of() != vr
+            {
                 return Err(Error::ResourceConflict);
             }
-            if snap["is_vmss_snapshot"] == true {
+            if VmRecord::new(&snap).is_vmss_snapshot() == true {
                 ids.push(
-                    snap["uuid"]
+                    VmRecord::new(&snap)
+                        .uuid()
                         .as_str()
                         .and_then(|s| SnapshotId::parse(s).ok())
                         .ok_or(Error::ResourceConflict)?,
@@ -470,7 +494,12 @@ pub(super) fn plugin_success_reply(value: &Value) -> bool {
     plugin_success(&json!({ "result": value }))
 }
 pub(super) fn plugin_success(task: &Value) -> bool {
-    let Some(s) = task["result"].as_str().filter(|s| s.len() <= 4096) else {
+    let Some(s) = TaskRecord::new(task)
+        .result()
+        .value()
+        .as_str()
+        .filter(|s| s.len() <= 4096)
+    else {
         return false;
     };
     if s == "True" {

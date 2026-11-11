@@ -2,6 +2,7 @@ use super::{Error, MAX_TRANSFER_BYTES, archive, files};
 use sha1::{Digest, Sha1};
 use std::{collections::BTreeMap, io::Read};
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::VdiRecord;
 
 const CHUNK: u64 = 1024 * 1024;
 const METADATA: usize = 8 * 1024 * 1024;
@@ -112,10 +113,14 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
     let mut total = 0u64;
     for object in objects.iter().filter(|o| o["class"] == "VDI") {
         let record = &object["snapshot"];
-        if record["SR"].as_str().is_some_and(|sr| iso_srs.contains(sr)) {
+        if VdiRecord::new(record)
+            .sr()
+            .as_str()
+            .is_some_and(|sr| iso_srs.contains(sr))
+        {
             continue;
         }
-        if record["type"] != "user" && record["type"] != "suspend" {
+        if VdiRecord::new(record).type_() != "user" && VdiRecord::new(record).type_() != "suspend" {
             return invalid();
         }
         let id = object["id"]
@@ -127,9 +132,10 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
                     && id.len() <= 128
             })
             .ok_or(Error::TransferArchive)?;
-        let size = record["virtual_size"]
+        let size = VdiRecord::new(record)
+            .virtual_size()
             .as_u64()
-            .or_else(|| record["virtual_size"].as_str()?.parse().ok())
+            .or_else(|| VdiRecord::new(record).virtual_size().as_str()?.parse().ok())
             .filter(|n| *n > 0 && *n <= MAX_TRANSFER_BYTES)
             .ok_or(Error::TransferArchive)?;
         total = total

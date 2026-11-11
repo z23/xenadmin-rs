@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::{HostCrashdumpRecord, HostRecord};
 
 #[path = "host_archive.rs"]
 pub(crate) mod archive;
@@ -196,7 +197,11 @@ pub(crate) async fn host_record(
         .ok_or(Error::Stale)
 }
 pub(crate) fn version(r: &Value) -> Result<String, Error> {
-    crate::security_discovery::text(&r["software_version"]["product_version"], 64).and_then(|v| {
+    crate::security_discovery::text(
+        &HostRecord::new(r).software_version()["product_version"],
+        64,
+    )
+    .and_then(|v| {
         if v.is_empty() {
             Err(Error::TransferConflict)
         } else {
@@ -233,16 +238,18 @@ async fn crashdumps(s: &Session, reference: &str) -> Result<Vec<HostCrashdump>, 
 }
 pub(crate) fn decode_crashdump(r: &Value) -> Result<HostCrashdump, Error> {
     Ok(HostCrashdump {
-        uuid: r["uuid"]
+        uuid: HostCrashdumpRecord::new(r)
+            .uuid()
             .as_str()
             .and_then(|s| crate::HostCrashdumpId::parse(s).ok())
             .filter(|id| !id.uuid().is_nil())
             .ok_or(Error::Protocol("invalid host crashdump UUID"))?,
-        size: r["size"]
+        size: HostCrashdumpRecord::new(r)
+            .size()
             .as_u64()
-            .or_else(|| r["size"].as_str()?.parse().ok())
+            .or_else(|| HostCrashdumpRecord::new(r).size().as_str()?.parse().ok())
             .ok_or(Error::Protocol("invalid host crashdump size"))?,
-        timestamp: crate::security_discovery::text(&r["timestamp"], 64)?,
+        timestamp: crate::security_discovery::text(&HostCrashdumpRecord::new(r).timestamp(), 64)?,
     })
 }
 pub(crate) async fn discover(
@@ -286,7 +293,9 @@ pub(crate) async fn prepare(
     if version(&record)? != expected_version {
         return Err(Error::TransferConflict);
     }
-    let address = record["address"]
+    let address = HostRecord::new(&record)
+        .address()
+        .value()
         .as_str()
         .filter(|s| !s.is_empty() && s.len() <= 253 && !s.contains(['/', '@', '?', '#']))
         .ok_or(Error::TransferEndpoint)?;
@@ -312,7 +321,8 @@ pub(crate) async fn prepare(
             }
             if archive.host != host
                 || archive.version != expected_version
-                || record["current_operations"]
+                || HostRecord::new(&record)
+                    .current_operations()
                     .as_object()
                     .is_none_or(|m| !m.is_empty())
             {
@@ -341,10 +351,11 @@ pub(crate) async fn prepare(
     }
     let peer_identity = unique_certificate(s, host).await?;
     let (_, current) = host_record(s, pool, host).await?;
-    if current["address"] != record["address"]
+    if HostRecord::new(&current).address() != HostRecord::new(&record).address()
         || version(&current)? != expected_version
         || (matches!(operation, HostArchiveOperation::StageRestore { .. })
-            && current["current_operations"]
+            && HostRecord::new(&current)
+                .current_operations()
                 .as_object()
                 .is_none_or(|m| !m.is_empty()))
     {

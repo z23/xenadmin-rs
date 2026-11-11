@@ -1,6 +1,7 @@
 use super::*;
 use crate::{CreatedDevice, OperationStep, StepState, migration_backend as migration};
 use serde_json::Value;
+use xenadmin_xapi::records::TaskRecord;
 impl MutationRequest {
     pub(super) async fn execute_migration(
         &mut self,
@@ -176,7 +177,9 @@ impl MutationRequest {
         rechecking: bool,
     ) -> Result<(), Error> {
         let mut plan = self.record.migration_plan.clone().ok_or(Error::Journal)?;
-        let code = task["error_info"]
+        let code = TaskRecord::new(task)
+            .error_info()
+            .value()
             .as_array()
             .and_then(|a| a.first())
             .and_then(Value::as_str)

@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+use xenadmin_xapi::records::{VbdRecord, VdiRecord, VifRecord, VmRecord};
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskSource {
     pub id: VdiId,
@@ -96,16 +97,16 @@ pub(crate) async fn capture(
         ExportSource::Checkpoint { .. } => return Err(Error::TransferConflict),
     };
     let (reference, v) = super::import::fresh(s, "VM", id).await?;
-    let cpus = u32::try_from(num(&v["VCPUs_at_startup"])?)
+    let cpus = u32::try_from(num(&VmRecord::new(&v).vcpus_at_startup())?)
         .ok()
         .filter(|n| (1..=256).contains(n))
         .ok_or(Error::TransferConflict)?;
-    let memory_bytes = num(&v["memory_static_max"])?;
+    let memory_bytes = num(&VmRecord::new(&v).memory_static_max())?;
     if !(16 * 1024 * 1024..=8 * 1024 * 1024 * 1024 * 1024).contains(&memory_bytes)
         || !memory_bytes.is_multiple_of(1024)
-        || v["HVM_boot_policy"] != "BIOS order"
-        || v["HVM_boot_params"]["order"] != "dc"
-        || v["platform"]["secureboot"]
+        || VmRecord::new(&v).hvm_boot_policy() != "BIOS order"
+        || VmRecord::new(&v).hvm_boot_params()["order"] != "dc"
+        || VmRecord::new(&v).platform()["secureboot"]
             .as_str()
             .is_some_and(|v| v != "false")
     {
@@ -122,7 +123,7 @@ pub(crate) async fn capture(
             ));
         }
     }
-    let firmware = match v["HVM_boot_params"]["firmware"].as_str() {
+    let firmware = match VmRecord::new(&v).hvm_boot_params()["firmware"].as_str() {
         None | Some("bios") => GuestFirmware::Bios,
         Some("uefi") => GuestFirmware::Uefi,
         _ => return Err(Error::TransferConflict),
@@ -133,34 +134,39 @@ pub(crate) async fn capture(
     let mut device_ids = std::collections::BTreeSet::new();
     let mut source_ids = std::collections::BTreeSet::new();
     let mut vbds = vec![];
-    for r in refs(&v["VBDs"])? {
+    for r in refs(&VmRecord::new(&v).vbds())? {
         vbds.push(record(s, "VBD", r).await?)
     }
-    vbds.sort_by_key(|d| num(&d["userdevice"]).unwrap_or(u64::MAX));
+    vbds.sort_by_key(|d| num(&VbdRecord::new(d).userdevice()).unwrap_or(u64::MAX));
     for d in vbds {
-        if d["VM"] != reference
-            || d["currently_attached"] != false
-            || d["current_operations"]
+        if VbdRecord::new(&d).vm() != reference
+            || VbdRecord::new(&d).currently_attached() != false
+            || VbdRecord::new(&d)
+                .current_operations()
                 .as_object()
                 .is_none_or(|m| !m.is_empty())
         {
             return Err(Error::TransferConflict);
         }
-        if d["type"] == "CD" && d["empty"] == true {
+        if VbdRecord::new(&d).type_() == "CD" && VbdRecord::new(&d).empty() == true {
             continue;
         }
-        if d["type"] != "Disk" || d["empty"] != false || d["mode"] != "RW" {
+        if VbdRecord::new(&d).type_() != "Disk"
+            || VbdRecord::new(&d).empty() != false
+            || VbdRecord::new(&d).mode() != "RW"
+        {
             return Err(Error::Ovf(
                 "eject installation media; read-only and non-disk devices are not supported in OVF export",
             ));
         }
-        let device = u32::try_from(num(&d["userdevice"])?)
+        let device = u32::try_from(num(&VbdRecord::new(&d).userdevice())?)
             .ok()
             .filter(|n| *n <= 63)
             .ok_or(Error::TransferConflict)?;
-        let vdi = record(s, "VDI", &d["VDI"]).await?;
-        let sr = record(s, "SR", &vdi["SR"]).await?;
-        let id: VdiId = vdi["uuid"]
+        let vdi = record(s, "VDI", &VbdRecord::new(&d).vdi()).await?;
+        let sr = record(s, "SR", &VdiRecord::new(&vdi).sr()).await?;
+        let id: VdiId = VdiRecord::new(&vdi)
+            .uuid()
             .as_str()
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?
@@ -173,7 +179,7 @@ pub(crate) async fn capture(
         if !device_ids.insert(device) || !source_ids.insert(id) {
             return Err(Error::TransferConflict);
         }
-        let size = num(&vdi["virtual_size"])?;
+        let size = num(&VdiRecord::new(&vdi).virtual_size())?;
         transfer::disk::disk_record(s, id, sr, DiskImageFormat::Vhd, false).await?;
         let index = disks.len();
         let key = format!("disk-{index}");
@@ -189,12 +195,13 @@ pub(crate) async fn capture(
     let mut networks = std::collections::BTreeSet::new();
     let mut nics = vec![];
     let mut devices = std::collections::BTreeSet::new();
-    for r in refs(&v["VIFs"])? {
+    for r in refs(&VmRecord::new(&v).vifs())? {
         let nic = record(s, "VIF", r).await?;
-        let n = record(s, "network", &nic["network"]).await?;
-        if nic["VM"] != reference
-            || nic["currently_attached"] != false
-            || nic["current_operations"]
+        let n = record(s, "network", &VifRecord::new(&nic).network()).await?;
+        if VifRecord::new(&nic).vm() != reference
+            || VifRecord::new(&nic).currently_attached() != false
+            || VifRecord::new(&nic)
+                .current_operations()
                 .as_object()
                 .is_none_or(|m| !m.is_empty())
         {
@@ -205,7 +212,7 @@ pub(crate) async fn capture(
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?;
         let network = format!("network-{id}");
-        let device = u32::try_from(num(&nic["device"])?)
+        let device = u32::try_from(num(&VifRecord::new(&nic).device())?)
             .ok()
             .filter(|n| *n <= 15)
             .ok_or(Error::TransferConflict)?;
@@ -219,8 +226,8 @@ pub(crate) async fn capture(
     let summary = OvfSummary {
         guests: vec![OvfGuest {
             key: "guest-1".into(),
-            name: text(&v["name_label"], 255)?,
-            description: text(&v["name_description"], 4096)?,
+            name: text(&VmRecord::new(&v).name_label(), 255)?,
+            description: text(&VmRecord::new(&v).name_description(), 4096)?,
             cpus,
             memory_bytes,
             firmware,

@@ -2,6 +2,7 @@ use crate::{Error, PowerAction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::SessionRecord;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PermissionUnknown {
@@ -240,18 +241,20 @@ impl SessionPermissions {
         }
     }
     pub(crate) fn decode(record: &Value) -> Self {
-        if record["is_local_superuser"] == true {
+        if SessionRecord::new(record).is_local_superuser() == true {
             return Self {
                 authority: Authority::LocalSuperuser,
             };
         }
-        let Some(values) = record["rbac_permissions"]
+        let Some(values) = SessionRecord::new(record)
+            .rbac_permissions()
+            .value()
             .as_array()
             .filter(|v| v.len() <= 16384)
         else {
             return Self::unknown(PermissionUnknown::InvalidResponse);
         };
-        if record["is_local_superuser"] != false {
+        if SessionRecord::new(record).is_local_superuser() != false {
             return Self::unknown(PermissionUnknown::InvalidResponse);
         }
         let mut permissions = BTreeSet::new();

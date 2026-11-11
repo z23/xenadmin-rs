@@ -5,6 +5,7 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use xenadmin_xapi::records::{NetworkRecord, VifRecord, VmRecord};
 
 fn text(v: &Value, key: &str, limit: usize) -> Result<String, Error> {
     v[key]
@@ -110,12 +111,14 @@ impl Graph {
                 ids.insert(network::uuid(v)?),
                 "Duplicate guest interface identity",
             )?;
-            let n = v["network"]
+            let n = VifRecord::new(v)
+                .network()
+                .value()
                 .as_str()
                 .ok_or(Error::Protocol("Guest interface network is unavailable"))?;
             graph.network(n)?;
             require(
-                v["VM"].as_str().is_some_and(|v| {
+                VifRecord::new(v).vm().as_str().is_some_and(|v| {
                     v.starts_with("OpaqueRef:") && v != "OpaqueRef:NULL" && v.len() <= 512
                 }),
                 "Guest interface VM identity unavailable",
@@ -145,7 +148,7 @@ impl Graph {
             if !networks.contains(&id) {
                 continue;
             }
-            let bytes = serde_json::to_vec(&v["other_config"])
+            let bytes = serde_json::to_vec(&NetworkRecord::new(v).other_config())
                 .map_err(|_| Error::Protocol("Network metadata unavailable"))?;
             require(
                 bytes.len() <= 64 * 1024,
@@ -155,10 +158,13 @@ impl Graph {
                 id,
                 crate::ManagementBondNetwork {
                     name: text(v, "name_label", 1024)?,
-                    mtu: network::number(&v["MTU"])
+                    mtu: network::number(&NetworkRecord::new(v).mtu())
                         .and_then(|v| u64::try_from(v).ok())
                         .ok_or(Error::ResourceConflict)?,
-                    default_locking_mode: v["default_locking_mode"].as_str().map(str::to_owned),
+                    default_locking_mode: NetworkRecord::new(v)
+                        .default_locking_mode()
+                        .as_str()
+                        .map(str::to_owned),
                     settings_fingerprint: Sha256::digest(bytes).into(),
                 },
             );
@@ -300,10 +306,12 @@ impl Graph {
             vm: network::uuid(vm)?.into(),
             vm_name: text(vm, "name_label", 1024)?,
             power_state,
-            template: vm["is_a_template"]
+            template: VmRecord::new(vm)
+                .is_a_template()
                 .as_bool()
                 .ok_or(Error::ResourceConflict)?,
-            snapshot: vm["is_a_snapshot"]
+            snapshot: VmRecord::new(vm)
+                .is_a_snapshot()
                 .as_bool()
                 .ok_or(Error::ResourceConflict)?,
             locality,

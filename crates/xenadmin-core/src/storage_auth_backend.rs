@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{PbdRecord, SrRecord};
 
 pub(super) fn require(ok: bool, message: &'static str) -> Result<(), Error> {
     if ok {
@@ -201,7 +202,9 @@ async fn clone_config(
     pbd: &Value,
 ) -> Result<(), Error> {
     let plan = record.storage_auth_plan.as_ref().ok_or(Error::Journal)?;
-    let map = pbd["device_config"]
+    let map = PbdRecord::new(pbd)
+        .device_config()
+        .value()
         .as_object()
         .filter(|m| m.len() <= 128)
         .ok_or(Error::Protocol("Attachment credentials unavailable"))?;
@@ -271,8 +274,11 @@ pub(super) async fn verify(
             };
             storage::attachment_identity(session, &pbd, sr, *host).await?;
             require(
-                pbd["currently_attached"] == false
-                    && storage::config_matches(&pbd["device_config"], &location.device_config()),
+                PbdRecord::new(&pbd).currently_attached() == false
+                    && storage::config_matches(
+                        &PbdRecord::new(&pbd).device_config(),
+                        &location.device_config(),
+                    ),
                 "Created attachment identity or location changed during verification",
             )?;
             clone_config(session, record, &pbd).await?;
@@ -290,16 +296,18 @@ pub(super) async fn verify(
                 return Err(Error::Journal);
             };
             require(
-                fresh["name_label"] == *name
-                    && fresh["name_description"] == *description
-                    && fresh["type"] == location.kind()
-                    && fresh["content_type"] == location.content_type()
-                    && fresh["shared"] == true,
+                SrRecord::new(&fresh).name_label() == *name
+                    && SrRecord::new(&fresh).name_description() == *description
+                    && SrRecord::new(&fresh).type_() == location.kind()
+                    && SrRecord::new(&fresh).content_type() == location.content_type()
+                    && SrRecord::new(&fresh).shared() == true,
                 "Created storage metadata changed during verification",
             )?;
             crate::storage_provisioning::verify_allocation(&fresh, location)?;
             let (host_ref, _) = xapi::read(session, ResourceTarget::Host(host)).await?;
-            let refs = fresh["PBDs"]
+            let refs = SrRecord::new(&fresh)
+                .pbds()
+                .value()
                 .as_array()
                 .filter(|v| !v.is_empty() && v.len() <= 1024)
                 .ok_or(Error::Protocol("Created storage attachments unavailable"))?;
@@ -310,10 +318,11 @@ pub(super) async fn verify(
                 let pbd = session
                     .call("PBD.get_record", vec![json!(reference)])
                     .await?;
-                if pbd["host"] != host_ref {
+                if PbdRecord::new(&pbd).host() != host_ref {
                     continue;
                 }
-                let id = pbd["uuid"]
+                let id = PbdRecord::new(&pbd)
+                    .uuid()
                     .as_str()
                     .and_then(|v| crate::PbdId::parse(v).ok())
                     .ok_or(Error::Protocol("Created attachment identity unavailable"))?;
@@ -322,10 +331,10 @@ pub(super) async fn verify(
                     "Created attachment provenance is ambiguous",
                 )?;
                 require(
-                    pbd["SR"] == sr_ref
-                        && pbd["currently_attached"] == true
+                    PbdRecord::new(&pbd).sr() == sr_ref
+                        && PbdRecord::new(&pbd).currently_attached() == true
                         && storage::config_matches(
-                            &pbd["device_config"],
+                            &PbdRecord::new(&pbd).device_config(),
                             &location.device_config(),
                         ),
                     "Created attachment identity or location changed during verification",

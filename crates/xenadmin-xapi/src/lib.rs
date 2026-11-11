@@ -73,9 +73,17 @@ where
         self.0 == other
     }
 }
-impl PartialEq<FieldValue<'_>> for FieldValue<'_> {
+/// A JSON value compares with a field as with the value the field wraps. With the
+/// comparison above, this also lets two fields be compared.
+impl PartialEq<FieldValue<'_>> for serde_json::Value {
     fn eq(&self, other: &FieldValue<'_>) -> bool {
-        self.0 == other.0
+        self == other.0
+    }
+}
+/// A field is written out as the value it wraps, so it can be sent back in a call.
+impl serde::Serialize for FieldValue<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
     }
 }
 
@@ -138,6 +146,9 @@ mod tests {
         // Two fields compare as their values do.
         assert!(vm.uuid() == records::VmRecord::new(&record).uuid());
         assert!(vm.uuid() != vm.power_state());
+        // A JSON value compares with a field, and a field serializes as its value.
+        assert!(json!("u") == vm.uuid());
+        assert_eq!(json!([vm.uuid(), vm.vcpus_max()]), json!(["u", 2]));
         // A field whose name is a Rust keyword keeps its meaning with an underscore.
         assert_eq!(
             records::VdiRecord::new(&json!({"type": "user"})).type_(),

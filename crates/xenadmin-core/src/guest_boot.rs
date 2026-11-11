@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::VmRecord;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootReadiness {
     Ready,
@@ -113,9 +114,9 @@ impl Request {
 }
 
 pub(crate) fn is_hvm(r: &Value) -> bool {
-    match r["domain_type"].as_str() {
+    match VmRecord::new(r).domain_type().as_str() {
         Some("hvm") => true,
-        None | Some("unspecified") => r["HVM_boot_policy"] == "BIOS order",
+        None | Some("unspecified") => VmRecord::new(r).hvm_boot_policy() == "BIOS order",
         _ => false,
     }
 }
@@ -123,13 +124,18 @@ pub(crate) fn firmware(r: &Value) -> Option<&str> {
     if !is_hvm(r) {
         return None;
     }
-    match r["HVM_boot_params"].as_object()?.get("firmware") {
+    match VmRecord::new(r)
+        .hvm_boot_params()
+        .value()
+        .as_object()?
+        .get("firmware")
+    {
         None => Some("bios"),
         Some(v) => v.as_str().filter(|v| matches!(*v, "bios" | "uefi")),
     }
 }
 pub(crate) fn policy(r: &Value) -> Option<bool> {
-    match r["platform"].as_object()?.get("secureboot") {
+    match VmRecord::new(r).platform().as_object()?.get("secureboot") {
         None => Some(false),
         Some(v) if v == "false" => Some(false),
         Some(v) if v == "true" => Some(true),
@@ -137,11 +143,14 @@ pub(crate) fn policy(r: &Value) -> Option<bool> {
     }
 }
 pub(crate) fn default_template(r: &Value) -> Option<bool> {
-    if r["is_default_template"] == true || r["other_config"]["default_template"] == "true" {
+    if VmRecord::new(r).is_default_template() == true
+        || VmRecord::new(r).other_config()["default_template"] == "true"
+    {
         return Some(true);
     }
-    if r["is_default_template"] == false
-        || r["other_config"]
+    if VmRecord::new(r).is_default_template() == false
+        || VmRecord::new(r)
+            .other_config()
             .as_object()
             .is_some_and(|m| m.get("default_template").is_none_or(|v| v == "false"))
     {
@@ -151,7 +160,7 @@ pub(crate) fn default_template(r: &Value) -> Option<bool> {
     }
 }
 pub(crate) fn custom_template(r: &Value) -> bool {
-    r["is_a_template"] == true && default_template(r) == Some(false)
+    VmRecord::new(r).is_a_template() == true && default_template(r) == Some(false)
 }
 pub(crate) async fn require_policy_support(
     session: &Session,
@@ -201,9 +210,9 @@ pub(crate) async fn read(
         .call("VM.get_by_uuid", vec![json!(vm.to_string())])
         .await?;
     let before = session.call("VM.get_record", vec![r.clone()]).await?;
-    if before["uuid"] != vm.to_string()
-        || before["is_control_domain"] != false
-        || before["is_a_snapshot"] != false
+    if VmRecord::new(&before).uuid() != vm.to_string()
+        || VmRecord::new(&before).is_control_domain() != false
+        || VmRecord::new(&before).is_a_snapshot() != false
     {
         return Err(Error::Stale);
     }
@@ -225,13 +234,13 @@ pub(crate) async fn read(
             .await,
     );
     let after = session.call("VM.get_record", vec![r]).await?;
-    if before["uuid"] != after["uuid"]
-        || before["is_a_template"] != after["is_a_template"]
-        || after["is_control_domain"] != false
-        || after["is_a_snapshot"] != false
+    if VmRecord::new(&before).uuid() != VmRecord::new(&after).uuid()
+        || VmRecord::new(&before).is_a_template() != VmRecord::new(&after).is_a_template()
+        || VmRecord::new(&after).is_control_domain() != false
+        || VmRecord::new(&after).is_a_snapshot() != false
         || firmware(&before) != firmware(&after)
         || policy(&before) != policy(&after)
-        || before["NVRAM"] != after["NVRAM"]
+        || VmRecord::new(&before).nvram() != VmRecord::new(&after).nvram()
     {
         return Err(Error::Stale);
     }

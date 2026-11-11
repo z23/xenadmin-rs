@@ -5,6 +5,7 @@ use crate::{
     root_password::Plan,
 };
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::SessionRecord;
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -48,7 +49,7 @@ async fn expected(
         .call("session.get_record", vec![json!(session.session_cookie())])
         .await?;
     require(
-        own["is_local_superuser"] == true,
+        SessionRecord::new(&own).is_local_superuser() == true,
         "Changing the pool root password requires a local superuser session",
     )
 }

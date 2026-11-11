@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{AlarmOperation, Error, HostId, alarm_policies, xapi::Session};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{HostRecord, VmRecord};
 
 async fn read(
     session: &Session,
@@ -16,19 +17,21 @@ async fn read(
     let (reference, fresh) = super::xapi::read(session, record.target).await?;
     if let AlarmOperation::SetPolicy(change) = operation {
         if let ResourceTarget::Vm(_) = record.target {
-            if fresh["is_a_template"] != false || fresh["is_a_snapshot"] != false {
+            if VmRecord::new(&fresh).is_a_template() != false
+                || VmRecord::new(&fresh).is_a_snapshot() != false
+            {
                 return Err(Error::UnavailableAction);
             }
             if let Some(host) = change.control_domain_host {
                 let (host_ref, host_record) =
                     super::xapi::read(session, ResourceTarget::Host(host)).await?;
-                if fresh["is_control_domain"] != true
-                    || fresh["resident_on"] != host_ref
-                    || host_record["control_domain"] != reference
+                if VmRecord::new(&fresh).is_control_domain() != true
+                    || VmRecord::new(&fresh).resident_on() != host_ref
+                    || HostRecord::new(&host_record).control_domain() != reference
                 {
                     return Err(Error::Stale);
                 }
-            } else if fresh["is_control_domain"] != false {
+            } else if VmRecord::new(&fresh).is_control_domain() != false {
                 return Err(Error::UnavailableAction);
             }
         } else if change.control_domain_host.is_some() {

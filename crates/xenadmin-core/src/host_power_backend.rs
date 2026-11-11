@@ -5,6 +5,7 @@ use crate::{
 };
 pub(super) use secrets::{absent, require, secret_ids, secret_uuid};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::HostRecord;
 
 pub(super) async fn current(
     session: &Session,
@@ -141,7 +142,8 @@ async fn no_host_consumer(
         .ok_or(Error::Protocol("Host Secret consumer scan is incomplete"))?;
     let mut excluded_count = 0;
     for host in hosts.values() {
-        let host_id = host["uuid"]
+        let host_id = HostRecord::new(host)
+            .uuid()
             .as_str()
             .and_then(|v| uuid::Uuid::parse_str(v).ok())
             .ok_or(Error::Protocol("Host Secret consumer identity unavailable"))?;
@@ -151,14 +153,17 @@ async fn no_host_consumer(
             excluded_count += 1;
             require(
                 crate::host_power::configuration(host).as_ref() == Some(expected)
-                    && host["current_operations"]
+                    && HostRecord::new(host)
+                        .current_operations()
                         .as_object()
                         .is_some_and(|v| v.is_empty()),
                 "Reviewed host configuration or operations changed during Secret consumer inspection",
             )?;
             continue;
         }
-        let config = host["power_on_config"]
+        let config = HostRecord::new(host)
+            .power_on_config()
+            .value()
             .as_object()
             .filter(|v| v.len() <= 128)
             .ok_or(Error::Protocol(

@@ -1,6 +1,7 @@
 use super::*;
 use crate::xapi::Session;
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{NetworkRecord, PoolRecord, SrRecord, TaskRecord};
 
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
@@ -83,14 +84,16 @@ fn same_field(actual: &Value, expected: &Value, field: &str) -> bool {
     }
 }
 async fn default_sr(session: &Session, record: &Value) -> Result<Option<SrId>, Error> {
-    if record["default_SR"] == "OpaqueRef:NULL" {
+    if PoolRecord::new(record).default_sr() == "OpaqueRef:NULL" {
         return Ok(None);
     }
-    let reference = reference(&record["default_SR"])?;
+    let reference = reference(&PoolRecord::new(record).default_sr())?;
     let sr = session
         .call("SR.get_record", vec![json!(reference)])
         .await?;
-    let id = sr["uuid"]
+    let id = SrRecord::new(&sr)
+        .uuid()
+        .value()
         .as_str()
         .ok_or(Error::Protocol("default storage UUID unavailable"))?;
     SrId::parse(id)
@@ -319,7 +322,7 @@ pub(super) async fn prepare(
                 return Err(Error::ResourceConflict);
             }
             let (_, sr_record) = read(session, ResourceTarget::Storage(*sr)).await?;
-            if sr_record["content_type"] != "user" {
+            if SrRecord::new(&sr_record).content_type() != "user" {
                 return Err(Error::InvalidResourceCommand);
             }
             steps.push(Step {
@@ -417,7 +420,7 @@ pub(super) async fn arguments(
                 return Err(Error::ResourceConflict);
             }
             let (sr_reference, sr_record) = read(session, ResourceTarget::Storage(*sr)).await?;
-            if sr_record["content_type"] != "user" {
+            if SrRecord::new(&sr_record).content_type() != "user" {
                 return Err(Error::InvalidResourceCommand);
             }
             Ok(vec![json!(reference), json!(sr_reference)])
@@ -445,8 +448,9 @@ pub(super) fn reply_reference(value: &Value) -> Result<String, Error> {
     reference(value)
 }
 fn cancellable_task(record: &Value) -> Result<(), Error> {
-    if record["status"] != "pending"
-        || !record["allowed_operations"]
+    if TaskRecord::new(record).status() != "pending"
+        || !TaskRecord::new(record)
+            .allowed_operations()
             .as_array()
             .is_some_and(|ops| ops.iter().any(|op| op == "cancel"))
     {
@@ -601,15 +605,16 @@ async fn verify_created(
         }
         candidates[0].clone()
     };
-    let id = fresh["uuid"]
+    let id = NetworkRecord::new(&fresh)
+        .uuid()
         .as_str()
         .and_then(|value| NetworkId::parse(value).ok())
         .ok_or(Error::Protocol("created network UUID unavailable"))?;
     if baseline.contains(&id)
-        || fresh["other_config"][OPERATION_TAG] != record.id.to_string()
-        || fresh["name_label"] != *name
-        || fresh["name_description"] != *description
-        || number(&fresh["MTU"]) != Some(*mtu)
+        || NetworkRecord::new(&fresh).other_config()[OPERATION_TAG] != record.id.to_string()
+        || NetworkRecord::new(&fresh).name_label() != *name
+        || NetworkRecord::new(&fresh).name_description() != *description
+        || number(&NetworkRecord::new(&fresh).mtu()) != Some(*mtu)
     {
         return Err(Error::ResourceConflict);
     }

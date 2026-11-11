@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VdiRecord, VmRecord};
 
 fn conflict<T>() -> Result<T, Error> {
     Err(Error::ResourceConflict)
@@ -48,14 +49,14 @@ fn idle(record: &Value) -> Result<(), Error> {
 }
 fn ordinary(record: &Value) -> Result<(), Error> {
     idle(record)?;
-    if record["managed"] != true
-        || record["missing"] != false
-        || record["read_only"] != false
-        || record["sharable"] != false
-        || record["is_a_snapshot"] != false
-        || record["type"] != "user"
-        || record["snapshot_of"] != "OpaqueRef:NULL"
-        || record["cbt_enabled"] != false
+    if VdiRecord::new(record).managed() != true
+        || VdiRecord::new(record).missing() != false
+        || VdiRecord::new(record).read_only() != false
+        || VdiRecord::new(record).sharable() != false
+        || VdiRecord::new(record).is_a_snapshot() != false
+        || VdiRecord::new(record).type_() != "user"
+        || VdiRecord::new(record).snapshot_of() != "OpaqueRef:NULL"
+        || VdiRecord::new(record).cbt_enabled() != false
     {
         return conflict();
     }
@@ -98,16 +99,16 @@ pub(super) async fn pool(s: &Session, expected: PoolId) -> Result<Value, Error> 
 async fn storage(s: &Session, sr: SrId) -> Result<String, Error> {
     let (reference, r) = xapi::read(s, ResourceTarget::Storage(sr)).await?;
     idle(&r)?;
-    if r["content_type"] == "iso" {
+    if SrRecord::new(&r).content_type() == "iso" {
         return conflict();
     }
     let mut attached = false;
     for pbd in refs(&r, "PBDs")? {
         let p = s.call("PBD.get_record", vec![json!(pbd)]).await?;
-        if p["SR"] != reference {
+        if PbdRecord::new(&p).sr() != reference {
             return conflict();
         }
-        if p["currently_attached"] == true {
+        if PbdRecord::new(&p).currently_attached() == true {
             attached = true;
         }
     }
@@ -125,11 +126,11 @@ async fn checked_disk(
 ) -> Result<(String, Value), Error> {
     let (reference, r) = xapi::read(s, ResourceTarget::Disk(disk)).await?;
     ordinary(&r)?;
-    if number(&r["virtual_size"]) != Some(size.unwrap_or(expected.size)) {
+    if number(&VdiRecord::new(&r).virtual_size()) != Some(size.unwrap_or(expected.size)) {
         return conflict();
     }
     let sr = storage(s, expected.sr).await?;
-    if r["SR"] != sr {
+    if VdiRecord::new(&r).sr() != sr {
         return conflict();
     }
     let vbds = records(s, "VBD").await?;
@@ -152,10 +153,13 @@ async fn checked_disk(
         let vm_ref = reference_value(&vbd["VM"])?;
         let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
         idle(vm)?;
-        if vm["is_a_snapshot"] != false
-            || vm["is_a_template"] != false
-            || vm["is_control_domain"] != false
-            || !matches!(vm["power_state"].as_str(), Some("Halted" | "Running"))
+        if VmRecord::new(vm).is_a_snapshot() != false
+            || VmRecord::new(vm).is_a_template() != false
+            || VmRecord::new(vm).is_control_domain() != false
+            || !matches!(
+                VmRecord::new(vm).power_state().as_str(),
+                Some("Halted" | "Running")
+            )
             || !refs(vm, "VBDs")?.contains(vbd_ref)
         {
             return Err(Error::StorageInUse);
@@ -171,21 +175,25 @@ async fn checked_disk(
     if consumers != expected_consumers || consumer_refs != refs(&r, "VBDs")? {
         return conflict();
     }
-    let statefiles = pool_record["ha_statefiles"]
+    let statefiles = PoolRecord::new(pool_record)
+        .ha_statefiles()
+        .value()
         .as_array()
         .filter(|a| a.len() <= 1024)
         .ok_or(Error::Protocol("Pool HA disk dependencies unavailable"))?;
     if statefiles.iter().any(|v| v.as_str().is_none()) {
         return conflict();
     }
-    if vms.values().any(|v| v["suspend_VDI"] == reference)
+    if vms
+        .values()
+        .any(|v| VmRecord::new(v).suspend_vdi() == reference)
         || vdis
             .iter()
-            .any(|(key, v)| key != &reference && v["snapshot_of"] == reference)
+            .any(|(key, v)| key != &reference && VmRecord::new(v).snapshot_of() == reference)
         || statefiles
             .iter()
             .any(|v| v == &reference || v == &disk.to_string())
-        || pool_record["redo_log_vdi"] == reference
+        || PoolRecord::new(pool_record).redo_log_vdi() == reference
     {
         return Err(Error::StorageInUse);
     }
@@ -193,8 +201,8 @@ async fn checked_disk(
     let (latest_ref, latest) = xapi::read(s, ResourceTarget::Disk(disk)).await?;
     ordinary(&latest)?;
     if latest_ref != reference
-        || latest["SR"] != sr
-        || number(&latest["virtual_size"]) != Some(size.unwrap_or(expected.size))
+        || VdiRecord::new(&latest).sr() != sr
+        || number(&VdiRecord::new(&latest).virtual_size()) != Some(size.unwrap_or(expected.size))
         || refs(&latest, "VBDs")? != consumer_refs
     {
         return conflict();
@@ -352,7 +360,8 @@ pub(super) async fn verify(
     match plan.kinds[index] {
         Kind::Grow => {
             let (_, vdi) = xapi::read(s, ResourceTarget::Disk(plan.disk)).await?;
-            let actual = number(&vdi["virtual_size"]).ok_or(Error::ResourceConflict)?;
+            let actual =
+                number(&VdiRecord::new(&vdi).virtual_size()).ok_or(Error::ResourceConflict)?;
             let DiskOperation::Grow { size, .. } = &plan.operation else {
                 return conflict();
             };
@@ -370,7 +379,7 @@ pub(super) async fn verify(
                 let DiskOperation::Copy { name, .. } = &plan.operation else {
                     return conflict();
                 };
-                if vdi["name_label"] != *name {
+                if VdiRecord::new(&vdi).name_label() != *name {
                     return conflict();
                 }
             }

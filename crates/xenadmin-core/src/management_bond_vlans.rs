@@ -1,5 +1,6 @@
 use super::*;
 use crate::{ManagementVlanReplacement, VlanId, management_bond::CapturedVlan};
+use xenadmin_xapi::records::{PifRecord, VlanRecord};
 pub(in crate::resources) fn before(
     t: &Records,
     expected: &BTreeMap<VlanId, CapturedVlan>,
@@ -59,8 +60,8 @@ pub(in crate::resources) fn identities(
                 .records("vlan")
                 .values()
                 .filter(|v| {
-                    v["tagged_PIF"] == parent_ref
-                        && network::number(&v["tag"])
+                    VlanRecord::new(v).tagged_pif() == parent_ref
+                        && network::number(&VlanRecord::new(v).tag())
                             == captured.vlan.tag.and_then(|v| i64::try_from(v).ok())
                 })
                 .collect::<Vec<_>>();
@@ -71,7 +72,12 @@ pub(in crate::resources) fn identities(
             let v = candidates[0];
             let child = t
                 .pifs()
-                .get(v["untagged_PIF"].as_str().ok_or(Error::ResourceConflict)?)
+                .get(
+                    VlanRecord::new(v)
+                        .untagged_pif()
+                        .as_str()
+                        .ok_or(Error::ResourceConflict)?,
+                )
                 .ok_or(Error::ResourceConflict)?;
             let new_vlan = VlanId::from(network::uuid(v)?);
             let new_interface = PifId::from(network::uuid(child)?);
@@ -85,13 +91,13 @@ pub(in crate::resources) fn identities(
                 !before.contains(&new_vlan)
                     && !b.pifs.contains(&new_interface)
                     && b.replacements.get(id).is_none_or(|old| old == &replacement)
-                    && child["network"]
+                    && PifRecord::new(child).network()
                         == lookup(
                             t.records("network"),
                             captured.interface.network.ok_or(Error::Journal)?.uuid(),
                         )?
                         .0
-                    && child["host"] == receiver_host(t, parent)?,
+                    && PifRecord::new(child).host() == receiver_host(t, parent)?,
                 "VLAN replacement identity, network or provenance differs from review",
             )?;
             Ok(replacement)
@@ -144,25 +150,33 @@ pub(super) fn verify(
         let v = lookup(t.records("vlan"), replacement.new_vlan.uuid())?.1;
         require(
             basic(p)
-                && p["physical"] == false
-                && network::number(&p["VLAN"])
+                && PifRecord::new(p).physical() == false
+                && network::number(&PifRecord::new(p).vlan())
                     == captured.vlan.tag.and_then(|v| i64::try_from(v).ok())
-                && p["MAC"]
+                && PifRecord::new(p)
+                    .mac()
                     .as_str()
                     .is_some_and(|v| v.eq_ignore_ascii_case("fe:ff:ff:ff:ff:ff"))
-                && p["device"] == t.pif(parent)?.1["device"]
-                && p["management"].as_bool() == before.management
-                && p["currently_attached"].as_bool() == before.currently_attached
-                && p["primary_address_type"] == "IPv4"
-                && p["ip_configuration_mode"] == before.ip_configuration_mode
-                && p["IP"] == before.ip
-                && p["netmask"] == before.netmask
-                && p["gateway"] == before.gateway
-                && dns(p["DNS"].as_str().ok_or(Error::ResourceConflict)?)? == dns(&before.dns)?
-                && p["ipv6_configuration_mode"] == "None"
-                && addresses(&p["IPv6"])?.is_empty()
-                && p["ipv6_gateway"] == ""
-                && p["other_config"].as_object().is_some_and(|v| v.is_empty())
+                && PifRecord::new(p).device() == t.pif(parent)?.1["device"]
+                && PifRecord::new(p).management().as_bool() == before.management
+                && PifRecord::new(p).currently_attached().as_bool() == before.currently_attached
+                && PifRecord::new(p).primary_address_type() == "IPv4"
+                && PifRecord::new(p).ip_configuration_mode() == before.ip_configuration_mode
+                && PifRecord::new(p).ip() == before.ip
+                && PifRecord::new(p).netmask() == before.netmask
+                && PifRecord::new(p).gateway() == before.gateway
+                && dns(PifRecord::new(p)
+                    .dns()
+                    .as_str()
+                    .ok_or(Error::ResourceConflict)?)?
+                    == dns(&before.dns)?
+                && PifRecord::new(p).ipv6_configuration_mode() == "None"
+                && addresses(&PifRecord::new(p).ipv6())?.is_empty()
+                && PifRecord::new(p).ipv6_gateway() == ""
+                && PifRecord::new(p)
+                    .other_config()
+                    .as_object()
+                    .is_some_and(|v| v.is_empty())
                 && properties(p)?.is_empty()
                 && v["other_config"].as_object().is_some_and(|v| v.is_empty()),
             "Migrated VLAN configuration differs from the reviewed interface",

@@ -3,6 +3,7 @@ use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::{HostRecord, PoolRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotPolicySupport {
@@ -98,21 +99,22 @@ pub(crate) async fn read(
             .await?,
     )?;
     let pool = session.call("pool.get_record", vec![json!(&pr)]).await?;
-    if pool["uuid"] != id.to_string() {
+    if PoolRecord::new(&pool).uuid() != id.to_string() {
         return Err(Error::Stale);
     }
-    if pool["restrictions"]["restrict_vmss"] != "false" {
+    if PoolRecord::new(&pool).restrictions()["restrict_vmss"] != "false" {
         return Err(Error::Protocol(
             "The pool does not explicitly advertise snapshot scheduling support",
         ));
     }
-    let hr = crate::xapi::opaque_reference(&pool["master"])?;
+    let hr = crate::xapi::opaque_reference(&PoolRecord::new(&pool).master())?;
     let host = session.call("host.get_record", vec![json!(&hr)]).await?;
-    let id = host["uuid"]
+    let id = HostRecord::new(&host)
+        .uuid()
         .as_str()
         .and_then(|s| HostId::parse(s).ok())
         .ok_or(Error::Stale)?;
-    let sw = &host["software_version"];
+    let sw = &HostRecord::new(&host).software_version();
     if sw["product_brand"] != "XCP-ng"
         || !sw["product_version"]
             .as_str()
@@ -165,7 +167,9 @@ pub(crate) async fn read(
         ));
     }
     let pool2 = session.call("pool.get_record", vec![json!(&pr)]).await?;
-    if pool2["uuid"] != pool["uuid"] || pool2["master"] != pool["master"] {
+    if pool2["uuid"] != PoolRecord::new(&pool).uuid()
+        || pool2["master"] != PoolRecord::new(&pool).master()
+    {
         return Err(Error::Stale);
     }
     Ok(SnapshotPolicySupport {
@@ -173,7 +177,8 @@ pub(crate) async fn read(
             coordinator: id,
             utc_offset_minutes: (offset / 60) as i32,
         },
-        coordinator_name: host["name_label"]
+        coordinator_name: HostRecord::new(&host)
+            .name_label()
             .as_str()
             .unwrap_or("Coordinator")
             .to_owned(),

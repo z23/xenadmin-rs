@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{PbdRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuestToolsMediaSource {
@@ -21,10 +22,10 @@ impl GuestToolsMediaSource {
     }
 }
 pub(crate) fn source(record: &Value) -> Option<GuestToolsMediaSource> {
-    if record["is_tools_iso"] == true {
+    if VdiRecord::new(record).is_tools_iso() == true {
         Some(GuestToolsMediaSource::HostFlag)
     } else if matches!(
-        record["name_label"].as_str(),
+        VdiRecord::new(record).name_label().as_str(),
         Some("xswindrivers.iso" | "xs-tools.iso" | "guest-tools.iso")
     ) {
         Some(GuestToolsMediaSource::LegacyName)
@@ -167,10 +168,14 @@ fn idle(record: &Value) -> Result<(), Error> {
 }
 fn permits(record: &Value, operation: &str) -> Result<(), Error> {
     idle(record)?;
-    if record["allowed_operations"]
+    if VmRecord::new(record)
+        .allowed_operations()
         .as_array()
         .is_some_and(|ops| ops.iter().any(|s| s == operation))
-        && record["blocked_operations"].get(operation).is_none()
+        && VmRecord::new(record)
+            .blocked_operations()
+            .get(operation)
+            .is_none()
     {
         Ok(())
     } else {
@@ -179,14 +184,17 @@ fn permits(record: &Value, operation: &str) -> Result<(), Error> {
 }
 async fn guest(session: &Session, vm: VmId, writing: bool) -> Result<(String, Value), Error> {
     let (reference, record) = fresh(session, "VM", vm.uuid()).await?;
-    if record["is_a_snapshot"] != false
-        || record["is_a_template"] != false
-        || record["is_control_domain"] != false
+    if VmRecord::new(&record).is_a_snapshot() != false
+        || VmRecord::new(&record).is_a_template() != false
+        || VmRecord::new(&record).is_control_domain() != false
     {
         return Err(Error::Stale);
     }
     if writing {
-        if !matches!(record["power_state"].as_str(), Some("Running" | "Halted")) {
+        if !matches!(
+            VmRecord::new(&record).power_state().as_str(),
+            Some("Running" | "Halted")
+        ) {
             return Err(Error::UnavailableAction);
         }
         idle(&record)?;
@@ -197,10 +205,10 @@ async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Resu
     let (image_ref, disk) = fresh(session, "VDI", image.uuid()).await?;
     let (sr_ref, storage) = fresh(session, "SR", sr.uuid()).await?;
     if source(&disk).is_none()
-        || disk["SR"] != sr_ref
-        || disk["missing"] != false
-        || disk["read_only"] != true
-        || storage["content_type"] != "iso"
+        || VdiRecord::new(&disk).sr() != sr_ref
+        || VdiRecord::new(&disk).missing() != false
+        || VdiRecord::new(&disk).read_only() != true
+        || SrRecord::new(&storage).content_type() != "iso"
     {
         return Err(Error::DeviceConflict);
     }
@@ -211,13 +219,12 @@ async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Resu
         .filter(|r| r.len() <= 10_000)
         .ok_or(Error::DeviceConflict)?;
     let mut reachable = false;
-    for pbd in pbds
-        .values()
-        .filter(|p| p["SR"] == sr_ref && p["currently_attached"] == true)
-    {
+    for pbd in pbds.values().filter(|p| {
+        PbdRecord::new(p).sr() == sr_ref && PbdRecord::new(p).currently_attached() == true
+    }) {
         let host = crate::snapshots::reference(&pbd["host"])?;
-        if guest["power_state"] == "Running" {
-            if guest["resident_on"] == host {
+        if VmRecord::new(guest).power_state() == "Running" {
+            if VmRecord::new(guest).resident_on() == host {
                 reachable = true;
                 break;
             }
@@ -241,15 +248,18 @@ async fn cd(
     previous: Option<VdiId>,
 ) -> Result<String, Error> {
     let (reference, record) = fresh(session, "VBD", id.uuid()).await?;
-    if record["VM"] != vm || record["type"] != "CD" || record["empty"] != previous.is_none() {
+    if VbdRecord::new(&record).vm() != vm
+        || VbdRecord::new(&record).type_() != "CD"
+        || VbdRecord::new(&record).empty() != previous.is_none()
+    {
         return Err(Error::DeviceConflict);
     }
     if let Some(previous) = previous {
         let (previous_ref, _) = fresh(session, "VDI", previous.uuid()).await?;
-        if record["VDI"] != previous_ref {
+        if VbdRecord::new(&record).vdi() != previous_ref {
             return Err(Error::DeviceConflict);
         }
-    } else if record["VDI"] != "OpaqueRef:NULL" {
+    } else if VbdRecord::new(&record).vdi() != "OpaqueRef:NULL" {
         return Err(Error::DeviceConflict);
     }
     permits(
@@ -331,15 +341,18 @@ pub(crate) async fn verify(session: &Session, vm: VmId, step: &Step) -> Result<b
         Step::Eject { cd, .. } | Step::Insert { cd, .. } => *cd,
     };
     let (_, record) = fresh(session, "VBD", id.uuid()).await?;
-    if record["VM"] != vm_ref || record["type"] != "CD" {
+    if VbdRecord::new(&record).vm() != vm_ref || VbdRecord::new(&record).type_() != "CD" {
         return Err(Error::DeviceConflict);
     }
     match step {
-        Step::Eject { .. } => Ok(record["empty"] == true && record["VDI"] == "OpaqueRef:NULL"),
+        Step::Eject { .. } => Ok(VbdRecord::new(&record).empty() == true
+            && VbdRecord::new(&record).vdi() == "OpaqueRef:NULL"),
         Step::Insert { image, sr, .. } => {
             let (image_ref, disk) = fresh(session, "VDI", image.uuid()).await?;
             let (sr_ref, _) = fresh(session, "SR", sr.uuid()).await?;
-            Ok(record["empty"] == false && record["VDI"] == image_ref && disk["SR"] == sr_ref)
+            Ok(VbdRecord::new(&record).empty() == false
+                && VbdRecord::new(&record).vdi() == image_ref
+                && disk["SR"] == sr_ref)
         }
     }
 }

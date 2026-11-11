@@ -4,6 +4,7 @@ use crate::{
     cloud_init::{self, Attachment, Plan},
 };
 use serde_json::Value;
+use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
 
 impl ResourceRequest {
     fn cloud_config(&self) -> Result<&crate::CloudInitConfiguration, Error> {
@@ -34,14 +35,15 @@ impl ResourceRequest {
             return Err(Error::Stale);
         };
         let (reference, vm) = crate::resources::xapi::read(session, self.record.target).await?;
-        if vm["is_a_snapshot"] != false
-            || vm["is_a_template"] != false
-            || vm["is_control_domain"] != false
-            || vm["power_state"] != "Halted"
+        if VmRecord::new(&vm).is_a_snapshot() != false
+            || VmRecord::new(&vm).is_a_template() != false
+            || VmRecord::new(&vm).is_control_domain() != false
+            || VmRecord::new(&vm).power_state() != "Halted"
         {
             return Err(Error::DeviceLifecycleRequiresHaltedVm);
         }
-        if vm["current_operations"]
+        if VmRecord::new(&vm)
+            .current_operations()
             .as_object()
             .is_none_or(|o| !o.is_empty())
         {
@@ -57,26 +59,34 @@ impl ResourceRequest {
             {
                 return Err(Error::DeviceConflict);
             }
-            let attachments = vm["VBDs"]
+            let attachments = VmRecord::new(&vm)
+                .vbds()
+                .value()
                 .as_array()
                 .filter(|v| v.len() <= 256)
                 .ok_or(Error::DeviceConflict)?;
             for attachment in attachments {
                 let r = crate::snapshots::reference(attachment)?;
                 let vbd = session.call("VBD.get_record", vec![json!(r)]).await?;
-                if vbd["VM"] != reference {
+                if VbdRecord::new(&vbd).vm() != reference {
                     return Err(Error::DeviceConflict);
                 }
-                if vbd["other_config"].get(cloud_init::MARKER).is_some() {
+                if VbdRecord::new(&vbd)
+                    .other_config()
+                    .get(cloud_init::MARKER)
+                    .is_some()
+                {
                     return Err(Error::HostPrerequisite(
                         "This VM already has an app-created cloud-init drive; review its removal separately",
                     ));
                 }
-                if vbd["type"] == "Disk" {
+                if VbdRecord::new(&vbd).type_() == "Disk" {
                     let vdi = session
                         .call(
                             "VDI.get_record",
-                            vec![json!(crate::snapshots::reference(&vbd["VDI"])?)],
+                            vec![json!(crate::snapshots::reference(
+                                &VbdRecord::new(&vbd).vdi()
+                            )?)],
                         )
                         .await?;
                     if vdi["other_config"].get(cloud_init::MARKER).is_some() {
@@ -335,10 +345,12 @@ impl ResourceRequest {
         )
         .await?;
         if creation.reference.as_ref() != Some(&disk_ref)
-            || d["other_config"][cloud_init::MARKER] != config.configuration_id.to_string()
-            || d["other_config"][crate::transfer::disk::MARKER] != self.record.id.to_string()
-            || d["is_a_snapshot"] != false
-            || d["read_only"] != false
+            || VdiRecord::new(&d).other_config()[cloud_init::MARKER]
+                != config.configuration_id.to_string()
+            || VdiRecord::new(&d).other_config()[crate::transfer::disk::MARKER]
+                != self.record.id.to_string()
+            || VdiRecord::new(&d).is_a_snapshot() != false
+            || VdiRecord::new(&d).read_only() != false
         {
             return Err(Error::TransferConflict);
         }
@@ -370,21 +382,23 @@ impl ResourceRequest {
         let fresh = session
             .call("VBD.get_record", vec![json!(reference)])
             .await?;
-        if fresh["uuid"] != uuid.to_string()
-            || fresh["VM"] != vm_ref
-            || fresh["VDI"] != disk_ref
-            || fresh["userdevice"] != config.device
-            || fresh["mode"] != "RO"
-            || fresh["type"] != "Disk"
-            || fresh["empty"] != false
-            || fresh["bootable"] != false
-            || fresh["currently_attached"] != false
-            || fresh["other_config"][cloud_init::MARKER] != config.configuration_id.to_string()
-            || fresh["other_config"]["owner"] != self.record.id.to_string()
-            || fresh["current_operations"]
+        if VbdRecord::new(&fresh).uuid() != uuid.to_string()
+            || VbdRecord::new(&fresh).vm() != vm_ref
+            || VbdRecord::new(&fresh).vdi() != disk_ref
+            || VbdRecord::new(&fresh).userdevice() != config.device
+            || VbdRecord::new(&fresh).mode() != "RO"
+            || VbdRecord::new(&fresh).type_() != "Disk"
+            || VbdRecord::new(&fresh).empty() != false
+            || VbdRecord::new(&fresh).bootable() != false
+            || VbdRecord::new(&fresh).currently_attached() != false
+            || VbdRecord::new(&fresh).other_config()[cloud_init::MARKER]
+                != config.configuration_id.to_string()
+            || VbdRecord::new(&fresh).other_config()["owner"] != self.record.id.to_string()
+            || VbdRecord::new(&fresh)
+                .current_operations()
                 .as_object()
                 .is_none_or(|o| !o.is_empty())
-            || d["VBDs"] != json!([reference])
+            || VdiRecord::new(&d).vbds() != json!([reference])
             || vm["VBDs"]
                 .as_array()
                 .is_none_or(|v| !v.iter().any(|r| r == reference))

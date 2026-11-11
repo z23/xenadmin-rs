@@ -11,6 +11,7 @@ pub(crate) use bond::review as review_bond;
 pub(super) use bond::{created as created_bond, replacements as bond_replacements};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{PifRecord, PoolRecord};
 fn require(condition: bool, message: &'static str) -> Result<(), Error> {
     if condition {
         Ok(())
@@ -207,7 +208,7 @@ fn dynamic_settings(
     let shared = secondary_dns(dns(text("DNS")?)?) == secondary_dns(dns(&before.ipv4.dns)?);
     Ok(shared
         && if ipv4 {
-            v["ip_configuration_mode"] == mode.as_str()
+            PifRecord::new(v).ip_configuration_mode() == mode.as_str()
                 && text("IP")?.parse::<std::net::IpAddr>().ok() == Some(recovery)
                 && crate::Ipv4Configuration {
                     mode: crate::Ipv4Mode::Static,
@@ -217,22 +218,22 @@ fn dynamic_settings(
                     dns: text("DNS")?.into(),
                 }
                 .valid()
-                && v["ipv6_configuration_mode"] == before.ipv6.mode.as_str()
-                && addresses(&v["IPv6"])? == before.ipv6.addresses
-                && v["ipv6_gateway"] == before.ipv6.gateway
+                && PifRecord::new(v).ipv6_configuration_mode() == before.ipv6.mode.as_str()
+                && addresses(&PifRecord::new(v).ipv6())? == before.ipv6.addresses
+                && PifRecord::new(v).ipv6_gateway() == before.ipv6.gateway
         } else {
-            v["ipv6_configuration_mode"] == mode.as_str()
-                && addresses(&v["IPv6"])?.iter().any(|v| {
+            PifRecord::new(v).ipv6_configuration_mode() == mode.as_str()
+                && addresses(&PifRecord::new(v).ipv6())?.iter().any(|v| {
                     v.split_once('/')
                         .and_then(|(v, _)| v.parse::<std::net::IpAddr>().ok())
                         == Some(recovery)
                 })
                 && (text("ipv6_gateway")?.is_empty()
                     || text("ipv6_gateway")?.parse::<std::net::Ipv6Addr>().is_ok())
-                && v["ip_configuration_mode"] == before.ipv4.mode.as_str()
-                && v["IP"] == before.ipv4.address
-                && v["netmask"] == before.ipv4.netmask
-                && v["gateway"] == before.ipv4.gateway
+                && PifRecord::new(v).ip_configuration_mode() == before.ipv4.mode.as_str()
+                && PifRecord::new(v).ip() == before.ipv4.address
+                && PifRecord::new(v).netmask() == before.ipv4.netmask
+                && PifRecord::new(v).gateway() == before.ipv4.gateway
         })
 }
 async fn pif(
@@ -249,39 +250,40 @@ async fn pif(
     };
     network::pif_identity(s, &v, &before.identity).await?;
     require(
-        v["primary_address_type"] == before.primary.as_str()
-            && v["currently_attached"].as_bool() == Some(before.attached)
-            && v["disallow_unplug"].as_bool() == Some(before.protected),
+        PifRecord::new(&v).primary_address_type() == before.primary.as_str()
+            && PifRecord::new(&v).currently_attached().as_bool() == Some(before.attached)
+            && PifRecord::new(&v).disallow_unplug().as_bool() == Some(before.protected),
         "Management interface state changed since review",
     )?;
     let settings_match = if let Some((mode, recovery)) = dynamic {
         dynamic_settings(&v, before, mode, recovery)?
     } else {
-        v["ip_configuration_mode"] == before.ipv4.mode.as_str()
-            && v["IP"] == before.ipv4.address
-            && v["netmask"] == before.ipv4.netmask
-            && v["gateway"] == before.ipv4.gateway
-            && dns(v["DNS"]
+        PifRecord::new(&v).ip_configuration_mode() == before.ipv4.mode.as_str()
+            && PifRecord::new(&v).ip() == before.ipv4.address
+            && PifRecord::new(&v).netmask() == before.ipv4.netmask
+            && PifRecord::new(&v).gateway() == before.ipv4.gateway
+            && dns(PifRecord::new(&v)
+                .dns()
                 .as_str()
                 .ok_or(Error::Protocol("Management DNS settings unavailable"))?)?
                 == dns(&before.ipv4.dns)?
-            && v["ipv6_configuration_mode"] == before.ipv6.mode.as_str()
-            && addresses(&v["IPv6"])?
+            && PifRecord::new(&v).ipv6_configuration_mode() == before.ipv6.mode.as_str()
+            && addresses(&PifRecord::new(&v).ipv6())?
                 == canonical_ipv6(&before.ipv6.addresses).ok_or(Error::InvalidResourceCommand)?
-            && v["ipv6_gateway"] == before.ipv6.gateway
+            && PifRecord::new(&v).ipv6_gateway() == before.ipv6.gateway
     };
     require(
         settings_match,
         "Management IP settings changed since review",
     )?;
     require(
-        v["managed"] == true
-            && network::number(&v["MTU"]) == Some(1500)
-            && v["bond_slave_of"] == "OpaqueRef:NULL"
+        PifRecord::new(&v).managed() == true
+            && network::number(&PifRecord::new(&v).mtu()) == Some(1500)
+            && PifRecord::new(&v).bond_slave_of() == "OpaqueRef:NULL"
             && (before.topology.is_some()
-                || (v["physical"] == true
-                    && network::number(&v["VLAN"]) == Some(-1)
-                    && v["VLAN_master_of"] == "OpaqueRef:NULL")),
+                || (PifRecord::new(&v).physical() == true
+                    && network::number(&PifRecord::new(&v).vlan()) == Some(-1)
+                    && PifRecord::new(&v).vlan_master_of() == "OpaqueRef:NULL")),
         "Management requires a physical interface, bond master or reviewed VLAN at MTU 1500",
     )?;
     let fields = if before.topology.is_some() {
@@ -300,7 +302,9 @@ async fn pif(
             "Management topology requires a separate reviewed workflow",
         )?;
     }
-    let config = v["other_config"]
+    let config = PifRecord::new(&v)
+        .other_config()
+        .value()
         .as_object()
         .filter(|v| v.len() <= 1024)
         .ok_or(Error::Protocol("Management interface metadata unavailable"))?;
@@ -330,7 +334,7 @@ async fn graph(
     };
     let (_, pool) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
     require(
-        pool["ha_enabled"] == false,
+        PoolRecord::new(&pool).ha_enabled() == false,
         "Disable HA before changing management networking",
     )?;
     let (host_ref, host) = xapi::read(s, r.target).await?;
@@ -415,11 +419,13 @@ async fn graph(
         if network::uuid(value)? == receiver.uuid() {
             continue;
         }
-        let ipv4 = value["IP"]
+        let ipv4 = PifRecord::new(value)
+            .ip()
+            .value()
             .as_str()
             .ok_or(Error::Protocol("Pool interface IP inventory unavailable"))?;
         let collides = ipv4.parse::<std::net::IpAddr>().ok() == Some(recovery)
-            || addresses(&value["IPv6"])?.iter().any(|v| {
+            || addresses(&PifRecord::new(value).ipv6())?.iter().any(|v| {
                 v.split_once('/')
                     .and_then(|(ip, _)| ip.parse::<std::net::IpAddr>().ok())
                     == Some(recovery)
@@ -432,7 +438,9 @@ async fn graph(
 
     let management = pifs
         .iter()
-        .filter(|(_, v)| v["host"] == host_ref && v["management"] == true)
+        .filter(|(_, v)| {
+            PifRecord::new(v).host() == host_ref && PifRecord::new(v).management() == true
+        })
         .map(|(r, _)| r.as_str())
         .collect::<Vec<_>>();
     require(

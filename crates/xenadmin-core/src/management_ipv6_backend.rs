@@ -11,6 +11,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::records::{HostRecord, PifRecord, PoolRecord};
 fn require(v: bool, message: &'static str) -> Result<(), Error> {
     if v {
         Ok(())
@@ -326,21 +327,26 @@ async fn environment(
 ) -> Result<(), Error> {
     let (_, pool) = xapi::read(s, ResourceTarget::Pool(p.pool)).await?;
     require(
-        pool["ha_enabled"] == false,
+        PoolRecord::new(&pool).ha_enabled() == false,
         "Disable HA before a staged IPv6 management handover",
     )?;
     let (host, record) = xapi::read(s, ResourceTarget::Host(p.host)).await?;
     require(
-        record["current_operations"]
+        HostRecord::new(&record)
+            .current_operations()
             .as_object()
             .is_some_and(|v| v.is_empty())
-            && record["address"].as_str().and_then(|v| v.parse().ok()) == Some(address),
+            && HostRecord::new(&record)
+                .address()
+                .as_str()
+                .and_then(|v| v.parse().ok())
+                == Some(address),
         "Host management role, address or task state changed",
     )?;
     let active = t
         .pifs()
         .iter()
-        .filter(|(_, v)| v["host"] == host && v["management"] == true)
+        .filter(|(_, v)| PifRecord::new(v).host() == host && PifRecord::new(v).management() == true)
         .map(|(r, _)| r.as_str())
         .collect::<Vec<_>>();
     require(
@@ -355,7 +361,7 @@ async fn environment(
         Err(e) => return Err(e),
     };
     require(
-        clusters.values().all(|v| v["host"] != host),
+        clusters.values().all(|v| PifRecord::new(v).host() != host),
         "Host clustering requires a separate management handover",
     )?;
     let temp_networks = p
@@ -370,7 +376,8 @@ async fn environment(
     }
     require(
         network::all(s, "VIF").await?.values().all(|v| {
-            v["network"]
+            PifRecord::new(v)
+                .network()
                 .as_str()
                 .is_some_and(|n| !temp_refs.contains(n))
         }),
@@ -408,7 +415,11 @@ async fn environment(
     ] {
         for v in t.pifs().values() {
             if network::uuid(v)? != owner.uuid() {
-                let addresses = v["IPv6"].as_array().ok_or(Error::ResourceConflict)?;
+                let addresses = PifRecord::new(v)
+                    .ipv6()
+                    .value()
+                    .as_array()
+                    .ok_or(Error::ResourceConflict)?;
                 require(
                     !addresses
                         .iter()

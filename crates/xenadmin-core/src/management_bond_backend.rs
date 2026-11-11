@@ -9,6 +9,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 pub(in crate::resources) use vlans::replacements;
+use xenadmin_xapi::records::{BondRecord, HostRecord, PifRecord, PoolRecord};
 fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, &Op), Error> {
     match operation(r)? {
         ManagementNetworkOperation::Bond {
@@ -79,16 +80,21 @@ async fn environment(
 ) -> Result<(), Error> {
     let (_, pool) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
     require(
-        pool["ha_enabled"] == false,
+        PoolRecord::new(&pool).ha_enabled() == false,
         "Disable HA before changing management bonds",
     )?;
     let (host_ref, host) = xapi::read(s, r.target).await?;
     require(
-        host["address"].as_str().and_then(|v| v.parse().ok()) == operation(r)?.source().address(),
+        HostRecord::new(&host)
+            .address()
+            .as_str()
+            .and_then(|v| v.parse().ok())
+            == operation(r)?.source().address(),
         "Host management address changed since review",
     )?;
     require(
-        host["current_operations"]
+        HostRecord::new(&host)
+            .current_operations()
             .as_object()
             .is_some_and(|v| v.is_empty()),
         "Host is busy or operation availability is unknown",
@@ -96,7 +102,9 @@ async fn environment(
     let managements = t
         .pifs()
         .iter()
-        .filter(|(_, v)| v["host"] == host_ref && v["management"] == true)
+        .filter(|(_, v)| {
+            PifRecord::new(v).host() == host_ref && PifRecord::new(v).management() == true
+        })
         .map(|(r, _)| r.as_str())
         .collect::<Vec<_>>();
     require(
@@ -107,7 +115,8 @@ async fn environment(
     for (reference, p) in t.pifs() {
         if reference != management {
             require(
-                p["IP"]
+                PifRecord::new(p)
+                    .ip()
                     .as_str()
                     .and_then(|v| v.parse::<std::net::IpAddr>().ok())
                     != Some(ip),
@@ -146,20 +155,21 @@ fn source_networks(
         .collect()
 }
 fn no_ip(p: &Value) -> bool {
-    p["ip_configuration_mode"] == "None"
-        && p["IP"] == ""
-        && p["netmask"] == ""
-        && p["gateway"] == ""
-        && p["DNS"] == ""
-        && p["ipv6_configuration_mode"] == "None"
-        && addresses(&p["IPv6"]).is_ok_and(|v| v.is_empty())
-        && p["ipv6_gateway"] == ""
+    PifRecord::new(p).ip_configuration_mode() == "None"
+        && PifRecord::new(p).ip() == ""
+        && PifRecord::new(p).netmask() == ""
+        && PifRecord::new(p).gateway() == ""
+        && PifRecord::new(p).dns() == ""
+        && PifRecord::new(p).ipv6_configuration_mode() == "None"
+        && addresses(&PifRecord::new(p).ipv6()).is_ok_and(|v| v.is_empty())
+        && PifRecord::new(p).ipv6_gateway() == ""
 }
 fn basic(p: &Value) -> bool {
-    p["managed"] == true
-        && network::number(&p["MTU"]) == Some(1500)
-        && p["disallow_unplug"] == false
-        && p["other_config"]
+    PifRecord::new(p).managed() == true
+        && network::number(&PifRecord::new(p).mtu()) == Some(1500)
+        && PifRecord::new(p).disallow_unplug() == false
+        && PifRecord::new(p)
+            .other_config()
             .as_object()
             .is_some_and(|v| !v.contains_key("management_purpose"))
 }
@@ -303,7 +313,11 @@ pub(in crate::resources) fn identity(
         .get(reference)
         .ok_or(Error::ResourceConflict)?;
     let bond = BondId::from(network::uuid(b)?);
-    let master_ref = b["master"].as_str().ok_or(Error::ResourceConflict)?;
+    let master_ref = BondRecord::new(b)
+        .master()
+        .value()
+        .as_str()
+        .ok_or(Error::ResourceConflict)?;
     let p = t.pifs().get(master_ref).ok_or(Error::ResourceConflict)?;
     let master = PifId::from(network::uuid(p)?);
     let pair = ManagementBondCreated { bond, master };
@@ -317,12 +331,12 @@ pub(in crate::resources) fn identity(
         !plan.bonds.contains(&bond)
             && !plan.pifs.contains(&master)
             && plan.created.is_none_or(|id| id == pair)
-            && p["host"] == host
-            && p["network"] == target
-            && b["primary_slave"]
+            && PifRecord::new(p).host() == host
+            && PifRecord::new(p).network() == target
+            && BondRecord::new(b).primary_slave()
                 == t.pif(Op::management_parent(source).ok_or(Error::InvalidResourceCommand)?)?
                     .0
-            && network::refs(&b["slaves"])?
+            && network::refs(&BondRecord::new(b).slaves())?
                 .into_iter()
                 .collect::<BTreeSet<_>>()
                 == refs,
@@ -423,27 +437,31 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
     let net_ref = lookup(t.records("network"), expected_network.uuid())?.0;
     require(
         basic(p)
-            && p["currently_attached"] == true
-            && p["management"] == true
-            && p["network"] == net_ref
-            && p["primary_address_type"] == "IPv4"
-            && p["ip_configuration_mode"] == source.ipv4.mode.as_str()
-            && p["IP"] == source.ipv4.address
-            && p["netmask"] == source.ipv4.netmask
-            && p["gateway"] == source.ipv4.gateway
-            && dns(p["DNS"].as_str().ok_or(Error::ResourceConflict)?)? == dns(&source.ipv4.dns)?
-            && p["ipv6_configuration_mode"] == "None"
-            && addresses(&p["IPv6"])?.is_empty()
-            && p["ipv6_gateway"] == "",
+            && PifRecord::new(p).currently_attached() == true
+            && PifRecord::new(p).management() == true
+            && PifRecord::new(p).network() == net_ref
+            && PifRecord::new(p).primary_address_type() == "IPv4"
+            && PifRecord::new(p).ip_configuration_mode() == source.ipv4.mode.as_str()
+            && PifRecord::new(p).ip() == source.ipv4.address
+            && PifRecord::new(p).netmask() == source.ipv4.netmask
+            && PifRecord::new(p).gateway() == source.ipv4.gateway
+            && dns(PifRecord::new(p)
+                .dns()
+                .as_str()
+                .ok_or(Error::ResourceConflict)?)?
+                == dns(&source.ipv4.dns)?
+            && PifRecord::new(p).ipv6_configuration_mode() == "None"
+            && addresses(&PifRecord::new(p).ipv6())?.is_empty()
+            && PifRecord::new(p).ipv6_gateway() == "",
         "Management bond receiver does not have the reviewed configuration",
     )?;
     let (_, parent_record) = t.pif(parent)?;
     require(
         properties(parent_record)? == b.properties
-            && parent_record["currently_attached"] == true
-            && network::number(&parent_record["VLAN"]) == Some(-1)
+            && PifRecord::new(parent_record).currently_attached() == true
+            && network::number(&PifRecord::new(parent_record).vlan()) == Some(-1)
             && (receiver == parent
-                || (parent_record["management"] == false && no_ip(parent_record))),
+                || (PifRecord::new(parent_record).management() == false && no_ip(parent_record))),
         "Bond parent properties or IP settings changed unexpectedly",
     )?;
     if op.creates() {
@@ -452,7 +470,7 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
             .find(|m| m.pif == old_parent)
             .ok_or(Error::Journal)?;
         require(
-            parent_record["MAC"] == physical.identity.mac,
+            PifRecord::new(parent_record).mac() == physical.identity.mac,
             "Management bond did not retain the primary physical MAC",
         )?;
     }
@@ -460,18 +478,19 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
         let (_, p) = t.pif(m.pif)?;
         require(
             basic(p)
-                && p["physical"] == true
-                && network::number(&p["VLAN"]) == Some(-1)
-                && p["MAC"] == m.identity.mac
-                && p["device"] == m.identity.device
-                && p["host"] == receiver_host(&t, receiver)?
-                && p["network"] == lookup(t.records("network"), m.identity.network.uuid())?.0
+                && PifRecord::new(p).physical() == true
+                && network::number(&PifRecord::new(p).vlan()) == Some(-1)
+                && PifRecord::new(p).mac() == m.identity.mac
+                && PifRecord::new(p).device() == m.identity.device
+                && PifRecord::new(p).host() == receiver_host(&t, receiver)?
+                && PifRecord::new(p).network()
+                    == lookup(t.records("network"), m.identity.network.uuid())?.0
                 && properties(p)? == b.properties,
             "Management bond member identity or configuration changed",
         )?;
         if m.pif != receiver {
             require(
-                p["management"] == false && no_ip(p),
+                PifRecord::new(p).management() == false && no_ip(p),
                 "Bond member retained unexpected IP configuration",
             )?;
         }
@@ -491,7 +510,8 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
     }
     let mut nets = source_networks(&t, members.iter().map(|m| m.pif))?;
     nets.insert(
-        parent_record["network"]
+        PifRecord::new(parent_record)
+            .network()
             .as_str()
             .ok_or(Error::ResourceConflict)?
             .into(),

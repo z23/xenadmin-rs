@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 
 const MARKER: &str = "xenadmin-rs-operation";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,10 +403,14 @@ fn idle(record: &Value) -> Result<(), Error> {
 }
 fn permits(record: &Value, operation: &str) -> Result<(), Error> {
     idle(record)?;
-    if record["allowed_operations"]
+    if VmRecord::new(record)
+        .allowed_operations()
         .as_array()
         .is_none_or(|ops| !ops.iter().any(|op| op == operation))
-        || record["blocked_operations"].get(operation).is_some()
+        || VmRecord::new(record)
+            .blocked_operations()
+            .get(operation)
+            .is_some()
     {
         return Err(Error::UnavailableAction);
     }
@@ -413,14 +418,14 @@ fn permits(record: &Value, operation: &str) -> Result<(), Error> {
 }
 async fn guest(session: &Session, vm: VmId, halted: bool) -> Result<String, Error> {
     let (reference, record) = fresh(session, "VM", vm.uuid()).await?;
-    if record["is_a_snapshot"] != false
-        || record["is_a_template"] != false
-        || record["is_control_domain"] != false
+    if VmRecord::new(&record).is_a_snapshot() != false
+        || VmRecord::new(&record).is_a_template() != false
+        || VmRecord::new(&record).is_control_domain() != false
     {
         return Err(Error::Stale);
     }
     if halted {
-        if record["power_state"] != "Halted" {
+        if VmRecord::new(&record).power_state() != "Halted" {
             return Err(Error::DeviceLifecycleRequiresHaltedVm);
         }
         idle(&record)?;
@@ -447,11 +452,11 @@ async fn allowed_slot(session: &Session, vm: &str, class: &str, device: &str) ->
     Ok(())
 }
 fn ordinary_disk(record: &Value) -> bool {
-    record["type"] == "user"
-        && record["managed"] == true
-        && record["missing"] == false
-        && record["sharable"] == false
-        && record["is_a_snapshot"] == false
+    VdiRecord::new(record).type_() == "user"
+        && VdiRecord::new(record).managed() == true
+        && VdiRecord::new(record).missing() == false
+        && VdiRecord::new(record).sharable() == false
+        && VdiRecord::new(record).is_a_snapshot() == false
 }
 fn refs(record: &Value, key: &str) -> Result<Vec<String>, Error> {
     record[key]
@@ -471,16 +476,17 @@ async fn attachment(
 ) -> Result<(String, Value), Error> {
     let (reference, record) = fresh(session, "VBD", vbd.uuid()).await?;
     let (disk_ref, disk_record) = fresh(session, "VDI", disk.uuid()).await?;
-    if record["VM"] != vm
-        || record["VDI"] != disk_ref
-        || record["type"] != "Disk"
-        || record["currently_attached"] != false
+    if VbdRecord::new(&record).vm() != vm
+        || VbdRecord::new(&record).vdi() != disk_ref
+        || VbdRecord::new(&record).type_() != "Disk"
+        || VbdRecord::new(&record).currently_attached() != false
     {
         return Err(Error::DeviceConflict);
     }
     idle(&record)?;
     if deleting {
-        if !record["other_config"]
+        if !VbdRecord::new(&record)
+            .other_config()
             .get("owner")
             .is_some_and(Value::is_string)
             || !ordinary_disk(&disk_record)
@@ -550,7 +556,7 @@ pub(crate) async fn plan(
             let (_, disk) = fresh(session, "VDI", vdi.uuid()).await?;
             if !ordinary_disk(&disk)
                 || !refs(&disk, "VBDs")?.is_empty()
-                || (!*read_only && disk["read_only"] != false)
+                || (!*read_only && VdiRecord::new(&disk).read_only() != false)
             {
                 return Err(Error::DeviceInUse);
             }
@@ -606,7 +612,8 @@ pub(crate) async fn plan(
             let network_record = session
                 .call("network.get_record", vec![json!(network_ref)])
                 .await?;
-            let from = network_record["uuid"]
+            let from = NetworkRecord::new(&network_record)
+                .uuid()
                 .as_str()
                 .and_then(|id| NetworkId::parse(id).ok())
                 .ok_or(Error::DeviceConflict)?;
@@ -986,9 +993,9 @@ pub(crate) async fn verify_step(
                 .as_object()
                 .filter(|values| values.len() <= 10_000)
                 .ok_or(Error::DeviceConflict)?;
-            let mut candidates = records
-                .iter()
-                .filter(|(_, record)| record["other_config"][MARKER] == id.to_string());
+            let mut candidates = records.iter().filter(|(_, record)| {
+                VifRecord::new(record).other_config()[MARKER] == id.to_string()
+            });
             let Some((reference, record)) = candidates.next() else {
                 return Ok(false);
             };
@@ -997,7 +1004,8 @@ pub(crate) async fn verify_step(
             }
             (self::reference(&json!(reference))?, record.clone())
         };
-        let uuid = record["uuid"]
+        let uuid = VifRecord::new(&record)
+            .uuid()
             .as_str()
             .and_then(|id| Uuid::parse_str(id).ok())
             .ok_or(Error::DeviceConflict)?;
@@ -1056,9 +1064,10 @@ pub(crate) async fn verify_step(
             let (network_ref, _) = network(session, *to).await?;
             let (_, record) = fresh(session, "VIF", vif.uuid()).await?;
             let vm_ref = guest(session, vm, false).await?;
-            Ok(record["VM"] == vm_ref
-                && record["network"] == network_ref
-                && record["MAC"]
+            Ok(VifRecord::new(&record).vm() == vm_ref
+                && VifRecord::new(&record).network() == network_ref
+                && VifRecord::new(&record)
+                    .mac()
                     .as_str()
                     .is_some_and(|m| m.eq_ignore_ascii_case(mac)))
         }

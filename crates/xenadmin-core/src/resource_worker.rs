@@ -52,6 +52,7 @@ use serde_json::json;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::TaskRecord;
 
 pub(crate) struct ResourceRequest {
     pub(crate) batch_permit: Option<crate::vm_workflow_batch::ChildPermit>,
@@ -763,7 +764,7 @@ impl ResourceRequest {
             let (_, task) = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=xapi::read(session,self.record.target)=>result? };
             // Only status establishes completion. The original task remains owned
             // by its creator and is never destroyed by this cancellation observer.
-            let (state, detail) = match task["status"].as_str() {
+            let (state, detail) = match TaskRecord::new(&task).status().as_str() {
                 Some("pending") if self.record.steps[0].state != StepState::Verified => (
                     OperationState::OutcomeUnknown,
                     "Cancellation request delivery is unknown; task is still pending. No request was replayed",
@@ -797,9 +798,10 @@ impl ResourceRequest {
             self.record.state = state.clone();
             self.record.detail = detail.into();
             self.record.can_cancel = false;
-            self.record.progress = task["progress"]
+            self.record.progress = TaskRecord::new(&task)
+                .progress()
                 .as_f64()
-                .or_else(|| task["progress"].as_str()?.parse().ok())
+                .or_else(|| TaskRecord::new(&task).progress().as_str()?.parse().ok())
                 .filter(|v| v.is_finite())
                 .map(|v| v.clamp(0.0, 1.0));
             if state.terminal() {
@@ -859,12 +861,14 @@ impl ResourceRequest {
                     return Ok(());
                 }
             }
-            self.record.progress = task["progress"]
+            self.record.progress = TaskRecord::new(&task)
+                .progress()
                 .as_f64()
-                .or_else(|| task["progress"].as_str()?.parse().ok())
+                .or_else(|| TaskRecord::new(&task).progress().as_str()?.parse().ok())
                 .filter(|v| v.is_finite())
                 .map(|v| v.clamp(0.0, 1.0));
-            self.record.can_cancel = task["allowed_operations"]
+            self.record.can_cancel = TaskRecord::new(&task)
+                .allowed_operations()
                 .as_array()
                 .is_some_and(|ops| ops.iter().any(|op| op == "cancel"));
             if (matches!(&self.record.action, super::ResourceAction::Storage(operation) if operation.creates_reference())
@@ -875,16 +879,21 @@ impl ResourceRequest {
                     &self.record.action,
                     super::ResourceAction::SnapshotPolicy(_)
                 ))
-                && matches!(task["status"].as_str(), Some("failure" | "cancelled"))
+                && matches!(
+                    TaskRecord::new(&task).status().as_str(),
+                    Some("failure" | "cancelled")
+                )
             {
-                let code = task["error_info"]
+                let code = TaskRecord::new(&task)
+                    .error_info()
+                    .value()
                     .as_array()
                     .and_then(|values| values.first())
                     .and_then(|value| value.as_str())
                     .map(crate::xapi::safe_error_code);
                 self.record.state = OperationState::OutcomeUnknown;
                 self.record.can_cancel = false;
-                let outcome = if task["status"] == "failure" {
+                let outcome = if TaskRecord::new(&task).status() == "failure" {
                     "failed"
                 } else {
                     "was cancelled"
@@ -900,7 +909,7 @@ impl ResourceRequest {
                 // Keep the task and pool reservation: failure/cancellation does not prove cleanup.
                 return self.save(journal).await;
             }
-            match task["status"].as_str() {
+            match TaskRecord::new(&task).status().as_str() {
                 Some("success") => {
                     if let super::ResourceAction::SnapshotPolicy(op) = &self.record.action {
                         if matches!(op, crate::SnapshotPolicyOperation::Create { .. })
@@ -1039,7 +1048,9 @@ impl ResourceRequest {
                 }
                 Some("failure") => {
                     self.record.state = OperationState::Failed;
-                    let code = task["error_info"]
+                    let code = TaskRecord::new(&task)
+                        .error_info()
+                        .value()
                         .as_array()
                         .and_then(|values| values.first())
                         .and_then(|value| value.as_str())

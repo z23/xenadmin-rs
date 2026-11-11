@@ -1,6 +1,7 @@
 use super::*;
 use crate::{OperationStep, StepState, vm_lifecycle_backend as lifecycle};
 use serde_json::Value;
+use xenadmin_xapi::records::TaskRecord;
 
 impl MutationRequest {
     async fn save_lifecycle_evidence(
@@ -127,7 +128,7 @@ impl MutationRequest {
                             return self.lifecycle_error(journal, &plan, index, error).await;
                         }
                     };
-                    match record["status"].as_str() {
+                    match TaskRecord::new(&record).status().as_str() {
                         Some("success") => {
                             if matches!(plan.steps[index], lifecycle::Step::Copy { .. }) {
                                 plan.evidence[index].result =
@@ -137,7 +138,9 @@ impl MutationRequest {
                             break;
                         }
                         Some("failure") | Some("cancelled") => {
-                            let code = record["error_info"]
+                            let code = TaskRecord::new(&record)
+                                .error_info()
+                                .value()
                                 .as_array()
                                 .and_then(|v| v.first())
                                 .and_then(Value::as_str)

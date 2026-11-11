@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::records::{SrRecord, VdiRecord, VmRecord};
 
 impl ExportSource {
     pub fn checkpoint(
@@ -64,9 +65,10 @@ pub(crate) fn availability(
 }
 
 pub(crate) fn size(record: &Value) -> Result<u64, Error> {
-    record["virtual_size"]
+    VdiRecord::new(record)
+        .virtual_size()
         .as_u64()
-        .or_else(|| record["virtual_size"].as_str()?.parse().ok())
+        .or_else(|| VdiRecord::new(record).virtual_size().as_str()?.parse().ok())
         .filter(|v| *v > 0 && *v <= MAX_TRANSFER_BYTES)
         .ok_or(Error::TransferArchive)
 }
@@ -85,12 +87,12 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
     let mut guests = BTreeMap::new();
     for object in objects.iter().filter(|o| o["class"] == "VM") {
         let record = &object["snapshot"];
-        let suspended = match record["power_state"].as_str() {
+        let suspended = match VmRecord::new(record).power_state().as_str() {
             Some("Halted") => false,
             Some("Suspended") => true,
             _ => return Err(Error::TransferArchive),
         };
-        let memory = record["suspend_VDI"].as_str();
+        let memory = VmRecord::new(record).suspend_vdi().value().as_str();
         if !suspended {
             if memory.is_some_and(|r| !matches!(r, "OpaqueRef:NULL" | "Ref:NULL")) {
                 return Err(Error::TransferArchive);
@@ -100,17 +102,19 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
         let reference = memory.ok_or(Error::TransferArchive)?;
         let disk = records.get(reference).ok_or(Error::TransferArchive)?;
         let d = &disk["snapshot"];
-        let uuid: uuid::Uuid = d["uuid"]
+        let uuid: uuid::Uuid = VdiRecord::new(d)
+            .uuid()
             .as_str()
             .ok_or(Error::TransferArchive)?
             .parse()
             .map_err(|_| Error::TransferArchive)?;
-        let sr = d["SR"]
+        let sr = VdiRecord::new(d)
+            .sr()
             .as_str()
             .and_then(|r| records.get(r))
             .ok_or(Error::TransferArchive)?;
         if disk["class"] != "VDI"
-            || d["type"] != "suspend"
+            || VdiRecord::new(d).type_() != "suspend"
             || uuid.is_nil()
             || sr["class"] != "SR"
             || sr["snapshot"]["content_type"] != "user"
@@ -154,18 +158,22 @@ pub(crate) async fn fresh(
     let (sr_ref, sr) = crate::snapshots::optional_record(s, "SR", &expected.sr.to_string())
         .await?
         .ok_or(Error::TransferConflict)?;
-    if vm["suspend_VDI"] != reference
-        || vm["power_state"] != "Suspended"
-        || disk["type"] != "suspend"
-        || disk["managed"] != true
-        || disk["missing"] != false
+    if VmRecord::new(vm).suspend_vdi() != reference
+        || VmRecord::new(vm).power_state() != "Suspended"
+        || VdiRecord::new(&disk).type_() != "suspend"
+        || VdiRecord::new(&disk).managed() != true
+        || VdiRecord::new(&disk).missing() != false
         || size(&disk)? != expected.virtual_size
-        || disk["SR"] != sr_ref
-        || sr["content_type"] != "user"
-        || disk["current_operations"]
+        || VdiRecord::new(&disk).sr() != sr_ref
+        || SrRecord::new(&sr).content_type() != "user"
+        || VdiRecord::new(&disk)
+            .current_operations()
             .as_object()
             .is_none_or(|v| !v.is_empty())
-        || disk["VBDs"].as_array().is_none_or(|v| !v.is_empty())
+        || VdiRecord::new(&disk)
+            .vbds()
+            .as_array()
+            .is_none_or(|v| !v.is_empty())
     {
         return Err(Error::TransferConflict);
     }

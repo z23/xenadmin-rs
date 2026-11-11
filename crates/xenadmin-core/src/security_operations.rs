@@ -4,6 +4,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use xenadmin_xapi::records::{HostRecord, SubjectRecord};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&PoolSecurityOperation, Error> {
     match &record.action {
@@ -61,8 +62,8 @@ async fn subject(
     let mut expected = expected_roles.to_vec();
     expected.sort();
     require(
-        value["subject_identifier"] == identifier
-            && discovery::subject_roles(&value["roles"], &ids)? == expected,
+        SubjectRecord::new(&value).subject_identifier() == identifier
+            && discovery::subject_roles(&SubjectRecord::new(&value).roles(), &ids)? == expected,
         "The subject or its assigned roles changed since review",
     )?;
     Ok((reference, value))
@@ -123,18 +124,20 @@ pub(super) async fn arguments(
                 !hosts.is_empty()
                     && hosts
                         .values()
-                        .all(|h| h["license_params"]["restrict_rbac"] == "false"),
+                        .all(|h| HostRecord::new(h).license_params()["restrict_rbac"] == "false"),
                 "Subject creation requires explicitly available RBAC; restricted servers may grant new subjects full administration",
             )?;
             require(
-                hosts.values().all(|h| h["external_auth_type"] == "AD"),
+                hosts
+                    .values()
+                    .all(|h| HostRecord::new(h).external_auth_type() == "AD"),
                 "All pool members must already use Active Directory",
             )?;
             let subjects = discovery::records(session, "subject", 4096).await?;
             require(
                 subjects
                     .values()
-                    .all(|s| s["subject_identifier"] != *identifier),
+                    .all(|s| SubjectRecord::new(s).subject_identifier() != *identifier),
                 "This directory subject already has access",
             )?;
             session
@@ -272,18 +275,21 @@ pub(super) async fn verify(
             let value = session
                 .call("subject.get_record", vec![json!(reference)])
                 .await?;
-            let id = SubjectId::parse(&discovery::text(&value["uuid"], 36)?)
+            let id = SubjectId::parse(&discovery::text(&SubjectRecord::new(&value).uuid(), 36)?)
                 .map_err(|_| Error::Protocol("invalid subject UUID"))?;
             require(
                 record
                     .subject_baseline
                     .as_ref()
                     .is_some_and(|ids| !ids.contains(&id))
-                    && value["subject_identifier"] == *identifier,
+                    && SubjectRecord::new(&value).subject_identifier() == *identifier,
                 "The returned subject does not match this creation",
             )?;
             require(
-                value["roles"].as_array().is_some_and(Vec::is_empty),
+                SubjectRecord::new(&value)
+                    .roles()
+                    .as_array()
+                    .is_some_and(Vec::is_empty),
                 "The server assigned unexpected roles; inspect subject access before acknowledging",
             )?;
         }

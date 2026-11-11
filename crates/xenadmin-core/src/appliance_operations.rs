@@ -8,6 +8,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::VmRecord;
 
 #[derive(Clone)]
 pub(super) enum Verify {
@@ -58,12 +59,12 @@ async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
     let record = session
         .call("VM.get_record", vec![json!(&reference)])
         .await?;
-    if record["uuid"] != id.to_string() {
+    if VmRecord::new(&record).uuid() != id.to_string() {
         return Err(Error::Stale);
     }
-    if record["is_a_template"] != false
-        || record["is_a_snapshot"] != false
-        || record["is_control_domain"] != false
+    if VmRecord::new(&record).is_a_template() != false
+        || VmRecord::new(&record).is_a_snapshot() != false
+        || VmRecord::new(&record).is_control_domain() != false
     {
         return Err(Error::InvalidResourceCommand);
     }
@@ -96,17 +97,17 @@ fn number(value: &Value) -> Option<i64> {
 }
 fn order(record: &Value) -> Result<ApplianceOrder, Error> {
     Ok(ApplianceOrder {
-        order: number(&record["order"]).ok_or(Error::ResourceConflict)?,
-        start_delay: number(&record["start_delay"])
+        order: number(&VmRecord::new(record).order()).ok_or(Error::ResourceConflict)?,
+        start_delay: number(&VmRecord::new(record).start_delay())
             .and_then(|v| v.try_into().ok())
             .ok_or(Error::ResourceConflict)?,
-        shutdown_delay: number(&record["shutdown_delay"])
+        shutdown_delay: number(&VmRecord::new(record).shutdown_delay())
             .and_then(|v| v.try_into().ok())
             .ok_or(Error::ResourceConflict)?,
     })
 }
 fn power(record: &Value) -> Result<PowerState, Error> {
-    match record["power_state"].as_str() {
+    match VmRecord::new(record).power_state().as_str() {
         Some("Running") => Ok(PowerState::Running),
         Some("Halted") => Ok(PowerState::Halted),
         Some("Paused") => Ok(PowerState::Paused),
@@ -278,7 +279,9 @@ pub(super) async fn arguments(
             let (reference, fresh) = if let Some(id) = target {
                 let (vr, v) = vm(session, *id).await?;
                 idle(&v)?;
-                if v["appliance"] != reference || !members(session, &fresh).await?.contains(id) {
+                if VmRecord::new(&v).appliance() != reference
+                    || !members(session, &fresh).await?.contains(id)
+                {
                     return Err(Error::ResourceConflict);
                 }
                 (vr, v)
@@ -310,7 +313,7 @@ pub(super) async fn arguments(
             } else {
                 reference.as_str()
             };
-            if v["appliance"] != previous {
+            if VmRecord::new(&v).appliance() != previous {
                 return Err(Error::ResourceConflict);
             }
             Ok(vec![
@@ -347,7 +350,7 @@ pub(super) async fn arguments(
                 for member in reviewed {
                     let (vr, v) = vm(session, member.vm).await?;
                     idle(&v)?;
-                    if v["appliance"] != reference
+                    if VmRecord::new(&v).appliance() != reference
                         || order(&v)? != member.order
                         || power(&v)? != member.state
                     {
@@ -435,7 +438,9 @@ pub(super) async fn verify(
         } => {
             let fresh = if let Some(id) = target {
                 let (_, v) = vm(session, *id).await?;
-                if v["appliance"] != reference || !members(session, &fresh).await?.contains(id) {
+                if VmRecord::new(&v).appliance() != reference
+                    || !members(session, &fresh).await?.contains(id)
+                {
                     return Err(Error::ResourceConflict);
                 }
                 v
@@ -464,7 +469,7 @@ pub(super) async fn verify(
             }
             let (_, v) = vm(session, *id).await?;
             if members(session, &fresh).await? != expected
-                || v["appliance"]
+                || VmRecord::new(&v).appliance()
                     != if *join {
                         reference.as_str()
                     } else {
@@ -490,7 +495,7 @@ pub(super) async fn verify(
             for member in reviewed {
                 let (_, v) = vm(session, member.vm).await?;
                 idle(&v)?;
-                if v["appliance"] != reference
+                if VmRecord::new(&v).appliance() != reference
                     || order(&v)? != member.order
                     || power(&v)? != action.destination()
                 {

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::records::{HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
@@ -238,19 +239,20 @@ impl Fresh {
             .collect()
     }
     fn clean_child(&self, p: &Value, kind: Kind) -> Result<(), Error> {
-        if p["management"] != false
-            || p["managed"] != true
-            || p["physical"] != false
-            || p["disallow_unplug"] != false
-            || p["ip_configuration_mode"] != "None"
-            || p["ipv6_configuration_mode"] != "None"
+        if PifRecord::new(p).management() != false
+            || PifRecord::new(p).managed() != true
+            || PifRecord::new(p).physical() != false
+            || PifRecord::new(p).disallow_unplug() != false
+            || PifRecord::new(p).ip_configuration_mode() != "None"
+            || PifRecord::new(p).ipv6_configuration_mode() != "None"
             || ["IP", "netmask", "gateway", "DNS", "ipv6_gateway"]
                 .iter()
                 .any(|f| p[f] != "")
-            || p["IPv6"]
+            || PifRecord::new(p)
+                .ipv6()
                 .as_array()
                 .is_none_or(|ips| ips.iter().any(|ip| ip != ""))
-            || network::number(&p["VLAN"]) != Some(-1)
+            || network::number(&PifRecord::new(p).vlan()) != Some(-1)
             || network::refs(
                 &p[match kind {
                     Kind::Tunnel(_) => "sriov_logical_PIF_of",
@@ -258,8 +260,8 @@ impl Fresh {
                 }],
             )
             .map_or(true, |refs| !refs.is_empty())
-            || p["bond_slave_of"] != "OpaqueRef:NULL"
-            || p["VLAN_master_of"] != "OpaqueRef:NULL"
+            || PifRecord::new(p).bond_slave_of() != "OpaqueRef:NULL"
+            || PifRecord::new(p).vlan_master_of() != "OpaqueRef:NULL"
             || [
                 "bond_master_of",
                 "VLAN_slave_of",
@@ -268,8 +270,14 @@ impl Fresh {
             ]
             .iter()
             .any(|f| network::refs(&p[f]).map_or(true, |v| !v.is_empty()))
-            || p["other_config"].as_object().is_none_or(|m| !m.is_empty())
-            || p["properties"].as_object().is_none_or(|m| !m.is_empty())
+            || PifRecord::new(p)
+                .other_config()
+                .as_object()
+                .is_none_or(|m| !m.is_empty())
+            || PifRecord::new(p)
+                .properties()
+                .as_object()
+                .is_none_or(|m| !m.is_empty())
         {
             return Err(Error::ResourceInUse);
         }
@@ -286,8 +294,8 @@ impl Fresh {
             .filter(|p| p["network"] == network_ref)
             .map(network::uuid)
             .collect::<Result<BTreeSet<_>, _>>()?;
-        if actual != self.ref_ids("PIF", &n["PIFs"])?
-            || !network::refs(&n["VIFs"])?.is_empty()
+        if actual != self.ref_ids("PIF", &NetworkRecord::new(n).pifs())?
+            || !network::refs(&NetworkRecord::new(n).vifs())?.is_empty()
             || self.raw["vif"]
                 .values()
                 .any(|v| v["network"] == network_ref)
@@ -357,18 +365,19 @@ impl Fresh {
                 {
                     return Err(Error::ResourceInUse);
                 }
-                if self.raw["network_sriov"]
-                    .values()
-                    .any(|o| o["physical_PIF"] == pr && network::uuid(o).ok() != allowed)
-                {
+                if self.raw["network_sriov"].values().any(|o| {
+                    NetworkSriovRecord::new(o).physical_pif() == pr
+                        && network::uuid(o).ok() != allowed
+                }) {
                     return Err(Error::Protocol(
                         "Another same-driver SR-IOV interface is already configured; review it separately",
                     ));
                 }
             }
             let (_, host) = self.by_id("host", r.host.uuid())?;
-            if host["enabled"] != false
-                || host["current_operations"]
+            if HostRecord::new(host).enabled() != false
+                || HostRecord::new(host)
+                    .current_operations()
                     .as_object()
                     .is_none_or(|v| !v.is_empty())
                 || self.raw["vm"]
@@ -380,7 +389,8 @@ impl Fresh {
                     "SR-IOV changes require a disabled evacuated host and disabled pool HA",
                 ));
             }
-            let metrics = host["metrics"]
+            let metrics = HostRecord::new(host)
+                .metrics()
                 .as_str()
                 .and_then(|r| self.raw["host_metrics"].get(r))
                 .ok_or(Error::ResourceConflict)?;
@@ -513,10 +523,12 @@ async fn identity_for(
         || baseline["pif"].contains(&child_id.uuid())
         || network::uuid(&network::related(s, "PIF", &value[parent]).await?)?
             != op.review.input.id.uuid()
-        || network::uuid(&network::related(s, "host", &child_record["host"]).await?)?
-            != op.review.host.uuid()
-        || network::uuid(&network::related(s, "network", &child_record["network"]).await?)?
-            != op.review.network.uuid()
+        || network::uuid(
+            &network::related(s, "host", &PifRecord::new(&child_record).host()).await?,
+        )? != op.review.host.uuid()
+        || network::uuid(
+            &network::related(s, "network", &PifRecord::new(&child_record).network()).await?,
+        )? != op.review.network.uuid()
     {
         return Err(Error::ResourceConflict);
     }

@@ -5,6 +5,7 @@ use crate::{
     transfer::{Plan, files, http},
 };
 use uuid::Uuid;
+use xenadmin_xapi::records::TaskRecord;
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -364,7 +365,8 @@ impl ResourceRequest {
         self.ovf_check_upload(j, s, c, index).await
     }
     fn ovf_task_id(&self, index: usize, v: &serde_json::Value, name: &str) -> Result<Uuid, Error> {
-        let id = v["uuid"]
+        let id = TaskRecord::new(v)
+            .uuid()
             .as_str()
             .and_then(|v| v.parse().ok())
             .ok_or(Error::TransferConflict)?;
@@ -373,8 +375,8 @@ impl ResourceRequest {
             .baseline
             .get("task")
             .is_none_or(|ids| ids.contains(&id))
-            || v["name_label"] != name
-            || v["status"] != "pending"
+            || TaskRecord::new(v).name_label() != name
+            || TaskRecord::new(v).status() != "pending"
             || self.ovf_plan()?.steps.iter().enumerate().any(|(i, st)| {
                 i != index && st.stream.as_ref().is_some_and(|p| p.task_uuid == Some(id))
             })
@@ -443,7 +445,12 @@ impl ResourceRequest {
             if self.record.state.terminal() {
                 return Ok(());
             }
-            if v["uuid"].as_str().and_then(|v| v.parse::<Uuid>().ok()) != Some(id) {
+            if TaskRecord::new(&v)
+                .uuid()
+                .as_str()
+                .and_then(|v| v.parse::<Uuid>().ok())
+                != Some(id)
+            {
                 return Err(Error::TransferConflict);
             }
             let stream = self
@@ -451,7 +458,7 @@ impl ResourceRequest {
                 .stream
                 .as_mut()
                 .ok_or(Error::TransferConflict)?;
-            match v["status"].as_str() {
+            match TaskRecord::new(&v).status().as_str() {
                 Some("success") => {
                     stream.task_success = true;
                     stream.result = Some(vec![crate::xapi::snapshot_task_result(&v)?]);
@@ -469,7 +476,8 @@ impl ResourceRequest {
             }
             if self.record.cancel_requested
                 && !st.cancelled
-                && v["allowed_operations"]
+                && TaskRecord::new(&v)
+                    .allowed_operations()
                     .as_array()
                     .is_some_and(|a| a.iter().any(|v| v == "cancel"))
             {

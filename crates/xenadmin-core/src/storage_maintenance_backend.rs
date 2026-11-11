@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::records::{PbdRecord, SrRecord};
 fn conflict<T>() -> Result<T, Error> {
     Err(Error::ResourceConflict)
 }
@@ -48,7 +49,9 @@ async fn storage(
     Ok((reference, v))
 }
 fn config(v: &Value) -> Result<String, Error> {
-    let m = v["device_config"]
+    let m = PbdRecord::new(v)
+        .device_config()
+        .value()
         .as_object()
         .filter(|m| m.len() <= 256)
         .ok_or(Error::ResourceConflict)?;
@@ -74,13 +77,17 @@ async fn attachment(
     let (host_ref, host) = xapi::read(s, ResourceTarget::Host(p.host)).await?;
     idle(&host)?;
     let (reference, v) = xapi::read(s, ResourceTarget::Pbd(p.attachment)).await?;
-    if v["SR"] != sr_ref
-        || v["host"] != host_ref
-        || v["currently_attached"] != attached
-        || crate::storage::safe_location_for_kind(&v["device_config"], sr["type"].as_str())
-            != p.location
-        || crate::storage::requires_credentials(&v["device_config"]) != p.requires_credentials
-        || !sr["PBDs"]
+    if PbdRecord::new(&v).sr() != sr_ref
+        || PbdRecord::new(&v).host() != host_ref
+        || PbdRecord::new(&v).currently_attached() != attached
+        || crate::storage::safe_location_for_kind(
+            &PbdRecord::new(&v).device_config(),
+            SrRecord::new(sr).type_().as_str(),
+        ) != p.location
+        || crate::storage::requires_credentials(&PbdRecord::new(&v).device_config())
+            != p.requires_credentials
+        || !SrRecord::new(sr)
+            .pbds()
             .as_array()
             .is_some_and(|a| a.contains(&json!(reference)))
     {

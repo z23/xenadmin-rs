@@ -2,6 +2,7 @@
 use crate::{Error, HostId, StorageLocation, storage_discovery, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalStorageKind {
@@ -97,13 +98,16 @@ pub(crate) async fn probe(
             "Both local EXT and LVM probing drivers are required",
         ))?;
         if matching.next().is_some()
-            || !driver["configuration"]
+            || !SmRecord::new(driver)
+                .configuration()
                 .as_object()
                 .is_some_and(|m| m.contains_key("device"))
-            || !(driver["capabilities"]
+            || !(SmRecord::new(driver)
+                .capabilities()
                 .as_array()
                 .is_some_and(|a| a.iter().any(|v| v == "SR_PROBE"))
-                || driver["features"]
+                || SmRecord::new(driver)
+                    .features()
                     .as_object()
                     .is_some_and(|m| m.contains_key("SR_PROBE")))
         {
@@ -143,13 +147,17 @@ pub(crate) async fn preflight(
     }
     let pbds = session.call("PBD.get_all_records", vec![]).await?;
     for pbd in records(&pbds)?.values() {
-        let owner = pbd["host"]
+        let owner = PbdRecord::new(pbd)
+            .host()
+            .value()
             .as_str()
             .ok_or(Error::Protocol("Storage attachment host unavailable"))?;
         if owner != host_ref {
             continue;
         }
-        let config = pbd["device_config"]
+        let config = PbdRecord::new(pbd)
+            .device_config()
+            .value()
             .as_object()
             .ok_or(Error::Protocol("Storage attachment location unavailable"))?;
         if let Some(existing) = config.get("device") {
@@ -214,9 +222,10 @@ async fn read_host(session: &Session, host: HostId) -> Result<(String, Value), E
 }
 
 pub(crate) fn attachment_graph(sr: &Value, reference: &str) -> Result<(), Error> {
-    if matches!(sr["type"].as_str(), Some("ext" | "lvm"))
-        && (sr["shared"] != false
-            || !sr["PBDs"]
+    if matches!(SrRecord::new(sr).type_().as_str(), Some("ext" | "lvm"))
+        && (SrRecord::new(sr).shared() != false
+            || !SrRecord::new(sr)
+                .pbds()
                 .as_array()
                 .is_some_and(|a| a.len() == 1 && a[0] == reference))
     {

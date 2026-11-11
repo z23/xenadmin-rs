@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{Error, PbdId, SrId, StorageOperation, VdiId, storage::StorageBaseline, xapi::Session};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord, TaskRecord};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&StorageOperation, Error> {
     match &record.action {
@@ -50,15 +51,20 @@ pub(super) async fn capability(session: &Session, kind: &str, feature: &str) -> 
         .as_object()
         .filter(|r| r.len() <= 256)
         .ok_or(Error::Protocol("storage capability data unavailable"))?;
-    let supported = records.values().filter(|r| r["type"] == kind).any(|r| {
-        feature.is_empty()
-            || r["features"]
-                .as_object()
-                .is_some_and(|f| f.contains_key(feature))
-            || r["capabilities"]
-                .as_array()
-                .is_some_and(|v| v.iter().any(|v| v == feature))
-    });
+    let supported = records
+        .values()
+        .filter(|r| SmRecord::new(r).type_() == kind)
+        .any(|r| {
+            feature.is_empty()
+                || SmRecord::new(r)
+                    .features()
+                    .as_object()
+                    .is_some_and(|f| f.contains_key(feature))
+                || SmRecord::new(r)
+                    .capabilities()
+                    .as_array()
+                    .is_some_and(|v| v.iter().any(|v| v == feature))
+        });
     if supported {
         Ok(())
     } else {
@@ -165,14 +171,14 @@ async fn removable(
     name: &str,
     disks: &[VdiId],
 ) -> Result<(), Error> {
-    if sr["name_label"] != name {
+    if SrRecord::new(sr).name_label() != name {
         return Err(Error::ResourceConflict);
     }
     empty_current(sr)?;
     // A repository that was some host's local cache is refused below while a host still
     // binds it; the flag alone must not keep a dead host's local storage from being
     // forgotten (lab finding 37).
-    if sr["is_tools_sr"] != false {
+    if SrRecord::new(sr).is_tools_sr() != false {
         return Err(Error::StorageInUse);
     }
     let (_, pool) = xapi::read(session, ResourceTarget::Pool(record.pool)).await?;
@@ -267,9 +273,9 @@ pub(super) async fn arguments(
             let mut attached = false;
             for pbd in array(&fresh, "PBDs")? {
                 let pbd = by_ref(session, "PBD", pbd).await?;
-                if pbd["host"] == host_ref
-                    && pbd["SR"] == reference
-                    && pbd["currently_attached"] == true
+                if PbdRecord::new(&pbd).host() == host_ref
+                    && PbdRecord::new(&pbd).sr() == reference
+                    && PbdRecord::new(&pbd).currently_attached() == true
                 {
                     attached = true;
                 }
@@ -361,18 +367,20 @@ pub(super) async fn arguments(
             }
             for pbd in array(&fresh, "PBDs")? {
                 let attachment = by_ref(session, "PBD", pbd).await?;
-                if attachment["host"] == host_ref {
+                if PbdRecord::new(&attachment).host() == host_ref {
                     return Err(Error::ResourceConflict);
                 }
                 if !matches!(record.action, ResourceAction::AuthenticatedStorage { .. })
-                    && crate::storage::requires_credentials(&attachment["device_config"])
+                    && crate::storage::requires_credentials(
+                        &PbdRecord::new(&attachment).device_config(),
+                    )
                 {
                     return Err(Error::Protocol(
                         "This attachment requires fresh storage credentials",
                     ));
                 }
                 if crate::storage::safe_location_for_kind(
-                    &attachment["device_config"],
+                    &PbdRecord::new(&attachment).device_config(),
                     fresh["type"].as_str(),
                 )
                 .as_ref()
@@ -507,7 +515,8 @@ pub(super) async fn verify(
                 }
                 for pbd in array(&fresh, "PBDs")? {
                     let pbd = by_ref(session, "PBD", pbd).await?;
-                    let id = pbd["uuid"]
+                    let id = PbdRecord::new(&pbd)
+                        .uuid()
                         .as_str()
                         .and_then(|v| PbdId::parse(v).ok())
                         .ok_or(Error::Protocol(
@@ -516,9 +525,12 @@ pub(super) async fn verify(
                     if baseline.pbds.contains(&id) {
                         return Err(Error::ResourceConflict);
                     }
-                    if pbd["host"] == host_ref
-                        && pbd["SR"] == *reference
-                        && config_matches(&pbd["device_config"], &location.device_config())
+                    if PbdRecord::new(&pbd).host() == host_ref
+                        && PbdRecord::new(&pbd).sr() == *reference
+                        && config_matches(
+                            &PbdRecord::new(&pbd).device_config(),
+                            &location.device_config(),
+                        )
                     {
                         found = true;
                     }
@@ -549,7 +561,7 @@ pub(super) async fn verify(
             };
             let (_, sr_record) = attachment_identity(session, &fresh, sr, *host).await?;
             if !location.shared() {
-                if sr_record["shared"] != false {
+                if SrRecord::new(&sr_record).shared() != false {
                     return Err(Error::ResourceConflict);
                 }
                 crate::storage_local::attachment_graph(&sr_record, reference)?;
@@ -592,7 +604,9 @@ pub(super) fn config_matches(actual: &Value, expected: &Value) -> bool {
 // Only this successful plugin result is evidence of completion; arbitrary backend error XML
 // and secrets are never copied into operation history.
 pub(super) fn trim_succeeded(task: &Value) -> Result<bool, Error> {
-    let xml = task["result"]
+    let xml = TaskRecord::new(task)
+        .result()
+        .value()
         .as_str()
         .filter(|s| s.len() <= 65536)
         .ok_or(Error::Protocol("trim task result unavailable"))?;

@@ -2,6 +2,7 @@ use super::*;
 use crate::{ClassAvailability, DiskImageFormat, VdiId, xapi::Session};
 use serde_json::{Value, json};
 use uuid::Uuid;
+use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
 pub(crate) const MARKER: &str = "xenadmin-rs-disk-transfer";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Creation {
@@ -100,21 +101,23 @@ pub(crate) async fn disk_record(
 ) -> Result<(String, Value), Error> {
     let (reference, d) = fresh(s, "VDI", vdi.uuid()).await?;
     idle(&d)?;
-    if d["type"] != "user"
-        || d["managed"] != true
-        || d["missing"] != false
-        || d["sharable"] != false
-        || d["cbt_enabled"] != false
-        || number(&d["virtual_size"])
+    if VdiRecord::new(&d).type_() != "user"
+        || VdiRecord::new(&d).managed() != true
+        || VdiRecord::new(&d).missing() != false
+        || VdiRecord::new(&d).sharable() != false
+        || VdiRecord::new(&d).cbt_enabled() != false
+        || number(&VdiRecord::new(&d).virtual_size())
             .is_none_or(|n| n == 0 || n > format.limit() || !n.is_multiple_of(512))
     {
         return Err(Error::TransferConflict);
     }
     let (sr_ref, _) = fresh(s, "SR", sr.uuid()).await?;
-    if d["SR"] != sr_ref {
+    if VdiRecord::new(&d).sr() != sr_ref {
         return Err(Error::TransferConflict);
     }
-    let attachments = d["VBDs"]
+    let attachments = VdiRecord::new(&d)
+        .vbds()
+        .value()
         .as_array()
         .filter(|a| a.len() <= 256)
         .ok_or(Error::TransferConflict)?;
@@ -129,17 +132,22 @@ pub(crate) async fn disk_record(
             )
             .await?;
         idle(&a)?;
-        if a["VDI"] != reference || a["currently_attached"] != false {
+        if VbdRecord::new(&a).vdi() != reference || VbdRecord::new(&a).currently_attached() != false
+        {
             return Err(Error::TransferConflict);
         }
         let vm = s
             .call(
                 "VM.get_record",
-                vec![json!(crate::snapshots::reference(&a["VM"])?)],
+                vec![json!(crate::snapshots::reference(
+                    &VbdRecord::new(&a).vm()
+                )?)],
             )
             .await?;
         idle(&vm)?;
-        if vm["power_state"] != "Halted" || vm["is_control_domain"] != false {
+        if VmRecord::new(&vm).power_state() != "Halted"
+            || VmRecord::new(&vm).is_control_domain() != false
+        {
             return Err(Error::TransferConflict);
         }
     }
@@ -173,7 +181,7 @@ pub(crate) async fn prepare(
     if let Some(vdi) = vdi {
         let (reference, record) = disk_record(s, vdi, sr, format, !action.is_export()).await?;
         if let TransferAction::ExportDisk { expected_size, .. } = action
-            && number(&record["virtual_size"]) != Some(*expected_size)
+            && number(&VdiRecord::new(&record).virtual_size()) != Some(*expected_size)
         {
             return Err(Error::TransferConflict);
         }
@@ -199,7 +207,7 @@ pub(crate) async fn creation_arguments(
     }
     let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
     idle(&r)?;
-    if r["content_type"] != "user" || !crate::xapi::advertises(&r, "vdi_create") {
+    if SrRecord::new(&r).content_type() != "user" || !crate::xapi::advertises(&r, "vdi_create") {
         return Err(Error::UnavailableAction);
     }
     Ok(vec![
@@ -252,11 +260,11 @@ pub(crate) async fn identify(
         .filter(|d| d.format == *format)
         .ok_or(Error::DiskImage)?
         .virtual_size;
-    if record["read_only"] != false
-        || record["is_a_snapshot"] != false
-        || record["name_label"] != *name
-        || record["other_config"][MARKER] != id.to_string()
-        || number(&record["virtual_size"]).is_none_or(|n| n < size)
+    if VdiRecord::new(&record).read_only() != false
+        || VdiRecord::new(&record).is_a_snapshot() != false
+        || VdiRecord::new(&record).name_label() != *name
+        || VdiRecord::new(&record).other_config()[MARKER] != id.to_string()
+        || number(&VdiRecord::new(&record).virtual_size()).is_none_or(|n| n < size)
     {
         return Err(Error::TransferConflict);
     }

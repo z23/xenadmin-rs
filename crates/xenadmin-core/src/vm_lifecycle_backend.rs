@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Change {
@@ -231,7 +232,7 @@ fn permits_memory_limits(r: &Value) -> Result<(), Error> {
 /// running guest still needs the advertised capability.
 fn permits_vcpu_change(r: &Value) -> Result<(), Error> {
     idle(r)?;
-    if crate::xapi::advertises(r, "changing_VCPUs") || r["power_state"] == "Halted" {
+    if crate::xapi::advertises(r, "changing_VCPUs") || VmRecord::new(r).power_state() == "Halted" {
         Ok(())
     } else {
         Err(Error::UnavailableAction)
@@ -251,15 +252,15 @@ async fn fresh(session: &Session, class: &str, id: Uuid) -> Result<(String, Valu
         .ok_or(Error::VmLifecycleConflict)
 }
 fn ordinary(r: &Value) -> bool {
-    r["is_a_snapshot"] == false
-        && r["is_control_domain"] == false
-        && r["is_a_template"].is_boolean()
+    VmRecord::new(r).is_a_snapshot() == false
+        && VmRecord::new(r).is_control_domain() == false
+        && VmRecord::new(r).is_a_template().is_boolean()
 }
 async fn source(session: &Session, plan: &Plan) -> Result<(String, Value), Error> {
     let (reference, r) = fresh(session, "VM", plan.source.uuid()).await?;
     if !ordinary(&r)
-        || r["is_a_template"] != plan.operation.template()
-        || r["power_state"] != "Halted"
+        || VmRecord::new(&r).is_a_template() != plan.operation.template()
+        || VmRecord::new(&r).power_state() != "Halted"
     {
         return Err(Error::VmLifecycleConflict);
     }
@@ -267,14 +268,15 @@ async fn source(session: &Session, plan: &Plan) -> Result<(String, Value), Error
     if matches!(
         plan.operation,
         VmLifecycleOperation::EditTemplate { .. } | VmLifecycleOperation::Delete { .. }
-    ) && (r["is_a_template"] == true && !crate::guest_boot::custom_template(&r)
-        || r["other_config"]["default_template"] == "true"
-        || r["is_default_template"] == true)
+    ) && (VmRecord::new(&r).is_a_template() == true && !crate::guest_boot::custom_template(&r)
+        || VmRecord::new(&r).other_config()["default_template"] == "true"
+        || VmRecord::new(&r).is_default_template() == true)
     {
         return Err(Error::UnavailableAction);
     }
     if let Some((name, description)) = &plan.metadata
-        && (r["name_label"] != *name || r["name_description"] != *description)
+        && (VmRecord::new(&r).name_label() != *name
+            || VmRecord::new(&r).name_description() != *description)
     {
         return Err(Error::VmLifecycleConflict);
     }
@@ -293,7 +295,7 @@ async fn target(session: &Session, plan: &Plan, vm: VmId) -> Result<(String, Val
         return Err(Error::VmLifecycleConflict);
     }
     let (reference, r) = fresh(session, "VM", vm.uuid()).await?;
-    if !ordinary(&r) || r["power_state"] != "Halted" {
+    if !ordinary(&r) || VmRecord::new(&r).power_state() != "Halted" {
         return Err(Error::VmLifecycleConflict);
     }
     idle(&r)?;
@@ -301,7 +303,7 @@ async fn target(session: &Session, plan: &Plan, vm: VmId) -> Result<(String, Val
 }
 async fn sr(session: &Session, sr: SrId) -> Result<String, Error> {
     let (reference, r) = fresh(session, "SR", sr.uuid()).await?;
-    if r["content_type"] != "user" {
+    if SrRecord::new(&r).content_type() != "user" {
         return Err(Error::UnavailableAction);
     }
     permits(&r, "vdi_create")?;
@@ -311,16 +313,19 @@ async fn sr(session: &Session, sr: SrId) -> Result<String, Error> {
 /// in an ISO library: XCP-ng 8.3.0 records the images of its ISO repositories (including
 /// the host's tools image) with type `user`, so the repository's content type decides.
 async fn require_iso_image(session: &Session, image: &Value) -> Result<(), Error> {
-    if image["read_only"] != true || image["missing"] != false {
+    if VdiRecord::new(image).read_only() != true || VdiRecord::new(image).missing() != false {
         return Err(Error::UnavailableAction);
     }
-    if image["type"] == "iso" {
+    if VdiRecord::new(image).type_() == "iso" {
         return Ok(());
     }
     let sr = session
-        .call("SR.get_record", vec![json!(reference(&image["SR"])?)])
+        .call(
+            "SR.get_record",
+            vec![json!(reference(&VdiRecord::new(image).sr())?)],
+        )
         .await?;
-    if sr["content_type"] == "iso" {
+    if SrRecord::new(&sr).content_type() == "iso" {
         Ok(())
     } else {
         Err(Error::UnavailableAction)
@@ -382,11 +387,13 @@ pub(crate) async fn plan(
     }
     if matches!(operation, VmLifecycleOperation::EditTemplate { .. }) {
         plan.metadata = Some((
-            record["name_label"]
+            VmRecord::new(&record)
+                .name_label()
                 .as_str()
                 .ok_or(Error::VmLifecycleConflict)?
                 .into(),
-            record["name_description"]
+            VmRecord::new(&record)
+                .name_description()
                 .as_str()
                 .ok_or(Error::VmLifecycleConflict)?
                 .into(),
@@ -419,7 +426,8 @@ pub(crate) async fn plan(
                 plan.bios_identity = Some(map);
             }
             if let VmLifecycleOperation::Create { memory, .. } = operation
-                && number(&record["memory_static_min"]).is_none_or(|minimum| minimum > *memory)
+                && number(&VmRecord::new(&record).memory_static_min())
+                    .is_none_or(|minimum| minimum > *memory)
             {
                 return Err(Error::InvalidVmLifecycle);
             }
@@ -565,7 +573,9 @@ async fn guard_creation_permissions(
         if iso.is_some() {
             match first_cd(session, record).await? {
                 None => methods.push("VBD.create".into()),
-                Some((_, cd)) if cd["empty"] != true => methods.push("VBD.eject".into()),
+                Some((_, cd)) if VbdRecord::new(&cd).empty() != true => {
+                    methods.push("VBD.eject".into())
+                }
                 _ => (),
             }
         }
@@ -582,25 +592,28 @@ async fn validate_source_devices(session: &Session, record: &Value) -> Result<()
         let r = session
             .call("VBD.get_record", vec![json!(attachment)])
             .await?;
-        if r["type"] == "Disk" {
+        if VbdRecord::new(&r).type_() == "Disk" {
             let disk = session
-                .call("VDI.get_record", vec![json!(reference(&r["VDI"])?)])
+                .call(
+                    "VDI.get_record",
+                    vec![json!(reference(&VbdRecord::new(&r).vdi())?)],
+                )
                 .await?;
             if !ordinary_disk(&disk) {
                 return Err(Error::UnsupportedVmLifecycle);
             }
-        } else if r["type"] != "CD" {
+        } else if VbdRecord::new(&r).type_() != "CD" {
             return Err(Error::UnsupportedVmLifecycle);
         }
     }
     Ok(())
 }
 fn ordinary_disk(r: &Value) -> bool {
-    r["type"] == "user"
-        && r["managed"] == true
-        && r["missing"] == false
-        && r["sharable"] == false
-        && r["is_a_snapshot"] == false
+    VdiRecord::new(r).type_() == "user"
+        && VdiRecord::new(r).managed() == true
+        && VdiRecord::new(r).missing() == false
+        && VdiRecord::new(r).sharable() == false
+        && VdiRecord::new(r).is_a_snapshot() == false
 }
 async fn validate_owned_disks(session: &Session, vm: VmId, disks: &[VdiId]) -> Result<(), Error> {
     let (vm_ref, vm_record) = fresh(session, "VM", vm.uuid()).await?;
@@ -619,11 +632,14 @@ async fn validate_owned_disks(session: &Session, vm: VmId, disks: &[VdiId]) -> R
             let v = session
                 .call("VBD.get_record", vec![json!(consumer)])
                 .await?;
-            if v["VM"] != vm_ref
-                || v["VDI"] != disk_ref
-                || v["type"] != "Disk"
-                || v["currently_attached"] != false
-                || !v["other_config"].get("owner").is_some_and(Value::is_string)
+            if VbdRecord::new(&v).vm() != vm_ref
+                || VbdRecord::new(&v).vdi() != disk_ref
+                || VbdRecord::new(&v).type_() != "Disk"
+                || VbdRecord::new(&v).currently_attached() != false
+                || !VbdRecord::new(&v)
+                    .other_config()
+                    .get("owner")
+                    .is_some_and(Value::is_string)
             {
                 return Err(Error::DeviceInUse);
             }
@@ -885,9 +901,9 @@ pub(crate) async fn prepare(
                     .baseline
                     .get("VDI")
                     .is_none_or(|ids| ids.contains(&disk.uuid()))
-                || attachment["VM"] != vm_ref
-                || attachment["VDI"] != disk_ref
-                || attachment["type"] != "Disk"
+                || VbdRecord::new(&attachment).vm() != vm_ref
+                || VbdRecord::new(&attachment).vdi() != disk_ref
+                || VbdRecord::new(&attachment).type_() != "Disk"
                 || !ordinary_disk(&record)
                 || refs(&record, "VBDs")? != vec![vbd_ref.clone()]
             {
@@ -895,7 +911,8 @@ pub(crate) async fn prepare(
             }
             idle(&attachment)?;
             idle(&record)?;
-            if attachment["other_config"]
+            if VbdRecord::new(&attachment)
+                .other_config()
                 .get("owner")
                 .is_some_and(Value::is_string)
             {
@@ -941,7 +958,7 @@ pub(crate) async fn prepare(
                 .filter(|v| v.len() <= 10_000)
                 .ok_or(Error::VmLifecycleConflict)?
                 .values()
-                .any(|v| v["suspend_VDI"] == reference)
+                .any(|v| VmRecord::new(v).suspend_vdi() == reference)
             {
                 return Err(Error::DeviceInUse);
             }
@@ -1023,7 +1040,7 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
         return Err(Error::InvalidVmLifecycle);
     };
     let (vm_ref, vm_record) = target(session, plan, vm).await?;
-    if vm_record["is_a_template"] != false {
+    if VmRecord::new(&vm_record).is_a_template() != false {
         return Err(Error::VmLifecycleConflict);
     }
     let mut disk_slots = slots(session, &vm_ref, "VBD").await?;
@@ -1095,9 +1112,12 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
     }
     if let Some(image) = iso {
         match first_cd(session, &vm_record).await? {
-            Some((vbd, cd)) if cd["empty"] != true => {
+            Some((vbd, cd)) if VbdRecord::new(&cd).empty() != true => {
                 let old = session
-                    .call("VDI.get_record", vec![json!(reference(&cd["VDI"])?)])
+                    .call(
+                        "VDI.get_record",
+                        vec![json!(reference(&VbdRecord::new(&cd).vdi())?)],
+                    )
                     .await?;
                 plan.push(Step::EjectIso {
                     vm,
@@ -1132,7 +1152,7 @@ async fn capture_graph(
             .call("VBD.get_record", vec![json!(&attachment)])
             .await?;
         let vbd_id: VbdId = id(&vbd)?;
-        if vbd["VM"] != vm_ref
+        if VbdRecord::new(&vbd).vm() != vm_ref
             || plan
                 .baseline
                 .get("VBD")
@@ -1146,8 +1166,8 @@ async fn capture_graph(
         {
             plan.created_devices.push(CreatedDevice::Attachment(vbd_id));
         }
-        if vbd["type"] == "Disk" {
-            let disk_ref = reference(&vbd["VDI"])?;
+        if VbdRecord::new(&vbd).type_() == "Disk" {
+            let disk_ref = reference(&VbdRecord::new(&vbd).vdi())?;
             let disk = session
                 .call("VDI.get_record", vec![json!(disk_ref)])
                 .await?;
@@ -1166,7 +1186,7 @@ async fn capture_graph(
             if !plan.created_devices.contains(&CreatedDevice::Disk(disk_id)) {
                 plan.created_devices.push(CreatedDevice::Disk(disk_id));
             }
-        } else if vbd["type"] != "CD" {
+        } else if VbdRecord::new(&vbd).type_() != "CD" {
             return Err(Error::UnsupportedVmLifecycle);
         }
     }
@@ -1197,7 +1217,7 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
             bios_host,
             ..
         } => {
-            if record["other_config"].get("disks").is_some() {
+            if VmRecord::new(record).other_config().get("disks").is_some() {
                 plan.push(Step::Set {
                     vm,
                     change: Change::RemoveProvisionDisks,
@@ -1227,7 +1247,8 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
                 vm,
                 change: Change::Memory(memory),
             });
-            let old = number(&record["VCPUs_at_startup"]).ok_or(Error::VmLifecycleConflict)?;
+            let old = number(&VmRecord::new(record).vcpus_at_startup())
+                .ok_or(Error::VmLifecycleConflict)?;
             if vcpus < old {
                 plan.push(Step::Set {
                     vm,
@@ -1250,7 +1271,7 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
             plan.push(Step::ConfigureDevices { vm });
         }
         VmLifecycleOperation::Clone { as_template, .. } => {
-            if record["is_a_template"] != as_template {
+            if VmRecord::new(record).is_a_template() != as_template {
                 plan.push(Step::Set {
                     vm,
                     change: Change::Template(as_template),
@@ -1294,13 +1315,13 @@ pub(crate) async fn verify(
                 .await?;
             let vm: VmId = id(&record)?;
             if !ordinary(&record)
-                || record["power_state"] != "Halted"
-                || record["name_label"] != name
+                || VmRecord::new(&record).power_state() != "Halted"
+                || VmRecord::new(&record).name_label() != name
                 || plan
                     .baseline
                     .get("VM")
                     .is_none_or(|ids| ids.contains(&vm.uuid()))
-                || record["snapshot_of"] != "OpaqueRef:NULL"
+                || VmRecord::new(&record).snapshot_of() != "OpaqueRef:NULL"
             {
                 return Err(Error::VmLifecycleConflict);
             }
@@ -1309,9 +1330,9 @@ pub(crate) async fn verify(
                 return Ok(false);
             }
             if (continue_work || !plan.workflow_planned)
-                && (record["is_a_template"] != plan.operation.template()
-                    || record["other_config"]["default_template"] == "true"
-                    || record["is_default_template"] == true)
+                && (VmRecord::new(&record).is_a_template() != plan.operation.template()
+                    || VmRecord::new(&record).other_config()["default_template"] == "true"
+                    || VmRecord::new(&record).is_default_template() == true)
             {
                 return Err(Error::VmLifecycleConflict);
             }
@@ -1339,15 +1360,18 @@ pub(crate) async fn verify(
                     let vbd = session
                         .call("VBD.get_record", vec![json!(attachment)])
                         .await?;
-                    if vbd["type"] == "Disk"
-                        && !vbd["other_config"]
+                    if VbdRecord::new(&vbd).type_() == "Disk"
+                        && !VbdRecord::new(&vbd)
+                            .other_config()
                             .get("owner")
                             .is_some_and(Value::is_string)
                     {
                         let disk = session
                             .call(
                                 "VDI.get_record",
-                                vec![json!(crate::snapshots::reference(&vbd["VDI"])?)],
+                                vec![json!(crate::snapshots::reference(
+                                    &VbdRecord::new(&vbd).vdi()
+                                )?)],
                             )
                             .await?;
                         plan.push(Step::ClaimDisk {
@@ -1461,11 +1485,14 @@ pub(crate) async fn verify(
             let Some((_, cd)) = first_cd(session, &r).await? else {
                 return Ok(false);
             };
-            if cd["empty"] != false {
+            if VbdRecord::new(&cd).empty() != false {
                 return Ok(false);
             }
             let disk = session
-                .call("VDI.get_record", vec![json!(reference(&cd["VDI"])?)])
+                .call(
+                    "VDI.get_record",
+                    vec![json!(reference(&VbdRecord::new(&cd).vdi())?)],
+                )
                 .await?;
             Ok(id::<VdiId>(&disk)? == image)
         }
@@ -1520,12 +1547,16 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
                 .call("VDI.get_record", vec![json!(reference(&v["VDI"])?)])
                 .await?;
             let sr = session
-                .call("SR.get_record", vec![json!(reference(&d["SR"])?)])
+                .call(
+                    "SR.get_record",
+                    vec![json!(reference(&VdiRecord::new(&d).sr())?)],
+                )
                 .await?;
             graph.disks.insert(
                 slot,
                 ExpectedDisk {
-                    size: number(&d["virtual_size"]).ok_or(Error::VmLifecycleConflict)?,
+                    size: number(&VdiRecord::new(&d).virtual_size())
+                        .ok_or(Error::VmLifecycleConflict)?,
                     sr: id(&sr)?,
                     mode: v["mode"].as_str().ok_or(Error::VmLifecycleConflict)?.into(),
                 },
@@ -1593,7 +1624,7 @@ async fn validate_firmware_change(
     Ok(())
 }
 fn firmware_safe(record: &Value, firmware: GuestFirmware) -> Result<(), Error> {
-    if firmware == GuestFirmware::Bios && record["platform"]["secureboot"] == "true" {
+    if firmware == GuestFirmware::Bios && VmRecord::new(record).platform()["secureboot"] == "true" {
         return Err(Error::UnsupportedVmLifecycle);
     }
     if firmware != GuestFirmware::Inherited && !crate::guest_boot::is_hvm(record) {

@@ -4,6 +4,7 @@ use crate::{
     transfer::{self, Plan, files, http},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+use xenadmin_xapi::records::{TaskRecord, VdiRecord};
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -336,12 +337,15 @@ impl ResourceRequest {
         let fresh_task = session
             .call("task.get_record", vec![json!(&self.record.task)])
             .await?;
-        let task_uuid = fresh_task["uuid"]
+        let task_uuid = TaskRecord::new(&fresh_task)
+            .uuid()
             .as_str()
             .and_then(|v| v.parse().ok())
             .filter(|id| !previous_tasks.contains(id))
             .ok_or(Error::TransferConflict)?;
-        if fresh_task["name_label"] != task_name || fresh_task["status"] != "pending" {
+        if TaskRecord::new(&fresh_task).name_label() != task_name
+            || TaskRecord::new(&fresh_task).status() != "pending"
+        {
             return Err(Error::TransferConflict);
         }
         self.transfer_plan_mut()?.task_uuid = Some(task_uuid);
@@ -596,22 +600,27 @@ impl ResourceRequest {
             if self.record.state.terminal() && !self.fenced_transfer() {
                 return Ok(());
             }
-            if value["uuid"].as_str().and_then(|s| s.parse().ok())
+            if TaskRecord::new(&value)
+                .uuid()
+                .as_str()
+                .and_then(|s| s.parse().ok())
                 != self.transfer_plan()?.task_uuid
                 || self.transfer_plan()?.task_uuid.is_none()
             {
                 return Err(Error::TransferConflict);
             }
             self.record.state = OperationState::Tracking;
-            self.record.progress = value["progress"]
+            self.record.progress = TaskRecord::new(&value)
+                .progress()
                 .as_f64()
-                .or_else(|| value["progress"].as_str()?.parse().ok())
+                .or_else(|| TaskRecord::new(&value).progress().as_str()?.parse().ok())
                 .filter(|n| n.is_finite())
                 .map(|n| n.clamp(0.0, 1.0));
-            self.record.can_cancel = value["allowed_operations"]
+            self.record.can_cancel = TaskRecord::new(&value)
+                .allowed_operations()
                 .as_array()
                 .is_some_and(|a| a.iter().any(|v| v == "cancel"));
-            match value["status"].as_str() {
+            match TaskRecord::new(&value).status().as_str() {
                 Some("success") => {
                     let imported = !self.transfer_action()?.is_export()
                         && !self.transfer_action()?.is_host_restore();
@@ -633,7 +642,7 @@ impl ResourceRequest {
                 }
                 Some("failure") => {
                     self.transfer_plan_mut()?.task_failed = true;
-                    let code = value["error_info"][0]
+                    let code = TaskRecord::new(&value).error_info().value()[0]
                         .as_str()
                         .unwrap_or("UNKNOWN_API_ERROR");
                     self.record.detail = format!(
@@ -721,10 +730,13 @@ impl ResourceRequest {
                     let (_, record) =
                         transfer::disk::disk_record(session, *vdi, *expected_sr, *format, false)
                             .await?;
-                    if record["virtual_size"]
-                        .as_u64()
-                        .or_else(|| record["virtual_size"].as_str()?.parse().ok())
-                        != Some(*expected_size)
+                    if VdiRecord::new(&record).virtual_size().as_u64().or_else(|| {
+                        VdiRecord::new(&record)
+                            .virtual_size()
+                            .as_str()?
+                            .parse()
+                            .ok()
+                    }) != Some(*expected_size)
                     {
                         return Err(Error::TransferConflict);
                     }

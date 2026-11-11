@@ -8,6 +8,7 @@ use crate::{
     xapi::Session,
 };
 use serde_json::{Value, json};
+use xenadmin_xapi::records::VmRecord;
 
 async fn read(session: &Session, id: OrganizationObjectId) -> Result<(String, Value), Error> {
     let reference = super::xapi::reply_reference(
@@ -24,14 +25,14 @@ async fn read(session: &Session, id: OrganizationObjectId) -> Result<(String, Va
             vec![json!(&reference)],
         )
         .await?;
-    if fresh["uuid"] != id.uuid().to_string() {
+    if VmRecord::new(&fresh).uuid() != id.uuid().to_string() {
         return Err(Error::Stale);
     }
     if matches!(
         id,
         OrganizationObjectId::Vm(_) | OrganizationObjectId::Snapshot(_)
-    ) && (fresh["is_control_domain"] != false
-        || fresh["is_a_snapshot"].as_bool()
+    ) && (VmRecord::new(&fresh).is_control_domain() != false
+        || VmRecord::new(&fresh).is_a_snapshot().as_bool()
             != Some(matches!(id, OrganizationObjectId::Snapshot(_))))
     {
         return Err(Error::UnavailableAction);

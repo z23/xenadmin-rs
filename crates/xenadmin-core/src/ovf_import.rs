@@ -2,6 +2,7 @@ use super::*;
 use crate::{NetworkId, OperationId, SrId, transfer::Plan as TransferPlan, xapi::Session};
 use serde_json::{Value, json};
 use uuid::Uuid;
+use xenadmin_xapi::records::{VdiRecord, VmRecord};
 pub(crate) const MARKER: &str = "xenadmin-rs-ovf-import";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -217,11 +218,11 @@ async fn guest(s: &Session, p: &ImportPlan, g: usize) -> Result<(String, Value),
     let st = p.step(Kind::Guest { guest: g })?;
     let (r, v) = fresh(s, "VM", st.uuid.ok_or(Error::TransferConflict)?).await?;
     if Some(r.as_str()) != st.reference.as_deref()
-        || v["other_config"][MARKER] != st.token.to_string()
-        || v["is_a_template"] != false
-        || v["is_a_snapshot"] != false
-        || v["is_control_domain"] != false
-        || v["power_state"] != "Halted"
+        || VmRecord::new(&v).other_config()[MARKER] != st.token.to_string()
+        || VmRecord::new(&v).is_a_template() != false
+        || VmRecord::new(&v).is_a_snapshot() != false
+        || VmRecord::new(&v).is_control_domain() != false
+        || VmRecord::new(&v).power_state() != "Halted"
     {
         return Err(Error::TransferConflict);
     }
@@ -246,10 +247,11 @@ async fn disk(
     )
     .await?;
     if Some(r.as_str()) != st.reference.as_deref()
-        || v["other_config"][crate::transfer::disk::MARKER] != st.token.to_string()
-        || number(&v["virtual_size"]).is_none_or(|size| size < expected.virtual_size)
-        || v["read_only"] != false
-        || v["is_a_snapshot"] != false
+        || VdiRecord::new(&v).other_config()[crate::transfer::disk::MARKER] != st.token.to_string()
+        || number(&VdiRecord::new(&v).virtual_size())
+            .is_none_or(|size| size < expected.virtual_size)
+        || VdiRecord::new(&v).read_only() != false
+        || VdiRecord::new(&v).is_a_snapshot() != false
     {
         return Err(Error::TransferConflict);
     }

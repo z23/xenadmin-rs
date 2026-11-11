@@ -1,5 +1,6 @@
 use super::*;
 use crate::{resources::storage_graph, storage_graph::Evidence};
+use xenadmin_xapi::records::TaskRecord;
 impl ResourceRequest {
     fn storage_graph_step(&self, index: usize) -> Result<&Evidence, Error> {
         self.record
@@ -184,7 +185,7 @@ impl ResourceRequest {
             }
             let (uuid, value) = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=storage_graph::task(s,&self.record,index)=>v?};
             self.storage_graph_step_mut(index)?.task_uuid = Some(uuid);
-            match value["status"].as_str() {
+            match TaskRecord::new(&value).status().as_str() {
                 Some("success") => {
                     if matches!(
                         self.record
@@ -217,9 +218,10 @@ impl ResourceRequest {
             self.record.detail =
                 "Host storage task is running. Stop prevents later steps; it does not cancel host I/O"
                     .into();
-            self.record.progress = value["progress"]
+            self.record.progress = TaskRecord::new(&value)
+                .progress()
                 .as_f64()
-                .or_else(|| value["progress"].as_str()?.parse().ok())
+                .or_else(|| TaskRecord::new(&value).progress().as_str()?.parse().ok())
                 .filter(|v| v.is_finite())
                 .map(|v| v.clamp(0., 1.));
             if self.reconcile || tokio::time::Instant::now() >= deadline {

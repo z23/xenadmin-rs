@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::{HostRecord, RoleRecord, SubjectRecord};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectorySubject {
@@ -159,10 +160,10 @@ pub(crate) async fn directory_hosts(session: &Session) -> Result<Vec<DirectoryHo
         .values()
         .map(|r| {
             Ok(DirectoryHostState {
-                host: HostId::parse(&text(&r["uuid"], 36)?)
+                host: HostId::parse(&text(&HostRecord::new(r).uuid(), 36)?)
                     .map_err(|_| Error::Protocol("invalid host UUID"))?,
-                auth_type: text(&r["external_auth_type"], 64)?,
-                service_name: text(&r["external_auth_service_name"], 1024)?,
+                auth_type: text(&HostRecord::new(r).external_auth_type(), 64)?,
+                service_name: text(&HostRecord::new(r).external_auth_service_name(), 1024)?,
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -247,12 +248,14 @@ pub(crate) fn roles(
     let mut ids = BTreeMap::new();
     let mut result = Vec::new();
     for (reference, r) in value {
-        let id = RoleId::parse(&text(&r["uuid"], 36)?)
+        let id = RoleId::parse(&text(&RoleRecord::new(r).uuid(), 36)?)
             .map_err(|_| Error::Protocol("invalid role UUID"))?;
         ids.insert(reference.clone(), id);
-        let name = text(&r["name_label"], 256)?;
+        let name = text(&RoleRecord::new(r).name_label(), 256)?;
         // Leaf permission roles are not assignable user roles.
-        let subroles = r["subroles"]
+        let subroles = RoleRecord::new(r)
+            .subroles()
+            .value()
             .as_array()
             .filter(|v| v.len() <= 16_384)
             .ok_or(Error::Protocol("role permissions are unavailable"))?;
@@ -260,7 +263,7 @@ pub(crate) fn roles(
             result.push(SecurityRole {
                 id,
                 name,
-                description: text(&r["name_description"], 2048)?,
+                description: text(&RoleRecord::new(r).name_description(), 2048)?,
             });
         }
     }
@@ -299,7 +302,7 @@ pub(crate) async fn rbac_available(session: &Session) -> Result<Option<bool>, Er
     let values: Option<Vec<_>> = records
         .values()
         .map(
-            |host| match host["license_params"]["restrict_rbac"].as_str() {
+            |host| match HostRecord::new(host).license_params()["restrict_rbac"].as_str() {
                 Some("false") => Some(true),
                 Some("true") => Some(false),
                 _ => None,
@@ -343,15 +346,15 @@ async fn overview(session: &Session) -> Result<SecurityOverview, Error> {
                     .values()
                     .map(|r| {
                         Ok(DirectorySubject {
-                            id: SubjectId::parse(&text(&r["uuid"], 36)?)
+                            id: SubjectId::parse(&text(&SubjectRecord::new(r).uuid(), 36)?)
                                 .map_err(|_| Error::Protocol("invalid subject UUID"))?,
-                            identifier: text(&r["subject_identifier"], 1024)?,
-                            name: r["other_config"]["subject-name"]
+                            identifier: text(&SubjectRecord::new(r).subject_identifier(), 1024)?,
+                            name: SubjectRecord::new(r).other_config()["subject-name"]
                                 .as_str()
                                 .filter(|s| s.len() <= 1024 && !s.chars().any(char::is_control))
                                 .unwrap_or("")
                                 .into(),
-                            roles: subject_roles(&r["roles"], &ids)?,
+                            roles: subject_roles(&SubjectRecord::new(r).roles(), &ids)?,
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()

@@ -1,5 +1,6 @@
 use super::*;
 use crate::resources::host;
+use xenadmin_xapi::records::TaskRecord;
 
 impl ResourceRequest {
     pub(super) async fn execute_host(
@@ -175,7 +176,7 @@ impl ResourceRequest {
                 .task
                 .ok_or(Error::Protocol("host task receipt unavailable"))?;
             let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&task_ref)])=>result?};
-            match task["status"].as_str() {
+            match TaskRecord::new(&task).status().as_str() {
                 Some("success") => {
                     self.record.host_plan.as_mut().ok_or(Error::Journal)?.steps[index]
                         .task_succeeded = true;
@@ -184,7 +185,8 @@ impl ResourceRequest {
                     return Ok(!self.stopped_after_recovery());
                 }
                 Some(status @ ("failure" | "cancelled")) => {
-                    let code = task["error_info"]
+                    let code = TaskRecord::new(&task)
+                        .error_info()
                         .as_array()
                         .and_then(|v| v.first())
                         .and_then(|v| v.as_str())

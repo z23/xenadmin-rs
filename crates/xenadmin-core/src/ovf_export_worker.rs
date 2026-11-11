@@ -9,6 +9,7 @@ use crate::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
+use xenadmin_xapi::records::TaskRecord;
 struct StopOnDrop(Arc<AtomicBool>);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
@@ -159,12 +160,13 @@ impl ResourceRequest {
         let task = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.create",vec![json!(name),json!("Client-owned OVF disk export")])=>crate::resources::xapi::reply_reference(&v?)?};
         self.export_task_evidence(j, index, &task, None).await?;
         let v = s.call("task.get_record", vec![json!(task)]).await?;
-        let id = v["uuid"]
+        let id = TaskRecord::new(&v)
+            .uuid()
             .as_str()
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?;
-        if v["name_label"] != name
-            || v["status"] != "pending"
+        if TaskRecord::new(&v).name_label() != name
+            || TaskRecord::new(&v).status() != "pending"
             || self.ovf_export()?.task_baseline.contains(&id)
             || self
                 .ovf_export()?
@@ -359,10 +361,19 @@ impl ResourceRequest {
             let id = st.stream.task_uuid.ok_or(Error::TransferConflict)?;
             let value = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.get_record",vec![json!(task)])=>v?};
             self.reload(j)?;
-            if value["uuid"].as_str().and_then(|v| v.parse::<Uuid>().ok()) != Some(id) {
+            if TaskRecord::new(&value)
+                .uuid()
+                .as_str()
+                .and_then(|v| v.parse::<Uuid>().ok())
+                != Some(id)
+            {
                 return Err(Error::TransferConflict);
             }
-            let status = value["status"].as_str().ok_or(Error::TransferConflict)?;
+            let status = TaskRecord::new(&value)
+                .status()
+                .value()
+                .as_str()
+                .ok_or(Error::TransferConflict)?;
             if !self.export_outcome_evidence(j, index, id, status).await? {
                 return Ok(());
             }
@@ -373,7 +384,8 @@ impl ResourceRequest {
             if self.record.cancel_requested
                 && self.record.batch_parent.is_none()
                 && !st.cancel_dispatched
-                && value["allowed_operations"]
+                && TaskRecord::new(&value)
+                    .allowed_operations()
                     .as_array()
                     .is_some_and(|a| a.iter().any(|v| v == "cancel"))
             {

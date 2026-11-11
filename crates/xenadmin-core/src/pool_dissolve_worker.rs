@@ -1,5 +1,6 @@
 use super::*;
 use crate::{pool_dissolve::Evidence, resources::dissolution as pool_dissolve};
+use xenadmin_xapi::records::TaskRecord;
 impl ResourceRequest {
     fn pool_dissolve_step(&self, index: usize) -> Result<&Evidence, Error> {
         self.record
@@ -193,7 +194,7 @@ impl ResourceRequest {
             }
             let (uuid, value) = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=pool_dissolve::task(s,&self.record,index)=>v?};
             self.pool_dissolve_step_mut(index)?.task_uuid = Some(uuid);
-            match value["status"].as_str() {
+            match TaskRecord::new(&value).status().as_str() {
                 Some("success") => {
                     self.pool_dissolve_step_mut(index)?.completed = true;
                     self.pool_dissolve_step_mut(index)?.ended = true;
@@ -215,9 +216,10 @@ impl ResourceRequest {
             self.record.detail =
                 "Member ejection is running. Stop skips later hosts and metadata changes; it does not cancel this ejection"
                     .into();
-            self.record.progress = value["progress"]
+            self.record.progress = TaskRecord::new(&value)
+                .progress()
                 .as_f64()
-                .or_else(|| value["progress"].as_str()?.parse().ok())
+                .or_else(|| TaskRecord::new(&value).progress().as_str()?.parse().ok())
                 .filter(|v| v.is_finite())
                 .map(|v| v.clamp(0., 1.));
             if self.reconcile || tokio::time::Instant::now() >= deadline {

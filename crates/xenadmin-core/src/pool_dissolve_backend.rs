@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::PoolRecord;
 fn operation(r: &ResourceOperationRecord) -> Result<&PoolDissolve, Error> {
     match &r.action {
         ResourceAction::DissolvePool(op) => Ok(op),
@@ -18,7 +19,7 @@ fn plan(r: &ResourceOperationRecord) -> Result<&Plan, Error> {
 pub(super) async fn state(s: &Session, r: &ResourceOperationRecord) -> Result<String, Error> {
     let op = operation(r)?;
     let (pool, record) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
-    if record["ha_enabled"] != false {
+    if PoolRecord::new(&record).ha_enabled() != false {
         return Err(Error::ResourceInUse);
     }
     let hosts = s.call("host.get_all_records", vec![]).await?;
@@ -36,7 +37,7 @@ pub(super) async fn state(s: &Session, r: &ResourceOperationRecord) -> Result<St
         if !actual.insert(id) {
             return Err(Error::ResourceConflict);
         }
-        if record["master"] == *reference {
+        if PoolRecord::new(&record).master() == *reference {
             if id != op.coordinator {
                 return Err(Error::ResourceConflict);
             }
@@ -67,8 +68,8 @@ pub(super) async fn state(s: &Session, r: &ResourceOperationRecord) -> Result<St
     }
     if !coordinator
         || expected != actual
-        || record["name_label"] != name
-        || record["name_description"] != description
+        || PoolRecord::new(&record).name_label() != name
+        || PoolRecord::new(&record).name_description() != description
     {
         return Err(Error::ResourceConflict);
     }

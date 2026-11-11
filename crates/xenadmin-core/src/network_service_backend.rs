@@ -2,6 +2,7 @@ use super::{network, xapi};
 use crate::{Error, NetworkServiceReview, ResourceOperationRecord, ResourceTarget, xapi::Session};
 use serde_json::Value;
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{NetworkRecord, PifRecord};
 
 async fn interfaces(
     s: &Session,
@@ -9,7 +10,7 @@ async fn interfaces(
     fresh: &Value,
     review: &NetworkServiceReview,
 ) -> Result<(), Error> {
-    if fresh["managed"].as_bool() != Some(true) {
+    if NetworkRecord::new(fresh).managed().as_bool() != Some(true) {
         return Err(Error::UnavailableAction);
     }
     let pifs = network::all(s, "PIF").await?;
@@ -25,7 +26,7 @@ async fn interfaces(
         .iter()
         .map(|(_, p)| network::uuid(p).map(crate::PifId::from))
         .collect::<Result<BTreeSet<_>, _>>()?;
-    if refs != network::refs(&fresh["PIFs"])?
+    if refs != network::refs(&NetworkRecord::new(fresh).pifs())?
         || actual.len() != review.interfaces.len()
         || ids != review.interfaces.iter().map(|p| p.pif).collect()
     {
@@ -39,13 +40,19 @@ async fn interfaces(
             .find(|p| p.pif == id)
             .ok_or(Error::ResourceConflict)?;
         network::pif_identity(s, pif, &expected.identity).await?;
-        let ipv4 = pif["IP"].as_str().ok_or(Error::ResourceConflict)?;
+        let ipv4 = PifRecord::new(pif)
+            .ip()
+            .value()
+            .as_str()
+            .ok_or(Error::ResourceConflict)?;
         let ipv4 = if ipv4.is_empty() {
             None
         } else {
             Some(ipv4.parse().map_err(|_| Error::ResourceConflict)?)
         };
-        let ipv6 = pif["IPv6"]
+        let ipv6 = PifRecord::new(pif)
+            .ipv6()
+            .value()
             .as_array()
             .filter(|v| v.len() <= 64)
             .ok_or(Error::ResourceConflict)?;
@@ -54,8 +61,8 @@ async fn interfaces(
             .map(Value::as_str)
             .collect::<Option<Vec<_>>>()
             .ok_or(Error::ResourceConflict)?;
-        if pif["managed"].as_bool() != Some(true)
-            || pif["currently_attached"].as_bool() != Some(expected.attached)
+        if PifRecord::new(pif).managed().as_bool() != Some(true)
+            || PifRecord::new(pif).currently_attached().as_bool() != Some(expected.attached)
             || ipv4 != expected.ipv4
             || crate::network_service::canonical_ipv6(ipv6.into_iter()).as_ref()
                 != Some(&expected.ipv6)
@@ -95,15 +102,18 @@ pub(super) async fn check(
     } else {
         review.purposes.clone()
     };
-    if crate::network_service::purposes(&fresh["purpose"]).as_ref() != Some(&expected) {
+    if crate::network_service::purposes(&NetworkRecord::new(fresh).purpose()).as_ref()
+        != Some(&expected)
+    {
         return Err(Error::ResourceConflict);
     }
     interfaces(s, network_ref, fresh, review).await?;
     if *enabled {
         for n in networks.values() {
-            let purposes = crate::network_service::purposes(&n["purpose"]).ok_or(
-                Error::Protocol("Pool network service purposes are unavailable"),
-            )?;
+            let purposes = crate::network_service::purposes(&NetworkRecord::new(n).purpose())
+                .ok_or(Error::Protocol(
+                    "Pool network service purposes are unavailable",
+                ))?;
             if purposes.contains(purpose.opposite()) {
                 return Err(Error::Protocol(
                     "Another network service policy conflicts with this NBD mode; review and remove that policy separately",

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::records::{HostRecord, PbdRecord, PifRecord, SrRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Disk {
@@ -217,10 +218,10 @@ pub(crate) async fn nullable_host(
 }
 async fn guest(session: &Session, plan: &Plan, original: bool) -> Result<(String, Value), Error> {
     let (reference, r) = fresh(session, "VM", plan.vm.uuid()).await?;
-    if r["is_a_template"] != false
-        || r["is_a_snapshot"] != false
-        || r["is_control_domain"] != false
-        || r["power_state"]
+    if VmRecord::new(&r).is_a_template() != false
+        || VmRecord::new(&r).is_a_snapshot() != false
+        || VmRecord::new(&r).is_control_domain() != false
+        || VmRecord::new(&r).power_state()
             != if plan.operation.live {
                 "Running"
             } else {
@@ -230,7 +231,7 @@ async fn guest(session: &Session, plan: &Plan, original: bool) -> Result<(String
         return Err(Error::MigrationConflict);
     }
     idle(&r)?;
-    let host = nullable_host(session, &r["resident_on"]).await?;
+    let host = nullable_host(session, &VmRecord::new(&r).resident_on()).await?;
     if host
         != if original {
             plan.operation.expected_host
@@ -244,7 +245,8 @@ async fn guest(session: &Session, plan: &Plan, original: bool) -> Result<(String
     }
     if original
         && !plan.operation.live
-        && nullable_host(session, &r["affinity"]).await? != plan.operation.expected_affinity
+        && nullable_host(session, &VmRecord::new(&r).affinity()).await?
+            != plan.operation.expected_affinity
     {
         return Err(Error::MigrationConflict);
     }
@@ -276,10 +278,15 @@ pub(crate) async fn graph(session: &Session, vmref: &str, r: &Value) -> Result<G
         } else if v["empty"] == false {
             let d = read(session, "VDI", &snapshots::reference(&v["VDI"])?).await?;
             idle(&d)?;
-            if d["missing"] != false || d["managed"] != true {
+            if VdiRecord::new(&d).missing() != false || VdiRecord::new(&d).managed() != true {
                 return Err(Error::UnsupportedMigration);
             }
-            let sr = read(session, "SR", &snapshots::reference(&d["SR"])?).await?;
+            let sr = read(
+                session,
+                "SR",
+                &snapshots::reference(&VdiRecord::new(&d).sr())?,
+            )
+            .await?;
             Some(Disk {
                 id: id(&d)?,
                 sr: id(&sr)?,
@@ -344,10 +351,10 @@ fn matches_review(g: &Graph, o: &VmMigration) -> bool {
 pub(crate) async fn host(session: &Session, target: HostId) -> Result<String, Error> {
     let (reference, h) = fresh(session, "host", target.uuid()).await?;
     idle(&h)?;
-    if h["enabled"] != true {
+    if HostRecord::new(&h).enabled() != true {
         return Err(Error::UnavailableAction);
     }
-    let metrics = snapshots::reference(&h["metrics"])?;
+    let metrics = snapshots::reference(&HostRecord::new(&h).metrics())?;
     let m = read(session, "host_metrics", &metrics).await?;
     if m["live"] != true {
         return Err(Error::UnavailableAction);
@@ -362,16 +369,19 @@ pub(crate) async fn sr_visible(
 ) -> Result<String, Error> {
     let (reference, r) = fresh(session, "SR", sr.uuid()).await?;
     idle(&r)?;
-    if write && (r["content_type"] != "user" || !crate::xapi::advertises(&r, "vdi_create")) {
+    if write
+        && (SrRecord::new(&r).content_type() != "user"
+            || !crate::xapi::advertises(&r, "vdi_create"))
+    {
         return Err(Error::UnavailableAction);
     }
     let mut visible = false;
     for p in refs(&r, "PBDs")? {
         let p = read(session, "PBD", &p).await?;
-        if p["SR"] != reference {
+        if PbdRecord::new(&p).sr() != reference {
             return Err(Error::MigrationConflict);
         }
-        if p["host"] == hostref && p["currently_attached"] == true {
+        if PbdRecord::new(&p).host() == hostref && PbdRecord::new(&p).currently_attached() == true {
             visible = true
         }
     }
@@ -392,13 +402,13 @@ pub(crate) async fn network_visible(
     let mut visible = pifs.is_empty() && !transfer;
     for p in pifs {
         let p = read(session, "PIF", &p).await?;
-        if p["network"] != reference {
+        if PifRecord::new(&p).network() != reference {
             return Err(Error::MigrationConflict);
         }
-        if p["host"] == hostref
-            && p["currently_attached"] == true
+        if PifRecord::new(&p).host() == hostref
+            && PifRecord::new(&p).currently_attached() == true
             && (!transfer
-                || p["IP"].as_str().is_some_and(|s| {
+                || PifRecord::new(&p).ip().as_str().is_some_and(|s| {
                     s.parse::<std::net::IpAddr>()
                         .is_ok_and(|a| !a.is_unspecified() && !a.is_loopback())
                 }))
@@ -427,10 +437,10 @@ async fn validate_destinations(
             if moving {
                 if attachment.kind != "Disk"
                     || d.kind != "user"
-                    || r["read_only"] != false
-                    || r["sharable"] != false
-                    || r["is_a_snapshot"] != false
-                    || r["cbt_enabled"] != false
+                    || VdiRecord::new(&r).read_only() != false
+                    || VdiRecord::new(&r).sharable() != false
+                    || VdiRecord::new(&r).is_a_snapshot() != false
+                    || VdiRecord::new(&r).cbt_enabled() != false
                     || refs(&r, "VBDs")?.len() != 1
                 {
                     return Err(Error::UnsupportedMigration);
@@ -666,9 +676,9 @@ pub(crate) async fn verify(
                     return Err(Error::MigrationConflict);
                 }
                 let (_, r) = fresh(session, "VDI", newdisk.id.uuid()).await?;
-                if r["sharable"] != false
-                    || r["read_only"] != false
-                    || r["is_a_snapshot"] != false
+                if VdiRecord::new(&r).sharable() != false
+                    || VdiRecord::new(&r).read_only() != false
+                    || VdiRecord::new(&r).is_a_snapshot() != false
                     || refs(&r, "VBDs")?.len() != 1
                 {
                     return Err(Error::MigrationConflict);
@@ -709,12 +719,15 @@ pub(crate) async fn unchanged(session: &Session, plan: &Plan) -> Result<bool, Er
 }
 pub(crate) async fn affinity_matches(session: &Session, plan: &Plan) -> Result<bool, Error> {
     let (_, r) = guest(session, plan, false).await?;
-    Ok(nullable_host(session, &r["affinity"]).await? == Some(plan.operation.destination))
+    Ok(nullable_host(session, &VmRecord::new(&r).affinity()).await?
+        == Some(plan.operation.destination))
 }
 pub(crate) async fn prepare_affinity(session: &Session, plan: &Plan) -> Result<Prepared, Error> {
     verify(session, plan, None).await?;
     let (vmref, r) = guest(session, plan, false).await?;
-    if nullable_host(session, &r["affinity"]).await? != plan.operation.expected_affinity {
+    if nullable_host(session, &VmRecord::new(&r).affinity()).await?
+        != plan.operation.expected_affinity
+    {
         return Err(Error::MigrationConflict);
     }
     let hostref = host(session, plan.operation.destination).await?;

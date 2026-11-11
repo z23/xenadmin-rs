@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{HostRecord, PoolRecord, TaskRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -170,7 +171,9 @@ fn map_bool(record: &Value, key: &str) -> Option<bool> {
     }
 }
 fn destination(record: &Value) -> Result<Option<String>, Error> {
-    let map = record["logging"]
+    let map = HostRecord::new(record)
+        .logging()
+        .value()
         .as_object()
         .ok_or(Error::HostPrerequisite(
             "Host logging configuration is unavailable",
@@ -201,13 +204,13 @@ fn allowed(record: &Value, operation: &str) -> Result<(), Error> {
 }
 fn memory(record: &Value) -> Result<MemoryLimits, Error> {
     Ok(MemoryLimits {
-        static_min: integer(&record["memory_static_min"])
+        static_min: integer(&VmRecord::new(record).memory_static_min())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
-        dynamic_min: integer(&record["memory_dynamic_min"])
+        dynamic_min: integer(&VmRecord::new(record).memory_dynamic_min())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
-        dynamic_max: integer(&record["memory_dynamic_max"])
+        dynamic_max: integer(&VmRecord::new(record).memory_dynamic_max())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
-        static_max: integer(&record["memory_static_max"])
+        static_max: integer(&VmRecord::new(record).memory_static_max())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
     })
 }
@@ -253,7 +256,9 @@ async fn live(session: &Session, host: &Value, expected: bool) -> Result<(), Err
     )
 }
 async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Vec<VmId>, Error> {
-    let values = host["resident_VMs"]
+    let values = HostRecord::new(host)
+        .resident_vms()
+        .value()
         .as_array()
         .filter(|v| v.len() <= 10_000)
         .ok_or(Error::HostPrerequisite(
@@ -264,22 +269,29 @@ async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Ve
         let vm_ref = reference(value)?;
         let vm = session.call("VM.get_record", vec![json!(&vm_ref)]).await?;
         require(
-            vm["resident_on"] == host_ref,
+            VmRecord::new(&vm).resident_on() == host_ref,
             "Resident VM location changed",
         )?;
-        let control = vm["is_control_domain"]
+        let control = VmRecord::new(&vm)
+            .is_control_domain()
             .as_bool()
             .ok_or(Error::Protocol("resident VM type unavailable"))?;
         require(
             matches!(
-                vm["power_state"].as_str(),
+                VmRecord::new(&vm).power_state().as_str(),
                 Some("Running" | "Paused" | "Halted" | "Suspended")
             ),
             "Resident VM power state is unavailable",
         )?;
-        if !control && matches!(vm["power_state"].as_str(), Some("Running" | "Paused")) {
+        if !control
+            && matches!(
+                VmRecord::new(&vm).power_state().as_str(),
+                Some("Running" | "Paused")
+            )
+        {
             idle(&vm)?;
-            let id = vm["uuid"]
+            let id = VmRecord::new(&vm)
+                .uuid()
                 .as_str()
                 .and_then(|v| VmId::parse(v).ok())
                 .ok_or(Error::Protocol("resident VM UUID unavailable"))?;
@@ -555,7 +567,7 @@ pub(crate) async fn arguments(
             };
             require(
                 *expected_enabled
-                    && host["enabled"] == true
+                    && HostRecord::new(&host).enabled() == true
                     && map_bool(&host, "MAINTENANCE_MODE") == Some(false),
                 "Host scheduling or maintenance state changed",
             )?;
@@ -570,7 +582,7 @@ pub(crate) async fn arguments(
                 _ => return Err(Error::InvalidResourceCommand),
             };
             require(
-                host["enabled"] == false,
+                HostRecord::new(&host).enabled() == false,
                 "Disable scheduling before evacuating",
             )?;
             live(session, &host, true).await?;
@@ -588,7 +600,8 @@ pub(crate) async fn arguments(
                 )?;
             } else {
                 require(
-                    host["enabled"] == true && map_bool(&host, "MAINTENANCE_MODE") == Some(true),
+                    HostRecord::new(&host).enabled() == true
+                        && map_bool(&host, "MAINTENANCE_MODE") == Some(true),
                     "Host scheduling or maintenance state changed",
                 )?;
             }
@@ -615,7 +628,7 @@ pub(crate) async fn arguments(
                 "The host no longer carries the maintenance marker",
             )?;
             live(session, &host, true).await?;
-            if host["enabled"] != true {
+            if HostRecord::new(&host).enabled() != true {
                 allowed(&host, "enable")?;
             }
             (kind.method(), vec![json!(&reference)])
@@ -642,7 +655,7 @@ pub(crate) async fn arguments(
         }
         Kind::Restart => {
             require(
-                pool["ha_enabled"] == false,
+                PoolRecord::new(&pool).ha_enabled() == false,
                 "Disable pool HA separately before restarting the toolstack; active HA may fence the host",
             )?;
             let HostOperation::RestartToolstack {
@@ -659,7 +672,7 @@ pub(crate) async fn arguments(
                     tasks.len() <= 10_000
                         && tasks.values().all(|task| {
                             matches!(
-                                task["status"].as_str(),
+                                TaskRecord::new(task).status().as_str(),
                                 Some("success" | "failure" | "cancelled")
                             )
                         })
@@ -672,7 +685,8 @@ pub(crate) async fn arguments(
             live(session, &host, false).await?;
             allowed(&host, "power_on")?;
             require(
-                host["power_on_mode"]
+                HostRecord::new(&host)
+                    .power_on_mode()
                     .as_str()
                     .is_some_and(|v| !v.is_empty()),
                 "Configure host power-on first",
@@ -689,8 +703,9 @@ pub(crate) async fn arguments(
             };
             live(session, &host, true).await?;
             require(
-                host["power_on_mode"] == *expected_mode
-                    && host["power_on_config"]
+                HostRecord::new(&host).power_on_mode() == *expected_mode
+                    && HostRecord::new(&host)
+                        .power_on_config()
                         .as_object()
                         .is_some_and(|m| m.is_empty()),
                 "Power-on mode changed or contains BMC configuration that this editor does not replace",
@@ -712,9 +727,9 @@ pub(crate) async fn arguments(
             live(session, &host, true).await?;
             let (vm_ref, vm) = read(session, "VM", control_domain.uuid()).await?;
             require(
-                host["control_domain"] == vm_ref
-                    && vm["is_control_domain"] == true
-                    && vm["resident_on"] == reference,
+                HostRecord::new(&host).control_domain() == vm_ref
+                    && VmRecord::new(&vm).is_control_domain() == true
+                    && VmRecord::new(&vm).resident_on() == reference,
                 "Control-domain identity changed",
             )?;
             idle(&vm)?;
@@ -780,7 +795,7 @@ pub(crate) async fn arguments(
             )?;
             detached_storage(session, &reference, &host).await?;
             require(
-                host["multipathing"]
+                HostRecord::new(&host).multipathing()
                     == if *kind == Kind::Multipath {
                         *expected
                     } else {
@@ -788,7 +803,9 @@ pub(crate) async fn arguments(
                     },
                 "Multipath configuration changed",
             )?;
-            let handler = host["other_config"]
+            let handler = HostRecord::new(&host)
+                .other_config()
+                .value()
                 .as_object()
                 .and_then(|m| m.get("multipathhandle"));
             require(
@@ -825,7 +842,8 @@ pub(crate) async fn arguments(
             live(session, &host, false).await?;
             empty_disabled(session, &reference, &host).await?;
             require(
-                pool["master"] != reference && pool["ha_enabled"] == false,
+                PoolRecord::new(&pool).master() != reference
+                    && PoolRecord::new(&pool).ha_enabled() == false,
                 "The coordinator cannot be forgotten and HA must be disabled",
             )?;
             (kind.method(), vec![json!(&reference)])
@@ -888,14 +906,23 @@ pub(crate) async fn verify(
                 "Host identity changed during recording verification",
             )
         }
-        Kind::Disable => require(host["enabled"] == false, "Host scheduling is not disabled"),
-        Kind::Enable => require(host["enabled"] == true, "Host scheduling is not enabled"),
+        Kind::Disable => require(
+            HostRecord::new(&host).enabled() == false,
+            "Host scheduling is not disabled",
+        ),
+        Kind::Enable => require(
+            HostRecord::new(&host).enabled() == true,
+            "Host scheduling is not enabled",
+        ),
         Kind::Evacuate => empty_disabled(session, &reference, &host).await,
         Kind::MarkMaintenance(value) => {
             if *value {
                 empty_disabled(session, &reference, &host).await?;
             } else {
-                require(host["enabled"] == true, "Host scheduling is not enabled")?;
+                require(
+                    HostRecord::new(&host).enabled() == true,
+                    "Host scheduling is not enabled",
+                )?;
             }
             require(
                 map_bool(&host, "MAINTENANCE_MODE") == Some(*value),
@@ -975,8 +1002,9 @@ pub(crate) async fn verify(
                 return Err(Error::InvalidResourceCommand);
             };
             require(
-                host["power_on_mode"] == mode.as_str()
-                    && host["power_on_config"]
+                HostRecord::new(&host).power_on_mode() == mode.as_str()
+                    && HostRecord::new(&host)
+                        .power_on_config()
                         .as_object()
                         .is_some_and(|m| m.is_empty()),
                 "Host power-on configuration is not verified",
@@ -993,9 +1021,9 @@ pub(crate) async fn verify(
             };
             let (vm_ref, vm) = read(session, "VM", control_domain.uuid()).await?;
             require(
-                host["control_domain"] == vm_ref
-                    && vm["is_control_domain"] == true
-                    && vm["resident_on"] == reference,
+                HostRecord::new(&host).control_domain() == vm_ref
+                    && VmRecord::new(&vm).is_control_domain() == true
+                    && VmRecord::new(&vm).resident_on() == reference,
                 "Control-domain identity changed",
             )?;
             require(
@@ -1034,11 +1062,13 @@ pub(crate) async fn verify(
                 return Err(Error::InvalidResourceCommand);
             };
             require(
-                host["multipathing"] == *enabled,
+                HostRecord::new(&host).multipathing() == *enabled,
                 "Host multipathing mode is not verified",
             )?;
             if step.kind == Kind::MultipathHandle {
-                let actual = host["other_config"]
+                let actual = HostRecord::new(&host)
+                    .other_config()
+                    .value()
                     .as_object()
                     .and_then(|m| m.get("multipathhandle"));
                 require(

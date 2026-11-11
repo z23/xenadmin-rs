@@ -9,6 +9,7 @@ use std::{
     collections::BTreeSet,
     time::{SystemTime, UNIX_EPOCH},
 };
+use xenadmin_xapi::records::{NetworkRecord, PifRecord, VlanRecord};
 
 pub(super) fn now() -> u64 {
     SystemTime::now()
@@ -250,9 +251,9 @@ async fn uplink(session: &Session, review: &VlanUplink) -> Result<(String, Value
     let (reference, pif) = xapi::read(session, ResourceTarget::Pif(review.pif)).await?;
     network::pif_identity(session, &pif, &review.expected).await?;
     require(
-        pif["managed"].as_bool() == Some(true)
-            && network::number(&pif["VLAN"]) == Some(-1)
-            && pif["bond_slave_of"] == "OpaqueRef:NULL",
+        PifRecord::new(&pif).managed().as_bool() == Some(true)
+            && network::number(&PifRecord::new(&pif).vlan()) == Some(-1)
+            && PifRecord::new(&pif).bond_slave_of() == "OpaqueRef:NULL",
         "VLAN uplink must be a managed untagged interface or bond master",
     )?;
     Ok((reference, pif))
@@ -278,34 +279,36 @@ async fn retaggable(
     let (parent, _) = uplink(session, &review.uplink).await?;
     let (child, pif) = xapi::read(session, ResourceTarget::Pif(review.child)).await?;
     require(
-        vlan["tagged_PIF"] == parent
-            && vlan["untagged_PIF"] == child
-            && network::number(&vlan["tag"]) == Some(i64::from(review.tag)),
+        VlanRecord::new(&vlan).tagged_pif() == parent
+            && VlanRecord::new(&vlan).untagged_pif() == child
+            && network::number(&VlanRecord::new(&vlan).tag()) == Some(i64::from(review.tag)),
         "Reviewed VLAN topology changed",
     )?;
     require(
-        network::uuid(&network::related(session, "host", &pif["host"]).await?)?
+        network::uuid(&network::related(session, "host", &PifRecord::new(&pif).host()).await?)?
             == review.uplink.expected.host.uuid()
-            && network::uuid(&network::related(session, "network", &pif["network"]).await?)?
-                == network.uuid(),
+            && network::uuid(
+                &network::related(session, "network", &PifRecord::new(&pif).network()).await?,
+            )? == network.uuid(),
         "Reviewed VLAN host or network changed",
     )?;
     require(
-        pif["currently_attached"].as_bool() == Some(review.attached)
-            && pif["management"].as_bool() == Some(false)
-            && pif["managed"].as_bool() == Some(true)
-            && pif["disallow_unplug"].as_bool() == Some(false)
-            && pif["physical"].as_bool() == Some(false)
-            && pif["bond_slave_of"] == "OpaqueRef:NULL"
-            && network::number(&pif["VLAN"]) == Some(i64::from(review.tag))
-            && pif["ip_configuration_mode"] == "None"
-            && pif["ipv6_configuration_mode"] == "None"
-            && pif["IP"] == ""
-            && pif["netmask"] == ""
-            && pif["gateway"] == ""
-            && pif["DNS"] == ""
-            && pif["ipv6_gateway"] == ""
-            && pif["IPv6"]
+        PifRecord::new(&pif).currently_attached().as_bool() == Some(review.attached)
+            && PifRecord::new(&pif).management().as_bool() == Some(false)
+            && PifRecord::new(&pif).managed().as_bool() == Some(true)
+            && PifRecord::new(&pif).disallow_unplug().as_bool() == Some(false)
+            && PifRecord::new(&pif).physical().as_bool() == Some(false)
+            && PifRecord::new(&pif).bond_slave_of() == "OpaqueRef:NULL"
+            && network::number(&PifRecord::new(&pif).vlan()) == Some(i64::from(review.tag))
+            && PifRecord::new(&pif).ip_configuration_mode() == "None"
+            && PifRecord::new(&pif).ipv6_configuration_mode() == "None"
+            && PifRecord::new(&pif).ip() == ""
+            && PifRecord::new(&pif).netmask() == ""
+            && PifRecord::new(&pif).gateway() == ""
+            && PifRecord::new(&pif).dns() == ""
+            && PifRecord::new(&pif).ipv6_gateway() == ""
+            && PifRecord::new(&pif)
+                .ipv6()
                 .as_array()
                 .is_some_and(|a| a.iter().all(|v| v == "")),
         "Retagging refuses management, protected or IP-configured interfaces",
@@ -355,12 +358,12 @@ async fn checked_network(
 ) -> Result<(String, Value), Error> {
     let (reference, network) = xapi::read(session, ResourceTarget::Network(plan.network)).await?;
     require(
-        network["managed"].as_bool() == Some(true),
+        NetworkRecord::new(&network).managed().as_bool() == Some(true),
         "The selected network must be managed by XAPI",
     )?;
     empty_set(&network, "VIFs")?;
     let mut actual = BTreeSet::new();
-    for pif in network::refs(&network["PIFs"])? {
+    for pif in network::refs(&NetworkRecord::new(&network).pifs())? {
         let value = session.call("PIF.get_record", vec![json!(pif)]).await?;
         actual.insert(PifId::from(network::uuid(&value)?));
     }
@@ -436,7 +439,8 @@ async fn unused_tag(session: &Session, parent: PifId, tag: u16) -> Result<(), Er
     let vlans = network::all(session, "VLAN").await?;
     require(
         !vlans.values().any(|v| {
-            v["tagged_PIF"] == parent && network::number(&v["tag"]) == Some(i64::from(tag))
+            VlanRecord::new(v).tagged_pif() == parent
+                && network::number(&VlanRecord::new(v).tag()) == Some(i64::from(tag))
         }),
         "The selected VLAN tag is already present on an uplink",
     )
@@ -525,7 +529,7 @@ pub(super) async fn creation_identity(
         .call("VLAN.get_record", vec![json!(reference)])
         .await?;
     let id = VlanId::from(network::uuid(&vlan)?);
-    let child = network::related(session, "PIF", &vlan["untagged_PIF"]).await?;
+    let child = network::related(session, "PIF", &VlanRecord::new(&vlan).untagged_pif()).await?;
     let child_id = PifId::from(network::uuid(&child)?);
     let (parent_ref, _) = uplink(session, parent).await?;
     require(
@@ -535,18 +539,21 @@ pub(super) async fn creation_identity(
             && !plan.steps.iter().enumerate().any(|(i, s)| {
                 i != index && s.created.is_some_and(|(v, p)| v == id || p == child_id)
             })
-            && vlan["tagged_PIF"] == parent_ref
-            && network::number(&vlan["tag"]) == Some(i64::from(*tag))
-            && network::number(&child["VLAN"]) == Some(i64::from(*tag))
-            && child["VLAN_master_of"] == *reference
-            && network::uuid(&network::related(session, "host", &child["host"]).await?)?
-                == parent.expected.host.uuid()
-            && network::uuid(&network::related(session, "network", &child["network"]).await?)?
-                == plan.network.uuid(),
+            && VlanRecord::new(&vlan).tagged_pif() == parent_ref
+            && network::number(&VlanRecord::new(&vlan).tag()) == Some(i64::from(*tag))
+            && network::number(&PifRecord::new(&child).vlan()) == Some(i64::from(*tag))
+            && PifRecord::new(&child).vlan_master_of() == *reference
+            && network::uuid(
+                &network::related(session, "host", &PifRecord::new(&child).host()).await?,
+            )? == parent.expected.host.uuid()
+            && network::uuid(
+                &network::related(session, "network", &PifRecord::new(&child).network()).await?,
+            )? == plan.network.uuid(),
         "Created VLAN identity does not match the reviewed network, host and tag",
     )?;
     require(
-        child["management"].as_bool() == Some(false) && child["physical"].as_bool() == Some(false),
+        PifRecord::new(&child).management().as_bool() == Some(false)
+            && PifRecord::new(&child).physical().as_bool() == Some(false),
         "Created VLAN interface has an unexpected management role",
     )?;
     Ok((id, child_id))

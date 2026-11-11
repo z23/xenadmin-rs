@@ -5,6 +5,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::VmRecord;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchVmProperties {
@@ -170,8 +171,8 @@ async fn read(
     let value = session
         .call("VM.get_record", vec![json!(&reference)])
         .await?;
-    if value["uuid"] != item.vm.to_string()
-        || value["power_state"] != item.expected_state.to_string()
+    if VmRecord::new(&value).uuid() != item.vm.to_string()
+        || VmRecord::new(&value).power_state() != item.expected_state.to_string()
     {
         return Err(Error::Stale);
     }

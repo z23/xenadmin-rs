@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VdiRecord, VmRecord};
 fn require(ok: bool, msg: &'static str) -> Result<(), Error> {
     if ok {
         Ok(())
@@ -46,7 +47,9 @@ async fn records(s: &Session, class: &str, limit: usize) -> Result<BTreeMap<Stri
     Ok(m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
 }
 fn config(v: &Value) -> Result<&serde_json::Map<String, Value>, Error> {
-    let m = v["device_config"]
+    let m = PbdRecord::new(v)
+        .device_config()
+        .value()
         .as_object()
         .filter(|m| m.len() <= 128)
         .ok_or(Error::ResourceConflict)?;
@@ -102,7 +105,8 @@ fn source_config(v: &Value, location: &crate::StorageLocation) -> Result<(), Err
         "Custom or host-dependent attachment configuration needs separate review; automatic reconstruction is unavailable",
     )?;
     require(
-        crate::storage::safe_location_from_config(&v["device_config"]).as_ref() == Some(location),
+        crate::storage::safe_location_from_config(&PbdRecord::new(v).device_config()).as_ref()
+            == Some(location),
         "Source attachment location changed",
     )?;
     for key in secret_keys() {
@@ -152,13 +156,16 @@ fn attachment(
     hash: Option<&str>,
 ) -> Result<(), Error> {
     require(
-        v["uuid"] == p.pbd.to_string()
-            && v["host"] == host_ref
-            && v["SR"] == sr_ref
-            && v["currently_attached"] == attached
-            && crate::storage::safe_location_for_kind(&v["device_config"], sr["type"].as_str())
-                == p.location
-            && crate::storage::requires_credentials(&v["device_config"]) == p.requires_credentials,
+        PbdRecord::new(v).uuid() == p.pbd.to_string()
+            && PbdRecord::new(v).host() == host_ref
+            && PbdRecord::new(v).sr() == sr_ref
+            && PbdRecord::new(v).currently_attached() == attached
+            && crate::storage::safe_location_for_kind(
+                &PbdRecord::new(v).device_config(),
+                sr["type"].as_str(),
+            ) == p.location
+            && crate::storage::requires_credentials(&PbdRecord::new(v).device_config())
+                == p.requires_credentials,
         "Reviewed attachment identity, state or location changed",
     )?;
     if let Some(hash) = hash {
@@ -195,8 +202,8 @@ async fn repair_graph(
     require(pool["master"] == master, "Pool coordinator changed")?;
     let (sr_ref, sr) = storage(s, source.sr).await?;
     require(
-        sr["shared"] == true
-            && sr["type"] == source.location.as_ref().ok_or(Error::Journal)?.kind(),
+        SrRecord::new(&sr).shared() == true
+            && SrRecord::new(&sr).type_() == source.location.as_ref().ok_or(Error::Journal)?.kind(),
         "Repair requires the same shared storage backend",
     )?;
     let pbds = records(s, "PBD", 10000).await?;
@@ -257,7 +264,7 @@ async fn repair_graph(
         }
     }
     require(
-        sr["PBDs"].as_array().is_some_and(|a| {
+        SrRecord::new(&sr).pbds().as_array().is_some_and(|a| {
             a.iter().all(|v| {
                 v.as_str()
                     .is_some_and(|k| pbds.get(k).is_some_and(|p| p["SR"] == sr_ref))
@@ -324,14 +331,15 @@ async fn verify_clone(
     let all = records(s, "PBD", 10000).await?;
     let (_, latest) = find(&all, uuid(v)?)?;
     require(
-        latest["host"] == v["host"]
-            && latest["SR"] == v["SR"]
-            && latest["currently_attached"] == v["currently_attached"]
-            && latest["device_config"] == v["device_config"],
+        PbdRecord::new(&latest).host() == PbdRecord::new(v).host()
+            && PbdRecord::new(&latest).sr() == PbdRecord::new(v).sr()
+            && PbdRecord::new(&latest).currently_attached()
+                == PbdRecord::new(v).currently_attached()
+            && PbdRecord::new(&latest).device_config() == PbdRecord::new(v).device_config(),
         "Created attachment changed during credential verification",
     )?;
     for (_, other) in all {
-        if other["uuid"] == v["uuid"] {
+        if other["uuid"] == PbdRecord::new(v).uuid() {
             continue;
         }
         for value in config(&other)?.values() {
@@ -384,13 +392,14 @@ async fn multipath_graph(
     };
     let pool = super::disk::pool(s, r.pool).await?;
     require(
-        pool["ha_enabled"] == false,
+        PoolRecord::new(&pool).ha_enabled() == false,
         "Disable HA separately before multipath maintenance",
     )?;
     // XCP-ng keeps the statefile disk listed in `ha_statefiles` after HA is disabled; an
     // enable or disable still in progress shows in the pool's current operations instead.
     require(
-        pool["current_operations"]
+        PoolRecord::new(&pool)
+            .current_operations()
             .as_object()
             .is_some_and(|m| m.is_empty()),
         "Wait for the pool's active operation before multipath maintenance",
@@ -447,8 +456,9 @@ async fn multipath_graph(
     )?;
     let vms = records(s, "VM", 10000).await?;
     require(
-        !vms.values()
-            .any(|vm| vm["resident_on"] == h && vm["is_control_domain"] != true),
+        !vms.values().any(|vm| {
+            VmRecord::new(vm).resident_on() == h && VmRecord::new(vm).is_control_domain() != true
+        }),
         "Evacuate all guests before multipath maintenance",
     )?;
     let disks = records(s, "VDI", 10000).await?;
@@ -478,35 +488,41 @@ async fn multipath_graph(
             )?;
         } else {
             require(
-                sr["local_cache_enabled"] == false && v["local_cache_sr"] != sr_ref,
+                SrRecord::new(&sr).local_cache_enabled() == false && v["local_cache_sr"] != sr_ref,
                 "Storage used for local caching must be reviewed as kept attached",
             )?;
         }
-        let block = matches!(sr["type"].as_str(), Some("lvmoiscsi" | "lvmohba"));
+        let block = matches!(
+            SrRecord::new(&sr).type_().as_str(),
+            Some("lvmoiscsi" | "lvmohba")
+        );
         let expected_disks = disks
             .iter()
-            .filter(|(_, d)| d["SR"] == sr_ref)
+            .filter(|(_, d)| VdiRecord::new(d).sr() == sr_ref)
             .map(|(k, _)| k.clone())
             .collect::<BTreeSet<_>>();
         require(
-            ref_set(&sr["VDIs"])? == expected_disks,
+            ref_set(&SrRecord::new(&sr).vdis())? == expected_disks,
             "Repository disk graph is incomplete or changed",
         )?;
-        for (dref, d) in disks.iter().filter(|(_, d)| d["SR"] == sr_ref) {
+        for (dref, d) in disks
+            .iter()
+            .filter(|(_, d)| VdiRecord::new(d).sr() == sr_ref)
+        {
             let expected_vbds = vbds
                 .iter()
                 .filter(|(_, b)| b["VDI"] == *dref)
                 .map(|(k, _)| k.clone())
                 .collect::<BTreeSet<_>>();
             require(
-                ref_set(&d["VBDs"])? == expected_vbds,
+                ref_set(&VdiRecord::new(d).vbds())? == expected_vbds,
                 "Disk attachment graph is incomplete or changed",
             )?;
             for bref in &expected_vbds {
                 let b = &vbds[bref];
                 let vm_ref = reference(&b["VM"])?;
                 let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
-                let declared = ref_set(&vm["VBDs"])?;
+                let declared = ref_set(&VmRecord::new(vm).vbds())?;
                 require(
                     declared.contains(bref),
                     "Guest disk attachment graph is inconsistent",
@@ -520,7 +536,7 @@ async fn multipath_graph(
             }
             idle(d)?;
             require(
-                d["type"] != "metadata",
+                VdiRecord::new(d).type_() != "metadata",
                 "Storage metadata replication requires separate maintenance",
             )?;
             for b in vbds.values().filter(|b| b["VDI"] == *dref) {
@@ -656,15 +672,16 @@ pub(super) async fn arguments(
                     let (_, latest) = xapi::read(s, ResourceTarget::Pbd(source.pbd)).await?;
                     require(
                         fingerprint(&latest)? == fingerprint(&src)?
-                            && latest["SR"] == src["SR"]
-                            && latest["host"] == src["host"]
-                            && latest["currently_attached"] == src["currently_attached"],
+                            && PbdRecord::new(&latest).sr() == PbdRecord::new(&src).sr()
+                            && PbdRecord::new(&latest).host() == PbdRecord::new(&src).host()
+                            && PbdRecord::new(&latest).currently_attached()
+                                == PbdRecord::new(&src).currently_attached(),
                         "Source configuration changed before copy",
                     )?;
                     Ok((
                         "Async.PBD.create",
                         vec![
-                            json!({"host":h,"SR":sr_ref,"device_config":latest["device_config"],"other_config":{}}),
+                            json!({"host":h,"SR":sr_ref,"device_config":PbdRecord::new(&latest).device_config(),"other_config":{}}),
                         ],
                     ))
                 }
@@ -750,9 +767,9 @@ pub(super) async fn discover_created(
     require(
         !p.pbds_before.contains(&id)
             && !p.evidence.iter().any(|v| v.created == Some(id))
-            && v["host"] == host_ref
-            && v["SR"] == sr_ref
-            && v["currently_attached"] == false,
+            && PbdRecord::new(&v).host() == host_ref
+            && PbdRecord::new(&v).sr() == sr_ref
+            && PbdRecord::new(&v).currently_attached() == false,
         "Returned attachment is not the new reviewed host/SR connection",
     )?;
     r.storage_graph_plan
@@ -785,9 +802,9 @@ pub(super) async fn verify(
         require(
             !p.pbds_before.contains(&id)
                 && p.evidence[index].created == Some(id)
-                && v["host"] == host_ref
-                && v["SR"] == sr_ref
-                && v["currently_attached"] == false,
+                && PbdRecord::new(&v).host() == host_ref
+                && PbdRecord::new(&v).sr() == sr_ref
+                && PbdRecord::new(&v).currently_attached() == false,
             "Returned attachment is not the new reviewed host/SR connection",
         )?;
         let (_, source_v) = xapi::read(s, ResourceTarget::Pbd(source.pbd)).await?;

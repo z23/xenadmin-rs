@@ -1,5 +1,6 @@
 use crate::{Error, HostId, ObservedResource, SrId, StorageLocation, xapi::Session};
 use serde::{Deserialize, Serialize};
+use xenadmin_xapi::records::SmRecord;
 #[path = "storage_discovery_xml.rs"]
 mod xml;
 use serde_json::{Value, json};
@@ -300,7 +301,9 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
     records
         .values()
         .map(|r| {
-            let kind = r["type"]
+            let kind = SmRecord::new(r)
+                .type_()
+                .value()
                 .as_str()
                 .filter(|s| {
                     s.len() <= 128
@@ -308,7 +311,8 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
                             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
                 })
                 .ok_or(Error::Protocol("invalid storage backend type"))?;
-            let mut features = r["capabilities"]
+            let mut features = SmRecord::new(r)
+                .capabilities()
                 .as_array()
                 .into_iter()
                 .flatten()
@@ -317,7 +321,8 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
                 .map(|s| clean(s, 128))
                 .collect::<Vec<_>>();
             features.extend(
-                r["features"]
+                SmRecord::new(r)
+                    .features()
                     .as_object()
                     .into_iter()
                     .flat_map(|r| r.keys())
@@ -326,7 +331,8 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
             );
             features.sort();
             features.dedup();
-            let configuration = r["configuration"]
+            let configuration = SmRecord::new(r)
+                .configuration()
                 .as_object()
                 .into_iter()
                 .flat_map(|r| r.iter())
@@ -335,7 +341,7 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
                 .collect();
             Ok(StorageBackend {
                 kind: kind.into(),
-                name: clean(r["name_label"].as_str().unwrap_or(kind), 256),
+                name: clean(SmRecord::new(r).name_label().as_str().unwrap_or(kind), 256),
                 features,
                 configuration,
             })
