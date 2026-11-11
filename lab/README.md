@@ -231,6 +231,14 @@ before every build.
   root password from `XENADMIN_LAB_PASSWORD_FILE` and sends nothing to a host whose
   certificate does not match the fingerprint. The host never closes the root account's own
   sessions by a subject logout.
+- A guest with a graphical desktop, for pointer checks, is made by the harness scenario
+  `lab_desktop_guest_provisioning` from the isohybrid live image named by
+  `XENADMIN_LAB_DESKTOP_IMAGE`. The lab uses GParted Live (`gparted-live-1.8.1-6-amd64.iso`,
+  688 MiB, from the project's download page, checked against its published SHA-256): it is
+  imported through the client as a raw disk, booted in a 1 GiB guest named `lab-desktop-…`
+  and reaches its desktop after three Return presses, which the scenario sends.
+  `lab_desktop_guest_pointer_press_lands_on_its_target` then presses at the point given in
+  `XENADMIN_LAB_POINTER_TARGET=x,y` and keeps the frames before and after.
 - The Xen Orchestra appliance for the recovery gate is the vendor's own image (downloaded
   from `https://xoa.io/xva`, 1.9 GB) imported through the client by the gate scenario, named
   `XOA`, sized to 2 GiB and left running on the shared NFS repository. `node lab/xo_connect.mjs

@@ -19583,6 +19583,304 @@ async fn lab_console_lost_while_a_modifier_is_held_leaves_no_stuck_key() {
     }
 }
 
+/// The lab guest with a graphical desktop, by its name prefix.
+fn desktop_guest(c: &Connection) -> Option<xenadmin_core::Vm> {
+    c.latest().inventory().and_then(|i| {
+        i.guests()
+            .find(|v| v.name.starts_with("lab-desktop-") && !v.is_template)
+            .cloned()
+    })
+}
+
+/// P11-09, P08-02, P03-01, P04-01: a lab guest with a graphical desktop, for pointer checks.
+/// `XENADMIN_LAB_DESKTOP_IMAGE` names an isohybrid live image that starts a desktop (GParted
+/// Live is what the lab uses). The image is imported as a raw disk, a guest is created from
+/// the generic template with that disk alone and started, and Return is sent at intervals to
+/// accept the image's boot prompts. A guest from an earlier run is reused and only started.
+/// The scenario keeps the console frame it ends on; whether that frame shows a desktop is
+/// for whoever reads it.
+#[tokio::test]
+#[ignore]
+async fn lab_desktop_guest_provisioning() {
+    use xenadmin_core::{
+        ConsoleInput, DeviceCommand, DeviceOperation, DiskImageFormat, GuestFirmware, PowerAction,
+        PowerState, TransferAction, TransferFile, TransferRequest, VmCommand, VmLifecycleOperation,
+    };
+    let lab = Lab::load();
+    let Ok(image) = std::env::var("XENADMIN_LAB_DESKTOP_IMAGE") else {
+        eprintln!("XENADMIN_LAB_DESKTOP_IMAGE not set; skipping");
+        return;
+    };
+    let image = PathBuf::from(image);
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory.coordinator.expect("coordinator");
+    let mut steps = Vec::new();
+    let vm = if let Some(existing) = desktop_guest(&c) {
+        note(
+            &mut steps,
+            json!({"step": "create the desktop guest", "reused": existing.name}),
+        );
+        existing.id
+    } else {
+        let sr = local_sr_of(&inventory, coordinator).expect("coordinator local EXT repository");
+        let template = inventory
+            .vms
+            .values()
+            .find(|v| v.is_template && v.name == "Other install media")
+            .expect("generic template")
+            .clone();
+        let network = inventory
+            .details
+            .pifs
+            .values()
+            .find(|p| p.host == Some(coordinator) && p.management == Some(true))
+            .and_then(|p| p.network)
+            .expect("management network");
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let disk_name = format!("lab-desktop-image-{stamp}");
+        let started = std::time::Instant::now();
+        let import = c
+            .transfer(
+                OperationId::new(),
+                c.latest()
+                    .observe_resource(ResourceTarget::Pool(inventory.pool_id))
+                    .unwrap(),
+                TransferRequest {
+                    action: TransferAction::ImportDisk {
+                        sr,
+                        name: disk_name.clone(),
+                        format: DiskImageFormat::Raw,
+                    },
+                    file: TransferFile::disk_source(&image, DiskImageFormat::Raw)
+                        .expect("inspect image"),
+                },
+            )
+            .expect("import accepted");
+        let outcome = wait_outcome(&import, 1800).await;
+        let find_disk = || {
+            c.latest().inventory().and_then(|i| {
+                i.details
+                    .vdis
+                    .values()
+                    .find(|v| v.name == disk_name && v.sr == Some(sr))
+                    .map(|v| v.id)
+            })
+        };
+        settle(120, || find_disk().is_some()).await;
+        let imported = find_disk();
+        note(
+            &mut steps,
+            json!({"step": "import the live image as a disk", "accepted": true, "state": format!("{:?}", outcome.state),
+                   "detail": outcome.detail, "read_back": imported.is_some(), "elapsed_ms": started.elapsed().as_millis() as u64}),
+        );
+        let imported = imported.expect("imported disk visible in inventory");
+        let create = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Lifecycle {
+                    source: c.latest().observe_vm(template.id).unwrap(),
+                    operation: VmLifecycleOperation::Create {
+                        name: format!("lab-desktop-{stamp}"),
+                        description:
+                            "Disposable lab guest that boots a live image into a graphical desktop"
+                                .into(),
+                        sr,
+                        network,
+                        iso: None,
+                        vcpus: 1,
+                        memory: 1024 * 1024 * 1024,
+                        disk_size: None,
+                        firmware: GuestFirmware::Bios,
+                        bios_host: None,
+                    },
+                },
+            )
+            .expect("creation accepted");
+        let outcome = wait_vm_outcome(&create, 300).await;
+        let vm = outcome.created_vm;
+        let visible = settle(60, || {
+            vm.is_some_and(|vm| {
+                c.latest()
+                    .inventory()
+                    .is_some_and(|i| i.vms.contains_key(&vm))
+            })
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "create the desktop guest", "accepted": true, "state": format!("{:?}", outcome.state),
+                   "detail": outcome.detail, "read_back": visible}),
+        );
+        let vm = vm.expect("created VM identity");
+        let attach = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Device(DeviceCommand {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    operation: DeviceOperation::AttachDisk {
+                        vdi: imported,
+                        device: "0".into(),
+                        read_only: false,
+                    },
+                }),
+            )
+            .expect("attach accepted");
+        let outcome = wait_vm_outcome(&attach, 300).await;
+        let attached = settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.details.vm_disks.get(&vm).is_some_and(|d| d.len() == 1))
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "attach the image as the guest's disk", "accepted": true, "state": format!("{:?}", outcome.state),
+                   "detail": outcome.detail, "read_back": attached}),
+        );
+        vm
+    };
+
+    // Start it, accept the image's boot prompts and keep the frame it settles on.
+    let halted = c
+        .latest()
+        .inventory()
+        .is_some_and(|i| i.vms[&vm].power_state == PowerState::Halted);
+    let mut frame_file = None;
+    if halted {
+        settle(60, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&vm].allowed_actions.contains(&PowerAction::Start))
+        })
+        .await;
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!("start the desktop guest");
+        note(&mut steps, start);
+        match open_guest_console(&c, vm).await {
+            Ok(console) => {
+                // The boot menu starts its default entry by itself; the image then asks
+                // for a keymap, a language and a mode, each with a usable default.
+                for wait in [75, 20, 20, 20] {
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
+                    let _ = console.input(ConsoleInput::KeyChord(vec![0xff0d]));
+                }
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                let frame = console.latest().frame.clone();
+                frame_file = save_frame(&lab, &console, "desktop-guest");
+                note(
+                    &mut steps,
+                    json!({"step": "the console after the boot prompts", "read_back": frame.is_some(),
+                           "width": frame.as_ref().map(|f| f.width), "height": frame.as_ref().map(|f| f.height),
+                           "console_frame_file": frame_file}),
+                );
+                console.close();
+            }
+            Err(error) => note(
+                &mut steps,
+                json!({"step": "the console after the boot prompts", "read_back": false, "error": error}),
+            ),
+        }
+    }
+    c.close().await;
+    lab.record(
+        "desktop-guest-provisioning",
+        json!({"vm": vm.to_string(), "image": image.file_name().map(|f| f.to_string_lossy().into_owned()),
+               "console_frame_file": frame_file, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
+/// P04-02, P04-04: a pointer press in the desktop guest lands where it was aimed.
+/// `XENADMIN_LAB_POINTER_TARGET` is `x,y` in the guest's framebuffer, chosen by a person
+/// from a saved frame as a control that reacts to a press (a menu title, say). The pointer
+/// is moved there and the left button pressed and released; the frames before and after
+/// are kept, and the scenario reports the area that changed and whether it reaches the
+/// target. With `XENADMIN_LAB_POINTER_KEY=escape` an Escape follows, to close a menu.
+#[tokio::test]
+#[ignore]
+async fn lab_desktop_guest_pointer_press_lands_on_its_target() {
+    use xenadmin_core::ConsoleInput;
+    let lab = Lab::load();
+    let Some((x, y)) = std::env::var("XENADMIN_LAB_POINTER_TARGET")
+        .ok()
+        .and_then(|v| {
+            let (x, y) = v.split_once(',')?;
+            Some((x.trim().parse::<u16>().ok()?, y.trim().parse::<u16>().ok()?))
+        })
+    else {
+        eprintln!("XENADMIN_LAB_POINTER_TARGET=x,y not set; skipping");
+        return;
+    };
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let Some(guest) = desktop_guest(&c) else {
+        eprintln!("no desktop guest; run lab_desktop_guest_provisioning first");
+        c.close().await;
+        return;
+    };
+    let console = open_guest_console(&c, guest.id).await.expect("console");
+    // Let the first frames arrive, then park the pointer away from the target.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let pointer = |x: u16, y: u16, buttons: u8| ConsoleInput::Pointer { x, y, buttons };
+    console.input(pointer(5, 5, 0)).expect("pointer moved");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let before = console.latest().frame.clone().expect("frame");
+    let before_file = save_frame(&lab, &console, "desktop-pointer-before");
+    console.input(pointer(x, y, 0)).expect("pointer moved");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let hovered = console.latest().frame.clone().expect("frame");
+    console.input(pointer(x, y, 1)).expect("button pressed");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    console.input(pointer(x, y, 0)).expect("button released");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let after = console.latest().frame.clone().expect("frame");
+    let after_file = save_frame(&lab, &console, "desktop-pointer-after");
+    let area = |a: &xenadmin_core::ConsoleFrame, b: &xenadmin_core::ConsoleFrame| {
+        changed_area(a, b).map(|(top, left, rows, columns)| {
+            json!({"top": top, "left": left, "rows": rows, "columns": columns})
+        })
+    };
+    // The press reaches its target when what changed starts within a few pixels of it.
+    let near = changed_area(&hovered, &after).is_some_and(|(top, left, rows, columns)| {
+        let (x, y) = (usize::from(x), usize::from(y));
+        x + 24 >= left && x <= left + columns + 24 && y + 24 >= top && y <= top + rows + 24
+    });
+    if std::env::var("XENADMIN_LAB_POINTER_KEY").as_deref() == Ok("escape") {
+        let _ = console.input(ConsoleInput::KeyChord(vec![0xff1b]));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let cursor = console
+        .latest()
+        .cursor
+        .as_ref()
+        .map(|c| json!({"width": c.width, "height": c.height}));
+    console.close();
+    c.close().await;
+    lab.record(
+        "desktop-guest-pointer-press",
+        json!({"guest": guest.name, "target": {"x": x, "y": y}, "frame": {"width": after.width, "height": after.height},
+               "changed_by_moving_there": area(&before, &hovered), "changed_by_the_press": area(&hovered, &after),
+               "change_reaches_the_target": near, "guest_cursor_shape": cursor,
+               "before_file": before_file, "after_file": after_file}),
+    );
+    assert!(near, "the press changed nothing at its target");
+}
+
 /// The pool's security overview through a fresh inspection.
 async fn security_overview(
     c: &Connection,
