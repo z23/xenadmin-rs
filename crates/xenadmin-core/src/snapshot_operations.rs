@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OperationStep, StepState, snapshots};
+use xenadmin_xapi::records::VmRecord;
 
 #[derive(Clone, Copy)]
 enum DeleteStep {
@@ -37,7 +38,7 @@ impl DeleteStep {
                 }
                 let (_, record) =
                     snapshots::snapshot_record(session, parent, plan.snapshot).await?;
-                Ok(record["power_state"] == "Halted")
+                Ok(VmRecord::new(&record).power_state() == "Halted")
             }
             Self::Snapshot => {
                 Ok(
@@ -252,12 +253,12 @@ impl MutationRequest {
         {
             return Err(Error::SnapshotConflict);
         }
-        if self.record.created_vm.is_none() && current["is_a_template"] != true {
+        if self.record.created_vm.is_none() && VmRecord::new(&current).is_a_template() != true {
             return Err(Error::Protocol("snapshot clone did not return a template"));
         }
         self.record.created_vm = Some(id);
         if as_template {
-            if current["is_a_template"] != true {
+            if VmRecord::new(&current).is_a_template() != true {
                 return Err(Error::SnapshotConflict);
             }
             return Ok(());
@@ -270,7 +271,7 @@ impl MutationRequest {
             }];
             self.persist_steps(journal).await?;
         }
-        if current["is_a_template"] == false {
+        if VmRecord::new(&current).is_a_template() == false {
             // The conversion reached the host even if its reply was lost; the host still
             // needs to recompute the new VM's allowed operations (see below).
             let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("VM.update_allowed_operations",vec![json!(&reference)])=>result};
@@ -324,7 +325,7 @@ impl MutationRequest {
         self.persist_steps(journal).await?;
         let (verified, after) =
             snapshots::verify_clone(session, self.record.vm, snapshot, &reference).await?;
-        if verified != id || after["is_a_template"] != false {
+        if verified != id || VmRecord::new(&after).is_a_template() != false {
             return Err(Error::SnapshotConflict);
         }
         self.record.steps[0].state = StepState::Verified;

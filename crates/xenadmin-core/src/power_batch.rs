@@ -4,6 +4,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{PoolRecord, VmRecord};
 
 /// One reviewed ordinary guest. UUIDs are scoped by the command's observed pool.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,7 +160,7 @@ pub(crate) async fn pool(
     let value = session
         .call("pool.get_record", vec![json!(reference)])
         .await?;
-    if value["uuid"] != record.pool.to_string() {
+    if PoolRecord::new(&value).uuid() != record.pool.to_string() {
         return Err(Error::Stale);
     }
     Ok(())
@@ -172,10 +173,10 @@ async fn read(session: &crate::xapi::Session, vm: VmId) -> Result<(String, Value
     let value = session
         .call("VM.get_record", vec![json!(&reference)])
         .await?;
-    if value["uuid"] != vm.to_string()
-        || value["is_a_template"] != false
-        || value["is_a_snapshot"] != false
-        || value["is_control_domain"] != false
+    if VmRecord::new(&value).uuid() != vm.to_string()
+        || VmRecord::new(&value).is_a_template() != false
+        || VmRecord::new(&value).is_a_snapshot() != false
+        || VmRecord::new(&value).is_control_domain() != false
     {
         return Err(Error::Stale);
     }
@@ -187,10 +188,11 @@ pub(crate) async fn prepare_item(
     action: PowerAction,
 ) -> Result<Vec<Value>, Error> {
     let (reference, value) = read(session, selected.vm).await?;
-    if value["power_state"] != selected.expected_state.to_string()
+    if VmRecord::new(&value).power_state() != selected.expected_state.to_string()
         || !crate::xapi::advertises(&value, action.wire())
-        || !value["blocked_operations"].is_object()
-        || !value["current_operations"]
+        || !VmRecord::new(&value).blocked_operations().is_object()
+        || !VmRecord::new(&value)
+            .current_operations()
             .as_object()
             .is_some_and(|v| v.is_empty())
     {
@@ -217,8 +219,9 @@ pub(crate) async fn verify_item(
         return Err(Error::Protocol("Power task completion is not proven"));
     }
     let (_, value) = read(session, item.selected.vm).await?;
-    if value["power_state"] != expected_result(action).to_string()
-        || !value["current_operations"]
+    if VmRecord::new(&value).power_state() != expected_result(action).to_string()
+        || !VmRecord::new(&value)
+            .current_operations()
             .as_object()
             .is_some_and(|v| v.is_empty())
     {

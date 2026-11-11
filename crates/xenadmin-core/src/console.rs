@@ -7,6 +7,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use vnc::{VncConnector, VncEncoding, VncEvent, X11Event};
+use xenadmin_xapi::records::{ConsoleRecord, HostRecord, VmRecord};
 
 #[path = "console_clipboard.rs"]
 mod clipboard;
@@ -219,11 +220,14 @@ impl ConsoleRequest {
                 let console = session
                     .call("console.get_record", vec![json!(console_ref)])
                     .await?;
-                if console["protocol"].as_str() == Some("rfb") {
-                    if console["VM"] != reference {
+                if ConsoleRecord::new(&console).protocol().as_str() == Some("rfb") {
+                    if ConsoleRecord::new(&console).vm() != reference {
                         return Err(Error::Stale);
                     }
-                    location = console["location"].as_str().map(str::to_owned);
+                    location = ConsoleRecord::new(&console)
+                        .location()
+                        .as_str()
+                        .map(str::to_owned);
                     break;
                 }
             }
@@ -403,7 +407,7 @@ async fn host_reference(
     let host_record = session
         .call("host.get_record", vec![json!(host_ref)])
         .await?;
-    if host_record["uuid"] != host.to_string() {
+    if HostRecord::new(&host_record).uuid() != host.to_string() {
         return Err(Error::Stale);
     }
     let vm_ref = crate::xapi::opaque_reference(
@@ -412,12 +416,12 @@ async fn host_reference(
             .await?,
     )?;
     let vm_record = session.call("VM.get_record", vec![json!(vm_ref)]).await?;
-    if vm_record["uuid"] != vm.to_string()
-        || vm_record["is_control_domain"] != true
-        || vm_record["is_a_template"] != false
-        || vm_record["is_a_snapshot"] != false
-        || vm_record["resident_on"] != host_ref
-        || vm_record["power_state"] != "Running"
+    if VmRecord::new(&vm_record).uuid() != vm.to_string()
+        || VmRecord::new(&vm_record).is_control_domain() != true
+        || VmRecord::new(&vm_record).is_a_template() != false
+        || VmRecord::new(&vm_record).is_a_snapshot() != false
+        || VmRecord::new(&vm_record).resident_on() != host_ref
+        || VmRecord::new(&vm_record).power_state() != "Running"
     {
         return Err(Error::Stale);
     }

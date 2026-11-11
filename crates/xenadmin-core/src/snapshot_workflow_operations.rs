@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OperationStep, StepState, snapshot_workflow as workflow};
+use xenadmin_xapi::records::TaskRecord;
 
 impl Journal {
     fn snapshot_workflow_evidence(
@@ -131,7 +132,7 @@ impl MutationRequest {
         if !plan.evidence[index].completed
             && let Some(task) = &plan.evidence[index].task
             && let Ok(record) = session.call("task.get_record", vec![json!(task)]).await
-            && record["status"] == "success"
+            && TaskRecord::new(&record).status() == "success"
         {
             if plan.steps[index] == workflow::Step::Create {
                 plan.evidence[index].result = Some(crate::xapi::snapshot_task_result(&record)?);
@@ -206,7 +207,7 @@ impl MutationRequest {
                                 .await;
                         }
                     };
-                    match record["status"].as_str() {
+                    match TaskRecord::new(&record).status().as_str() {
                         Some("success")=>{
                             if plan.steps[index]==workflow::Step::Create {plan.evidence[index].result=Some(crate::xapi::snapshot_task_result(&record)?)}
                             plan.evidence[index].completed=true;break;
@@ -323,7 +324,7 @@ impl MutationRequest {
                 };
                 let record = session.call("task.get_record", vec![json!(task)]).await;
                 match record {
-                    Ok(record) if record["status"] == "success" => {
+                    Ok(record) if TaskRecord::new(&record).status() == "success" => {
                         if plan.steps[index] == workflow::Step::Create {
                             plan.evidence[index].result =
                                 Some(crate::xapi::snapshot_task_result(&record)?)

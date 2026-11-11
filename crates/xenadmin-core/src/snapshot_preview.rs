@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::{BlobRecord, PoolRecord, VmRecord};
 
 pub(crate) const KEY: &str = "XenCenter.VNCSnapshot";
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -117,21 +118,25 @@ fn image(bytes: Vec<u8>) -> Result<SnapshotPreview, Error> {
     })
 }
 fn blob_identity(record: &Value) -> Result<(uuid::Uuid, u64, String, String), Error> {
-    let id = record["uuid"]
+    let id = BlobRecord::new(record)
+        .uuid()
         .as_str()
         .and_then(|s| s.parse().ok())
         .ok_or(Error::Protocol("invalid snapshot preview identity"))?;
-    let size = record["size"]
+    let size = BlobRecord::new(record)
+        .size()
         .as_u64()
-        .or_else(|| record["size"].as_str()?.parse().ok())
+        .or_else(|| BlobRecord::new(record).size().as_str()?.parse().ok())
         .filter(|size| *size > 0 && *size <= MAX_BYTES as u64)
         .ok_or(Error::Protocol("snapshot preview exceeds image bounds"))?;
-    let mime = record["mime_type"]
+    let mime = BlobRecord::new(record)
+        .mime_type()
         .as_str()
         .filter(|s| matches!(*s, "image/png" | "image/jpeg"))
         .ok_or(Error::Protocol("unsupported snapshot preview type"))?
         .to_owned();
-    let updated = record["last_updated"]
+    let updated = BlobRecord::new(record)
+        .last_updated()
         .as_str()
         .filter(|s| s.len() <= 64)
         .ok_or(Error::Protocol("snapshot preview metadata unavailable"))?
@@ -146,12 +151,12 @@ pub(crate) async fn read(
         .call("pool.get_by_uuid", vec![json!(observed.pool.to_string())])
         .await?;
     let pool_record = session.call("pool.get_record", vec![pool]).await?;
-    if pool_record["uuid"] != observed.pool.to_string() {
+    if PoolRecord::new(&pool_record).uuid() != observed.pool.to_string() {
         return Err(Error::Stale);
     }
     let (snapshot_ref, before) =
         crate::snapshots::snapshot_record(session, observed.vm, observed.id).await?;
-    let blob = before["blobs"].get(KEY);
+    let blob = VmRecord::new(&before).blobs().value().get(KEY);
     let result = if let Some(blob) = blob {
         let reference = crate::snapshots::reference(blob)?;
         let metadata = session
@@ -205,7 +210,7 @@ pub(crate) async fn read(
             return Err(Error::Stale);
         }
         Some(image)
-    } else if let Some(encoded) = before["other_config"].get(KEY) {
+    } else if let Some(encoded) = VmRecord::new(&before).other_config().get(KEY) {
         let encoded = encoded
             .as_str()
             .filter(|s| s.len() <= MAX_BYTES.div_ceil(3) * 4)
@@ -220,8 +225,9 @@ pub(crate) async fn read(
     let (after_ref, after) =
         crate::snapshots::snapshot_record(session, observed.vm, observed.id).await?;
     if after_ref != snapshot_ref
-        || after["blobs"].get(KEY) != before["blobs"].get(KEY)
-        || after["other_config"].get(KEY) != before["other_config"].get(KEY)
+        || VmRecord::new(&after).blobs().get(KEY) != VmRecord::new(&before).blobs().get(KEY)
+        || VmRecord::new(&after).other_config().get(KEY)
+            != VmRecord::new(&before).other_config().get(KEY)
     {
         return Err(Error::Stale);
     }

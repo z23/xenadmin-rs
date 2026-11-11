@@ -14,6 +14,7 @@ use std::{
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use xenadmin_xapi::records::{TaskRecord, VmRecord};
 
 #[path = "device_lifecycle_operations.rs"]
 mod device_lifecycle_operations;
@@ -1613,7 +1614,7 @@ impl MutationRequest {
                 .call("VM.get_record", vec![json!(reference)])
                 .await?;
             let before = patch.resolve_record(session, before).await?;
-            if before["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
+            if VmRecord::new(&before).uuid().as_str() != Some(self.record.vm.to_string().as_str()) {
                 return Err(Error::Stale);
             }
             if let Err(error) = patch
@@ -1668,7 +1669,7 @@ impl MutationRequest {
                 .call("VM.get_record", vec![json!(reference)])
                 .await?;
             let after = patch.resolve_record(session, after).await?;
-            if after["uuid"].as_str() != Some(self.record.vm.to_string().as_str())
+            if VmRecord::new(&after).uuid().as_str() != Some(self.record.vm.to_string().as_str())
                 || patch.target_guard(&after).is_err()
                 || !step.verified(&after)
             {
@@ -1700,7 +1701,7 @@ impl MutationRequest {
             .await?;
         let current = session.call("VM.get_record", vec![reference]).await?;
         let current = patch.resolve_record(session, current).await?;
-        if current["uuid"].as_str() != Some(self.record.vm.to_string().as_str()) {
+        if VmRecord::new(&current).uuid().as_str() != Some(self.record.vm.to_string().as_str()) {
             return Err(Error::Stale);
         };
         patch.target_guard(&current)?;
@@ -1775,16 +1776,19 @@ impl MutationRequest {
                 }
                 Err(error) => return Err(error),
             };
-            self.record.progress = task["progress"]
+            self.record.progress = TaskRecord::new(&task)
+                .progress()
                 .as_f64()
                 .or_else(|| {
-                    task["progress"]
+                    TaskRecord::new(&task)
+                        .progress()
                         .as_str()
                         .and_then(|value| value.parse().ok())
                 })
                 .filter(|value| value.is_finite())
                 .map(|value| value.clamp(0.0, 1.0));
-            self.record.can_cancel = task["allowed_operations"]
+            self.record.can_cancel = TaskRecord::new(&task)
+                .allowed_operations()
                 .as_array()
                 .is_some_and(|values| values.iter().any(|value| value == "cancel"));
             self.record.state = if self.record.cancel_requested {
@@ -1792,7 +1796,7 @@ impl MutationRequest {
             } else {
                 OperationState::Tracking
             };
-            match task["status"].as_str() {
+            match TaskRecord::new(&task).status().as_str() {
                 Some("success") => {
                     if matches!(
                         self.record.action,
@@ -1874,7 +1878,9 @@ impl MutationRequest {
                 }
                 Some("failure") => {
                     self.record.state = OperationState::Failed;
-                    let code = task["error_info"]
+                    let code = TaskRecord::new(&task)
+                        .error_info()
+                        .value()
                         .as_array()
                         .and_then(|values| values.first())
                         .and_then(serde_json::Value::as_str)

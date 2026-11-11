@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use xenadmin_xapi::records::{BlobRecord, PoolRecord, VmRecord};
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -52,7 +53,7 @@ async fn snapshot(
         .call("pool.get_by_uuid", vec![json!(record.pool.to_string())])
         .await?;
     let pool = session.call("pool.get_record", vec![pool_ref]).await?;
-    if pool["uuid"] != record.pool.to_string() {
+    if PoolRecord::new(&pool).uuid() != record.pool.to_string() {
         return Err(Error::Stale);
     }
     let expected = expected(record)?;
@@ -61,7 +62,8 @@ async fn snapshot(
     };
     let (reference, value) =
         crate::snapshots::snapshot_record(session, vm, expected.snapshot).await?;
-    if value["current_operations"]
+    if VmRecord::new(&value)
+        .current_operations()
         .as_object()
         .is_none_or(|m| !m.is_empty())
     {
@@ -78,8 +80,9 @@ async fn blob(session: &Session, record: &ResourceOperationRecord) -> Result<uui
         "preview creation receipt is missing; creation will not be repeated",
     ))?;
     let (_, snapshot) = snapshot(session, record).await?;
-    if snapshot["blobs"][snapshot_preview::KEY] != *reference
-        || snapshot["other_config"]
+    if VmRecord::new(&snapshot).blobs()[snapshot_preview::KEY] != *reference
+        || VmRecord::new(&snapshot)
+            .other_config()
             .get(snapshot_preview::KEY)
             .is_some()
     {
@@ -88,15 +91,16 @@ async fn blob(session: &Session, record: &ResourceOperationRecord) -> Result<uui
     let fresh = session
         .call("blob.get_record", vec![json!(reference)])
         .await?;
-    let id = fresh["uuid"]
+    let id = BlobRecord::new(&fresh)
+        .uuid()
         .as_str()
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
         .filter(|id| !id.is_nil())
         .ok_or(Error::Stale)?;
     if plan.baseline.binary_search(&id).is_ok()
         || plan.blob.is_some_and(|old| old != id)
-        || fresh["mime_type"] != "image/png"
-        || fresh["public"] != false
+        || BlobRecord::new(&fresh).mime_type() != "image/png"
+        || BlobRecord::new(&fresh).public() != false
     {
         return Err(Error::Stale);
     }
@@ -201,9 +205,15 @@ impl ResourceRequest {
             return Err(Error::InvalidResourceCommand);
         }
         let (_, fresh) = bounded(cancel, snapshot(session, &self.record)).await?;
-        if fresh["blobs"].as_object().is_none()
-            || fresh["blobs"].get(snapshot_preview::KEY).is_some()
-            || fresh["other_config"].get(snapshot_preview::KEY).is_some()
+        if VmRecord::new(&fresh).blobs().as_object().is_none()
+            || VmRecord::new(&fresh)
+                .blobs()
+                .get(snapshot_preview::KEY)
+                .is_some()
+            || VmRecord::new(&fresh)
+                .other_config()
+                .get(snapshot_preview::KEY)
+                .is_some()
         {
             return Err(Error::Protocol(
                 "snapshot already has a preview or its metadata is unavailable",
@@ -219,7 +229,8 @@ impl ResourceRequest {
         let mut baseline = records
             .values()
             .map(|v| {
-                v["uuid"]
+                BlobRecord::new(v)
+                    .uuid()
                     .as_str()
                     .and_then(|v| v.parse::<uuid::Uuid>().ok())
                     .filter(|v| !v.is_nil())
@@ -241,9 +252,15 @@ impl ResourceRequest {
         ];
         self.save(journal).await?;
         let (reference, fresh) = bounded(cancel, snapshot(session, &self.record)).await?;
-        if fresh["blobs"].as_object().is_none()
-            || fresh["blobs"].get(snapshot_preview::KEY).is_some()
-            || fresh["other_config"].get(snapshot_preview::KEY).is_some()
+        if VmRecord::new(&fresh).blobs().as_object().is_none()
+            || VmRecord::new(&fresh)
+                .blobs()
+                .get(snapshot_preview::KEY)
+                .is_some()
+            || VmRecord::new(&fresh)
+                .other_config()
+                .get(snapshot_preview::KEY)
+                .is_some()
         {
             return Err(Error::Stale);
         }

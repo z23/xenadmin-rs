@@ -2,6 +2,7 @@ use crate::{Error, Inventory, SnapshotId, VdiId, VmId, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DeletionPlan {
@@ -98,18 +99,18 @@ pub(crate) async fn snapshot_record(
     let (parent_ref, parent_record) = optional_record(session, "VM", &parent.to_string())
         .await?
         .ok_or(Error::Stale)?;
-    if parent_record["is_a_snapshot"] != false
-        || !parent_record["is_a_template"].is_boolean()
-        || parent_record["is_control_domain"] != false
+    if VmRecord::new(&parent_record).is_a_snapshot() != false
+        || !VmRecord::new(&parent_record).is_a_template().is_boolean()
+        || VmRecord::new(&parent_record).is_control_domain() != false
     {
         return Err(Error::Stale);
     }
     let (reference, record) = optional_record(session, "VM", &snapshot.to_string())
         .await?
         .ok_or(Error::Stale)?;
-    if record["is_a_snapshot"] != true
-        || record["is_control_domain"] != false
-        || record["snapshot_of"].as_str() != Some(&parent_ref)
+    if VmRecord::new(&record).is_a_snapshot() != true
+        || VmRecord::new(&record).is_control_domain() != false
+        || VmRecord::new(&record).snapshot_of().as_str() != Some(&parent_ref)
     {
         return Err(Error::SnapshotConflict);
     }
@@ -124,17 +125,21 @@ fn refs(record: &Value, key: &str) -> Result<Vec<String>, Error> {
     values.iter().map(reference).collect()
 }
 fn can(record: &Value, operation: &str) -> bool {
-    record["allowed_operations"]
+    VmRecord::new(record)
+        .allowed_operations()
         .as_array()
         .is_some_and(|ops| ops.iter().any(|op| op == operation))
-        && record["blocked_operations"].get(operation).is_none()
+        && VmRecord::new(record)
+            .blocked_operations()
+            .get(operation)
+            .is_none()
 }
 fn disk_is_snapshot(record: &Value) -> bool {
-    record["is_a_snapshot"] == true
-        && record["sharable"] == false
-        && record["managed"] == true
-        && record["missing"] == false
-        && record["type"] == "user"
+    VdiRecord::new(record).is_a_snapshot() == true
+        && VdiRecord::new(record).sharable() == false
+        && VdiRecord::new(record).managed() == true
+        && VdiRecord::new(record).missing() == false
+        && VdiRecord::new(record).type_() == "user"
 }
 
 pub(crate) async fn deletion_plan(
@@ -147,8 +152,8 @@ pub(crate) async fn deletion_plan(
         return Err(Error::SnapshotConflict);
     }
     let (snapshot_ref, record) = snapshot_record(session, parent, snapshot).await?;
-    let checkpoint = record["power_state"] == "Suspended";
-    if (!checkpoint && record["power_state"] != "Halted")
+    let checkpoint = VmRecord::new(&record).power_state() == "Suspended";
+    if (!checkpoint && VmRecord::new(&record).power_state() != "Halted")
         || !can(
             &record,
             if checkpoint {
@@ -174,10 +179,11 @@ pub(crate) async fn deletion_plan(
         }
         for vbd in consumers {
             let attachment = session.call("VBD.get_record", vec![json!(vbd)]).await?;
-            if attachment["VM"] != snapshot_ref
-                || attachment["VDI"] != disk_ref
-                || attachment["type"] != "Disk"
-                || !attachment["other_config"]
+            if VbdRecord::new(&attachment).vm() != snapshot_ref
+                || VbdRecord::new(&attachment).vdi() != disk_ref
+                || VbdRecord::new(&attachment).type_() != "Disk"
+                || !VbdRecord::new(&attachment)
+                    .other_config()
                     .get("owner")
                     .is_some_and(Value::is_string)
             {
@@ -186,17 +192,18 @@ pub(crate) async fn deletion_plan(
         }
     }
     let memory = if checkpoint {
-        let reference = reference(&record["suspend_VDI"])?;
+        let reference = reference(&VmRecord::new(&record).suspend_vdi())?;
         let disk = session
             .call("VDI.get_record", vec![json!(&reference)])
             .await?;
-        if disk["type"] != "suspend"
-            || disk["sharable"] != false
+        if VdiRecord::new(&disk).type_() != "suspend"
+            || VdiRecord::new(&disk).sharable() != false
             || !refs(&disk, "VBDs")?.is_empty()
         {
             return Err(Error::SnapshotConflict);
         }
-        let id = disk["uuid"]
+        let id = VdiRecord::new(&disk)
+            .uuid()
             .as_str()
             .and_then(|id| VdiId::parse(id).ok())
             .ok_or(Error::SnapshotConflict)?;
@@ -205,7 +212,9 @@ pub(crate) async fn deletion_plan(
             .as_object()
             .ok_or(Error::SnapshotConflict)?
             .iter()
-            .any(|(vm, value)| *vm != snapshot_ref && value["suspend_VDI"] == reference)
+            .any(|(vm, value)| {
+                *vm != snapshot_ref && VmRecord::new(value).suspend_vdi() == reference
+            })
         {
             return Err(Error::SnapshotConflict);
         }
@@ -228,14 +237,14 @@ pub(crate) async fn stop_checkpoint(
     memory: Option<VdiId>,
 ) -> Result<(), Error> {
     let (reference, record) = snapshot_record(session, parent, snapshot).await?;
-    if record["power_state"] != "Suspended" || !can(&record, "hard_shutdown") {
+    if VmRecord::new(&record).power_state() != "Suspended" || !can(&record, "hard_shutdown") {
         return Err(Error::SnapshotConflict);
     }
-    let memory_ref = self::reference(&record["suspend_VDI"])?;
+    let memory_ref = self::reference(&VmRecord::new(&record).suspend_vdi())?;
     let saved = session
         .call("VDI.get_record", vec![json!(memory_ref)])
         .await?;
-    if saved["uuid"].as_str() != memory.map(|id| id.to_string()).as_deref() {
+    if VdiRecord::new(&saved).uuid().as_str() != memory.map(|id| id.to_string()).as_deref() {
         return Err(Error::SnapshotConflict);
     }
     session
@@ -250,7 +259,7 @@ pub(crate) async fn destroy_snapshot(
     snapshot: SnapshotId,
 ) -> Result<(), Error> {
     let (reference, record) = snapshot_record(session, parent, snapshot).await?;
-    if record["power_state"] != "Halted" || !can(&record, "destroy") {
+    if VmRecord::new(&record).power_state() != "Halted" || !can(&record, "destroy") {
         return Err(Error::SnapshotConflict);
     }
     session.call("VM.destroy", vec![json!(reference)]).await?;
@@ -271,7 +280,7 @@ pub(crate) async fn destroy_disk(session: &Session, disk: VdiId) -> Result<(), E
         .as_object()
         .ok_or(Error::SnapshotConflict)?
         .values()
-        .any(|vm| vm["suspend_VDI"] == reference)
+        .any(|vm| VmRecord::new(vm).suspend_vdi() == reference)
     {
         return Err(Error::SnapshotConflict);
     }
@@ -288,17 +297,18 @@ pub(crate) async fn verify_clone(
     let record = session
         .call("VM.get_record", vec![json!(reference)])
         .await?;
-    let id = record["uuid"]
+    let id = VmRecord::new(&record)
+        .uuid()
         .as_str()
         .and_then(|id| VmId::parse(id).ok())
         .ok_or(Error::Protocol("invalid cloned VM identity"))?;
     if id == parent
         || id.to_string() == snapshot.to_string()
-        || record["is_a_snapshot"] != false
-        || record["is_control_domain"] != false
-        || !record["is_a_template"].is_boolean()
-        || record["power_state"] != "Halted"
-        || record["snapshot_of"] != "OpaqueRef:NULL"
+        || VmRecord::new(&record).is_a_snapshot() != false
+        || VmRecord::new(&record).is_control_domain() != false
+        || !VmRecord::new(&record).is_a_template().is_boolean()
+        || VmRecord::new(&record).power_state() != "Halted"
+        || VmRecord::new(&record).snapshot_of() != "OpaqueRef:NULL"
     {
         return Err(Error::Protocol("invalid cloned VM result"));
     }
@@ -316,7 +326,8 @@ pub(crate) async fn clone_baseline(session: &Session) -> Result<Vec<VmId>, Error
     let ids = records
         .values()
         .map(|record| {
-            record["uuid"]
+            VmRecord::new(record)
+                .uuid()
                 .as_str()
                 .and_then(|id| VmId::parse(id).ok())
                 .ok_or(Error::Protocol(

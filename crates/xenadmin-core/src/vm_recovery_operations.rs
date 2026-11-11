@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OperationStep, StepState, VmRecoveryOperation, vm_recovery as recovery};
+use xenadmin_xapi::records::TaskRecord;
 impl Journal {
     fn recovery_evidence(
         &self,
@@ -209,7 +210,7 @@ impl MutationRequest {
                     if self.save_recovery_evidence(j, false).await? {
                         return Ok(());
                     }
-                    match task["status"].as_str(){Some("success")=>break,Some("pending"|"cancelling")=>{tokio::select!{_=cancel.cancelled()=>return self.recovery_error(j,&plan,index,Error::Closed,false).await,_=tokio::time::sleep(Duration::from_millis(250))=>{}}},_=>return self.recovery_error(j,&plan,index,Error::Protocol("Recovery task did not complete successfully; inspect its outcome"),false).await}
+                    match TaskRecord::new(&task).status().as_str(){Some("success")=>break,Some("pending"|"cancelling")=>{tokio::select!{_=cancel.cancelled()=>return self.recovery_error(j,&plan,index,Error::Closed,false).await,_=tokio::time::sleep(Duration::from_millis(250))=>{}}},_=>return self.recovery_error(j,&plan,index,Error::Protocol("Recovery task did not complete successfully; inspect its outcome"),false).await}
                 }
             } else {
                 plan.evidence[index].completed = true;

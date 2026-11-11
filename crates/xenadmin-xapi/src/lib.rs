@@ -73,6 +73,11 @@ where
         self.0 == other
     }
 }
+impl PartialEq<FieldValue<'_>> for FieldValue<'_> {
+    fn eq(&self, other: &FieldValue<'_>) -> bool {
+        self.0 == other.0
+    }
+}
 
 /// The upstream tag, commit and digest of the description the bindings were generated from.
 pub const SOURCE: &str = include_str!("../data/SOURCE");
@@ -130,6 +135,9 @@ mod tests {
         assert_eq!(name, "u");
         assert_eq!(FieldValue::of(&record["VCPUs_max"]), 2);
         assert_eq!(vm.vcpus_max().as_u64(), Some(2));
+        // Two fields compare as their values do.
+        assert!(vm.uuid() == records::VmRecord::new(&record).uuid());
+        assert!(vm.uuid() != vm.power_state());
         // A field whose name is a Rust keyword keeps its meaning with an underscore.
         assert_eq!(
             records::VdiRecord::new(&json!({"type": "user"})).type_(),

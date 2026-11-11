@@ -4,6 +4,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::{TaskRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForceRecoveryAction {
@@ -69,11 +70,12 @@ impl RecoveryBootConfiguration {
         Ok(())
     }
     fn matches(&self, record: &Value, order: Option<&str>) -> bool {
-        record["domain_type"] == "hvm"
-            && record["HVM_boot_policy"] == "BIOS order"
+        VmRecord::new(record).domain_type() == "hvm"
+            && VmRecord::new(record).hvm_boot_policy() == "BIOS order"
             && crate::guest_boot::firmware(record) == Some(self.firmware.as_str())
             && crate::guest_boot::policy(record) == self.secure_boot
-            && record["HVM_boot_params"]
+            && VmRecord::new(record)
+                .hvm_boot_params()
                 .as_object()
                 .is_some_and(|map| map.get("order").map(Value::as_str) == order.map(Some))
     }
@@ -189,18 +191,20 @@ impl VmRecoveryOperation {
             && match self {
                 Self::Force { action, tasks } => {
                     validate_tasks(tasks).is_ok()
-                        && r["power_state"] == "Running"
-                        && r["blocked_operations"]
+                        && VmRecord::new(r).power_state() == "Running"
+                        && VmRecord::new(r)
+                            .blocked_operations()
                             .as_object()
                             .is_some_and(|b| !b.contains_key(action.wire()))
-                        && r["current_operations"]
+                        && VmRecord::new(r)
+                            .current_operations()
                             .as_object()
                             .is_some_and(|o| o.len() == tasks.len())
                 }
                 Self::Boot { configuration } => {
                     configuration.validate().is_ok()
                         && configuration.matches(r, configuration.order.as_deref())
-                        && r["power_state"] == "Halted"
+                        && VmRecord::new(r).power_state() == "Halted"
                         && idle(r)
                         && advertised(r, "start")
                 }
@@ -251,18 +255,23 @@ fn validate_tasks(tasks: &[RecoveryTask]) -> Result<(), Error> {
     }
 }
 fn normal(r: &Value) -> bool {
-    r["is_a_template"] == false && r["is_a_snapshot"] == false && r["is_control_domain"] == false
+    VmRecord::new(r).is_a_template() == false
+        && VmRecord::new(r).is_a_snapshot() == false
+        && VmRecord::new(r).is_control_domain() == false
 }
 fn idle(r: &Value) -> bool {
-    r["current_operations"]
+    VmRecord::new(r)
+        .current_operations()
         .as_object()
         .is_some_and(|o| o.is_empty())
 }
 fn advertised(r: &Value, op: &str) -> bool {
-    r["allowed_operations"]
+    VmRecord::new(r)
+        .allowed_operations()
         .as_array()
         .is_some_and(|v| v.iter().any(|v| v == op))
-        && r["blocked_operations"]
+        && VmRecord::new(r)
+            .blocked_operations()
             .as_object()
             .is_some_and(|b| !b.contains_key(op))
 }
@@ -397,7 +406,8 @@ pub(crate) async fn plan(
         let mut ids = map
             .values()
             .map(|r| {
-                r["uuid"]
+                TaskRecord::new(r)
+                    .uuid()
                     .as_str()
                     .ok_or(Error::Stale)
                     .and_then(|v| TaskId::parse(v).map_err(|_| Error::Stale))
@@ -441,12 +451,16 @@ pub(crate) async fn prepare(
         let VmRecoveryOperation::Force { tasks, .. } = &plan.operation else {
             return Err(Error::Journal);
         };
-        let raw = r["current_operations"].as_object().ok_or(Error::Stale)?;
+        let raw = VmRecord::new(&r)
+            .current_operations()
+            .value()
+            .as_object()
+            .ok_or(Error::Stale)?;
         let mut actual = Vec::new();
         for (reference, op) in raw {
             let task = s.call("task.get_record", vec![json!(reference)]).await?;
             actual.push(RecoveryTask {
-                task: TaskId::parse(task["uuid"].as_str().ok_or(Error::Stale)?)
+                task: TaskId::parse(TaskRecord::new(&task).uuid().as_str().ok_or(Error::Stale)?)
                     .map_err(|_| Error::Stale)?,
                 operation: op.as_str().ok_or(Error::Stale)?.into(),
             });
@@ -456,7 +470,8 @@ pub(crate) async fn prepare(
             return Err(Error::Stale);
         }
         let (_, fresh) = guest(s, vm).await?;
-        if !plan.operation.allows(&fresh) || fresh["current_operations"] != r["current_operations"]
+        if !plan.operation.allows(&fresh)
+            || VmRecord::new(&fresh).current_operations() != VmRecord::new(&r).current_operations()
         {
             return Err(Error::Stale);
         }
@@ -479,7 +494,7 @@ pub(crate) async fn prepare(
     if !config.matches(&r, expected) || !idle(&r) {
         return Err(Error::Stale);
     }
-    if matches!(step, Step::Start | Step::Override) && r["power_state"] != "Halted" {
+    if matches!(step, Step::Start | Step::Override) && VmRecord::new(&r).power_state() != "Halted" {
         return Err(Error::Stale);
     }
     match step {
@@ -498,7 +513,8 @@ pub(crate) async fn prepare(
             })
         }
         Step::Override | Step::Restore => {
-            let mut params = r["HVM_boot_params"]
+            let mut params = VmRecord::new(&r)
+                .hvm_boot_params()
                 .as_object()
                 .cloned()
                 .ok_or(Error::Stale)?;
@@ -528,12 +544,13 @@ pub(crate) async fn task(s: &Session, plan: &mut Plan, index: usize) -> Result<V
             vec![json!(e.task.as_ref().ok_or(Error::Journal)?)],
         )
         .await?;
-    let id = TaskId::parse(r["uuid"].as_str().ok_or(Error::Stale)?).map_err(|_| Error::Stale)?;
+    let id = TaskId::parse(TaskRecord::new(&r).uuid().as_str().ok_or(Error::Stale)?)
+        .map_err(|_| Error::Stale)?;
     if plan.baseline.contains(&id) || e.task_id.is_some_and(|old| old != id) {
         return Err(Error::Stale);
     }
     e.task_id = Some(id);
-    if r["status"] == "success" {
+    if TaskRecord::new(&r).status() == "success" {
         e.completed = true
     }
     Ok(r)
@@ -550,7 +567,7 @@ pub(crate) async fn verify(
     let (_, r) = guest(s, vm).await?;
     Ok(match &plan.steps[index] {
         Step::Force(a) => {
-            r["power_state"]
+            VmRecord::new(&r).power_state()
                 == if *a == ForceRecoveryAction::Shutdown {
                     "Halted"
                 } else {
@@ -564,7 +581,8 @@ pub(crate) async fn verify(
             } else {
                 Some("dn")
             };
-            c.matches(&r, order) && (*step != Step::Start || r["power_state"] == "Running")
+            c.matches(&r, order)
+                && (*step != Step::Start || VmRecord::new(&r).power_state() == "Running")
         }
     })
 }

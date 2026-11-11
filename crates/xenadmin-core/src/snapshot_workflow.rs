@@ -1,6 +1,7 @@
 use crate::{Error, PowerState, SnapshotId, SnapshotName, VdiId, VmId, snapshots, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SnapshotWorkflow {
@@ -134,8 +135,8 @@ impl SnapshotWorkflow {
                 ..
             } => snapshot.is_some_and(|s| {
                 idle(s)
-                    && s["name_label"] == *expected_name
-                    && s["name_description"] == *expected_description
+                    && VmRecord::new(s).name_label() == *expected_name
+                    && VmRecord::new(s).name_description() == *expected_description
             }),
             Self::Restore {
                 expected_state,
@@ -143,35 +144,38 @@ impl SnapshotWorkflow {
                 shutdown,
                 ..
             } => {
-                parent["power_state"] == expected_state.to_string()
+                VmRecord::new(parent).power_state() == expected_state.to_string()
                     && (!shutdown || can(parent, "clean_shutdown"))
                     && snapshot.is_some_and(|s| {
                         idle(s)
                             && can(s, "revert")
-                            && s["power_state"] == if *checkpoint { "Suspended" } else { "Halted" }
+                            && VmRecord::new(s).power_state()
+                                == if *checkpoint { "Suspended" } else { "Halted" }
                     })
             }
         }
     }
 }
 fn idle(record: &Value) -> bool {
-    record["current_operations"]
+    VmRecord::new(record)
+        .current_operations()
         .as_object()
         .is_some_and(|ops| ops.is_empty())
 }
 fn can(record: &Value, op: &str) -> bool {
-    record["allowed_operations"]
+    VmRecord::new(record)
+        .allowed_operations()
         .as_array()
         .is_some_and(|ops| ops.iter().any(|v| v == op))
-        && record["blocked_operations"].get(op).is_none()
+        && VmRecord::new(record).blocked_operations().get(op).is_none()
 }
 async fn parent(session: &Session, vm: VmId) -> Result<(String, Value), Error> {
     let value = snapshots::optional_record(session, "VM", &vm.to_string())
         .await?
         .ok_or(Error::Stale)?;
-    if value.1["is_a_snapshot"] != false
-        || value.1["is_a_template"] != false
-        || value.1["is_control_domain"] != false
+    if VmRecord::new(&value.1).is_a_snapshot() != false
+        || VmRecord::new(&value.1).is_a_template() != false
+        || VmRecord::new(&value.1).is_control_domain() != false
     {
         return Err(Error::Stale);
     }
@@ -257,18 +261,19 @@ impl Plan {
     }
 }
 async fn memory(session: &Session, record: &Value) -> Result<Option<VdiId>, Error> {
-    if record["power_state"] != "Suspended" {
+    if VmRecord::new(record).power_state() != "Suspended" {
         return Ok(None);
     }
-    let reference = snapshots::reference(&record["suspend_VDI"])?;
+    let reference = snapshots::reference(&VmRecord::new(record).suspend_vdi())?;
     let disk = session
         .call("VDI.get_record", vec![json!(reference)])
         .await?;
-    if disk["type"] != "suspend" {
+    if VdiRecord::new(&disk).type_() != "suspend" {
         return Err(Error::SnapshotConflict);
     }
     Ok(Some(
-        disk["uuid"]
+        VdiRecord::new(&disk)
+            .uuid()
             .as_str()
             .and_then(|v| VdiId::parse(v).ok())
             .ok_or(Error::SnapshotConflict)?,
@@ -323,7 +328,8 @@ async fn source(session: &Session, vm: VmId, plan: &Plan) -> Result<(String, Val
         return Err(Error::UnavailableAction);
     }
     if let SnapshotWorkflow::Restore { checkpoint, .. } = plan.operation
-        && (result.1["power_state"] != if checkpoint { "Suspended" } else { "Halted" }
+        && (VmRecord::new(&result.1).power_state()
+            != if checkpoint { "Suspended" } else { "Halted" }
             || memory(session, &result.1).await? != plan.memory)
     {
         return Err(Error::SnapshotConflict);
@@ -381,8 +387,8 @@ pub(crate) async fn prepare(
             } else {
                 name
             };
-            if snapshot["name_label"] != *wanted_name
-                || snapshot["name_description"] != *previous_description
+            if VmRecord::new(&snapshot).name_label() != *wanted_name
+                || VmRecord::new(&snapshot).name_description() != *previous_description
             {
                 return Err(Error::SnapshotConflict);
             }
@@ -399,7 +405,7 @@ pub(crate) async fn prepare(
             })
         }
         Step::Shutdown => {
-            if guest["power_state"] != "Running"
+            if VmRecord::new(&guest).power_state() != "Running"
                 || !can(&guest, "clean_shutdown")
                 || !can(&snapshot, "revert")
             {
@@ -417,7 +423,7 @@ pub(crate) async fn prepare(
             })
         }
         Step::Revert => {
-            if guest["power_state"] != "Halted" || !can(&snapshot, "revert") {
+            if VmRecord::new(&guest).power_state() != "Halted" || !can(&snapshot, "revert") {
                 return Err(Error::UnavailableAction);
             }
             session
@@ -434,8 +440,9 @@ pub(crate) async fn prepare(
         Step::Start | Step::Resume => {
             let resume = *step == Step::Resume;
             let op = if resume { "resume" } else { "start" };
-            if guest["parent"] != snapshot_ref
-                || guest["power_state"] != if resume { "Suspended" } else { "Halted" }
+            if VmRecord::new(&guest).parent() != snapshot_ref
+                || VmRecord::new(&guest).power_state()
+                    != if resume { "Suspended" } else { "Halted" }
                 || !can(&guest, op)
             {
                 return Err(Error::UnavailableAction);
@@ -489,8 +496,8 @@ pub(crate) async fn verify(
         let SnapshotWorkflow::Create { name, memory, .. } = &plan.operation else {
             return Err(Error::SnapshotConflict);
         };
-        if record["name_label"] != *name
-            || record["power_state"] != if *memory { "Suspended" } else { "Halted" }
+        if VmRecord::new(&record).name_label() != *name
+            || VmRecord::new(&record).power_state() != if *memory { "Suspended" } else { "Halted" }
             || !idle(&record)
         {
             return Ok(false);
@@ -498,7 +505,8 @@ pub(crate) async fn verify(
         plan.created = Some(id);
         if plan.created_description.is_none() {
             plan.created_description = Some(
-                record["name_description"]
+                VmRecord::new(&record)
+                    .name_description()
                     .as_str()
                     .ok_or(Error::SnapshotConflict)?
                     .into(),
@@ -509,7 +517,7 @@ pub(crate) async fn verify(
     let (reference, snapshot) = source(session, vm, plan).await?;
     Ok(match step {
         Step::Name => match &plan.operation {
-            SnapshotWorkflow::Edit { name, .. } => snapshot["name_label"] == *name,
+            SnapshotWorkflow::Edit { name, .. } => VmRecord::new(&snapshot).name_label() == *name,
             _ => false,
         },
         Step::Description => match &plan.operation {
@@ -518,20 +526,24 @@ pub(crate) async fn verify(
             }
             | SnapshotWorkflow::Edit {
                 name, description, ..
-            } => snapshot["name_label"] == *name && snapshot["name_description"] == *description,
+            } => {
+                VmRecord::new(&snapshot).name_label() == *name
+                    && VmRecord::new(&snapshot).name_description() == *description
+            }
             _ => false,
         },
-        Step::Shutdown => guest["power_state"] == "Halted",
+        Step::Shutdown => VmRecord::new(&guest).power_state() == "Halted",
         Step::Revert => {
-            guest["parent"] == reference
-                && guest["power_state"] == snapshot["power_state"]
-                && (snapshot["power_state"] != "Suspended"
+            VmRecord::new(&guest).parent() == reference
+                && VmRecord::new(&guest).power_state() == VmRecord::new(&snapshot).power_state()
+                && (VmRecord::new(&snapshot).power_state() != "Suspended"
                     || memory(session, &guest)
                         .await?
                         .is_some_and(|id| Some(id) != plan.memory))
         }
         Step::Start | Step::Resume => {
-            guest["power_state"] == "Running" && guest["parent"] == reference
+            VmRecord::new(&guest).power_state() == "Running"
+                && VmRecord::new(&guest).parent() == reference
         }
         Step::Create => false,
     })
