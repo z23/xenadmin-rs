@@ -1211,6 +1211,639 @@ async fn a_late_event_reply_from_the_previous_coordinator_is_not_applied_to_the_
     connection.close().await;
 }
 
+fn guest_event(name: &str, state: &str) -> Value {
+    let mut event = batch("unused", state)["events"][2].clone();
+    event["snapshot"]["name_label"] = json!(name);
+    event
+}
+
+/// Serves `event.from` from a log of guest events the way XAPI does. A token names a
+/// position in the log, the bootstrap describes the guest as it was when its request
+/// arrived, and a continuation waits for whatever was logged after its token.
+#[derive(Clone)]
+struct EventLog {
+    events: tokio::sync::watch::Sender<Vec<Value>>,
+    /// The token each `event.from` carried, in the order the calls reached the log.
+    received: Arc<Mutex<Vec<String>>>,
+    /// The token each reply returned, in the order the replies were prepared.
+    returned: Arc<Mutex<Vec<String>>>,
+}
+impl EventLog {
+    fn new() -> Self {
+        Self {
+            events: tokio::sync::watch::Sender::new(Vec::new()),
+            received: Arc::default(),
+            returned: Arc::default(),
+        }
+    }
+    fn push(&self, event: Value) {
+        self.events.send_modify(|events| events.push(event));
+    }
+    async fn reply(&self, request: &Value) -> Option<RpcReply> {
+        if request["method"] != "event.from" {
+            return None;
+        }
+        let token = request["params"][2].as_str()?.to_owned();
+        self.received.lock().unwrap().push(token.clone());
+        let (position, events) = if token.is_empty() {
+            let logged = self.events.borrow().clone();
+            let mut initial = batch("unused", "Halted");
+            if let Some(latest) = logged.last() {
+                initial["events"][2] = latest.clone();
+            }
+            (logged.len(), initial["events"].take())
+        } else {
+            let position: usize = token.strip_prefix("position:")?.parse().ok()?;
+            let mut events = self.events.subscribe();
+            let logged = events
+                .wait_for(|logged| logged.len() > position)
+                .await
+                .ok()?
+                .clone();
+            (logged.len(), json!(logged[position..]))
+        };
+        let token = format!("position:{position}");
+        self.returned.lock().unwrap().push(token.clone());
+        Some(RpcReply::Json(
+            json!({"result":{"token":token,"events":events}}),
+        ))
+    }
+}
+
+async fn inventory_at_revision(
+    connection: &xenadmin_core::Connection,
+    revision: u64,
+) -> Arc<xenadmin_core::Inventory> {
+    tokio::time::timeout(deadline(3), async {
+        loop {
+            if let Some(inventory) = connection
+                .latest()
+                .inventory()
+                .filter(|inventory| inventory.revision >= revision)
+            {
+                return inventory.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the logged change must reach the published inventory")
+}
+
+#[tokio::test]
+async fn changes_racing_the_initial_inventory_are_applied_in_order_from_consecutive_tokens() {
+    let log = EventLog::new();
+    let held = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let observed = Arc::new(tokio::sync::Notify::new());
+    let server = mock_overridden(override_rpc({
+        let (log, held, release, observed) =
+            (log.clone(), held.clone(), release.clone(), observed.clone());
+        move |request| {
+            let (log, held, release, observed) =
+                (log.clone(), held.clone(), release.clone(), observed.clone());
+            async move {
+                if request["method"] != "event.from" {
+                    return None;
+                }
+                if request["params"][2] == "" {
+                    // The bootstrap is prepared when its request arrives and sent when the
+                    // test releases it, so a change logged in between is one it does not
+                    // describe.
+                    let reply = log.reply(&request).await;
+                    held.notify_one();
+                    release.notified().await;
+                    return reply;
+                }
+                if request["params"][2] == "position:0" {
+                    // The batch after the bootstrap is answered once the test has read the
+                    // bootstrap inventory, so that inventory is seen before the change.
+                    observed.notified().await;
+                }
+                log.reply(&request).await
+            }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    tokio::time::timeout(deadline(3), held.notified())
+        .await
+        .expect("the inventory request follows a successful login");
+    assert_eq!(connection.latest().state(), ConnectionState::Synchronizing);
+    // The guest changes on the host while the initial inventory is still outstanding.
+    log.push(guest_event(
+        "Renamed during the initial inventory",
+        "Running",
+    ));
+    release.notify_one();
+    let initial = connection.wait_ready(deadline(3)).await.unwrap();
+    let generation = connection.latest().generation();
+    let guest = initial.guests().next().unwrap().id;
+    assert_eq!(initial.revision, 1);
+    assert_eq!(initial.vms[&guest].name, "XO recovery guest");
+    assert_eq!(initial.vms[&guest].power_state, PowerState::Halted);
+
+    observed.notify_one();
+    let first = inventory_at_revision(&connection, 2).await;
+    assert_eq!(first.revision, 2);
+    assert_eq!(
+        first.vms[&guest].name,
+        "Renamed during the initial inventory"
+    );
+    assert_eq!(first.vms[&guest].power_state, PowerState::Running);
+
+    log.push(guest_event("Renamed after the first change", "Suspended"));
+    let second = inventory_at_revision(&connection, 3).await;
+    assert_eq!(second.revision, 3);
+    assert_eq!(second.vms[&guest].name, "Renamed after the first change");
+    assert_eq!(second.vms[&guest].power_state, PowerState::Suspended);
+
+    tokio::time::timeout(deadline(3), async {
+        while log.received.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the client must keep listening after the second change");
+    assert_eq!(
+        *log.received.lock().unwrap(),
+        ["", "position:0", "position:1", "position:2"],
+        "one download, then each call continues from the previous reply"
+    );
+    assert_eq!(
+        log.received.lock().unwrap()[1..],
+        *log.returned.lock().unwrap(),
+        "every returned token is sent back once, in order"
+    );
+    let snapshot = connection.latest();
+    assert!(snapshot.is_current());
+    assert_eq!(snapshot.generation(), generation);
+    assert_eq!(snapshot.inventory().unwrap().revision, 3);
+    assert_eq!(server.logins.load(Ordering::SeqCst), 1);
+    connection.close().await;
+}
+
+const FAULTY_CHANGE: &str = "Changed by a faulty batch";
+
+/// After a healthy bootstrap the first continuation is answered with `faulty`, whose token
+/// is "faulty" and whose first event validly renames the guest to [`FAULTY_CHANGE`] and
+/// suspends it. Nothing of that batch may be published, the fault is reported as
+/// `reported` on a reconnecting snapshot, and the client downloads the inventory again
+/// without ever sending the faulty batch's token.
+async fn a_faulty_event_batch_is_reported_and_resynchronized(
+    faulty: fn() -> Value,
+    reported: &str,
+) {
+    use xenadmin_core::{ConnectionStage, Error};
+    let tokens = Arc::new(Mutex::new(Vec::new()));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = mock_overridden(override_rpc({
+        let (tokens, release) = (tokens.clone(), release.clone());
+        move |request| {
+            let (tokens, release) = (tokens.clone(), release.clone());
+            async move {
+                if request["method"] != "event.from" {
+                    return None;
+                }
+                let token = request["params"][2].as_str()?.to_owned();
+                let bootstraps = {
+                    let mut tokens = tokens.lock().unwrap();
+                    tokens.push(token.clone());
+                    tokens.iter().filter(|token| token.is_empty()).count()
+                };
+                let result = match token.as_str() {
+                    "" if bootstraps == 1 => batch("initial", "Halted"),
+                    // The host never held the faulty batch's change: a later download
+                    // shows the guest under its own name, now running.
+                    "" => batch("resynchronized", "Running"),
+                    "initial" => {
+                        release.notified().await;
+                        faulty()
+                    }
+                    _ => {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        json!({"token":token,"events":[]})
+                    }
+                };
+                Some(RpcReply::Json(json!({"result":result})))
+            }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let before = connection.wait_ready(deadline(3)).await.unwrap();
+    let guest = before.guests().next().unwrap().id;
+    let first = connection.latest().generation();
+    assert_eq!(before.revision, 1);
+    assert_eq!(before.vms[&guest].power_state, PowerState::Halted);
+    // Every snapshot read from here on is checked for the faulty batch's valid event.
+    let unapplied = |snapshot: &xenadmin_core::ConnectionSnapshot| {
+        if let Some(inventory) = snapshot.inventory() {
+            assert_ne!(
+                inventory.vms[&guest].name, FAULTY_CHANGE,
+                "the valid event of a faulty batch was applied"
+            );
+            assert_ne!(inventory.vms[&guest].power_state, PowerState::Suspended);
+        }
+    };
+
+    release.notify_one();
+    let faulted = tokio::time::timeout(deadline(5), async {
+        loop {
+            let snapshot = connection.latest();
+            unapplied(&snapshot);
+            if snapshot.failure().is_some() {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the connection must report the faulty batch");
+    assert_eq!(faulted.state(), ConnectionState::Reconnecting);
+    assert!(!faulted.is_current());
+    assert_eq!(faulted.generation(), first);
+    assert_eq!(faulted.error(), Some(reported));
+    let failure = faulted.failure().unwrap();
+    assert_eq!(failure.stage, ConnectionStage::EventStream);
+    assert_eq!(failure.message, reported);
+    assert!(
+        Arc::ptr_eq(faulted.inventory().unwrap(), &before),
+        "the inventory shown with the fault must be the one from before the faulty batch"
+    );
+    assert!(matches!(faulted.observe_vm(guest), Err(Error::Stale)));
+
+    let recovered = tokio::time::timeout(deadline(8), async {
+        loop {
+            let snapshot = connection.latest();
+            unapplied(&snapshot);
+            if snapshot.is_current() && snapshot.generation() != first {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the connection must resynchronize once the host answers normally");
+    assert_eq!(recovered.error(), None);
+    assert!(recovered.failure().is_none());
+    let inventory = recovered.inventory().unwrap();
+    assert_eq!(
+        inventory.revision, 1,
+        "the new inventory is built from a full download alone"
+    );
+    assert_eq!(inventory.pool_id, before.pool_id);
+    assert_eq!(inventory.vms[&guest].name, "XO recovery guest");
+    assert_eq!(inventory.vms[&guest].power_state, PowerState::Running);
+    tokio::time::timeout(deadline(3), async {
+        while tokens.lock().unwrap().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the new session must continue from its own download");
+    assert_eq!(
+        *tokens.lock().unwrap(),
+        ["", "initial", "", "resynchronized"],
+        "the faulty batch's token must never be sent back"
+    );
+    assert_eq!(server.logins.load(Ordering::SeqCst), 2);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_malformed_event_batch_is_not_applied_and_its_token_is_never_sent_back() {
+    a_faulty_event_batch_is_reported_and_resynchronized(
+        // A valid change, then a host record whose required UUID is a number.
+        || {
+            json!({"token":"faulty","events":[
+                guest_event(FAULTY_CHANGE, "Suspended"),
+                {"class":"host","operation":"mod","ref":"OpaqueRef:host","snapshot":{"uuid":42,"name_label":"Fixture host","address":"192.0.2.10","enabled":true}}
+            ]})
+        },
+        "Invalid XAPI response: missing required inventory field",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn an_undecodable_event_batch_is_not_applied_and_its_token_is_never_sent_back() {
+    a_faulty_event_batch_is_reported_and_resynchronized(
+        // A valid change, then an event whose own object reference is a number.
+        || {
+            json!({"token":"faulty","events":[
+                guest_event(FAULTY_CHANGE, "Suspended"),
+                {"class":"host","operation":"mod","ref":7,"snapshot":{"uuid":"22222222-2222-2222-2222-222222222222","name_label":"Fixture host","address":"192.0.2.10","enabled":true}}
+            ]})
+        },
+        "Invalid XAPI response: invalid event batch",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn an_event_batch_over_the_object_limit_is_not_applied_and_its_token_is_never_sent_back() {
+    a_faulty_event_batch_is_reported_and_resynchronized(
+        // A valid change, then enough valid networks to pass the inventory's limit of
+        // 100,000 objects on top of the three the bootstrap holds.
+        || {
+            let mut events = vec![guest_event(FAULTY_CHANGE, "Suspended")];
+            events.extend((0..100_000).map(|n| {
+                json!({"class":"network","operation":"add","ref":format!("OpaqueRef:network-{n}"),"snapshot":{"uuid":format!("{n:08x}-0000-4000-8000-000000000000"),"name_label":"Surplus network","bridge":"xenbr0"}})
+            }));
+            json!({"token":"faulty","events":events})
+        },
+        "Invalid XAPI response: inventory exceeds the object limit",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn an_event_reply_over_the_size_limit_is_not_applied_and_its_token_is_never_sent_back() {
+    a_faulty_event_batch_is_reported_and_resynchronized(
+        // One valid change whose description alone passes the 32 MiB reply limit.
+        || {
+            let mut event = guest_event(FAULTY_CHANGE, "Suspended");
+            event["snapshot"]["name_description"] = json!("x".repeat(32 * 1024 * 1024 + 1));
+            json!({"token":"faulty","events":[event]})
+        },
+        "Invalid XAPI response: response exceeds the size limit",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_slow_or_closed_observer_does_not_hold_back_snapshots_or_operation_results() {
+    use xenadmin_core::{OperationId, OperationState, PowerAction, VmCommand};
+    let log = EventLog::new();
+    let server = mock_overridden(override_rpc({
+        let log = log.clone();
+        move |request| {
+            let log = log.clone();
+            async move { log.reply(&request).await }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let initial = connection.wait_ready(deadline(3)).await.unwrap();
+    let guest = initial.guests().next().unwrap().id;
+    let generation = connection.latest().generation();
+
+    // One observer reads the first snapshot and is not polled again until the end, one is
+    // closed part-way, and a third keeps up and records every state it is shown.
+    let mut slow = connection.watch();
+    assert_eq!(slow.borrow_and_update().inventory().unwrap().revision, 1);
+    let mut closed = connection.watch();
+    assert!(closed.borrow_and_update().is_current());
+    let states = Arc::new(Mutex::new(Vec::new()));
+    let attentive = tokio::spawn({
+        let (mut receiver, states) = (connection.watch(), states.clone());
+        async move {
+            loop {
+                let state = receiver.borrow_and_update().state();
+                states.lock().unwrap().push(state);
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut revision = 1;
+    let mut change = async |name: &str, state: &str| {
+        log.push(guest_event(name, state));
+        revision += 1;
+        let inventory = inventory_at_revision(&connection, revision).await;
+        assert_eq!(inventory.revision, revision);
+        assert_eq!(inventory.vms[&guest].name, name);
+    };
+    change("First rename", "Halted").await;
+    change("Second rename", "Halted").await;
+    drop(closed);
+    change("Third rename", "Halted").await;
+    let operation = connection
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: connection.latest().observe_vm(guest).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::Succeeded);
+    change("Fourth rename", "Running").await;
+    change("Fifth rename", "Running").await;
+
+    let newest = connection.latest();
+    assert!(newest.is_current());
+    assert_eq!(newest.error(), None);
+    assert_eq!(newest.inventory().unwrap().revision, 6);
+    assert_eq!(newest.inventory().unwrap().vms[&guest].name, "Fifth rename");
+
+    // The slow observer is told of a change at once and one read brings it up to date:
+    // it is given the newest snapshot, not the five it never read.
+    assert!(slow.has_changed().unwrap());
+    tokio::time::timeout(deadline(1), slow.changed())
+        .await
+        .expect("an unread change is reported without waiting")
+        .expect("the snapshot channel stays open for a slow observer");
+    let read = slow.borrow_and_update().clone();
+    assert!(Arc::ptr_eq(&read, &newest));
+    assert!(!slow.has_changed().unwrap());
+
+    // The accepted operation's result is still answered by its handle and by the history.
+    let id = operation.latest().id;
+    assert_eq!(operation.latest().state, OperationState::Succeeded);
+    tokio::time::timeout(deadline(3), async {
+        while !connection
+            .operation_history()
+            .iter()
+            .any(|record| record.id == id && record.state == OperationState::Succeeded)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the operation history must report the accepted operation's outcome");
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
+
+    // Leaving Ready always starts a new generation with a new login and download.
+    attentive.abort();
+    let states = states.lock().unwrap().clone();
+    assert!(!states.is_empty());
+    assert!(
+        states.iter().all(|state| *state == ConnectionState::Ready),
+        "{states:?}"
+    );
+    assert_eq!(connection.latest().generation(), generation);
+    assert_eq!(server.logins.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *log.received.lock().unwrap(),
+        [
+            "",
+            "position:0",
+            "position:1",
+            "position:2",
+            "position:3",
+            "position:4",
+            "position:5"
+        ]
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_control_queued_across_a_reconnect_does_not_publish_ready_before_the_new_inventory() {
+    use xenadmin_core::{Error, OperationControl, OperationId};
+    let bootstraps = Arc::new(AtomicUsize::new(0));
+    let expire = Arc::new(tokio::sync::Notify::new());
+    let held = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = mock_overridden(override_rpc({
+        let (bootstraps, expire, held, release) = (
+            bootstraps.clone(),
+            expire.clone(),
+            held.clone(),
+            release.clone(),
+        );
+        move |request| {
+            let (bootstraps, expire, held, release) = (
+                bootstraps.clone(),
+                expire.clone(),
+                held.clone(),
+                release.clone(),
+            );
+            async move {
+                if request["method"] != "event.from" {
+                    return None;
+                }
+                if request["params"][2] != "" {
+                    // Released once, so only the first session's long poll is answered.
+                    expire.notified().await;
+                    return Some(RpcReply::Json(
+                        json!({"error":{"code":1,"message":"SESSION_INVALID","data":[]}}),
+                    ));
+                }
+                if bootstraps.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Some(RpcReply::Json(json!({"result":batch("initial","Halted")})));
+                }
+                held.notify_one();
+                release.notified().await;
+                Some(RpcReply::Json(json!({"result":batch("initial","Running")})))
+            }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let previous = connection.wait_ready(deadline(3)).await.unwrap();
+    let guest = previous.guests().next().unwrap().id;
+    let first = connection.latest().generation();
+
+    // The facade admits a control only while the snapshot is current, but the queue it
+    // fills outlives the session: what the owner has not taken when the session ends is
+    // taken by the next session before its inventory arrives. Nothing can hold the owner
+    // still, so a thread that does not yield keeps the queue's 32 places full (the owner
+    // opens the journal for each control it takes) until the facade refuses.
+    let saturated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let controls = tokio::task::spawn_blocking({
+        let (connection, saturated) = (connection.clone(), saturated.clone());
+        move || {
+            let limit = std::time::Instant::now() + deadline(5);
+            while std::time::Instant::now() < limit {
+                match connection
+                    .control_operation(OperationId::new(), OperationControl::RequestCancellation)
+                {
+                    Ok(()) => {}
+                    Err(Error::Busy) => saturated.store(true, Ordering::SeqCst),
+                    Err(Error::Stale) => return true,
+                    Err(error) => panic!("unexpected refusal: {error}"),
+                }
+            }
+            false
+        }
+    });
+    tokio::time::timeout(deadline(3), async {
+        while !saturated.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the control queue must fill");
+    expire.notify_one();
+    assert!(
+        tokio::time::timeout(deadline(6), controls)
+            .await
+            .unwrap()
+            .unwrap(),
+        "the facade must refuse controls once the session is lost"
+    );
+
+    tokio::time::timeout(deadline(6), held.notified())
+        .await
+        .expect("the client must log in again and ask for the inventory");
+    // The owner takes everything left in the queue within microseconds of starting the
+    // new session, so a quarter of a second after its inventory request is ample.
+    let mut snapshot = connection.latest();
+    let until = tokio::time::Instant::now() + deadline(1) / 4;
+    while snapshot.state() == ConnectionState::Synchronizing && tokio::time::Instant::now() < until
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        snapshot = connection.latest();
+    }
+    assert_ne!(snapshot.generation(), first);
+    assert_eq!(
+        snapshot.state(),
+        ConnectionState::Synchronizing,
+        "a queued control was answered as if the connection were ready (error {:?}; the previous generation's inventory presented: {})",
+        snapshot.error(),
+        snapshot
+            .inventory()
+            .is_some_and(|inventory| Arc::ptr_eq(inventory, &previous)),
+    );
+    assert!(!snapshot.is_current());
+    assert!(matches!(snapshot.observe_vm(guest), Err(Error::Stale)));
+
+    release.notify_one();
+    let current = tokio::time::timeout(deadline(3), async {
+        loop {
+            let snapshot = connection.latest();
+            if snapshot.is_current()
+                && snapshot.inventory().is_some_and(|inventory| {
+                    inventory.vms[&guest].power_state == PowerState::Running
+                })
+            {
+                break snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the new inventory must make the connection ready");
+    assert_ne!(current.generation(), first);
+    assert_eq!(server.logins.load(Ordering::SeqCst), 2);
+    connection.close().await;
+}
+
 #[tokio::test]
 async fn cancellation_after_reconnect_reaches_the_recovered_task() {
     use xenadmin_core::{OperationControl, OperationId, OperationState, PowerAction};

@@ -36,6 +36,13 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
   the host was enabled: the host refuses the enable while it is still booting, and the
   repeat of that call was refused by the client's own journal. The repeat is now recorded
   and followed, and the step says how often the call was repeated.
+- Removing a directory user's access left that user's open sessions working. The removal
+  now closes them once it is confirmed. Sessions of a removed group's members are not
+  closed by it; XAPI rechecks directory sessions periodically and ends them then, which
+  has not been timed on the lab.
+- A request to cancel, recheck or acknowledge an operation that was still queued when a
+  session was lost could make the connection report Ready, with the inventory from before
+  the loss, while the new session was still loading its own.
 
 ### Known issues
 

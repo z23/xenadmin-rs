@@ -33,6 +33,7 @@ enum Fault {
     Unsupported,
     NotRoot,
     CatalogueUnimplemented,
+    LogoutRefused,
 }
 type Records = Arc<Mutex<BTreeMap<String, Value>>>;
 fn pem() -> (String, String) {
@@ -84,6 +85,13 @@ async fn fixture(fault: Fault) -> (Mock, Records, Arc<Mutex<String>>) {
         }
         if let Some(class)=method.strip_suffix(".get_by_uuid")&&["pool","host","subject","role"].contains(&class){let records=r.lock().unwrap();let found=records.iter().find(|(_,v)|v["uuid"]==p[1]);return Some(RpcReply::Json(match found{Some((key,_))=>json!({"result":format!("OpaqueRef:{key}")}),None=>json!({"error":{"message":"UUID_INVALID","data":[]}})}));}
         if let Some(class)=method.strip_suffix(".get_record")&&["pool","host","subject","role"].contains(&class){let key=p[1].as_str().unwrap().strip_prefix("OpaqueRef:").unwrap();return Some(RpcReply::Json(json!({"result":r.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));}
+        if method=="session.logout_subject_identifier"{
+            let mut records=r.lock().unwrap();
+            assert!(!records.contains_key("subject"),"sessions were closed before the subject was removed");
+            if fault==Fault::LogoutRefused&&!records.contains_key("logout-refused"){records.insert("logout-refused".into(),json!(true));return Some(RpcReply::Json(json!({"error":{"message":"RBAC_PERMISSION_DENIED","data":[SECRET]}})));}
+            let mut closed=records.get("closed-sessions").cloned().unwrap_or_else(||json!([]));closed.as_array_mut().unwrap().push(p[1].clone());records.insert("closed-sessions".into(),closed);
+            return Some(RpcReply::Json(json!({"result":""})));
+        }
         if METHODS.contains(&method){writes.fetch_add(1,Ordering::SeqCst);let mut records=r.lock().unwrap();let mut result=Value::Null;
             match method{
                 "pool.enable_external_auth"=>{assert_eq!(p[1],"OpaqueRef:pool");assert_eq!(p[2],json!({"user":"directory-admin","pass":SECRET}));assert_eq!(p[3],"example.test");assert_eq!(p[4],"AD");if fault!=Fault::Partial{records.get_mut("host").unwrap()["external_auth_type"]=json!("AD");records.get_mut("host").unwrap()["external_auth_service_name"]=p[3].clone();}},
@@ -366,7 +374,7 @@ async fn subject_creation_requires_explicit_rbac_and_verifies_no_automatic_privi
 }
 #[tokio::test]
 async fn subject_roles_use_exact_reviewed_role_set_and_reject_leaf_permissions() {
-    let (mock, _, _) = fixture(Fault::None).await;
+    let (mock, records, _) = fixture(Fault::None).await;
     let dir = tempfile::tempdir().unwrap();
     let b = Backend::with_state_directory(dir.path().into()).unwrap();
     let c = connect(&mock, &b, false).await;
@@ -431,7 +439,56 @@ async fn subject_roles_use_exact_reviewed_role_set_and_reject_leaf_permissions()
         .unwrap(),
     )
     .await;
-    assert_eq!(r.state, OperationState::Succeeded);
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    // The removed subject's open sessions are closed once, after the removal; the refused
+    // removal before it closed nothing.
+    assert_eq!(
+        records.lock().unwrap()["closed-sessions"],
+        json!(["S-fixture-existing"])
+    );
+    let methods = mock.methods.lock().unwrap().clone();
+    let at = |name: &str| methods.iter().rposition(|m| m == name).unwrap();
+    assert!(at("subject.destroy") < at("session.logout_subject_identifier"));
+}
+#[tokio::test]
+async fn a_refused_session_close_after_a_removal_is_reported_and_repeated_by_a_recheck_alone() {
+    let (mock, records, _) = fixture(Fault::LogoutRefused).await;
+    let dir = tempfile::tempdir().unwrap();
+    let b = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &b, false).await;
+    let r = finished(
+        &c.submit_resource(
+            OperationId::new(),
+            plain(
+                &c,
+                SecurityOp::RemoveSubject {
+                    subject: SubjectId::parse(SUBJECT).unwrap(),
+                    expected_identifier: "S-fixture-existing".into(),
+                    expected_roles: vec![],
+                },
+            ),
+        )
+        .unwrap(),
+    )
+    .await;
+    // The subject is gone and its sessions are not closed: neither a success nor a failure.
+    assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+    assert!(
+        r.detail.contains("refused to close its open sessions"),
+        "{}",
+        r.detail
+    );
+    privacy(&r, dir.path());
+    assert!(!records.lock().unwrap().contains_key("subject"));
+    assert!(!records.lock().unwrap().contains_key("closed-sessions"));
+    // The recheck repeats the session close and never the removal.
+    let r = recheck(&c, &r).await;
+    assert_eq!(r.state, OperationState::Succeeded, "{}", r.detail);
+    assert_eq!(mutations(&mock), 1);
+    assert_eq!(
+        records.lock().unwrap()["closed-sessions"],
+        json!(["S-fixture-existing"])
+    );
 }
 #[tokio::test]
 async fn certificate_install_reset_recheck_fingerprints_and_never_persist_key() {

@@ -1454,7 +1454,7 @@ async fn run(
                                     if !resource_counts.contains_key(&id)&&resource_rechecks.remove(&id) {
                                         match operations::Journal::open(&directory).and_then(|journal|journal.resource_load(id)) {
                                             Ok(Some(record)) if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_))=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts,&credentials),
-                                            Err(error)=>publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update),
+                                            Err(error)=>publish(&sender,generation,session_state(&token),&last_inventory,Some(error.to_string()),last_update),
                                             _=>{},
                                         }
                                     }
@@ -1469,7 +1469,7 @@ async fn run(
                                     if !worker_counts.contains_key(&id) && vm_rechecks.remove(&id) {
                                         match operations::Journal::open(&directory).and_then(|journal|journal.load(id)) {
                                             Ok(Some(record)) if record.batch_parent.is_none() && !record.state.terminal() && record.can_recheck()=>start_worker(MutationRequest::tracking(record),None,&mut workers,&mut worker_counts),
-                                            Err(error)=>publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update),
+                                            Err(error)=>publish(&sender,generation,session_state(&token),&last_inventory,Some(error.to_string()),last_update),
                                             _=>{},
                                         }
                                     }
@@ -1496,7 +1496,7 @@ async fn run(
                             if let Some(inventory)=&last_inventory {
                                 match operations::Journal::open(&directory).and_then(|journal|journal.resource_history(inventory.pool_id)) {
                                     Ok(rows)=>{for record in rows {merge_resource_record(&mut resource_records,record);}publish_resource_history(&resource_history,&mut resource_records);},
-                                    Err(error)=>{journal_error=Some(error.to_string());publish(&sender,generation,ConnectionState::Ready,&last_inventory,journal_error.clone(),last_update);continue;}
+                                    Err(error)=>{journal_error=Some(error.to_string());publish(&sender,generation,session_state(&token),&last_inventory,journal_error.clone(),last_update);continue;}
                                 }
                                 match operations::Journal::open(&directory).and_then(|journal|journal.history()) {
                                     Ok(rows)=>{
@@ -1513,7 +1513,7 @@ async fn run(
                                     },
                                     Err(error)=>{
                                         journal_error=Some(error.to_string());
-                                        publish(&sender,generation,ConnectionState::Ready,&last_inventory,journal_error.clone(),last_update);
+                                        publish(&sender,generation,session_state(&token),&last_inventory,journal_error.clone(),last_update);
                                     },
                                 }
                             }
@@ -1549,7 +1549,7 @@ async fn run(
                                         }
                                         merge_resource_record(&mut resource_records,record);publish_resource_history(&resource_history,&mut resource_records);Ok::<_,Error>(())
                                     })();
-                                    if let Err(error)=result {publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update);}
+                                    if let Err(error)=result {publish(&sender,generation,session_state(&token),&last_inventory,Some(error.to_string()),last_update);}
                                 }
                                 Request::Submit(request)=>{
                                     if operations::Journal::open(&directory).and_then(|j|j.workflow_owner(request.record.id)).map_or(true,|p|p.is_some()) {request.reject(Error::OperationConflict);}
@@ -1679,7 +1679,7 @@ async fn run(
                                         Ok::<_,Error>(())
                                     })();
                                     if let Err(error)=result {
-                                        publish(&sender,generation,ConnectionState::Ready,&last_inventory,Some(error.to_string()),last_update);
+                                        publish(&sender,generation,session_state(&token),&last_inventory,Some(error.to_string()),last_update);
                                     }
                                 }
                             }
@@ -2098,6 +2098,18 @@ async fn next_events(
     token: String,
 ) -> Result<crate::xapi::EventBatch, Error> {
     session.events(&token).await
+}
+
+/// The state of a session inside its event loop: synchronizing until the first inventory
+/// of its generation has been applied, ready after it. A refusal reported from the loop must
+/// carry this state: reporting Ready before that inventory would present the previous
+/// generation's inventory as current.
+fn session_state(token: &str) -> ConnectionState {
+    if token.is_empty() {
+        ConnectionState::Synchronizing
+    } else {
+        ConnectionState::Ready
+    }
 }
 
 fn publish(

@@ -287,10 +287,33 @@ pub(super) async fn verify(
                 "The server assigned unexpected roles; inspect subject access before acknowledging",
             )?;
         }
-        PoolSecurityOperation::RemoveSubject { subject, .. } => {
+        PoolSecurityOperation::RemoveSubject {
+            subject,
+            expected_identifier,
+            ..
+        } => {
             match read(session, "subject", subject.uuid()).await {
                 Err(Error::Api(code)) if code == "UUID_INVALID" => {}
                 Ok(_) => return Err(Error::SecurityPrerequisite("The subject still has access")),
+                Err(e) => return Err(e),
+            }
+            // A removed subject's open sessions keep their role until the host next checks
+            // them. The reference client closes them before the removal, which a client that
+            // signs in again at once survives; closing them after it leaves nothing to sign
+            // in with. The call closes sessions only, so a recheck may repeat it.
+            match session
+                .call(
+                    "session.logout_subject_identifier",
+                    vec![json!(expected_identifier)],
+                )
+                .await
+            {
+                Ok(_) => {}
+                Err(Error::Api(_)) => {
+                    return Err(Error::SecurityPrerequisite(
+                        "The subject's access was removed, but the host refused to close its open sessions. They last until the host next checks its sessions",
+                    ));
+                }
                 Err(e) => return Err(e),
             }
         }
