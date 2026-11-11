@@ -10,6 +10,9 @@ use vnc::{VncConnector, VncEncoding, VncEvent, X11Event};
 
 #[path = "console_clipboard.rs"]
 mod clipboard;
+#[path = "console_typing.rs"]
+mod typing;
+pub use typing::{MAX_TYPED_TEXT, TypedText};
 
 const MAX_PIXELS: usize = 8_294_400;
 
@@ -41,6 +44,8 @@ pub struct ConsoleSnapshot {
     pub guest_clipboard: Option<Arc<str>>,
     pub clipboard_utf8: bool,
     pub extended_keys: bool,
+    /// Characters of a typed text that have not been sent yet.
+    pub typing: usize,
 }
 #[derive(Clone, Debug)]
 pub enum ConsoleInput {
@@ -55,6 +60,9 @@ pub enum ConsoleInput {
     },
     KeyChord(Vec<u32>),
     Clipboard(String),
+    /// Types the text as key presses, a character at a time. Any later key input, another
+    /// text or `ReleaseAll` stops what is left of it.
+    TypeText(String),
     Pointer {
         x: u16,
         y: u16,
@@ -76,6 +84,9 @@ impl Console {
     pub fn input(&self, event: ConsoleInput) -> Result<(), Error> {
         if let ConsoleInput::Clipboard(text) = &event {
             clipboard::validate(text, self.latest().clipboard_utf8)?;
+        }
+        if let ConsoleInput::TypeText(text) = &event {
+            TypedText::review(text)?;
         }
         if let ConsoleInput::KeyChord(keys) = &event
             && keys.len() > 16
@@ -126,6 +137,7 @@ pub(crate) fn channel(
         guest_clipboard: None,
         clipboard_utf8: false,
         extended_keys: false,
+        typing: 0,
     }));
     let (input, inputs) = mpsc::channel(128);
     (
@@ -154,6 +166,7 @@ impl ConsoleRequest {
             guest_clipboard: None,
             clipboard_utf8: false,
             extended_keys: false,
+            typing: 0,
         }));
     }
     pub(crate) async fn run(
@@ -256,11 +269,24 @@ impl ConsoleRequest {
         let mut snapshot = self.sender.borrow().as_ref().clone();
         let mut refresh = tokio::time::interval(Duration::from_millis(33));
         refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // A text being typed: what is left of it, sent a character at a time.
+        let mut typed: std::collections::VecDeque<typing::Stroke> = Default::default();
+        let mut pace = tokio::time::interval(typing::PACE);
+        pace.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let result = 'running: loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => break Ok(()),
                 input = self.inputs.recv() => {
                     let Some(input) = input else { break Ok(()); };
+                    // Keys from the person, another text or a release stop a text that is
+                    // still being typed. The pointer and the clipboard do not.
+                    if !typed.is_empty()
+                        && !matches!(input, ConsoleInput::Pointer { .. } | ConsoleInput::Clipboard(_))
+                    {
+                        typed.clear();
+                        snapshot.typing = 0;
+                        self.sender.send_replace(Arc::new(snapshot.clone()));
+                    }
                     let result = match input {
                         ConsoleInput::Key {keysym, down} => {
                             if down { held.insert(u64::from(keysym), (keysym, None)); } else { held.remove(&u64::from(keysym)); }
@@ -281,6 +307,18 @@ impl ConsoleRequest {
                             result
                         }
                         ConsoleInput::Clipboard(text) => clipboard.send(&client, text).await,
+                        ConsoleInput::TypeText(text) => {
+                            for (_, (symbol, code)) in std::mem::take(&mut held) { let _ = client.input(key_event(symbol, code, false)).await; }
+                            // The handle refused a text that cannot be typed, so this is a
+                            // text that can be; a failure here types nothing.
+                            if let Ok(strokes) = typing::strokes(&text) {
+                                typed = strokes.into();
+                                snapshot.typing = typed.len();
+                                self.sender.send_replace(Arc::new(snapshot.clone()));
+                                pace.reset();
+                            }
+                            Ok(())
+                        }
                         ConsoleInput::Pointer {x,y,buttons} => client.input(X11Event::PointerEvent((x,y,buttons).into())).await,
                         ConsoleInput::ReleaseAll => {
                             for (_, (symbol, code)) in std::mem::take(&mut held) { let _ = client.input(key_event(symbol, code, false)).await; }
@@ -288,6 +326,19 @@ impl ConsoleRequest {
                         }
                     };
                     if result.is_err() { break Err(Error::ConsoleProtocol); }
+                }
+                _ = pace.tick(), if !typed.is_empty() => {
+                    // Shift goes down and up within one character, so stopping between
+                    // characters never leaves a key held.
+                    if let Some(stroke) = typed.pop_front() {
+                        for (keysym, down) in stroke.events() {
+                            if client.input(key_event(keysym, None, down)).await.is_err() {
+                                break 'running Err(Error::ConsoleProtocol);
+                            }
+                        }
+                        snapshot.typing = typed.len();
+                        self.sender.send_replace(Arc::new(snapshot.clone()));
+                    }
                 }
                 _ = refresh.tick() => {
                     let mut changed = false;

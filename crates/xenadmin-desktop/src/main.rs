@@ -2636,6 +2636,7 @@ fn main() -> std::process::ExitCode {
             ("console-recovery", console_view::recovery_scene),
             ("console-frame", console_view::frame_scene),
             ("console-actual-size", console_view::actual_size_scene),
+            ("console-typing-review", console_view::typing_scene),
             ("multiple-consoles", console_windows::multiple_scene),
             ("guest-connections", |s| external_tools::scene(s, false)),
             ("external-tools", |s| external_tools::scene(s, true)),

@@ -109,6 +109,7 @@ pub(super) fn scene(s: &mut State) {
         guest_clipboard: None,
         clipboard_utf8: false,
         extended_keys: false,
+        typing: 0,
     }));
 }
 

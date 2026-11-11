@@ -170,6 +170,7 @@ mod tests {
             guest_clipboard: None,
             clipboard_utf8: false,
             extended_keys: false,
+            typing: 0,
         }));
         let mut runtime = rune::Runtime::new(
             state,

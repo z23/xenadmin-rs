@@ -642,6 +642,86 @@ async fn authenticated_console_roundtrip(host: bool) {
     })
     .await
     .unwrap();
+
+    // A typed text arrives as the key presses of a US keyboard, a character at a time,
+    // with Shift held around the characters that need it and a line break as Return.
+    const SHIFT: u32 = 0xffe1;
+    let arrived = |from: usize, count: usize| {
+        let keys = keys.clone();
+        async move {
+            tokio::time::timeout(deadline(8), async {
+                while keys.lock().unwrap().len() < from + count {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the typed keys arrive");
+        }
+    };
+    let before = keys.lock().unwrap().len();
+    console
+        .input(ConsoleInput::TypeText("aB!\r\n".into()))
+        .unwrap();
+    let expected = [
+        (0x61, true),
+        (0x61, false),
+        (SHIFT, true),
+        (0x42, true),
+        (0x42, false),
+        (SHIFT, false),
+        (SHIFT, true),
+        (0x21, true),
+        (0x21, false),
+        (SHIFT, false),
+        (0xff0d, true),
+        (0xff0d, false),
+    ];
+    arrived(before, expected.len()).await;
+    assert_eq!(keys.lock().unwrap()[before..], expected);
+    tokio::time::timeout(deadline(3), async {
+        while console.latest().typing != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the snapshot reports the text finished");
+
+    // A text with a character no US key types is refused whole, and nothing is sent.
+    assert!(matches!(
+        console.input(ConsoleInput::TypeText("caf\u{e9}".into())),
+        Err(xenadmin_core::Error::ConsoleTextUntypable)
+    ));
+
+    // A release stops a longer text between two characters: nothing more arrives, and
+    // every Shift that went down came up.
+    let before = keys.lock().unwrap().len();
+    console
+        .input(ConsoleInput::TypeText("X".repeat(200)))
+        .unwrap();
+    arrived(before, 8).await;
+    assert!(console.latest().typing > 0);
+    console.input(ConsoleInput::ReleaseAll).unwrap();
+    tokio::time::timeout(deadline(3), async {
+        while console.latest().typing != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the release stops the text");
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let stopped = keys.lock().unwrap()[before..].to_vec();
+    assert!(stopped.len() < 200 * 4, "{} key events", stopped.len());
+    assert_eq!(stopped.len() % 4, 0, "the text stopped inside a character");
+    let count = |key: (u32, bool)| stopped.iter().filter(|k| **k == key).count();
+    assert_eq!(count((SHIFT, true)), count((SHIFT, false)));
+    assert_eq!(count((0x58, true)), count((0x58, false)));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(keys.lock().unwrap().len(), before + stopped.len());
+    assert!(
+        !keys.lock().unwrap().contains(&(0xe9, true)),
+        "the refused text sent a key"
+    );
+
     console.close();
     connection.close().await;
     let _ = tokio::time::timeout(deadline(3), rfb).await;

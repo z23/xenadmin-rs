@@ -195,6 +195,7 @@ pub use connection::{
 };
 pub use console::{
     Console, ConsoleCursor, ConsoleFrame, ConsoleInput, ConsoleSnapshot, ConsoleState,
+    MAX_TYPED_TEXT, TypedText,
 };
 pub use model::*;
 pub use operations::{
@@ -304,6 +305,14 @@ pub enum Error {
     ConsoleClipboardUnsupported,
     #[error("Clipboard text exceeds the console size limit")]
     ConsoleClipboardTooLarge,
+    #[error("There is no text to type")]
+    ConsoleTextEmpty,
+    #[error(
+        "Only text a US keyboard types directly can be typed as keys: letters, digits, common punctuation, Tab and line breaks. This text has other characters, so none of it was typed"
+    )]
+    ConsoleTextUntypable,
+    #[error("This text is longer than the 2,000 characters that can be typed as keys at once")]
+    ConsoleTextTooLong,
     #[error("Enter valid VM property values; CPU and memory limits must be ordered and positive")]
     InvalidSettings,
     #[error("Shut down the VM before changing CPU, boot or memory limits")]

@@ -496,6 +496,7 @@ fn sample_frame(s: &mut State, tint: u8) {
         guest_clipboard: None,
         clipboard_utf8: false,
         extended_keys: false,
+        typing: 0,
     }));
 }
 pub(super) fn multiple_scene(s: &mut State) {

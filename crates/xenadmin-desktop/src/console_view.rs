@@ -31,6 +31,14 @@ pub(super) struct ConsoleUi {
     wheel: [f32; 2],
     message: Option<String>,
     export: export::Export,
+    typed: Option<PendingText>,
+}
+/// Clipboard text that waits for the person to confirm that it is typed as keys. It
+/// belongs to the console that was open when it was read, and it is never displayed.
+struct PendingText {
+    serial: u64,
+    text: zeroize::Zeroizing<String>,
+    review: xenadmin_core::TypedText,
 }
 impl ConsoleUi {
     pub fn target(&self) -> Option<&ConsoleTarget> {
@@ -92,6 +100,7 @@ pub(super) fn recovery_scene(s: &mut State) {
         guest_clipboard: None,
         clipboard_utf8: false,
         extended_keys: false,
+        typing: 0,
     }));
 }
 
@@ -130,9 +139,15 @@ pub(super) fn frame_scene(s: &mut State) {
         guest_clipboard: None,
         clipboard_utf8: false,
         extended_keys: true,
+        typing: 0,
     }));
 }
 /// The same frame at its own size inside the panning view.
+/// The console with clipboard text waiting to be typed as keys.
+pub(super) fn typing_scene(s: &mut State) {
+    frame_scene(s);
+    arm_typing(s, "echo first line\necho second line\n");
+}
 pub(super) fn actual_size_scene(s: &mut State) {
     frame_scene(s);
     s.console_ui.actual_size = true;
@@ -162,6 +177,56 @@ pub(super) fn release(s: &mut State) {
     s.console_buttons = 0;
     s.console_keys.clear();
     s.console_ui.wheel = [0.0; 2];
+}
+/// Reviews clipboard text for typing as keys and asks for confirmation, or says why it
+/// cannot be typed.
+fn arm_typing(s: &mut State, text: &str) {
+    match xenadmin_core::TypedText::review(text) {
+        Ok(review) => {
+            s.console_ui.typed = Some(PendingText {
+                serial: s.console_ui.serial,
+                text: zeroize::Zeroizing::new(text.to_owned()),
+                review,
+            });
+            s.console_ui.message = None;
+        }
+        Err(error) => {
+            s.console_ui.typed = None;
+            s.console_ui.message = Some(error.to_string());
+        }
+    }
+}
+/// The question put before a text is typed. It gives the amount, never the text.
+fn typing_prompt(review: xenadmin_core::TypedText, target: &str) -> String {
+    let characters = match review.characters {
+        1 => "1 character".to_owned(),
+        n => format!("{n} characters"),
+    };
+    let breaks = match review.line_breaks {
+        0 => String::new(),
+        1 => ", with 1 line break sent as Enter,".to_owned(),
+        n => format!(", with {n} line breaks sent as Enter,"),
+    };
+    format!(
+        "Type {characters}{breaks} into {target} as key presses? The text is not shown here. Punctuation comes out as written only if the guest uses a US keyboard layout."
+    )
+}
+fn confirm_typing(s: &mut State) {
+    let Some(pending) = s.console_ui.typed.take() else {
+        return;
+    };
+    if pending.serial != s.console_ui.serial {
+        return;
+    }
+    release(s);
+    if !recovery::input_ready(s) {
+        s.console_ui.message = Some("The console is not connected; nothing was typed.".into());
+        return;
+    }
+    s.console_ui.message = Some(
+        "Typing. A key press, Release input or leaving the console stops what is left.".into(),
+    );
+    send(s, ConsoleInput::TypeText(pending.text.to_string()));
 }
 fn send(s: &mut State, input: ConsoleInput) {
     if !recovery::input_ready(s) {
@@ -522,6 +587,22 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .key("send-console-clipboard"),
                 )
                 .child(
+                    Button::new("Type clipboard as keys")
+                        .disabled(!connected)
+                        .on_press_tx(|s: &mut State, tx| {
+                            release(s);
+                            let serial = s.console_ui.serial;
+                            tx.read_clipboard(move |s: &mut State, clipboard, _| {
+                                if s.console.is_none() || s.console_ui.serial != serial {
+                                    return;
+                                }
+                                arm_typing(s, clipboard.text());
+                            });
+                        })
+                        .build(k)
+                        .key("type-console-clipboard"),
+                )
+                .child(
                     Button::new(if host_console {
                         "Copy host clipboard"
                     } else {
@@ -548,10 +629,60 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                     .key("copy-console-clipboard"),
                 ),
         );
+    if let Some(pending) = s
+        .console_ui
+        .typed
+        .as_ref()
+        .filter(|pending| pending.serial == s.console_ui.serial)
+    {
+        let target = s
+            .console_ui
+            .target
+            .as_ref()
+            .map_or("this console", |target| target.name.as_str());
+        result = result.child(
+            col()
+                .gap(8.0)
+                .child(caption(typing_prompt(pending.review, target), k).wrap())
+                .child(
+                    row()
+                        .gap(8.0)
+                        .child(
+                            Button::new("Type it")
+                                .variant(ButtonVariant::Contrast)
+                                .disabled(!connected)
+                                .on_press(confirm_typing)
+                                .build(k)
+                                .key("confirm-console-typing"),
+                        )
+                        .child(
+                            Button::new("Cancel")
+                                .variant(ButtonVariant::Outline)
+                                .on_press(|s: &mut State| s.console_ui.typed = None)
+                                .build(k)
+                                .key("cancel-console-typing"),
+                        ),
+                )
+                .role("group")
+                .label("Type clipboard text as keys")
+                .key("console-typing-review"),
+        );
+    }
     if let Some(message) = &s.console_ui.message {
         result = result.child(caption(message, k).wrap());
     }
-    result.child(canvas).child(caption("Click the console to type. Focus loss releases input. In Actual size, Shift+wheel pans the view. Clipboard exchange is experimental: it needs guest tools that support it and has not worked with the Linux guests tried. Text is limited to 256 KiB.", k).wrap())
+    if let Some(left) = s
+        .console_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.typing)
+        .filter(|left| *left > 0)
+    {
+        result = result.child(
+            caption(format!("Typing as keys: {left} characters left."), k)
+                .key("console-typing-progress"),
+        );
+    }
+    result.child(canvas).child(caption("Click the console to type. Focus loss releases input. In Actual size, Shift+wheel pans the view. Clipboard exchange is experimental: it needs guest tools that support it and has not worked with the Linux guests tried. Typing the clipboard as keys works with any guest, for up to 2,000 characters of plain US-keyboard text.", k).wrap())
 }
 fn wheel_steps(remainder: &mut f32, delta: f32, precise: bool) -> i32 {
     if !delta.is_finite() || delta == 0.0 {
@@ -867,6 +998,86 @@ mod tests {
         recovery_scene(&mut s);
         assert!(!s.console_ui.actual_size);
         assert!(s.console_ui.recovery.enabled);
+    }
+    #[test]
+    fn clipboard_text_is_typed_only_after_a_review_that_never_shows_it() {
+        let shows = |state: State, key: &str| {
+            let mut runtime = rune::Runtime::new(
+                state,
+                crate::view,
+                (1440.0, 900.0),
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            runtime.frame(0.0);
+            let found = runtime.find(key).is_some();
+            (found, runtime.state)
+        };
+        let mut s = crate::init();
+        frame_scene(&mut s);
+        let (review, mut s) = shows(s, "console-typing-review");
+        assert!(!review, "nothing is pending at first");
+
+        // Text a US keyboard cannot type is refused with the reason, and nothing is pending.
+        arm_typing(&mut s, "caf\u{e9} au lait");
+        assert!(s.console_ui.typed.is_none());
+        assert!(
+            s.console_ui
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("US keyboard")),
+            "{:?}",
+            s.console_ui.message
+        );
+
+        // Typable text waits for confirmation; the review gives the amount and not the text.
+        arm_typing(&mut s, "Secret-Passw0rd!\r\nsecond line\n");
+        let pending = s.console_ui.typed.as_ref().expect("the text is pending");
+        let prompt = typing_prompt(pending.review, "Lab guest");
+        assert!(
+            prompt.starts_with(
+                "Type 29 characters, with 2 line breaks sent as Enter, into Lab guest as key presses?"
+            ),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("Secret") && !prompt.contains("second"));
+        assert_eq!(
+            typing_prompt(xenadmin_core::TypedText::review("x").unwrap(), "a host"),
+            typing_prompt(
+                xenadmin_core::TypedText {
+                    characters: 1,
+                    line_breaks: 0
+                },
+                "a host"
+            )
+        );
+        assert!(
+            typing_prompt(xenadmin_core::TypedText::review("x").unwrap(), "a host")
+                .starts_with("Type 1 character into a host as key presses?")
+        );
+        let (review, mut s) = shows(s, "console-typing-review");
+        assert!(review, "the review is on screen");
+
+        // The pending text belongs to the console it was read for.
+        s.console_ui.serial += 1;
+        let (review, mut s) = shows(s, "console-typing-review");
+        assert!(!review, "another console does not offer the earlier text");
+        confirm_typing(&mut s);
+        assert!(
+            s.console_ui.typed.is_none(),
+            "and confirming it types nothing"
+        );
+
+        // Cancelling or confirming ends the review.
+        arm_typing(&mut s, "ls -la");
+        s.console_ui.typed = None;
+        let (review, mut s) = shows(s, "console-typing-review");
+        assert!(!review);
+        arm_typing(&mut s, "ls -la");
+        confirm_typing(&mut s);
+        assert!(s.console_ui.typed.is_none());
     }
     #[test]
     fn a_repeat_after_release_does_not_press_the_key_again() {

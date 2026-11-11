@@ -11,6 +11,16 @@ Nothing has been published. Versions up to 0.17.0 are local development checkpoi
 
 Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.0.
 
+### Added
+
+- "Type clipboard as keys" in the console types the clipboard's text into the guest or
+  host as key presses, so pasting works with any guest and in a text console. It asks
+  first, giving the number of characters and line breaks and never the text; line breaks
+  are sent as Enter. It takes up to 2,000 characters of what a US keyboard types
+  directly, and refuses a text with anything else whole. A key press, Release input or
+  leaving the console stops what is left. Punctuation comes out as written only if the
+  guest uses a US keyboard layout.
+
 ### Changed
 
 - Buttons have a visible fill or edge and follow one scheme: outlined buttons open a view
@@ -65,7 +75,9 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
   supported.
 - Clipboard exchange with a guest is experimental. It needs guest tools that implement
   it, did not work with the Linux guests tried, and is unverified with a guest that has
-  such tools.
+  such tools. Typing the clipboard as keys does not depend on it.
+- Nobody has yet used the "Type clipboard as keys" button on a real seat; the typing
+  itself reached a lab guest exactly.
 - Only XCP-ng 8.3.0 has been exercised, on nested virtualization. Most workflows have a
   recorded successful path and no recorded failure or interruption path.
 - Not verified: the wheel's direction and dragging in a graphical guest (the operator
