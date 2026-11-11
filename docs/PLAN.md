@@ -289,7 +289,7 @@ list below is the minimum for that, with its state on 2026-11-11.
 | Item | State |
 | --- | --- |
 | Draw the supported boundary: the core with live evidence (connections and trust, inventory, power, console, snapshots, metrics, activity) as supported, the rest labelled experimental; settle the four product decisions and the generated-bindings deferral | Open: the operator's decision |
-| Failure paths for that core on the lab | Recorded: a clean shutdown, a start, a snapshot create and a restore interrupted by a client restart; a coordinator power loss; a console across a reboot and a migration. Open: a console dropped while input is held, an XO outage caused by the network, a session that expires without an outage |
+| Failure paths for that core on the lab | Recorded: a clean shutdown, a start, a snapshot create and a restore interrupted by a client restart; a coordinator power loss; a console across a reboot and a migration; XO unreachable with its VM running, by a detached NIC. Open: a console dropped while input is held, a session that expires without an outage |
 | Tests for the core scenarios that had none | V02 and V10 now have fixture tests and V06 and V20 their missing assertions; V03, V08 and V09 remain partial ([traceability](reports/2026-11-11-verification-traceability.md)) |
 | Explain the two journal anomalies | Done: finding 23 was the client refusing its own repeated enable and is fixed and rerun live; the missing restore record was the scenario closing before admission |
 | Clean-machine installs with software rendering | Done on untouched Ubuntu 24.04 and Arch images ([report](reports/2026-11-11-clean-install.md)); nobody has used the window there |

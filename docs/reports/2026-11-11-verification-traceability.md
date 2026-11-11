@@ -64,7 +64,7 @@ through the packaged desktop client" row).
 | Step | Result | Caveat |
 | --- | --- | --- |
 | 1. Record pool, account, VM UUID and allowed operations | Recorded in the run record | The account is the lab's root account |
-| 2. Make XO unavailable while keeping host access | The XO VM was shut down and XO refused connections | A shutdown, not a network fault with XO still running |
+| 2. Make XO unavailable while keeping host access | The XO VM was shut down and XO refused connections | A shutdown. A later harness scenario detached the running appliance's NIC instead and repaired it through the direct connection; the packaged desktop was not used for that |
 | 3. Cold-start the installed application | The AppImage, on an empty state directory, with a member endpoint typed by hand | On the development workstation in a nested compositor, not a clean system |
 | 4. Authenticate, wait for inventory, locate the XO VM by UUID | Session-only login; the first eight characters of the UUID left that one VM | |
 | 5. Start it and follow the result | One Start operation, Succeeded; VM running; XO answering again within 40 s | |

@@ -18963,6 +18963,232 @@ async fn lab_xo_vm_recovery_gate() {
     }
 }
 
+/// Polls a fixed address until the XO web endpoint answers (or stops answering, when
+/// `expect` is false) within `seconds`.
+async fn xo_answers_at(address: &str, seconds: u64, expect: bool) -> Value {
+    let started = std::time::Instant::now();
+    let mut last = json!(null);
+    let ok = tokio::time::timeout(deadline(seconds), async {
+        loop {
+            last = xo_probe(address).await;
+            if last["reachable"] == expect {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    json!({"as_expected": ok, "after_ms": started.elapsed().as_millis() as u64, "address": address, "probe": last})
+}
+
+/// M2 recovery gate, P11-09, P07-03: XO made unreachable by a network fault while its VM
+/// keeps running. The appliance's only NIC is disconnected, so XO stops answering although
+/// the VM is Running. Through the direct host connection alone the client then locates the
+/// XO VM, shows it Running with its NIC detached, opens its console, reconnects the NIC and
+/// waits for XO to answer again. A reboot through the client is the fallback when the guest
+/// does not take its address back; which of the two restored XO is recorded.
+#[tokio::test]
+#[ignore]
+async fn lab_xo_network_fault_is_diagnosed_and_repaired_through_the_direct_connection() {
+    use xenadmin_core::{DeviceOperation, PowerAction, PowerState};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let find_xo = |c: &Connection| {
+        c.latest().inventory().and_then(|i| {
+            i.guests()
+                .find(|v| v.name == "XOA" && !v.is_template)
+                .map(|v| (v.id, v.description.clone(), v.power_state.clone()))
+        })
+    };
+    let Some((xo, _, power_state)) = find_xo(&c) else {
+        eprintln!("no XOA appliance in the lab pool; run lab_xo_vm_recovery_gate first");
+        c.close().await;
+        return;
+    };
+    let mut steps = Vec::new();
+    let mut power = Vec::new();
+    if power_state == PowerState::Halted {
+        power.push(power_to(&c, xo, PowerAction::Start, PowerState::Running).await);
+    }
+    let up = xo_reachable_within(&c, xo, 900, true).await;
+    let address = up["address"].as_str().map(str::to_owned);
+    note(
+        &mut steps,
+        json!({"step": "XO answers over HTTP before the fault", "read_back": up["as_expected"], "probe": up}),
+    );
+    let address = address.expect("the appliance reports an address while XO answers");
+    let vif_view = |c: &Connection, vif: xenadmin_core::VifId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.vifs.get(&vif).cloned())
+    };
+    let nics: Vec<_> = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(xo))
+        .cloned()
+        .collect();
+    assert_eq!(nics.len(), 1, "the appliance should carry exactly one NIC");
+    let vif = nics[0].id;
+    let hotplug = nics[0]
+        .allowed_operations
+        .as_deref()
+        .is_some_and(|ops| ops.iter().any(|o| o == "unplug"));
+    note(
+        &mut steps,
+        json!({"step": "the appliance's NIC", "read_back": nics[0].currently_attached == Some(true) && hotplug,
+               "device": nics[0].device, "currently_attached": nics[0].currently_attached, "allowed_operations": nics[0].allowed_operations}),
+    );
+    assert!(hotplug, "the appliance does not advertise a NIC unplug");
+
+    // The fault: the NIC is disconnected while the appliance runs.
+    let mut fault = device_op(&c, xo, DeviceOperation::UnplugNic { vif }, 180).await;
+    fault["step"] = json!("fault: disconnect the appliance's NIC while it runs");
+    let detached = settle(60, || {
+        vif_view(&c, vif).is_some_and(|v| v.currently_attached == Some(false))
+    })
+    .await;
+    fault["read_back"] = json!(detached);
+    note(&mut steps, fault);
+    let down = xo_answers_at(&address, 120, false).await;
+    note(
+        &mut steps,
+        json!({"step": "XO unreachable at its address with its VM running", "read_back": down["as_expected"], "probe": down}),
+    );
+
+    // Diagnosis through the direct connection only.
+    let located = find_xo(&c);
+    let nic = vif_view(&c, vif);
+    note(
+        &mut steps,
+        json!({"step": "locate the XO VM and read its state with XO unreachable",
+               "read_back": located.as_ref().is_some_and(|(_, d, p)| d.contains("Xen Orchestra") && *p == PowerState::Running)
+                   && nic.as_ref().is_some_and(|v| v.currently_attached == Some(false))
+                   && c.latest().state() == xenadmin_core::ConnectionState::Ready,
+               "connection": format!("{:?}", c.latest().state()), "name": "XOA",
+               "description": located.as_ref().map(|x| x.1.clone()), "power_state": located.as_ref().map(|x| format!("{:?}", x.2)),
+               "nic_currently_attached": nic.as_ref().and_then(|v| v.currently_attached),
+               "reported_address": xo_address(&c, xo)}),
+    );
+    let (console_state, frame_file) = match c
+        .latest()
+        .observe_vm(xo)
+        .map_err(|e| e.to_string())
+        .and_then(|target| c.open_console(target).map_err(|e| e.to_string()))
+    {
+        Ok(console) => {
+            let got = tokio::time::timeout(deadline(120), async {
+                loop {
+                    let snapshot = console.latest();
+                    if snapshot.state == xenadmin_core::ConsoleState::Connected
+                        && snapshot.frame.is_some()
+                    {
+                        return true;
+                    }
+                    if matches!(snapshot.state, xenadmin_core::ConsoleState::Failed(_)) {
+                        return false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap_or(false);
+            let digest = console
+                .latest()
+                .frame
+                .as_ref()
+                .map(|frame| frame_digest(frame))
+                .unwrap_or_default();
+            let saved = got
+                .then(|| save_frame(&lab, &console, "xo-vm-console-network-fault"))
+                .flatten();
+            let state = format!("{:?}", console.latest().state);
+            console.close();
+            (
+                json!({"connected": got, "state": state, "frame_digest": digest}),
+                saved,
+            )
+        }
+        Err(error) => (json!({"connected": false, "error": error}), None),
+    };
+    note(
+        &mut steps,
+        json!({"step": "open the XO VM's console with XO unreachable", "read_back": console_state["connected"],
+               "console": console_state, "console_frame_file": frame_file}),
+    );
+
+    // The repair: reconnect the NIC and wait for XO. The guest may come back on another
+    // address, so the reported address is preferred and the earlier one is the fallback.
+    let repair_at = std::time::Instant::now();
+    let mut repair = device_op(&c, xo, DeviceOperation::PlugNic { vif }, 180).await;
+    repair["step"] = json!("repair: reconnect the appliance's NIC");
+    let attached = settle(60, || {
+        vif_view(&c, vif).is_some_and(|v| v.currently_attached == Some(true))
+    })
+    .await;
+    repair["read_back"] = json!(attached);
+    note(&mut steps, repair);
+    let answers = |seconds: u64| {
+        let c = &c;
+        let address = address.clone();
+        async move {
+            let started = std::time::Instant::now();
+            let mut last = json!(null);
+            let mut used = address.clone();
+            let ok = tokio::time::timeout(deadline(seconds), async {
+                loop {
+                    used = xo_address(c, xo).unwrap_or_else(|| address.clone());
+                    last = xo_probe(&used).await;
+                    if last["reachable"] == true {
+                        return true;
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            })
+            .await
+            .unwrap_or(false);
+            json!({"as_expected": ok, "after_ms": started.elapsed().as_millis() as u64, "address": used, "probe": last})
+        }
+    };
+    let mut back = answers(240).await;
+    let mut restored_by = "reconnecting the NIC";
+    if back["as_expected"] != true {
+        note(
+            &mut steps,
+            json!({"step": "XO did not answer after the NIC was reconnected", "probe": back}),
+        );
+        power.push(power_to(&c, xo, PowerAction::Reboot, PowerState::Running).await);
+        back = answers(900).await;
+        restored_by = "a reboot through the client after reconnecting the NIC";
+    }
+    note(
+        &mut steps,
+        json!({"step": "XO answers over HTTP again", "read_back": back["as_expected"], "restored_by": restored_by,
+               "probe": back, "recovered_after_ms": repair_at.elapsed().as_millis() as u64}),
+    );
+    c.close().await;
+    lab.record(
+        "xo-network-fault",
+        json!({"vm": xo.to_string(), "power": power, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
 /// The pool's security overview through a fresh inspection.
 async fn security_overview(
     c: &Connection,
