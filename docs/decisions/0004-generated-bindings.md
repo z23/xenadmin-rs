@@ -68,8 +68,9 @@ The description was at first a file copied unchanged from upstream's repository,
 is what the operator was shown when deciding. Since finding 56 it is the output of
 upstream's own program run on upstream's data model at the same commit. It is derived
 from the same LGPL-licensed source, stays in the same crate under the same terms, and
-the notice says how it is produced. The change was reported to the operator with the
-work and waits for their word before it reaches the main branch.
+the notice says how it is produced. The operator was told of the change and accepted
+upstream's generator output as the description on 2026-11-11, and it went to the main
+branch then.
 
 Nothing derived from the description may live outside that crate, and the other crates
 stay under the MIT licence. Packages carry the crate's licence and notice with the other
