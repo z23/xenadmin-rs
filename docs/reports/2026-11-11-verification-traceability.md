@@ -77,7 +77,7 @@ through the packaged desktop client" row).
 | Requirement | State |
 | --- | --- |
 | Clean Arch and Ubuntu 24.04 installation | Installed, rendered and started offline on untouched cloud images of both ([clean-install report](2026-11-11-clean-install.md)); nobody has used the window on a clean system |
-| Wayland compositor and X11 window manager actually used | Nested Hyprland 0.56.2 as a Wayland client, and its Xwayland server as an X11 client. No standalone X server or window manager |
+| Wayland compositor and X11 window manager actually used | Nested Hyprland 0.56.2 as a Wayland client, and its Xwayland server as an X11 client; the operator's own Hyprland session as a Wayland client; the X.Org server with Openbox and no Wayland, in a virtual machine with injected input and synthetic data ([clean install](2026-11-11-clean-install.md)). No person has used an X session, and no host connection or console was tried under X.Org |
 | Hardware rendering and one software Vulkan setup | Hardware Vulkan on the workstation; software Vulkan on the two clean images, headless and in a window under Weston |
 | Theme contrast, keyboard-only operation, HiDPI | Open. Dialogs were driven by Tab and Space, with the clipped-control gap of finding 22 |
 | File chooser | The portal's save dialog wrote a console screenshot in the second desktop session |

@@ -42,10 +42,43 @@ AppImage was run by extraction, as the installation guide describes.
 
 Renders of the same scene were the same size to the byte on both machines.
 
+## An X session without Wayland, added later the same day
+
+Until here the client had been an X11 application only under Xwayland, the X server a
+Wayland compositor provides. The same Ubuntu image was started again, untouched, to run it
+under the X.Org server itself with a window manager and no Wayland compositor present.
+
+- Added to the runtime packages: `xserver-xorg-core` 21.1.12 with its `dummy` video driver
+  (a virtual 1600 by 1000 display; the cloud kernel has no graphics driver), Openbox 3.6.1,
+  and `xdotool`, `xclip` and ImageMagick to drive and observe the session. Rendering was
+  Mesa's software Vulkan driver, as before.
+- The client was the same CI-built archive, unpacked and started with `--demo`, so it showed
+  synthetic data and connected to nothing. `WAYLAND_DISPLAY` was unset and the session type
+  was `tty`.
+
+| Check | Result |
+| --- | --- |
+| The window is mapped and managed: Openbox frames it with a title bar and the client reports its name, class and process | Yes, 1440 by 900 |
+| The interface renders | Yes; it looks as it does under Wayland |
+| A pointer press on a tab changes the table | Yes |
+| The wheel scrolls the table | Yes |
+| Typed text reaches a field, capitals included, and filters the table | Yes |
+| Ctrl with plus enlarges the interface and Ctrl with 0 restores it | Yes |
+| Copy from a field reaches the X clipboard, and text placed on the X clipboard pastes into a field | Yes, both |
+| A resize through the window manager lays the interface out again | Yes, at 900 by 640 |
+| Closing through the window manager ends the process with nothing in its log | Yes |
+
+Input was injected through the X test extension, not typed by a person, and the session
+had no real display, GPU or desktop environment. No connection to a host and no console
+were tried under this server; console input as an X11 client is recorded under Xwayland
+only. The X server's log held one error line, which was not kept. Screenshots are kept
+outside the repository.
+
 ## What this does not show
 
 - No person used the window: the compositor in the virtual machine had no seat. Input,
   clipboard, file dialogs and accessibility on a clean system are unverified.
-- No X11 session, no hardware GPU and no desktop environment's own launcher or icon.
+- No hardware GPU and no desktop environment's own launcher or icon. The X session above
+  used synthetic data only.
 - The login and inventory were read through the probe, not through the desktop window.
 - The Arch image is a rolling snapshot; the result is for that day's packages.

@@ -129,8 +129,10 @@ HA and a directory service were recorded the same day. The
 [verification traceability report](reports/2026-11-11-verification-traceability.md) maps
 the core scenarios to their fixture and live evidence. Pointer input, focus-loss release,
 console follow after a migration and an X11 client under Xwayland were verified in a nested
-compositor with injected input; a real seat, a standalone X server, clipboard, Orca and
-software rendering remain qualification gates. Milestones remain open until their retained
+compositor with injected input. Since then the operator has used the client on a real seat,
+software rendering and an X.Org session without Wayland have been checked in virtual
+machines, clipboard exchange with a guest has been recorded as experimental and screen
+readers as unsupported. Milestones remain open until their retained
 workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols
@@ -294,7 +296,7 @@ list below is the minimum for that, with its state on 2026-11-11.
 | Explain the two journal anomalies | Done: finding 23 was the client refusing its own repeated enable and is fixed and rerun live; the missing restore record was the scenario closing before admission |
 | Clean-machine installs with software rendering | Done on untouched Ubuntu 24.04 and Arch images ([report](reports/2026-11-11-clean-install.md)); nobody has used the window there |
 | A notice for hosts outside the qualified release | Done |
-| One real-seat pass | The operator's sessions covered the window, resizing, a real inventory, console typing, and pointer movement and clicks in a guest with a graphical desktop. Open: clipboard, a standalone X server, and whether screen-reader support is a documented gap |
+| One real-seat pass | Done. The operator's sessions covered the window, resizing, a real inventory, console typing, pointer movement and clicks in a guest with a graphical desktop, and the performance charts. Clipboard exchange with a guest did not work for them and is recorded as experimental; screen readers are recorded as unsupported. An X session without Wayland was checked in a virtual machine with injected input ([report](reports/2026-11-11-clean-install.md)), not by a person |
 | Release mechanics | A [changelog](../CHANGELOG.md) with known issues and the stored-format rule, a tag-triggered workflow that leaves a draft release (not yet run), and a first [performance baseline](reports/2026-11-11-performance-baseline.md). Pushing the first tag is the operator's decision |
 
 Publishing a tag or binary is a separate decision; nothing has been published.

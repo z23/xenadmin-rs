@@ -69,7 +69,8 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
 - Only XCP-ng 8.3.0 has been exercised, on nested virtualization. Most workflows have a
   recorded successful path and no recorded failure or interruption path.
 - Not verified: the wheel's direction and dragging in a graphical guest (the operator
-  confirmed pointer movement and clicks there), non-US keyboard layouts, a standalone X server, and a person using the client on a
+  confirmed pointer movement and clicks there), non-US keyboard layouts, a person using
+  the client on an X session without Wayland (a scripted check there passed) or on a
   freshly installed system (installation, software rendering and an offline start there
   are recorded in the [clean-install report](docs/reports/2026-11-11-clean-install.md)).
 
