@@ -573,7 +573,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 let query = format!("{prefix}:{value}");
                 groups = groups.child(
                     Button::new(&query)
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press(move |s: &mut State| edit(s).query = TextEdit::new(&query))
                         .build(k),
                 );
@@ -606,7 +606,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 )
                 .child(
                     Button::new("Clear selection")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press(|s: &mut State| edit(s).selected.clear())
                         .build(k),
                 )
@@ -665,11 +665,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             for action in actions {
                 choices = choices.child(
                     Button::new(action.title())
-                        .variant(if action == w.action {
-                            ButtonVariant::Outline
-                        } else {
-                            ButtonVariant::Ghost
-                        })
+                        .variant(crate::theme::choice(action == w.action))
                         .on_press(move |s: &mut State| {
                             let w = edit(s);
                             w.action = action;
@@ -725,7 +721,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 let name = d.name.clone();
                 fields = fields.child(
                     Button::new(&name)
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press(move |s: &mut State| edit(s).name = TextEdit::new(&name))
                         .build(k),
                 );
@@ -748,7 +744,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     let mut controls = row().gap(6.0).flex_wrap().justify_end().child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.organization = None)
             .build(k),
     );

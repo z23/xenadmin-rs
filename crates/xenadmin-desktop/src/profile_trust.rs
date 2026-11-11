@@ -311,11 +311,7 @@ pub(super) fn proxy_fields(s: &State, k: &Kit) -> El {
     for (mode, label) in [(0, "Environment"), (1, "Direct"), (2, "HTTP proxy")] {
         choices = choices.child(
             Button::new(label)
-                .variant(if mode == p.mode {
-                    ButtonVariant::Neutral
-                } else {
-                    ButtonVariant::Ghost
-                })
+                .variant(crate::theme::choice(mode == p.mode))
                 .on_press(move |s: &mut State| {
                     if s.workspace.trust.mode != mode {
                         s.workspace.trust.mode = mode;
@@ -355,7 +351,7 @@ pub(super) fn proxy_fields(s: &State, k: &Kit) -> El {
             .child(caption("Proxy username • optional",k)).child(TextInput::new(&p.username).label("Proxy username").on_edit(|s:&mut State|&mut s.workspace.trust.username).build(k).key("proxy-username"))
             .child(caption("Proxy password • current application session only",k)).child(TextInput::new(&p.password).secure().label("Proxy password").on_edit(|s:&mut State|&mut s.workspace.trust.password).build(k).key("proxy-password"))
             .child(caption("HTTP proxy authentication is sent to the proxy without TLS. Host traffic remains HTTPS. Proxy passwords stay in memory for this application session and are never saved with connection profiles.",k).wrap())
-            .child(Button::new("Forget proxy password").variant(ButtonVariant::Ghost).on_press(|s:&mut State| { s.workspace.trust.password = secure_field(); if let Some(id)=s.workspace.editing { s.workspace.proxy_sessions.remove(&id); } }).build(k).key("forget-proxy-password"));
+            .child(Button::new("Forget proxy password").variant(ButtonVariant::Outline).on_press(|s:&mut State| { s.workspace.trust.password = secure_field(); if let Some(id)=s.workspace.editing { s.workspace.proxy_sessions.remove(&id); } }).build(k).key("forget-proxy-password"));
     }
     body
 }
@@ -434,7 +430,7 @@ pub(super) fn review_controls(s: &State, k: &Kit) -> Option<El> {
             .justify_end()
             .child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         s.workspace.trust.observation = None;
                         s.workspace.trust.context = None;

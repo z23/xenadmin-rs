@@ -188,7 +188,11 @@ pub(super) fn controls(s: &State, id: VmId, k: &Kit) -> El {
     let mut add = |label: &str, key: &str, kind: Kind, enabled: bool| {
         controls = std::mem::replace(&mut controls, el()).child(
             Button::new(label)
-                .variant(ButtonVariant::Outline)
+                .variant(if label.starts_with("Delete") {
+                    ButtonVariant::Danger
+                } else {
+                    ButtonVariant::Neutral
+                })
                 .disabled(!writable || !enabled)
                 .on_press(move |s: &mut State| open(s, id, kind))
                 .build(k)
@@ -619,7 +623,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     });
     let mut buttons = row().w_full().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(close)
             .build(k)
             .key("cancel-vm-lifecycle"),
@@ -628,7 +632,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if form.kind != Kind::Convert {
             buttons = buttons.child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(form) = editor_mut(s) {
                             form.review = None;
@@ -665,7 +669,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if form.kind == Kind::Create && form.step > 0 {
             buttons = buttons.child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(form) = editor_mut(s) {
                             form.step -= 1;
@@ -743,7 +747,7 @@ pub(super) fn history_button(s: &State, k: &Kit) -> El {
         return el();
     }
     Button::new("VM changes")
-        .variant(ButtonVariant::Ghost)
+        .variant(ButtonVariant::Outline)
         .on_press(|s: &mut State| s.vm_lifecycle = Some(Panel::History))
         .build(k)
         .key("vm-lifecycle-history")
@@ -816,7 +820,7 @@ fn history(s: &State, k: &Kit) -> El {
             let source = record.vm.to_string();
             item = item.child(
                 Button::new("Review unknown outcome acknowledgment…")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .disabled(!can_control)
                     .on_press(move |s: &mut State| {
                         s.vm_lifecycle = None;

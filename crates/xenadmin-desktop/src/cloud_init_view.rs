@@ -88,7 +88,6 @@ pub(super) fn button(s: &State, vm: VmId, k: &Kit) -> El {
     } else {
         "Cloud-init drive (shut down first)"
     })
-    .variant(ButtonVariant::Outline)
     .disabled(v.power_state != PowerState::Halted)
     .on_press(move |s: &mut State| open(s, vm))
     .build(k)

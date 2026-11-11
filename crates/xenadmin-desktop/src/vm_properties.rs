@@ -816,7 +816,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     let mut controls = row().gap(8.0).justify_end().child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.properties = None)
             .build(k),
     );
@@ -829,7 +829,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         controls = controls
             .child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(editor) = &mut s.properties {
                             editor.review = None

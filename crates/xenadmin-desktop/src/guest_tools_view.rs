@@ -343,7 +343,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     controls = controls
         .child(
             Button::new("Installation guide")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press_tx(|s: &mut State, tx: &mut Tx| {
                     if let Err(e) = tx.open_url("https://docs.xcp-ng.org/vms/")
                         && let Some(p) = &mut s.guest_tools

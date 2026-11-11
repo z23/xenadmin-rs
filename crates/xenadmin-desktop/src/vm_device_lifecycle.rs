@@ -770,7 +770,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
     }
     let mut controls = row().w_full().flex_wrap().gap(8.0).justify_end().child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(close)
             .build(k)
             .key("cancel-device-lifecycle"),
@@ -787,7 +787,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
         if !matches!(form.kind, Kind::Fixed(_)) {
             controls = controls.child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(form) = form_mut(s) {
                             form.review = None;

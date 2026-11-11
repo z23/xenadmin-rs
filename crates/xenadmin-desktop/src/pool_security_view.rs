@@ -706,7 +706,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> rune::El {
     }
     let mut footer = row().gap(8.0).justify_end().child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.pool_security = None)
             .build(k),
     );
@@ -847,7 +847,7 @@ mod tests {
             |_: &State, cx: &mut rune::Cx<State>| {
                 Button::new("Pick")
                     .on_press_tx(|s: &mut State, tx: &mut Tx| choose_file(s, tx, 0))
-                    .build(&Kit::neutral(cx.system_dark()))
+                    .build(&crate::theme::kit(cx.system_dark()))
                     .key("pick")
             },
             (480.0, 640.0),

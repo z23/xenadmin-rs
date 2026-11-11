@@ -236,7 +236,7 @@ fn automatic_reconnect_toggle_and_pinned_identity_render_at_both_window_sizes() 
         super::super::opened(&mut s, pool, id, name);
         let mut rt = rune::Runtime::new(
             s,
-            |s, cx| super::super::view(s, &Kit::neutral(cx.system_dark())),
+            |s, cx| super::super::view(s, &crate::theme::kit(cx.system_dark())),
             size,
             rune::Env {
                 system_dark: true,

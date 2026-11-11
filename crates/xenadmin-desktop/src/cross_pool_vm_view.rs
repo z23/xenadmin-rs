@@ -272,7 +272,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if e.stage > 0 {
             body = body.child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(e) = &mut s.cross_pool.editor {
                             e.stage -= 1;
@@ -305,7 +305,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     body = body.child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(close)
             .build(k),
     );

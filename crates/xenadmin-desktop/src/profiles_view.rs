@@ -412,7 +412,7 @@ fn start_connection(
     Ok(())
 }
 
-fn clear_view(s: &mut State) {
+pub(super) fn clear_view(s: &mut State) {
     s.metrics = None;
     s.diagnostics = None;
     s.diagnostic_results.clear();
@@ -434,6 +434,8 @@ fn clear_view(s: &mut State) {
     s.host_filter = None;
     s.show_details = false;
     s.search = TextEdit::new("");
+    // Rebuilding the table drops the widths it holds; keep what the user set first.
+    s.capture_layout();
     s.table = TableState::new().key("inventory-table").multi_select(true);
     s.bulk_power = None;
     s.bulk_properties = None;
@@ -645,11 +647,9 @@ pub(super) fn sidebar(s: &State, k: &Kit) -> El {
                     .unwrap_or_default(),
                 status(Some(connection))
             ))
-            .variant(if s.workspace.selected == Some(id) && !s.demo {
-                ButtonVariant::Neutral
-            } else {
-                ButtonVariant::Ghost
-            })
+            .variant(crate::theme::choice(
+                s.workspace.selected == Some(id) && !s.demo,
+            ))
             .on_press(move |s: &mut State| select(s, id))
             .build(k)
             .key(format!("pool-{id}")),
@@ -671,7 +671,7 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
         )
         .child(
             Button::new("Saved connection options")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| s.workspace.advanced = !s.workspace.advanced)
                 .build(k)
                 .key("profile-options"),
@@ -718,7 +718,7 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
             )
             .child(
                 Button::new("Save without connecting")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(save_only)
                     .build(k)
                     .key("save-profile"),
@@ -771,7 +771,7 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
                 .gap(8.0)
                 .child(
                     Button::new("Load saved password")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press(|s: &mut State| {
                             if let Some(profile) = s
                                 .workspace
@@ -787,7 +787,7 @@ pub(super) fn form_fields(s: &State, k: &Kit) -> El {
                 )
                 .child(
                     Button::new("Forget saved password")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press(forget_password)
                         .build(k)
                         .key("forget-password"),
@@ -972,7 +972,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 )
                 .child(
                     Button::new("Disconnect")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press(move |s: &mut State| {
                             if s.workspace.selected == Some(id) {
                                 disconnect_selected(s);
@@ -986,7 +986,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         } else if s.workspace.loads.contains_key(&id) {
             actions = actions.child(
                 Button::new("Cancel connection attempt")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(move |s: &mut State| cancel_load(s, id))
                     .build(k)
                     .key(format!("cancel-profile-{id}")),
@@ -1001,7 +1001,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 )
                 .child(
                     Button::new("Remove")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Danger)
                         .on_press(move |s: &mut State| remove(s, id))
                         .build(k)
                         .key(format!("remove-profile-{id}")),
@@ -1023,12 +1023,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .child(caption("Keep several pools connected and switch between them. Same-pool entries share one session; disconnecting either disconnects that pool.", k).wrap())
         .child(row().gap(8.0)
             .child(Button::new("Connect all").disabled(!s.workspace.writable || !has_profiles).on_press(connect_all).build(k).key("connect-all"))
-            .child(Button::new("Disconnect all").variant(ButtonVariant::Ghost).disabled(s.workspace.active.is_empty() && s.workspace.loads.is_empty()).on_press(disconnect_all).build(k).key("disconnect-all")))
+            .child(Button::new("Disconnect all").variant(ButtonVariant::Outline).disabled(s.workspace.active.is_empty() && s.workspace.loads.is_empty()).on_press(disconnect_all).build(k).key("disconnect-all")))
         .child(list)
         .child(if let Some(status) = &s.workspace.credential_status { caption(status, k).wrap() } else {el()})
         .child(if let Some(error) = &s.error { text(error.clone()).font(k.ty.text_small).color(k.c.danger.icon).wrap().role("alert") } else { el() })
         .child(row().justify_end().gap(8.0)
-            .child(Button::new("Close").variant(ButtonVariant::Ghost).on_press(|s: &mut State| s.workspace.show_manager = false).build(k).key("close-connections"))
+            .child(Button::new("Close").variant(ButtonVariant::Outline).on_press(|s: &mut State| s.workspace.show_manager = false).build(k).key("close-connections"))
             .child(Button::new("Add connection").on_press(begin_new).build(k).key("new-profile")));
     el().key("profiles-dialog")
         .role("dialog")
@@ -1424,7 +1424,7 @@ mod tests {
             |_: &State, cx: &mut rune::Cx<State>| {
                 Button::new("Choose CA")
                     .on_press_tx(choose_ca)
-                    .build(&Kit::neutral(cx.system_dark()))
+                    .build(&crate::theme::kit(cx.system_dark()))
                     .key("pick")
             },
             (480.0, 640.0),

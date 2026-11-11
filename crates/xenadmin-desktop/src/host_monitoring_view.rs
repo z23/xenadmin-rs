@@ -226,7 +226,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let mut body = col().gap(12.0);
     let mut footer = row().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.host_monitoring = None)
             .build(k)
             .key("monitoring-close"),
@@ -425,7 +425,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let pool = p.pool;
     footer = footer.child(
         Button::new("History")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(move |s: &mut State| {
                 s.host_monitoring = None;
                 activity::open_history(s, pool);

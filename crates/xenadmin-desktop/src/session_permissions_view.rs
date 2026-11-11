@@ -9,9 +9,9 @@ pub(super) fn power_button(
 ) -> El {
     Button::new(action.label())
         .variant(if action.is_force() {
-            ButtonVariant::Ghost
+            ButtonVariant::Danger
         } else {
-            ButtonVariant::Outline
+            ButtonVariant::Neutral
         })
         .disabled(!eligible || permission.is_some_and(PermissionDecision::is_denied))
         .on_press(move |s: &mut State| s.request_power(action))
@@ -89,7 +89,7 @@ mod tests {
         )
     }
     fn render(permission: PermissionDecision, eligible: bool, cx: &mut Cx<State>) -> El {
-        let k = Kit::neutral(cx.system_dark());
+        let k = crate::theme::kit(cx.system_dark());
         col()
             .padding(20.0)
             .w_full()

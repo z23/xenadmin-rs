@@ -533,9 +533,9 @@ pub(super) fn buttons(s: &State, k: &Kit) -> El {
         buttons = buttons.child(
             Button::new(kind.title())
                 .variant(if kind.danger() {
-                    ButtonVariant::Ghost
+                    ButtonVariant::Danger
                 } else {
-                    ButtonVariant::Outline
+                    ButtonVariant::Neutral
                 })
                 .disabled(
                     (!s.demo && !s.can_mutate())
@@ -827,7 +827,7 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             }
             view = view.child(
                 Button::new("Acknowledge unknown outcome…")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .disabled(!can_control)
                     .on_press(move |s: &mut State| open_pool(s, Kind::Acknowledge(id)))
                     .build(k),
@@ -850,7 +850,7 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
                         "Request cancellation"
                     },
                 )
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .disabled(!can_control)
                 .on_press(move |s: &mut State| {
                     control(s, id, OperationControl::RequestCancellation)
@@ -1033,7 +1033,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         } else {
             "Cancel"
         })
-        .variant(ButtonVariant::Ghost)
+        .variant(ButtonVariant::Outline)
         .on_press(|s: &mut State| s.resource_editor = None)
         .build(k),
     );
@@ -1043,7 +1043,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         controls = controls
             .child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(editor) = &mut s.resource_editor {
                             editor.review = None;
@@ -1120,7 +1120,7 @@ pub(super) fn notice(s: &State, k: &Kit) -> Option<El> {
             record.action.label(),
             record.state
         ))
-        .variant(ButtonVariant::Ghost)
+        .variant(ButtonVariant::Outline)
         .on_press(|s: &mut State| open_pool(s, Kind::History))
         .build(k)
         .key("resource-operation-notice"),

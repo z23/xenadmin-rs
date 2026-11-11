@@ -32,6 +32,8 @@ pub(super) struct Options {
     pub review_power: bool,
     pub console_actual_size: bool,
     pub console_reconnect: bool,
+    /// The size the whole interface is drawn at, as a percentage.
+    pub interface_scale: u16,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -41,12 +43,35 @@ impl Default for Options {
             review_power: false,
             console_actual_size: false,
             console_reconnect: true,
+            interface_scale: 100,
         }
     }
 }
 impl Options {
+    /// The interface sizes on offer, as percentages.
+    pub const SCALES: [u16; 8] = [80, 90, 100, 110, 125, 150, 175, 200];
+
     pub fn reviews(self, action: xenadmin_core::PowerAction) -> bool {
         action.is_force() || self.review_power
+    }
+    /// The factor the interface is drawn at. A saved value outside the offered range, as a
+    /// hand-edited file could hold, is brought back into it.
+    pub fn zoom(self) -> f32 {
+        let (smallest, largest) = (Self::SCALES[0], Self::SCALES[Self::SCALES.len() - 1]);
+        f32::from(self.interface_scale.clamp(smallest, largest)) / 100.0
+    }
+    /// The next offered size above or below the current one, or the current one at an end.
+    pub fn scale_step(self, larger: bool) -> u16 {
+        let current = self.interface_scale;
+        if larger {
+            Self::SCALES.into_iter().find(|scale| *scale > current)
+        } else {
+            Self::SCALES
+                .into_iter()
+                .rev()
+                .find(|scale| *scale < current)
+        }
+        .unwrap_or_else(|| current.clamp(Self::SCALES[0], Self::SCALES[Self::SCALES.len() - 1]))
     }
 }
 #[derive(Clone, Copy)]
@@ -119,7 +144,12 @@ fn apply(s: &mut State) {
     let Some(Panel::Options(options)) = s.application_panel else {
         return;
     };
-    s.preferences.options = options;
+    let scale = options.interface_scale;
+    s.preferences.options = Options {
+        interface_scale: s.preferences.options.interface_scale,
+        ..options
+    };
+    s.set_interface_scale(scale);
     s.save_preferences();
     s.application_panel = None;
 }
@@ -169,7 +199,43 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .key(format!("appearance-{choice:?}")),
                 );
             }
+            let scale_button = |label: &'static str, key: &'static str, target: u16| {
+                Button::new(label)
+                    .variant(ButtonVariant::Outline)
+                    .disabled(target == options.interface_scale)
+                    .on_press(move |s: &mut State| {
+                        if let Some(Panel::Options(draft)) = &mut s.application_panel {
+                            draft.interface_scale = target;
+                        }
+                    })
+                    .build(k)
+                    .key(key)
+            };
+            let interface_size = row()
+                .gap(6.0)
+                .center_y()
+                .flex_wrap()
+                .child(scale_button(
+                    "Smaller",
+                    "settings-scale-smaller",
+                    options.scale_step(false),
+                ))
+                .child(
+                    text(format!("{} %", options.interface_scale))
+                        .font(k.ty.ui_medium)
+                        .color(k.c.text_base)
+                        .key("settings-scale-value"),
+                )
+                .child(scale_button(
+                    "Larger",
+                    "settings-scale-larger",
+                    options.scale_step(true),
+                ))
+                .child(scale_button("Reset", "settings-scale-reset", 100));
             body = body.child(heading("Appearance", k)).child(appearance)
+                .child(heading("Interface size", k))
+                .child(interface_size)
+                .child(caption("Text and controls scale together. Ctrl with plus, minus or 0 changes the size at once from anywhere outside a console.", k).wrap())
                 .child(check(s,k,"Reduce animation","settings-reduced-motion",|o|o.reduced_motion,|o|o.reduced_motion= !o.reduced_motion))
                 .child(heading("Confirmations",k))
                 .child(check(s,k,"Review routine VM power actions","settings-review-power",|o|o.review_power,|o|o.review_power= !o.review_power))
@@ -218,7 +284,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 )
                 .child(
                     Button::new("z23/xenadmin-rs on GitHub")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press_tx(|s: &mut State, tx| {
                             s.error = tx
                                 .open_url("https://github.com/z23/xenadmin-rs")
@@ -232,7 +298,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     };
     let mut buttons = row().gap(8.0).justify_end().child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.application_panel = None)
             .build(k)
             .key("settings-close"),

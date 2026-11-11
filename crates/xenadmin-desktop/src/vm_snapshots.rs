@@ -567,7 +567,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             ) && snapshot.allowed_actions.contains(&SnapshotAction::Delete)
         });
     let mut content = col().w_full().h_full().min_h(0.0).padding(20.0).gap(12.0)
-        .child(row().w_full().justify_between().center_y().child(heading("Snapshots",k)).child(Button::new("Back to inventory").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.snapshot_view=None).build(k).key("back-from-snapshots")))
+        .child(row().w_full().justify_between().center_y().child(heading("Snapshots",k)).child(Button::new("Back to inventory").variant(ButtonVariant::Outline).on_press(|s:&mut State|s.snapshot_view=None).build(k).key("back-from-snapshots")))
         .child(heading(vm.map(|vm|vm.name.as_str()).unwrap_or("VM unavailable"),k))
         .child(caption(if s.window_width < 700.0 { "Select a snapshot to restore, copy or delete." } else { "Disk snapshots capture VM configuration and virtual disks. Choose Include guest memory for a memory checkpoint when supported. Application quiescing is not available on XCP-ng 8.1 and later." },k).wrap())
         .child(row().gap(8.0).flex_wrap()
@@ -577,8 +577,8 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .child(Button::new("Create VM").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, false)).build(k).key("clone-snapshot-vm"))
             .child(Button::new("Create template").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_clone)).on_press(|s: &mut State| begin_clone(s, true)).build(k).key("clone-snapshot-template"))
             .child(Button::new("Inspect snapshot").variant(ButtonVariant::Outline).disabled(selected.is_none()).on_press(snapshot_inspection::open).build(k).key("inspect-snapshot"))
-            .child(Button::new(if s.snapshot_tree {"Show list"}else{"Show ancestry"}).variant(ButtonVariant::Ghost).on_press(|s:&mut State|{s.snapshot_tree = !s.snapshot_tree;refresh(s);}).build(k).key("snapshot-tree-toggle"))
-            .child(Button::new("Activity").variant(ButtonVariant::Ghost).on_press(activity::open).build(k).key("snapshot-activity"))
+            .child(Button::new(if s.snapshot_tree {"Show list"}else{"Show ancestry"}).variant(ButtonVariant::Outline).on_press(|s:&mut State|{s.snapshot_tree = !s.snapshot_tree;refresh(s);}).build(k).key("snapshot-tree-toggle"))
+            .child(Button::new("Activity").variant(ButtonVariant::Outline).on_press(activity::open).build(k).key("snapshot-activity"))
             .child(Button::new("Delete snapshot").variant(ButtonVariant::Danger).disabled(selected.is_none() || (!s.demo && !can_delete)).on_press(begin_delete).build(k).key("delete-snapshot")));
     if let Some(snapshot) = selected
         && let Some(parent) = snapshot.vm
@@ -761,7 +761,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             if operation.can_cancel && !operation.cancel_requested && !operation.state.terminal() {
                 content = content.child(
                     Button::new("Stop remaining steps")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .disabled(!current(s))
                         .on_press(move |s: &mut State| {
                             s.control_operation(
@@ -1189,7 +1189,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             .justify_end()
             .child(
                 Button::new("Cancel")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(snapshot_capture::cancel_dialog)
                     .build(k)
                     .key("cancel-snapshot"),

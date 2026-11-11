@@ -1306,7 +1306,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 );
                 body = body.child(
                     Button::new("Remove detached attachment…")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .disabled(
                             attachment.currently_attached != Some(false)
                                 || (!s.demo && !s.can_mutate()),
@@ -1362,7 +1362,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             )
             .child(
                 Button::new("Forget repository…")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Danger)
                     .on_press(|s: &mut State| removal(s, false))
                     .build(k),
             )
@@ -1580,7 +1580,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                             ""
                         }
                     ))
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(move |s: &mut State| {
                         s.storage_editor.as_mut().unwrap().version = version
                     })
@@ -1911,7 +1911,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         });
     let mut footer = row().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.storage_editor = None)
             .build(k)
             .key("storage-close"),

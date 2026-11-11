@@ -44,6 +44,7 @@ mod snapshot_inspection;
 mod snapshot_policy_view;
 mod storage_graph_view;
 mod storage_view;
+mod theme;
 mod transfers;
 mod vm_devices;
 mod vm_lifecycle;
@@ -237,6 +238,11 @@ struct State {
     snapshot_description: TextEdit,
     window_width: f32,
     window_height: f32,
+    /// The window's size in its own points. `window_width` and `window_height` are the
+    /// size the view is laid out at, which is this divided by the interface zoom.
+    viewport: [f32; 2],
+    /// When the sidebar or a column last changed width, on the poll clock, until saved.
+    layout_changed_at: Option<f64>,
     show_details: bool,
     operations: Vec<xenadmin_core::Operation>,
     operation_rows: Vec<xenadmin_core::OperationRecord>,
@@ -368,6 +374,8 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         snapshot_description: TextEdit::new(""),
         window_width: 1440.0,
         window_height: 900.0,
+        viewport: [1440.0, 900.0],
+        layout_changed_at: None,
         show_details: false,
         operations: Vec::new(),
         operation_rows: Vec::new(),
@@ -609,19 +617,46 @@ impl State {
     fn connect(&mut self) {
         profiles_view::connect(self);
     }
+    /// Copies the sidebar width and the column widths the user set into the preferences.
+    /// Returns whether any of them changed.
+    fn capture_layout(&mut self) -> bool {
+        let mut changed = false;
+        let sidebar = self.sidebar.width();
+        if (self.preferences.sidebar_width - sidebar).abs() > 0.5 {
+            self.preferences.sidebar_width = sidebar;
+            changed = true;
+        }
+        for name in ["name", "state", "location", "cpu", "memory"] {
+            match self.table.column_width(name) {
+                Some(width) => {
+                    if self.preferences.columns.get(name) != Some(&width) {
+                        self.preferences.columns.insert(name.into(), width);
+                        changed = true;
+                    }
+                }
+                // A double press on the divider puts a column back to its declared width.
+                None => changed |= self.preferences.columns.remove(name).is_some(),
+            }
+        }
+        changed
+    }
     fn save_preferences(&mut self) {
+        self.capture_layout();
+        self.layout_changed_at = None;
         if self._instance.is_none() {
             return;
-        }
-        self.preferences.sidebar_width = self.sidebar.width();
-        for name in ["name", "state", "location", "cpu", "memory"] {
-            if let Some(width) = self.table.column_width(name) {
-                self.preferences.columns.insert(name.into(), width);
-            }
         }
         if let Err(error) = self.preferences.save() {
             self.error = Some(error);
         }
+    }
+    /// Sets the interface size and keeps it.
+    fn set_interface_scale(&mut self, percent: u16) {
+        if percent == self.preferences.options.interface_scale {
+            return;
+        }
+        self.preferences.options.interface_scale = percent;
+        self.save_preferences();
     }
     fn rebuild(&mut self) {
         vm_snapshots::refresh(self);
@@ -855,7 +890,21 @@ fn merge_operation_rows(
     rows
 }
 
+/// How long the sidebar and column widths rest before they are written, so a drag saves once.
+const LAYOUT_SAVE_DELAY: f64 = 0.6;
+
 fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
+    // Widths used to be written only as the window closed, so a session that ended any
+    // other way lost them.
+    if s.capture_layout() {
+        s.layout_changed_at = Some(clock);
+        tx.wake_after(std::time::Duration::from_secs_f64(LAYOUT_SAVE_DELAY));
+    }
+    if s.layout_changed_at
+        .is_some_and(|at| clock - at >= LAYOUT_SAVE_DELAY)
+    {
+        s.save_preferences();
+    }
     let mut changed = profiles_view::refresh(s);
     changed |= console_windows::poll_registry(s);
     changed |= external_tools::poll(s);
@@ -982,7 +1031,7 @@ fn heading(value: impl Into<String>, k: &Kit) -> El {
     text(value).font(k.ty.ui_medium).color(k.c.text_base)
 }
 fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let k = Kit::neutral(s.preferences.options.appearance.dark(cx.system_dark()));
+    let k = crate::theme::kit(s.preferences.options.appearance.dark(cx.system_dark()));
     cx.reduced_motion(s.preferences.options.reduced_motion || cx.system_reduced_motion());
     let repository_label = "z23 / xenadmin-rs";
     let sidebar = col()
@@ -1138,15 +1187,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     ]
     .into_iter()
     .fold(
-        row().gap(4.0).role("tablist").label("Inventory views"),
+        theme::tab_strip(&k, row().role("tablist").label("Inventory views")),
         |tabs, page| {
             tabs.child(
                 Button::new(page.title())
-                    .variant(if s.page == page {
-                        ButtonVariant::Neutral
-                    } else {
-                        ButtonVariant::Ghost
-                    })
+                    .variant(crate::theme::tab(s.page == page))
                     .on_press(move |s: &mut State| {
                         s.snapshot_view = None;
                         s.metrics = None;
@@ -1315,7 +1360,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                         "Back to inventory"
                     },
                 )
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| s.show_details = false)
                 .build(&k)
                 .key("back-to-inventory"),
@@ -1334,6 +1379,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     }
     controls = controls.child(
         Button::new("Cross-pool transfers")
+            .variant(ButtonVariant::Outline)
             .on_press(cross_pool_vm::history)
             .build(&k)
             .key("cross-pool-history"),
@@ -1341,7 +1387,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.window_width < 800.0 {
         controls = controls.child(
             Button::new("Connections")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| s.workspace.show_manager = true)
                 .build(&k),
         );
@@ -1349,7 +1395,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.window_width < 1200.0 {
         controls = controls.child(
             Button::new("Details")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .disabled(s.selected().is_none())
                 .on_press(|s: &mut State| {
                     s.metrics = None;
@@ -1366,18 +1412,21 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     controls = controls
         .child(
             Button::new("Options")
+                .variant(ButtonVariant::Outline)
                 .on_press(settings::open)
                 .build(&k)
                 .key("settings-open"),
         )
         .child(
             Button::new("Help")
+                .variant(ButtonVariant::Outline)
                 .on_press(settings::help)
                 .build(&k)
                 .key("help-open"),
         );
     controls = controls.child(
         Button::new("Alarms")
+            .variant(ButtonVariant::Outline)
             .disabled(s.inventory.is_none())
             .on_press(alarms_view::open)
             .build(&k)
@@ -1385,6 +1434,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     );
     controls = controls.child(
         Button::new("Convert local disk…")
+            .variant(ButtonVariant::Outline)
             .on_press(local_conversion_view::open)
             .build(&k)
             .key("conversion-open"),
@@ -1392,12 +1442,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     controls = controls.child(vm_lifecycle::history_button(s, &k));
     controls = controls.child(
         Button::new("Search pools")
+            .variant(ButtonVariant::Outline)
             .on_press(search_view::open)
             .build(&k)
             .key("search-pools-open"),
     );
     controls = controls.child(
         Button::new("Snapshot schedules")
+            .variant(ButtonVariant::Outline)
             .disabled(s.inventory.is_none())
             .on_press(snapshot_policy_view::open)
             .build(&k)
@@ -1405,12 +1457,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     );
     controls = controls.child(
         Button::new("Archives")
+            .variant(ButtonVariant::Outline)
             .on_press(transfers::open)
             .build(&k)
             .key("archives-open"),
     );
     controls = controls.child(
         Button::new("Organize")
+            .variant(ButtonVariant::Outline)
             .disabled(s.inventory.is_none())
             .on_press(organization_view::open)
             .build(&k)
@@ -1418,13 +1472,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     );
     controls = controls.child(
         Button::new("Activity")
+            .variant(ButtonVariant::Outline)
             .on_press(activity::open)
             .build(&k)
             .key("activity-open"),
     );
     controls = controls.child(
         Button::new("Disconnect")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .disabled(s.connection.is_none())
             .on_press(profiles_view::disconnect_selected)
             .build(&k)
@@ -1433,6 +1488,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if s.inventory.is_some() {
         controls = controls.child(
             Button::new("Pool")
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| {
                     resource_admin::open_pool(s, resource_admin::Kind::History)
                 })
@@ -1555,7 +1611,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(heading(format!("{} this VM?",action.label()),&k))
             .child(caption(format!("Target: {name}\nUUID: {vm}"),&k).wrap_anywhere())
             .child(caption(if action.is_force() { "This interrupts the guest immediately and can lose unsaved data. A clean shutdown is safer when the guest responds." } else { "The selected power action will be sent to this VM. Current host permissions and power state are checked again before submission." },&k).wrap())
-            .child(row().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.force_action=None).build(&k))
+            .child(row().gap(8.0).justify_end().child(Button::new("Cancel").variant(ButtonVariant::Outline).on_press(|s:&mut State|s.force_action=None).build(&k))
                 .child(Button::new(action.label()).variant(if action.is_force() { ButtonVariant::Danger } else { ButtonVariant::Neutral }).on_press(move|s:&mut State|s.submit_power(vm,action)).build(&k)));
         rune_kit::root(
             base,
@@ -1581,7 +1637,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(caption(format!("VM: {name}"), &k).wrap_anywhere())
             .child(caption("The earlier operation may still be running. Inspect the host and stop other client instances handling it before continuing. Acknowledging releases this client's VM block; it does not cancel the host task or establish its result.", &k).wrap())
             .child(row().gap(8.0).justify_end()
-                .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s:&mut State|s.unknown_review=None).build(&k))
+                .child(Button::new("Cancel").variant(ButtonVariant::Outline).on_press(|s:&mut State|s.unknown_review=None).build(&k))
                 .child(Button::new("Acknowledge outcome").variant(ButtonVariant::Warning)
                     .on_press(move|s:&mut State|{s.control_operation(id,xenadmin_core::OperationControl::AcknowledgeUnknown);s.unknown_review=None;}).build(&k)));
         rune_kit::root(
@@ -1662,7 +1718,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else {
         root
     };
-    root.key("application")
+    let root = root
+        .key("application")
         .on_layout_tx(|s: &mut State, rect, _| {
             if rect[2].is_finite() && rect[2] > 0.0 && (s.window_width - rect[2]).abs() > 0.5 {
                 s.window_width = rect[2];
@@ -1670,7 +1727,64 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             if rect[3].is_finite() && rect[3] > 0.0 && (s.window_height - rect[3]).abs() > 0.5 {
                 s.window_height = rect[3];
             }
+            // At 100 percent the view fills the window, so its size is the window's.
+            if (s.preferences.options.zoom() - 1.0).abs() < 0.005 {
+                s.viewport = [s.window_width, s.window_height];
+            }
+        });
+    zoomed(s, root)
+}
+
+/// Draws the view at the interface zoom: laid out at the window's size divided by the zoom
+/// and drawn that many times larger, so text, controls and spacing scale together and the
+/// narrow-window layouts follow the space that is left. At 100 percent the view is returned
+/// as it is.
+fn zoomed(s: &State, root: El) -> El {
+    let zoom = s.preferences.options.zoom();
+    if (zoom - 1.0).abs() < 0.005 {
+        return root;
+    }
+    el().key("interface-zoom")
+        .w_full()
+        .h_full()
+        .center()
+        .on_layout_tx(|s: &mut State, rect, _| {
+            let size = [rect[2], rect[3]];
+            if size.iter().all(|side| side.is_finite() && *side > 0.0)
+                && (0..2).any(|axis| (s.viewport[axis] - size[axis]).abs() > 0.5)
+            {
+                s.viewport = size;
+            }
         })
+        .child(
+            el().size(s.viewport[0] / zoom, s.viewport[1] / zoom)
+                .scale(zoom)
+                .child(root),
+        )
+}
+
+/// Keys no focused control took: Ctrl with plus, minus or 0 changes the interface size.
+/// A focused console forwards every key to its guest first, so these never fire there.
+fn app_key(s: &mut State, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
+    let pressed = |chords: &[&str]| {
+        chords
+            .iter()
+            .filter_map(|chord| rune::Chord::parse(chord).ok())
+            .any(|chord| chord.matches_tx(event, tx))
+    };
+    let options = s.preferences.options;
+    let scale = if pressed(&["mod+plus", "mod+="]) {
+        options.scale_step(true)
+    } else if pressed(&["mod+minus", "mod+-"]) {
+        options.scale_step(false)
+    } else if pressed(&["mod+0"]) {
+        100
+    } else {
+        return false;
+    };
+    tx.instant();
+    s.set_interface_scale(scale);
+    true
 }
 fn details(s: &State, k: &Kit) -> El {
     let mut detail = col()
@@ -1764,6 +1878,7 @@ fn details(s: &State, k: &Kit) -> El {
     if selected.vm.is_some() || s.page == Page::Hosts || console_view::host(s).is_some() {
         detail = detail.child(
             Button::new("General information")
+                .variant(ButtonVariant::Outline)
                 .on_press(inventory_information::open)
                 .build(k)
                 .key("information-open"),
@@ -1820,7 +1935,6 @@ fn details(s: &State, k: &Kit) -> El {
                 } else {
                     "Start on host…"
                 })
-                .variant(ButtonVariant::Outline)
                 .disabled(!s.snapshot.as_ref().is_some_and(|s| s.is_current()))
                 .on_press(vm_placement::open)
                 .build(k),
@@ -1853,7 +1967,7 @@ fn details(s: &State, k: &Kit) -> El {
         if !s.demo {
             actions = actions.child(
                 Button::new("Check action availability")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .disabled(!s.snapshot.as_ref().is_some_and(|s| s.is_current()))
                     .on_press(State::diagnose_actions)
                     .build(k),
@@ -2006,7 +2120,7 @@ fn details(s: &State, k: &Kit) -> El {
                         "Request cancellation"
                     },
                 )
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(move |s: &mut State| {
                     s.control_operation(id, xenadmin_core::OperationControl::RequestCancellation);
                 })
@@ -2040,7 +2154,7 @@ fn details(s: &State, k: &Kit) -> El {
         .child(el().h(1.0).w_full().fill(k.c.border_weak))
         .child(
             Button::new("Open console")
-                .variant(ButtonVariant::Outline)
+                .variant(ButtonVariant::Contrast)
                 .disabled(!s.can_mutate() || selected.vm.is_none())
                 .on_press(State::open_console)
                 .build(k)
@@ -2100,7 +2214,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
     if !s.accept_invalid_certificates {
         dialog = dialog.child(
             Button::new("Certificate options")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| s.show_certificate_details = !s.show_certificate_details)
                 .build(k)
                 .key("certificate-options"),
@@ -2146,7 +2260,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .gap(8.0)
         .child(
             Button::new("Cancel")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| {
                     profiles_view::cancel_editor(s);
                     s.show_connect = false;
@@ -2157,6 +2271,7 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         )
         .child(
             Button::new("Connect")
+                .variant(ButtonVariant::Contrast)
                 .on_press(State::connect)
                 .build(k)
                 .key("connect"),
@@ -2350,6 +2465,10 @@ fn main() -> std::process::ExitCode {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("interface-large", |s| {
+                demo(s);
+                s.preferences.options.interface_scale = 125;
+            }),
             ("inventory-context", inventory_menu::scene),
             ("general-information", inventory_information::scene),
             ("options", settings::open),
@@ -2533,6 +2652,7 @@ fn main() -> std::process::ExitCode {
             }),
         ],
         min_size: Some((480.0, 640.0)),
+        on_key: Some(app_key),
         ..AppSpec::new("XenAdmin RS", (1440.0, 900.0), init, view)
     };
     let mut app = rune::App::new(spec)
@@ -2870,6 +2990,138 @@ mod tests {
         }
         assert!(rt.find("connect-dialog").is_none());
         assert!(rt.state.password.text.is_empty());
+    }
+
+    #[test]
+    fn interface_size_scales_the_layout_and_follows_ctrl_plus_minus_and_zero() {
+        use rune::{Env, Key, KeyEvent, Mods, Runtime};
+        let mut state = init();
+        demo(&mut state);
+        let mut rt = Runtime::new(
+            state,
+            view,
+            (1440.0, 900.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.on_key = Some(app_key);
+        let settle = |rt: &mut Runtime<State>| {
+            for _ in 0..4 {
+                rt.frame(1.0 / 60.0);
+            }
+        };
+        let ctrl = |c: char| KeyEvent {
+            key: Key::Command(c),
+            mods: Mods {
+                cmd: true,
+                ctrl: true,
+                ..Default::default()
+            },
+        };
+        settle(&mut rt);
+        assert_eq!(rt.state.window_width, 1440.0);
+        assert!(
+            rt.find("interface-zoom").is_none(),
+            "100 percent adds nothing"
+        );
+
+        rt.key(ctrl('='));
+        settle(&mut rt);
+        assert_eq!(rt.state.preferences.options.interface_scale, 110);
+        // The view is laid out in the space that is left, so narrow layouts follow the zoom.
+        assert!((rt.state.window_width - 1440.0 / 1.1).abs() < 1.0);
+        assert!((rt.state.window_height - 900.0 / 1.1).abs() < 1.0);
+        assert_eq!(rt.state.viewport, [1440.0, 900.0]);
+
+        rt.key(ctrl('='));
+        settle(&mut rt);
+        assert_eq!(rt.state.preferences.options.interface_scale, 125);
+        assert!((rt.state.window_width - 1440.0 / 1.25).abs() < 1.0);
+
+        rt.key(ctrl('-'));
+        rt.key(ctrl('-'));
+        rt.key(ctrl('-'));
+        settle(&mut rt);
+        assert_eq!(rt.state.preferences.options.interface_scale, 90);
+        assert!((rt.state.window_width - 1440.0 / 0.9).abs() < 1.0);
+
+        rt.key(ctrl('0'));
+        settle(&mut rt);
+        assert_eq!(rt.state.preferences.options.interface_scale, 100);
+        assert_eq!(rt.state.window_width, 1440.0);
+
+        // The ends of the range hold, and a hand-edited value is brought back into it.
+        let at = |interface_scale| settings::Options {
+            interface_scale,
+            ..Default::default()
+        };
+        assert_eq!(at(200).scale_step(true), 200);
+        assert_eq!(at(80).scale_step(false), 80);
+        assert_eq!(at(5000).zoom(), 2.0);
+        assert_eq!(at(5000).scale_step(false), 200);
+    }
+
+    #[test]
+    fn column_and_sidebar_widths_reach_the_preferences_and_survive_a_table_rebuild() {
+        let mut s = init();
+        demo(&mut s);
+        assert!(!s.capture_layout(), "nothing set yet");
+        s.table.set_column_width("name", 321.0);
+        assert!(s.capture_layout());
+        assert_eq!(s.preferences.columns.get("name"), Some(&321.0));
+        assert!(!s.capture_layout(), "unchanged widths are not a change");
+
+        // Activating a connection rebuilds the table; a width set since the last save used
+        // to be lost there.
+        s.table.set_column_width("state", 150.0);
+        profiles_view::clear_view(&mut s);
+        assert_eq!(s.table.column_width("state"), Some(150.0));
+        assert_eq!(s.table.column_width("name"), Some(321.0));
+
+        // A column put back to its declared width is forgotten too.
+        s.table.reset_column_width("name");
+        assert!(s.capture_layout());
+        assert!(!s.preferences.columns.contains_key("name"));
+        assert_eq!(s.preferences.columns.get("state"), Some(&150.0));
+    }
+
+    #[test]
+    fn widths_are_saved_shortly_after_they_stop_changing_without_waiting_for_close() {
+        use rune::{Env, Runtime};
+        let mut state = init();
+        demo(&mut state);
+        let mut rt = Runtime::new(
+            state,
+            view,
+            (1440.0, 900.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.poll = Some(poll);
+        rt.frame(0.0);
+        assert!(rt.state.layout_changed_at.is_none());
+        rt.state.table.set_column_width("name", 300.0);
+        rt.frame(0.1);
+        assert!(
+            rt.state.layout_changed_at.is_some(),
+            "a change starts the delay"
+        );
+        assert_eq!(rt.state.preferences.columns.get("name"), Some(&300.0));
+        rt.state.table.set_column_width("name", 340.0);
+        rt.frame(0.3);
+        assert!(
+            rt.state.layout_changed_at.is_some(),
+            "a drag keeps deferring"
+        );
+        for _ in 0..8 {
+            rt.frame(0.1);
+        }
+        assert!(rt.state.layout_changed_at.is_none(), "saved once it rests");
+        assert_eq!(rt.state.preferences.columns.get("name"), Some(&340.0));
     }
 
     #[test]

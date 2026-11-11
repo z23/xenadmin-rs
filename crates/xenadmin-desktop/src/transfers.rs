@@ -109,7 +109,6 @@ pub(super) fn export_button(s: &State, source: ExportSource, k: &Kit) -> El {
         .as_ref()
         .is_some_and(|i| action.availability(i).is_available());
     Button::new("Export…")
-        .variant(ButtonVariant::Outline)
         .disabled(!s.demo && !available)
         .on_press(move |s: &mut State| begin(s, Some(source.clone())))
         .build(k)
@@ -471,7 +470,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 )
                 .child(
                     Button::new("Close")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Outline)
                         .on_press(close)
                         .build(k),
                 ),

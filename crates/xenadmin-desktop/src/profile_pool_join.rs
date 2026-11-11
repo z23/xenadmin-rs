@@ -263,7 +263,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     let mut footer = row().gap(8.0).justify_end().child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(close)
             .build(k),
     );
@@ -271,7 +271,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         footer = footer
             .child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         let e = s.workspace.join.as_mut().unwrap();
                         e.review = false;

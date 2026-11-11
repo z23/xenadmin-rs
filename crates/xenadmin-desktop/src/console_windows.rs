@@ -325,7 +325,7 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     console_view::poll_recovery(s, clock, tx) | changed
 }
 fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let k = Kit::neutral(s.preferences.options.appearance.dark(cx.system_dark()));
+    let k = crate::theme::kit(s.preferences.options.appearance.dark(cx.system_dark()));
     cx.reduced_motion(s.preferences.options.reduced_motion || cx.system_reduced_motion());
     let body = if s.console_ui.target().is_some() {
         console_view::view(s, &k)

@@ -606,19 +606,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 ),
         );
     } else {
-        let mut tabs = row()
-            .flex_wrap()
-            .gap(4.0)
-            .role("tablist")
-            .label("Activity views");
+        let mut tabs =
+            crate::theme::tab_strip(k, row().flex_wrap().role("tablist").label("Activity views"));
         for tab in [Tab::Tasks, Tab::Messages, Tab::History] {
             tabs = tabs.child(
                 Button::new(tab.title())
-                    .variant(if tab == a.tab {
-                        ButtonVariant::Neutral
-                    } else {
-                        ButtonVariant::Ghost
-                    })
+                    .variant(crate::theme::tab(tab == a.tab))
                     .on_press(move |s: &mut State| {
                         s.activity.tab = tab;
                         s.activity.state_filter = TextEdit::new("");

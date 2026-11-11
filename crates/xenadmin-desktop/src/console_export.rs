@@ -176,7 +176,7 @@ mod tests {
             |_: &State, cx: &mut rune::Cx<State>| {
                 Button::new("Save")
                     .on_press_tx(choose)
-                    .build(&Kit::neutral(cx.system_dark()))
+                    .build(&crate::theme::kit(cx.system_dark()))
                     .key("save")
             },
             (480.0, 640.0),

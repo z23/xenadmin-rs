@@ -106,7 +106,6 @@ pub(super) fn button(s: &State, id: VmId, k: &Kit) -> El {
     };
     let supported_state = matches!(vm.power_state, PowerState::Running | PowerState::Halted);
     let control = Button::new("Migrate / move VM")
-        .variant(ButtonVariant::Outline)
         .disabled(!supported_state || (!s.demo && !s.can_mutate()))
         .on_press(move |s: &mut State| open(s, id))
         .build(k)
@@ -409,14 +408,14 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     let mut buttons = row().w_full().gap(8.0).child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(close)
             .build(k),
     );
     if f.stage > 0 {
         buttons = buttons.child(
             Button::new("Back")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| {
                     if let Some(f) = s.vm_migration.as_mut() {
                         f.stage -= 1;

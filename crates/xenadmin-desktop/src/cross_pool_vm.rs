@@ -192,7 +192,6 @@ pub(super) fn button(s: &State, id: VmId, k: &Kit) -> El {
         return el();
     }
     Button::new("Move / copy to another pool…")
-        .variant(ButtonVariant::Outline)
         .disabled(!s.can_mutate())
         .on_press(move |s: &mut State| open(s, id))
         .build(k)

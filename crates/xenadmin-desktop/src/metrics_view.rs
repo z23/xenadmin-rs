@@ -40,6 +40,7 @@ pub(super) fn button(s: &State, k: &Kit) -> El {
         return el();
     }
     Button::new("Performance")
+        .variant(ButtonVariant::Outline)
         .disabled(
             !s.demo
                 && !s
@@ -232,11 +233,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     ] {
         controls = controls.child(
             Button::new(period.label())
-                .variant(if view.options.window == period {
-                    ButtonVariant::Outline
-                } else {
-                    ButtonVariant::Ghost
-                })
+                .variant(crate::theme::choice(view.options.window == period))
                 .on_press(move |s: &mut State| window(s, period))
                 .build(k)
                 .key(format!("metrics-window-{}", period.duration_seconds())),

@@ -569,7 +569,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
     }
     let mut buttons = row().w_full().flex_wrap().gap(8.0).justify_end().child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(close)
             .build(k)
             .key("property-cancel"),
@@ -577,7 +577,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
     if f.choice.is_some() {
         buttons = buttons.child(
             Button::new("Back")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| {
                     if let Some(f) = form_mut(s) {
                         if f.review.take().is_none() {

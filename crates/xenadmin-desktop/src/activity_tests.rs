@@ -247,7 +247,7 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
         |_: &State, cx: &mut Cx<State>| {
             Button::new("Export")
                 .on_press_tx(activity_export::choose)
-                .build(&Kit::neutral(cx.system_dark()))
+                .build(&crate::theme::kit(cx.system_dark()))
                 .key("export")
         },
         (480.0, 640.0),

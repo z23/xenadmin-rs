@@ -141,6 +141,7 @@ pub(super) fn button(s: &State, k: &Kit) -> El {
         .zip(s.inventory.as_ref())
         .is_some_and(|(vm, i)| ordinary(i, vm));
     Button::new("Guest SSH, RDP and tools…")
+        .variant(ButtonVariant::Outline)
         .disabled(!available)
         .on_press(open)
         .build(k)

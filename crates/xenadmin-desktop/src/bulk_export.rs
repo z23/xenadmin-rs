@@ -308,7 +308,6 @@ fn submit(s: &mut State) {
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
     Button::new("Export selection…")
-        .variant(ButtonVariant::Ghost)
         .disabled(selected(s).is_err())
         .on_press(open)
         .build(k)
@@ -343,11 +342,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             let selected = e.format == format;
             choices = choices.child(
                 Button::new(label)
-                    .variant(if selected {
-                        ButtonVariant::Outline
-                    } else {
-                        ButtonVariant::Ghost
-                    })
+                    .variant(crate::theme::choice(selected))
                     .disabled(e.pending.is_some())
                     .on_press(move |s: &mut State| change_format(s, format.clone()))
                     .build(k)

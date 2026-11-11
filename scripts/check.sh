@@ -16,6 +16,9 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/demo.png --tree artifacts/demo.json --scene demo --theme dark --size 1440x900 --scale 1
 "$check_binary" --snap artifacts/connect.png --tree artifacts/connect.json --scene connect --theme dark --size 1440x900 --scale 1
 "$check_binary" --snap artifacts/compact.png --tree artifacts/compact.json --scene demo --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/demo-light.png --tree artifacts/demo-light.json --scene demo --theme light --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/interface-large.png --tree artifacts/interface-large.json --scene interface-large --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/interface-large-compact.png --tree artifacts/interface-large-compact.json --scene interface-large --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/connect-insecure.png --tree artifacts/connect-insecure.json --scene connect-insecure --theme dark --size 513x652 --scale 1 --at 1
 
 "$check_binary" --snap artifacts/snapshots.png --tree artifacts/snapshots.json --scene snapshots --theme dark --size 1440x900 --scale 1 --at 1

@@ -113,7 +113,7 @@ pub(super) fn button(help: Option<FailureHelp>, key: impl Into<String>, k: &Kit)
     let key = key.into();
     help.return_focus = key.clone();
     Button::new("Explain outcome…")
-        .variant(ButtonVariant::Ghost)
+        .variant(ButtonVariant::Outline)
         .on_press(move |s: &mut State| {
             console_view::release(s);
             s.failure_help = Some(help.clone());

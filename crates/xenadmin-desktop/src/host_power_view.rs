@@ -373,7 +373,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     let mut footer = row().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.host_power = None)
             .build(k),
     );

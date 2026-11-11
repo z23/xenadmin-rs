@@ -153,7 +153,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .justify_end()
         .child(
             Button::new("Cancel")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::Outline)
                 .on_press(|s: &mut State| s.workspace.reconnect = None)
                 .build(k),
         )

@@ -299,7 +299,6 @@ fn submit(s: &mut State) {
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
     Button::new("Move selection…")
-        .variant(ButtonVariant::Ghost)
         .disabled(selected(s).is_err())
         .on_press(open)
         .build(k)

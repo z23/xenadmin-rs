@@ -66,7 +66,6 @@ pub(super) fn button(s: &State, id: VmId, k: &Kit) -> El {
         return el();
     }
     Button::new("Recovery controls…")
-        .variant(ButtonVariant::Outline)
         .on_press(move |s: &mut State| open(s, id))
         .build(k)
         .key("vm-recovery-open")

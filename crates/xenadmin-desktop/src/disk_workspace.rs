@@ -327,11 +327,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .into_iter()
                     .map(|(mode, label)| {
                         Button::new(label)
-                            .variant(if p.mode == mode {
-                                ButtonVariant::Outline
-                            } else {
-                                ButtonVariant::Ghost
-                            })
+                            .variant(crate::theme::choice(p.mode == mode))
                             .on_press(move |s: &mut State| {
                                 let p = s.disk_workspace.as_mut().unwrap();
                                 p.mode = mode;

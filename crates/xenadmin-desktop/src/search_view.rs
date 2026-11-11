@@ -716,11 +716,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     ] {
         groups = groups.child(
             Button::new(label)
-                .variant(if w.query.group == group {
-                    ButtonVariant::Outline
-                } else {
-                    ButtonVariant::Ghost
-                })
+                .variant(crate::theme::choice(w.query.group == group))
                 .on_press(move |s: &mut State| {
                     edit(s).query.group = group;
                     rebuild(s);

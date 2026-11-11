@@ -122,7 +122,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     }
     let mut controls = row().gap(8.0).justify_end().child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.placement = None)
             .build(k),
     );
@@ -130,7 +130,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         controls = controls
             .child(
                 Button::new("Choose another host")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(p) = &mut s.placement {
                             p.host = None

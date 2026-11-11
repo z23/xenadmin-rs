@@ -439,7 +439,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
 
     let mut controls = row().gap(8.0).flex_wrap().justify_end().child(
         Button::new("Close")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(|s: &mut State| s.host_workspace = None)
             .build(k),
     );
@@ -447,7 +447,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         if w.kind != Kind::Autostart || w.review.is_some() {
             controls = controls.child(
                 Button::new("Back")
-                    .variant(ButtonVariant::Ghost)
+                    .variant(ButtonVariant::Outline)
                     .on_press(|s: &mut State| {
                         if let Some(w) = &mut s.host_workspace {
                             if w.review.take().is_none() {

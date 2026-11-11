@@ -378,7 +378,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> Option<El> {
     }
     let mut controls = row().gap(8.0).justify_end().child(
         Button::new("Cancel")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(close)
             .build(k),
     );

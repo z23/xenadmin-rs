@@ -234,7 +234,7 @@ fn submit(s: &mut State) {
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
     Button::new("Delete selection…")
-        .variant(ButtonVariant::Ghost)
+        .variant(ButtonVariant::Danger)
         .disabled(selected(s).is_err())
         .on_press(open)
         .build(k)
