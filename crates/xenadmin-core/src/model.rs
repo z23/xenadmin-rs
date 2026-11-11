@@ -79,6 +79,25 @@ pub struct Host {
     pub version: String,
 }
 
+impl Host {
+    /// The product line this client's behaviour has been recorded against on a live host.
+    pub const QUALIFIED_RELEASE: &'static str = "8.3";
+
+    /// Whether this host reports a release of the qualified product line (8.3 or 8.3.x).
+    /// Every other answer, including none, means its behaviour here is unrecorded: other
+    /// lines differ in what they advertise and which calls exist.
+    pub fn qualified(&self) -> bool {
+        self.version
+            .strip_prefix(Self::QUALIFIED_RELEASE)
+            .is_some_and(|rest| {
+                rest.is_empty()
+                    || rest.strip_prefix('.').is_some_and(|patch| {
+                        !patch.is_empty() && patch.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+                    })
+            })
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Vm {
     #[serde(default)]

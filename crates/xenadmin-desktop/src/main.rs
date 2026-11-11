@@ -1282,6 +1282,24 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 )),
         );
     }
+    if let Some(notice) = unqualified_hosts_notice(s) {
+        content = content.child(
+            col()
+                .w_full()
+                .padding(10.0)
+                .radius(6.0)
+                .fill(k.c.warning.bg)
+                .border(1.0, k.c.warning.border)
+                .child(
+                    text(notice)
+                        .font(k.ty.text_small)
+                        .color(k.c.warning.fg)
+                        .wrap(),
+                )
+                .role("status")
+                .key("host-version-notice"),
+        );
+    }
     if let Some(error) = s
         .error
         .as_deref()
@@ -1733,6 +1751,38 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             }
         });
     zoomed(s, root)
+}
+
+/// Says so when a connected host is not of the product line this client has been run
+/// against. It restricts nothing: the operator decides what to do on such a host.
+fn unqualified_hosts_notice(s: &State) -> Option<String> {
+    let inventory = s.inventory.as_ref()?;
+    let mut hosts = inventory
+        .hosts
+        .values()
+        .filter(|host| !host.qualified())
+        .map(|host| {
+            if host.version.is_empty() || host.version == "Unknown" {
+                format!("{} (no version reported)", host.name)
+            } else {
+                format!("{} ({})", host.name, host.version)
+            }
+        })
+        .collect::<Vec<_>>();
+    if hosts.is_empty() {
+        return None;
+    }
+    hosts.sort();
+    let more = hosts.len().saturating_sub(3);
+    hosts.truncate(3);
+    let mut listed = hosts.join(", ");
+    if more > 0 {
+        listed.push_str(&format!(" and {more} more"));
+    }
+    Some(format!(
+        "Not qualified on this host version: {listed}. This client has only been run against XCP-ng {}. Looking is safe; treat any change here as untested.",
+        xenadmin_core::Host::QUALIFIED_RELEASE
+    ))
 }
 
 /// Draws the view at the interface zoom: laid out at the window's size divided by the zoom
@@ -2314,6 +2364,12 @@ fn connection_dialog(s: &State, k: &Kit) -> El {
         .child(dialog)
 }
 fn demo(s: &mut State) {
+    demo_sized(s, 3, 48);
+}
+
+/// The synthetic pool at a chosen size, for the demo (3 hosts, 48 guests) and for measuring
+/// the interface on an inventory larger than the lab's.
+fn demo_sized(s: &mut State, host_count: usize, vm_count: usize) {
     external_tools::clear(s);
     s.metrics = None;
     console_view::release(s);
@@ -2355,14 +2411,14 @@ fn demo(s: &mut State) {
     s.host_filter = None;
     let pool_id = PoolId::parse("10000000-0000-0000-0000-000000000001").unwrap();
     let mut hosts = BTreeMap::new();
-    for i in 1..=3 {
+    for i in 1..=host_count {
         let id = HostId::parse(&format!("20000000-0000-0000-0000-{i:012}")).unwrap();
         hosts.insert(
             id,
             Host {
                 id,
                 name: format!("xcp-lab-{i:02}"),
-                address: format!("192.0.2.{}", i + 10),
+                address: format!("192.0.2.{}", (i + 10) % 256),
                 enabled: true,
                 version: "8.3".into(),
             },
@@ -2380,7 +2436,7 @@ fn demo(s: &mut State) {
         "File services",
     ];
     let mut vms = BTreeMap::new();
-    for i in 0..48 {
+    for i in 0..vm_count {
         let id = VmId::parse(&format!("30000000-0000-0000-0000-{i:012}")).unwrap();
         let running = i % 5 != 0;
         vms.insert(
@@ -2400,7 +2456,7 @@ fn demo(s: &mut State) {
                 } else {
                     PowerState::Halted
                 },
-                host: running.then_some(host_ids[i % 3]),
+                host: running.then_some(host_ids[i % host_count]),
                 vcpus: if i % 3 == 0 { 4 } else { 2 },
                 memory_bytes: (2 + i % 4) as u64 * (1 << 30),
                 is_template: false,
@@ -2465,6 +2521,15 @@ fn main() -> std::process::ExitCode {
         poll: Some(poll),
         scenes: &[
             ("demo", demo),
+            ("large-inventory", |s| demo_sized(s, 16, 2000)),
+            ("host-version-notice", |s| {
+                demo(s);
+                let mut inventory = s.inventory.take().unwrap().as_ref().clone();
+                if let Some(host) = inventory.hosts.values_mut().next() {
+                    host.version = "8.2.1".into();
+                }
+                s.inventory = Some(std::sync::Arc::new(inventory));
+            }),
             ("interface-large", |s| {
                 demo(s);
                 s.preferences.options.interface_scale = 125;
@@ -2990,6 +3055,143 @@ mod tests {
         }
         assert!(rt.find("connect-dialog").is_none());
         assert!(rt.state.password.text.is_empty());
+    }
+
+    /// Prints timings for a 16-host, 2,000-guest synthetic pool. Run it in a release build:
+    /// `cargo test --release -p xenadmin-desktop -- --ignored --nocapture measure_large_inventory`.
+    /// It asserts nothing about speed; the numbers go into a dated report.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn measure_large_inventory() {
+        use std::time::Instant;
+        let time = |label: &str, runs: usize, mut work: Box<dyn FnMut()>| {
+            let mut samples = (0..runs)
+                .map(|_| {
+                    let start = Instant::now();
+                    work();
+                    start.elapsed().as_secs_f64() * 1000.0
+                })
+                .collect::<Vec<_>>();
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "{label}: median {:.3} ms, worst {:.3} ms over {runs} runs",
+                samples[runs / 2],
+                samples[runs - 1]
+            );
+        };
+        time(
+            "build the synthetic inventory and its tree and rows",
+            5,
+            Box::new(|| {
+                let mut s = init();
+                demo_sized(&mut s, 16, 2000);
+                assert_eq!(s.rows.len(), 2000);
+            }),
+        );
+        let mut s = init();
+        demo_sized(&mut s, 16, 2000);
+        let state = std::cell::RefCell::new(s);
+        time(
+            "rebuild the tree after an inventory change",
+            20,
+            Box::new(|| state.borrow_mut().rebuild()),
+        );
+        time(
+            "filter 2,000 rows by a name fragment",
+            50,
+            Box::new(|| {
+                let mut s = state.borrow_mut();
+                s.search.text = "orchestra 1".into();
+                s.filter_rows();
+                assert!(!s.rows.is_empty() && s.rows.len() < 2000);
+            }),
+        );
+        time(
+            "clear the filter",
+            50,
+            Box::new(|| {
+                let mut s = state.borrow_mut();
+                s.search.text.clear();
+                s.filter_rows();
+                assert_eq!(s.rows.len(), 2000);
+            }),
+        );
+        let mut rt = rune::Runtime::new(
+            state.into_inner(),
+            view,
+            (1440.0, 900.0),
+            rune::Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        let start = Instant::now();
+        rt.frame(0.0);
+        println!(
+            "first frame (view, layout and display list on the CPU): {:.3} ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+        let mut frames = (0..120)
+            .map(|_| {
+                let start = Instant::now();
+                rt.frame(1.0 / 60.0);
+                start.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect::<Vec<_>>();
+        frames.sort_by(f64::total_cmp);
+        println!(
+            "steady frames: median {:.3} ms, 95th percentile {:.3} ms, worst {:.3} ms over 120",
+            frames[60], frames[114], frames[119]
+        );
+    }
+
+    #[test]
+    fn hosts_outside_the_qualified_release_are_named_in_a_notice() {
+        let host = |version: &str| xenadmin_core::Host {
+            id: uuid::Uuid::from_u128(7).into(),
+            name: "h".into(),
+            address: String::new(),
+            enabled: true,
+            version: version.into(),
+        };
+        for version in ["8.3", "8.3.0", "8.3.12"] {
+            assert!(host(version).qualified(), "{version}");
+        }
+        for version in ["8.2.1", "8.30", "8.3-rc1", "8.3.", "9.0", "", "Unknown"] {
+            assert!(!host(version).qualified(), "{version}");
+        }
+
+        let mut s = init();
+        demo(&mut s);
+        assert!(
+            unqualified_hosts_notice(&s).is_none(),
+            "the demo pool is 8.3"
+        );
+        let mut inventory = s.inventory.take().unwrap().as_ref().clone();
+        let mut names = Vec::new();
+        for (index, host) in inventory.hosts.values_mut().enumerate() {
+            if index < 2 {
+                host.version = if index == 0 { "8.2.1" } else { "Unknown" }.into();
+                names.push(host.name.clone());
+            }
+        }
+        s.inventory = Some(std::sync::Arc::new(inventory));
+        let notice = unqualified_hosts_notice(&s).expect("two hosts are outside 8.3");
+        assert!(notice.contains("8.2.1") && notice.contains("no version reported"));
+        assert!(names.iter().all(|name| notice.contains(name)));
+        assert!(notice.contains("XCP-ng 8.3"));
+
+        let mut rt = rune::Runtime::new(
+            s,
+            view,
+            (1440.0, 900.0),
+            rune::Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(rt.find("host-version-notice").is_some());
     }
 
     #[test]
