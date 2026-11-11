@@ -113,6 +113,9 @@ check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --
 "$check_binary" --snap artifacts/storage-auth-review-compact.png --tree artifacts/storage-auth-review-compact.json --scene storage-auth-review --theme dark --size 513x652 --scale 1 --at 1
 
 "$check_binary" --snap artifacts/console-recovery.png --tree artifacts/console-recovery.json --scene console-recovery --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/console-frame.png --tree artifacts/console-frame.json --scene console-frame --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/console-actual-size.png --tree artifacts/console-actual-size.json --scene console-actual-size --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/console-actual-size-compact.png --tree artifacts/console-actual-size-compact.json --scene console-actual-size --theme dark --size 513x652 --scale 1 --at 1
 
 "$check_binary" --snap artifacts/console-recovery-compact.png --tree artifacts/console-recovery-compact.json --scene console-recovery --theme dark --size 513x652 --scale 1 --at 1
 

@@ -1203,6 +1203,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                             s.filter_rows();
                         })
                         .clear_button()
+                        // The kit draws the clear button but leaves its press to the application.
+                        .on_action(|s: &mut State, _| {
+                            s.search.clear();
+                            s.table.clear_selection();
+                            s.row_menu = None;
+                            s.filter_rows();
+                        })
                         .build(&k)
                         .w(if s.window_width < 800.0 { 180.0 } else { 270.0 })
                         .key("search"),
@@ -2358,6 +2365,8 @@ fn main() -> std::process::ExitCode {
             ("batch-move", bulk_move::scene),
             ("batch-export", bulk_export::scene),
             ("console-recovery", console_view::recovery_scene),
+            ("console-frame", console_view::frame_scene),
+            ("console-actual-size", console_view::actual_size_scene),
             ("multiple-consoles", console_windows::multiple_scene),
             ("guest-connections", |s| external_tools::scene(s, false)),
             ("external-tools", |s| external_tools::scene(s, true)),
@@ -2861,6 +2870,47 @@ mod tests {
         }
         assert!(rt.find("connect-dialog").is_none());
         assert!(rt.state.password.text.is_empty());
+    }
+
+    #[test]
+    fn search_clear_button_empties_the_search_and_restores_every_row() {
+        use rune::{Env, Key, Runtime};
+        let mut state = init();
+        demo(&mut state);
+        let mut rt = Runtime::new(
+            state,
+            view,
+            (1440.0, 900.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.frame(0.0);
+        let all = rt.state.rows.len();
+        let (x, y) = rt.find("search").expect("search field is visible");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.key(Key::Text("Xen Orchestra".into()).into());
+        rt.frame(0.0);
+        assert!(rt.state.rows.len() < all, "the search narrows the table");
+        // The live desktop showed this button doing nothing: the kit only draws it.
+        let clear = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("action") && e.path.contains("search"))
+            .expect("the search field has a clear button");
+        assert_eq!(clear.label.as_deref(), Some("Clear"));
+        let (x, y) = (
+            clear.rect[0] + clear.rect[2] * 0.5,
+            clear.rect[1] + clear.rect[3] * 0.5,
+        );
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert!(rt.state.search.text.is_empty(), "Clear empties the search");
+        assert_eq!(rt.state.rows.len(), all, "every row is listed again");
     }
 
     #[test]

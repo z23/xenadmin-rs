@@ -95,6 +95,49 @@ pub(super) fn recovery_scene(s: &mut State) {
     }));
 }
 
+/// A connected console showing a synthetic 800 by 600 frame. The recovery scene has no
+/// frame, so without this the headless renders never draw the console canvas itself.
+pub(super) fn frame_scene(s: &mut State) {
+    recovery_scene(s);
+    let (width, height) = (800_u16, 600_u16);
+    let mut rgba = Vec::with_capacity(usize::from(width) * usize::from(height) * 4);
+    for y in 0..height {
+        for x in 0..width {
+            // A light border marks the frame's edges; the gradient shows its orientation.
+            let edge = x < 4 || y < 4 || x >= width - 4 || y >= height - 4;
+            let (r, g, b) = if edge {
+                (230, 230, 230)
+            } else {
+                (
+                    (u32::from(x) * 255 / u32::from(width)) as u8,
+                    (u32::from(y) * 255 / u32::from(height)) as u8,
+                    96,
+                )
+            };
+            rgba.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    s.console_pixels
+        .set(u32::from(width), u32::from(height), rgba.clone());
+    s.console_snapshot = Some(std::sync::Arc::new(xenadmin_core::ConsoleSnapshot {
+        state: ConsoleState::Connected,
+        frame: Some(std::sync::Arc::new(xenadmin_core::ConsoleFrame {
+            width,
+            height,
+            rgba: rgba.into(),
+        })),
+        cursor: None,
+        guest_clipboard: None,
+        clipboard_utf8: false,
+        extended_keys: true,
+    }));
+}
+/// The same frame at its own size inside the panning view.
+pub(super) fn actual_size_scene(s: &mut State) {
+    frame_scene(s);
+    s.console_ui.actual_size = true;
+}
+
 fn next_serial() -> u64 {
     static SERIAL: AtomicU64 = AtomicU64::new(1);
     SERIAL.fetch_add(1, Ordering::Relaxed)
@@ -144,16 +187,30 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         }
         _ => "Opening the host console…".into(),
     };
-    let mut canvas = el()
+    // Actual size shows the frame at its own dimensions inside a panning view. A canvas that
+    // also asked for the full width resolved to zero width there, because the panning view's
+    // content has no definite width to take a share of; so each mode sets its own sizing.
+    let actual_frame = s
+        .console_ui
+        .actual_size
+        .then(|| s.console_snapshot.as_ref()?.frame.as_ref())
+        .flatten()
+        .map(|frame| (f32::from(frame.width), f32::from(frame.height)));
+    let canvas = el()
         .key("console-canvas")
         .role("application")
         .label("VM console. Click to send keyboard and pointer input")
         .focusable(true)
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .fill(rune::Color::BLACK)
-        .pixels_fit(&s.console_pixels, SurfaceFit::Fit)
+        .fill(rune::Color::BLACK);
+    let canvas = match actual_frame {
+        Some((width, height)) => canvas.w(width).h(height).pixels(&s.console_pixels),
+        None => canvas
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .pixels_fit(&s.console_pixels, SurfaceFit::Fit),
+    };
+    let mut canvas = canvas
         .on_layout_tx(|s: &mut State, rect, tx| {
             s.console_bounds = [rect[2], rect[3]];
             tx.live_only();
@@ -163,7 +220,12 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .on_physical_input(|s: &mut State, event, tx| {
             match event {
                 PhysicalInput::FocusLost => release(s),
-                PhysicalInput::Key { key, pressed, .. } => {
+                PhysicalInput::Key {
+                    key,
+                    pressed,
+                    repeat,
+                    ..
+                } => {
                     if let Some(keycode) = scancode(*key) {
                         let special = match key {
                             PhysicalKeyCode::CapsLock => Some(0xffe5),
@@ -177,14 +239,18 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                         if special.is_some()
                             || s.console_snapshot.as_ref().is_some_and(|x| x.extended_keys)
                         {
-                            send(
-                                s,
-                                ConsoleInput::PhysicalKey {
-                                    keysym: special.unwrap_or(0),
-                                    keycode,
-                                    down: *pressed,
-                                },
-                            );
+                            let keysym = special.unwrap_or(0);
+                            if track_physical(&mut s.console_keys, *key, keysym, *pressed, *repeat)
+                            {
+                                send(
+                                    s,
+                                    ConsoleInput::PhysicalKey {
+                                        keysym,
+                                        keycode,
+                                        down: *pressed,
+                                    },
+                                );
+                            }
                             tx.live_only();
                             return true;
                         }
@@ -250,15 +316,6 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             tx.live_only();
             true
         });
-    if s.console_ui.actual_size
-        && let Some(frame) = s.console_snapshot.as_ref().and_then(|x| x.frame.as_ref())
-    {
-        canvas = canvas
-            .w(f32::from(frame.width))
-            .h(f32::from(frame.height))
-            .grow(0.0)
-            .pixels(&s.console_pixels);
-    }
     if let Some(cursor) = s.console_snapshot.as_ref().and_then(|x| x.cursor.as_ref()) {
         canvas = canvas.cursor(rune::Cursor::Hidden);
         if cursor.width > 0 && cursor.height > 0 {
@@ -280,7 +337,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             );
         }
     }
-    let canvas = if s.console_ui.actual_size {
+    let canvas = if actual_frame.is_some() {
         el().w_full().grow(1.0).min_h(0.0).scroll_xy().child(canvas)
     } else {
         canvas
@@ -618,6 +675,32 @@ fn key(s: &mut State, event: &KeyEvent, tx: &mut Tx, down: bool) -> bool {
         false
     }
 }
+/// Records which physical keys this console holds down in the guest and says whether an
+/// event should be forwarded. A repeat of a key that is not held here is dropped: once a
+/// focus loss has released every key, a repeat already in flight would press it again.
+fn track_physical(
+    held: &mut Vec<(PhysicalKeyCode, u32)>,
+    key: PhysicalKeyCode,
+    keysym: u32,
+    pressed: bool,
+    repeat: bool,
+) -> bool {
+    let position = held.iter().position(|(existing, _)| *existing == key);
+    match (pressed, position) {
+        (true, None) if repeat => false,
+        (true, None) => {
+            held.push((key, keysym));
+            true
+        }
+        (true, Some(_)) => true,
+        (false, Some(index)) => {
+            held.remove(index);
+            true
+        }
+        // A release for a key this console does not hold is harmless to forward.
+        (false, None) => true,
+    }
+}
 fn scancode(key: PhysicalKeyCode) -> Option<u32> {
     use PhysicalKeyCode::*;
     Some(match key {
@@ -784,6 +867,74 @@ mod tests {
         recovery_scene(&mut s);
         assert!(!s.console_ui.actual_size);
         assert!(s.console_ui.recovery.enabled);
+    }
+    #[test]
+    fn a_repeat_after_release_does_not_press_the_key_again() {
+        use PhysicalKeyCode::{KeyA, KeyB};
+        let mut held = Vec::new();
+        assert!(track_physical(&mut held, KeyA, 0, true, false), "press");
+        assert!(
+            track_physical(&mut held, KeyA, 0, true, true),
+            "repeat while held"
+        );
+        // Focus loss releases everything; the live desktop then saw one more press arrive.
+        held.clear();
+        assert!(
+            !track_physical(&mut held, KeyA, 0, true, true),
+            "a repeat of a released key is dropped"
+        );
+        assert!(held.is_empty());
+        assert!(
+            track_physical(&mut held, KeyA, 0, false, false),
+            "stray release"
+        );
+        assert!(track_physical(&mut held, KeyB, 0, true, false));
+        assert!(track_physical(&mut held, KeyB, 0, false, false));
+        assert!(held.is_empty());
+    }
+    #[test]
+    fn the_console_canvas_is_laid_out_in_fit_and_actual_size_modes() {
+        let rect = |scene: fn(&mut State)| {
+            let mut state = crate::init();
+            scene(&mut state);
+            let mut runtime = rune::Runtime::new(
+                state,
+                crate::view,
+                (1440.0, 900.0),
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            for _ in 0..30 {
+                runtime.frame(1.0 / 60.0);
+            }
+            let canvas = runtime
+                .elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("console-canvas"))
+                .expect("the console canvas is part of the view");
+            (canvas.rect, runtime.state.console_bounds)
+        };
+        let (fit, fit_bounds) = rect(frame_scene);
+        assert!(
+            fit[2] > 400.0 && fit[3] > 300.0,
+            "fit fills the panel: {fit:?}"
+        );
+        assert_eq!(fit_bounds, [fit[2], fit[3]]);
+        // The live desktop showed an empty panel here: the canvas had resolved to zero width.
+        let (actual, actual_bounds) = rect(actual_size_scene);
+        assert_eq!(
+            [actual[2], actual[3]],
+            [800.0, 600.0],
+            "actual size shows the frame at its own dimensions"
+        );
+        assert_eq!(actual_bounds, [800.0, 600.0]);
+        assert_eq!(
+            [actual[0], actual[1]],
+            [fit[0], fit[1]],
+            "the frame starts at the view's origin"
+        );
     }
     #[test]
     fn pointer_matches_letterboxing_actual_size_and_resize() {

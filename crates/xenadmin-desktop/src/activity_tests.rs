@@ -101,6 +101,38 @@ fn message_review_keeps_original_content_digest_when_selection_or_inventory_chan
     assert!(s.resource_operations.is_empty());
 }
 #[test]
+fn clear_buttons_empty_the_activity_filters_and_restore_the_rows() {
+    let mut s = state();
+    assert_eq!(s.activity.rows.len(), 2);
+    s.activity.search = TextEdit::new("Synthetic task 1");
+    s.activity.state_filter = TextEdit::new("pending");
+    rebuild(&mut s);
+    assert_eq!(s.activity.rows.len(), 1);
+    let mut rt = runtime(s, (1440.0, 900.0));
+    // The kit only draws these buttons; each press is the application's to handle.
+    for (field, cleared) in [("activity-search", 0), ("activity-state-filter", 1)] {
+        let clear = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("action") && e.path.contains(field))
+            .unwrap_or_else(|| panic!("{field} has a clear button"));
+        let (x, y) = (
+            clear.rect[0] + clear.rect[2] * 0.5,
+            clear.rect[1] + clear.rect[3] * 0.5,
+        );
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        settle(&mut rt);
+        if cleared == 0 {
+            assert!(rt.state.activity.search.text.is_empty());
+            assert_eq!(rt.state.activity.state_filter.text, "pending");
+        } else {
+            assert!(rt.state.activity.state_filter.text.is_empty());
+        }
+    }
+    assert_eq!(rt.state.activity.rows.len(), 2);
+}
+#[test]
 fn filters_cover_message_body_priority_task_state_and_cached_pools() {
     let mut s = state();
     assert_eq!(s.activity.rows.len(), 2);

@@ -639,6 +639,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .on_edit(|s: &mut State| &mut s.activity.search)
                         .on_change(|s: &mut State, _| rebuild(s))
                         .clear_button()
+                        .on_action(|s: &mut State, _| {
+                            s.activity.search.clear();
+                            rebuild(s);
+                        })
                         .build(k)
                         .w(260.0)
                         .max_w((s.window_width - 80.0).max(200.0))
@@ -659,6 +663,10 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                         .on_edit(|s: &mut State| &mut s.activity.state_filter)
                         .on_change(|s: &mut State, _| rebuild(s))
                         .clear_button()
+                        .on_action(|s: &mut State, _| {
+                            s.activity.state_filter.clear();
+                            rebuild(s);
+                        })
                         .build(k)
                         .w(150.0)
                         .key("activity-state-filter"),
