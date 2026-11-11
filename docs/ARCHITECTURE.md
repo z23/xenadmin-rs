@@ -18,8 +18,11 @@ Rust in `crates/xenadmin-core/src/lib.rs` and the re-exported types.
   and preserves task references across reconnects. Snapshot task results are durably recorded
   before UUID/parent verification; verification can resume without the original task record. There is currently one connection in the
   UI; core connections resolving to the same pool are not deduplicated yet.
-- `xapi.rs` contains a bounded, handwritten decoder for the initial five event classes;
-  matching-schema generated bindings and the full device graph remain planned.
+- `xapi.rs` contains a bounded, handwritten decoder for the initial five event classes.
+  Its record reads go through hand-written views, and every call, field and view is
+  checked against the upstream description of the qualified toolstack's API, which is
+  fetched for the check and not stored ([decision](decisions/0004-checked-bindings.md)).
+  The full device graph remains planned.
 - `console.rs` owns an authenticated CONNECT stream, `vnc-rs` decoding, latest RGBA frames,
   and bounded ordered input. `console_view.rs` maps Rune events and presents `Pixels`.
 - The alpha has no metrics worker, bulk transfers, keyring storage, or multi-object workflows.
@@ -63,8 +66,7 @@ Keep these workspace boundaries small:
 | `tools/host-probe` | CLI consumer of the core for protocol qualification and lab acceptance |
 | `crates/xenadmin-core/tests` | Local controllable HTTP, TLS, and RFB protocol fixtures |
 
-Raw wire records and future generated bindings stay inside the core's private `xapi`
-module. A view cannot bypass the application facade.
+Raw wire records and their views stay inside the core's private `xapi` modules. A view cannot bypass the application facade.
 Avoid separate controller, repository, and service layers that forward the same calls.
 
 ## Caller's view

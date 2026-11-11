@@ -86,9 +86,11 @@ as QEMU extended key events from the desktop, and pointer position and buttons t
 read back exactly; JSON-RPC login, coordinator redirects and the `event.from` bootstrap run
 against those hosts in every live scenario. Non-US layouts, guest framebuffer resize, cursor
 shapes, the wheel's direction and clipboard negotiation against a real guest remain
-unqualified. The decoder is still handwritten: M0's matching-schema API export and
-generated bindings have not been selected, and no XML-RPC transport exists for hosts
-without JSON-RPC.
+unqualified. The decoder is still handwritten. The matching API description has been
+selected, the upstream generator's JSON output at the lab's toolstack tag, and the client's
+calls, fields and record views are checked against it; nothing generated from it is
+stored, by the operator's decision ([decision](decisions/0004-checked-bindings.md)). No
+XML-RPC transport exists for hosts without JSON-RPC.
 
 Later reports must distinguish successful tests from untested requirements. Production
 access, host versions, credentials, and a lab were not supplied during planning; the

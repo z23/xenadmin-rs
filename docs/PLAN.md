@@ -301,6 +301,7 @@ list below is the minimum for that, with its state on 2026-11-11.
 
 The operator decided on 2026-11-11 to release this state as 0.18.0, a beta, cut from the
 main branch and published once the packages the tag workflow built had been checked. It
-was published that day ([release report](reports/2026-11-11-release-0.18.md)). Generated
-bindings are the next piece of work and have been started on the `generated-bindings`
-branch.
+was published that day ([release report](reports/2026-11-11-release-0.18.md)). The
+next piece of work is the bindings: checked against the upstream API description and
+written by hand, since the operator decided to store nothing derived from that
+LGPL-licensed description ([decision](decisions/0004-checked-bindings.md)).

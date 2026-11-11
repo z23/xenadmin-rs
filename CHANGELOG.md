@@ -12,7 +12,10 @@ checkpoints.
 
 Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.0.
 
-Nothing has changed for someone running the client yet.
+Nothing has changed for someone running the client yet. Inside, the calls and record
+fields the client names are now checked against the upstream description of the
+qualified toolstack's API, and the core's event decoder reads records through views that
+the same check covers.
 
 ## 0.18.0 (2026-11-11)
 
