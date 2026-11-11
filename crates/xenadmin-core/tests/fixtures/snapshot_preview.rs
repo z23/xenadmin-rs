@@ -41,7 +41,8 @@ async fn result(
 #[tokio::test]
 async fn snapshot_preview_facade_allows_readonly_and_rejects_another_connection_generation() {
     let server = preview_mock(Default::default(), Default::default(), Default::default()).await;
-    let backend = Backend::start().unwrap();
+    let backend_state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(backend_state.path().into()).unwrap();
     let mut options = ConnectionOptions::new(server.endpoint.clone());
     options.read_only = true;
     let connection = backend.connect(
@@ -58,7 +59,8 @@ async fn snapshot_preview_facade_allows_readonly_and_rejects_another_connection_
             .unwrap()
             .is_none()
     );
-    let other_backend = Backend::start().unwrap();
+    let other_backend_state = tempfile::tempdir().unwrap();
+    let other_backend = Backend::with_state_directory(other_backend_state.path().into()).unwrap();
     let other = other_backend.connect(options, Credentials::new("root".into(), "fixture".into()));
     other.wait_ready(deadline(3)).await.unwrap();
     assert!(matches!(
@@ -75,7 +77,8 @@ async fn snapshot_preview_pending_read_is_cancelled_by_connection_retirement() {
     let entered = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let server = preview_mock(block.clone(), entered.clone(), release.clone()).await;
-    let backend = Backend::start().unwrap();
+    let backend_state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(backend_state.path().into()).unwrap();
     let connection = backend.connect(
         ConnectionOptions::new(server.endpoint.clone()),
         Credentials::new("root".into(), "fixture".into()),
@@ -114,7 +117,8 @@ async fn snapshot_upload_requires_write_access_generation_and_local_creation_evi
         xenadmin_core::SnapshotPreviewImage::from_png(bytes).unwrap()
     }
     let server = preview_mock(Default::default(), Default::default(), Default::default()).await;
-    let backend = Backend::start().unwrap();
+    let backend_state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(backend_state.path().into()).unwrap();
     let mut options = ConnectionOptions::new(server.endpoint.clone());
     options.read_only = true;
     let connection = backend.connect(
@@ -135,7 +139,8 @@ async fn snapshot_upload_requires_write_access_generation_and_local_creation_evi
         Err(xenadmin_core::Error::ReadOnly)
     ));
     options.read_only = false;
-    let other_backend = Backend::start().unwrap();
+    let other_backend_state = tempfile::tempdir().unwrap();
+    let other_backend = Backend::with_state_directory(other_backend_state.path().into()).unwrap();
     let other = other_backend.connect(options, Credentials::new("root".into(), "fixture".into()));
     other.wait_ready(deadline(3)).await.unwrap();
     assert!(matches!(

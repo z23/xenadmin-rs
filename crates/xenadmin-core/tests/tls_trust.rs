@@ -74,7 +74,8 @@ async fn attempt(pin: Option<bool>, insecure: bool) -> (String, bool) {
             }
         })
         .map(|pin| pin.parse().unwrap());
-    let backend = Backend::start().unwrap();
+    let backend_state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(backend_state.path().into()).unwrap();
     let connection = backend.connect(
         options,
         Credentials::new("fixture".into(), "not-a-real-password".into()),
