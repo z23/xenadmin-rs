@@ -19189,6 +19189,400 @@ async fn lab_xo_network_fault_is_diagnosed_and_repaired_through_the_direct_conne
     }
 }
 
+/// The area in which two console frames differ, as top, left, rows and columns in pixels:
+/// the whole frame when their sizes differ, none when they are the same.
+fn changed_area(
+    a: &xenadmin_core::ConsoleFrame,
+    b: &xenadmin_core::ConsoleFrame,
+) -> Option<(usize, usize, usize, usize)> {
+    if (a.width, a.height) != (b.width, b.height) {
+        return Some((0, 0, usize::from(b.height), usize::from(b.width)));
+    }
+    let width = usize::from(a.width);
+    let (mut top, mut bottom, mut left, mut right) = (usize::MAX, 0, usize::MAX, 0);
+    for (index, (p, q)) in a.rgba.chunks(4).zip(b.rgba.chunks(4)).enumerate() {
+        if p != q {
+            let (row, column) = (index / width, index % width);
+            top = top.min(row);
+            bottom = bottom.max(row);
+            left = left.min(column);
+            right = right.max(column);
+        }
+    }
+    (top != usize::MAX).then(|| (top, left, bottom - top + 1, right - left + 1))
+}
+
+/// The character a key press drew on a text console with 8 by 16 pixel cells: the top 14
+/// rows of the cell that changed between two frames, which leaves out the cursor's rows.
+/// None when nothing changed or more than that cell and the cursor's next one did.
+fn typed_glyph(
+    before: &xenadmin_core::ConsoleFrame,
+    after: &xenadmin_core::ConsoleFrame,
+) -> Option<Vec<u8>> {
+    let (top, left, rows, columns) = changed_area(before, after)?;
+    if rows > 16 || columns > 16 {
+        return None;
+    }
+    let (x, y, width) = (left / 8 * 8, top / 16 * 16, usize::from(after.width));
+    if x + 8 > width || y + 14 > usize::from(after.height) {
+        return None;
+    }
+    let mut glyph = Vec::with_capacity(8 * 14 * 4);
+    for row in y..y + 14 {
+        let start = (row * width + x) * 4;
+        glyph.extend_from_slice(&after.rgba[start..start + 32]);
+    }
+    Some(glyph)
+}
+
+/// Opens a guest's console and waits for its first frame.
+async fn open_guest_console(
+    c: &Connection,
+    vm: xenadmin_core::VmId,
+) -> Result<xenadmin_core::Console, String> {
+    let console = c
+        .latest()
+        .observe_vm(vm)
+        .map_err(|e| e.to_string())
+        .and_then(|target| c.open_console(target).map_err(|e| e.to_string()))?;
+    let connected = tokio::time::timeout(deadline(120), async {
+        loop {
+            let snapshot = console.latest();
+            if snapshot.state == xenadmin_core::ConsoleState::Connected && snapshot.frame.is_some()
+            {
+                return true;
+            }
+            if matches!(snapshot.state, xenadmin_core::ConsoleState::Failed(_)) {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
+    if connected {
+        Ok(console)
+    } else {
+        let state = format!("{:?}", console.latest().state);
+        console.close();
+        Err(format!("the console did not connect: {state}"))
+    }
+}
+
+/// Sends `keys` to a console and reads what they drew within three seconds: the character,
+/// when exactly one appeared, and the size of the screen area that changed.
+async fn typed_character(
+    console: &xenadmin_core::Console,
+    keys: &[xenadmin_core::ConsoleInput],
+) -> (Option<Vec<u8>>, Value) {
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let before = console.latest().frame.clone();
+    for key in keys {
+        if let Err(error) = console.input(key.clone()) {
+            return (None, json!({"sent": false, "error": error.to_string()}));
+        }
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let after = console.latest().frame.clone();
+    let (Some(before), Some(after)) = (before, after) else {
+        return (None, json!({"sent": true, "error": "no frame"}));
+    };
+    let area = changed_area(&before, &after);
+    (
+        typed_glyph(&before, &after),
+        json!({"sent": true, "changed_rows": area.map(|a| a.2), "changed_columns": area.map(|a| a.3)}),
+    )
+}
+
+/// P04-02, P04-07, V19: a console connection lost while a modifier key is held. At the tools
+/// guest's login prompt the scenario first reads the character the screen shows for a plain
+/// `d` and for the same key with Shift. It then presses Shift without releasing it and
+/// live-migrates the guest to the other host, which ends the console connection under the
+/// held key. On a new console to the migrated guest a plain `d` must again read as the
+/// lower-case character: the upper-case one means the guest still holds Shift. It repeats
+/// that with a restart of the toolstack on the guest's host in place of the migration,
+/// where nothing suspends the guest. When a character reads wrong, Shift is released by
+/// hand and the key typed again, which shows whether a release alone cures it. The guest is
+/// migrated back at the end. No password is typed and nothing is submitted at the prompt.
+#[tokio::test]
+#[ignore]
+async fn lab_console_lost_while_a_modifier_is_held_leaves_no_stuck_key() {
+    use xenadmin_core::{
+        ConsoleInput, DiskPlacement, NicPlacement, PowerState, VmCommand, VmMigration,
+    };
+    const SHIFT: u32 = 0xffe1;
+    const LETTER: u32 = 0x64;
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let Some(guest) = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-tools-") && !v.is_template)
+        .cloned()
+    else {
+        eprintln!("no tools guest on shared storage; run lab_tools_guest_on_shared_storage first");
+        c.close().await;
+        return;
+    };
+    let vm = guest.id;
+    assert_eq!(
+        guest.power_state,
+        PowerState::Running,
+        "the tools guest must be running"
+    );
+    let home = guest.host.expect("resident host");
+    let away = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| *h != home)
+        .expect("a second pool host");
+    let mut steps = Vec::new();
+    let migrate = |destination: HostId| {
+        let c = &c;
+        async move {
+            let now = c.latest().inventory().unwrap().clone();
+            let disks = now.details.vm_disks[&vm]
+                .iter()
+                .filter_map(|b| now.details.vbds.get(b))
+                .filter(|b| b.kind == "Disk")
+                .filter_map(|b| {
+                    let vdi = b.vdi?;
+                    let sr = now.details.vdis.get(&vdi)?.sr?;
+                    Some(DiskPlacement {
+                        vdi,
+                        expected_sr: sr,
+                        destination_sr: sr,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let networks = now
+                .details
+                .vifs
+                .values()
+                .filter(|v| v.vm == Some(vm))
+                .filter_map(|v| {
+                    let network = v.network?;
+                    Some(NicPlacement {
+                        vif: v.id,
+                        expected_network: network,
+                        destination_network: network,
+                    })
+                })
+                .collect::<Vec<_>>();
+            settle(60, || {
+                c.latest().inventory().is_some_and(|i| {
+                    i.details.vms.get(&vm).is_some_and(|d| {
+                        d.allowed_operations
+                            .as_ref()
+                            .is_some_and(|ops| ops.iter().any(|op| op == "pool_migrate"))
+                    })
+                })
+            })
+            .await;
+            let started = std::time::Instant::now();
+            let migration = c
+                .submit(
+                    OperationId::new(),
+                    VmCommand::Migrate {
+                        vm: c.latest().observe_vm(vm).unwrap(),
+                        operation: VmMigration {
+                            destination,
+                            expected_host: now.vms[&vm].host,
+                            expected_affinity: None,
+                            live: true,
+                            disks,
+                            networks,
+                            transfer_network: None,
+                        },
+                    },
+                )
+                .expect("migration accepted");
+            let row = wait_vm_outcome(&migration, 900).await;
+            let placed = settle(120, || {
+                c.latest().inventory().is_some_and(|i| {
+                    i.vms[&vm].host == Some(destination)
+                        && i.vms[&vm].power_state == PowerState::Running
+                })
+            })
+            .await;
+            json!({"accepted": true, "state": format!("{:?}", row.state), "detail": row.detail,
+                   "read_back": placed, "elapsed_ms": started.elapsed().as_millis() as u64})
+        }
+    };
+    let key = |keysym: u32, down: bool| ConsoleInput::Key { keysym, down };
+    let plain = [key(LETTER, true), key(LETTER, false)];
+
+    // The two reference characters on the first console. The first frames of a console
+    // arrive in pieces, so one measurement with no key passes before the ones that count.
+    let console = open_guest_console(&c, vm).await.expect("console");
+    let painting = typed_character(&console, &[]).await.1;
+    let (lower, lower_screen) = typed_character(&console, &plain).await;
+    let (upper, upper_screen) = typed_character(
+        &console,
+        &[
+            key(SHIFT, true),
+            key(LETTER, true),
+            key(LETTER, false),
+            key(SHIFT, false),
+        ],
+    )
+    .await;
+    let told_apart = lower.is_some() && upper.is_some() && lower != upper;
+    note(
+        &mut steps,
+        json!({"step": "the screen tells a plain letter from the same letter with Shift", "read_back": told_apart,
+               "initial_painting": painting, "plain_letter": lower_screen, "letter_with_shift": upper_screen}),
+    );
+    let read = |glyph: &Option<Vec<u8>>| {
+        if glyph.is_some() && *glyph == lower {
+            "lower case"
+        } else if glyph.is_some() && *glyph == upper {
+            "upper case"
+        } else {
+            "something else"
+        }
+    };
+    // A plain letter on a new console to the guest: lower case, or upper case when the
+    // guest still holds Shift.
+    let plain_letter_on_a_new_console = |label: &'static str| {
+        let (c, plain, read) = (&c, plain.clone(), &read);
+        async move {
+            let mut opened = open_guest_console(c, vm).await;
+            for _ in 0..3 {
+                if opened.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                opened = open_guest_console(c, vm).await;
+            }
+            match opened {
+                Ok(console) => {
+                    let painting = typed_character(&console, &[]).await.1;
+                    let (glyph, screen) = typed_character(&console, &plain).await;
+                    let seen = read(&glyph);
+                    let mut released = json!(null);
+                    if seen != "lower case" {
+                        let _ = console.input(key(SHIFT, false));
+                        let (again, screen) = typed_character(&console, &plain).await;
+                        released = json!({"read": read(&again), "screen": screen});
+                    }
+                    (
+                        Some(console),
+                        json!({"step": label, "read_back": seen == "lower case", "read": seen, "screen": screen,
+                               "initial_painting": painting, "after_releasing_shift_by_hand": released}),
+                    )
+                }
+                Err(error) => (
+                    None,
+                    json!({"step": label, "read_back": false, "error": error}),
+                ),
+            }
+        }
+    };
+
+    if told_apart {
+        // First loss: a live migration ends the connection under the held key.
+        console.input(key(SHIFT, true)).expect("Shift pressed");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let held_at = std::time::Instant::now();
+        let mut away_step = migrate(away).await;
+        away_step["step"] = json!("live-migrate the guest with Shift held in its console");
+        note(&mut steps, away_step);
+        let lost = settle(60, || {
+            console.latest().state != xenadmin_core::ConsoleState::Connected
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "the migration ended the console connection under the held key", "read_back": lost,
+                   "state": format!("{:?}", console.latest().state), "within_ms": held_at.elapsed().as_millis() as u64}),
+        );
+        console.close();
+        let (console, entry) =
+            plain_letter_on_a_new_console("a plain letter on a new console after the migration")
+                .await;
+        note(&mut steps, entry);
+
+        // Second loss: the toolstack of the guest's host restarts. The guest and its device
+        // model keep running and nothing suspends the guest; only the console's path
+        // through that host ends. A member is used so that the pool's API stays up. The
+        // client refuses this restart while any task is unfinished, and an open console is
+        // one, so lab tooling restarts the toolstack as another administrator would.
+        let on_a_member = Some(away) != inventory.coordinator;
+        if let Some(console) = console.filter(|_| on_a_member) {
+            let (_, fingerprint) = pinned_options(&lab.endpoint(0)).await;
+            let coordinator = lab.hosts[0].ip.clone();
+            let agent = |c: &Connection| {
+                c.latest().inventory().and_then(|i| {
+                    i.details
+                        .hosts
+                        .get(&away)
+                        .and_then(|h| h.agent_start_time.clone())
+                })
+            };
+            let agent_before = agent(&c).expect("agent start time");
+            let pending = other_admin(&coordinator, &fingerprint, &["pending-tasks"]).await;
+            console.input(key(SHIFT, true)).expect("Shift pressed");
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let held_at = std::time::Instant::now();
+            let restart = other_admin(
+                &coordinator,
+                &fingerprint,
+                &["restart-toolstack", &away.to_string()],
+            )
+            .await;
+            let lost = settle(120, || {
+                console.latest().state != xenadmin_core::ConsoleState::Connected
+            })
+            .await;
+            let lost_after_ms = held_at.elapsed().as_millis() as u64;
+            let restarted = settle(300, || agent(&c).is_some_and(|now| now != agent_before)).await;
+            note(
+                &mut steps,
+                json!({"step": "another administrator restarts the toolstack of the guest's host with Shift held in its console",
+                       "read_back": restart.is_ok() && lost && restarted, "error": restart.as_ref().err(),
+                       "unfinished_tasks_with_the_console_open": pending.unwrap_or_else(|e| json!({"error": e})),
+                       "console_state": format!("{:?}", console.latest().state), "console_lost_after_ms": lost_after_ms,
+                       "toolstack_back_after_ms": held_at.elapsed().as_millis() as u64}),
+            );
+            console.close();
+            let (console, entry) = plain_letter_on_a_new_console(
+                "a plain letter on a new console after the toolstack restart",
+            )
+            .await;
+            note(&mut steps, entry);
+            if let Some(console) = console {
+                console.close();
+            }
+            // The restarted toolstack advertises the guest's operations again a little later.
+            tokio::time::sleep(Duration::from_secs(15)).await;
+        }
+        let mut back = migrate(home).await;
+        back["step"] = json!("live-migrate the guest back");
+        note(&mut steps, back);
+    } else {
+        console.close();
+    }
+    c.close().await;
+    lab.record(
+        "console-lost-while-a-modifier-is-held",
+        json!({"guest": guest.name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
 /// The pool's security overview through a fresh inspection.
 async fn security_overview(
     c: &Connection,
@@ -19225,16 +19619,17 @@ async fn security_result(
     .unwrap_or_else(|_| Err("security inspection timed out".into()))
 }
 
-/// Lab tooling standing in for another administrator: closes every session of a directory
-/// subject on the pool through `lab/force_logout.py`. The client has no operation for it.
-/// The script reads the lab password file itself and checks the host's fingerprint first.
-async fn force_subject_logout(
-    host: &str,
+/// Lab tooling standing in for another administrator, through `lab/other_admin.py`: an
+/// action the client cannot take itself in the situation under test. The script reads the
+/// lab password file itself and checks the coordinator's fingerprint before sending anything.
+async fn other_admin(
+    coordinator: &str,
     fingerprint: &CertificateFingerprint,
-    subject: &str,
-) -> Result<(), String> {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lab/force_logout.py");
-    let arguments = [host.to_owned(), fingerprint.to_string(), subject.to_owned()];
+    action: &[&str],
+) -> Result<Value, String> {
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lab/other_admin.py");
+    let mut arguments = vec![coordinator.to_owned(), fingerprint.to_string()];
+    arguments.extend(action.iter().map(|a| (*a).to_owned()));
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("python3")
             .arg(script)
@@ -19242,7 +19637,7 @@ async fn force_subject_logout(
             .output()
             .map_err(|e| e.to_string())?;
         if output.status.success() {
-            Ok(())
+            serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())
         } else {
             Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
         }
@@ -19645,8 +20040,12 @@ async fn lab_directory_join_subjects_and_roles() {
         let connected_subject = user_subject.clone().filter(|_| ready.is_ok());
         if let Some(subject) = &connected_subject {
             let before = as_user.latest().generation();
-            let logout =
-                force_subject_logout(&lab.hosts[0].ip, &fingerprint, &subject.identifier).await;
+            let logout = other_admin(
+                &lab.hosts[0].ip,
+                &fingerprint,
+                &["logout-subject", &subject.identifier],
+            )
+            .await;
             let (timeline, recovered) = state_timeline(&as_user, 180, |x| {
                 let s = x.latest();
                 s.state() == ConnectionState::Ready && s.generation() > before
@@ -19756,8 +20155,12 @@ async fn lab_directory_join_subjects_and_roles() {
             if !stopped {
                 // The removal left the session open. Close it as another administrator
                 // would, so that the refused sign-in is still observed.
-                let logout =
-                    force_subject_logout(&lab.hosts[0].ip, &fingerprint, &subject.identifier).await;
+                let logout = other_admin(
+                    &lab.hosts[0].ip,
+                    &fingerprint,
+                    &["logout-subject", &subject.identifier],
+                )
+                .await;
                 tooling = json!({"closed": logout.is_ok(), "error": logout.err()});
                 let (more, later) = state_timeline(&as_user, 180, stops).await;
                 timeline.extend(more);

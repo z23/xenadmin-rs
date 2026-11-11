@@ -664,7 +664,7 @@ pub(crate) async fn arguments(
                             )
                         })
                 }),
-                "Finish pending pool tasks before restarting the toolstack",
+                "Finish pending pool tasks before restarting the toolstack. An open VM or host console counts as one",
             )?;
             (kind.method(), vec![json!(&reference)])
         }

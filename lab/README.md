@@ -221,12 +221,16 @@ before every build.
   DNS server to join; the directory scenario sets and restores that through the client.
 - `dc start|status|stop|undefine --directory DIR` manages the controller VM (1 GiB, one
   vCPU, one NIC on the lab network).
-- `python3 lab/force_logout.py HOST SHA256_FINGERPRINT SUBJECT_IDENTIFIER` closes every
-  session of one directory subject on a lab pool, as another administrator would. The
-  directory scenario runs it against the first host to end the test user's session while
-  that user is connected. It reads the root password from `XENADMIN_LAB_PASSWORD_FILE` and
-  sends nothing to a host whose certificate does not match the fingerprint. The host never
-  closes the root account's own sessions this way.
+- `python3 lab/other_admin.py COORDINATOR SHA256_FINGERPRINT ACTION` does what another
+  administrator might do to the pool while the client under test is connected, for the
+  cases the client cannot produce itself: `logout-subject SUBJECT_IDENTIFIER` closes every
+  session of one directory subject (the directory scenario ends the test user's session
+  with it), `restart-toolstack HOST_UUID` restarts one host's toolstack (the console
+  scenario uses it, because the client refuses that restart while a console is open), and
+  `pending-tasks` lists the pool's unfinished tasks without changing anything. It reads the
+  root password from `XENADMIN_LAB_PASSWORD_FILE` and sends nothing to a host whose
+  certificate does not match the fingerprint. The host never closes the root account's own
+  sessions by a subject logout.
 - The Xen Orchestra appliance for the recovery gate is the vendor's own image (downloaded
   from `https://xoa.io/xva`, 1.9 GB) imported through the client by the gate scenario, named
   `XOA`, sized to 2 GiB and left running on the shared NFS repository. `node lab/xo_connect.mjs

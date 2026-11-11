@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Close every session of one directory subject on a lab pool.
+"""What another administrator does to a lab pool while the client under test is connected.
 
-The live harness uses this to stand in for another administrator ending a user's
-sessions. XenCenter offers that as "Logout User"; the client under test has no such
-operation, so the harness cannot do it through the client. The script logs in as the lab's
-root account, calls session.logout_subject_identifier and logs out again.
+The live harness uses this for actions the client cannot take itself in the situation
+being tested, so that it can watch how the client copes:
 
-    force_logout.py HOST SHA256_FINGERPRINT SUBJECT_IDENTIFIER
+    other_admin.py HOST SHA256_FINGERPRINT logout-subject SUBJECT_IDENTIFIER
+        Close every session of one directory subject. XenCenter offers this as "Logout
+        User"; the client has no operation for it.
+    other_admin.py HOST SHA256_FINGERPRINT restart-toolstack HOST_UUID
+        Restart the toolstack of one pool host. The client refuses that while a console is
+        open, which is exactly when the harness needs it.
+    other_admin.py HOST SHA256_FINGERPRINT pending-tasks
+        Print the names of the pool's unfinished tasks. Read-only.
 
-The password is read from the file named by XENADMIN_LAB_PASSWORD_FILE and is never taken
-from the command line or printed. Nothing is sent to a host whose certificate does not
-match the fingerprint. XAPI never closes a local superuser's session this way, so the
-account used here keeps its own.
+HOST is the pool coordinator. The script logs in as the lab's root account, makes the one
+call and logs out. The password is read from the file named by XENADMIN_LAB_PASSWORD_FILE
+and is never taken from the command line or printed. Nothing is sent to a host whose
+certificate does not match the fingerprint. XAPI never closes a local superuser's session
+by a subject logout, so the account used here keeps its own.
 """
 import hashlib
 import http.client
@@ -19,6 +25,8 @@ import json
 import os
 import ssl
 import sys
+
+USAGE = "usage: other_admin.py HOST SHA256_FINGERPRINT logout-subject SUBJECT | restart-toolstack HOST_UUID | pending-tasks"
 
 
 class Refused(Exception):
@@ -71,20 +79,41 @@ def call(host, fingerprint, method, params, timeout=30):
         connection.close()
 
 
-def force_logout(host, fingerprint, subject, password):
+def logout_subject(ask, subject):
+    ask("session.logout_subject_identifier", subject)
+    return {"logged_out": subject}
+
+
+def restart_toolstack(ask, host_uuid):
+    ask("host.restart_agent", ask("host.get_by_uuid", host_uuid))
+    return {"restarting": host_uuid}
+
+
+def pending_tasks(ask):
+    tasks = ask("task.get_all_records")
+    return {"pending": sorted(t["name_label"] for t in tasks.values() if t["status"] == "pending")}
+
+
+ACTIONS = {"logout-subject": (logout_subject, 1), "restart-toolstack": (restart_toolstack, 1),
+           "pending-tasks": (pending_tasks, 0)}
+
+
+def act(host, fingerprint, password, action, arguments):
+    """Runs one action between a login and a logout of the tooling's own session."""
     session = call(host, fingerprint, "session.login_with_password",
                    ["root", password, "1.0", "xenadmin-rs-lab-tooling"])
     try:
-        call(host, fingerprint, "session.logout_subject_identifier", [session, subject])
+        return action(lambda method, *params: call(host, fingerprint, method, [session, *params]),
+                      *arguments)
     finally:
         call(host, fingerprint, "session.logout", [session])
 
 
 def main(arguments):
-    if len(arguments) != 3:
-        print("usage: force_logout.py HOST SHA256_FINGERPRINT SUBJECT_IDENTIFIER", file=sys.stderr)
+    if len(arguments) < 3 or arguments[2] not in ACTIONS or len(arguments) - 3 != ACTIONS[arguments[2]][1]:
+        print(USAGE, file=sys.stderr)
         return 2
-    host, fingerprint, subject = arguments
+    host, fingerprint, name = arguments[:3]
     path = os.environ.get("XENADMIN_LAB_PASSWORD_FILE")
     if not path:
         print("XENADMIN_LAB_PASSWORD_FILE must name the lab-only root password file", file=sys.stderr)
@@ -92,11 +121,11 @@ def main(arguments):
     with open(path, encoding="utf-8") as file:
         password = file.readline().strip()
     try:
-        force_logout(host, fingerprint, subject, password)
+        outcome = act(host, fingerprint, password, ACTIONS[name][0], arguments[3:])
     except (Refused, ValueError, OSError) as error:
-        print(f"force_logout: {error}", file=sys.stderr)
+        print(f"other_admin: {error}", file=sys.stderr)
         return 1
-    print(json.dumps({"logged_out": subject}))
+    print(json.dumps(outcome))
     return 0
 
 

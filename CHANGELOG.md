@@ -43,6 +43,8 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
 - A request to cancel, recheck or acknowledge an operation that was still queued when a
   session was lost could make the connection report Ready, with the inventory from before
   the loss, while the new session was still loading its own.
+- The refusal of a toolstack restart while tasks are unfinished now says that an open
+  console counts as one.
 
 ### Known issues
 
