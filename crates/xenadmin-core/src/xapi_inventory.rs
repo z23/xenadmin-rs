@@ -2,6 +2,11 @@ use super::*;
 use crate::model::*;
 use std::collections::BTreeSet;
 use uuid::Uuid;
+use xenadmin_xapi::records::{
+    BondRecord, HostMetricsRecord, MessageRecord, NetworkRecord, PbdRecord, PifMetricsRecord,
+    PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VlanRecord,
+    VmApplianceRecord, VmGuestMetricsRecord, VmMetricsRecord, VmssRecord,
+};
 #[path = "xapi_network_fabric.rs"]
 mod network_fabric;
 
@@ -67,20 +72,20 @@ impl References {
     }
 }
 
-fn id<T: From<Uuid>>(record: &Value) -> Result<T, Error> {
-    required(record, "uuid")?
+fn id<T: From<Uuid>>(uuid: &Value) -> Result<T, Error> {
+    required(uuid)?
         .parse::<Uuid>()
         .map(T::from)
         .map_err(|_| Error::Protocol("invalid optional inventory UUID"))
 }
-fn text_option(record: &Value, key: &str) -> Option<String> {
-    record[key]
+fn text_option(value: &Value) -> Option<String> {
+    value
         .as_str()
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
-fn map_bool(record: &Value, key: &str) -> Option<bool> {
-    match record["other_config"].as_object()?.get(key) {
+fn map_bool(other_config: &Value, key: &str) -> Option<bool> {
+    match other_config.as_object()?.get(key) {
         None => Some(false),
         Some(value) => match value.as_str()? {
             "true" => Some(true),
@@ -90,14 +95,15 @@ fn map_bool(record: &Value, key: &str) -> Option<bool> {
     }
 }
 pub(crate) fn decode_server_message(record: &Value) -> Result<ServerMessage, Error> {
+    let view = MessageRecord::new(record);
     Ok(ServerMessage {
-        id: id(record)?,
-        name: string(record, "name"),
-        priority: integer(record, "priority", "message.priority")?,
-        object_class: string(record, "cls"),
-        object_uuid: record["obj_uuid"].as_str().and_then(|s| s.parse().ok()),
-        timestamp: text_option(record, "timestamp"),
-        body: string(record, "body"),
+        id: id(view.uuid())?,
+        name: string(view.name()),
+        priority: integer(view.priority(), "message.priority")?,
+        object_class: string(view.cls()),
+        object_uuid: view.obj_uuid().as_str().and_then(|s| s.parse().ok()),
+        timestamp: text_option(view.timestamp()),
+        body: string(view.body()),
     })
 }
 fn strings(value: &Value) -> Option<Vec<String>> {
@@ -147,9 +153,11 @@ fn blocked_reason(reason: &str) -> String {
 }
 
 pub(super) fn power_availability(record: &Value, action: crate::PowerAction) -> ActionAvailability {
+    let view = VmRecord::new(record);
     VmDetails {
-        allowed_operations: strings(&record["allowed_operations"]),
-        current_operations: record["current_operations"]
+        allowed_operations: strings(view.allowed_operations()),
+        current_operations: view
+            .current_operations()
             .as_object()
             .into_iter()
             .flatten()
@@ -160,18 +168,18 @@ pub(super) fn power_availability(record: &Value, action: crate::PowerAction) -> 
                 })
             })
             .collect(),
-        blocked_operations: blocked_operations(&record["blocked_operations"]),
+        blocked_operations: blocked_operations(view.blocked_operations()),
         ..Default::default()
     }
     .power_availability(action, true)
 }
-fn size(record: &Value, key: &str, field: &'static str) -> Result<Option<u64>, Error> {
-    storage_number(record, key, field)
+fn size(value: &Value, field: &'static str) -> Result<Option<u64>, Error> {
+    storage_number(value, field)
 }
-fn boolean(record: &Value, key: &str) -> Result<Option<bool>, Error> {
-    match record.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(value)) => Ok(Some(*value)),
+fn boolean(value: &Value) -> Result<Option<bool>, Error> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Bool(value) => Ok(Some(*value)),
         _ => Err(Error::Protocol("invalid optional inventory boolean")),
     }
 }
@@ -212,17 +220,18 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         ..Default::default()
     };
     result.pool = store.class("pool").next().and_then(|(_, record)| {
-        let default_sr = refs.link("sr", &record["default_SR"]);
+        let view = PoolRecord::new(record);
+        let default_sr = refs.link("sr", view.default_sr());
         Some(PoolDetails {
             administration: pool_administration(record, &refs, store),
-            auto_poweron: map_bool(record, "auto_poweron"),
-            ha_enabled: record["ha_enabled"].as_bool(),
-            igmp_snooping_enabled: record["igmp_snooping_enabled"].as_bool(),
-            id: id(record).ok()?,
-            name: string(record, "name_label"),
-            description: string(record, "name_description"),
+            auto_poweron: map_bool(view.other_config(), "auto_poweron"),
+            ha_enabled: view.ha_enabled().as_bool(),
+            igmp_snooping_enabled: view.igmp_snooping_enabled().as_bool(),
+            id: id(view.uuid()).ok()?,
+            name: string(view.name_label()),
+            description: string(view.name_description()),
             default_sr,
-            default_sr_known: record["default_SR"] == "OpaqueRef:NULL" || default_sr.is_some(),
+            default_sr_known: *view.default_sr() == "OpaqueRef:NULL" || default_sr.is_some(),
         })
     });
     decode_organization(store, &mut result);
@@ -235,320 +244,339 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     }
     result.network_fabric = network_fabric::decode(store, &refs, &mut result.classes);
     result.storage = records(store, "sr", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = SrRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             StorageDetails {
-                read_cache_override: record["other_config"]["o_direct"]
+                read_cache_override: view.other_config()["o_direct"]
                     .as_str()
                     .filter(|v| matches!(*v, "true" | "false"))
                     .map(str::to_owned),
-                read_cache_policy_known: record["other_config"].as_object().is_some_and(|m| {
+                read_cache_policy_known: view.other_config().as_object().is_some_and(|m| {
                     !m.contains_key("o_direct")
                         || matches!(m["o_direct"].as_str(), Some("true" | "false"))
                 }),
                 id,
-                description: string(record, "name_description"),
-                content_type: string(record, "content_type"),
-                shared: boolean(record, "shared")?,
-                virtual_allocation: size(record, "virtual_allocation", "SR.virtual_allocation")?,
-                allowed_operations: strings(&record["allowed_operations"]),
-                tags: strings(&record["tags"]).unwrap_or_default(),
+                description: string(view.name_description()),
+                content_type: string(view.content_type()),
+                shared: boolean(view.shared())?,
+                virtual_allocation: size(view.virtual_allocation(), "SR.virtual_allocation")?,
+                allowed_operations: strings(view.allowed_operations()),
+                tags: strings(view.tags()).unwrap_or_default(),
             },
         ))
     });
     result.networks = records(store, "network", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = NetworkRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             NetworkDetails {
-                purposes: crate::network_service::purposes(&record["purpose"]),
-                automatic: record["other_config"]["automatic"]
-                    .as_str()
-                    .map(str::to_owned),
-                automatic_known: record["other_config"]
+                purposes: crate::network_service::purposes(view.purpose()),
+                automatic: view.other_config()["automatic"].as_str().map(str::to_owned),
+                automatic_known: view
+                    .other_config()
                     .as_object()
                     .is_some_and(|m| m.get("automatic").is_none_or(Value::is_string)),
                 id,
-                description: string(record, "name_description"),
-                mtu: size(record, "MTU", "network.MTU")?,
-                managed: boolean(record, "managed")?,
-                default_locking_mode: text_option(record, "default_locking_mode"),
-                allowed_operations: strings(&record["allowed_operations"]),
-                tags: strings(&record["tags"]).unwrap_or_default(),
+                description: string(view.name_description()),
+                mtu: size(view.mtu(), "network.MTU")?,
+                managed: boolean(view.managed())?,
+                default_locking_mode: text_option(view.default_locking_mode()),
+                allowed_operations: strings(view.allowed_operations()),
+                tags: strings(view.tags()).unwrap_or_default(),
             },
         ))
     });
     result.tasks = records(store, "task", &mut result.classes, |record| {
-        let id = id(record)?;
-        let progress = record["progress"]
+        let view = TaskRecord::new(record);
+        let id = id(view.uuid())?;
+        let progress = view
+            .progress()
             .as_f64()
-            .or_else(|| record["progress"].as_str()?.parse().ok())
+            .or_else(|| view.progress().as_str()?.parse().ok())
             .filter(|n| n.is_finite() && (0.0..=1.0).contains(n));
         Ok((
             id,
             ServerTask {
                 id,
-                name: label(record),
-                description: string(record, "name_description"),
-                status: string(record, "status"),
+                name: label(view.name_label()),
+                description: string(view.name_description()),
+                status: string(view.status()),
                 progress,
-                created: text_option(record, "created"),
-                finished: text_option(record, "finished"),
-                error_code: record["error_info"]
+                created: text_option(view.created()),
+                finished: text_option(view.finished()),
+                error_code: view
+                    .error_info()
                     .as_array()
                     .and_then(|values| values.first())
                     .and_then(Value::as_str)
                     .map(|code| safe_error_code(code).to_owned()),
-                allowed_operations: strings(&record["allowed_operations"]),
-                resident_host: refs.link("host", &record["resident_on"]),
-                parent: refs.link("task", &record["subtask_of"]),
-                subtasks: refs.links("task", &record["subtasks"]),
-                result_type: text_option(record, "type"),
+                allowed_operations: strings(view.allowed_operations()),
+                resident_host: refs.link("host", view.resident_on()),
+                parent: refs.link("task", view.subtask_of()),
+                subtasks: refs.links("task", view.subtasks()),
+                result_type: text_option(view.type_()),
             },
         ))
     });
     result.vdis = records(store, "vdi", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VdiRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             VirtualDisk {
                 id,
-                name: label(record),
-                description: string(record, "name_description"),
-                sr: refs.link("sr", &record["SR"]),
-                virtual_size: size(record, "virtual_size", "VDI.virtual_size")?,
+                name: label(view.name_label()),
+                description: string(view.name_description()),
+                sr: refs.link("sr", view.sr()),
+                virtual_size: size(view.virtual_size(), "VDI.virtual_size")?,
                 physical_utilisation: size(
-                    record,
-                    "physical_utilisation",
+                    view.physical_utilisation(),
                     "VDI.physical_utilisation",
                 )?,
-                kind: string(record, "type"),
-                read_only: boolean(record, "read_only")?,
-                sharable: boolean(record, "sharable")?,
-                managed: boolean(record, "managed")?,
-                missing: boolean(record, "missing")?,
-                is_snapshot: boolean(record, "is_a_snapshot")?,
-                snapshot_of: refs.link("vdi", &record["snapshot_of"]),
-                cbt_enabled: boolean(record, "cbt_enabled")?,
-                allowed_operations: strings(&record["allowed_operations"]),
+                kind: string(view.type_()),
+                read_only: boolean(view.read_only())?,
+                sharable: boolean(view.sharable())?,
+                managed: boolean(view.managed())?,
+                missing: boolean(view.missing())?,
+                is_snapshot: boolean(view.is_a_snapshot())?,
+                snapshot_of: refs.link("vdi", view.snapshot_of()),
+                cbt_enabled: boolean(view.cbt_enabled())?,
+                allowed_operations: strings(view.allowed_operations()),
             },
         ))
     });
     for (_, record) in store.class("vdi") {
-        if let (Ok(id), Some(source)) = (id::<VdiId>(record), crate::guest_tools::source(record))
-            && result.vdis.contains_key(&id)
+        if let (Ok(id), Some(source)) = (
+            id::<VdiId>(VdiRecord::new(record).uuid()),
+            crate::guest_tools::source(record),
+        ) && result.vdis.contains_key(&id)
         {
             result.tools_media.insert(id, source);
         }
     }
     result.vbds = records(store, "vbd", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VbdRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             VirtualBlockDevice {
                 qos: crate::DeviceQos::from_record(record),
-                qos_supported_algorithms: strings(&record["qos_supported_algorithms"]),
+                qos_supported_algorithms: strings(view.qos_supported_algorithms()),
                 id,
-                vm: refs.vm(&record["VM"]),
-                snapshot: refs.snapshot(&record["VM"]),
-                vdi: refs.link("vdi", &record["VDI"]),
-                device: string(record, "device"),
-                userdevice: string(record, "userdevice"),
-                kind: string(record, "type"),
-                mode: string(record, "mode"),
-                currently_attached: boolean(record, "currently_attached")?,
-                bootable: boolean(record, "bootable")?,
-                empty: boolean(record, "empty")?,
-                owned: record["other_config"]
+                vm: refs.vm(view.vm()),
+                snapshot: refs.snapshot(view.vm()),
+                vdi: refs.link("vdi", view.vdi()),
+                device: string(view.device()),
+                userdevice: string(view.userdevice()),
+                kind: string(view.type_()),
+                mode: string(view.mode()),
+                currently_attached: boolean(view.currently_attached())?,
+                bootable: boolean(view.bootable())?,
+                empty: boolean(view.empty())?,
+                owned: view
+                    .other_config()
                     .get("owner")
                     .is_some_and(Value::is_string),
-                allowed_operations: strings(&record["allowed_operations"]),
+                allowed_operations: strings(view.allowed_operations()),
             },
         ))
     });
     result.vifs = records(store, "vif", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VifRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             VirtualInterface {
                 qos_known: crate::DeviceQos::from_record(record).is_some(),
-                qos_supported_algorithms: strings(&record["qos_supported_algorithms"]),
+                qos_supported_algorithms: strings(view.qos_supported_algorithms()),
                 id,
-                vm: refs.vm(&record["VM"]),
-                network: refs.link("network", &record["network"]),
-                device: string(record, "device"),
-                mac: string(record, "MAC"),
-                mtu: size(record, "MTU", "VIF.MTU")?,
-                currently_attached: boolean(record, "currently_attached")?,
-                qos_algorithm: string(record, "qos_algorithm_type"),
-                qos_parameters: string_map(&record["qos_algorithm_params"]),
-                allowed_operations: strings(&record["allowed_operations"]),
+                vm: refs.vm(view.vm()),
+                network: refs.link("network", view.network()),
+                device: string(view.device()),
+                mac: string(view.mac()),
+                mtu: size(view.mtu(), "VIF.MTU")?,
+                currently_attached: boolean(view.currently_attached())?,
+                qos_algorithm: string(view.qos_algorithm_type()),
+                qos_parameters: string_map(view.qos_algorithm_params()),
+                allowed_operations: strings(view.allowed_operations()),
             },
         ))
     });
     result.pifs = records(store, "pif", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = PifRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             PhysicalInterface {
-                metrics: refs.link("pif_metrics", &record["metrics"]),
-                capabilities: strings(&record["capabilities"]).filter(|values| {
+                metrics: refs.link("pif_metrics", view.metrics()),
+                capabilities: strings(view.capabilities()).filter(|values| {
                     values.len() <= 64
                         && values
                             .iter()
                             .all(|v| v.len() <= 128 && !v.chars().any(char::is_control))
                 }),
-                managed: boolean(record, "managed")?,
-                disallow_unplug: boolean(record, "disallow_unplug")?,
-                management_purpose: record["other_config"]["management_purpose"]
+                managed: boolean(view.managed())?,
+                disallow_unplug: boolean(view.disallow_unplug())?,
+                management_purpose: view.other_config()["management_purpose"]
                     .as_str()
                     .filter(|v| v.len() <= 256 && !v.chars().any(char::is_control))
                     .map(str::to_owned),
-                primary_address_type: record["primary_address_type"]
+                primary_address_type: view
+                    .primary_address_type()
                     .as_str()
                     .filter(|v| ["IPv4", "IPv6"].contains(v))
                     .map(str::to_owned),
                 id,
-                host: refs.link("host", &record["host"]),
-                network: refs.link("network", &record["network"]),
-                device: string(record, "device"),
-                mac: string(record, "MAC"),
-                mtu: size(record, "MTU", "PIF.MTU")?,
-                vlan: integer(record, "VLAN", "PIF.VLAN")?,
-                management: boolean(record, "management")?,
-                physical: boolean(record, "physical")?,
-                currently_attached: boolean(record, "currently_attached")?,
-                ip_configuration_mode: string(record, "ip_configuration_mode"),
-                ip: string(record, "IP"),
-                netmask: string(record, "netmask"),
-                gateway: string(record, "gateway"),
-                dns: string(record, "DNS"),
-                ipv6: strings(&record["IPv6"])
+                host: refs.link("host", view.host()),
+                network: refs.link("network", view.network()),
+                device: string(view.device()),
+                mac: string(view.mac()),
+                mtu: size(view.mtu(), "PIF.MTU")?,
+                vlan: integer(view.vlan(), "PIF.VLAN")?,
+                management: boolean(view.management())?,
+                physical: boolean(view.physical())?,
+                currently_attached: boolean(view.currently_attached())?,
+                ip_configuration_mode: string(view.ip_configuration_mode()),
+                ip: string(view.ip()),
+                netmask: string(view.netmask()),
+                gateway: string(view.gateway()),
+                dns: string(view.dns()),
+                ipv6: strings(view.ipv6())
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|address| !address.is_empty())
                     .collect(),
-                ipv6_configuration_mode: string(record, "ipv6_configuration_mode"),
-                ipv6_gateway: string(record, "ipv6_gateway"),
+                ipv6_configuration_mode: string(view.ipv6_configuration_mode()),
+                ipv6_gateway: string(view.ipv6_gateway()),
             },
         ))
     });
     result.pbds = records(store, "pbd", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = PbdRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             StorageAttachment {
                 id,
                 location: crate::storage::safe_location_for_kind(
-                    &record["device_config"],
-                    record["SR"].as_str().and_then(|reference| {
-                        store.records.get("sr")?.get(reference)?["type"].as_str()
+                    view.device_config(),
+                    view.sr().as_str().and_then(|reference| {
+                        SrRecord::new(store.records.get("sr")?.get(reference)?)
+                            .type_()
+                            .as_str()
                     }),
                 ),
-                requires_credentials: crate::storage::requires_credentials(
-                    &record["device_config"],
-                ),
-                multipathed: record["other_config"]["multipathed"]
+                requires_credentials: crate::storage::requires_credentials(view.device_config()),
+                multipathed: view.other_config()["multipathed"]
                     .as_str()
                     .and_then(|s| s.parse().ok()),
-                paths: crate::storage::path_counts(&record["other_config"]),
-                host: refs.link("host", &record["host"]),
-                sr: refs.link("sr", &record["SR"]),
-                currently_attached: boolean(record, "currently_attached")?,
+                paths: crate::storage::path_counts(view.other_config()),
+                host: refs.link("host", view.host()),
+                sr: refs.link("sr", view.sr()),
+                currently_attached: boolean(view.currently_attached())?,
             },
         ))
     });
     result.pif_metrics = records(store, "pif_metrics", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = PifMetricsRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             PifMetrics {
                 id,
-                carrier: boolean(record, "carrier")?,
-                speed_mbps: size(record, "speed", "PIF_metrics.speed")?.filter(|v| *v > 0),
-                full_duplex: boolean(record, "duplex")?,
-                vendor_id: string(record, "vendor_id"),
-                vendor_name: string(record, "vendor_name"),
-                device_id: string(record, "device_id"),
-                device_name: string(record, "device_name"),
-                pci_bus_path: string(record, "pci_bus_path"),
-                last_updated: text_option(record, "last_updated"),
+                carrier: boolean(view.carrier())?,
+                speed_mbps: size(view.speed(), "PIF_metrics.speed")?.filter(|v| *v > 0),
+                full_duplex: boolean(view.duplex())?,
+                vendor_id: string(view.vendor_id()),
+                vendor_name: string(view.vendor_name()),
+                device_id: string(view.device_id()),
+                device_name: string(view.device_name()),
+                pci_bus_path: string(view.pci_bus_path()),
+                last_updated: text_option(view.last_updated()),
             },
         ))
     });
     result.bonds = records(store, "bond", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = BondRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             NetworkBond {
-                primary_slave: refs.link("pif", &record["primary_slave"]),
-                hashing_algorithm: record["properties"]["hashing_algorithm"]
+                primary_slave: refs.link("pif", view.primary_slave()),
+                hashing_algorithm: view.properties()["hashing_algorithm"]
                     .as_str()
                     .map(str::to_owned),
-                hashing_algorithm_known: record["properties"]
+                hashing_algorithm_known: view
+                    .properties()
                     .as_object()
                     .is_some_and(|m| m.get("hashing_algorithm").is_none_or(Value::is_string)),
                 id,
-                master: refs.link("pif", &record["master"]),
-                slaves: refs.links("pif", &record["slaves"]),
-                mode: string(record, "mode"),
-                links_up: size(record, "links_up", "Bond.links_up")?,
+                master: refs.link("pif", view.master()),
+                slaves: refs.links("pif", view.slaves()),
+                mode: string(view.mode()),
+                links_up: size(view.links_up(), "Bond.links_up")?,
             },
         ))
     });
     result.vlans = records(store, "vlan", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VlanRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             Vlan {
                 id,
-                tagged_pif: refs.link("pif", &record["tagged_PIF"]),
-                untagged_pif: refs.link("pif", &record["untagged_PIF"]),
-                tag: size(record, "tag", "VLAN.tag")?,
+                tagged_pif: refs.link("pif", view.tagged_pif()),
+                untagged_pif: refs.link("pif", view.untagged_pif()),
+                tag: size(view.tag(), "VLAN.tag")?,
             },
         ))
     });
     result.guest_metrics = records(store, "vm_guest_metrics", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VmGuestMetricsRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             GuestMetrics {
                 id,
-                os_version: string_map(&record["os_version"]),
-                tools_version: string_map(&record["PV_drivers_version"]),
-                networks: string_map(&record["networks"]),
-                live: boolean(record, "live")?,
-                last_updated: text_option(record, "last_updated"),
+                os_version: string_map(view.os_version()),
+                tools_version: string_map(view.pv_drivers_version()),
+                networks: string_map(view.networks()),
+                live: boolean(view.live())?,
+                last_updated: text_option(view.last_updated()),
             },
         ))
     });
     result.vm_metrics = records(store, "vm_metrics", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VmMetricsRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             VmMetrics {
-                install_time: text_option(record, "install_time"),
-                last_updated: text_option(record, "last_updated"),
-                state: strings(&record["state"]).unwrap_or_default(),
-                current_domain_type: text_option(record, "current_domain_type"),
+                install_time: text_option(view.install_time()),
+                last_updated: text_option(view.last_updated()),
+                state: strings(view.state()).unwrap_or_default(),
+                current_domain_type: text_option(view.current_domain_type()),
                 id,
-                memory_actual: size(record, "memory_actual", "VM_metrics.memory_actual")?,
-                vcpus_number: size(record, "VCPUs_number", "VM_metrics.VCPUs_number")?,
-                start_time: text_option(record, "start_time"),
+                memory_actual: size(view.memory_actual(), "VM_metrics.memory_actual")?,
+                vcpus_number: size(view.vcpus_number(), "VM_metrics.VCPUs_number")?,
+                start_time: text_option(view.start_time()),
             },
         ))
     });
     result.host_metrics = records(store, "host_metrics", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = HostMetricsRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             HostMetrics {
                 id,
-                live: boolean(record, "live")?,
-                memory_total: size(record, "memory_total", "host_metrics.memory_total")?,
-                memory_free: size(record, "memory_free", "host_metrics.memory_free")?,
-                last_updated: text_option(record, "last_updated"),
+                live: boolean(view.live())?,
+                memory_total: size(view.memory_total(), "host_metrics.memory_total")?,
+                memory_free: size(view.memory_free(), "host_metrics.memory_free")?,
+                last_updated: text_option(view.last_updated()),
             },
         ))
     });
@@ -557,44 +585,50 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((message.id, message))
     });
     result.appliances = records(store, "vm_appliance", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VmApplianceRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             VmAppliance {
-                vms_known: record["VMs"]
+                vms_known: view
+                    .vms()
                     .as_array()
                     .is_some_and(|v| v.iter().all(|r| refs.vm(r).is_some())),
                 id,
-                name: label(record),
-                description: string(record, "name_description"),
-                vms: record["VMs"]
+                name: label(view.name_label()),
+                description: string(view.name_description()),
+                vms: view
+                    .vms()
                     .as_array()
                     .into_iter()
                     .flatten()
                     .filter_map(|r| refs.vm(r))
                     .collect(),
-                allowed_operations: strings(&record["allowed_operations"]),
+                allowed_operations: strings(view.allowed_operations()),
             },
         ))
     });
     result.snapshot_policies = records(store, "vmss", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = VmssRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             SnapshotPolicy {
-                vms_known: record["VMs"]
+                vms_known: view
+                    .vms()
                     .as_array()
                     .is_some_and(|v| v.iter().all(|r| refs.vm(r).is_some())),
-                last_run_time: record["last_run_time"].as_str().map(str::to_owned),
+                last_run_time: view.last_run_time().as_str().map(str::to_owned),
                 id,
-                name: label(record),
-                description: string(record, "name_description"),
-                enabled: boolean(record, "enabled")?,
-                kind: string(record, "type"),
-                frequency: string(record, "frequency"),
-                retained_snapshots: size(record, "retained_snapshots", "VMSS.retained_snapshots")?,
-                schedule: string_map(&record["schedule"]),
-                vms: record["VMs"]
+                name: label(view.name_label()),
+                description: string(view.name_description()),
+                enabled: boolean(view.enabled())?,
+                kind: string(view.type_()),
+                frequency: string(view.frequency()),
+                retained_snapshots: size(view.retained_snapshots(), "VMSS.retained_snapshots")?,
+                schedule: string_map(view.schedule()),
+                vms: view
+                    .vms()
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -604,38 +638,40 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         ))
     });
     result.storage_managers = records(store, "sm", &mut result.classes, |record| {
-        let id = id(record)?;
+        let view = SmRecord::new(record);
+        let id = id(view.uuid())?;
         Ok((
             id,
             StorageManager {
                 id,
-                kind: string(record, "type"),
-                name: label(record),
-                capabilities: strings(&record["capabilities"]).unwrap_or_default(),
+                kind: string(view.type_()),
+                name: label(view.name_label()),
+                capabilities: strings(view.capabilities()).unwrap_or_default(),
             },
         ))
     });
     for (_, record) in store
         .class("vm")
-        .filter(|(_, r)| r["is_a_snapshot"] == true)
+        .filter(|(_, r)| *VmRecord::new(r).is_a_snapshot() == true)
     {
-        if let Ok(id) = id(record) {
+        let view = VmRecord::new(record);
+        if let Ok(id) = id(view.uuid()) {
             result.snapshots.insert(
                 id,
                 crate::SnapshotDetails {
-                    can_export: record["allowed_operations"].as_array().and_then(|_| {
-                        record["current_operations"]
+                    can_export: view.allowed_operations().as_array().and_then(|_| {
+                        view.current_operations()
                             .as_object()
                             .map(|ops| ops.is_empty() && advertises(record, "export"))
                     }),
-                    parent: refs.snapshot_parent(&record["parent"]),
-                    memory_vdi: refs.link("vdi", &record["suspend_VDI"]),
-                    memory_vdi_known: record["suspend_VDI"] == "OpaqueRef:NULL"
-                        || refs.link::<VdiId>("vdi", &record["suspend_VDI"]).is_some(),
-                    preview_available: record["blobs"][crate::snapshot_preview::KEY]
+                    parent: refs.snapshot_parent(view.parent()),
+                    memory_vdi: refs.link("vdi", view.suspend_vdi()),
+                    memory_vdi_known: *view.suspend_vdi() == "OpaqueRef:NULL"
+                        || refs.link::<VdiId>("vdi", view.suspend_vdi()).is_some(),
+                    preview_available: view.blobs()[crate::snapshot_preview::KEY]
                         .as_str()
                         .is_some_and(|s| s != "OpaqueRef:NULL")
-                        || record["other_config"][crate::snapshot_preview::KEY]
+                        || view.other_config()[crate::snapshot_preview::KEY]
                             .as_str()
                             .is_some_and(|s| !s.is_empty()),
                 },
@@ -644,30 +680,35 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     }
     for (_, record) in store
         .class("vm")
-        .filter(|(_, r)| r["is_a_snapshot"] != true)
+        .filter(|(_, r)| *VmRecord::new(r).is_a_snapshot() != true)
     {
-        if let Ok(id) = id(record) {
+        let view = VmRecord::new(record);
+        if let Ok(id) = id(view.uuid()) {
             result.vms.insert(
                 id,
                 VmDetails {
-                    snapshot_parent: refs.snapshot_parent(&record["parent"]),
-                    domain_type: text_option(record, "domain_type"),
-                    cores_per_socket: text_option(&record["platform"], "cores-per-socket"),
-                    topology_known: record["platform"]
+                    snapshot_parent: refs.snapshot_parent(view.parent()),
+                    domain_type: text_option(view.domain_type()),
+                    cores_per_socket: text_option(&view.platform()["cores-per-socket"]),
+                    topology_known: view
+                        .platform()
                         .as_object()
                         .is_some_and(|m| m.get("cores-per-socket").is_none_or(Value::is_string)),
-                    cpu_weight: text_option(&record["VCPUs_params"], "weight"),
-                    cpu_weight_known: record["VCPUs_params"]
+                    cpu_weight: text_option(&view.vcpus_params()["weight"]),
+                    cpu_weight_known: view
+                        .vcpus_params()
                         .as_object()
                         .is_some_and(|m| m.get("weight").is_none_or(Value::is_string)),
-                    shadow_multiplier: record["HVM_shadow_multiplier"]
+                    shadow_multiplier: view
+                        .hvm_shadow_multiplier()
                         .as_f64()
-                        .or_else(|| record["HVM_shadow_multiplier"].as_str()?.parse().ok())
+                        .or_else(|| view.hvm_shadow_multiplier().as_str()?.parse().ok())
                         .filter(|v| v.is_finite())
                         .map(|v| v.to_string()),
                     is_default_template: crate::guest_boot::default_template(record),
-                    allowed_operations: strings(&record["allowed_operations"]),
-                    current_operations: record["current_operations"]
+                    allowed_operations: strings(view.allowed_operations()),
+                    current_operations: view
+                        .current_operations()
                         .as_object()
                         .into_iter()
                         .flatten()
@@ -678,57 +719,58 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                             })
                         })
                         .collect(),
-                    blocked_operations: blocked_operations(&record["blocked_operations"]),
-                    vcpus_max: size(record, "VCPUs_max", "VM.VCPUs_max").ok().flatten(),
-                    vcpus_at_startup: size(record, "VCPUs_at_startup", "VM.VCPUs_at_startup")
+                    blocked_operations: blocked_operations(view.blocked_operations()),
+                    vcpus_max: size(view.vcpus_max(), "VM.VCPUs_max").ok().flatten(),
+                    vcpus_at_startup: size(view.vcpus_at_startup(), "VM.VCPUs_at_startup")
                         .ok()
                         .flatten(),
-                    memory_static_min: size(record, "memory_static_min", "VM.memory_static_min")
+                    memory_static_min: size(view.memory_static_min(), "VM.memory_static_min")
                         .ok()
                         .flatten(),
-                    memory_static_max: size(record, "memory_static_max", "VM.memory_static_max")
+                    memory_static_max: size(view.memory_static_max(), "VM.memory_static_max")
                         .ok()
                         .flatten(),
-                    memory_dynamic_min: size(record, "memory_dynamic_min", "VM.memory_dynamic_min")
+                    memory_dynamic_min: size(view.memory_dynamic_min(), "VM.memory_dynamic_min")
                         .ok()
                         .flatten(),
-                    memory_dynamic_max: size(record, "memory_dynamic_max", "VM.memory_dynamic_max")
+                    memory_dynamic_max: size(view.memory_dynamic_max(), "VM.memory_dynamic_max")
                         .ok()
                         .flatten(),
-                    memory_target: size(record, "memory_target", "VM.memory_target")
+                    memory_target: size(view.memory_target(), "VM.memory_target")
                         .ok()
                         .flatten(),
-                    boot_order: text_option(&record["HVM_boot_params"], "order"),
-                    boot_policy: text_option(record, "HVM_boot_policy"),
-                    firmware: text_option(&record["HVM_boot_params"], "firmware")
+                    boot_order: text_option(&view.hvm_boot_params()["order"]),
+                    boot_policy: text_option(view.hvm_boot_policy()),
+                    firmware: text_option(&view.hvm_boot_params()["firmware"])
                         .or_else(|| crate::guest_boot::firmware(record).map(str::to_owned)),
                     secure_boot: crate::guest_boot::policy(record),
-                    bios_identity_empty: record["bios_strings"].as_object().map(|v| v.is_empty()),
-                    affinity: refs.link("host", &record["affinity"]),
-                    affinity_known: record["affinity"] == "OpaqueRef:NULL"
-                        || refs.link::<HostId>("host", &record["affinity"]).is_some(),
-                    guest_metrics: refs.link("vm_guest_metrics", &record["guest_metrics"]),
-                    metrics: refs.link("vm_metrics", &record["metrics"]),
-                    suspend_vdi: refs.link("vdi", &record["suspend_VDI"]),
-                    appliance: refs.link("vm_appliance", &record["appliance"]),
-                    appliance_known: record["appliance"] == "OpaqueRef:NULL"
+                    bios_identity_empty: view.bios_strings().as_object().map(|v| v.is_empty()),
+                    affinity: refs.link("host", view.affinity()),
+                    affinity_known: *view.affinity() == "OpaqueRef:NULL"
+                        || refs.link::<HostId>("host", view.affinity()).is_some(),
+                    guest_metrics: refs.link("vm_guest_metrics", view.guest_metrics()),
+                    metrics: refs.link("vm_metrics", view.metrics()),
+                    suspend_vdi: refs.link("vdi", view.suspend_vdi()),
+                    appliance: refs.link("vm_appliance", view.appliance()),
+                    appliance_known: *view.appliance() == "OpaqueRef:NULL"
                         || refs
-                            .link::<ApplianceId>("vm_appliance", &record["appliance"])
+                            .link::<ApplianceId>("vm_appliance", view.appliance())
                             .is_some(),
                     appliance_order: (|| {
                         Some(crate::ApplianceOrder {
-                            order: record["order"]
+                            order: view
+                                .order()
                                 .as_i64()
-                                .or_else(|| record["order"].as_str()?.parse().ok())?,
-                            start_delay: size(record, "start_delay", "VM.start_delay").ok()??,
-                            shutdown_delay: size(record, "shutdown_delay", "VM.shutdown_delay")
+                                .or_else(|| view.order().as_str()?.parse().ok())?,
+                            start_delay: size(view.start_delay(), "VM.start_delay").ok()??,
+                            shutdown_delay: size(view.shutdown_delay(), "VM.shutdown_delay")
                                 .ok()??,
                         })
                     })(),
-                    snapshot_policy: refs.link("vmss", &record["snapshot_schedule"]),
-                    tags: strings(&record["tags"]).unwrap_or_default(),
-                    ha_restart_priority: record["ha_restart_priority"].as_str().map(str::to_owned),
-                    auto_power_on: record["other_config"]["auto_poweron"]
+                    snapshot_policy: refs.link("vmss", view.snapshot_schedule()),
+                    tags: strings(view.tags()).unwrap_or_default(),
+                    ha_restart_priority: view.ha_restart_priority().as_str().map(str::to_owned),
+                    auto_power_on: view.other_config()["auto_poweron"]
                         .as_str()
                         .and_then(|v| v.parse().ok()),
                 },
@@ -736,16 +778,17 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         }
     }
     for (_, record) in store.class("host") {
-        if let Ok(id) = id(record) {
+        let view = HostRecord::new(record);
+        if let Ok(id) = id(view.uuid()) {
             result.hosts.insert(
                 id,
                 HostDetails {
-                    bios_strings: string_map(&record["bios_strings"]),
-                    chipset_info: string_map(&record["chipset_info"]),
-                    external_auth_type: text_option(record, "external_auth_type"),
-                    external_auth_service_name: text_option(record, "external_auth_service_name"),
-                    allowed_operations: strings(&record["allowed_operations"]),
-                    current_operations: record["current_operations"].as_object().map(|ops| {
+                    bios_strings: string_map(view.bios_strings()),
+                    chipset_info: string_map(view.chipset_info()),
+                    external_auth_type: text_option(view.external_auth_type()),
+                    external_auth_service_name: text_option(view.external_auth_service_name()),
+                    allowed_operations: strings(view.allowed_operations()),
+                    current_operations: view.current_operations().as_object().map(|ops| {
                         ops.iter()
                             .map(|(task, operation)| RunningOperation {
                                 task: refs.link("task", &Value::String(task.clone())),
@@ -753,46 +796,47 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                             })
                             .collect()
                     }),
-                    maintenance_mode: map_bool(record, "MAINTENANCE_MODE"),
-                    boot_time: record["other_config"]["boot_time"]
+                    maintenance_mode: map_bool(view.other_config(), "MAINTENANCE_MODE"),
+                    boot_time: view.other_config()["boot_time"]
                         .as_str()
                         .filter(|s| crate::host_types::valid_epoch(s))
                         .map(str::to_owned),
-                    agent_start_time: record["other_config"]["agent_start_time"]
+                    agent_start_time: view.other_config()["agent_start_time"]
                         .as_str()
                         .filter(|s| crate::host_types::valid_epoch(s))
                         .map(str::to_owned),
-                    control_domain: refs.vm(&record["control_domain"]),
+                    control_domain: refs.vm(view.control_domain()),
                     power_configuration: crate::host_power::configuration(record),
-                    power_on_mode: record["power_on_mode"].as_str().map(str::to_owned),
-                    power_on_config_empty: record["power_on_config"]
+                    power_on_mode: view.power_on_mode().as_str().map(str::to_owned),
+                    power_on_config_empty: view
+                        .power_on_config()
                         .as_object()
                         .map(|config| config.is_empty()),
-                    syslog_destination: record["logging"]["syslog_destination"]
+                    syslog_destination: view.logging()["syslog_destination"]
                         .as_str()
                         .filter(|s| !s.is_empty())
                         .map(str::to_owned),
-                    syslog_known: record["logging"].as_object().is_some_and(|map| {
+                    syslog_known: view.logging().as_object().is_some_and(|map| {
                         map.get("syslog_destination")
                             .is_none_or(|value| value.is_string())
                     }),
-                    multipathing: record["multipathing"].as_bool(),
-                    local_cache_sr: refs.link("sr", &record["local_cache_sr"]),
-                    standard_multipath_handler: record["other_config"].as_object().and_then(|m| {
-                        match m.get("multipathhandle") {
+                    multipathing: view.multipathing().as_bool(),
+                    local_cache_sr: refs.link("sr", view.local_cache_sr()),
+                    standard_multipath_handler: view.other_config().as_object().and_then(
+                        |m| match m.get("multipathhandle") {
                             None => Some(false),
                             Some(v) if v == "dmp" => Some(true),
                             _ => None,
-                        }
-                    }),
-                    description: string(record, "name_description"),
-                    hostname: string(record, "hostname"),
-                    metrics: refs.link("host_metrics", &record["metrics"]),
-                    software_version: string_map(&record["software_version"]),
-                    cpu_info: string_map(&record["cpu_info"]),
-                    capabilities: strings(&record["capabilities"]).unwrap_or_default(),
-                    tags: strings(&record["tags"]).unwrap_or_default(),
-                    enabled: record["enabled"].as_bool(),
+                        },
+                    ),
+                    description: string(view.name_description()),
+                    hostname: string(view.hostname()),
+                    metrics: refs.link("host_metrics", view.metrics()),
+                    software_version: string_map(view.software_version()),
+                    cpu_info: string_map(view.cpu_info()),
+                    capabilities: strings(view.capabilities()).unwrap_or_default(),
+                    tags: strings(view.tags()).unwrap_or_default(),
+                    enabled: view.enabled().as_bool(),
                 },
             );
         }
@@ -846,12 +890,9 @@ fn pool_administration(
     refs: &References,
     store: &Store,
 ) -> crate::PoolAdministration {
-    let number = |key: &str| {
-        record[key]
-            .as_u64()
-            .or_else(|| record[key].as_str()?.parse().ok())
-    };
-    let statefiles = record["ha_statefiles"].as_array().filter(|v| v.len() <= 64);
+    let view = PoolRecord::new(record);
+    let number = |value: &Value| value.as_u64().or_else(|| value.as_str()?.parse().ok());
+    let statefiles = view.ha_statefiles().as_array().filter(|v| v.len() <= 64);
     let heartbeat_srs: Option<Vec<SrId>> = statefiles.and_then(|values| {
         values
             .iter()
@@ -859,30 +900,32 @@ fn pool_administration(
                 let vdi = store
                     .class("vdi")
                     .find(|(reference, r)| {
-                        value.as_str() == Some(*reference) || r["uuid"] == *value
+                        value.as_str() == Some(*reference) || VdiRecord::new(r).uuid() == value
                     })?
                     .1;
-                refs.link("sr", &vdi["SR"])
+                refs.link("sr", VdiRecord::new(vdi).sr())
             })
             .collect()
     });
     crate::PoolAdministration {
-        coordinator: refs.link("host", &record["master"]),
-        ha_enabled: record["ha_enabled"].as_bool(),
-        ha_failures_to_tolerate: number("ha_host_failures_to_tolerate"),
-        ha_plan_exists_for: number("ha_plan_exists_for"),
-        ha_overcommitted: record["ha_overcommitted"].as_bool(),
-        ha_allow_overcommit: record["ha_allow_overcommit"].as_bool(),
-        ha_timeout_known: record["other_config"]
+        coordinator: refs.link("host", view.master()),
+        ha_enabled: view.ha_enabled().as_bool(),
+        ha_failures_to_tolerate: number(view.ha_host_failures_to_tolerate()),
+        ha_plan_exists_for: number(view.ha_plan_exists_for()),
+        ha_overcommitted: view.ha_overcommitted().as_bool(),
+        ha_allow_overcommit: view.ha_allow_overcommit().as_bool(),
+        ha_timeout_known: view
+            .other_config()
             .as_object()
             .is_some_and(|m| m.get("default_ha_timeout").is_none_or(Value::is_string))
-            && record["ha_configuration"]
+            && view
+                .ha_configuration()
                 .as_object()
                 .is_some_and(|m| m.get("timeout").is_none_or(Value::is_string)),
-        ha_timeout_override: record["other_config"]["default_ha_timeout"]
+        ha_timeout_override: view.other_config()["default_ha_timeout"]
             .as_str()
             .map(str::to_owned),
-        ha_configuration_timeout: record["ha_configuration"]["timeout"]
+        ha_configuration_timeout: view.ha_configuration()["timeout"]
             .as_str()
             .map(str::to_owned),
         heartbeat_srs_known: heartbeat_srs.is_some(),
@@ -892,10 +935,20 @@ fn pool_administration(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
-        migration_compression: record["migration_compression"].as_bool(),
-        https_only: record["https_only"].as_bool(),
-        tls_verification_enabled: record["tls_verification_enabled"].as_bool(),
-        secret_rotation_pending: record["is_psr_pending"].as_bool(),
+        migration_compression: view.migration_compression().as_bool(),
+        // XAPI keeps this on each host and has no pool field for it; the pool has a value
+        // only where every host agrees.
+        https_only: {
+            let mut hosts = store
+                .class("host")
+                .map(|(_, host)| HostRecord::new(host).https_only().as_bool());
+            match hosts.next() {
+                Some(Some(first)) if hosts.all(|host| host == Some(first)) => Some(first),
+                _ => None,
+            }
+        },
+        tls_verification_enabled: view.tls_verification_enabled().as_bool(),
+        secret_rotation_pending: view.is_psr_pending().as_bool(),
     }
 }
 

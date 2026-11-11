@@ -11,7 +11,7 @@ fn text(record: &Value, field: &str, limit: usize) -> Option<String> {
         .map(str::to_owned)
 }
 fn controller(record: &Value) -> Option<SdnControllerConfiguration> {
-    let port = integer(record, "port", "controller port").ok()??;
+    let port = integer(&record["port"], "controller port").ok()??;
     match record["protocol"].as_str()? {
         "ssl" => Some(SdnControllerConfiguration::Ssl {
             address: record["address"].as_str()?.parse().ok()?,
@@ -29,7 +29,7 @@ pub(super) fn decode(
     states: &mut BTreeMap<String, ClassAvailability>,
 ) -> NetworkFabricInventory {
     let controllers = records(store, "sdn_controller", states, |record| {
-        let id = id(record)?;
+        let id = id(&record["uuid"])?;
         Ok((
             id,
             SdnController {
@@ -39,7 +39,7 @@ pub(super) fn decode(
         ))
     });
     let tunnels = records(store, "tunnel", states, |record| {
-        let id = id(record)?;
+        let id = id(&record["uuid"])?;
         let status = record["status"]
             .as_object()
             .filter(|map| map.len() <= 32 && map.values().all(Value::is_string));
@@ -68,14 +68,14 @@ pub(super) fn decode(
         ))
     });
     let sriovs = records(store, "network_sriov", states, |record| {
-        let id = id(record)?;
+        let id = id(&record["uuid"])?;
         Ok((
             id,
             NetworkSriov {
                 id,
                 physical: refs.link("pif", &record["physical_PIF"]),
                 logical: refs.link("pif", &record["logical_PIF"]),
-                requires_reboot: boolean(record, "requires_reboot")?,
+                requires_reboot: boolean(&record["requires_reboot"])?,
                 mode: record["configuration_mode"]
                     .as_str()
                     .and_then(SriovConfigurationMode::parse),
@@ -83,7 +83,7 @@ pub(super) fn decode(
         ))
     });
     let pci_devices = records(store, "pci", states, |record| {
-        let id = id(record)?;
+        let id = id(&record["uuid"])?;
         Ok((
             id,
             NetworkPciDevice {
@@ -104,7 +104,7 @@ pub(super) fn decode(
         ..Default::default()
     };
     for (_, record) in store.class("pif") {
-        if let (Ok(id), Some(pci)) = (id(record), refs.link("pci", &record["PCI"])) {
+        if let (Ok(id), Some(pci)) = (id(&record["uuid"]), refs.link("pci", &record["PCI"])) {
             result.pif_pci.insert(id, pci);
         }
     }

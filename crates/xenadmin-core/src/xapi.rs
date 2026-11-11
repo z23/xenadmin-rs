@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 use xenadmin_xapi::{
     enumerations::vm_power_state,
-    records::{HostRecord, TaskRecord, VmRecord},
+    records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord, VmRecord},
 };
 
 use crate::{
@@ -833,20 +833,21 @@ impl Store {
             ));
         }
         let pool = pools[0].1;
-        let pool_id = PoolId::parse(required(pool, "uuid")?)
+        let pool_id = PoolId::parse(required(&pool["uuid"])?)
             .map_err(|_| Error::Protocol("invalid pool UUID"))?;
         let mut host_refs = BTreeMap::new();
         let mut hosts = BTreeMap::new();
         for (reference, value) in self.class("host") {
-            let id = HostId::parse(required(value, "uuid")?)
+            let view = HostRecord::new(value);
+            let id = HostId::parse(required(view.uuid())?)
                 .map_err(|_| Error::Protocol("invalid host UUID"))?;
             host_refs.insert(reference.as_str(), id);
             hosts.insert(
                 id,
                 Host {
                     id,
-                    name: label(value),
-                    address: string(value, "address"),
+                    name: label(view.name_label()),
+                    address: string(view.address()),
                     enabled: HostRecord::new(value).enabled().as_bool().unwrap_or(false),
                     version: HostRecord::new(value).software_version()["product_version"]
                         .as_str()
@@ -865,9 +866,10 @@ impl Store {
             .class("vm")
             .filter(|(_, value)| *VmRecord::new(value).is_a_snapshot() != true)
         {
+            let view = VmRecord::new(value);
             vm_refs.insert(
                 reference.as_str(),
-                VmId::parse(required(value, "uuid")?)
+                VmId::parse(required(view.uuid())?)
                     .map_err(|_| Error::Protocol("invalid VM UUID"))?,
             );
         }
@@ -887,15 +889,15 @@ impl Store {
                     actions.push(crate::SnapshotAction::Clone);
                 }
                 snapshots.insert(crate::Snapshot {
-                    id: crate::SnapshotId::parse(required(value, "uuid")?)
+                    id: crate::SnapshotId::parse(required(view.uuid())?)
                         .map_err(|_| Error::Protocol("invalid snapshot UUID"))?,
                     vm: view
                         .snapshot_of()
                         .as_str()
                         .and_then(|reference| vm_refs.get(reference))
                         .copied(),
-                    name: label(value),
-                    description: string(value, "name_description"),
+                    name: label(view.name_label()),
+                    description: string(view.name_description()),
                     created_at: view
                         .snapshot_time()
                         .as_str()
@@ -906,7 +908,7 @@ impl Store {
                 });
                 continue;
             }
-            let id = VmId::parse(required(value, "uuid")?)
+            let id = VmId::parse(required(view.uuid())?)
                 .map_err(|_| Error::Protocol("invalid VM UUID"))?;
             let power_state = decode_power_state(value)?;
             vms.insert(
@@ -918,16 +920,16 @@ impl Store {
                         .filter(|action| advertises(value, action.wire()))
                         .collect(),
                     id,
-                    name: label(value),
-                    description: string(value, "name_description"),
+                    name: label(view.name_label()),
+                    description: string(view.name_description()),
                     power_state,
                     host: value
                         .get("resident_on")
                         .and_then(Value::as_str)
                         .and_then(|r| host_refs.get(r))
                         .copied(),
-                    vcpus: number(value, "VCPUs_at_startup", "VM.VCPUs_at_startup")?,
-                    memory_bytes: number(value, "memory_static_max", "VM.memory_static_max")?,
+                    vcpus: number(view.vcpus_at_startup(), "VM.VCPUs_at_startup")?,
+                    memory_bytes: number(view.memory_static_max(), "VM.memory_static_max")?,
                     is_template: view.is_a_template().as_bool().unwrap_or(false),
                     is_control_domain: view.is_control_domain().as_bool().unwrap_or(false),
                 },
@@ -935,33 +937,31 @@ impl Store {
         }
         let mut storage = Vec::new();
         for (_, value) in self.class("sr") {
+            let view = SrRecord::new(value);
             storage.push(Storage {
-                uuid: required(value, "uuid")?
+                uuid: required(view.uuid())?
                     .parse()
                     .map_err(|_| Error::Protocol("invalid SR UUID"))?,
-                name: label(value),
-                kind: string(value, "type"),
-                capacity_bytes: storage_number(value, "physical_size", "SR.physical_size")?,
-                used_bytes: storage_number(
-                    value,
-                    "physical_utilisation",
-                    "SR.physical_utilisation",
-                )?,
+                name: label(view.name_label()),
+                kind: string(view.type_()),
+                capacity_bytes: storage_number(view.physical_size(), "SR.physical_size")?,
+                used_bytes: storage_number(view.physical_utilisation(), "SR.physical_utilisation")?,
             });
         }
         let mut networks = Vec::new();
         for (_, value) in self.class("network") {
+            let view = NetworkRecord::new(value);
             networks.push(Network {
-                uuid: required(value, "uuid")?
+                uuid: required(view.uuid())?
                     .parse()
                     .map_err(|_| Error::Protocol("invalid network UUID"))?,
-                name: label(value),
-                bridge: string(value, "bridge"),
+                name: label(view.name_label()),
+                bridge: string(view.bridge()),
             });
         }
         Ok(Inventory {
             pool_id,
-            pool_name: label(pool),
+            pool_name: label(PoolRecord::new(pool).name_label()),
             coordinator,
             hosts,
             vms,
@@ -1159,7 +1159,7 @@ pub(crate) async fn verify_created_snapshot(
 }
 
 fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
-    Ok(match required(record, "power_state")? {
+    Ok(match required(&record["power_state"])? {
         vm_power_state::RUNNING => PowerState::Running,
         vm_power_state::HALTED => PowerState::Halted,
         vm_power_state::PAUSED => PowerState::Paused,
@@ -1168,47 +1168,43 @@ fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
     })
 }
 
-fn required<'a>(record: &'a Value, key: &str) -> Result<&'a str, Error> {
-    record
-        .get(key)
-        .and_then(Value::as_str)
+// The readers below take a field's value, as a record view or an index gives it. A field
+// the record does not carry is null there, which each reader treats as absent.
+fn required(value: &Value) -> Result<&str, Error> {
+    value
+        .as_str()
         .ok_or(Error::Protocol("missing required inventory field"))
 }
-fn string(record: &Value, key: &str) -> String {
-    record
-        .get(key)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .into()
+fn string(value: &Value) -> String {
+    value.as_str().unwrap_or_default().into()
 }
-fn label(record: &Value) -> String {
-    record
-        .get("name_label")
-        .and_then(Value::as_str)
+fn label(name_label: &Value) -> String {
+    name_label
+        .as_str()
         .filter(|v| !v.is_empty())
         .unwrap_or("Unnamed")
         .into()
 }
-fn integer(record: &Value, key: &str, field: &'static str) -> Result<Option<i64>, Error> {
+fn integer(value: &Value, field: &'static str) -> Result<Option<i64>, Error> {
     let invalid = || Error::InventoryNumber {
         field,
         expected: "a signed 64-bit integer",
     };
-    match record.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => n.as_i64().map(Some).ok_or_else(invalid),
-        Some(Value::String(n)) => n.parse::<i64>().map(Some).map_err(|_| invalid()),
+    match value {
+        Value::Null => Ok(None),
+        Value::Number(n) => n.as_i64().map(Some).ok_or_else(invalid),
+        Value::String(n) => n.parse::<i64>().map(Some).map_err(|_| invalid()),
         _ => Err(invalid()),
     }
 }
-fn number(record: &Value, key: &str, field: &'static str) -> Result<u64, Error> {
-    u64::try_from(integer(record, key, field)?.unwrap_or(0)).map_err(|_| Error::InventoryNumber {
+fn number(value: &Value, field: &'static str) -> Result<u64, Error> {
+    u64::try_from(integer(value, field)?.unwrap_or(0)).map_err(|_| Error::InventoryNumber {
         field,
         expected: "a non-negative integer",
     })
 }
-fn storage_number(record: &Value, key: &str, field: &'static str) -> Result<Option<u64>, Error> {
-    match integer(record, key, field)? {
+fn storage_number(value: &Value, field: &'static str) -> Result<Option<u64>, Error> {
+    match integer(value, field)? {
         None | Some(-1) => Ok(None),
         Some(value) => u64::try_from(value)
             .map(Some)
