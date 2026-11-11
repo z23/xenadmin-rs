@@ -496,7 +496,7 @@ impl Fixture {
                             let method = request["method"].as_str().unwrap();
                             methods.lock().unwrap().push(method.into());
                             let host = |second: bool| json!({"uuid":if second{HOST2}else{HOST},"name_label":"Fixture host","address":if second{"127.0.0.2"}else{"127.0.0.1"},"enabled":true});
-                            let vm = || json!({"uuid":VM,"name_label":"Fixture VM","power_state":"Running","resident_on":if resident.load(Ordering::SeqCst)==1{"OpaqueRef:host"}else{"OpaqueRef:host2"},"VCPUs_at_startup":"2","memory_static_max":"2048"});
+                            let vm = || json!({"uuid":VM,"name_label":"Fixture VM","power_state":"Running","resident_on":if resident.load(Ordering::SeqCst)==1{"OpaqueRef:host"}else{"OpaqueRef:host2"},"VCPUs_at_startup":"2","memory_static_max":"2048","allowed_operations":["clean_shutdown"]});
                             let result = match method {
                                 "session.login_with_password" => json!("OpaqueRef:fixture-session"),
                                 "session.logout" => Value::Null,
@@ -533,6 +533,11 @@ impl Fixture {
                                     host(request["params"][1] == "OpaqueRef:host2")
                                 }
                                 "VM.get_data_sources" | "host.get_data_sources" => metadata(),
+                                "Async.VM.clean_shutdown" => json!("OpaqueRef:task"),
+                                "task.get_record" => {
+                                    json!({"status":"success","progress":1.0,"allowed_operations":[]})
+                                }
+                                "task.destroy" => Value::Null,
                                 other => panic!("Unexpected metric RPC {other}"),
                             };
                             serde_json::to_vec(
@@ -682,6 +687,76 @@ async fn unsafe_redirects_authentication_errors_oversize_and_malformed_data_are_
             assert!(!encoded.contains(forbidden));
         }
         assert_eq!(fixture.gets.load(Ordering::SeqCst), 1);
+        connection.close().await;
+    }
+}
+#[tokio::test]
+async fn failed_metrics_leave_the_connection_ready_and_a_power_command_still_succeeds() {
+    use crate::{ConnectionState, OperationId, OperationState, PowerAction, VmCommand};
+    for (mode, expected) in [
+        (Mode::Unauthorized, MetricsState::Stale),
+        (Mode::Forbidden, MetricsState::Failed),
+        (Mode::Oversized, MetricsState::Failed),
+        (Mode::Malformed, MetricsState::Failed),
+        (Mode::UntrustedRedirect, MetricsState::Failed),
+    ] {
+        let fixture = Fixture::new(mode).await;
+        let calls = |method: &str| {
+            fixture
+                .methods
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|called| called.as_str() == method)
+                .count()
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+        // Unlike the read-only views in the other tests, this connection may change the pool.
+        let connection = backend.connect(
+            fixture.options.clone(),
+            Credentials::new("fixture-user".into(), "fixture-password".into()),
+        );
+        connection.wait_ready(Duration::from_secs(3)).await.unwrap();
+        let generation = connection.latest().generation();
+        let metrics = subscribe(&connection, target());
+        assert_eq!(settled(&metrics).await.state, expected);
+
+        let snapshot = connection.latest();
+        assert_eq!(snapshot.state(), ConnectionState::Ready);
+        assert_eq!(snapshot.generation(), generation);
+        assert_eq!(snapshot.error(), None);
+        let operation = connection
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: snapshot.observe_vm(VmId::parse(VM).unwrap()).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            )
+            .unwrap();
+        let record = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let record = operation.latest();
+                if record.state.terminal() || record.state == OperationState::OutcomeUnknown {
+                    return record;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(record.state, OperationState::Succeeded, "{}", record.detail);
+        assert_eq!(calls("Async.VM.clean_shutdown"), 1);
+
+        // The command did not repair the charts, and their failure cost the connection nothing.
+        let charts = metrics.latest();
+        assert_eq!(charts.state, expected);
+        assert!(charts.series.is_empty());
+        let snapshot = connection.latest();
+        assert!(snapshot.is_current());
+        assert_eq!(snapshot.generation(), generation);
+        assert_eq!(calls("session.login_with_password"), 1);
         connection.close().await;
     }
 }

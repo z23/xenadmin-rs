@@ -2265,6 +2265,64 @@ mod tests {
         }
         assert_eq!(recover(dir.path(), record().pool).unwrap().len(), 200);
     }
+    #[test]
+    fn a_full_journal_refuses_the_next_admission_and_adds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        // Filling the journal is a thousand commits; syncing each one to a disk-backed
+        // directory takes seconds and is not what this test observes.
+        journal.0.execute_batch("PRAGMA synchronous=OFF").unwrap();
+        let rows = |journal: &Journal, filter: &str| -> i64 {
+            journal
+                .0
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM operations {filter}"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        // Every operation is in its own pool, so none reserves anything another needs
+        // and only the journal-wide limit can refuse one.
+        let unresolved = || {
+            let mut row = record();
+            row.pool = PoolId::from(uuid::Uuid::new_v4());
+            row.state = OperationState::Submitting;
+            row
+        };
+        let mut admitted = Vec::new();
+        for _ in 0..1000 {
+            let mut row = unresolved();
+            assert!(journal.admit(&mut row).unwrap());
+            admitted.push(row);
+        }
+        let mut refused = unresolved();
+        assert!(matches!(
+            journal.admit(&mut refused),
+            Err(Error::JournalFull)
+        ));
+        assert_eq!(refused.revision(), 0);
+        assert!(journal.load(refused.id).unwrap().is_none());
+        assert_eq!(rows(&journal, ""), 1000);
+        // Reopening shows the refusal left nothing behind in the file either.
+        drop(journal);
+        let mut journal = Journal::open(dir.path()).unwrap();
+        assert!(journal.load(refused.id).unwrap().is_none());
+        assert_eq!(rows(&journal, "WHERE terminal=0"), 1000);
+
+        let mut resolved = admitted.pop().unwrap();
+        resolved.state = OperationState::Failed;
+        journal.save(&mut resolved).unwrap();
+        assert!(
+            journal.admit(&mut refused).unwrap(),
+            "one resolved operation frees one place"
+        );
+        assert!(matches!(
+            journal.admit(&mut unresolved()),
+            Err(Error::JournalFull)
+        ));
+        assert_eq!(rows(&journal, "WHERE terminal=0"), 1000);
+    }
 }
 
 #[cfg(test)]

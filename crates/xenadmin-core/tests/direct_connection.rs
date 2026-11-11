@@ -291,6 +291,99 @@ async fn session_expiry_resynchronizes_in_a_new_generation() {
 }
 
 #[tokio::test]
+async fn delayed_initial_inventory_reports_synchronizing_and_admits_no_command_until_ready() {
+    use xenadmin_core::{
+        Error, OperationControl, OperationId, OperationState, PowerAction, VmCommand,
+    };
+    let hold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let server = mock_overridden(override_rpc({
+        let (hold, held, release) = (hold.clone(), held.clone(), release.clone());
+        move |request| {
+            let (hold, held, release) = (hold.clone(), held.clone(), release.clone());
+            async move {
+                if request["method"] == "event.from"
+                    && request["params"][2] == ""
+                    && hold.load(Ordering::SeqCst)
+                {
+                    held.notify_one();
+                    release.notified().await;
+                }
+                None
+            }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connect = || {
+        backend.connect(
+            ConnectionOptions::new(server.endpoint.clone()),
+            Credentials::new("root".into(), "fixture-password".into()),
+        )
+    };
+    // A command needs a guest observation and a synchronizing connection has none to give,
+    // so an earlier connection to the same pool supplies one to offer.
+    let earlier = connect();
+    let guest = earlier
+        .wait_ready(deadline(3))
+        .await
+        .unwrap()
+        .guests()
+        .next()
+        .unwrap()
+        .id;
+    let observed = earlier.latest().observe_vm(guest).unwrap();
+    earlier.close().await;
+    let start = |vm| VmCommand::Power {
+        vm,
+        action: PowerAction::Start,
+    };
+
+    hold.store(true, Ordering::SeqCst);
+    let connection = connect();
+    tokio::time::timeout(deadline(3), held.notified())
+        .await
+        .expect("the inventory request follows a successful login");
+    assert_eq!(server.logins.load(Ordering::SeqCst), 2);
+    let snapshot = connection.latest();
+    assert_eq!(snapshot.state(), ConnectionState::Synchronizing);
+    assert!(!snapshot.is_current());
+    assert!(snapshot.inventory().is_none());
+    assert!(matches!(snapshot.observe_vm(guest), Err(Error::Stale)));
+    assert!(matches!(
+        connection.submit(OperationId::new(), start(observed)),
+        Err(Error::Stale)
+    ));
+    assert!(matches!(
+        connection.control_operation(OperationId::new(), OperationControl::RequestCancellation),
+        Err(Error::Stale)
+    ));
+    assert!(matches!(
+        connection.open_console(observed),
+        Err(Error::Stale)
+    ));
+    assert_eq!(connection.latest().state(), ConnectionState::Synchronizing);
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 0);
+    assert!(!directory.path().join("operations.sqlite3").exists());
+
+    release.notify_one();
+    connection.wait_ready(deadline(3)).await.unwrap();
+    let snapshot = connection.latest();
+    assert_eq!(snapshot.state(), ConnectionState::Ready);
+    let operation = connection
+        .submit(
+            OperationId::new(),
+            start(snapshot.observe_vm(guest).unwrap()),
+        )
+        .unwrap();
+    assert_eq!(finish(&operation).await, OperationState::Succeeded);
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn a_vm_observation_cannot_be_used_in_another_pool_with_the_same_vm_uuid() {
     let first = mock(false, false).await;
     let second = mock(false, false).await;
@@ -947,6 +1040,178 @@ async fn an_established_session_follows_a_new_coordinator_in_a_new_generation() 
 }
 
 #[tokio::test]
+async fn a_late_event_reply_from_the_previous_coordinator_is_not_applied_to_the_new_generation() {
+    use xenadmin_core::{OperationId, OperationState, PowerAction, VmCommand};
+    fn guest_change(token: &str, name: &str, state: &str) -> RpcReply {
+        let mut event = batch("unused", state)["events"][2].clone();
+        event["snapshot"]["name_label"] = json!(name);
+        RpcReply::Json(json!({"result":{"token":token,"events":[event]}}))
+    }
+    let late = Arc::new(tokio::sync::Notify::new());
+    let answered = Arc::new(tokio::sync::Notify::new());
+    let tokens = Arc::new(Mutex::new(Vec::new()));
+    let destination = mock_overridden(override_rpc({
+        let (answered, tokens) = (answered.clone(), tokens.clone());
+        move |request| {
+            let (answered, tokens) = (answered.clone(), tokens.clone());
+            async move {
+                if request["method"] != "event.from" {
+                    return None;
+                }
+                let token = request["params"][2].as_str()?.to_owned();
+                tokens.lock().unwrap().push(token.clone());
+                match token.as_str() {
+                    "" => Some(RpcReply::Json(json!({"result":batch("initial","Running")}))),
+                    // The current generation's next change is held until the previous
+                    // coordinator has been released to answer, so the late reply is
+                    // written first.
+                    "initial" => {
+                        answered.notified().await;
+                        Some(guest_change(
+                            "current",
+                            "Renamed on the new coordinator",
+                            "Running",
+                        ))
+                    }
+                    _ => {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        Some(RpcReply::Json(
+                            json!({"result":{"token":token,"events":[]}}),
+                        ))
+                    }
+                }
+            }
+        }
+    }))
+    .await;
+    let redirect = destination.endpoint.to_string();
+    let polling = Arc::new(tokio::sync::Notify::new());
+    let polls = Arc::new(AtomicUsize::new(0));
+    let source = mock_overridden(override_rpc({
+        let (late, answered, polling, polls) = (
+            late.clone(),
+            answered.clone(),
+            polling.clone(),
+            polls.clone(),
+        );
+        move |request| {
+            let (redirect, late, answered, polling, polls) = (
+                redirect.clone(),
+                late.clone(),
+                answered.clone(),
+                polling.clone(),
+                polls.clone(),
+            );
+            async move {
+                match request["method"].as_str()? {
+                    "event.from" if request["params"][2] == "" => {
+                        Some(RpcReply::Json(json!({"result":batch("initial","Halted")})))
+                    }
+                    "event.from" => {
+                        polls.fetch_add(1, Ordering::SeqCst);
+                        polling.notify_one();
+                        late.notified().await;
+                        answered.notify_one();
+                        Some(guest_change(
+                            "late",
+                            "Late change from the previous coordinator",
+                            "Suspended",
+                        ))
+                    }
+                    "Async.VM.start" => Some(RpcReply::Json(
+                        json!({"error":{"code":1,"message":"HOST_IS_SLAVE","data":[redirect]}}),
+                    )),
+                    _ => None,
+                }
+            }
+        }
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(source.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let guest = connection
+        .wait_ready(deadline(3))
+        .await
+        .unwrap()
+        .guests()
+        .next()
+        .unwrap()
+        .id;
+    let first = connection.latest().generation();
+    tokio::time::timeout(deadline(3), polling.notified())
+        .await
+        .expect("the event long poll must be outstanding before the session moves");
+    // A command answered HOST_IS_SLAVE moves the session while that long poll is unanswered.
+    let refused = connection
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: connection.latest().observe_vm(guest).unwrap(),
+                action: PowerAction::Start,
+            },
+        )
+        .unwrap();
+    assert_eq!(finish(&refused).await, OperationState::Failed);
+    tokio::time::timeout(deadline(6), async {
+        loop {
+            let snapshot = connection.latest();
+            if snapshot.is_current() && snapshot.generation() != first {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let second = connection.latest().generation();
+
+    late.notify_one();
+    tokio::time::timeout(deadline(3), async {
+        loop {
+            if connection
+                .latest()
+                .inventory()
+                .is_some_and(|inventory| inventory.vms[&guest].name != "XO recovery guest")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a change must reach the inventory after the late reply was released");
+    tokio::time::timeout(deadline(3), async {
+        while tokens.lock().unwrap().len() < 3 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the new generation must continue its own event stream");
+    let snapshot = connection.latest();
+    assert!(snapshot.is_current());
+    assert_eq!(snapshot.generation(), second);
+    let vm = &snapshot.inventory().unwrap().vms[&guest];
+    assert_eq!(vm.name, "Renamed on the new coordinator");
+    assert_eq!(vm.power_state, PowerState::Running);
+    assert_eq!(
+        *tokens.lock().unwrap(),
+        ["", "initial", "current"],
+        "the late reply's token must not continue the new generation's stream"
+    );
+    assert_eq!(
+        polls.load(Ordering::SeqCst),
+        1,
+        "the previous coordinator must not be polled again"
+    );
+    assert_eq!(destination.mutations.load(Ordering::SeqCst), 0);
+    connection.close().await;
+}
+
+#[tokio::test]
 async fn cancellation_after_reconnect_reaches_the_recovered_task() {
     use xenadmin_core::{OperationControl, OperationId, OperationState, PowerAction};
     let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1081,6 +1346,155 @@ async fn terminal_persistence_failure_is_visible_and_keeps_the_vm_reserved() {
     database
         .execute_batch("DROP TRIGGER fail_terminal")
         .unwrap();
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_full_journal_refuses_the_submission_with_its_reason_and_sends_no_mutation() {
+    use xenadmin_core::{Error, OperationId, OperationState, PowerAction, VmCommand};
+    let server = mock(false, false).await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
+    let observed = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    let start = || VmCommand::Power {
+        vm: observed,
+        action: PowerAction::Start,
+    };
+    // Create the journal through a first operation.
+    let first = connection.submit(OperationId::new(), start()).unwrap();
+    assert_eq!(finish(&first).await, OperationState::Succeeded);
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
+
+    // This mock has one guest, so the journal cannot be filled by submitting. The limit
+    // counts every pool: 1000 unresolved operations of other pools are written as copies
+    // of the row above.
+    let database = rusqlite::Connection::open(directory.path().join("operations.sqlite3")).unwrap();
+    database.busy_timeout(deadline(5)).unwrap();
+    let saved: String = database
+        .query_row("SELECT payload FROM operations", [], |row| row.get(0))
+        .unwrap();
+    let mut payload: Value = serde_json::from_str(&saved).unwrap();
+    payload["state"] = json!("OutcomeUnknown");
+    database.execute_batch("BEGIN IMMEDIATE").unwrap();
+    for _ in 0..1000 {
+        let [id, pool, vm] = std::array::from_fn(|_| uuid::Uuid::new_v4().to_string());
+        payload["id"] = json!(id);
+        payload["pool"] = json!(pool);
+        payload["vm"] = json!(vm);
+        database
+            .execute(
+                "INSERT INTO operations(id,pool,vm,payload,terminal,revision) VALUES(?1,?2,?3,?4,0,1)",
+                rusqlite::params![id, pool, vm, payload.to_string()],
+            )
+            .unwrap();
+    }
+    database.execute_batch("COMMIT").unwrap();
+    let rows = |filter: &str| -> i64 {
+        database
+            .query_row(
+                &format!("SELECT COUNT(*) FROM operations WHERE {filter}"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert_eq!(rows(&format!("id='{}'", first.latest().id)), 1);
+
+    let id = OperationId::new();
+    let refused = connection.submit(id, start()).unwrap();
+    assert_eq!(finish(&refused).await, OperationState::Rejected);
+    assert_eq!(refused.latest().detail, Error::JournalFull.to_string());
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
+    assert_eq!(rows(&format!("id='{id}'")), 0);
+    assert_eq!(rows("terminal=0"), 1000);
+    assert!(connection.operation_history().iter().all(|r| r.id != id));
+
+    // One unresolved operation fewer and the same command is admitted and dispatched.
+    database
+        .execute(
+            "DELETE FROM operations WHERE rowid=(SELECT MAX(rowid) FROM operations WHERE terminal=0)",
+            [],
+        )
+        .unwrap();
+    let admitted = connection.submit(OperationId::new(), start()).unwrap();
+    assert_eq!(finish(&admitted).await, OperationState::Succeeded);
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 2);
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_full_command_queue_refuses_the_submission_at_once_and_dispatches_nothing_for_it() {
+    use xenadmin_core::{Error, OperationId, OperationState, PowerAction, VmCommand};
+    // The host task stays pending, so the one admitted operation keeps the guest reserved
+    // and every other queued command is refused at admission: exactly one mutation.
+    let server = mock_overridden(override_rpc(|request| async move {
+        (request["method"] == "task.get_record").then(|| {
+            RpcReply::Json(
+                json!({"result":{"status":"pending","progress":0.2,"allowed_operations":[]}}),
+            )
+        })
+    }))
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let connection = backend.connect(
+        ConnectionOptions::new(server.endpoint.clone()),
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    let inventory = connection.wait_ready(deadline(3)).await.unwrap();
+    let observed = connection
+        .latest()
+        .observe_vm(inventory.guests().next().unwrap().id)
+        .unwrap();
+    // Nothing can hold the connection's owner still from here. It opens the journal for
+    // each command it takes, so a caller that does not yield fills the queue's 32 places
+    // long before they drain.
+    let mut queued = Vec::new();
+    let refusal = loop {
+        match connection.submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: observed,
+                action: PowerAction::Start,
+            },
+        ) {
+            Ok(operation) => queued.push(operation),
+            Err(error) => break error,
+        }
+        assert!(queued.len() < 10_000, "the command queue never filled");
+    };
+    assert!(matches!(refusal, Error::Busy), "{refusal}");
+    assert!(queued.len() >= 32);
+    tokio::time::timeout(deadline(10), async {
+        while !queued.iter().all(|operation| {
+            let record = operation.latest();
+            record.has_task() || record.state.terminal()
+        }) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("every queued command must be admitted or refused");
+    let (tracked, refused): (Vec<_>, Vec<_>) = queued
+        .iter()
+        .map(|operation| operation.latest())
+        .partition(|record| record.has_task());
+    assert_eq!(tracked.len(), 1);
+    assert!(
+        refused
+            .iter()
+            .all(|record| record.state == OperationState::Rejected
+                && record.detail == Error::ConflictingOperation.to_string())
+    );
+    assert_eq!(server.mutations.load(Ordering::SeqCst), 1);
     connection.close().await;
 }
 
