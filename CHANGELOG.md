@@ -12,24 +12,31 @@ checkpoints.
 
 Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.0.
 
-Nothing has changed in what the client does yet.
-
 ### Changed
 
 - The packages now contain one component under a different licence from the rest: the
   XAPI bindings, generated from the upstream API description, are under the LGPL 2.1
   with a linking exception. Their licence and a notice of their source are under
   `third-party/xenadmin-xapi-VERSION/`. Everything else stays under the MIT licence.
-- Inside, the core's event, inventory, network fabric and management topology decoders
-  read records through those generated bindings, and every call and field the client
-  names is checked against the generated catalogue. A field read through them has a type
-  of its own, so code that expects one field cannot be given a whole record.
+- Inside, the core reads host records through those generated bindings in its decoders
+  and in most of its operations, and every call and field the client names is checked
+  against the generated catalogue. A field read through them has a type of its own, so
+  code that expects one field cannot be given a whole record.
+- The bindings are generated from the API description that upstream's own generator
+  writes for the toolstack release the client is qualified on (26.1.11). The description
+  first used was a copy upstream keeps in its repository, which turned out to date from
+  2024 and to lack 3 classes, 54 fields and 115 calls of that release.
 
 ### Fixed
 
 - The pool's HTTPS-only setting was never shown and could not be changed on a real pool:
   the client looked for it on the pool, and hosts keep it per host. It is now read from
   the hosts, shown where they agree, and can be turned on and off.
+- Growing, copying or cleaning up a virtual disk was refused as "in use" whenever a guest
+  had the disk attached, even a halted guest: the check read a field of the attachment
+  that hosts do not send. A disk attached to a guest that is not using it can now be
+  grown and copied. For the same reason multipath maintenance treated every attached
+  disk as active; it now looks only at disks that are plugged in.
 
 ## 0.18.0 (2026-11-11)
 

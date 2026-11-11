@@ -231,6 +231,14 @@ before every build.
   root password from `XENADMIN_LAB_PASSWORD_FILE` and sends nothing to a host whose
   certificate does not match the fingerprint. The host never closes the root account's own
   sessions by a subject logout.
+- `python3 lab/description_check.py COORDINATOR SHA256_FINGERPRINT [DESCRIPTION_JSON]`
+  compares the fields of the pool's live records with the API description the client's
+  bindings are generated from (or another description, named as the third argument), and
+  prints the fields that hosts send and the description lacks, the described fields no
+  record carries, the classes without records and the classes the host refuses. It only
+  reads, prints field names and never record contents, and takes the password and the
+  fingerprint as `other_admin.py` does. A class without records on the lab cannot be
+  compared.
 - A guest with a graphical desktop, for pointer checks, is made by the harness scenario
   `lab_desktop_guest_provisioning` from the isohybrid live image named by
   `XENADMIN_LAB_DESKTOP_IMAGE`. The lab uses GParted Live (`gparted-live-1.8.1-6-amd64.iso`,

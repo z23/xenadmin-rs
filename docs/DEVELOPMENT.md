@@ -76,7 +76,12 @@ from `data/xenapi.json` when it is built, and refuses a description whose digest
 the one in `data/SOURCE`. The check compares every XAPI call and field the core names as a
 string with that catalogue. That crate is under the LGPL 2.1 with a linking exception,
 unlike the rest of the workspace: keep anything derived from the description inside it
-([decision](decisions/0004-generated-bindings.md)).
+([decision](decisions/0004-generated-bindings.md)). The description is produced by
+`crates/xenadmin-xapi/data/regenerate.sh`, which builds and runs upstream's generator at
+a toolstack tag on a throwaway Debian or Ubuntu machine; a new description goes in with
+its tag, commit and digest in `data/SOURCE`. `lab/description_check.py` compares a
+description with the fields of a lab pool's live records, read-only, and is how a
+description is shown to match the hosts it is for.
 
 The development and inspection launchers use Cargo to select the current build executable.
 They honor `CARGO_TARGET_DIR` and target-specific output paths; inspection builds the local

@@ -87,9 +87,12 @@ read back exactly; JSON-RPC login, coordinator redirects and the `event.from` bo
 against those hosts in every live scenario. Non-US layouts, guest framebuffer resize, cursor
 shapes, the wheel's direction and clipboard negotiation against a real guest remain
 unqualified. The decoder is still handwritten, on top of generated record views. The
-matching API description has been selected, the upstream generator's JSON output at the
-lab's toolstack tag, and bindings are generated from it in `crates/xenadmin-xapi`, the
-one crate under upstream's LGPL terms ([decision](decisions/0004-generated-bindings.md)).
+API description is what upstream's generator writes for the data model at the lab's
+toolstack tag, produced by running that generator (the copy upstream keeps in its
+repository is two years older), and bindings are generated from it in
+`crates/xenadmin-xapi`, the one crate under upstream's LGPL terms
+([decision](decisions/0004-generated-bindings.md)). A read-only lab tool compares the
+description with the fields of live records.
 No XML-RPC transport exists for hosts without JSON-RPC.
 
 Later reports must distinguish successful tests from untested requirements. Production

@@ -8,24 +8,39 @@ description, how its licence is handled, what is generated and what follows.
 
 ## The description
 
-`doc/data/xenapi.json` in the upstream repository `xapi-project/xen-api` is the
-machine-readable output of the upstream API generator, kept under version control there.
-It lists 67 classes with 845 fields and 1,828 messages, each with its types, parameters,
-result, errors, permitted roles and lifecycle.
+The upstream repository `xapi-project/xen-api` holds the API's data model as OCaml source
+under `ocaml/idl`, and a program of its own, `ocaml/idl/json_backend/gen_json.ml`, that
+writes that model out as JSON: every class with its fields and messages, each with its
+types, parameters, result, errors, permitted roles and lifecycle.
 
-It is taken at tag `v26.1.11`, commit `53cf465262b2236a29c34dafb2ae1ccfd6a40ac0`. The
-lab's XCP-ng 8.3.0 hosts report toolstack 26.1.11 and API version 2.21, so it describes
-the API of the hosts the client is qualified on. No OCaml source is parsed and nothing is
-built from upstream.
+The crate's description, `data/xenapi.json`, is what that program writes at tag
+`v26.1.11`, commit `53cf465262b2236a29c34dafb2ae1ccfd6a40ac0`: 70 classes with 899 fields
+and 1,943 messages. The lab's XCP-ng 8.3.0 hosts report toolstack 26.1.11 and API version
+2.21. `data/regenerate.sh` clones the tag, builds the program with the distribution's
+OCaml and runs it. The program was built twice in a throwaway Ubuntu 24.04 virtual
+machine, the second time by that script from an empty package root, and wrote the same
+file each time. The tool versions are recorded in `data/SOURCE`. Nothing of upstream's is
+built when the client is built: the file is kept, and the build checks its digest.
+
+The first description used here was a different file, `doc/data/xenapi.json`, which
+upstream keeps under version control as a copy of that same output. At the tag it had
+last been changed in May 2024 and named no release newer than 24.10.0: 67 classes, 845
+fields and 1,828 messages. It was taken on the assumption that the file at a tag
+describes that tag, and that was wrong (finding 56 of the live report). A read-only
+comparison of the lab's live records with it, `lab/description_check.py`, showed 28
+fields in six classes that hosts send and it lacked; against the generated description
+the same comparison shows no difference in either direction, over the 27 classes that
+have records on the lab. Two calls the older file lacked had been listed as XCP-ng's own
+additions; they are upstream's and are in the generated description.
 
 What it does not say:
 
 - Whether a message has an asynchronous form. The host decides that, and finding 19 of the
   live report (a call with no asynchronous form) could not have been read from it.
-- What XCP-ng adds to XAPI. `VM.get_secureboot_readiness` and
-  `pool.get_guest_secureboot_readiness` answer on the lab and are absent upstream.
 - What a host of another version offers. A second host version needs its own description
   and a recorded difference.
+- Whether a class the lab has no records of matches: 31 classes could not be compared,
+  and three the host refuses to list.
 
 ## Licence: one LGPL crate, the rest MIT
 
@@ -44,9 +59,17 @@ on the main branch.
   exception followed by the LGPL 2.1. Its manifest declares
   `LGPL-2.1-only WITH OCaml-LGPL-linking-exception`.
 - Its `NOTICE` says what the crate is derived from and where the complete source is.
-- `data/xenapi.json` is the description, unchanged, and `data/SOURCE` records the
-  repository, tag, commit, path and SHA-256. The build refuses any other file.
+- `data/xenapi.json` is the description as upstream's program wrote it, and
+  `data/SOURCE` records the repository, tag, commit, program and SHA-256. The build
+  refuses any other file. `data/regenerate.sh` is how it is produced.
 - The generator and the few hand-written lines of the crate are under the same terms.
+
+The description was at first a file copied unchanged from upstream's repository, which
+is what the operator was shown when deciding. Since finding 56 it is the output of
+upstream's own program run on upstream's data model at the same commit. It is derived
+from the same LGPL-licensed source, stays in the same crate under the same terms, and
+the notice says how it is produced. The change was reported to the operator with the
+work and waits for their word before it reaches the main branch.
 
 Nothing derived from the description may live outside that crate, and the other crates
 stay under the MIT licence. Packages carry the crate's licence and notice with the other
@@ -74,50 +97,69 @@ depends on the description alone and is sorted.
 
 - The event decoder, the power and snapshot checks, the inventory decoder and the
   network fabric and management topology decoders read their records through the
-  generated views, where a field that its class lacks does not compile. Those four files
-  read a value by key in 309 places before the move and in 102 now (the count
-  is defined under "What follows"). What remains by key there are keys inside map-valued
-  fields, the JSON-RPC envelope and loops that handle several classes at once.
+  generated views, where a field that its class lacks does not compile.
 - The readers those decoders share (a required string, a label, a size, a reference and
   the like) take a `FieldValue`. A read that has no view, such as a key inside
   `other_config`, wraps its value by hand with `FieldValue::of`, which is visible where
   it is done.
+- The operation modules read through views wherever the class of a record variable was
+  established: by hand for the snapshot, power, console and recovery modules, and for the
+  rest from the fields themselves, a variable being given a class when every field read
+  from it in a function belongs to exactly one class. Each read names its view where it
+  is made (`VmRecord::new(&record).power_state()`), so a view is never held across a
+  point where the variable is bound to another record.
 - VM power states are compared with the generated constants in the event decoder.
 - `xapi_conformance_tests.rs` checks every string of the form `Class.name` or
   `Async.Class.name` in the core against the catalogue: a call must be a message of that
-  class, and a field named by a decoder must be a field of it. Names the description
-  lacks are listed in the test with the reason each is used, and an entry that no longer
-  applies fails the test.
+  class, and a field named by a decoder must be a field of it. It has a list for calls
+  the description lacks, which is empty, and an entry that no longer applies fails the
+  test.
 
 What the move found:
 
-- Every call and field the client names exists, with two XCP-ng additions as the only
-  exceptions.
+- Every call and field the client names in that form exists.
 - One fixture test asserted on `VM.reset_power_state`, a name the API does not have
   (`VM.power_state_reset` is the call), so that assertion could never have failed.
 - The pool's HTTPS-only setting was read from a pool field that does not exist: hosts
   keep it. The fixture carried the field, so tests passed, and against a real pool the
   setting could never be shown or changed. The read did not compile against the pool's
   view (finding 55 of the live report).
+- A disk attachment has no `reserved` field in the API, and two checks read one. Absent,
+  it compared as set, so growing, copying or cleaning up a disk was refused whenever any
+  guest had it attached, plugged or not, and multipath maintenance counted every
+  attachment as active. Again the fixtures carried the field (finding 57).
+- Two guards could never fire: a network interface has no `trunks` field and a disk no
+  `blocked_operations` (finding 58).
+- The description itself was two years older than the toolstack it was taken to describe
+  (finding 56, above).
+
+The last three came from looking at the variables no class fits. A variable whose fields
+fit a class but for one is either two records under one name or a wrong field name.
 
 What the views alone did not protect against: a reader that takes a field's value took
 a JSON value, as a whole record is. One call that passed the record where its UUID was
 expected compiled, and a test caught it. `FieldValue` closed that: the same call, put
 back as a check, is refused by the compiler ("expected `FieldValue`, found `&Value`").
 A field of the wrong class or the wrong meaning passed to a reader still compiles;
-typed values, step 3 below, narrow that further.
+typed values, step 3 below, narrow that further. A variable given the wrong class
+compiles too when that class has the fields read; the assignment from fields cannot
+make that mistake where one class fits, and the assignments by hand were read against
+the calls that produce each record.
 
 ## What follows, in order
 
 The count used here is of indexes by a string literal on an expression (`record["key"]`)
 in the core's sources outside its test files, which is how a field is read without a
 view. Before the move the core had 2,094 of them over 252 distinct keys; on 2026-11-11
-it has 1,886 over 246. Not all of them are fields: some are keys inside
-map-valued fields, parts of the JSON-RPC envelope or the client's own structures.
+it has 762 over 196. Not all of them are fields: some are keys inside map-valued
+fields, parts of the JSON-RPC envelope, disk image and archive metadata or the client's
+own structures.
 
-1. The loops that handle several classes at once, then the operation modules, which hold
-   nearly all of the reads by key still in the core. The largest are the VM lifecycle
-   backend, network operations and the storage graph backend.
+1. The reads by key that are left. Most are in functions where one variable name holds
+   records of several classes in turn (the VM lifecycle backend, network operations,
+   device lifecycle, OVF import and the storage operations have the most), or where the
+   fields read are too few to tell the class; each needs its class read from the call
+   that produced the record. The loops that handle several classes at once stay by key.
 2. Enumeration constants replace the remaining literal values.
 3. Typed values: generated readers that turn a field into its Rust type, with the core's
    bounds applied to the result.
