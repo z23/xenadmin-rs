@@ -160,7 +160,7 @@ async fn force_with_other_client_tasks_uses_fresh_assert_without_cancelling_or_r
         assert_eq!(count(&calls, "VM.assert_operation_valid"), 1);
         assert_eq!(count(&calls, &format!("Async.VM.{}", action.wire())), 1);
         assert_eq!(count(&calls, "task.cancel"), 0);
-        assert_eq!(count(&calls, "VM.reset_power_state"), 0);
+        assert_eq!(count(&calls, "VM.power_state_reset"), 0);
     }
 }
 #[tokio::test]

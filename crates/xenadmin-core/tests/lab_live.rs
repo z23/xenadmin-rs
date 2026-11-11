@@ -7009,6 +7009,16 @@ async fn lab_chosen_host_start_and_action_diagnosis() {
             .unwrap_or_default()
     };
 
+    // A guest that another scenario started a moment ago does not advertise a clean
+    // shutdown yet, and the client rightly refuses one until the host does.
+    settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&guest.id)
+                .is_some_and(|v| v.allowed_actions.contains(&PowerAction::CleanShutdown))
+        })
+    })
+    .await;
     let while_running = diagnose_all(&c, guest.id).await;
     let shutdown = c
         .submit(

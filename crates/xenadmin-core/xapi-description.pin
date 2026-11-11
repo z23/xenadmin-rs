@@ -1,0 +1,8 @@
+# The upstream API description that the client's XAPI names are checked against: the
+# machine-readable output of the upstream API generator, at the toolstack version the
+# qualified hosts run. It is fetched for the check and is not kept in this repository.
+repository=xapi-project/xen-api
+tag=v26.1.11
+commit=53cf465262b2236a29c34dafb2ae1ccfd6a40ac0
+path=doc/data/xenapi.json
+sha256=09a9dc2cb458b91548e9dac0e0425d3e5121cadfdd091699896e233869130ba7

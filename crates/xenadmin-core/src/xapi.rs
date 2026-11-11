@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
+use crate::xapi_records::{HostRecord, TaskRecord, VmRecord};
+
 use crate::{
     ConnectionOptions, Credentials, Error, Host, HostId, Inventory, Network, PoolId, PowerState,
     Storage, Vm, VmId,
@@ -414,10 +416,11 @@ impl Session {
             .await?;
         let reference = opaque_reference(&reference)?;
         let record = self.call("VM.get_record", vec![json!(&reference)]).await?;
-        if record["uuid"].as_str() != Some(vm.to_string().as_str())
-            || record["is_a_snapshot"] != false
-            || record["is_a_template"] != false
-            || record["is_control_domain"] != false
+        let view = VmRecord::new(&record);
+        if view.uuid().as_str() != Some(vm.to_string().as_str())
+            || *view.is_a_snapshot() != false
+            || *view.is_a_template() != false
+            || *view.is_control_domain() != false
         {
             return Err(Error::Stale);
         }
@@ -468,14 +471,15 @@ impl Session {
             .await?;
         let reference = opaque_reference(&reference)?;
         let record = self.call("VM.get_record", vec![json!(&reference)]).await?;
-        if record["uuid"].as_str() != Some(vm.to_string().as_str())
-            || record["is_a_snapshot"] != false
-            || record["is_a_template"] != false
-            || record["is_control_domain"] != false
+        let view = VmRecord::new(&record);
+        if view.uuid().as_str() != Some(vm.to_string().as_str())
+            || *view.is_a_snapshot() != false
+            || *view.is_a_template() != false
+            || *view.is_control_domain() != false
         {
             return Err(Error::Stale);
         }
-        if record["power_state"] != required_state || !advertises(&record, operation) {
+        if *view.power_state() != required_state || !advertises(&record, operation) {
             return Err(Error::UnavailableAction);
         }
         let destination = self
@@ -485,10 +489,11 @@ impl Session {
         let destination_record = self
             .call("host.get_record", vec![json!(&destination)])
             .await?;
-        if destination_record["uuid"].as_str() != Some(host.to_string().as_str()) {
+        let destination_view = HostRecord::new(&destination_record);
+        if destination_view.uuid().as_str() != Some(host.to_string().as_str()) {
             return Err(Error::Stale);
         }
-        if destination_record["enabled"] != true {
+        if *destination_view.enabled() != true {
             return Err(Error::UnavailableAction);
         }
         self.call(
@@ -650,13 +655,16 @@ impl Store {
 
     pub(crate) fn allows(&self, vm: VmId, action: &crate::OperationAction) -> bool {
         self.class("vm")
-            .find(|(_, value)| value["uuid"].as_str() == Some(vm.to_string().as_str()))
+            .find(|(_, value)| {
+                VmRecord::new(value).uuid().as_str() == Some(vm.to_string().as_str())
+            })
             .is_some_and(|(_, value)| {
-                value["is_control_domain"] != true
-                    && (value["is_a_template"] != true
+                let view = VmRecord::new(value);
+                *view.is_control_domain() != true
+                    && (*view.is_a_template() != true
                         || matches!(action, crate::OperationAction::Lifecycle(_))
                         || matches!(action, crate::OperationAction::Settings(p) if p.is_template()))
-                    && value["is_a_snapshot"] != true
+                    && *view.is_a_snapshot() != true
                     && match action {
                         crate::OperationAction::Power(action) => advertises(value, action.wire()),
                         crate::OperationAction::Snapshot(crate::SnapshotOperation::Workflow {
@@ -665,10 +673,11 @@ impl Store {
                             let source = operation.snapshot().and_then(|id| {
                                 self.class("vm")
                                     .find(|(_, candidate)| {
-                                        candidate["uuid"].as_str() == Some(id.to_string().as_str())
-                                            && candidate["is_a_snapshot"] == true
-                                            && candidate["is_control_domain"] == false
-                                            && candidate["snapshot_of"].as_str()
+                                        let candidate = VmRecord::new(candidate);
+                                        candidate.uuid().as_str() == Some(id.to_string().as_str())
+                                            && *candidate.is_a_snapshot() == true
+                                            && *candidate.is_control_domain() == false
+                                            && candidate.snapshot_of().as_str()
                                                 == self.vm_reference(vm).as_deref()
                                     })
                                     .map(|(_, candidate)| candidate)
@@ -684,7 +693,7 @@ impl Store {
                             crate::SnapshotOperation::Checkpoint { .. },
                         ) => advertises(value, "checkpoint"),
                         crate::OperationAction::Placement(p) => {
-                            value["allowed_operations"].as_array().is_some_and(|ops| {
+                            view.allowed_operations().as_array().is_some_and(|ops| {
                                 ops.iter().any(|op| {
                                     op == match p.placement {
                                         crate::PowerAction::Start => "start_on",
@@ -700,12 +709,13 @@ impl Store {
                         crate::OperationAction::Snapshot(crate::SnapshotOperation::Revert {
                             snapshot,
                         }) => {
-                            value["power_state"] == "Halted"
+                            *view.power_state() == "Halted"
                                 && self.class("vm").any(|(reference, candidate)| {
-                                    candidate["uuid"].as_str()
+                                    let snapshot_view = VmRecord::new(candidate);
+                                    snapshot_view.uuid().as_str()
                                         == Some(snapshot.to_string().as_str())
-                                        && candidate["is_a_snapshot"] == true
-                                        && candidate["snapshot_of"].as_str()
+                                        && *snapshot_view.is_a_snapshot() == true
+                                        && snapshot_view.snapshot_of().as_str()
                                             == self.vm_reference(vm).as_deref()
                                         && reference != "OpaqueRef:NULL"
                                         && advertises(candidate, "revert")
@@ -715,9 +725,10 @@ impl Store {
                             crate::SnapshotOperation::Clone { snapshot, .. }
                             | crate::SnapshotOperation::Delete { snapshot, .. },
                         ) => self.class("vm").any(|(_, candidate)| {
-                            candidate["uuid"].as_str() == Some(snapshot.to_string().as_str())
-                                && candidate["is_a_snapshot"] == true
-                                && candidate["snapshot_of"].as_str()
+                            let snapshot_view = VmRecord::new(candidate);
+                            snapshot_view.uuid().as_str() == Some(snapshot.to_string().as_str())
+                                && *snapshot_view.is_a_snapshot() == true
+                                && snapshot_view.snapshot_of().as_str()
                                     == self.vm_reference(vm).as_deref()
                                 && match action {
                                     crate::OperationAction::Snapshot(
@@ -731,7 +742,9 @@ impl Store {
     }
     pub(crate) fn vm_reference(&self, id: VmId) -> Option<String> {
         self.class("vm")
-            .find(|(_, value)| value["uuid"].as_str() == Some(id.to_string().as_str()))
+            .find(|(_, value)| {
+                VmRecord::new(value).uuid().as_str() == Some(id.to_string().as_str())
+            })
             .map(|(reference, _)| reference.clone())
     }
     pub(crate) fn apply(&mut self, batch: &EventBatch) -> Result<Inventory, Error> {
@@ -831,8 +844,8 @@ impl Store {
                     id,
                     name: label(value),
                     address: string(value, "address"),
-                    enabled: value["enabled"].as_bool().unwrap_or(false),
-                    version: value["software_version"]["product_version"]
+                    enabled: HostRecord::new(value).enabled().as_bool().unwrap_or(false),
+                    version: HostRecord::new(value).software_version()["product_version"]
                         .as_str()
                         .unwrap_or("Unknown")
                         .into(),
@@ -847,7 +860,7 @@ impl Store {
         let mut vm_refs = BTreeMap::new();
         for (reference, value) in self
             .class("vm")
-            .filter(|(_, value)| value["is_a_snapshot"] != true)
+            .filter(|(_, value)| *VmRecord::new(value).is_a_snapshot() != true)
         {
             vm_refs.insert(
                 reference.as_str(),
@@ -858,7 +871,8 @@ impl Store {
         let mut vms = BTreeMap::new();
         let mut snapshots = crate::SnapshotInventory::default();
         for (_, value) in self.class("vm") {
-            if value["is_a_snapshot"] == true {
+            let view = VmRecord::new(value);
+            if *view.is_a_snapshot() == true {
                 let mut actions = Vec::new();
                 if advertises(value, "revert") {
                     actions.push(crate::SnapshotAction::Revert);
@@ -872,13 +886,15 @@ impl Store {
                 snapshots.insert(crate::Snapshot {
                     id: crate::SnapshotId::parse(required(value, "uuid")?)
                         .map_err(|_| Error::Protocol("invalid snapshot UUID"))?,
-                    vm: value["snapshot_of"]
+                    vm: view
+                        .snapshot_of()
                         .as_str()
                         .and_then(|reference| vm_refs.get(reference))
                         .copied(),
                     name: label(value),
                     description: string(value, "name_description"),
-                    created_at: value["snapshot_time"]
+                    created_at: view
+                        .snapshot_time()
                         .as_str()
                         .filter(|time| !time.is_empty())
                         .map(str::to_owned),
@@ -909,8 +925,8 @@ impl Store {
                         .copied(),
                     vcpus: number(value, "VCPUs_at_startup", "VM.VCPUs_at_startup")?,
                     memory_bytes: number(value, "memory_static_max", "VM.memory_static_max")?,
-                    is_template: value["is_a_template"].as_bool().unwrap_or(false),
-                    is_control_domain: value["is_control_domain"].as_bool().unwrap_or(false),
+                    is_template: view.is_a_template().as_bool().unwrap_or(false),
+                    is_control_domain: view.is_control_domain().as_bool().unwrap_or(false),
                 },
             );
         }
@@ -963,7 +979,7 @@ pub(crate) fn advertises(record: &Value, action: &str) -> bool {
 }
 
 fn can_delete_snapshot(record: &Value) -> bool {
-    match record["power_state"].as_str() {
+    match VmRecord::new(record).power_state().as_str() {
         Some("Halted") => advertises(record, "destroy"),
         Some("Suspended") => advertises(record, "hard_shutdown"),
         _ => false,
@@ -980,11 +996,12 @@ pub(crate) async fn prepare_mutation(
         return Ok(parent);
     }
     let record = session.call("VM.get_record", vec![json!(&parent)]).await?;
-    if record["uuid"].as_str() != Some(operation.vm.to_string().as_str())
-        || record["is_a_snapshot"] != false
-        || (record["is_a_template"] != false
+    let view = VmRecord::new(&record);
+    if view.uuid().as_str() != Some(operation.vm.to_string().as_str())
+        || *view.is_a_snapshot() != false
+        || (*view.is_a_template() != false
             && !matches!(&operation.action, OperationAction::Settings(p) if p.is_template()))
-        || record["is_control_domain"] != false
+        || *view.is_control_domain() != false
     {
         return Err(Error::Stale);
     }
@@ -1012,7 +1029,7 @@ pub(crate) async fn prepare_mutation(
             Ok(parent)
         }
         OperationAction::Snapshot(SnapshotOperation::Revert { snapshot }) => {
-            if record["power_state"] != "Halted" {
+            if *view.power_state() != "Halted" {
                 return Err(Error::SnapshotRequiresHaltedVm);
             }
             let reference = session
@@ -1022,10 +1039,11 @@ pub(crate) async fn prepare_mutation(
             let candidate = session
                 .call("VM.get_record", vec![json!(&reference)])
                 .await?;
-            if candidate["uuid"].as_str() != Some(snapshot.to_string().as_str())
-                || candidate["is_a_snapshot"] != true
-                || candidate["is_control_domain"] != false
-                || candidate["snapshot_of"].as_str() != Some(&parent)
+            let candidate_view = VmRecord::new(&candidate);
+            if candidate_view.uuid().as_str() != Some(snapshot.to_string().as_str())
+                || *candidate_view.is_a_snapshot() != true
+                || *candidate_view.is_control_domain() != false
+                || candidate_view.snapshot_of().as_str() != Some(&parent)
             {
                 return Err(Error::Stale);
             }
@@ -1070,7 +1088,8 @@ pub(crate) fn opaque_reference(value: &Value) -> Result<String, Error> {
 }
 
 pub(crate) fn snapshot_task_result(task: &Value) -> Result<String, Error> {
-    let xml = task["result"]
+    let xml = TaskRecord::new(task)
+        .result()
         .as_str()
         .filter(|value| value.len() <= 4096)
         .ok_or(Error::Protocol("missing or oversized snapshot result"))?;
@@ -1118,13 +1137,15 @@ pub(crate) async fn verify_created_snapshot(
     let result = session
         .call("VM.get_record", vec![json!(reference)])
         .await?;
-    let id = result["uuid"]
+    let created = VmRecord::new(&result);
+    let id = created
+        .uuid()
         .as_str()
         .and_then(|value| crate::SnapshotId::parse(value).ok())
         .ok_or(Error::Protocol("invalid created snapshot UUID"))?;
-    if result["is_a_snapshot"] != true
-        || result["is_control_domain"] != false
-        || result["snapshot_of"].as_str() != Some(&parent)
+    if *created.is_a_snapshot() != true
+        || *created.is_control_domain() != false
+        || created.snapshot_of().as_str() != Some(&parent)
         || id.to_string() == vm.to_string()
     {
         return Err(Error::Protocol(

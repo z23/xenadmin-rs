@@ -18,6 +18,13 @@ jobs:
           sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libfontconfig1-dev libvulkan1 mesa-vulkan-drivers desktop-file-utils
       - name: Install the repository toolchain
         run: rustup show
+      - name: Reuse the fetched API description
+        # The description is fetched for the conformance check, verified against its pinned
+        # SHA-256 on every use and never added to the repository.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/xapi-description
+          key: xapi-description-${{ hashFiles('crates/xenadmin-core/xapi-description.pin') }}
       - name: Check, test, and render
         env:
           # Shared runners are slower than a workstation; extend fixture polling deadlines only.
