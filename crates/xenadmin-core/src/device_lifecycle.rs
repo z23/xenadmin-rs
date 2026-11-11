@@ -228,27 +228,29 @@ impl NicSettings {
         }
     }
     fn from_record(record: &Value) -> Result<Self, Error> {
-        if record["other_config"]
+        if VifRecord::new(record)
+            .other_config()
             .as_object()
             .is_none_or(|map| map.keys().any(|k| k != MARKER))
             || ["ipv4_configuration_mode", "ipv6_configuration_mode"]
                 .iter()
                 .any(|field| record[*field].as_str().is_some_and(|v| v != "None"))
-            || record["trunks"].as_array().is_some_and(|v| !v.is_empty())
         {
             return Err(Error::UnsupportedNicConfiguration);
         }
-        let mtu = number(&record["MTU"])
+        let mtu = number(&VifRecord::new(record).mtu())
             .filter(|n| *n >= 576 && *n <= 65535)
             .ok_or(Error::UnsupportedNicConfiguration)?;
-        let qos_algorithm = record["qos_algorithm_type"]
+        let qos_algorithm = VifRecord::new(record)
+            .qos_algorithm_type()
             .as_str()
             .ok_or(Error::UnsupportedNicConfiguration)?
             .to_owned();
         if !matches!(qos_algorithm.as_str(), "" | "ratelimit") {
             return Err(Error::UnsupportedNicConfiguration);
         }
-        let qos_parameters = record["qos_algorithm_params"]
+        let qos_parameters = VifRecord::new(record)
+            .qos_algorithm_params()
             .as_object()
             .ok_or(Error::UnsupportedNicConfiguration)?
             .iter()
@@ -262,7 +264,8 @@ impl NicSettings {
                 ))
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        let locking_mode = record["locking_mode"]
+        let locking_mode = VifRecord::new(record)
+            .locking_mode()
             .as_str()
             .unwrap_or("network_default")
             .to_owned();

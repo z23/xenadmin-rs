@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 fn conflict<T>() -> Result<T, Error> {
     Err(Error::ResourceConflict)
@@ -139,18 +139,17 @@ async fn checked_disk(
     let mut consumers = BTreeMap::new();
     let mut consumer_refs = BTreeSet::new();
     for (vbd_ref, vbd) in &vbds {
-        if vbd["VDI"] != reference {
+        if VbdRecord::new(vbd).vdi() != reference {
             continue;
         }
         idle(vbd)?;
-        if vbd["currently_attached"] != false
-            || vbd["reserved"] != false
-            || vbd["empty"] != false
-            || vbd["type"] != "Disk"
+        if VbdRecord::new(vbd).currently_attached() != false
+            || VbdRecord::new(vbd).empty() != false
+            || VbdRecord::new(vbd).type_() != "Disk"
         {
             return Err(Error::StorageInUse);
         }
-        let vm_ref = reference_value(&vbd["VM"])?;
+        let vm_ref = reference_value(&VbdRecord::new(vbd).vm())?;
         let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
         idle(vm)?;
         if VmRecord::new(vm).is_a_snapshot() != false

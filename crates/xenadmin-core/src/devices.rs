@@ -446,14 +446,11 @@ fn permits(record: &Value, operation: &str) -> Result<(), Error> {
 }
 /// Changed-block tracking can be disabled when it is enabled on an idle disk. XCP-ng 8.3.0
 /// never lists `disable_cbt` among a disk's allowed operations, even with tracking enabled,
-/// and offers no `VDI.update_allowed_operations`, so the tracking state and the blocked
-/// operations decide; the host still refuses a disable it does not accept.
+/// and offers no `VDI.update_allowed_operations`, and a disk has no blocked operations in
+/// the API, so the tracking state decides; the host still refuses a disable it does not
+/// accept.
 pub(crate) fn permits_cbt_disable(record: &Value) -> Result<(), Error> {
-    if record["cbt_enabled"] != true
-        || record["blocked_operations"]
-            .as_object()
-            .is_some_and(|blocked| blocked.contains_key("disable_cbt"))
-    {
+    if VdiRecord::new(record).cbt_enabled() != true {
         return Err(Error::UnavailableAction);
     }
     if let Some(current) = record.get("current_operations")

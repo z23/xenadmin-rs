@@ -466,7 +466,7 @@ async fn multipath_refuses_ha_resident_guests_changed_graph_and_shared_active_io
                         })
                     }
                     d.insert("OpaqueRef:VDI:busy".into(),json!({"uuid":uuid(80),"SR":"OpaqueRef:SR:s","type":"user","current_operations":{},"VBDs":["OpaqueRef:VBD:busy"]}));
-                    d.insert("OpaqueRef:VBD:busy".into(),json!({"uuid":uuid(81),"VDI":"OpaqueRef:VDI:busy","VM":"OpaqueRef:VM:source","currently_attached":true,"reserved":false}));
+                    d.insert("OpaqueRef:VBD:busy".into(),json!({"uuid":uuid(81),"VDI":"OpaqueRef:VDI:busy","VM":"OpaqueRef:VM:source","currently_attached":true}));
                     d.get_mut("OpaqueRef:SR:s").unwrap()["VDIs"] = json!(["OpaqueRef:VDI:busy"]);
                     d.get_mut("OpaqueRef:VM:source").unwrap()["VBDs"] =
                         json!(["OpaqueRef:VBD:busy"]);
@@ -480,6 +480,33 @@ async fn multipath_refuses_ha_resident_guests_changed_graph_and_shared_active_io
         assert_eq!(f.count("Async.PBD.unplug"), 0);
         assert_eq!(f.count("host.set_multipathing"), 0);
     }
+}
+/// A disk on a shared repository that a guest has attached but not plugged in is not
+/// active storage. The attachment record has the fields a host sends and no others.
+#[tokio::test]
+async fn multipath_is_not_refused_for_a_shared_disk_that_is_attached_but_not_plugged() {
+    let f = fixture("", false).await;
+    let mut op = multipath();
+    {
+        let mut d = f.records.lock().unwrap();
+        d.get_mut("OpaqueRef:SR:s").unwrap()["type"] = json!("lvmohba");
+        let p = d.get_mut("OpaqueRef:PBD:p").unwrap();
+        p["device_config"] = json!({"SCSIid":"3600fixture"});
+        if let StorageGraph::Multipath { attachments, .. } = &mut op {
+            attachments[0].location = Some(StorageLocation::Hba {
+                scsi_id: "3600fixture".into(),
+                allocation: crate::StorageAllocation::DriverDefault,
+            })
+        }
+        d.insert("OpaqueRef:VDI:idle".into(),json!({"uuid":uuid(80),"SR":"OpaqueRef:SR:s","type":"user","current_operations":{},"VBDs":["OpaqueRef:VBD:idle"]}));
+        d.insert("OpaqueRef:VBD:idle".into(),json!({"uuid":uuid(81),"VDI":"OpaqueRef:VDI:idle","VM":"OpaqueRef:VM:source","currently_attached":false}));
+        d.get_mut("OpaqueRef:SR:s").unwrap()["VDIs"] = json!(["OpaqueRef:VDI:idle"]);
+        d.get_mut("OpaqueRef:VM:source").unwrap()["VBDs"] = json!(["OpaqueRef:VBD:idle"]);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let r = execute(&f, dir.path(), op).await;
+    assert_ne!(r.state, OperationState::Rejected, "{}", r.detail);
+    assert_eq!(f.count("host.set_multipathing"), 1, "{}", r.detail);
 }
 #[tokio::test]
 async fn multipath_refusal_or_loss_does_not_automatically_reconnect() {
@@ -671,7 +698,7 @@ async fn incomplete_disk_graph_refuses_before_any_detachment() {
                 d.insert("OpaqueRef:VDI:graph".into(),json!({"uuid":uuid(82),"SR":"OpaqueRef:SR:s","type":"user","current_operations":{},"VBDs":["OpaqueRef:VBD:graph"]}));
             }
             if fault != "missing-vbd" {
-                d.insert("OpaqueRef:VBD:graph".into(),json!({"uuid":uuid(83),"VDI":if fault=="vbd-backref"{"OpaqueRef:VDI:else"}else{"OpaqueRef:VDI:graph"},"VM":"OpaqueRef:VM:source","currently_attached":false,"reserved":false}));
+                d.insert("OpaqueRef:VBD:graph".into(),json!({"uuid":uuid(83),"VDI":if fault=="vbd-backref"{"OpaqueRef:VDI:else"}else{"OpaqueRef:VDI:graph"},"VM":"OpaqueRef:VM:source","currently_attached":false}));
             }
             d.get_mut("OpaqueRef:VM:source").unwrap()["VBDs"] = if fault == "vm-backref" {
                 json!([])

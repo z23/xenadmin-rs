@@ -7,7 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 fn require(ok: bool, msg: &'static str) -> Result<(), Error> {
     if ok {
         Ok(())
@@ -511,7 +511,7 @@ async fn multipath_graph(
         {
             let expected_vbds = vbds
                 .iter()
-                .filter(|(_, b)| b["VDI"] == *dref)
+                .filter(|(_, b)| VbdRecord::new(b).vdi() == *dref)
                 .map(|(k, _)| k.clone())
                 .collect::<BTreeSet<_>>();
             require(
@@ -520,7 +520,7 @@ async fn multipath_graph(
             )?;
             for bref in &expected_vbds {
                 let b = &vbds[bref];
-                let vm_ref = reference(&b["VM"])?;
+                let vm_ref = reference(&VbdRecord::new(b).vm())?;
                 let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
                 let declared = ref_set(&VmRecord::new(vm).vbds())?;
                 require(
@@ -529,7 +529,8 @@ async fn multipath_graph(
                 )?;
                 for candidate in declared {
                     require(
-                        vbds.get(&candidate).is_some_and(|b| b["VM"] == vm_ref),
+                        vbds.get(&candidate)
+                            .is_some_and(|b| VbdRecord::new(b).vm() == vm_ref),
                         "Guest references a missing or rebound disk attachment",
                     )?;
                 }
@@ -539,14 +540,13 @@ async fn multipath_graph(
                 VdiRecord::new(d).type_() != "metadata",
                 "Storage metadata replication requires separate maintenance",
             )?;
-            for b in vbds.values().filter(|b| b["VDI"] == *dref) {
-                let busy = b["currently_attached"] != false || b["reserved"] != false;
-                if busy {
-                    let vm = reference(&b["VM"])?;
+            for b in vbds.values().filter(|b| VbdRecord::new(b).vdi() == *dref) {
+                if VbdRecord::new(b).currently_attached() != false {
+                    let vm = reference(&VbdRecord::new(b).vm())?;
                     let resident = vms.get(&vm).ok_or(Error::ResourceConflict)?;
                     require(
                         !block && resident["resident_on"] != h,
-                        "Active or reserved virtual disks prevent multipath maintenance",
+                        "Active virtual disks prevent multipath maintenance",
                     )?;
                 }
             }

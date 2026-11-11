@@ -56,7 +56,6 @@ fn fingerprint(v: &Value) -> Result<[u8; 32], Error> {
         "ipv6_configuration_mode",
         "ipv6_addresses",
         "ipv6_gateway",
-        "trunks",
     ] {
         let mut value = v[key].clone();
         if let Some(values) = value.as_array_mut() {

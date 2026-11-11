@@ -158,16 +158,9 @@ async fn detached_growth_accepts_driver_rounding_and_reports_actual_size() {
     assert_eq!(f.count("Async.VDI.resize"), 1);
 }
 #[tokio::test]
-async fn inactive_running_consumer_is_supported_but_attached_reserved_and_unreviewed_consumers_are_refused()
- {
-    for bad in [
-        "",
-        "attached",
-        "reserved",
-        "unreviewed",
-        "snapshot",
-        "paused",
-    ] {
+async fn inactive_running_consumer_is_supported_but_attached_and_unreviewed_consumers_are_refused()
+{
+    for bad in ["", "attached", "unreviewed", "snapshot", "paused"] {
         let f = fixture("").await;
         {
             let mut rows = f.records.lock().unwrap();
@@ -176,7 +169,7 @@ async fn inactive_running_consumer_is_supported_but_attached_reserved_and_unrevi
             vm["VBDs"] = json!(["OpaqueRef:VBD:old"]);
             vm["is_a_snapshot"] = json!(bad == "snapshot");
             rows.get_mut("OpaqueRef:VDI:source").unwrap()["VBDs"] = json!(["OpaqueRef:VBD:old"]);
-            rows.insert("OpaqueRef:VBD:old".into(),json!({"uuid":uuid(12),"VM":"OpaqueRef:VM:source","VDI":"OpaqueRef:VDI:source","type":"Disk","empty":false,"reserved":bad=="reserved","currently_attached":bad=="attached","current_operations":{}}));
+            rows.insert("OpaqueRef:VBD:old".into(),json!({"uuid":uuid(12),"VM":"OpaqueRef:VM:source","VDI":"OpaqueRef:VDI:source","type":"Disk","empty":false,"currently_attached":bad=="attached","current_operations":{}}));
         }
         let mut e = expected();
         if bad != "unreviewed" {

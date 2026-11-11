@@ -291,7 +291,33 @@ async fn connect(lab: &Lab, backend: &Backend, index: usize, read_only: bool) ->
     } else {
         index
     };
-    connect_at(lab, backend, index, read_only).await
+    let connection = connect_at(lab, backend, index, read_only).await;
+    if !read_only {
+        guest_settled(&connection).await;
+    }
+    connection
+}
+
+/// A scenario often begins seconds after another one started the lab guest. Until the
+/// guest's kernel has announced itself, its host offers no clean shutdown or reboot, and
+/// the client rightly refuses an action the host does not offer. Scenarios are about what
+/// they name, not about that window, so a running lab guest is given time to be offered a
+/// clean shutdown before a scenario that may change things starts. A guest that is never
+/// offered one starts the scenario all the same.
+async fn guest_settled(c: &Connection) {
+    use xenadmin_core::{PowerAction, PowerState};
+    settle(120, || {
+        c.latest().inventory().is_none_or(|i| {
+            i.guests()
+                .filter(|v| {
+                    v.name.starts_with("lab-guest-")
+                        && !v.is_template
+                        && v.power_state == PowerState::Running
+                })
+                .all(|v| v.allowed_actions.contains(&PowerAction::CleanShutdown))
+        })
+    })
+    .await;
 }
 
 /// Connects to exactly the manifest host at `index`, ignoring the default-endpoint override.
@@ -3219,9 +3245,10 @@ async fn lab_snapshot_clone_to_vm_and_template() {
 }
 
 /// P07-04, P07-06, P07-07, P07-08, P07-09: a scratch disk on the halted lab guest is
-/// renamed, repositioned, detached with its data kept, reattached, grown, copied to another
-/// member's local repository, the copy cleaned up and the scratch disk deleted. The guest's
-/// own image and data disks are never touched, and the guest is started again at the end.
+/// renamed, repositioned, grown while still attached, detached with its data kept, grown
+/// again, copied to another member's local repository, the copy cleaned up, and the
+/// scratch disk reattached, detached and deleted. The guest's own image and data disks are
+/// never touched, and the guest is started again at the end.
 #[tokio::test]
 #[ignore]
 async fn lab_disk_lifecycle_on_halted_guest() {
@@ -3410,6 +3437,41 @@ async fn lab_disk_lifecycle_on_halted_guest() {
     })
     .await;
     step(&mut steps, "change device position", &outcome, check);
+
+    // Grow while the disk is still attached to the halted guest: an attachment that is
+    // not plugged does not make the disk busy.
+    let reviewed = ReviewedDisk::from_inventory(c.latest().inventory().unwrap(), scratch)
+        .expect("reviewed disk");
+    let grow = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::Disk {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Disk(scratch))
+                    .unwrap(),
+                operation: DiskOperation::Grow {
+                    expected: reviewed,
+                    size: 384 * mib,
+                },
+            },
+        )
+        .expect("grow accepted");
+    let outcome = wait_outcome(&grow, 300).await;
+    let check = settle(60, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details.vdis.get(&scratch).and_then(|v| v.virtual_size) == Some(384 * mib)
+        })
+    })
+    .await;
+    steps.push(json!({"step": "grow to 384 MiB while attached to the halted guest", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": check}));
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(check);
 
     // Detach, keeping the data; the VDI must survive without an attachment.
     let (vbd, _) = vbd_of(&c, scratch).expect("scratch attachment");
