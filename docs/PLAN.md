@@ -300,5 +300,7 @@ list below is the minimum for that, with its state on 2026-11-11.
 | Release mechanics | Done: a [changelog](../CHANGELOG.md) with known issues and the stored-format rule, a tag-triggered workflow that builds the packages and leaves a draft pre-release, and a first [performance baseline](reports/2026-11-11-performance-baseline.md) |
 
 The operator decided on 2026-11-11 to release this state as 0.18.0, a beta, cut from the
-main branch and published once the packages the tag workflow builds have been checked.
-Generated bindings are the next piece of work after it.
+main branch and published once the packages the tag workflow built had been checked. It
+was published that day ([release report](reports/2026-11-11-release-0.18.md)). Generated
+bindings are the next piece of work and have been started on the `generated-bindings`
+branch.

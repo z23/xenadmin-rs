@@ -9,7 +9,9 @@ The client requires a reachable XAPI service and the user's host permissions.
 
 ## Project status
 
-Beta. Version 0.18.0 is the first published release ([changelog](CHANGELOG.md)), for
+Beta. Version 0.18.0 is the first published release
+([packages](https://github.com/z23/xenadmin-rs/releases/tag/v0.18.0),
+[changelog](CHANGELOG.md), [release report](docs/reports/2026-11-11-release-0.18.md)), for
 XCP-ng 8.3 with the client running as a Wayland application. Its supported part is
 connections and certificate trust, the live inventory, VM power, the console, snapshots,
 performance charts and activity. Everything else below is experimental: implemented, in
@@ -127,7 +129,8 @@ development checkpoints that froze source locally and recorded their verificatio
 - 0.18, the first release: the supported part drawn and the rest marked experimental;
   fixes from the packaged desktop run and from the operator's sessions on a real seat; the
   failure paths of the supported part recorded on the lab; clipboard text typed as key
-  presses. See the [changelog](CHANGELOG.md).
+  presses. See the [changelog](CHANGELOG.md) and the
+  [release report](docs/reports/2026-11-11-release-0.18.md).
 
 The per-increment reports under `docs/reports/` are linked from the ledger rows they verify.
 
