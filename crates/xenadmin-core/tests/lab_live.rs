@@ -7373,12 +7373,24 @@ async fn apply_vm_edit<F: Fn(&xenadmin_core::Inventory) -> bool>(
     })
 }
 
+/// Runs one power action on a VM and waits for the state it should reach. A guest that
+/// another scenario started moments ago is not yet offered a clean shutdown or reboot by
+/// its host, and the client refuses an action the host does not offer, so the action is
+/// first given time to be advertised; one that never is gets submitted and refused.
 async fn power_to(
     c: &Connection,
     vm: xenadmin_core::VmId,
     action: xenadmin_core::PowerAction,
     expected: xenadmin_core::PowerState,
 ) -> Value {
+    settle(120, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.vms
+                .get(&vm)
+                .is_some_and(|v| v.allowed_actions.contains(&action))
+        })
+    })
+    .await;
     let operation = c
         .submit(
             OperationId::new(),
