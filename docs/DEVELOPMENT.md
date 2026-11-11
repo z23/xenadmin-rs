@@ -71,12 +71,12 @@ protocol bounds, rejection of unsupported requests, socket lifecycle, and the pu
 projection. Headless UI captures contain synthetic data only. Infrastructure-changing
 qualification belongs in the explicitly designated [disposable lab](../lab/README.md).
 
-The check also compares the XAPI calls, fields and record views the core names with the
-upstream description of the qualified toolstack's API. `scripts/xapi-description.sh`
-fetches that description into `target/`, verifies it against the digest in
-`crates/xenadmin-core/xapi-description.pin` and never adds it to the repository; without
-a network the comparison is skipped and says so
-([decision](decisions/0004-checked-bindings.md)).
+`crates/xenadmin-xapi` generates its record views, enumeration constants and catalogue
+from `data/xenapi.json` when it is built, and refuses a description whose digest is not
+the one in `data/SOURCE`. The check compares every XAPI call and field the core names as a
+string with that catalogue. That crate is under the LGPL 2.1 with a linking exception,
+unlike the rest of the workspace: keep anything derived from the description inside it
+([decision](decisions/0004-generated-bindings.md)).
 
 The development and inspection launchers use Cargo to select the current build executable.
 They honor `CARGO_TARGET_DIR` and target-specific output paths; inspection builds the local

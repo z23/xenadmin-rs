@@ -21,6 +21,9 @@
   whose response was lost. Local cancellation does not establish server cancellation.
 - Keep console frames and metrics separate from reliable operation state.
 - Pin Rune to a reviewed full commit and keep generated bindings reproducible.
+- Keep everything derived from the upstream XAPI description inside `crates/xenadmin-xapi`,
+  the one crate under the LGPL. Do not copy generated output or the description into the
+  MIT-licensed crates.
 - Use the reference XenAdmin source to understand behavior. Preserve its license if copying
   source. Do not imply this project is an official XCP-ng or Vates application.
 

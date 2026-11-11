@@ -12,10 +12,16 @@ checkpoints.
 
 Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.0.
 
-Nothing has changed for someone running the client yet. Inside, the calls and record
-fields the client names are now checked against the upstream description of the
-qualified toolstack's API, and the core's event decoder reads records through views that
-the same check covers.
+Nothing has changed in what the client does yet.
+
+### Changed
+
+- The packages now contain one component under a different licence from the rest: the
+  XAPI bindings, generated from the upstream API description, are under the LGPL 2.1
+  with a linking exception. Their licence and a notice of their source are under
+  `third-party/xenadmin-xapi-VERSION/`. Everything else stays under the MIT licence.
+- Inside, the core's event decoder reads records through those generated bindings, and
+  every call and field the client names is checked against the generated catalogue.
 
 ## 0.18.0 (2026-11-11)
 

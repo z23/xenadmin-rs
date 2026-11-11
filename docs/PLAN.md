@@ -302,6 +302,6 @@ list below is the minimum for that, with its state on 2026-11-11.
 The operator decided on 2026-11-11 to release this state as 0.18.0, a beta, cut from the
 main branch and published once the packages the tag workflow built had been checked. It
 was published that day ([release report](reports/2026-11-11-release-0.18.md)). The
-next piece of work is the bindings: checked against the upstream API description and
-written by hand, since the operator decided to store nothing derived from that
-LGPL-licensed description ([decision](decisions/0004-checked-bindings.md)).
+next piece of work is the bindings, generated from the upstream API description in a
+crate of its own under upstream's LGPL terms, which the operator chose over hand-written
+bindings ([decision](decisions/0004-generated-bindings.md)).

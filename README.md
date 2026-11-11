@@ -139,12 +139,16 @@ The per-increment reports under `docs/reports/` are linked from the ledger rows 
 The workspace pins Rust 1.99.1 and Rune
 `f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`; `Cargo.lock` pins the dependency graph.
 `xenadmin-core` owns protocol and operation behavior without Rune dependencies.
-`xenadmin-desktop` adapts snapshots and console frames to Rune. `xenadmin-process` is the
+`xenadmin-desktop` adapts snapshots and console frames to Rune. `xenadmin-xapi` holds the
+generated XAPI record views, enumerations and catalogue. `xenadmin-process` is the
 post-fork helper for the offline image sandbox. `host-probe` consumes the same core
 through its public facade.
 
-The project uses the MIT license for original work. Binary archives include supplied
-dependency and embedded-font notices. This is an independent project, not an official
+The project uses the MIT license for original work, with one exception:
+`crates/xenadmin-xapi`, the XAPI bindings generated from the upstream API description, is
+under the LGPL 2.1 with a linking exception, as its `LICENSE` and `NOTICE` say. Binary
+archives include that crate's licence and notice with the supplied dependency and
+embedded-font notices. This is an independent project, not an official
 XCP-ng or Vates application.
 
 Use `./scripts/dev.sh` to enable private local inspection of the running desktop, and

@@ -178,7 +178,10 @@ The check script uses isolated temporary state and local protocol fixtures. It r
 the demo and connection dialog under `artifacts/`. Packaging writes a release archive to
 the same ignored directory.
 Archives also include declared dependency licenses, supplied notices, and embedded-font
-notices under `third-party/`. `./scripts/package.sh --appimage` also downloads the pinned
+notices under `third-party/`. The application is under the MIT licence; its XAPI bindings
+(`xenadmin-xapi`) are under the LGPL 2.1 with a linking exception, with that licence and
+a notice of their source in `third-party/xenadmin-xapi-VERSION/`. The complete source of
+every release is at <https://github.com/z23/xenadmin-rs> under the release's tag. `./scripts/package.sh --appimage` also downloads the pinned
 AppImage inputs into `target/package-tools`, verifies each against its recorded hash, and
 retries a transient mirror error a few times before refusing the build; CI caches that
 directory keyed on the input list.
