@@ -36,11 +36,11 @@ failure and interruption paths are recorded.
 Verification so far. The offline suite (core, protocol, TLS and Rune fixtures) runs in CI.
 Live qualification runs against a disposable nested XCP-ng 8.3.0 lab:
 the [live qualification report](docs/reports/2026-11-09-lab-qualification.md) records
-ninety-seven scenarios, including three driven desktop sessions, the last with the packaged
+ninety-eight scenarios, including three driven desktop sessions, the last with the packaged
 AppImage, and one operator session on a real seat, covering connections and recovery, power and consoles, snapshots and checkpoints,
 devices, storage and networking, shared NFS and iSCSI repositories with HA, live migration
 and evacuation, host maintenance, reboots and power cycles, coordinator handover and
-endpoint failover, together with fifty-four numbered findings and observations: host
+endpoint failover, together with fifty-five numbered findings and observations: host
 behaviours the client now handles, host observations, client fixes and four product
 decisions, since settled. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md), and the
 [verification traceability report](docs/reports/2026-11-11-verification-traceability.md)

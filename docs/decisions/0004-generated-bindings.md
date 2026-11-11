@@ -69,20 +69,33 @@ depends on the description alone and is sorted.
 
 ## Use in the core so far
 
-- The event decoder and the power and snapshot checks in `xapi.rs` read VM, host and task
-  records through the generated views and compare power states with the generated
-  constants. Of its 58 reads by key, the seven that remain are parts of the JSON-RPC
-  envelope, a key inside a map-valued field and a helper shared by several classes.
+- The event decoder, the power and snapshot checks and the inventory decoder read their
+  records through the generated views: 331 reads in those files, where a field that its
+  class lacks does not compile. The 86 reads by key that remain there are keys inside
+  map-valued fields, the JSON-RPC envelope, loops that handle several classes at once,
+  and two decoders (network fabric and management topology) that have not been moved.
+- VM power states are compared with the generated constants in the event decoder.
 - `xapi_conformance_tests.rs` checks every string of the form `Class.name` or
   `Async.Class.name` in the core against the catalogue: a call must be a message of that
   class, and a field named by a decoder must be a field of it. Names the description
   lacks are listed in the test with the reason each is used, and an entry that no longer
   applies fails the test.
 
-On its first run the check passed for every call and field the client names, with the two
-XCP-ng additions as its only exceptions. It found one fixture test asserting on
-`VM.reset_power_state`, a name the API does not have (`VM.power_state_reset` is the call),
-so that assertion could never have failed.
+What the move found:
+
+- Every call and field the client names exists, with two XCP-ng additions as the only
+  exceptions.
+- One fixture test asserted on `VM.reset_power_state`, a name the API does not have
+  (`VM.power_state_reset` is the call), so that assertion could never have failed.
+- The pool's HTTPS-only setting was read from a pool field that does not exist: hosts
+  keep it. The fixture carried the field, so tests passed, and against a real pool the
+  setting could never be shown or changed. The read did not compile against the pool's
+  view (finding 55 of the live report).
+
+What the move did not protect against: the readers that take a field's value still take
+a JSON value, as a whole record is. One call that passed the record where its UUID was
+expected compiled, and a test caught it. Typed values, step 3 below, are what remove
+that.
 
 ## What follows, in order
 
@@ -90,8 +103,9 @@ Measured on 2026-11-11, the core reads 254 distinct keys in 2,069 places; 190 ar
 names somewhere in the description and 64 are keys inside map-valued fields, parts of the
 JSON-RPC envelope or the client's own structures.
 
-1. The remaining reads of the supported core move onto views: pool, VM metrics and guest
-   metrics, console and session records, then the inventory decoder.
+1. The remaining decoders move onto views: network fabric, management topology and the
+   loops that handle several classes, then the operation modules, which hold most of the
+   1,883 reads by key still in the core.
 2. Enumeration constants replace the remaining literal values.
 3. Typed values: generated readers that turn a field into its Rust type, with the core's
    bounds applied to the result.

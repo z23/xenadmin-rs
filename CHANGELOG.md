@@ -20,8 +20,15 @@ Nothing has changed in what the client does yet.
   XAPI bindings, generated from the upstream API description, are under the LGPL 2.1
   with a linking exception. Their licence and a notice of their source are under
   `third-party/xenadmin-xapi-VERSION/`. Everything else stays under the MIT licence.
-- Inside, the core's event decoder reads records through those generated bindings, and
-  every call and field the client names is checked against the generated catalogue.
+- Inside, the core's event and inventory decoders read records through those generated
+  bindings, and every call and field the client names is checked against the generated
+  catalogue.
+
+### Fixed
+
+- The pool's HTTPS-only setting was never shown and could not be changed on a real pool:
+  the client looked for it on the pool, and hosts keep it per host. It is now read from
+  the hosts, shown where they agree, and can be turned on and off.
 
 ## 0.18.0 (2026-11-11)
 
