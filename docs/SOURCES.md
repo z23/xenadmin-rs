@@ -2,12 +2,15 @@
 
 Checked on 2026-11-07. Source behavior and design choices are distinguished below.
 Local build, rendering, and protocol-fixture results are in the
-[alpha report](reports/2026-11-07-alpha.md). Live-host compatibility remains unverified.
+[alpha report](reports/2026-11-07-alpha.md). Live-host results exist for XCP-ng 8.3.0 only,
+in the [live qualification report](reports/2026-11-09-lab-qualification.md); every other
+host version remains unverified.
 
 ## Reference application
 
-The local read-only checkout is `~/src/xenadmin` at
-`35dc091c5b62ab3b22449bb7a89cfcf84a6600d4`.
+The reference revision is `35dc091c5b62ab3b22449bb7a89cfcf84a6600d4`. Planning used a local
+read-only checkout at `~/src/xenadmin`; that checkout is not present on the current
+workstation, so the links below are the authority.
 
 - [Connection worker](https://github.com/xcp-ng/xenadmin/blob/35dc091c5b62ab3b22449bb7a89cfcf84a6600d4/XenModel/Network/XenConnection.cs#L1135)
   separates event and command transports, warms the cache, and handles reconnection.
@@ -74,10 +77,19 @@ change in one of the two upstreams or a reviewed fork.
 
 ## Decisions requiring runtime evidence
 
-The alpha pins Rust 1.99.1 and the Rune revision above, and uses `vnc-rs` 0.6.0 through a
-custom stream-based CONNECT adapter. These are fixture-qualified choices. The RFB library
-still needs actual QEMU console and keyboard-extension qualification. M0 must select an
-API export matching the lab lineage and verify JSON-RPC and event bootstrap on that host.
+The alpha pins Rust 1.99.1 and the Rune revision above, and uses the vendored `vnc-rs` 0.6.0
+through a custom stream-based CONNECT adapter
+([console adapter decision](decisions/0003-console-protocol-adapter.md)). On the XCP-ng
+8.3.0 lab the adapter delivered guest and control-domain frames through the authenticated
+tunnel and carried keyboard input, as keysyms from the harness and as physical keys sent
+as QEMU extended key events from the desktop, and pointer position and buttons that a guest
+read back exactly; JSON-RPC login, coordinator redirects and the `event.from` bootstrap run
+against those hosts in every live scenario. Non-US layouts, guest framebuffer resize, cursor
+shapes, the wheel's direction and clipboard negotiation against a real guest remain
+unqualified. The decoder is still handwritten: M0's matching-schema API export and
+generated bindings have not been selected, and no XML-RPC transport exists for hosts
+without JSON-RPC.
 
 Later reports must distinguish successful tests from untested requirements. Production
-access, host versions, credentials, and a lab were not supplied during planning.
+access, host versions, credentials, and a lab were not supplied during planning; the
+disposable lab was added on 2026-11-09.

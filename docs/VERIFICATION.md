@@ -9,6 +9,10 @@ disposable nested lab are recorded in the
 [lab/ACCEPTANCE.md](../lab/ACCEPTANCE.md). Fixture success does not establish host
 compatibility, and a passed scenario does not establish its failure or interruption paths.
 
+The [verification traceability report](reports/2026-11-11-verification-traceability.md)
+maps each core scenario below, the console qualification list and the outage acceptance run
+to the fixture tests and live scenarios that cover them, and names what is still uncovered.
+
 Record results under `docs/reports/`. Each report names the
 application commit, dependency lockfile, host/API versions, desktop protocol, distribution,
 hardware or software renderer, scenario, actual result, and remaining limitations.
@@ -144,7 +148,16 @@ stderr during these runs; it never prints parameters, tokens or payloads. Scenar
 and host findings are recorded in the dated qualification reports under `reports/`.
 
 The native desktop can be driven in the same lab without a physical seat: a nested
-compositor with a headless output, AT-SPI for discovery and activation, and the compositor's
-physical key injection for typing. Virtual keyboard tools with their own keymap do not
-produce valid QEMU scancodes. Rune headless screenshots never substitute for these runs, and
-a nested compositor still does not establish real seat, clipboard or Orca behaviour.
+compositor with a headless output, AT-SPI for discovery and activation, the compositor's
+physical key injection for typing, and a client of the compositor's virtual-pointer protocol
+for motion, buttons and the wheel. Virtual keyboard tools with their own keymap do not
+produce valid QEMU scancodes, and the compositor's own button dispatcher delivers a click at
+a window's corner rather than at the pointer. Guest-side proof comes from the guest: have it
+capture its own input devices and report the bytes to a listener on the isolated bridge.
+Rune headless screenshots never substitute for these runs, and a nested compositor still
+does not establish real seat, clipboard or Orca behaviour.
+
+A private D-Bus session bus isolates a throwaway Secret Service provider from the operator's
+own keyring, but it shares the user's runtime directory: a keyring daemon and an
+accessibility launcher started on it bind the same socket paths as the session's own and
+displace them. Give such daemons their own runtime directory, and do not use `--replace`.

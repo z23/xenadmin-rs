@@ -9,9 +9,10 @@ The client requires a reachable XAPI service and the user's host permissions.
 
 ## Project status
 
-Development alpha, workspace version 0.17.0, no release published yet. The Cargo workspace
-builds the Rune desktop application, a read-only host probe and a small sandbox helper.
-No Xen Orchestra service is used.
+Development alpha, workspace version 0.18.0, no release published yet. The latest frozen
+build is the [0.17.0 checkpoint](docs/reports/2026-11-11-checkpoint-0.17.md). The Cargo
+workspace builds the Rune desktop application, a read-only host probe and a small sandbox
+helper. No Xen Orchestra service is used.
 
 Implemented scope, as reviewed operations with durable partial and unknown outcomes:
 saved and concurrent connections with certificate trust, credentials and endpoint failover;
@@ -27,18 +28,23 @@ the completion authority; an implemented row is not a qualified workflow until i
 failure and interruption paths are recorded.
 
 Verification so far. The offline suite (core, protocol, TLS and Rune fixtures) runs in CI.
-Live qualification runs against a disposable nested XCP-ng 8.3.0 lab that has no XO service:
+Live qualification runs against a disposable nested XCP-ng 8.3.0 lab:
 the [live qualification report](docs/reports/2026-11-09-lab-qualification.md) records
-more than seventy scenarios, including two native desktop sessions, covering connections and
-recovery, power and consoles, snapshots and checkpoints, devices, storage and networking,
-shared NFS and iSCSI repositories with HA, live migration and evacuation, host maintenance,
-reboots and power cycles, coordinator handover and endpoint failover, together with
-thirty-four findings: host behaviours the client now handles, host observations, client fixes
-and a few open product decisions. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md).
+eighty-seven scenarios, including three native desktop sessions, the last with the packaged
+AppImage, covering connections and recovery, power and consoles, snapshots and checkpoints,
+devices, storage and networking, shared NFS and iSCSI repositories with HA, live migration
+and evacuation, host maintenance, reboots and power cycles, coordinator handover and
+endpoint failover, together with forty-five numbered findings and observations: host
+behaviours the client now handles, host observations, client fixes and four open product
+decisions. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md), and the
+[verification traceability report](docs/reports/2026-11-11-verification-traceability.md)
+maps the core verification scenarios to their evidence.
 
 Still open before a usable release: the failure and interruption paths of most workflows,
-real-seat desktop checks (Wayland and X11 input, clipboard, Orca) and installation on clean
-target systems. Member failover with HA and a directory service were recorded on 2026-11-11. See the [implementation plan](docs/PLAN.md) for the gates.
+a real-seat desktop session (the desktop runs so far used a nested compositor with injected
+keyboard and pointer input, so clipboard, Orca, non-US layouts and a standalone X server are
+unverified), software rendering, installation on clean target systems and every host version
+other than 8.3.0. See the [implementation plan](docs/PLAN.md) for the gates.
 
 ## Run it
 
@@ -81,7 +87,9 @@ The recovery release acceptance gate is to locate, start, and use the console of
 with XO unreachable. It was recorded on the disposable lab on 2026-11-11 with the Xen
 Orchestra appliance imported through the client and managing the pool: XO shut down and
 unreachable, the VM located, started and consoled through the direct host connection, and XO
-answering again afterwards.
+answering again afterwards. It was run through the core facade and then through the packaged
+0.17.0 AppImage started on an empty state directory, with keyboard input in the appliance's
+console and the client's connections observed going to the two pool hosts only.
 
 ## Release history
 
@@ -103,8 +111,11 @@ record their verification:
   [0.11](docs/reports/2026-11-08-checkpoint-0.11.md), [0.12](docs/reports/2026-11-08-checkpoint-0.12.md),
   [0.13](docs/reports/2026-11-08-checkpoint-0.13.md), [0.14](docs/reports/2026-11-08-checkpoint-0.14.md),
   [0.15](docs/reports/2026-11-08-checkpoint-0.15.md) and [0.16](docs/reports/2026-11-08-checkpoint-0.16.md).
-- 0.17 (current): live lab qualification; see the
+- 0.17: live lab qualification and the recovery gate; see the
+  [0.17 checkpoint](docs/reports/2026-11-11-checkpoint-0.17.md) and the
   [live qualification report](docs/reports/2026-11-09-lab-qualification.md).
+- 0.18 (current): fixes from the packaged desktop run (search Clear buttons, the console's
+  Actual size view, a stray key press after focus loss).
 
 The per-increment reports under `docs/reports/` are linked from the ledger rows they verify.
 

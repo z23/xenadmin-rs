@@ -5,9 +5,13 @@ scope and records each workflow separately. It excludes only Specialized hardwar
 guests, and DR, updates and legacy services. The table below describes the original
 vertical slices; it is not an additional scope restriction. The [alpha report](reports/2026-11-07-alpha.md)
 records the initial implemented subset and its limitations; the
-[snapshot report](reports/2026-11-07-snapshots.md) records the 0.2.0 extension. No complete milestone has passed its
-live-host acceptance gate. A milestone becomes complete only when its acceptance evidence
-is recorded in [verification](VERIFICATION.md).
+[snapshot report](reports/2026-11-07-snapshots.md) records the 0.2.0 extension. No milestone
+is complete. M2's outage workflow has been run on the disposable XCP-ng 8.3.0 lab through
+the core facade and through the packaged desktop client
+([live report](reports/2026-11-09-lab-qualification.md)), with its remaining gaps listed in
+the [verification traceability report](reports/2026-11-11-verification-traceability.md).
+A milestone becomes complete only when the acceptance evidence
+[verification](VERIFICATION.md) requires is recorded.
 Milestone order and dependencies are defined in the [implementation plan](PLAN.md).
 
 | Workflow | Milestone | Required behavior |

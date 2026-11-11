@@ -116,13 +116,22 @@ appliances added on 2026-11-10, a shared NFS repository on both hosts with HA, a
 guest with NIC hot plug, shared-storage live migration and a real member evacuation, a storage
 bond round trip and a member power cycle, iSCSI target discovery with an LVM-over-iSCSI
 repository on both hosts and a CHAP-protected repository created with transient credentials
-and removed, a member multipath round trip with two active iSCSI paths and ISO libraries over NFS and SMB 3 listing a seeded image, plus twenty-two host-behaviour findings that were
-fixed, eight host observations, one client journal observation, a fixed client verification
-finding, two fixed client storage findings, two open client decisions and one open upstream accessibility finding. The M2 recovery
-gate was recorded on 2026-11-11 with the Xen Orchestra appliance imported through the client
-and managing the pool.
-Member failover with HA was recorded the same day: the client followed the surviving member and the old coordinator rejoined. Pointer and Orca qualification remain qualification gates. Milestones remain open until
-their retained workflows and relevant acceptance checks pass.
+and removed, a member multipath round trip with two active iSCSI paths and ISO libraries
+over NFS and SMB 3 listing a seeded image. The report numbers forty-five findings and
+observations: host behaviours the client now handles, host observations, client fixes, four
+open product decisions and one open upstream accessibility finding; it owns that list.
+
+The M2 recovery gate was recorded on 2026-11-11 with the Xen Orchestra appliance imported
+through the client and managing the pool, first through the core facade and then through
+the packaged 0.17.0 desktop client started on an empty state directory. Member failover with
+HA and a directory service were recorded the same day. The
+[0.17 checkpoint](reports/2026-11-11-checkpoint-0.17.md) freezes that build, and the
+[verification traceability report](reports/2026-11-11-verification-traceability.md) maps
+the core scenarios to their fixture and live evidence. Pointer input, focus-loss release,
+console follow after a migration and an X11 client under Xwayland were verified in a nested
+compositor with injected input; a real seat, a standalone X server, clipboard, Orca and
+software rendering remain qualification gates. Milestones remain open until their retained
+workflows and relevant acceptance checks pass.
 
 ## M0: Qualify the dependencies and host protocols
 
@@ -273,7 +282,19 @@ It cannot operate XAPI when the host toolstack itself is unavailable.
 
 ## Next acceptance task
 
-Designate a disposable XCP-ng 8.3 pool, a credential reference, and permitted test scope.
-Run the read-only probe first, qualify the console and API schema against that exact host
-lineage, then perform the M2 outage workflow within the authorized scope. Resolve the
-remaining M0–M2 gaps recorded in the alpha report before claiming a recovery release.
+The disposable lab exists and the recovery workflow has been run on it, so the next tasks
+are the ones a nested compositor on the development workstation cannot settle:
+
+1. A real-seat session with the packaged client: Wayland input and clipboard, a standalone
+   X server with a window manager, Orca, a non-US layout, the wheel's direction in a
+   graphical guest, and the native file dialogs. Record it as the M0 and M3 desktop evidence.
+2. Clean-system installation on Arch and on Ubuntu 24.04, with a software Vulkan driver on
+   one of them, cold-started without internet or XO.
+3. The interruption and failure paths of the M2 workflow that the lab can produce: an XO
+   outage caused by a network fault, a console lost mid-input, a start whose reply is lost.
+   The [traceability report](reports/2026-11-11-verification-traceability.md) lists which
+   core scenarios still rest on fixtures alone.
+4. The decisions recorded as open in the live report: four product decisions, the upstream
+   accessibility finding, and whether M0's generated bindings are built or deferred.
+
+Publishing a tag or binary is a separate decision; nothing has been published.

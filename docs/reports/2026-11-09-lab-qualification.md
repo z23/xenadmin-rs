@@ -29,7 +29,18 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 - Native desktop run: the debug `xenadmin-rs` binary inside a nested Hyprland 0.56.2 session
   on the same workstation (1600x1800 headless output, 1558x1758 window), driven over AT-SPI
   through libatspi and the compositor's `sendkeystate` dispatcher, which delivers physical
-  key events; screenshots through `grim`. The lab contains no Xen Orchestra service.
+  key events; screenshots through `grim`. During the desktop sessions of 2026-11-09 and
+  2026-11-10 the lab contained no Xen Orchestra service; the appliance was imported on
+  2026-11-11 for the recovery gate recorded below.
+- Packaged desktop run of 2026-11-11: the 0.17.0 AppImage built from `90e6355`
+  (SHA-256 `78bf1a572d8af56f75957234c02fe0443c52b9538bbcee61c3a5717e28afbf0c`), started on an
+  empty private state directory in the same nested compositor. Keys came from the
+  compositor's dispatcher as before; the pointer came from a small client of the
+  compositor's virtual-pointer protocol, which gives the session a real pointer device for
+  motion, buttons and the wheel. Guest-side evidence came from the guest itself: commands
+  typed through the console made it capture its own input devices and report the bytes to a
+  listener on the isolated bridge. A debug build of the fixed tree was used only for the
+  recheck row.
 
 ## Workstation prerequisites found during setup
 
@@ -126,6 +137,13 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Recovery gate: the XO VM located, started and consoled with XO unreachable | M2 gate, P11-06, P03-01, P04-01, P06-03 | Passed on the fourth attempt, findings 39 and 40 | The Xen Orchestra appliance image (1.9 GB, downloaded from the vendor) was imported through the client onto the shared NFS repository (173 s), sized to 2 GiB for the lab host while halted, and started; its agent reported an address and XO answered over HTTP from the workstation 25 s later. A clean shutdown through the agent made XO unreachable; with XO down the VM was located by name and description through the direct host connection, started, its console opened with a frame saved, and XO answered again 28 s after the start. The first three attempts failed in the client's XVA verifier and upload reply wait (findings 39 and 40). The appliance stays in the lab; the lab tooling then connected it to the pool over its own API, so it manages the pool and every lab guest, itself included, and the gate was run again in that state: XO reachable, shut down and unreachable, located, started and consoled, XO back 28 s later (44 s in all). Evidence: 1794320144-xo-vm-recovery-gate.json (first pass 1794317428), frames 1794320139- and 1794317423-console-xo-vm-console.ppm |
 | Coordinator loss with HA: member takeover, rerun | P01-04, P13-05, P13-06, P19-05, P10-09, P13-04 | Passed on the fourth run (two harness refinements) | With both hosts' heartbeat storage interfaces protected from unplug first, HA enabled on the shared NFS repository (33 s) with the tools guest protected and resident on the coordinator, the coordinator's domain was destroyed. The connection went stale in 31 s, followed the member as coordinator through its remembered member endpoint 158 s after the cut, and found the protected guest already restarted there by HA. The old coordinator, started again, rejoined as a member in 176 s with no further reset. HA was disabled, the coordinator role handed back (the reply lost in the toolstack restart; once both hosts were enabled again the recheck confirmed the durable record without replaying anything), the unplug protection removed, the tools guest moved back and the local-storage guest the power cut had halted started again. The two earlier runs with the client fixes ended the same way on the host side and differed only in the harness, which now rechecks the handover and waits for migrate to be advertised again. Evidence: 1794320065-coordinator-loss-with-ha-member-takeover.json (earlier runs 1794318589 and 1794319366) |
 | Directory service: join, subjects, roles, directory login and leave | P13-09, P13-10, P13-11, P10-08 | Passed on the third attempt (harness fixes) | With the Samba domain controller appliance up, both hosts' management interfaces were pointed at it for DNS through the management-network reconfiguration (addresses retained), the pool joined the lab domain with transient administrator credentials (6 s, both hosts reporting AD and the realm), the test user and group were resolved by their domain names and granted access (XCP-ng 8.3 created both subjects with no roles), the user was given the read-only role, and a connection as that user from a second client instance became Ready with the read-only role's 1348 permissions while its description edit was refused by the client's own permission guard before any request reached the host, worded as a host refusal (observation 41), and the guest stayed unchanged. The subjects were removed, the pool left the domain removing its machine accounts (1.3 s), and the DNS was restored. The first attempt reused the root connection's backend for the directory login, which the one-owner-per-pool rule refused; the second checked the refusal at submission rather than at the operation's outcome. Evidence: 1794318832-directory-join-subjects-and-roles.json |
+| Recovery gate through the packaged desktop client | M2 gate, P19-02, P01-01, P01-02, P01-09, P01-13, P02-03, P03-01, P04-01, P04-02 | Passed, findings 42 and 43 | Lab tooling cleanly shut the Xen Orchestra VM down, and XO refused connections from the workstation. The 0.17.0 AppImage (built from `90e6355`) was cold-started on an empty state directory inside the nested compositor. A member's endpoint was typed by hand; the certificate inspection of the member and then of the coordinator showed no saved pin and the same SHA-256 values an independent TLS read over the isolated bridge had given, and typing each exact endpoint and ticking the trusted-channel check enabled Trust certificate. A session-only password reached Ready through the member's redirect, with the pool, both hosts and the three guests. A search for the first eight characters of the XO VM's UUID left that one halted VM; a pointer click selected it, a pointer click on Start submitted one Start operation (the journal holds exactly one, Succeeded with "Host task completed"), the VM ran on the member, and XO answered over HTTPS again within 40 s. Its console opened as "Connected directly to the host console" on the Debian login prompt, a typed user name appeared there and an empty password ended in "Login incorrect". A watch of the client's sockets, sampled four times a second for the 21 minutes the client ran, saw connections to the two pool hosts on port 443 and nothing else; checks as short as the certificate inspections fall between samples. Evidence: desktop-run-3.json, its screenshots and connections.json in the desktop evidence directory outside the repository |
+| Pointer input verified from inside a guest | P04-02, P04-04, P04-09 | Passed for position and all three buttons; wheel direction unverified | The plain Alpine guest's kernel binds QEMU's USB tablet with its boot-protocol mouse driver, so the guest sees the tablet's absolute report as relative bytes: X in full and the low byte of Y. While the guest captured its input device and reported the bytes to a listener on the isolated bridge, a virtual pointer moved to three console positions and clicked left, middle and right. With the 800 by 600 frame fitted at a scale of 1.1975 the guest read X as pixels 199, 400 and 600 for targets at 199.6, 400.0 and 600.4, the low byte of Y matched rows 150, 300 and 449, and each button arrived as a press and a release (the right button as one complete click on release, as the adapter decision describes). The same three targets were exact after the window was resized to a scale of 0.75, and again in the same AppImage running as an X11 client. Two more reports arrived when the wheel turned, but that driver does not expose the tablet's wheel byte. Evidence: pointer-fit.json, pointer-resized.json and pointer-x11.json |
+| Held key released when the window loses focus | P04-02 | Passed, finding 44 | With the guest capturing its keyboard device, a key was held down in the console and another window then took the compositor's focus while the key stayed down at the injector for 7.8 s. The guest saw one press, 36 repeats and the release 2.06 s after the press, the moment focus moved, and no repeat after it. One more press and release of the same key followed 9 ms later (finding 44). Evidence: held-key-focus-loss.json |
+| Console follows a guest migrated by another client | P04-07, P19-06 | Passed | With the tools guest's console open in the desktop, lab tooling acting as another client live-migrated the guest to the member (3.4 s) and back (3.2 s). Each time the console reported "Console disconnected" about 2 s after the migration began and "Connected directly to the host console" again by 5 s and 4 s, the details pane showed the new host, the socket watch showed the tunnel on the member's address, and text typed afterwards appeared on the relocated console. The reviewed migration started from this client, with its one-shot console follow, was not run here. Evidence: migrate-1.json, migrate-2.json |
+| Packaged client as an X11 application | P18-04, P04-02 | Passed under Xwayland | The same AppImage started with no Wayland display on the nested compositor's Xwayland server, with automatic adapter selection and no surface error (the first alpha report had recorded one). It loaded the saved profile and both pins, logged in with a session password, opened the guest console, ran a command whose text needed shifted characters and that the guest reported over the network, and passed the same pointer check. This is Xwayland under a nested compositor, not a standalone X server with a window manager |
+| Saved credentials with a real Secret Service provider | P01-10, V18 | Passed for save, automatic restore and a locked store; forget not exercised | A throwaway GNOME keyring ran on a private session bus. With "Remember password in desktop keyring" and "Connect automatically when XenAdmin RS starts" ticked, the packaged client connected and the keyring then held one item labelled with the application, user and endpoint and carrying the application, endpoint, profile and username attributes. A restarted client was connected again with nothing typed. With the collection locked, a restarted client stayed disconnected and said "The desktop password store is locked. Unlock it in your password manager, then retry, or enter a password for this session"; a typed session password then connected with that notice still shown. This instance was driven by pointer coordinates and screenshots because the accessibility bus was not reachable from the private session. Removing the saved password through the client was not run |
+| Fixes rechecked on the live desktop | P02-03, P04-09, P04-02 | Passed | A debug build of the tree with the three fixes, in the same nested session: a search that left one object returned to three after a pointer click on Clear, which now also exposes a click action; Actual size showed the console at 800 by 600 from the view's origin, typing reached the guest and the three pointer targets read back exactly at a scale of one; and the held-key capture showed one press, 35 repeats and one release with nothing after it. Evidence: pointer-actual-size-fixed.json and the run record's recheck section |
 
 ## Findings
 
@@ -328,8 +346,8 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    allowed operation, so the host offered neither plug nor unplug. The client refused the
    disconnect without a host call. Its refusal had used the generic unavailable-action text;
    a device operation the host does not advertise is now refused with that reason and the
-   guest-tools prerequisite named (unit covered). Hot plug with a tools-equipped guest
-   remains open.
+   guest-tools prerequisite named (unit covered). Hot plug with a tools-equipped guest was
+   recorded later in the tools guest on shared storage scenario.
 25. **XCP-ng 8.3 records no supported VIF QoS algorithm.** The new VIF's
    qos_supported_algorithms was empty, so the client's rate-limit editor, which requires the
    host to advertise `ratelimit`, was not offered and the scenario skipped it. XenCenter sets
@@ -456,6 +474,30 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    RBAC_PERMISSION_DENIED" as if the host had answered. The guard now reports that the
    signed-in role does not allow the method and that nothing was sent. XCP-ng 8.3 also creates
    directory subjects with no roles, so a new subject can do nothing until a role is granted.
+42. **The search fields' Clear buttons did nothing.** The inventory search and the two
+   Activity filters draw the kit's clear button, and the kit leaves that button's press to
+   the application; none of the three handled it, so a pointer click changed nothing and the
+   button exposed no accessible action (the second desktop session had noted the missing
+   action). Each field now clears itself and refilters, with a Rune test per view; the fix
+   was rechecked on the live desktop.
+43. **Actual size showed an empty console panel.** The canvas kept its full-width request
+   when it was given the frame's own size, and inside the panning view, whose content has no
+   definite width, that resolved to zero width: no frame, no input and no canvas on the
+   accessibility bus until Fit to panel was chosen again. No headless scene had ever drawn a
+   console frame, so the checks could not see it. Each mode now sets its own sizing, two new
+   scenes render a synthetic frame in both modes in the check script, and a Rune test asserts
+   the canvas rectangle; the fix was rechecked on the live desktop with exact pointer mapping.
+44. **A key repeat in flight pressed a released key again.** When the window lost focus the
+   client released the held key in the guest at once, and 9 ms later the guest saw one more
+   press and release of it: a repeat already queued arrived after the release and was
+   forwarded as a press, and a second release then followed. The key was never left held. The
+   physical-key path now drops a repeat for a key this console does not hold (unit covered),
+   and the rerun showed one press, the repeats and one release.
+45. **Smaller desktop observations, unchanged.** Selecting a guest in the tree while the
+   search hides it shows no details and no hint that the filter is the reason. The object
+   count reads "1 objects". The certificate endpoint field's placeholder wraps onto the
+   Inspect certificate button below it. Controls below a dialog's fold were again absent from
+   the accessibility bus until the dialog was scrolled (finding 6).
 
 ## Console observation
 
@@ -472,11 +514,21 @@ and Enter on a focused link opened the workstation's browser outside the nested 
 
 ## Limitations
 
-The harness scenarios used the core facade; the desktop scenario used the Rune window under
-a nested compositor, so real seat input, X11, clipboard, Orca speech, non-US layouts, pointer
-input and the desktop's own console reconnect across a reboot remain unqualified. The M2 gate
-names an XO-managed VM; this lab has no XO at all, so the run shows the client working with
-no XO service rather than with a specific XO VM. Interruption paths for the passed workflows,
-memory checkpoints, storage and network administration and the remaining ledger rows are
-recorded as they are exercised. The lab now holds one running guest, its snapshots and one
-device-less guest left by the partial creation; they stay for later deletion scenarios.
+The harness scenarios used the core facade. The desktop scenarios used the Rune window under
+a nested compositor with injected input: keys through the compositor's dispatcher and, from
+2026-11-11, the pointer through a virtual pointer device. That establishes what the client
+does with Wayland and Xwayland input events; it does not establish a real seat, a standalone
+X server with a window manager, clipboard exchange with a guest, Orca speech, non-US layouts,
+software rendering (the workstation has no software Vulkan driver installed) or the wheel's
+direction. The packaged client ran on the development workstation, not on a clean system.
+
+The recovery gate has been run through the core facade with Xen Orchestra managing the pool
+and through the packaged desktop client; in both, XO was made unavailable by shutting its VM
+down, not by a network fault between the workstation and a running XO. Interruption paths
+for the passed workflows, storage and network failure cases and the remaining ledger rows
+are recorded as they are exercised; most are still open. Everything here is XCP-ng 8.3.0.
+
+The lab's steady state after the last run: the two-host pool with both hosts enabled, the
+Xen Orchestra appliance running on the member and answering, the plain guest and the tools
+guest running on the coordinator, the shared NFS and iSCSI repositories attached, HA off, and
+the third host standing alone for cross-pool scenarios.

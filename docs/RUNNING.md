@@ -1,7 +1,9 @@
 # Run XenAdmin RS
 
 This is a development alpha. Local protocol fixtures exercise the connection, console,
-and power-operation paths. A real XCP-ng host has not yet qualified this build.
+and power-operation paths, and a disposable nested XCP-ng 8.3.0 lab has exercised them
+live; the project's live qualification report records exactly what was run. Other host
+versions, real desktop seats and most failure paths remain unqualified.
 Use a disposable lab before relying on it for infrastructure recovery.
 
 ## Build from source
