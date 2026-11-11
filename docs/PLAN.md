@@ -117,7 +117,7 @@ guest with NIC hot plug, shared-storage live migration and a real member evacuat
 bond round trip and a member power cycle, iSCSI target discovery with an LVM-over-iSCSI
 repository on both hosts and a CHAP-protected repository created with transient credentials
 and removed, a member multipath round trip with two active iSCSI paths and ISO libraries
-over NFS and SMB 3 listing a seeded image. The report numbers forty-five findings and
+over NFS and SMB 3 listing a seeded image. The report numbers fifty findings and
 observations: host behaviours the client now handles, host observations, client fixes, four
 open product decisions and one open upstream accessibility finding; it owns that list.
 

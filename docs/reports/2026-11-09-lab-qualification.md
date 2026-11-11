@@ -144,6 +144,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Packaged client as an X11 application | P18-04, P04-02 | Passed under Xwayland | The same AppImage started with no Wayland display on the nested compositor's Xwayland server, with automatic adapter selection and no surface error (the first alpha report had recorded one). It loaded the saved profile and both pins, logged in with a session password, opened the guest console, ran a command whose text needed shifted characters and that the guest reported over the network, and passed the same pointer check. This is Xwayland under a nested compositor, not a standalone X server with a window manager |
 | Saved credentials with a real Secret Service provider | P01-10, V18 | Passed for save, automatic restore and a locked store; forget not exercised | A throwaway GNOME keyring ran on a private session bus. With "Remember password in desktop keyring" and "Connect automatically when XenAdmin RS starts" ticked, the packaged client connected and the keyring then held one item labelled with the application, user and endpoint and carrying the application, endpoint, profile and username attributes. A restarted client was connected again with nothing typed. With the collection locked, a restarted client stayed disconnected and said "The desktop password store is locked. Unlock it in your password manager, then retry, or enter a password for this session"; a typed session password then connected with that notice still shown. This instance was driven by pointer coordinates and screenshots because the accessibility bus was not reachable from the private session. Removing the saved password through the client was not run |
 | Fixes rechecked on the live desktop | P02-03, P04-09, P04-02 | Passed | A debug build of the tree with the three fixes, in the same nested session: a search that left one object returned to three after a pointer click on Clear, which now also exposes a click action; Actual size showed the console at 800 by 600 from the view's origin, typing reached the guest and the three pointer targets read back exactly at a scale of one; and the held-key capture showed one press, 35 repeats and one release with nothing after it. Evidence: pointer-actual-size-fixed.json and the run record's recheck section |
+| Operator session on a real seat | P18-04, P18-05, P02-01, P02-03, P02-04, P04-02, P14-07, P19-08 | Passed, findings 46 to 50 | The operator ran the 0.18.0 release build as a native Wayland client in their own desktop session, first against a pool of theirs outside the lab, also XCP-ng 8.3.0, to look at its inventory, and then against the lab. They reported the tree, tables and search responsive on that pool's real inventory, the search and its Clear button working, and window resizing and the narrow layout working. On the lab they opened a guest's console and typed into it from their own keyboard; the lab has no graphical guest, so they could not try the pointer. They also reported that buttons were hard to tell from labels and showed no order of importance, that text was too small with no way to enlarge it, that a changed column width was not kept, and that the performance view showed an error once it refreshed (findings 46 to 50). That client's journal holds no operation from the session. Nothing from that pool (names, addresses or inventory) is recorded in this repository, and its size was not measured |
 
 ## Findings
 
@@ -498,6 +499,50 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    count reads "1 objects". The certificate endpoint field's placeholder wraps onto the
    Inspect certificate button below it. Controls below a dialog's fold were again absent from
    the accessibility bus until the dialog was scrolled (finding 6).
+46. **Controls were hard to tell from labels, and nothing ranked them.** The kit's neutral
+   theme fills a standard button with the colour of the card behind it and edges it with
+   five percent white, outlines a secondary button about as faintly and draws an unchecked
+   box the same way; the application used the text-only variant for 78 buttons and the
+   emphasised variant for none. The desktop now builds its theme in one module that gives a
+   standard button its own fill and a visible edge, takes an outlined control's edge to three
+   to one against its surface, and gives the emphasised button the accent colour with white
+   text above 4.5 to one (unit covered). The levels are applied by role: outlined buttons
+   navigate or dismiss, filled buttons act on the selected object, red labels mark
+   destructive and forced actions, and the accent marks the one action a view is for (Open
+   console, Connect). Tabs sit in one bordered strip with the current tab raised; other
+   choices are filled when current and outlined otherwise. No button is text-only outside a
+   tab strip. Verified in headless renders of both themes, and the operator confirmed the
+   improvement on their own seat.
+47. **Text was too small, with no adjustment.** The interface now has a size setting from 80
+   to 200 percent, in Options and on Ctrl with plus, minus and 0. The view is laid out at
+   the window's size divided by the zoom and drawn that much larger, so text, controls and
+   spacing scale together and the narrow layouts follow the space that is left; a focused
+   console still receives those keys itself. Detached console windows are not scaled yet.
+   Rune test and headless render at 125 percent, and the operator confirmed it working on
+   their own seat.
+48. **Column widths were written only as the window closed, and lost when a connection was
+   activated.** Widths lived in the table's state until the close handler copied them out,
+   and activating a connection rebuilt that state from the last saved values, so a session
+   that ended any other way, or a width changed before connecting, was lost. The sidebar
+   and column widths are now copied out as they change and written 0.6 s after they rest,
+   and are kept across the rebuild (unit covered). The operator confirmed the sidebar and
+   column widths now persist; the details pane's width is not saved, which they set aside.
+49. **Every metrics refresh was refused.** The first answer drew the charts and each
+   refresh after it failed with "invalid or duplicate metric timestamp", so the view showed
+   "Performance data unavailable" over charts that had stopped advancing; the earlier live
+   scenario only ever read the first answer. Asked from an exact sample time, XCP-ng 8.3.0
+   reports the range as starting one step later and still returns the sample at the time
+   asked, and when nothing newer exists it reports a start one step past its end. The
+   decoder held rows to the reported range. It now allows one step of slack either way and
+   refuses anything further (unit covered with the recorded shapes), and the live scenario
+   follows three refreshes of a guest and of a host with no error.
+50. **A host that has run HA had no charts at all.** Such a coordinator lists data sources
+   with path-like names (`network/latency`, `statefile/<uuid>/latency`,
+   `xapi_healthcheck/latency`); the client's name rule refused the slash and with it the
+   whole source list ("invalid or duplicate metric source name"). The rule now allows a
+   slash and still refuses anything that could extend a query string, and a source or
+   column the client cannot name is left out instead of refusing the rest (unit covered);
+   the live scenario lists the coordinator's 93 sources and charts them.
 
 ## Console observation
 

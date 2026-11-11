@@ -67,6 +67,13 @@ opts into Secret Service storage. Locked/unavailable keyrings leave a working ma
 path. **Connections** manages saved profiles and switches among concurrent pools; custom CA,
 read-only mode and timeout live under connection options. See [connection details](CONNECTIONS.md).
 
+**Options** in the toolbar holds the appearance, the interface size and the console
+defaults. Ctrl with plus, minus or 0 makes the whole interface larger, smaller or 100
+percent again from anywhere outside a console, and the choice is kept between runs. Buttons
+follow one scheme: outlined buttons open a view or dismiss a dialog, filled buttons act on
+the selected object, red labels mark destructive or forced actions, and the accent colour
+marks the one action a view is for.
+
 Only one desktop can write a state directory. Close older application versions before
 starting this build. Host actions use advertised capabilities and fresh checks; XAPI enforces
 authorization again. **Check action availability** asks the current host for detailed reasons.

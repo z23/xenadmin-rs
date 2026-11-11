@@ -30,11 +30,11 @@ failure and interruption paths are recorded.
 Verification so far. The offline suite (core, protocol, TLS and Rune fixtures) runs in CI.
 Live qualification runs against a disposable nested XCP-ng 8.3.0 lab:
 the [live qualification report](docs/reports/2026-11-09-lab-qualification.md) records
-eighty-seven scenarios, including three native desktop sessions, the last with the packaged
-AppImage, covering connections and recovery, power and consoles, snapshots and checkpoints,
+eighty-eight scenarios, including three driven desktop sessions, the last with the packaged
+AppImage, and one operator session on a real seat, covering connections and recovery, power and consoles, snapshots and checkpoints,
 devices, storage and networking, shared NFS and iSCSI repositories with HA, live migration
 and evacuation, host maintenance, reboots and power cycles, coordinator handover and
-endpoint failover, together with forty-five numbered findings and observations: host
+endpoint failover, together with fifty numbered findings and observations: host
 behaviours the client now handles, host observations, client fixes and four open product
 decisions. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTANCE.md), and the
 [verification traceability report](docs/reports/2026-11-11-verification-traceability.md)
@@ -115,7 +115,9 @@ record their verification:
   [0.17 checkpoint](docs/reports/2026-11-11-checkpoint-0.17.md) and the
   [live qualification report](docs/reports/2026-11-09-lab-qualification.md).
 - 0.18 (current): fixes from the packaged desktop run (search Clear buttons, the console's
-  Actual size view, a stray key press after focus loss).
+  Actual size view, a stray key press after focus loss) and from the first operator session
+  on a real seat (visible buttons with role-based levels, an interface size setting, column
+  widths that persist).
 
 The per-increment reports under `docs/reports/` are linked from the ledger rows they verify.
 
