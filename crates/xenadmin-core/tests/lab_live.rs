@@ -19225,12 +19225,45 @@ async fn security_result(
     .unwrap_or_else(|_| Err("security inspection timed out".into()))
 }
 
+/// Lab tooling standing in for another administrator: closes every session of a directory
+/// subject on the pool through `lab/force_logout.py`. The client has no operation for it.
+/// The script reads the lab password file itself and checks the host's fingerprint first.
+async fn force_subject_logout(
+    host: &str,
+    fingerprint: &CertificateFingerprint,
+    subject: &str,
+) -> Result<(), String> {
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../lab/force_logout.py");
+    let arguments = [host.to_owned(), fingerprint.to_string(), subject.to_owned()];
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("python3")
+            .arg(script)
+            .args(arguments)
+            .output()
+            .map_err(|e| e.to_string())?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// P13-09, P13-10, P13-11, P10-11: point both pool hosts' management interfaces at the lab
 /// domain controller for DNS, join the pool to the lab Active Directory with transient
 /// administrator credentials, resolve the test user and group, grant them access, make the
 /// user read-only, connect as that user and confirm a write is refused, then remove the
 /// subjects, leave the directory removing the machine accounts, and restore the DNS. Leftover
 /// subjects or a joined pool from an earlier attempt are cleaned up first.
+///
+/// P01-03, V05: the user's sessions are closed on the host twice while the user is connected,
+/// with no outage. First by lab tooling acting as another administrator, while the user
+/// keeps its access: the user's client must sign in again by itself and follow the pool's
+/// events on the new session. Then by the removal of the user's subject through the client:
+/// signing in again is refused, so the user's client must stop with the reason and stay
+/// stopped.
 #[tokio::test]
 #[ignore]
 async fn lab_directory_join_subjects_and_roles() {
@@ -19542,7 +19575,7 @@ async fn lab_directory_join_subjects_and_roles() {
 
         // 5. Connect as the directory user from a second backend (one authenticated owner per
         // pool and backend): Ready with read-only permissions, a write refused.
-        let (mut options, _) = pinned_options(&lab.endpoint(0)).await;
+        let (mut options, fingerprint) = pinned_options(&lab.endpoint(0)).await;
         options.request_timeout = Duration::from_secs(60);
         let user_login = format!("{}\\{}", dir.netbios, dir.user);
         let user_state = tempfile::tempdir().unwrap();
@@ -19570,7 +19603,7 @@ async fn lab_directory_join_subjects_and_roles() {
         drop(snapshot);
         // The read-only session's write must not reach the host: refused at submission or
         // rejected by the client's permission preflight before any request.
-        let refused = if let Some((id, description)) = guest {
+        let refused = if let Some((id, description)) = guest.clone() {
             match as_user.latest().observe_vm(id) {
                 Ok(vm) => match as_user.submit(
                     OperationId::new(),
@@ -19600,18 +19633,92 @@ async fn lab_directory_join_subjects_and_roles() {
         } else {
             json!({"skipped": "no lab guest", "refused": false})
         };
-        as_user.close().await;
         note(
             &mut steps,
             json!({"step": "connect as the directory user", "read_back": ready.is_ok() && state == "Ready" && refused["refused"] == true,
                    "login": user_login, "state": state, "error": error, "permissions": permissions, "write_attempt": refused}),
         );
 
-        // 6. Remove the subjects and leave the directory, removing the machine accounts.
+        // 5b. A session lost with no outage: lab tooling, as another administrator, closes
+        // the user's sessions while the user keeps its access. The client must sign in again
+        // by itself and follow the pool's events on the new session.
+        let connected_subject = user_subject.clone().filter(|_| ready.is_ok());
+        if let Some(subject) = &connected_subject {
+            let before = as_user.latest().generation();
+            let logout =
+                force_subject_logout(&lab.hosts[0].ip, &fingerprint, &subject.identifier).await;
+            let (timeline, recovered) = state_timeline(&as_user, 180, |x| {
+                let s = x.latest();
+                s.state() == ConnectionState::Ready && s.generation() > before
+            })
+            .await;
+            let permissions = {
+                let snapshot = as_user.latest();
+                let p = snapshot.session_permissions();
+                json!({"roles": p.roles(), "permission_count": p.permission_count()})
+            };
+            // Events on the new session: the administrator edits the guest's description and
+            // restores it, and the user's connection must show each value.
+            let mut followed = Vec::new();
+            if let (true, Some((id, description))) = (recovered, guest.clone()) {
+                let marker = format!("{description} (session check)");
+                for (previous, value) in [
+                    (description.clone(), marker.clone()),
+                    (marker, description.clone()),
+                ] {
+                    let edit = c
+                        .submit(
+                            OperationId::new(),
+                            VmCommand::Configure {
+                                vm: c.latest().observe_vm(id).unwrap(),
+                                patch: VmSettingsPatch::new(vec![VmSettingEdit::Description {
+                                    previous,
+                                    value: value.clone(),
+                                }])
+                                .unwrap(),
+                            },
+                        )
+                        .expect("description edit accepted");
+                    let row = wait_vm_outcome(&edit, 120).await;
+                    let applied = settle(60, || {
+                        c.latest()
+                            .inventory()
+                            .is_some_and(|i| i.vms.get(&id).is_some_and(|v| v.description == value))
+                    })
+                    .await;
+                    let seen = settle(60, || {
+                        as_user
+                            .latest()
+                            .inventory()
+                            .is_some_and(|i| i.vms.get(&id).is_some_and(|v| v.description == value))
+                    })
+                    .await;
+                    followed.push(json!({"state": format!("{:?}", row.state), "applied": applied, "seen_by_the_user": seen}));
+                }
+            }
+            let follows = followed.len() == 2
+                && followed
+                    .iter()
+                    .all(|f| f["state"] == "Succeeded" && f["seen_by_the_user"] == true);
+            note(
+                &mut steps,
+                json!({"step": "the user's sessions are closed by another administrator; the user keeps its access",
+                       "read_back": logout.is_ok() && recovered && follows, "logout": logout.as_ref().err(),
+                       "generation_before": before, "generation_after": as_user.latest().generation(),
+                       "timeline": timeline, "permissions": permissions, "events_on_the_new_session": followed}),
+            );
+        }
+
+        // 6. Remove the subjects and leave the directory, removing the machine accounts. The
+        // connected user's subject goes last, so that no group still gives the user access
+        // when its removal closes its sessions.
         let now = security_overview(&c, pool)
             .await
             .expect("security overview");
-        for subject in &now.subjects {
+        let mut subjects = now.subjects.clone();
+        subjects.sort_by_key(|s| connected_subject.as_ref().is_some_and(|u| u.id == s.id));
+        let generation_before = as_user.latest().generation();
+        for subject in &subjects {
             let mut entry = resource_op(
                 &c,
                 &format!("remove the subject {}", subject.name),
@@ -19632,6 +19739,46 @@ async fn lab_directory_join_subjects_and_roles() {
             entry["read_back"] = json!(!after.subjects.iter().any(|s| s.id == subject.id));
             note(&mut steps, entry);
         }
+
+        // 6b. The same loss once the user's access is gone. Removing the subject through the
+        // client closes the user's sessions and signing in again is refused, so the user's
+        // client must stop with the reason, and stay stopped.
+        if let Some(subject) = &connected_subject {
+            let stops = |x: &Connection| {
+                matches!(
+                    x.latest().state(),
+                    ConnectionState::Failed | ConnectionState::Disconnected
+                )
+            };
+            let (mut timeline, mut stopped) = state_timeline(&as_user, 60, stops).await;
+            let closed_by_the_removal = stopped;
+            let mut tooling = json!(null);
+            if !stopped {
+                // The removal left the session open. Close it as another administrator
+                // would, so that the refused sign-in is still observed.
+                let logout =
+                    force_subject_logout(&lab.hosts[0].ip, &fingerprint, &subject.identifier).await;
+                tooling = json!({"closed": logout.is_ok(), "error": logout.err()});
+                let (more, later) = state_timeline(&as_user, 180, stops).await;
+                timeline.extend(more);
+                stopped = later;
+            }
+            let (later, returned) = state_timeline(&as_user, 30, |x| {
+                x.latest().state() == ConnectionState::Ready
+            })
+            .await;
+            let snapshot = as_user.latest();
+            note(
+                &mut steps,
+                json!({"step": "the user's access is removed while the user is connected",
+                       "read_back": closed_by_the_removal && stopped && !returned && snapshot.error().is_some(),
+                       "sessions_closed_by_the_removal": closed_by_the_removal, "lab_tooling_logout": tooling,
+                       "generation_before": generation_before, "generation": snapshot.generation(),
+                       "state": format!("{:?}", snapshot.state()), "error": snapshot.error(),
+                       "timeline": timeline, "next_30_s": later}),
+            );
+        }
+        as_user.close().await;
         let now = security_overview(&c, pool)
             .await
             .expect("security overview");
@@ -19692,7 +19839,6 @@ async fn lab_directory_join_subjects_and_roles() {
         );
         note(&mut steps, entry);
     }
-    let _ = ConnectionState::Ready;
     c.close().await;
     lab.record(
         "directory-join-subjects-and-roles",

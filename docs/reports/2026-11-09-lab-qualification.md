@@ -148,6 +148,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
 | Member reboot with the exit from maintenance repeated, rerun | P12-03, P12-05, P12-06 | Passed after the finding 23 fix | With the Xen Orchestra appliance moved to the coordinator first so the member was empty, the member entered maintenance, had its toolstack restarted, was rebooted through the reviewed operation and left maintenance, each step succeeding. On the exit the host refused the enable three times while it was still booting; the client repeated it, kept the three refused tasks in the record and verified the host enabled with its marker cleared. The appliance was moved back afterwards. Evidence: 1794360620-member-toolstack-restart-and-reboot.json (an earlier pass the same day, 1794360314, did not record the step details) |
 | Clean shutdown and start interrupted by a client restart | P03-01, P14-02, P19-03, V12 | Passed | A clean shutdown and then a start of the plain guest were each submitted and the client closed the moment the request was on its way; a new client on the same state directory recovered each as OutcomeUnknown and sent nothing again. In the first run the shutdown had its task reference saved ("The connection was closed", then the recheck followed the task to Succeeded), while the start was cut between its dispatch and the saved reference: it recovered as "Interrupted operation without a saved task reference. Inspect the host before acknowledging its unknown outcome", the recheck left it unknown, and the operator's acknowledgement released the guest, which was in fact running. In the second run both were cut after the reference was saved and both rechecks reached Succeeded. Each time the guest reached the state asked for and the history held one record per request. Evidence: 1794360938- and 1794360982-interrupted-shutdown-and-start.json |
 | XO unreachable through a network fault, its VM still running | M2 gate, P19-02, P07-03, P04-01 | Passed | With XO answering from the workstation, the appliance's only NIC was disconnected while it ran, through the client's own NIC operation on the direct connection. XO stopped answering at its address (the connection timed out) while the VM stayed Running. The same connection stayed Ready and showed the XO VM by name and description as Running with its NIC detached and no reported address, and its console opened and showed the appliance's login prompt. Reconnecting the NIC through the client succeeded, and XO answered at the same address 1.3 s after the request; the reboot fallback was not needed. The fault was a detached virtual NIC, injected by the client under test: a fault in the network between the workstation and XO, with the NIC attached, was not produced. Evidence: 1794362710-xo-network-fault.json |
+| Session closed on the host with no outage | P01-03, P13-10, V05 | Passed after the finding 51 fix | Inside the directory scenario, with the read-only directory user connected from a second client instance. First, lab tooling acting as another administrator closed the user's sessions on the host (`session.logout_subject_identifier`) while the user kept its access: the user's client reported the host's SESSION_INVALID, signed in again by itself and was Ready under the next generation 1.5 s later with the read-only role, and it then showed a description edit made by the administrator and its restoration, so events arrived on the new session. Second, the user's subject was removed through the client, the user's own subject last so that its group no longer gave it access. In the first run that removal left the user's client Ready (finding 51) and only the tooling's logout stopped it. In the rerun with the fix the removal itself closed the sessions: the user's client reported SESSION_INVALID, tried to sign in again and stopped at Failed with the host's SESSION_AUTHORIZATION_FAILED 10.5 s later, and stayed there for the 30 s it was watched. Both times the subjects were removed, the pool left the domain and the DNS was restored. The session was closed by an administrator's call; a session that times out by itself was not waited for. Evidence: 1794363295- and 1794363655-directory-join-subjects-and-roles.json |
 
 ## Findings
 
@@ -561,6 +562,19 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    slash and still refuses anything that could extend a query string, and a source or
    column the client cannot name is left out instead of refusing the rest (unit covered);
    the live scenario lists the coordinator's 93 sources and charts them.
+51. **A user whose access was removed stayed connected.** Removing a directory subject
+   destroyed the subject and left its open sessions alone, as the review text said
+   ("Existing sessions are managed by the host"): the removed user's client stayed Ready
+   with its role until something else closed the session. The reference client closes the
+   subject's sessions before it removes the subject, which a client that signs in again at
+   once survives. The client now closes them after the removal has been confirmed, so there
+   is nothing left to sign in with; a refusal of that call leaves the operation "outcome
+   unknown" with the reason, and a recheck repeats the session close and never the removal
+   (fixture covered). The live rerun shows the removed user's client stopping with the
+   host's authorization refusal. As in the reference client, the sessions of a removed
+   group's members are not closed this way: the host identifies a session by its user.
+   XAPI's source rechecks directory sessions every five minutes by default and ends those
+   that no longer have access; the lab run did not wait for that.
 
 ## Console observation
 
@@ -589,7 +603,9 @@ The recovery gate has been run through the core facade with Xen Orchestra managi
 and through the packaged desktop client; in both, XO was made unavailable by shutting its VM
 down. A third run, through the core facade only, left the VM running and detached its NIC;
 a fault in the network between the workstation and a running, attached XO has not been
-produced, and the desktop client has not been used for that case. Interruption paths
+produced, and the desktop client has not been used for that case. A session closed on the
+host with no outage has been followed through the core facade for a directory user; the
+local root account's session cannot be closed that way. Interruption paths
 for the passed workflows, storage and network failure cases and the remaining ledger rows
 are recorded as they are exercised; most are still open. Everything here is XCP-ng 8.3.0.
 
