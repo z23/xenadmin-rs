@@ -2562,6 +2562,169 @@ async fn wait_history_outcome(
     (record, seen)
 }
 
+/// Power and console row, failure column: a clean shutdown and a start, each interrupted by
+/// the application closing as soon as the request was admitted, are recovered from the
+/// journal on restart, never sent again, and the guest ends in the state each asked for.
+#[tokio::test]
+#[ignore]
+async fn lab_interrupted_shutdown_and_start_resolve_on_restart() {
+    use xenadmin_core::{OperationControl, PowerAction, PowerState, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let mut legs = Vec::new();
+    let mut failures = Vec::new();
+    for (action, expected) in [
+        (PowerAction::CleanShutdown, PowerState::Halted),
+        (PowerAction::Start, PowerState::Running),
+    ] {
+        let id = OperationId::new();
+        let (guest_id, states, state_at_close) = {
+            let backend = Backend::with_state_directory(state.path().into()).unwrap();
+            let c = connect(&lab, &backend, 0, false).await;
+            let guest = c
+                .latest()
+                .inventory()
+                .unwrap()
+                .guests()
+                .find(|v| v.name.starts_with("lab-guest-"))
+                .expect("lab guest")
+                .clone();
+            // Allowed operations lag a state change by a few seconds (observation 15).
+            let advertised = settle(90, || {
+                c.latest().inventory().is_some_and(|i| {
+                    i.vms
+                        .get(&guest.id)
+                        .is_some_and(|v| v.allowed_actions.contains(&action))
+                })
+            })
+            .await;
+            assert!(advertised, "{action:?} is not advertised for the lab guest");
+            let operation = c
+                .submit(
+                    id,
+                    VmCommand::Power {
+                        vm: c.latest().observe_vm(guest.id).unwrap(),
+                        action,
+                    },
+                )
+                .expect("power action accepted");
+            // Only an admitted record can be recovered: one still waiting for admission, or
+            // refused before it, exists on its handle alone. Stop the moment it is on its way.
+            let mut states = Vec::new();
+            let admitted = tokio::time::timeout(deadline(30), async {
+                loop {
+                    let latest = operation.latest();
+                    let entry = format!("{:?}", latest.state);
+                    if states.last() != Some(&entry) {
+                        states.push(entry);
+                    }
+                    if matches!(
+                        latest.state,
+                        OperationState::Dispatching | OperationState::Tracking
+                    ) {
+                        return true;
+                    }
+                    if latest.state.terminal() {
+                        return false;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap_or(false);
+            let state_at_close = format!("{:?}", operation.latest().state);
+            c.close().await;
+            drop(backend);
+            if !admitted {
+                failures.push(format!(
+                    "{action:?} finished before it could be interrupted: {states:?}"
+                ));
+            }
+            (guest.id, states, state_at_close)
+        };
+
+        // Same state directory, new process: the journal must reconcile, not replay.
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let c = connect(&lab, &backend, 0, false).await;
+        let (record, timeline) = wait_history_outcome(&c, id, 300).await;
+        let mut leg = json!({"action": format!("{action:?}"), "states_before_close": states,
+            "state_at_close": state_at_close, "recovered_timeline": timeline});
+        let Some(record) = record else {
+            failures.push(format!("{action:?}: no record after the restart"));
+            leg["recovered"] = json!(null);
+            legs.push(leg);
+            c.close().await;
+            continue;
+        };
+        leg["recovered"] = json!({"state": format!("{:?}", record.state), "detail": record.detail});
+        let record = if record.state == OperationState::OutcomeUnknown {
+            let before = (format!("{:?}", record.state), record.detail.clone());
+            c.control_operation(id, OperationControl::Recheck)
+                .expect("recheck accepted");
+            let moved = settle(180, || {
+                c.operation_history()
+                    .iter()
+                    .find(|r| r.id == id)
+                    .is_some_and(|r| (format!("{:?}", r.state), r.detail.clone()) != before)
+            })
+            .await;
+            let (after, more) = wait_history_outcome(&c, id, 300).await;
+            let after = after.expect("record after recheck");
+            leg["recheck"] = json!({"moved": moved, "timeline": more,
+                "state": format!("{:?}", after.state), "detail": after.detail});
+            after
+        } else {
+            record
+        };
+        // Host truth: the guest reaches the state the interrupted request asked for.
+        let reached = settle(240, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.vms
+                    .get(&guest_id)
+                    .is_some_and(|v| v.power_state == expected)
+            })
+        })
+        .await;
+        leg["guest_reached_expected_state"] = json!(reached);
+        leg["records_with_this_id"] =
+            json!(c.operation_history().iter().filter(|r| r.id == id).count());
+        if !reached {
+            failures.push(format!("{action:?}: the guest did not reach {expected:?}"));
+        }
+        if record.state == OperationState::OutcomeUnknown {
+            // Cut off between the dispatch and the saved task reference, the request leaves
+            // nothing a recheck can follow. Staying unknown is then the honest outcome: the
+            // guest's state alone does not say whose request changed it. The operator
+            // acknowledges it, which also releases the guest for the next leg.
+            c.control_operation(id, OperationControl::AcknowledgeUnknown)
+                .expect("acknowledgement accepted");
+            let acknowledged = settle(30, || {
+                c.operation_history()
+                    .iter()
+                    .find(|r| r.id == id)
+                    .is_some_and(|r| r.state == OperationState::AcknowledgedUnknown)
+            })
+            .await;
+            leg["acknowledged_unknown"] = json!(acknowledged);
+            if !record.detail.contains("without a saved task reference") || !acknowledged {
+                failures.push(format!(
+                    "{action:?}: unknown after the recheck for another reason: {}",
+                    record.detail
+                ));
+            }
+        } else if record.state != OperationState::Succeeded {
+            failures.push(format!(
+                "{action:?}: recovered as {:?}: {}",
+                record.state, record.detail
+            ));
+        }
+        legs.push(leg);
+        c.close().await;
+    }
+    lab.record("interrupted-shutdown-and-start", json!({"legs": legs}));
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
 /// Snapshot marker row, failure column: a snapshot create interrupted by the application
 /// closing mid-flight is reconciled on restart from the journal, never repeated, and the
 /// host ends with at most one snapshot of that name.
@@ -5000,7 +5163,8 @@ async fn lab_member_toolstack_restart_and_reboot() {
             .is_some_and(|i| i.hosts[&member].enabled)
     })
     .await;
-    steps.push(json!({"step": "exit maintenance", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": enabled}));
+    steps.push(json!({"step": "exit maintenance", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": enabled,
+        "step_details": outcome.steps.iter().map(|s| json!({"label": s.label, "detail": s.detail})).collect::<Vec<_>>()}));
     lab.record(
         "member-toolstack-restart-and-reboot",
         json!({"member": member_name, "steps": steps}),
@@ -6541,13 +6705,34 @@ async fn lab_interrupted_snapshot_restore_recovers_without_replay() {
             )
             .expect("restore accepted");
         // Let the first step (the clean shutdown) get under way, then stop like a crash.
-        settle(30, || {
-            !matches!(
-                restore.latest().state,
-                OperationState::Preparing | OperationState::Verifying
-            )
+        // Only a record that is tracking a host task has been admitted to the journal: a
+        // restore refused before admission (the guest or snapshot not yet advertising the
+        // action, another operation holding the guest) ends Rejected on the handle alone and
+        // leaves nothing to recover. The earlier wait accepted that state, and the still
+        // unadmitted one, as "under way"; one attempt in four then found no record.
+        let mut seen = Vec::new();
+        let tracking = tokio::time::timeout(deadline(60), async {
+            loop {
+                let latest = restore.latest();
+                let entry = format!("{:?}: {}", latest.state, latest.detail);
+                if seen.last() != Some(&entry) {
+                    seen.push(entry);
+                }
+                if latest.state == OperationState::Tracking || latest.state.terminal() {
+                    return latest.state == OperationState::Tracking;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         })
-        .await;
+        .await
+        .unwrap_or(false);
+        if !tracking {
+            lab.record(
+                "interrupted-snapshot-restore-not-admitted",
+                json!({"operation": id.to_string(), "states": seen}),
+            );
+            panic!("the restore never reached a tracked host task: {seen:?}");
+        }
         tokio::time::sleep(Duration::from_secs(3)).await;
         let state_at_close = format!("{:?}", restore.latest().state);
         c.close().await;
