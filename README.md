@@ -102,8 +102,9 @@ console and the client's connections observed going to the two pool hosts only.
 
 ## Release history
 
-No tag or binary has been published. Development checkpoints freeze source locally and
-record their verification:
+0.18.0 is the first published version, a beta, with its packages on the project's releases
+page and its notes in the [changelog](CHANGELOG.md). The versions before it were
+development checkpoints that froze source locally and recorded their verification:
 
 - 0.1 to 0.2: [alpha results](docs/reports/2026-11-07-alpha.md),
   [connection fixes](docs/reports/2026-11-07-connection-fixes.md),
@@ -123,10 +124,10 @@ record their verification:
 - 0.17: live lab qualification and the recovery gate; see the
   [0.17 checkpoint](docs/reports/2026-11-11-checkpoint-0.17.md) and the
   [live qualification report](docs/reports/2026-11-09-lab-qualification.md).
-- 0.18 (current): fixes from the packaged desktop run (search Clear buttons, the console's
-  Actual size view, a stray key press after focus loss) and from the first operator session
-  on a real seat (visible buttons with role-based levels, an interface size setting, column
-  widths that persist).
+- 0.18, the first release: the supported part drawn and the rest marked experimental;
+  fixes from the packaged desktop run and from the operator's sessions on a real seat; the
+  failure paths of the supported part recorded on the lab; clipboard text typed as key
+  presses. See the [changelog](CHANGELOG.md).
 
 The per-increment reports under `docs/reports/` are linked from the ledger rows they verify.
 
