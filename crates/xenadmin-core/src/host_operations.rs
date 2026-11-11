@@ -91,6 +91,33 @@ pub(crate) struct Step {
     pub task: Option<String>,
     pub accepted: bool,
     pub task_succeeded: bool,
+    /// Earlier tasks of this step that the host answered with a definite refusal, oldest
+    /// first, each superseded by a repeat of the same call. A stored task reference is
+    /// evidence and is never dropped: a repeat moves it here before taking its place.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<String>,
+}
+impl Step {
+    /// More repeats than any bounded wait produces; a plan beyond it is refused.
+    pub const MAX_REFUSED: usize = 512;
+
+    /// Whether `new` is this step after its task was refused and the call repeated: the
+    /// task that was current is now the newest refused one, nothing recorded before is
+    /// lost, and a task that succeeded is never superseded.
+    pub fn superseded_by(&self, new: &Self) -> bool {
+        match (&self.task, &new.task) {
+            (Some(old), Some(current)) => {
+                !self.task_succeeded
+                    && old != current
+                    && new.refused.len() == self.refused.len() + 1
+                    && new.refused.len() <= Self::MAX_REFUSED
+                    && new.refused.starts_with(&self.refused)
+                    && new.refused.last() == Some(old)
+                    && !new.refused.contains(current)
+            }
+            _ => false,
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
@@ -101,10 +128,12 @@ impl Plan {
         self.steps.len() == new.steps.len()
             && self.steps.iter().zip(&new.steps).all(|(old, new)| {
                 old.kind == new.kind
-                    && old
-                        .task
-                        .as_ref()
-                        .is_none_or(|task| Some(task) == new.task.as_ref())
+                    && (old.superseded_by(new)
+                        || (old
+                            .task
+                            .as_ref()
+                            .is_none_or(|task| Some(task) == new.task.as_ref())
+                            && old.refused == new.refused))
                     && (!old.accepted || new.accepted)
                     && (!old.task_succeeded || new.task_succeeded)
             })
@@ -457,6 +486,7 @@ pub(crate) async fn prepare(
                 task: None,
                 accepted: false,
                 task_succeeded: false,
+                refused: Vec::new(),
             })
             .collect(),
     };
@@ -1047,6 +1077,68 @@ fn blocker_summary(blockers: &serde_json::Map<String, Value>, names: &[String]) 
         parts.push(format!("and {} more", blockers.len() - names.len()));
     }
     parts.join("; ")
+}
+
+#[cfg(test)]
+mod repeated_task_tests {
+    use super::*;
+
+    fn step(task: Option<&str>, refused: &[&str]) -> Step {
+        Step {
+            kind: Kind::Enable,
+            task: task.map(str::to_owned),
+            accepted: true,
+            task_succeeded: false,
+            refused: refused.iter().map(|task| (*task).to_owned()).collect(),
+        }
+    }
+    fn plan(step: Step) -> Plan {
+        Plan { steps: vec![step] }
+    }
+
+    #[test]
+    fn a_refused_task_is_superseded_only_by_a_repeat_that_keeps_it() {
+        let first = step(Some("task-1"), &[]);
+        // The repeat after a definite refusal: the old task moves to the refused list.
+        let second = step(Some("task-2"), &["task-1"]);
+        assert!(first.superseded_by(&second));
+        assert!(plan(first.clone()).accepts(&plan(second.clone())));
+        let third = step(Some("task-3"), &["task-1", "task-2"]);
+        assert!(plan(second.clone()).accepts(&plan(third)));
+
+        // A task reference that simply changes is still a conflict, as before.
+        assert!(!plan(first.clone()).accepts(&plan(step(Some("task-2"), &[]))));
+        // So is a repeat that drops an earlier refusal, names the wrong task as refused,
+        // or lists its own task among the refused.
+        assert!(!plan(second.clone()).accepts(&plan(step(Some("task-3"), &["task-2"]))));
+        assert!(!plan(first.clone()).accepts(&plan(step(Some("task-2"), &["task-9"]))));
+        assert!(!plan(first.clone()).accepts(&plan(step(Some("task-2"), &["task-2"]))));
+        // The refused list never changes without a new task.
+        assert!(!plan(second.clone()).accepts(&plan(step(Some("task-2"), &[]))));
+        assert!(!plan(first.clone()).accepts(&plan(step(Some("task-1"), &["task-0"]))));
+        // A task that succeeded is never superseded.
+        let mut succeeded = first.clone();
+        succeeded.task_succeeded = true;
+        let mut after = second.clone();
+        after.task_succeeded = true;
+        assert!(!plan(succeeded).accepts(&plan(after)));
+        // An unchanged step, and a first task arriving, are accepted as before.
+        assert!(plan(first.clone()).accepts(&plan(first.clone())));
+        assert!(plan(step(None, &[])).accepts(&plan(first)));
+    }
+
+    #[test]
+    fn a_plan_written_before_refusals_were_recorded_still_reads() {
+        let old: Step = serde_json::from_value(
+            json!({"kind": "Enable", "task": "task-1", "accepted": true, "task_succeeded": false}),
+        )
+        .unwrap();
+        assert!(old.refused.is_empty());
+        assert!(
+            !serde_json::to_string(&old).unwrap().contains("refused"),
+            "a step with no refusal is written as it always was"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -115,7 +115,9 @@ async fn fixture_delayed(
                 // A host that has just rebooted fails its first enable tasks with this code.
                 if let Some(left) = records.get("_still_booting").and_then(Value::as_u64)
                     && left > 0
-                    && request["params"][1] == "OpaqueRef:task-Async.host.enable"
+                    && request["params"][1]
+                        .as_str()
+                        .is_some_and(|task| task.starts_with("OpaqueRef:task-Async.host.enable"))
                 {
                     records.insert("_still_booting".into(), json!(left - 1));
                     return Some(RpcReply::Json(
@@ -156,6 +158,11 @@ async fn fixture_delayed(
                 return Some(RpcReply::Json(
                     json!({"result":records.get("_destinations").cloned().unwrap_or(json!(["OpaqueRef:host-other"]))}),
                 ));
+            }
+            // The blocker summary names each VM; without an answer the default mock panicked
+            // in its own task and the summary quietly fell back to "unnamed VM".
+            if method == "VM.get_name_label" {
+                return Some(RpcReply::Json(json!({"result":"Fixture guest"})));
             }
             if method == "host.get_vms_which_prevent_evacuation" {
                 return Some(RpcReply::Json(
@@ -269,8 +276,16 @@ async fn fixture_delayed(
                 return Some(if method == drop_method {
                     RpcReply::Drop
                 } else {
+                    // A host mints a new task for every asynchronous call, so a repeated
+                    // call never answers with the reference of the one before it.
+                    let serial = records
+                        .get("_task_serial")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                        + 1;
+                    records.insert("_task_serial".into(), json!(serial));
                     RpcReply::Json(
-                        json!({"result":if method.starts_with("Async."){json!(format!("OpaqueRef:task-{}",method))}else{Value::Null}}),
+                        json!({"result":if method.starts_with("Async."){json!(format!("OpaqueRef:task-{method}-{serial}"))}else{Value::Null}}),
                     )
                 });
             }
@@ -885,6 +900,15 @@ async fn exit_maintenance_repeats_the_enable_while_the_host_is_still_booting() {
         r.lock().unwrap()["host"]["other_config"]
             .get("MAINTENANCE_MODE")
             .is_none()
+    );
+    // Each repeat brought a new task; the record says the call was repeated and how often.
+    assert!(
+        outcome
+            .steps
+            .iter()
+            .any(|step| step.detail.contains("refused the call 2 times")),
+        "{:?}",
+        outcome.steps
     );
     assert_eq!(
         mock.methods

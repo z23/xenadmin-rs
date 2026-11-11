@@ -364,6 +364,100 @@ fn vm_and_resource_admission_interlock_both_directions_but_not_across_pools() {
         Err(Error::ConflictingPoolOperation)
     ));
 }
+fn unresolved_rows(journal: &Journal) -> (i64, i64) {
+    journal
+        .0
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM operations WHERE terminal=0),(SELECT COUNT(*) FROM resource_operations WHERE terminal=0)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+}
+#[test]
+fn a_full_journal_refuses_both_operation_families_and_adds_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut journal = Journal::open(dir.path()).unwrap();
+    // Filling the journal is a thousand commits; syncing each one to a disk-backed
+    // directory takes seconds and is not what this test observes.
+    journal.0.execute_batch("PRAGMA synchronous=OFF").unwrap();
+    // The limit counts unresolved VM and resource operations together. Each one here is
+    // in its own pool, so no pool reservation can be what refuses the next admission.
+    let fresh = || PoolId::from(uuid::Uuid::new_v4());
+    let mut infrastructure = resource(fresh());
+    assert!(journal.resource_admit(&mut infrastructure).unwrap());
+    for _ in 0..999 {
+        assert!(journal.admit(&mut vm(fresh())).unwrap());
+    }
+    let pool = fresh();
+    let mut refused = resource(pool);
+    assert!(matches!(
+        journal.resource_admit(&mut refused),
+        Err(Error::JournalFull)
+    ));
+    assert_eq!(refused.revision(), 0);
+    assert!(journal.resource_load(refused.id).unwrap().is_none());
+    assert!(journal.resource_history(pool).unwrap().is_empty());
+    assert!(!journal.resource_pool_busy(pool).unwrap());
+    let mut virtual_machine = vm(pool);
+    assert!(matches!(
+        journal.admit(&mut virtual_machine),
+        Err(Error::JournalFull)
+    ));
+    assert!(journal.load(virtual_machine.id).unwrap().is_none());
+    assert_eq!(unresolved_rows(&journal), (999, 1));
+
+    infrastructure.state = OperationState::Succeeded;
+    journal.resource_save(&mut infrastructure).unwrap();
+    assert!(
+        journal.resource_admit(&mut refused).unwrap(),
+        "one resolved operation frees one place"
+    );
+    assert!(matches!(
+        journal.admit(&mut vm(fresh())),
+        Err(Error::JournalFull)
+    ));
+    assert_eq!(unresolved_rows(&journal), (999, 1));
+}
+#[test]
+fn more_reservation_rows_than_one_scan_reads_refuse_admission_instead_of_judging_a_part() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut journal = Journal::open(dir.path()).unwrap();
+    let fresh = || PoolId::from(uuid::Uuid::new_v4());
+    // Admission stops at 1000 unresolved operations, so these rows are written past it to
+    // outnumber the 1500 that one reservation scan reads.
+    let write = |journal: &Journal, count: usize| {
+        journal.0.execute_batch("BEGIN").unwrap();
+        for _ in 0..count {
+            journal.resource_save(&mut resource(fresh())).unwrap();
+        }
+        journal.0.execute_batch("COMMIT").unwrap();
+    };
+    write(&journal, 1500);
+    let pool = fresh();
+    assert!(
+        !journal.resource_pool_busy(pool).unwrap(),
+        "a scan that read every row can still show a pool free"
+    );
+    write(&journal, 1);
+    assert!(matches!(
+        journal.resource_pool_busy(pool),
+        Err(Error::JournalFull)
+    ));
+    let mut infrastructure = resource(pool);
+    assert!(matches!(
+        journal.resource_admit(&mut infrastructure),
+        Err(Error::JournalFull)
+    ));
+    assert!(journal.resource_load(infrastructure.id).unwrap().is_none());
+    let mut virtual_machine = vm(pool);
+    assert!(matches!(
+        journal.admit(&mut virtual_machine),
+        Err(Error::JournalFull)
+    ));
+    assert!(journal.load(virtual_machine.id).unwrap().is_none());
+    assert_eq!(unresolved_rows(&journal), (0, 1501));
+}
 #[test]
 fn id_deduplication_and_cross_family_identity_conflicts_do_not_create_second_operations() {
     let dir = tempfile::tempdir().unwrap();
@@ -673,6 +767,7 @@ fn host_step_receipts_survive_cancellation_and_acknowledgement_without_resurrect
             task: None,
             accepted: false,
             task_succeeded: false,
+            refused: Vec::new(),
         }],
     }));
     record.steps = vec![OperationStep {

@@ -111,12 +111,21 @@ impl ResourceRequest {
                 host::Kind::DataSource(crate::HostRecordingAction::ForgetHistory)
             ) {
                 "Positive history-deletion receipt; current recording may already have restarted"
+                    .into()
             } else if reconcile {
-                "Confirmed by fresh reads; no write replayed"
+                "Confirmed by fresh reads; no write replayed".into()
+            } else if step.refused.is_empty() {
+                "Confirmed by fresh host state".into()
             } else {
-                "Confirmed by fresh host state"
-            }
-            .into();
+                // The operator sees that the call was repeated, and how often.
+                format!(
+                    "Confirmed by fresh host state; the host refused the call {} while it was still booting and it was repeated",
+                    match step.refused.len() {
+                        1 => "once".to_owned(),
+                        times => format!("{times} times"),
+                    }
+                )
+            };
             self.record.state = if reconcile {
                 OperationState::Verifying
             } else {
@@ -205,6 +214,8 @@ impl ResourceRequest {
                             .steps
                             .get_mut(index)
                             .ok_or(Error::Journal)?;
+                        // The refused task stays in the record; the repeat takes its place.
+                        repeated.refused.push(task_ref.clone());
                         repeated.task = Some(xapi::reply_reference(&result)?);
                         repeated.task_succeeded = false;
                         self.record = journal.host_evidence(&self.record, index)?;

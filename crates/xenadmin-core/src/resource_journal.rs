@@ -1014,13 +1014,20 @@ impl Journal {
                 .as_mut()
                 .and_then(|p| p.steps.get_mut(index))
                 .ok_or(Error::Journal)?;
+            // A repeat of a call the host definitely refused brings a new task reference.
+            // It takes the stored one's place only with that one kept among the refused.
+            let superseded = step.superseded_by(received);
             if step.kind != received.kind
-                || (step.task.is_some() && received.task.is_some() && step.task != received.task)
+                || (step.task.is_some()
+                    && received.task.is_some()
+                    && step.task != received.task
+                    && !superseded)
             {
-                return Err(Error::JournalChanged);
+                return Err(journal_conflict(evidence.id, 23));
             }
-            if step.task.is_none() {
+            if step.task.is_none() || superseded {
                 step.task = received.task.clone();
+                step.refused = received.refused.clone();
             }
             step.accepted |= received.accepted;
             step.task_succeeded |= received.task_succeeded;
