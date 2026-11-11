@@ -1961,6 +1961,7 @@ async fn lab_metrics_guest_and_host() {
         .clone();
     let host = guest.host.expect("resident host");
     let mut results = Vec::new();
+    let mut refresh_failures = Vec::new();
     for target in [MetricTarget::Vm(guest.id), MetricTarget::Host(host)] {
         let observed = c
             .latest()
@@ -2038,10 +2039,48 @@ async fn lab_metrics_guest_and_host() {
             "{target:?}: no samples ({:?})",
             with_samples.error
         );
+        // The first answer is one request; every later one is a refresh from the last
+        // sample, which is where the host's reported start runs a step ahead of its rows.
+        let first_end = with_samples.range_end;
+        let mut refreshes = Vec::new();
+        let mut errors = Vec::new();
+        let followed = tokio::time::timeout(deadline(60), async {
+            loop {
+                let snapshot = metrics.latest();
+                if let Some(error) = &snapshot.error
+                    && !errors.contains(error)
+                {
+                    errors.push(error.clone());
+                }
+                if snapshot.range_end > first_end && refreshes.last() != Some(&snapshot.range_end) {
+                    refreshes.push(snapshot.range_end);
+                }
+                if refreshes.len() >= 3 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .is_ok();
+        results.last_mut().unwrap()["refresh"] = json!({"first_range_end": first_end,
+            "later_range_ends": refreshes, "errors": errors, "three_refreshes_seen": followed});
         metrics.close();
+        refresh_failures.extend(
+            errors
+                .into_iter()
+                .map(|error| format!("{target:?}: {error}")),
+        );
+        if !followed {
+            refresh_failures.push(format!("{target:?}: fewer than three refreshes in 60 s"));
+        }
     }
     c.close().await;
     lab.record("metrics-guest-and-host", json!({"targets": results}));
+    assert!(
+        refresh_failures.is_empty(),
+        "metrics refresh: {refresh_failures:?}"
+    );
 }
 
 /// P06-01, P06-02, P06-04: reviewed metadata edits on the running guest, then vCPU and

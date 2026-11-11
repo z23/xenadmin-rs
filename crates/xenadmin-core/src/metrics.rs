@@ -94,12 +94,16 @@ impl MetricsOptions {
         Ok(())
     }
 }
+/// A data-source name this client will show, select and name in a request. Hosts that
+/// have run HA publish path-like names (`network/latency`, `statefile/<uuid>/latency`,
+/// `xapi_healthcheck/latency`), so a slash is allowed; nothing that could end or extend a
+/// query string is.
 pub(crate) fn valid_source(source: &str) -> bool {
     !source.is_empty()
         && source.len() <= 128
         && source
             .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b'/'))
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetricCategory {

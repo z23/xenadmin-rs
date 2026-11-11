@@ -34,8 +34,10 @@ pub(super) fn sources(value: &Value) -> Result<Vec<MetricSource>, Error> {
     let mut sources = Vec::new();
     for value in values {
         let name = text(&value["name_label"], 128)?;
+        // One source this client cannot name must not take every chart on the host with
+        // it: such a source, or a repeat of one already listed, is left out.
         if !valid_source(&name) || !names.insert(name.clone()) {
-            return Err(Error::Protocol("invalid or duplicate metric source name"));
+            continue;
         }
         sources.push(MetricSource {
             category: MetricCategory::for_name(&name),
@@ -116,9 +118,15 @@ pub(super) fn decode(
     let start = integer(&meta["start"])?;
     let end = integer(&meta["end"])?;
     let step = integer(&meta["step"])?;
-    if step == 0 || step > 86_400 * 366 || start > end {
+    // XCP-ng reports `start` as the requested start rounded up to the next sample, yet it
+    // also returns the sample at the requested instant, and when nothing newer exists it
+    // reports a start one step past its end with that one row or none. Both are ordinary
+    // answers to a refresh, so the bounds allow one step of slack; anything further is
+    // still refused.
+    if step == 0 || step > 86_400 * 366 || start > end.saturating_add(step) {
         return Err(Error::Protocol("invalid metrics sampling bounds"));
     }
+    let earliest = start.saturating_sub(step);
     let legends = meta["legend"]
         .as_array()
         .filter(|values| values.len() <= MAX_COLUMNS)
@@ -143,10 +151,13 @@ pub(super) fn decode(
             .as_str()
             .filter(|s| s.len() <= 256)
             .ok_or(Error::Protocol("invalid metric legend"))?;
+        // A column for a source this client does not list is ignored, as its source is; a
+        // second column for the same source is ambiguous and refuses the answer.
         if let Some(name) = legend.strip_prefix(&prefix)
-            && (!valid_source(name) || columns.insert(name, column).is_some())
+            && valid_source(name)
+            && columns.insert(name, column).is_some()
         {
-            return Err(Error::Protocol("invalid or duplicate metric column"));
+            return Err(Error::Protocol("duplicate metric column"));
         }
     }
     let mut ordered = BTreeMap::new();
@@ -158,7 +169,7 @@ pub(super) fn decode(
             .ok_or(Error::Protocol(
                 "metrics row width does not match its legend",
             ))?;
-        if timestamp < start || timestamp > end || ordered.insert(timestamp, values).is_some() {
+        if timestamp < earliest || timestamp > end || ordered.insert(timestamp, values).is_some() {
             return Err(Error::Protocol("invalid or duplicate metric timestamp"));
         }
     }

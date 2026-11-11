@@ -180,7 +180,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
                 ))
                 .child(
                     Button::new("Remove")
-                        .variant(ButtonVariant::Ghost)
+                        .variant(ButtonVariant::Danger)
                         .on_press(move |s: &mut State| remove(s, &remove_name))
                         .build(k)
                         .key(format!("metric-preset-remove-{}", preset.name)),
@@ -189,7 +189,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     }
     body.child(
         Button::new("Back to graphs")
-            .variant(ButtonVariant::Ghost)
+            .variant(ButtonVariant::Outline)
             .on_press(open)
             .build(k)
             .key("metric-presets-close"),
@@ -315,7 +315,8 @@ mod tests {
         };
         catalog.save(good.clone()).unwrap();
         let mut bad = good.clone();
-        bad.options.sources = vec!["bad/source".into()];
+        // A slash is a real separator in host source names; a query character never is.
+        bad.options.sources = vec!["bad&source".into()];
         assert!(catalog.save(bad).is_err());
         assert_eq!(catalog.presets[0].options, good.options);
         for n in 1..32 {

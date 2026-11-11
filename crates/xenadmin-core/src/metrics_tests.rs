@@ -90,6 +90,147 @@ fn disabled_missing_and_nonfinite_values_are_unknown_not_zero() {
     }
 }
 #[test]
+fn path_like_source_names_are_listed_and_unnameable_ones_are_left_out() {
+    // A coordinator that has run HA lists these beside the ordinary sources; refusing the
+    // list for them left the host with no charts at all.
+    let source = |name: &str| json!({"name_label": name, "name_description": "", "units": "s", "enabled": true});
+    let listed = decode::sources(&json!([
+        source("cpu0"),
+        source("network/latency"),
+        source("statefile/3982d980-615d-412f-904f-d4f2b12ba14b/latency"),
+        source("xapi_healthcheck/latency"),
+        source("cpu0&session_id=secret"),
+        source("cpu0"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        listed.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        [
+            "cpu0",
+            "network/latency",
+            "statefile/3982d980-615d-412f-904f-d4f2b12ba14b/latency",
+            "xapi_healthcheck/latency"
+        ]
+    );
+    assert!(
+        MetricsOptions {
+            window: MetricsWindow::TenMinutes,
+            sources: vec!["network/latency".into()]
+        }
+        .validate()
+        .is_ok()
+    );
+
+    // The same names as columns: the path-like one is read, the unnameable one ignored.
+    let host = MetricTarget::Host(HostId::parse(HOST).unwrap());
+    let legend = |name: &str| format!("AVERAGE:host:{HOST}:{name}");
+    let answer = json!({"meta":{"start":1000,"end":1005,"step":5,"rows":2,"columns":3,
+        "legend":[legend("cpu0"), legend("network/latency"), legend("odd name?")]},
+        "data":[{"t":1005,"values":["0.5","0.002","9"]},{"t":1000,"values":["0.4","0.001","9"]}]});
+    let batch = decode::decode(
+        &serde_json::to_vec(&answer).unwrap(),
+        host,
+        &listed,
+        &["network/latency".to_string()],
+    )
+    .unwrap();
+    assert_eq!(
+        batch.series[0]
+            .samples
+            .iter()
+            .map(|sample| sample.value)
+            .collect::<Vec<_>>(),
+        [Some(0.001), Some(0.002)]
+    );
+    let mut repeated = answer.clone();
+    repeated["meta"]["legend"][2] = json!(legend("cpu0"));
+    assert!(
+        decode::decode(
+            &serde_json::to_vec(&repeated).unwrap(),
+            host,
+            &listed,
+            &["cpu0".to_string()]
+        )
+        .is_err(),
+        "two columns for one source stay refused"
+    );
+}
+#[test]
+fn refresh_answers_whose_reported_start_runs_one_step_ahead_are_accepted() {
+    // Shapes recorded from XCP-ng 8.3.0 when a refresh asks from an exact sample time.
+    let sources = decode::sources(&metadata()).unwrap();
+    let selected = vec!["cpu0".to_string()];
+    let decode = |value: &Value| {
+        decode::decode(
+            &serde_json::to_vec(value).unwrap(),
+            target(),
+            &sources,
+            &selected,
+        )
+    };
+    let legend = data(target())["meta"]["legend"].clone();
+    let row = |t: u64| json!({"t": t, "values": ["0.5", "1024", "99"]});
+
+    // Asked from 1005: the host says the range starts at 1010 and still returns 1005.
+    let overlapping = json!({"meta":{"start":1010,"end":1015,"step":5,"rows":3,"columns":3,"legend":legend},
+        "data":[row(1015), row(1010), row(1005)]});
+    let batch = decode(&overlapping).unwrap();
+    assert_eq!(batch.end, 1015);
+    assert_eq!(
+        batch.series[0]
+            .samples
+            .iter()
+            .map(|sample| sample.timestamp)
+            .collect::<Vec<_>>(),
+        [1005, 1010, 1015]
+    );
+
+    // Nothing newer than the sample asked from: start is one step past end, with that row.
+    let nothing_new = json!({"meta":{"start":1010,"end":1005,"step":5,"rows":1,"columns":3,"legend":legend},
+        "data":[row(1005)]});
+    let batch = decode(&nothing_new).unwrap();
+    assert_eq!((batch.end, batch.series[0].samples.len()), (1005, 1));
+    // ... or with no row at all, which leaves a merged series as it was.
+    let empty = json!({"meta":{"start":1010,"end":1005,"step":5,"rows":0,"columns":3,"legend":legend},
+        "data":[]});
+    let batch = decode(&empty).unwrap();
+    assert!(batch.series[0].samples.is_empty());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (handle, _) = channel(
+        ObservedMetrics {
+            pool: PoolId::parse(POOL).unwrap(),
+            generation: 1,
+            target: target(),
+        },
+        MetricsOptions::default(),
+        runtime.handle().clone(),
+    );
+    let mut snapshot = (*handle.latest()).clone();
+    decode::merge(
+        &mut snapshot,
+        decode(&overlapping).unwrap(),
+        MetricsWindow::TenMinutes,
+        true,
+    );
+    decode::merge(&mut snapshot, batch, MetricsWindow::TenMinutes, false);
+    assert_eq!(
+        snapshot.series[0].samples.len(),
+        1,
+        "samples up to the answer's end are kept"
+    );
+
+    // More than one step of disagreement is still malformed.
+    let mut early = overlapping.clone();
+    early["data"][2]["t"] = json!(1000);
+    assert!(decode(&early).is_err());
+    let mut inverted = nothing_new.clone();
+    inverted["meta"]["start"] = json!(1015);
+    assert!(decode(&inverted).is_err());
+    let mut late = overlapping.clone();
+    late["data"][0]["t"] = json!(1020);
+    assert!(decode(&late).is_err());
+}
+#[test]
 fn malformed_dimensions_duplicate_times_and_oversized_inputs_fail_atomically() {
     let sources = decode::sources(&metadata()).unwrap();
     let selected = vec!["cpu0".into()];
