@@ -19881,6 +19881,75 @@ async fn lab_desktop_guest_pointer_press_lands_on_its_target() {
     assert!(near, "the press changed nothing at its target");
 }
 
+/// P04-06, P04-02: a text typed as key presses reaches a guest exactly. In the plain guest's
+/// shell one request types three lines: a `read` that takes the next line as it comes, a
+/// line holding every printable ASCII character, and a command that reports that line's
+/// bytes in hexadecimal to the workstation over the isolated network. The report must be
+/// the bytes that were typed.
+#[tokio::test]
+#[ignore]
+async fn lab_typed_text_reaches_the_guest_exactly() {
+    use xenadmin_core::{ConsoleInput, PowerState, TypedText};
+    let lab = Lab::load();
+    let gateway = std::env::var("XENADMIN_LAB_GATEWAY").unwrap_or_else(|_| "192.168.254.1".into());
+    let port: u16 = 8000;
+    let guest_ip =
+        std::env::var("XENADMIN_LAB_GUEST_IP").unwrap_or_else(|_| "192.168.254.100".into());
+    let reports = report_listener(&format!("{gateway}:{port}")).await;
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let guest = c
+        .latest()
+        .inventory()
+        .unwrap()
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && v.power_state == PowerState::Running)
+        .expect("running lab guest from lab_guest_provisioning")
+        .clone();
+    let console = open_guest_console(&c, guest.id).await.expect("console");
+
+    // Log in and bring the interface up, as the other guest scenarios do.
+    stable_frame(&console, 240).await;
+    type_line(&console, "").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    stable_frame(&console, 60).await;
+    type_line(&console, "root").await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    type_line(&console, "ip link set eth0 up").await;
+    type_line(&console, &format!("ip addr add {guest_ip}/24 dev eth0")).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    // Every printable ASCII character, with the space inside so that `read` keeps it.
+    let payload: String = ('!'..='O').chain([' ']).chain('P'..='~').collect();
+    let expected: String = payload.bytes().map(|b| format!("{b:02x}")).collect();
+    let text = format!(
+        "read -r t\n{payload}\nwget -q -O- http://{gateway}:{port}/report/$(printf %s \"$t\" | hexdump -v -e '1/1 \"%02x\"')\n"
+    );
+    let review = TypedText::review(&text).expect("the text can be typed");
+    let started = std::time::Instant::now();
+    console
+        .input(ConsoleInput::TypeText(text))
+        .expect("typing accepted");
+    let began = settle(10, || console.latest().typing > 0).await;
+    let finished = settle(120, || console.latest().typing == 0).await;
+    let typed_ms = started.elapsed().as_millis() as u64;
+    let reported = wait_report(&reports, &expected, 90).await;
+    let received = reports.received.lock().unwrap().clone();
+    let frame_file = save_frame(&lab, &console, "typed-text");
+    console.close();
+    c.close().await;
+    lab.record(
+        "typed-text-reaches-the-guest",
+        json!({"guest": guest.name, "characters": review.characters, "line_breaks": review.line_breaks,
+               "payload_characters": payload.len(), "typing_began": began, "typing_finished": finished,
+               "typed_in_ms": typed_ms, "guest_reported_the_typed_bytes": reported,
+               "expected_report": expected, "received_reports": received, "console_frame_file": frame_file}),
+    );
+    assert!(began && finished, "the text was not typed out");
+    assert!(reported, "the guest did not report the typed bytes");
+}
+
 /// The pool's security overview through a fresh inspection.
 async fn security_overview(
     c: &Connection,

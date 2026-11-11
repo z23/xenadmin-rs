@@ -76,6 +76,11 @@ window manager passed for the window, input, clipboard, resizing and closing
 ([report](reports/2026-11-11-clean-install.md)), but nobody has used the client there and
 no console was tried.
 
+Typing clipboard text into a console as key presses is new in this release and is offered
+as part of the console. Through the core it reached a lab guest exactly, every printable
+character; its refusal of text a US keyboard cannot type and its stopping are verified by
+fixtures; nobody has used the desktop's button on a real seat yet.
+
 Not supported: screen readers. The accessibility tree has known gaps (findings 6 and 22 of
 the [live report](reports/2026-11-09-lab-qualification.md)) and no screen reader has been
 used with the client. Hosts other than XCP-ng 8.3 are not qualified, and the client says so
