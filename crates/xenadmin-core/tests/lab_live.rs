@@ -318,6 +318,70 @@ async fn guest_settled(c: &Connection) {
         })
     })
     .await;
+    let guests: Vec<_> = c
+        .latest()
+        .inventory()
+        .map(|i| {
+            i.guests()
+                .filter(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+                .map(|v| v.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    for vm in guests {
+        guest_booted(c, vm).await;
+    }
+}
+
+/// The offer of a clean shutdown comes from the guest's kernel. A request sent before the
+/// rest of the guest is up is lost, and the host then holds its task open for many
+/// minutes, so a running guest whose host says it started within the last 75 seconds is
+/// given the rest of them. The lab's hosts take their clocks from this workstation; were
+/// they far apart, no start would look recent and nothing would be waited for.
+async fn guest_booted(c: &Connection, vm: xenadmin_core::VmId) {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let age = c.latest().inventory().and_then(|i| {
+        let guest = i.vms.get(&vm)?;
+        if guest.power_state != xenadmin_core::PowerState::Running {
+            return None;
+        }
+        let metrics = i.details.vms.get(&vm)?.metrics?;
+        let started = host_time(i.details.vm_metrics.get(&metrics)?.start_time.as_deref()?)?;
+        Some(now - started)
+    });
+    if let Some(age) = age.filter(|age| (0..75).contains(age)) {
+        tokio::time::sleep(Duration::from_secs((75 - age) as u64)).await;
+    }
+}
+
+/// Seconds since the epoch for a time as XAPI writes it, `YYYYMMDDTHH:MM:SSZ`.
+fn host_time(text: &str) -> Option<i64> {
+    let digits = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    if text.len() != 18 || !text.is_ascii() || &text[8..9] != "T" || !text.ends_with('Z') {
+        return None;
+    }
+    let (year, month, day) = (digits(0..4)?, digits(4..6)?, digits(6..8)?);
+    let (hour, minute, second) = (digits(9..11)?, digits(12..14)?, digits(15..17)?);
+    // Days from the civil date, by the usual era arithmetic.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let year_of_era = y - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+#[test]
+fn a_host_time_reads_as_seconds_since_the_epoch() {
+    assert_eq!(host_time("19700101T00:00:00Z"), Some(0));
+    assert_eq!(host_time("20000229T12:00:01Z"), Some(951_825_601));
+    assert_eq!(host_time("20261111T10:20:30Z"), Some(1_794_392_430));
+    assert_eq!(host_time("2026-11-11T10:20:30Z"), None);
+    assert_eq!(host_time("20261111T10:20:30"), None);
 }
 
 /// Connects to exactly the manifest host at `index`, ignoring the default-endpoint override.
@@ -7453,6 +7517,12 @@ async fn power_to(
         })
     })
     .await;
+    if matches!(
+        action,
+        xenadmin_core::PowerAction::CleanShutdown | xenadmin_core::PowerAction::Reboot
+    ) {
+        guest_booted(c, vm).await;
+    }
     let operation = c
         .submit(
             OperationId::new(),
@@ -8747,6 +8817,44 @@ async fn lab_other_client_task_inspection_and_cancellation() {
     assert!(consistent, "guest and disks are not together on one host");
 }
 
+/// Cancels the pool's pending host tasks of one name through the client's reviewed task
+/// command and reports each outcome.
+async fn cancel_pending_task(c: &Connection, name: &str) -> Vec<String> {
+    use xenadmin_core::ResourceCommand;
+    let tasks: Vec<_> = c
+        .latest()
+        .inventory()
+        .map(|i| {
+            i.details
+                .tasks
+                .values()
+                .filter(|t| t.name == name && t.status == "pending")
+                .map(|t| t.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut outcomes = Vec::new();
+    for task in tasks {
+        let submitted = c
+            .latest()
+            .observe_resource(ResourceTarget::Task(task))
+            .and_then(|observed| {
+                c.submit_resource(
+                    OperationId::new(),
+                    ResourceCommand::CancelTask { task: observed },
+                )
+            });
+        outcomes.push(match submitted {
+            Ok(operation) => {
+                let row = wait_outcome(&operation, 120).await;
+                format!("{:?}: {}", row.state, row.detail)
+            }
+            Err(error) => format!("refused: {error:?}"),
+        });
+    }
+    outcomes
+}
+
 /// Halt a running guest: a clean shutdown first, and a hard shutdown when the guest does
 /// not acknowledge it (a guest sitting in its firmware after a recovery boot ignores ACPI).
 async fn halt_guest(c: &Connection, vm: xenadmin_core::VmId) -> Value {
@@ -8760,10 +8868,27 @@ async fn halt_guest(c: &Connection, vm: xenadmin_core::VmId) -> Value {
     })
     .await;
     if !advertised {
+        // A clean shutdown that an earlier session left pending on the host, because the
+        // guest never acted on it, is one reason for none being offered. It is cancelled
+        // first, through the reviewed task command, as an operator would.
+        let cancelled = cancel_pending_task(c, "Async.VM.clean_shutdown").await;
+        if !cancelled.is_empty() {
+            eprintln!("cancelled a pending clean shutdown before forcing: {cancelled:?}");
+            settle(60, || {
+                c.latest().inventory().is_some_and(|i| {
+                    !i.details
+                        .tasks
+                        .values()
+                        .any(|t| t.name == "Async.VM.clean_shutdown" && t.status == "pending")
+                })
+            })
+            .await;
+        }
         let forced = power_to(c, vm, PowerAction::HardShutdown, PowerState::Halted).await;
-        return json!({"action": "HardShutdown (clean shutdown not advertised)", "forced": forced, "reached": true});
+        return json!({"action": "HardShutdown (clean shutdown not advertised)", "cancelled_pending_shutdown": cancelled, "forced": forced, "reached": true});
     }
-    let clean = c
+    guest_booted(c, vm).await;
+    let shutdown = c
         .submit(
             OperationId::new(),
             VmCommand::Power {
@@ -8774,7 +8899,7 @@ async fn halt_guest(c: &Connection, vm: xenadmin_core::VmId) -> Value {
         .expect("clean shutdown accepted");
     let clean = tokio::time::timeout(deadline(150), async {
         loop {
-            let row = clean.latest();
+            let row = shutdown.latest();
             if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
                 return Some(row);
             }
@@ -8794,6 +8919,19 @@ async fn halt_guest(c: &Connection, vm: xenadmin_core::VmId) -> Value {
     if halted {
         return json!({"action": "CleanShutdown", "state": clean.map(|r| format!("{:?}", r.state)), "reached": true});
     }
+    // The guest did not act on the request: one that is still starting loses it. The host
+    // keeps its task open for many minutes, and the client refuses another action on the
+    // guest while that one is unresolved. Cancel the host task as an operator would,
+    // through the reviewed task command, and let the shutdown end before forcing.
+    let cancelled = cancel_pending_task(c, "Async.VM.clean_shutdown").await;
+    let ended = settle(120, || {
+        let row = shutdown.latest();
+        row.state.terminal() || row.state == OperationState::OutcomeUnknown
+    })
+    .await;
+    eprintln!(
+        "clean shutdown not acted on: task cancellation {cancelled:?}, operation ended {ended}"
+    );
     let forced = power_to(c, vm, PowerAction::HardShutdown, PowerState::Halted).await;
     json!({"action": "CleanShutdown then HardShutdown", "clean": clean.map(|r| json!({"state": format!("{:?}", r.state), "detail": r.detail})), "forced": forced, "reached": true})
 }
@@ -12224,6 +12362,70 @@ async fn lab_nic_plug_edit_and_rate_limit() {
         .expect("lab guest")
         .clone();
     let vm = guest.id;
+
+    // Leftovers of an earlier interrupted run go first, through the same reviewed
+    // workflows: the guest's NICs on a network this scenario made, then those networks.
+    let mut leftovers = Vec::new();
+    let made_here: Vec<(xenadmin_core::NetworkId, String)> = inventory
+        .networks
+        .iter()
+        .filter(|n| n.name.starts_with("lab-nic-"))
+        .map(|n| (n.uuid.into(), n.name.clone()))
+        .collect();
+    if !made_here.is_empty() {
+        if guest.power_state != PowerState::Halted {
+            let mut halt = halt_guest(&c, vm).await;
+            halt["step"] = json!("halt the guest to remove a leftover NIC");
+            leftovers.push(halt);
+        }
+        for (network, name) in &made_here {
+            let nics: Vec<_> = c
+                .latest()
+                .inventory()
+                .unwrap()
+                .details
+                .vifs
+                .values()
+                .filter(|v| v.vm == Some(vm) && v.network == Some(*network))
+                .map(|v| v.id)
+                .collect();
+            for vif in nics {
+                let mut entry = device_op(&c, vm, DeviceOperation::DeleteNic { vif }, 120).await;
+                entry["step"] = json!("remove a leftover NIC");
+                entry["read_back"] = json!(
+                    settle(60, || c
+                        .latest()
+                        .inventory()
+                        .is_some_and(|i| !i.details.vifs.contains_key(&vif)))
+                    .await
+                );
+                leftovers.push(entry);
+            }
+            let mut entry = resource_op(
+                &c,
+                "delete a leftover network",
+                ResourceCommand::DeleteInternalNetwork {
+                    network: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Network(*network))
+                        .unwrap(),
+                    expected_name: name.clone(),
+                },
+                120,
+            )
+            .await;
+            entry["read_back"] = json!(
+                settle(60, || c
+                    .latest()
+                    .inventory()
+                    .is_some_and(|i| !i.networks.iter().any(|n| &n.name == name)))
+                .await
+            );
+            leftovers.push(entry);
+        }
+    }
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory.vms[&vm].clone();
     let existing: Vec<_> = inventory
         .details
         .vifs
@@ -12234,7 +12436,7 @@ async fn lab_nic_plug_edit_and_rate_limit() {
     assert_eq!(
         existing.len(),
         1,
-        "the lab guest should carry exactly one NIC"
+        "the lab guest should carry exactly one NIC: {leftovers:?}"
     );
     let management = existing[0].network.expect("the existing NIC's network");
     let stamp = SystemTime::now()
@@ -12505,7 +12707,7 @@ async fn lab_nic_plug_edit_and_rate_limit() {
     c.close().await;
     lab.record(
         "nic-plug-edit-and-rate-limit",
-        json!({"guest": guest.name, "network": name, "steps": steps}),
+        json!({"guest": guest.name, "network": name, "leftovers_removed_first": leftovers, "steps": steps}),
     );
     for step in &steps {
         if step.get("expected_refusal").is_some() {
