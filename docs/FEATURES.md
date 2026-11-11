@@ -70,10 +70,11 @@ experimental as well: clipboard exchange with a guest, which has not worked with
 guests tried and is unverified with a guest whose tools support it, and clones and exports
 made from a snapshot.
 
-An X session without a Wayland compositor is experimental: a scripted check under the
-X.Org server with a window manager passed for the window, input, clipboard, resizing and
-closing ([report](reports/2026-11-11-clean-install.md)), but nobody has used the client
-there and no console was tried.
+An X session without a Wayland compositor is experimental and is not being pursued, by
+the operator's decision of 2026-11-11. A scripted check under the X.Org server with a
+window manager passed for the window, input, clipboard, resizing and closing
+([report](reports/2026-11-11-clean-install.md)), but nobody has used the client there and
+no console was tried.
 
 Not supported: screen readers. The accessibility tree has known gaps (findings 6 and 22 of
 the [live report](reports/2026-11-09-lab-qualification.md)) and no screen reader has been
