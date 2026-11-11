@@ -297,6 +297,8 @@ list below is the minimum for that, with its state on 2026-11-11.
 | Clean-machine installs with software rendering | Done on untouched Ubuntu 24.04 and Arch images ([report](reports/2026-11-11-clean-install.md)); nobody has used the window there |
 | A notice for hosts outside the qualified release | Done |
 | One real-seat pass | Done. The operator's sessions covered the window, resizing, a real inventory, console typing, pointer movement and clicks in a guest with a graphical desktop, and the performance charts. Clipboard exchange with a guest did not work for them and is recorded as experimental; screen readers are recorded as unsupported. An X session without Wayland was checked in a virtual machine with injected input ([report](reports/2026-11-11-clean-install.md)), not by a person |
-| Release mechanics | A [changelog](../CHANGELOG.md) with known issues and the stored-format rule, a tag-triggered workflow that leaves a draft release (not yet run), and a first [performance baseline](reports/2026-11-11-performance-baseline.md). Pushing the first tag is the operator's decision |
+| Release mechanics | Done: a [changelog](../CHANGELOG.md) with known issues and the stored-format rule, a tag-triggered workflow that builds the packages and leaves a draft pre-release, and a first [performance baseline](reports/2026-11-11-performance-baseline.md) |
 
-Publishing a tag or binary is a separate decision; nothing has been published.
+The operator decided on 2026-11-11 to release this state as 0.18.0, a beta, cut from the
+main branch and published once the packages the tag workflow builds have been checked.
+Generated bindings are the next piece of work after it.

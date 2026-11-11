@@ -42,6 +42,19 @@ class ReleaseNotes(unittest.TestCase):
         with self.assertRaisesRegex(release_notes.NotesError, "empty"):
             release_notes.entry(CHANGELOG, "1.0.0")
 
+    def test_repository_links_are_written_against_the_tagged_tree(self):
+        notes = (
+            "See the [scope](docs/FEATURES.md) and [findings](docs/reports/a.md#findings).\n"
+            "Not [this](https://example.test/x), [this](#known-issues) or [this](/rooted).\n"
+        )
+        base = "https://example.test/owner/repo/blob/v1.1.0/"
+        self.assertEqual(
+            release_notes.absolute_links(notes, base),
+            "See the [scope](https://example.test/owner/repo/blob/v1.1.0/docs/FEATURES.md) and "
+            "[findings](https://example.test/owner/repo/blob/v1.1.0/docs/reports/a.md#findings).\n"
+            "Not [this](https://example.test/x), [this](#known-issues) or [this](/rooted).\n",
+        )
+
     def test_a_version_is_matched_whole(self):
         with self.assertRaisesRegex(release_notes.NotesError, "no entry"):
             release_notes.entry(CHANGELOG, "1.1")

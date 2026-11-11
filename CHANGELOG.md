@@ -5,9 +5,20 @@ in that build, and the stored formats it reads and writes. Evidence for each ent
 the linked reports; the [retained parity ledger](docs/PARITY-IMPLEMENTATION.md) remains the
 authority on what is implemented and what is qualified.
 
-Nothing has been published. Versions up to 0.17.0 are local development checkpoints.
+0.18.0 is the first published version. Versions up to 0.17.0 were local development
+checkpoints.
 
-## 0.18.0 (in development)
+## 0.18.0 (2026-11-11)
+
+The first published version, a beta for XCP-ng 8.3. Its supported part is connections and
+certificate trust, the live inventory, VM power, the console, snapshots, performance charts
+and activity; everything else is experimental and marked so in the client
+([feature scope](docs/FEATURES.md)).
+
+The packages are a portable archive and an AppImage for x86-64 Linux, each with its
+SHA-256 checksum; [installation](docs/INSTALLATION.md) says how to check and install them,
+and [connections](docs/CONNECTIONS.md) how to reach a host. This is an independent
+project, not an official XCP-ng or Vates application.
 
 Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.0.
 

@@ -6,8 +6,9 @@
 - Connect directly to XAPI. Xen Orchestra must never be required to start, authenticate,
   discover a pool, run a command, or open a console.
 - Keep the UI responsive through slow hosts, reconnects, and console traffic.
-- This repository contains a development alpha. Report implemented, fixture-verified,
-  live-host-verified, and planned behavior separately; see docs/reports/ for evidence.
+- This repository contains a beta: a supported core and experimental areas, as drawn in
+  docs/FEATURES.md. Report implemented, fixture-verified, live-host-verified, and planned
+  behavior separately; see docs/reports/ for evidence.
 
 ## Implementation boundaries
 

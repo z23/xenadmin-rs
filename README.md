@@ -9,10 +9,14 @@ The client requires a reachable XAPI service and the user's host permissions.
 
 ## Project status
 
-Development alpha, workspace version 0.18.0, no release published yet. The latest frozen
-build is the [0.17.0 checkpoint](docs/reports/2026-11-11-checkpoint-0.17.md). The Cargo
-workspace builds the Rune desktop application, a read-only host probe and a small sandbox
-helper. No Xen Orchestra service is used.
+Beta. Version 0.18.0 is the first published release ([changelog](CHANGELOG.md)), for
+XCP-ng 8.3 with the client running as a Wayland application. Its supported part is
+connections and certificate trust, the live inventory, VM power, the console, snapshots,
+performance charts and activity. Everything else below is experimental: implemented, in
+most cases with one recorded successful run, and marked with a notice in the client. The
+[feature scope](docs/FEATURES.md) draws that line. The Cargo workspace builds the Rune
+desktop application, a read-only host probe and a small sandbox helper. No Xen Orchestra
+service is used.
 
 Implemented scope, as reviewed operations with durable partial and unknown outcomes:
 saved and concurrent connections with certificate trust, credentials and endpoint failover;
@@ -40,11 +44,11 @@ decisions, since settled. Per-row results are in [lab/ACCEPTANCE.md](lab/ACCEPTA
 [verification traceability report](docs/reports/2026-11-11-verification-traceability.md)
 maps the core verification scenarios to their evidence.
 
-Still open before a usable release: the failure and interruption paths of most workflows,
-the parts of a real desktop session nobody has exercised (a pointer in a graphical guest,
-clipboard, Orca, non-US layouts, a standalone X server) and every host version other than
-8.3.0. The [implementation plan](docs/PLAN.md) lists the minimum for leaving alpha and
-where each item stands.
+Known limits of this release are listed in the [changelog](CHANGELOG.md): the failure
+and interruption paths of the experimental areas are mostly unrecorded, only XCP-ng 8.3.0
+has been exercised, clipboard exchange with a guest is experimental, and screen readers
+are not supported. The [implementation plan](docs/PLAN.md) records how the supported part
+was qualified and what comes next.
 
 ## Run it
 
