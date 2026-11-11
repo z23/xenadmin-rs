@@ -294,7 +294,7 @@ list below is the minimum for that, with its state on 2026-11-11.
 | Explain the two journal anomalies | Done: finding 23 was the client refusing its own repeated enable and is fixed and rerun live; the missing restore record was the scenario closing before admission |
 | Clean-machine installs with software rendering | Done on untouched Ubuntu 24.04 and Arch images ([report](reports/2026-11-11-clean-install.md)); nobody has used the window there |
 | A notice for hosts outside the qualified release | Done |
-| One real-seat pass | The operator's session covered the window, resizing, a real inventory and console typing. Open: a pointer in a graphical guest (the lab now has one, and presses sent by the harness land where aimed; the operator's own hand is what is left), clipboard, a standalone X server, and whether screen-reader support is a documented gap |
+| One real-seat pass | The operator's sessions covered the window, resizing, a real inventory, console typing, and pointer movement and clicks in a guest with a graphical desktop. Open: clipboard, a standalone X server, and whether screen-reader support is a documented gap |
 | Release mechanics | A [changelog](../CHANGELOG.md) with known issues and the stored-format rule, a tag-triggered workflow that leaves a draft release (not yet run), and a first [performance baseline](reports/2026-11-11-performance-baseline.md). Pushing the first tag is the operator's decision |
 
 Publishing a tag or binary is a separate decision; nothing has been published.

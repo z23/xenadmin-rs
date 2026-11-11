@@ -56,8 +56,8 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.17.
   unverified.
 - Only XCP-ng 8.3.0 has been exercised, on nested virtualization. Most workflows have a
   recorded successful path and no recorded failure or interruption path.
-- Not verified: a person's pointer in a graphical guest through the desktop (presses sent
-  by the test harness do land where aimed), clipboard exchange with a guest,
+- Not verified: the wheel's direction and dragging in a graphical guest (the operator
+  confirmed pointer movement and clicks there), clipboard exchange with a guest,
   non-US keyboard layouts, a standalone X server, and a person using the client on a
   freshly installed system (installation, software rendering and an offline start there
   are recorded in the [clean-install report](docs/reports/2026-11-11-clean-install.md)).
