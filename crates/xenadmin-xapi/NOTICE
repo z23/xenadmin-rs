@@ -10,7 +10,10 @@ Source of the derived material:
   repository  https://github.com/xapi-project/xen-api
   tag         v26.1.11
   commit      53cf465262b2236a29c34dafb2ae1ccfd6a40ac0
-  file        doc/data/xenapi.json, kept unchanged here as data/xenapi.json
+  source      the API data model under ocaml/idl
+  file        data/xenapi.json, which is what the upstream program
+              ocaml/idl/json_backend/gen_json.ml writes for that data model, kept
+              here as it was written. data/regenerate.sh builds and runs that program.
 
 Everything this crate offers is generated from that file when the crate is built, by the
 generator in this directory. The rest of the XenAdmin RS workspace is under the MIT

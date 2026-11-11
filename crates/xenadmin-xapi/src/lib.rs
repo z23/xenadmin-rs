@@ -4,8 +4,9 @@
 //! messages and enumerations, a view of a record for every class, and constants for every
 //! enumeration value.
 //!
-//! All of it is generated when the crate is built, from the upstream API description kept
-//! unchanged in `data/xenapi.json`. See `NOTICE` for where that file comes from and
+//! All of it is generated when the crate is built, from the API description in
+//! `data/xenapi.json`: what upstream's own generator writes for the data model of the
+//! toolstack release named in `data/SOURCE`. See `NOTICE` for where it comes from and
 //! `LICENSE` for the terms of this crate, which differ from the rest of the workspace.
 //!
 //! The views return values as the host sent them. What a value must look like, how large
@@ -103,11 +104,11 @@ mod tests {
 
     #[test]
     fn the_catalogue_is_the_whole_description_in_order() {
-        assert_eq!(CLASSES.len(), 67);
-        assert_eq!(CLASSES.iter().map(|c| c.fields.len()).sum::<usize>(), 845);
+        assert_eq!(CLASSES.len(), 70);
+        assert_eq!(CLASSES.iter().map(|c| c.fields.len()).sum::<usize>(), 899);
         assert_eq!(
             CLASSES.iter().map(|c| c.messages.len()).sum::<usize>(),
-            1828
+            1943
         );
         assert!(CLASSES.windows(2).all(|pair| pair[0].name < pair[1].name));
         assert!(

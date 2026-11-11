@@ -62,17 +62,9 @@ fn named(classes: &BTreeSet<&str>) -> BTreeSet<(String, String)> {
 const NOT_NAMES: &[&str] = &["VM.set_", "pool.set_", "host.example"];
 
 /// Calls the client makes that the description does not list, each with the reason it is
-/// made anyway.
-const UNLISTED: &[(&str, &str)] = &[
-    (
-        "VM.get_secureboot_readiness",
-        "XCP-ng's own addition to XAPI, absent from the upstream description; it answered on the lab",
-    ),
-    (
-        "pool.get_guest_secureboot_readiness",
-        "XCP-ng's own addition to XAPI, absent from the upstream description; it answered on the lab",
-    ),
-];
+/// made anyway. There are none: the two that an older description lacked are in the one
+/// generated for the qualified toolstack.
+const UNLISTED: &[(&str, &str)] = &[];
 
 #[test]
 fn every_call_and_field_the_client_names_exists_in_the_api_of_the_qualified_toolstack() {

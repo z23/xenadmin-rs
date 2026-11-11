@@ -1,6 +1,11 @@
 # Where data/xenapi.json comes from. The build refuses a file with another digest.
+# It is what upstream's own generator writes for the data model at this commit, produced
+# by data/regenerate.sh. The copy upstream keeps at doc/data/xenapi.json is older.
 repository=xapi-project/xen-api
 tag=v26.1.11
 commit=53cf465262b2236a29c34dafb2ae1ccfd6a40ac0
-path=doc/data/xenapi.json
-sha256=09a9dc2cb458b91548e9dac0e0425d3e5121cadfdd091699896e233869130ba7
+generator=ocaml/idl/json_backend/gen_json.ml
+sha256=1b8bbae960e50b69acda2b964631edb6d7b889a40936eb5d3986dcfdba9af54c
+# Produced on Ubuntu 24.04 with OCaml 4.14.1, dune 3.24.2, yojson 3.0.0, rpclib 10.2.0,
+# ppx_deriving_rpc 10.2.0 and xapi-backtrace 0.8; two runs, the second from an empty
+# package root, gave this digest.

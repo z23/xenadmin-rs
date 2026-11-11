@@ -7,8 +7,8 @@ use xenadmin_xapi::records::{
     NetworkSriovRecord, PciRecord, PifRecord, PoolRecord, SdnControllerRecord, TunnelRecord,
 };
 
-fn text(record: &Value, field: &str, limit: usize) -> Option<String> {
-    record[field]
+fn text(field: FieldValue<'_>, limit: usize) -> Option<String> {
+    field
         .as_str()
         .filter(|v| !v.is_empty() && v.len() <= limit && !v.chars().any(char::is_control))
         .map(str::to_owned)
@@ -100,10 +100,10 @@ pub(super) fn decode(
             NetworkPciDevice {
                 id,
                 host: refs.link("host", view.host()),
-                address: text(record, "pci_id", 64),
-                vendor_id: text(record, "vendor_id", 16),
-                device_id: text(record, "device_id", 16),
-                driver: text(record, "driver_name", 128),
+                address: text(view.pci_id(), 64),
+                vendor_id: text(view.vendor_id(), 16),
+                device_id: text(view.device_id(), 16),
+                driver: text(view.driver_name(), 128),
             },
         ))
     });
