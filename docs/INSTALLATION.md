@@ -2,8 +2,9 @@
 
 The Linux portable archive and x86-64 AppImage contain the application, read-only probe,
 desktop metadata and dependency notices. They connect directly to XCP-ng; no host agent
-or Xen Orchestra service is required. Development builds still require the qualification
-checks recorded in [the parity ledger](https://github.com/z23/xenadmin-rs/blob/main/docs/PARITY-IMPLEMENTATION.md).
+or Xen Orchestra service is required. This is a beta for XCP-ng 8.3: the
+[feature scope](https://github.com/z23/xenadmin-rs/blob/main/docs/FEATURES.md) says which
+parts are supported and which are experimental.
 
 ## Runtime requirements
 
@@ -28,8 +29,9 @@ sudo pacman -S --needed vulkan-icd-loader vulkan-swrast wayland libxkbcommon lib
 
 `mesa-vulkan-drivers` and `vulkan-swrast` supply the software Vulkan driver, which is
 enough on a machine with no GPU; a hardware driver replaces it where there is one. Without
-any Vulkan driver the client stops with a message saying so. Real Wayland/X11 sessions,
-Orca and multi-monitor qualification are separate gates.
+any Vulkan driver the client stops with a message saying so. The client has been used as
+a Wayland application; an X session without Wayland has had a scripted check only, screen
+readers are not supported and multi-monitor use is unverified.
 
 ## Portable archive
 
