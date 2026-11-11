@@ -1,0 +1,20 @@
+xenadmin-xapi
+
+This crate is derived from the API description of the XAPI toolstack and is distributed
+under the terms in the LICENSE file beside this notice: the GNU Lesser General Public
+License version 2.1 with the linking exception stated at the top of that file. That file
+is the upstream repository's own licence file, unchanged.
+
+Source of the derived material:
+
+  repository  https://github.com/xapi-project/xen-api
+  tag         v26.1.11
+  commit      53cf465262b2236a29c34dafb2ae1ccfd6a40ac0
+  file        doc/data/xenapi.json, kept unchanged here as data/xenapi.json
+
+Everything this crate offers is generated from that file when the crate is built, by the
+generator in this directory. The rest of the XenAdmin RS workspace is under the MIT
+licence and uses this crate as a library.
+
+The complete source of this crate, of the generator and of the program that uses it is
+at https://github.com/z23/xenadmin-rs, tagged for each release.

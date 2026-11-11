@@ -90,7 +90,6 @@ mod metrics;
 mod model;
 #[cfg(test)]
 mod xapi_conformance_tests;
-mod xapi_records;
 pub use metrics::{
     MetricCategory, MetricSample, MetricSeries, MetricSource, MetricTarget, Metrics,
     MetricsOptions, MetricsSnapshot, MetricsState, MetricsWindow, ObservedMetrics,

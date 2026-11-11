@@ -1,0 +1,24 @@
+[package]
+name = "xenadmin-xapi"
+description = "Record views, enumerations and a catalogue of XAPI, generated from the upstream API description"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Not the workspace licence: this crate is derived from LGPL-licensed upstream material.
+license = "LGPL-2.1-only WITH OCaml-LGPL-linking-exception"
+publish = false
+build = "build.rs"
+
+[dependencies]
+serde_json.workspace = true
+
+[build-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

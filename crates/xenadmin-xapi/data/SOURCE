@@ -1,0 +1,6 @@
+# Where data/xenapi.json comes from. The build refuses a file with another digest.
+repository=xapi-project/xen-api
+tag=v26.1.11
+commit=53cf465262b2236a29c34dafb2ae1ccfd6a40ac0
+path=doc/data/xenapi.json
+sha256=09a9dc2cb458b91548e9dac0e0425d3e5121cadfdd091699896e233869130ba7

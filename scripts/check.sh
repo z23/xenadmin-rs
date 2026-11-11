@@ -6,12 +6,6 @@ trap 'rm -rf -- "$check_state_dir"' EXIT
 export XENADMIN_STATE_DIR="$check_state_dir"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-# The conformance check needs the upstream API description, which is fetched and never
-# kept in the repository. With it the check must run; without a network it is skipped.
-xapi_description="$(./scripts/xapi-description.sh --optional)"
-if [[ -n "$xapi_description" ]]; then
-  export XENADMIN_XAPI_DESCRIPTION="$xapi_description" XENADMIN_XAPI_CONFORMANCE=required
-fi
 cargo test --workspace --locked
 cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
 python3 -m unittest discover -s lab -p 'test_*.py'

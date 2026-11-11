@@ -10,7 +10,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::xapi_records::{HostRecord, TaskRecord, VmRecord};
+use xenadmin_xapi::{
+    enumerations::vm_power_state,
+    records::{HostRecord, TaskRecord, VmRecord},
+};
 
 use crate::{
     ConnectionOptions, Credentials, Error, Host, HostId, Inventory, Network, PoolId, PowerState,
@@ -462,8 +465,8 @@ impl Session {
         action: crate::PowerAction,
     ) -> Result<(String, String), Error> {
         let (operation, required_state) = match action {
-            crate::PowerAction::Start => ("start_on", "Halted"),
-            crate::PowerAction::Resume => ("resume_on", "Suspended"),
+            crate::PowerAction::Start => ("start_on", vm_power_state::HALTED),
+            crate::PowerAction::Resume => ("resume_on", vm_power_state::SUSPENDED),
             _ => return Err(Error::UnavailableAction),
         };
         let reference = self
@@ -709,7 +712,7 @@ impl Store {
                         crate::OperationAction::Snapshot(crate::SnapshotOperation::Revert {
                             snapshot,
                         }) => {
-                            *view.power_state() == "Halted"
+                            *view.power_state() == vm_power_state::HALTED
                                 && self.class("vm").any(|(reference, candidate)| {
                                     let snapshot_view = VmRecord::new(candidate);
                                     snapshot_view.uuid().as_str()
@@ -980,8 +983,8 @@ pub(crate) fn advertises(record: &Value, action: &str) -> bool {
 
 fn can_delete_snapshot(record: &Value) -> bool {
     match VmRecord::new(record).power_state().as_str() {
-        Some("Halted") => advertises(record, "destroy"),
-        Some("Suspended") => advertises(record, "hard_shutdown"),
+        Some(vm_power_state::HALTED) => advertises(record, "destroy"),
+        Some(vm_power_state::SUSPENDED) => advertises(record, "hard_shutdown"),
         _ => false,
     }
 }
@@ -1029,7 +1032,7 @@ pub(crate) async fn prepare_mutation(
             Ok(parent)
         }
         OperationAction::Snapshot(SnapshotOperation::Revert { snapshot }) => {
-            if *view.power_state() != "Halted" {
+            if *view.power_state() != vm_power_state::HALTED {
                 return Err(Error::SnapshotRequiresHaltedVm);
             }
             let reference = session
@@ -1157,10 +1160,10 @@ pub(crate) async fn verify_created_snapshot(
 
 fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
     Ok(match required(record, "power_state")? {
-        "Running" => PowerState::Running,
-        "Halted" => PowerState::Halted,
-        "Paused" => PowerState::Paused,
-        "Suspended" => PowerState::Suspended,
+        vm_power_state::RUNNING => PowerState::Running,
+        vm_power_state::HALTED => PowerState::Halted,
+        vm_power_state::PAUSED => PowerState::Paused,
+        vm_power_state::SUSPENDED => PowerState::Suspended,
         other => PowerState::Unknown(other.into()),
     })
 }

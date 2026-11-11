@@ -1,84 +1,28 @@
-//! Checks the XAPI names this crate uses against the upstream API description of the
-//! toolstack the qualified hosts run: the calls it makes, the fields its decoders name and
-//! the fields its record views read. The description is fetched by
-//! `scripts/xapi-description.sh` and is not kept in this repository; without it the check
-//! says so and is skipped, unless `XENADMIN_XAPI_CONFORMANCE=required`.
+//! Checks the XAPI names this crate writes as strings against the generated catalogue of
+//! the API the qualified hosts run: the calls it makes and the fields its decoders name.
+//! Reads through the generated record views need no check, because a view has no method
+//! for a field its class lacks.
 
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::CLASSES;
 
-const PIN: &str = include_str!("../xapi-description.pin");
-
-fn pinned(key: &str) -> &'static str {
-    PIN.lines()
-        .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
-        .unwrap_or_else(|| panic!("the pin has no {key}"))
-}
-
-#[derive(Deserialize)]
-struct Class {
-    name: String,
-    fields: Vec<Named>,
-    messages: Vec<Named>,
-}
-#[derive(Deserialize)]
-struct Named {
-    name: String,
-}
-
-/// A class's names in the description.
+/// A class's names in the catalogue.
 struct Members {
-    messages: BTreeSet<String>,
-    fields: BTreeSet<String>,
+    messages: BTreeSet<&'static str>,
+    fields: BTreeSet<&'static str>,
 }
 
-/// Every class of the description by name, or `None` when the description has not been
-/// fetched.
-fn description() -> Option<BTreeMap<String, Members>> {
-    let path = std::env::var_os("XENADMIN_XAPI_DESCRIPTION")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/xapi-description")
-                .join(format!("{}.json", pinned("sha256")))
-        });
-    let Ok(bytes) = std::fs::read(&path) else {
-        assert!(
-            std::env::var("XENADMIN_XAPI_CONFORMANCE").as_deref() != Ok("required"),
-            "the API description is required and {} cannot be read",
-            path.display()
-        );
-        eprintln!(
-            "skipped: no API description at {}; run scripts/xapi-description.sh",
-            path.display()
-        );
-        return None;
-    };
-    let digest: String = Sha256::digest(&bytes)
+fn catalogue() -> BTreeMap<&'static str, Members> {
+    CLASSES
         .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    assert_eq!(
-        digest,
-        pinned("sha256"),
-        "{} is not the pinned description",
-        path.display()
-    );
-    let classes: Vec<Class> = serde_json::from_slice(&bytes).expect("the description parses");
-    Some(
-        classes
-            .into_iter()
-            .map(|class| {
-                let names = |list: Vec<Named>| list.into_iter().map(|n| n.name).collect();
-                let members = Members {
-                    messages: names(class.messages),
-                    fields: names(class.fields),
-                };
-                (class.name, members)
-            })
-            .collect(),
-    )
+        .map(|class| {
+            let members = Members {
+                messages: class.messages.iter().map(|m| m.name).collect(),
+                fields: class.fields.iter().map(|f| f.name).collect(),
+            };
+            (class.name, members)
+        })
+        .collect()
 }
 
 /// Every string literal in the crate's sources that has the shape of a name on a class,
@@ -131,21 +75,9 @@ const UNLISTED: &[(&str, &str)] = &[
 ];
 
 #[test]
-fn the_pin_names_one_description_of_the_qualified_toolstack() {
-    assert_eq!(pinned("repository"), "xapi-project/xen-api");
-    assert_eq!(pinned("tag"), "v26.1.11");
-    assert_eq!(pinned("commit").len(), 40);
-    assert_eq!(pinned("sha256").len(), 64);
-    assert!(pinned("path").ends_with(".json"));
-}
-
-#[test]
 fn every_call_and_field_the_client_names_exists_in_the_api_of_the_qualified_toolstack() {
-    let Some(known) = description() else {
-        return;
-    };
-    assert_eq!(known.len(), 67, "classes in the description");
-    let classes: BTreeSet<&str> = known.keys().map(String::as_str).collect();
+    let known = catalogue();
+    let classes: BTreeSet<&str> = known.keys().copied().collect();
     let unlisted: BTreeSet<&str> = UNLISTED.iter().map(|(call, _)| *call).collect();
     let (mut calls, mut fields, mut unknown) = (0, 0, Vec::new());
     let mut seen_exceptions = BTreeSet::new();
@@ -167,10 +99,9 @@ fn every_call_and_field_the_client_names_exists_in_the_api_of_the_qualified_tool
     }
     assert!(
         unknown.is_empty(),
-        "not in the API description of {} {}:\n  {}",
-        pinned("repository"),
-        pinned("tag"),
-        unknown.join("\n  ")
+        "not in the API the bindings were generated from:\n  {}\n{}",
+        unknown.join("\n  "),
+        xenadmin_xapi::SOURCE
     );
     // The scan reaches the calls and the decoders: a change that hid them would pass empty.
     assert!(calls > 300 && fields > 20, "{calls} calls, {fields} fields");
@@ -181,28 +112,4 @@ fn every_call_and_field_the_client_names_exists_in_the_api_of_the_qualified_tool
             "{exception} is listed as an exception and is no longer named"
         );
     }
-}
-
-#[test]
-fn every_field_a_record_view_reads_is_a_field_of_its_class() {
-    let Some(known) = description() else {
-        return;
-    };
-    let mut unknown = Vec::new();
-    for (class, fields) in crate::xapi_records::VIEWS {
-        let Some(members) = known.get(*class) else {
-            unknown.push(format!("class {class}"));
-            continue;
-        };
-        for field in *fields {
-            if !members.fields.contains(*field) {
-                unknown.push(format!("{class}.{field}"));
-            }
-        }
-    }
-    assert!(
-        unknown.is_empty(),
-        "record views read what the API description does not have: {unknown:?}"
-    );
-    assert!(!crate::xapi_records::VIEWS.is_empty());
 }
