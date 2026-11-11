@@ -105,7 +105,11 @@ depends on the description alone and is sorted.
 - The operation modules read through views wherever the class of a record variable was
   established: by hand for the snapshot, power, console and recovery modules, and for the
   rest from the fields themselves, a variable being given a class when every field read
-  from it in a function belongs to exactly one class. Each read names its view where it
+  from it belongs to exactly one class: first taking a function's reads of a name
+  together, then taking each binding of the name (a `let`, a loop or closure parameter)
+  with the reads it governs, which separates records of different classes held under one
+  name in turn. The second kind were each read against the call that binds them. Each
+  read names its view where it
   is made (`VmRecord::new(&record).power_state()`), so a view is never held across a
   point where the variable is bound to another record.
 - VM power states are compared with the generated constants in the event decoder.
@@ -151,15 +155,16 @@ the calls that produce each record.
 The count used here is of indexes by a string literal on an expression (`record["key"]`)
 in the core's sources outside its test files, which is how a field is read without a
 view. Before the move the core had 2,094 of them over 252 distinct keys; on 2026-11-11
-it has 762 over 196. Not all of them are fields: some are keys inside map-valued
+it has 646 over 185. Not all of them are fields: some are keys inside map-valued
 fields, parts of the JSON-RPC envelope, disk image and archive metadata or the client's
 own structures.
 
-1. The reads by key that are left. Most are in functions where one variable name holds
-   records of several classes in turn (the VM lifecycle backend, network operations,
-   device lifecycle, OVF import and the storage operations have the most), or where the
-   fields read are too few to tell the class; each needs its class read from the call
-   that produced the record. The loops that handle several classes at once stay by key.
+1. The reads by key that are left. Most are where the class of a record depends on a
+   value at run time (network and storage operations read "the target's record", whose
+   class follows the kind of target), where the fields read are too few to tell the
+   class (a `uuid` alone), or in helpers that take a record of any class; each needs
+   its class from the call that produced the record, or a helper per class. The loops
+   that handle several classes at once stay by key.
 2. Enumeration constants replace the remaining literal values.
 3. Typed values: generated readers that turn a field into its Rust type, with the core's
    bounds applied to the result.
