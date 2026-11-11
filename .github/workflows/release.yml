@@ -1,0 +1,45 @@
+name: Draft a release from a version tag
+# Runs only when a tag such as v0.18.0 is pushed. It repeats the checks on the tagged
+# commit, builds the packages from it and leaves a draft release for a person to publish.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  draft:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require the tag to name the workspace version and to have release notes
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not name workspace version $version" >&2
+            exit 1
+          fi
+          python3 packaging/release_notes.py "$version" > "$RUNNER_TEMP/notes.md"
+      - name: Install Linux build and render dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libfontconfig1-dev libvulkan1 mesa-vulkan-drivers desktop-file-utils
+      - name: Install the repository toolchain
+        run: rustup show
+      - name: Check, test, and render
+        env:
+          XENADMIN_TEST_TIME_SCALE: "4"
+        run: ./scripts/check.sh
+      - name: Build portable archive and AppImage
+        run: ./scripts/package.sh --appimage
+      - name: Create the draft release with the packages and their checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "XenAdmin RS ${GITHUB_REF_NAME#v}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            artifacts/*.tar.gz artifacts/*.AppImage artifacts/*.sha256
