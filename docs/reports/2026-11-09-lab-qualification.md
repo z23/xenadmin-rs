@@ -766,6 +766,23 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    that the host may not end the migration afterwards and that cancelling it from the
    client that started it comes first (Rune fixture covered). The warning has not been
    seen on a real seat.
+64. **Once, the inventory did not follow a member's toolstack restart. Not reproduced.**
+   While clearing finding 63, the member's restart-and-reboot scenario was started some
+   forty seconds after the coordinator's toolstack had been restarted. It put the member
+   into maintenance and restarted the member's toolstack, and that operation succeeded:
+   its own read of the host found the newer start marker. The client's inventory did not
+   show the new marker, or that the restart had enabled the host again, in the fifteen
+   minutes the scenario waited, although the pool's records had both within the first
+   minute. Taking the host for still disabled, the scenario went straight to its
+   reviewed reboot, which the client refused on its fresh read of the host ("Disable
+   host scheduling before this operation"). The stale inventory therefore led to a
+   refusal and to no change on the host. The scenario stopped before writing its record,
+   so which events reached the client is not known. The same build passed the scenario
+   on the next run and again on a run started a minute after another restart of the
+   coordinator's toolstack. Whether the coordinator withheld the host's events from a
+   session opened that soon after its start, or the client lost them, is not
+   established. The scenario now writes its steps, and what the inventory showed, before
+   it fails.
 
 ## Console observation
 
