@@ -161,7 +161,8 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
     let tasks_before = tasks
         .values()
         .map(|v| {
-            v["uuid"]
+            TaskRecord::new(v)
+                .uuid()
                 .as_str()
                 .and_then(|v| TaskId::parse(v).ok())
                 .ok_or(Error::ResourceConflict)

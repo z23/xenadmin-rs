@@ -512,7 +512,7 @@ pub(super) async fn verify(s: &Session, p: &Plan, prefix: usize) -> Result<Recor
         require(
             NetworkRecord::new(v).managed() == true
                 && network::number(&NetworkRecord::new(v).mtu()) == Some(1500)
-                && t.pifs().values().all(|p| p["network"] != n),
+                && t.pifs().values().all(|p| PifRecord::new(p).network() != n),
             "Destination network is no longer empty, managed at MTU 1500",
         )?;
     }

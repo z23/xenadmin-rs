@@ -346,7 +346,7 @@ fn shape(record: &Value) -> Result<Shape, Error> {
 pub(crate) async fn pool(session: &Session, expected: PoolId) -> Result<Value, Error> {
     let rows = crate::security_discovery::records(session, "pool", 1).await?;
     let row = rows.values().next().ok_or(Error::MigrationConflict)?;
-    unchanged(rows.len() == 1 && row["uuid"] == expected.to_string())?;
+    unchanged(rows.len() == 1 && PoolRecord::new(row).uuid() == expected.to_string())?;
     m::idle(row)?;
     Ok(row.clone())
 }

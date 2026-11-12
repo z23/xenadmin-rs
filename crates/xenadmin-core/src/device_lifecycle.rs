@@ -617,7 +617,7 @@ pub(crate) async fn plan(
         }
         DeleteNic { vif } | EditNic { vif, .. } => {
             let (_, record) = nic(session, &vm_ref, *vif).await?;
-            let network_ref = reference(&record["network"])?;
+            let network_ref = reference(&VifRecord::new(&record).network())?;
             let network_record = session
                 .call("network.get_record", vec![json!(network_ref)])
                 .await?;
@@ -626,7 +626,8 @@ pub(crate) async fn plan(
                 .as_str()
                 .and_then(|id| NetworkId::parse(id).ok())
                 .ok_or(Error::DeviceConflict)?;
-            let address = record["MAC"]
+            let address = VifRecord::new(&record)
+                .mac()
                 .as_str()
                 .filter(|s| mac(s))
                 .ok_or(Error::DeviceConflict)?
@@ -655,7 +656,8 @@ pub(crate) async fn plan(
                     }]
                 } else {
                     let settings = NicSettings::from_record(&record)?;
-                    let device = record["device"]
+                    let device = VifRecord::new(&record)
+                        .device()
                         .as_str()
                         .filter(|s| slot(s))
                         .ok_or(Error::DeviceConflict)?
@@ -868,8 +870,9 @@ pub(crate) async fn prepare_step(
         } => {
             let (reference, record) = nic(session, &vm_ref, *vif).await?;
             let (network_ref, _) = network(session, *id_network).await?;
-            if record["network"] != network_ref
-                || !record["MAC"]
+            if VifRecord::new(&record).network() != network_ref
+                || !VifRecord::new(&record)
+                    .mac()
                     .as_str()
                     .is_some_and(|m| m.eq_ignore_ascii_case(mac))
                 || settings.as_ref().is_some_and(|s| {
@@ -887,8 +890,9 @@ pub(crate) async fn prepare_step(
             let (reference, record) = nic(session, &vm_ref, *vif).await?;
             let (source, _) = network(session, *from).await?;
             let (target, _) = network(session, *to).await?;
-            if record["network"] != source
-                || !record["MAC"]
+            if VifRecord::new(&record).network() != source
+                || !VifRecord::new(&record)
+                    .mac()
                     .as_str()
                     .is_some_and(|m| m.eq_ignore_ascii_case(mac))
             {

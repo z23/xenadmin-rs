@@ -837,7 +837,7 @@ impl Store {
             ));
         }
         let pool = pools[0].1;
-        let pool_id = PoolId::parse(required(FieldValue::of(&pool["uuid"]))?)
+        let pool_id = PoolId::parse(required(PoolRecord::new(pool).uuid())?)
             .map_err(|_| Error::Protocol("invalid pool UUID"))?;
         let mut host_refs = BTreeMap::new();
         let mut hosts = BTreeMap::new();

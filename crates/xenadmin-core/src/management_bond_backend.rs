@@ -12,7 +12,9 @@ pub(in crate::resources) use vlans::replacements;
 use xenadmin_xapi::enumerations::{
     ip_configuration_mode, ipv6_configuration_mode, primary_address_type,
 };
-use xenadmin_xapi::records::{BondRecord, HostRecord, NetworkRecord, PifRecord, PoolRecord};
+use xenadmin_xapi::records::{
+    BondRecord, ClusterHostRecord, HostRecord, NetworkRecord, PifRecord, PoolRecord,
+};
 fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, &Op), Error> {
     match operation(r)? {
         ManagementNetworkOperation::Bond {
@@ -137,7 +139,7 @@ async fn environment(
     };
     for c in clusters.values() {
         require(
-            c["host"] != host_ref,
+            ClusterHostRecord::new(c).host() != host_ref,
             "Management bond changes with host clustering require a separate reviewed workflow",
         )?;
     }
@@ -204,7 +206,9 @@ pub(super) async fn before(
                 "Management bond destination network must be managed at MTU 1500",
             )?;
             require(
-                t.pifs().values().all(|p| p["network"] != net_ref),
+                t.pifs()
+                    .values()
+                    .all(|p| PifRecord::new(p).network() != net_ref),
                 "Management bond destination network already has physical interfaces",
             )?;
             props = properties(t.pif(parent)?.1)?;

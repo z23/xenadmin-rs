@@ -20,7 +20,7 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.19.
   allow the migration is refused in those words. It used to be reported as "Invalid
   XAPI response" followed by them, as if the host had answered wrongly. The cross-pool
   workflows remain experimental.
-- Inside, 111 more reads of host records go through the generated bindings, leaving 538
+- Inside, 177 more reads of host records go through the generated bindings, leaving 472
   by key ([decision record](docs/decisions/0004-generated-bindings.md)). Nothing in the
   client's behaviour changes with them.
 - Inside, debug builds can compare every call they send with the API: how many arguments

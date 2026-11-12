@@ -897,7 +897,10 @@ pub(crate) async fn prepare(
             let (_, cd) = first_cd(session, &r)
                 .await?
                 .ok_or(Error::VmLifecycleConflict)?;
-            if cd["VM"] != vm_ref || cd["currently_attached"] != false || cd["empty"] != true {
+            if VbdRecord::new(&cd).vm() != vm_ref
+                || VbdRecord::new(&cd).currently_attached() != false
+                || VbdRecord::new(&cd).empty() != true
+            {
                 return Err(Error::VmLifecycleConflict);
             }
             let cd_ref = reference(&cd["ref"])?;

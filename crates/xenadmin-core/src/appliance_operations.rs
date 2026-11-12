@@ -72,7 +72,9 @@ async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
     Ok((reference, record))
 }
 async fn members(session: &Session, record: &Value) -> Result<BTreeSet<VmId>, Error> {
-    let refs = record["VMs"]
+    let refs = VmApplianceRecord::new(record)
+        .vms()
+        .value()
         .as_array()
         .filter(|v| v.len() <= 256)
         .ok_or(Error::Protocol(

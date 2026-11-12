@@ -113,7 +113,9 @@ fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, 
     })
 }
 async fn members(session: &Session, r: &Value) -> Result<Vec<VmId>, Error> {
-    let refs = r["VMs"]
+    let refs = VmssRecord::new(r)
+        .vms()
+        .value()
         .as_array()
         .filter(|v| v.len() <= 256)
         .ok_or(Error::ResourceConflict)?;

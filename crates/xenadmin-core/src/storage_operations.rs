@@ -87,7 +87,8 @@ async fn baseline(session: &Session) -> Result<StorageBaseline, Error> {
         srs: parse(&srs)?
             .into_iter()
             .map(|r| {
-                r["uuid"]
+                SrRecord::new(r)
+                    .uuid()
                     .as_str()
                     .and_then(|s| SrId::parse(s).ok())
                     .ok_or(Error::Protocol("invalid storage baseline UUID"))
@@ -112,7 +113,7 @@ pub(super) async fn attachment_identity(
 ) -> Result<(String, Value), Error> {
     let (sr_ref, sr_record) = xapi::read(session, ResourceTarget::Storage(sr)).await?;
     let (host_ref, _) = xapi::read(session, ResourceTarget::Host(host)).await?;
-    if fresh["SR"] != sr_ref || fresh["host"] != host_ref {
+    if PbdRecord::new(fresh).sr() != sr_ref || PbdRecord::new(fresh).host() != host_ref {
         return Err(Error::ResourceConflict);
     }
     Ok((sr_ref, sr_record))

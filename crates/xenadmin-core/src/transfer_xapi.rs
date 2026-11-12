@@ -7,7 +7,8 @@ use xenadmin_xapi::enumerations::{
     storage_operations, vbd_type, vdi_type, vm_operations, vm_power_state,
 };
 use xenadmin_xapi::records::{
-    HostRecord, PbdRecord, PoolRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord, VmRecord,
+    HostRecord, NetworkRecord, PbdRecord, PoolRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord,
+    VmRecord,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Baseline {
@@ -111,7 +112,8 @@ pub(crate) async fn prepare(
     let known_hosts = hosts
         .values()
         .map(|r| {
-            r["address"]
+            HostRecord::new(r)
+                .address()
                 .as_str()
                 .filter(|s| s.len() <= 253 && !s.contains('/'))
                 .map(str::to_owned)
@@ -362,7 +364,7 @@ pub(crate) async fn created(
         }
     }
     for r in networks.values() {
-        if r["other_config"]["import_task"] == task {
+        if NetworkRecord::new(r).other_config()["import_task"] == task {
             let uuid = id(r)?;
             if baseline.networks.contains(&uuid) {
                 return Err(Error::TransferConflict);
@@ -427,7 +429,8 @@ pub(crate) async fn storage_route(
     let known_hosts = hosts
         .values()
         .map(|h| {
-            h["address"]
+            HostRecord::new(h)
+                .address()
                 .as_str()
                 .filter(|v| v.len() <= 253 && !v.contains('/'))
                 .map(str::to_owned)

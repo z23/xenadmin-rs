@@ -366,14 +366,16 @@ impl ResourceRequest {
             .ok_or(Error::TransferLimit)?
             .iter()
             .filter(|(_, v)| {
-                v["other_config"][cloud_init::MARKER] == config.configuration_id.to_string()
+                VbdRecord::new(v).other_config()[cloud_init::MARKER]
+                    == config.configuration_id.to_string()
             })
             .collect::<Vec<_>>();
         if matches.len() != 1 {
             return Err(Error::TransferConflict);
         }
         let (reference, candidate) = matches[0];
-        let uuid = candidate["uuid"]
+        let uuid = VbdRecord::new(candidate)
+            .uuid()
             .as_str()
             .and_then(|s| s.parse::<Uuid>().ok())
             .filter(|u| !a.baseline.contains(u))

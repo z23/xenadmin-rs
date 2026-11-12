@@ -63,7 +63,7 @@ async fn pool(session: &Session, id: PoolId) -> Result<Value, Error> {
     let records = discovery::records(session, "pool", 1).await?;
     let record = records.values().next().ok_or(Error::Stale)?;
     require(
-        records.len() == 1 && record["uuid"] == id.to_string(),
+        records.len() == 1 && PoolRecord::new(record).uuid() == id.to_string(),
         "Connected pool identity changed; reopen the join review",
     )?;
     Ok(record.clone())
@@ -76,7 +76,8 @@ async fn host_ids(
         .values()
         .map(|host| {
             HostId::parse(
-                host["uuid"]
+                HostRecord::new(host)
+                    .uuid()
                     .as_str()
                     .ok_or(Error::Protocol("Host identity unavailable"))?,
             )
@@ -90,7 +91,7 @@ async fn host_ids(
     Ok((ids, hosts))
 }
 async fn live(session: &Session, host: &Value) -> Result<(), Error> {
-    let reference = xapi::reply_reference(&host["metrics"])?;
+    let reference = xapi::reply_reference(&HostRecord::new(host).metrics())?;
     require(
         session
             .call("host_metrics.get_record", vec![json!(reference)])

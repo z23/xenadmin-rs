@@ -3,7 +3,7 @@ use crate::{NetworkId, OperationId, SrId, transfer::Plan as TransferPlan, xapi::
 use serde_json::{Value, json};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::vm_power_state;
-use xenadmin_xapi::records::{NetworkRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 pub(crate) const MARKER: &str = "xenadmin-rs-ovf-import";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -426,15 +426,16 @@ pub(crate) async fn identify(
         Kind::Attachment { guest: g, disk: d } => {
             let (vr, _) = guest(s, p, g).await?;
             let (dr, _) = disk(s, p, g, d, false).await?;
-            if v["VM"] != vr
-                || v["VDI"] != dr
-                || number(&v["userdevice"]) != Some(u64::from(p.summary.guests[g].disks[d].device))
-                || v["other_config"]["owner"] != "true"
-                || v["mode"] != "RW"
-                || v["type"] != "Disk"
-                || v["empty"] != false
-                || v["currently_attached"] != false
-                || v["bootable"] != (d == 0)
+            if VbdRecord::new(&v).vm() != vr
+                || VbdRecord::new(&v).vdi() != dr
+                || number(&VbdRecord::new(&v).userdevice())
+                    != Some(u64::from(p.summary.guests[g].disks[d].device))
+                || VbdRecord::new(&v).other_config()["owner"] != "true"
+                || VbdRecord::new(&v).mode() != "RW"
+                || VbdRecord::new(&v).type_() != "Disk"
+                || VbdRecord::new(&v).empty() != false
+                || VbdRecord::new(&v).currently_attached() != false
+                || VbdRecord::new(&v).bootable() != (d == 0)
             {
                 return Err(Error::TransferConflict);
             }
@@ -442,17 +443,28 @@ pub(crate) async fn identify(
         Kind::Nic { guest: g, nic: n } => {
             let (vr, _) = guest(s, p, g).await?;
             let (nr, mtu) = network(s, p.networks[&p.summary.guests[g].nics[n].network]).await?;
-            if v["VM"] != vr
-                || v["network"] != nr
-                || number(&v["device"]) != Some(u64::from(p.summary.guests[g].nics[n].device))
-                || number(&v["MTU"]) != Some(mtu)
-                || v["currently_attached"] != false
-                || v["MAC"].as_str().is_none_or(|m| !valid_mac(m))
-                || v["locking_mode"] != "network_default"
-                || v["ipv4_allowed"].as_array().is_none_or(|a| !a.is_empty())
-                || v["ipv6_allowed"].as_array().is_none_or(|a| !a.is_empty())
-                || v["qos_algorithm_type"] != ""
-                || v["qos_algorithm_params"]
+            if VifRecord::new(&v).vm() != vr
+                || VifRecord::new(&v).network() != nr
+                || number(&VifRecord::new(&v).device())
+                    != Some(u64::from(p.summary.guests[g].nics[n].device))
+                || number(&VifRecord::new(&v).mtu()) != Some(mtu)
+                || VifRecord::new(&v).currently_attached() != false
+                || VifRecord::new(&v)
+                    .mac()
+                    .as_str()
+                    .is_none_or(|m| !valid_mac(m))
+                || VifRecord::new(&v).locking_mode() != "network_default"
+                || VifRecord::new(&v)
+                    .ipv4_allowed()
+                    .as_array()
+                    .is_none_or(|a| !a.is_empty())
+                || VifRecord::new(&v)
+                    .ipv6_allowed()
+                    .as_array()
+                    .is_none_or(|a| !a.is_empty())
+                || VifRecord::new(&v).qos_algorithm_type() != ""
+                || VifRecord::new(&v)
+                    .qos_algorithm_params()
                     .as_object()
                     .is_none_or(|m| !m.is_empty())
             {

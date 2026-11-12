@@ -76,7 +76,7 @@ fn fingerprint(v: &Value) -> Result<String, Error> {
 /// `multihomelist` in the attachment configuration (lab finding 34). That bookkeeping is not
 /// an operator change, so a reviewed hash may also match the configuration without it.
 fn fingerprint_without_discovery(v: &Value, sr: &Value) -> Result<Option<String>, Error> {
-    if sr["type"] != "lvmoiscsi" {
+    if SrRecord::new(sr).type_() != "lvmoiscsi" {
         return Ok(None);
     }
     let mut m = config(v)?.clone();
@@ -168,7 +168,7 @@ fn attachment(
             && PbdRecord::new(v).currently_attached() == attached
             && crate::storage::safe_location_for_kind(
                 &PbdRecord::new(v).device_config(),
-                sr["type"].as_str(),
+                SrRecord::new(sr).type_().as_str(),
             ) == p.location
             && crate::storage::requires_credentials(&PbdRecord::new(v).device_config())
                 == p.requires_credentials,
@@ -232,7 +232,7 @@ async fn repair_graph(
         let (h, _) = host(s, entry.host, true).await?;
         let pairs = pbds
             .iter()
-            .filter(|(_, v)| v["host"] == h && v["SR"] == sr_ref)
+            .filter(|(_, v)| PbdRecord::new(v).host() == h && PbdRecord::new(v).sr() == sr_ref)
             .collect::<Vec<_>>();
         let expected = p.attachment(entry.host, source.sr);
         match expected {
@@ -275,11 +275,13 @@ async fn repair_graph(
     require(
         SrRecord::new(&sr).pbds().as_array().is_some_and(|a| {
             a.iter().all(|v| {
-                v.as_str()
-                    .is_some_and(|k| pbds.get(k).is_some_and(|p| p["SR"] == sr_ref))
+                v.as_str().is_some_and(|k| {
+                    pbds.get(k)
+                        .is_some_and(|p| PbdRecord::new(p).sr() == sr_ref)
+                })
             }) && pbds
                 .iter()
-                .filter(|(_, v)| v["SR"] == sr_ref)
+                .filter(|(_, v)| PbdRecord::new(v).sr() == sr_ref)
                 .all(|(k, _)| a.contains(&json!(k)))
         }),
         "Storage attachment reverse graph is incomplete",
@@ -348,7 +350,7 @@ async fn verify_clone(
         "Created attachment changed during credential verification",
     )?;
     for (_, other) in all {
-        if other["uuid"] == PbdRecord::new(v).uuid() {
+        if PbdRecord::new(&other).uuid() == PbdRecord::new(v).uuid() {
             continue;
         }
         for value in config(&other)?.values() {
@@ -452,7 +454,7 @@ async fn multipath_graph(
     let pbds = records(s, "PBD", 10000).await?;
     let actual = pbds
         .values()
-        .filter(|a| a["host"] == h)
+        .filter(|a| PbdRecord::new(a).host() == h)
         .map(|a| uuid(a).map(crate::PbdId::from))
         .collect::<Result<BTreeSet<_>, _>>()?;
     require(
@@ -561,7 +563,7 @@ async fn multipath_graph(
                     let vm = reference(&VbdRecord::new(b).vm())?;
                     let resident = vms.get(&vm).ok_or(Error::ResourceConflict)?;
                     require(
-                        !block && resident["resident_on"] != h,
+                        !block && VmRecord::new(resident).resident_on() != h,
                         "Active virtual disks prevent multipath maintenance",
                     )?;
                 }

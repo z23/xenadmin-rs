@@ -1,7 +1,7 @@
 //! Driver-qualified allocation and destructive HBA selection checks.
 use crate::{DiscoveredHbaDevice, Error, StorageLocation, storage_discovery, xapi::Session};
 use serde_json::{Value, json};
-use xenadmin_xapi::records::HostRecord;
+use xenadmin_xapi::records::{HostRecord, SrRecord};
 
 pub(crate) async fn allocation_capability(
     session: &Session,
@@ -31,7 +31,7 @@ pub(crate) async fn allocation_capability(
 
 pub(crate) fn verify_allocation(sr: &Value, location: &StorageLocation) -> Result<(), Error> {
     if let Some(expected) = location.allocation().value()
-        && sr["sm_config"]["allocation"] != expected
+        && SrRecord::new(sr).sm_config()["allocation"] != expected
     {
         return Err(Error::Protocol(
             "The storage allocation mode could not be verified",

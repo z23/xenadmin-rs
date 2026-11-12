@@ -295,7 +295,7 @@ impl Fresh {
         let (network_ref, n) = self.by_id("network", r.network.uuid())?;
         let actual = self.raw["pif"]
             .values()
-            .filter(|p| p["network"] == network_ref)
+            .filter(|p| PifRecord::new(p).network() == network_ref)
             .map(network::uuid)
             .collect::<Result<BTreeSet<_>, _>>()?;
         if actual != self.ref_ids("PIF", &NetworkRecord::new(n).pifs())?
@@ -346,7 +346,7 @@ impl Fresh {
             let (pif_ref, p) = self.by_id("PIF", member.interface.id.uuid())?;
             if o[child] != pif_ref
                 || o[parent] != self.by_id("PIF", member.input.uuid())?.0
-                || p["network"] != network_ref
+                || PifRecord::new(p).network() != network_ref
                 || network::refs(&p[children])? != [object_ref.to_string()].into()
             {
                 return Err(Error::ResourceConflict);

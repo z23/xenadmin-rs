@@ -245,7 +245,7 @@ async fn host(
     Ok((reference, host, pool))
 }
 async fn metrics(session: &Session, host: &Value) -> Result<Value, Error> {
-    let metrics = reference(&host["metrics"])?;
+    let metrics = reference(&HostRecord::new(host).metrics())?;
     session
         .call("host_metrics.get_record", vec![json!(metrics)])
         .await

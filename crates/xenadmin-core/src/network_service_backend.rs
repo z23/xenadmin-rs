@@ -16,7 +16,7 @@ async fn interfaces(
     let pifs = network::all(s, "PIF").await?;
     let actual = pifs
         .iter()
-        .filter(|(_, p)| p["network"].as_str() == Some(network_ref))
+        .filter(|(_, p)| PifRecord::new(p).network().as_str() == Some(network_ref))
         .collect::<Vec<_>>();
     let refs = actual
         .iter()

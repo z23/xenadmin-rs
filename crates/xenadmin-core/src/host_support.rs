@@ -379,7 +379,8 @@ async fn unique_certificate(
     let ids = hosts
         .values()
         .map(|r| {
-            r["uuid"]
+            HostRecord::new(r)
+                .uuid()
                 .as_str()
                 .and_then(|v| HostId::parse(v).ok())
                 .ok_or(Error::TransferConflict)

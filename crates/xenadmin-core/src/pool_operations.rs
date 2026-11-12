@@ -385,7 +385,7 @@ pub(super) async fn arguments(
             for pbd in all(session, "PBD", 10_000)
                 .await?
                 .values()
-                .filter(|p| p["host"] == host_ref)
+                .filter(|p| PbdRecord::new(p).host() == host_ref)
             {
                 let sr = related(session, "SR", &pbd["SR"]).await?;
                 if SrRecord::new(&sr).shared().as_bool().is_none()

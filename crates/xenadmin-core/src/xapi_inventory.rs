@@ -5,9 +5,9 @@ use uuid::Uuid;
 use xenadmin_xapi::FieldValue;
 use xenadmin_xapi::enumerations::vm_operations;
 use xenadmin_xapi::records::{
-    BondRecord, HostMetricsRecord, MessageRecord, NetworkRecord, PbdRecord, PifMetricsRecord,
-    PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VlanRecord,
-    VmApplianceRecord, VmGuestMetricsRecord, VmMetricsRecord, VmssRecord,
+    BondRecord, HostMetricsRecord, HostRecord, MessageRecord, NetworkRecord, PbdRecord,
+    PifMetricsRecord, PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord,
+    VlanRecord, VmApplianceRecord, VmGuestMetricsRecord, VmMetricsRecord, VmssRecord,
 };
 #[path = "xapi_network_fabric.rs"]
 mod network_fabric;
@@ -1062,7 +1062,8 @@ fn decode_alarms(store: &Store, refs: &References, result: &mut InventoryDetails
                             if dom0.is_none()
                                 || !store.class("host").any(|(r, h)| {
                                     Some(r.as_str()) == record["resident_on"].as_str()
-                                        && h["control_domain"].as_str() == Some(reference.as_str())
+                                        && HostRecord::new(h).control_domain().as_str()
+                                            == Some(reference.as_str())
                                 })
                             {
                                 continue;

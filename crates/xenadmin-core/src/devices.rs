@@ -9,7 +9,7 @@ use uuid::Uuid;
 use xenadmin_xapi::enumerations::{
     vbd_operations, vbd_type, vdi_operations, vdi_type, vif_operations, vm_power_state,
 };
-use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 
 pub struct DeviceCommand {
     pub vm: ObservedVm,
@@ -549,8 +549,8 @@ async fn prepare_operation(
             let (device_reference, device) = fresh(session, "VBD", vbd.uuid()).await?;
             owns(&device, &vm_reference)?;
             let plugging = matches!(operation, DeviceOperation::PlugDisk { .. });
-            if device["type"] != "Disk"
-                || device["currently_attached"] != !plugging
+            if VbdRecord::new(&device).type_() != "Disk"
+                || VbdRecord::new(&device).currently_attached() != !plugging
                 || VmRecord::new(&guest).power_state() != vm_power_state::RUNNING
             {
                 return Err(Error::DeviceConflict);
@@ -576,7 +576,7 @@ async fn prepare_operation(
             let (device_reference, device) = fresh(session, "VIF", vif.uuid()).await?;
             owns(&device, &vm_reference)?;
             let plugging = matches!(operation, DeviceOperation::PlugNic { .. });
-            if device["currently_attached"] != !plugging
+            if VifRecord::new(&device).currently_attached() != !plugging
                 || VmRecord::new(&guest).power_state() != vm_power_state::RUNNING
             {
                 return Err(Error::DeviceConflict);

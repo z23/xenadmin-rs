@@ -218,15 +218,22 @@ helpers given records of other classes under them. With the stricter rule the ch
 over the core's tests reported one thing, a test fixture that gave a VIF a VBD's
 `bootable`, which was the fixture's mistake.
 
+A further 66 were then moved one by one, each after reading where its record comes from:
+a record fetched as one class a few lines above, the members of a list fetched as one
+class, the arms of a match that each handle one class, and helpers whose every caller
+was read. That leaves 472 over 176. The helpers that ask any record whether it is idle
+or read a flag from any record's `other_config` stay by key, as they are given several
+classes.
+
 1. The reads by key that are left. Most are where the class of a record depends on a
    value at run time (network and storage operations read "the target's record", whose
    class follows the kind of target), where the fields read are too few to tell the
    class (a `uuid` alone), or in helpers that take a record of any class; each needs
    its class from the call that produced the record, or a helper per class. The loops
-   that handle several classes at once stay by key. Of the 538, the four inventory
-   decoders hold 101 and some 113 are not fields at all; about 240 are reads whose
-   class could not be traced, 31 are in code given several classes, and 26 sit in match
-   arms where the class follows the arm.
+   that handle several classes at once stay by key. Of the 472, the four inventory
+   decoders hold 99 and some 116 are not fields at all; about 240 are reads whose class
+   could not be traced by a script and have not been read by hand, and some 30 are in
+   code given several classes.
 2. Typed values: generated readers that turn a field into its Rust type, with the core's
    bounds applied to the result. The enumeration values still written as literals are
    here: those compared with a value of the client's own, such as a reviewed power
