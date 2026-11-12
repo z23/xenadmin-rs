@@ -222,10 +222,21 @@ power state after each batch. It reviews each guest's home host as the pool repo
   to, the tools guest's back on the shared NFS repository, and every NIC on its
   network (evidence 1794478141-cross-pool-batch-move-round-trip.json).
 
-That is halted guests only, two of them, through the core and not through the window.
-A running guest has not been moved between pools on the lab by this client, alone or
-in a batch, and the fixtures are the only evidence for one. Stop, an interruption and
-the recheck after it have not been tried against a host.
+Two further modes of the scenario were run afterwards. With Stop asked for during the
+first of two moves, the first guest arrived and the second was never started and stayed
+where it was: "1 of 2 VM workflows verified; 1 not started", the batch partly
+completed; a batch of one brought the first guest back (evidence
+1794486340-cross-pool-batch-move-round-trip.json). With both guests left running, they
+moved live to the standalone pool in one batch (68 s) and back in a second (61 s), each
+arriving running with its disks and NICs as reviewed (evidence
+1794486601-cross-pool-batch-move-round-trip.json). Those are the first live moves
+between pools this client has made on the lab. Before it, the scenario's own review of a
+running guest as a halted move was refused by the client before anything was sent ("The
+ordinary guest's state or resident host changed; reopen this review").
+
+All of it went through the core and not through the window. An interruption of a
+cross-pool batch, and the recheck after it, have not been tried against a host; the
+fixtures are the only evidence for them.
 
 The fixtures enter at `Connection::move_vms_to_pool` and
 `Connection::recheck_cross_pool_batch`. The desktop's submission and its recheck through

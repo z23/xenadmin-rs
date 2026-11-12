@@ -33,9 +33,11 @@ again for that, because no published version reads format 5.
   rest, and a recheck reads what exists without downloading or publishing anything. While
   several snapshots are selected, restore, edit, copy, inspect, delete and the single
   export are unavailable, because each takes one snapshot. The batch is experimental: it
-  is verified by fixtures and by one run on the lab, where a disk snapshot and a
-  checkpoint with its memory were exported in one batch and read back; nobody has used
-  the dialog ([report](docs/reports/2026-11-12-batch-snapshot-export.md)).
+  is verified by fixtures and by lab runs in which a disk snapshot and a checkpoint with
+  its memory were exported in one batch and read back, a batch was stopped during its
+  first export, and one was cut off by the client closing and acknowledged afterwards;
+  nobody has used the dialog
+  ([report](docs/reports/2026-11-12-batch-snapshot-export.md)).
 - Several VMs can be moved to another connected pool in one reviewed batch. With 1 to 32
   VMs selected in the inventory, "Move selection to another pool…", beside "Move
   selection…" and in the row menu, opens a review in the three stages of the single
@@ -58,10 +60,11 @@ again for that, because no published version reads format 5.
   receiver a move is prepared with is not kept. With both pools connected again, Recheck
   reads the moves that had started, repeats no transfer and starts no remaining VM. A
   move whose outcome cannot be read stays unknown, with both pools reserved, until it is
-  acknowledged. The batch is experimental. It is verified by fixtures and by one lab
-  run in which two halted guests were moved to another pool and back; a running guest,
-  Stop and an interruption have not been tried against a host, and nobody has used the
-  dialog ([report](docs/reports/2026-11-12-cross-pool-bulk-move.md)).
+  acknowledged. The batch is experimental. It is verified by fixtures and by lab runs
+  in which two guests were moved to another pool and back, halted and then running, and
+  a batch was stopped during its first move; an interruption has not been tried against
+  a host, and nobody has used the dialog
+  ([report](docs/reports/2026-11-12-cross-pool-bulk-move.md)).
 
 ### Changed
 

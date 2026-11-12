@@ -104,8 +104,21 @@ and none in the disk snapshot's. The archives, the snapshot and the checkpoint w
 removed ([live report](2026-11-09-lab-qualification.md), evidence
 1794466851-snapshot-batch-xva-export.json). That is one run, of two snapshots of one
 guest, through the core and not through the window. It is also the first time a
-checkpoint was exported with its memory on the lab at all (P11-07). The other formats,
-Stop and recovery have not been tried against a host.
+checkpoint was exported with its memory on the lab at all (P11-07).
+
+Stop and an interruption were then run on the lab as well
+(`lab_snapshot_batch_stop_and_interruption`, evidence
+1794485952-snapshot-batch-stop-and-interruption.json). Stop, asked for during the first
+of three exports, a checkpoint with its memory, let that export finish and started no
+other: "1 of 3 snapshot workflows verified; 2 not started", one archive on disk. A
+second batch was cut off by the client closing during its first export. After the
+restart the batch was unknown, its first export unknown ("Batch interrupted; no further
+transfer or publication is authorized"), its second not started, and no archive had been
+published. A recheck changed nothing and published nothing: an export that was under
+way when the client closed cannot be read to an end, so the batch stays unknown until it
+is acknowledged. It was acknowledged, and a batch of one snapshot then went through,
+which shows the pool was free again. The other formats have not been tried against a
+host.
 
 The fixture tests enter at the batch request, as the bulk VM export tests do. The
 desktop's submission through `Connection::submit_snapshot_export_batch` is exercised
