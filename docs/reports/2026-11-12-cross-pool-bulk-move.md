@@ -234,9 +234,20 @@ between pools this client has made on the lab. Before it, the scenario's own rev
 running guest as a halted move was refused by the client before anything was sent ("The
 ordinary guest's state or resident host changed; reopen this review").
 
-All of it went through the core and not through the window. An interruption of a
-cross-pool batch, and the recheck after it, have not been tried against a host; the
-fixtures are the only evidence for them.
+An interruption was run last (`lab_cross_pool_batch_interrupted_and_rechecked`,
+evidence 1794488551-cross-pool-batch-interrupted-and-rechecked.json). The client closed
+while the first of two live moves was being dispatched. After the restart, with both
+pools connected again, the batch was unknown and listed in both pools' histories
+("Batch interrupted; both pools stay reserved. Reconnect both pools and recheck"), its
+first move unknown and its second not started. The hosts finished the move that had been
+sent: the lab guest arrived on the standalone pool. One recheck then ended the batch as
+partly completed, "1 of 2 VM workflows verified; 1 not started", the first move
+verified in the destination pool; the tools guest was still on its own pool with its
+move never begun. A batch of one brought the lab guest back, live.
+
+All of it went through the core and not through the window. A recheck that finds the
+move's task still pending, failed or cancelled has not been seen on a host inside a
+batch.
 
 The fixtures enter at `Connection::move_vms_to_pool` and
 `Connection::recheck_cross_pool_batch`. The desktop's submission and its recheck through

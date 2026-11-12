@@ -61,9 +61,9 @@ again for that, because no published version reads format 5.
   reads the moves that had started, repeats no transfer and starts no remaining VM. A
   move whose outcome cannot be read stays unknown, with both pools reserved, until it is
   acknowledged. The batch is experimental. It is verified by fixtures and by lab runs
-  in which two guests were moved to another pool and back, halted and then running, and
-  a batch was stopped during its first move; an interruption has not been tried against
-  a host, and nobody has used the dialog
+  in which two guests were moved to another pool and back, halted and then running, a
+  batch was stopped during its first move, and one was cut off by the client closing
+  and settled by a recheck after the restart; nobody has used the dialog
   ([report](docs/reports/2026-11-12-cross-pool-bulk-move.md)).
 
 ### Changed
