@@ -24,7 +24,7 @@ impl Drop for ReceiverSession {
     }
 }
 
-fn peer_current(
+pub(super) fn peer_current(
     inputs: &crate::cross_pool::Inputs,
     peer: &crate::connection::JoinPeer,
 ) -> Result<(), Error> {
@@ -54,6 +54,16 @@ impl ResourceRequest {
             .cross_pool_plan
             .as_deref_mut()
             .ok_or(Error::MigrationConflict)
+    }
+    /// The save that precedes a write to a host. A move of its own keeps its ordinary
+    /// save. A move run as a child of a batch is also refused here once its batch was
+    /// recovered, acknowledged or ended, whatever the child's own row says.
+    async fn save_cross_dispatch(&mut self, journal: &mut Journal) -> Result<(), Error> {
+        if self.record.batch_parent.is_some() {
+            self.save_dispatch(journal)
+        } else {
+            self.save(journal).await
+        }
     }
     pub(super) async fn execute_cross_pool(
         &mut self,
@@ -92,7 +102,7 @@ impl ResourceRequest {
         self.record.state = OperationState::Dispatching;
         self.record.steps[0].state = StepState::Dispatching;
         self.record.detail = "Preparing the reviewed host-to-host migration transport".into();
-        self.save(journal).await?;
+        self.save_cross_dispatch(journal).await?;
         peer_current(&inputs, &peer)?;
         let value = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=peer.session.call("host.migrate_receive",vec![json!(&prepared.host),json!(&prepared.network),json!({})])=>value? };
         let receiver = backend::receiver(value, &prepared, &operation.transfer_address)?;
@@ -152,7 +162,7 @@ impl ResourceRequest {
         self.record.steps[1].state = StepState::Dispatching;
         self.record.detail =
             "Submitting the reviewed cross-pool transfer; both pools remain reserved".into();
-        self.save(journal).await?;
+        self.save_cross_dispatch(journal).await?;
         receiver_session.keep_for_server = true;
         let reply = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=source.call("Async.VM.migrate_send",args)=>value };
         if matches!(reply, Err(Error::Api(_) | Error::Coordinator(_))) {
@@ -182,6 +192,16 @@ impl ResourceRequest {
         self.reload(journal)?;
         if self.record.state.terminal() {
             return Ok(());
+        }
+        if self.record.cross_pool_plan.is_none() {
+            // The plan is stored by the save that precedes the first call that changes a
+            // host, and that save is refused once the row has changed under its worker. A
+            // transfer without a plan therefore prepared no receiver and submitted
+            // nothing: that is read from the journal and is no inference about the hosts.
+            self.record.state = OperationState::Cancelled;
+            self.record.can_cancel = false;
+            self.record.detail = "Interrupted before anything was sent: no receiver was prepared and no transfer was submitted, so this operation changed nothing on either pool".into();
+            return self.save(journal).await;
         }
         self.record.state = OperationState::Verifying;
         self.record.can_cancel = false;
@@ -395,5 +415,109 @@ impl ResourceRequest {
             .await;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod batch_child_tests {
+    use super::*;
+    use crate::{
+        BatchVmWorkflow, CrossPoolMode, CrossPoolVmOperation, ObservedResource, PoolId,
+        ResourceTarget, VmWorkflowBatch,
+    };
+
+    fn id(n: u128) -> uuid::Uuid {
+        uuid::Uuid::from_u128(n)
+    }
+    fn observed(pool: PoolId) -> ObservedResource {
+        ObservedResource {
+            pool,
+            generation: 1,
+            target: ResourceTarget::Pool(pool),
+        }
+    }
+    fn operation(destination: PoolId) -> CrossPoolVmOperation {
+        CrossPoolVmOperation {
+            vm: id(3).into(),
+            destination_pool: destination,
+            destination_host: id(102).into(),
+            expected_host: None,
+            expected_affinity: None,
+            transfer_network: id(103).into(),
+            transfer_address: "192.0.2.20".into(),
+            mode: CrossPoolMode::MoveHalted,
+            disks: vec![],
+            networks: vec![],
+            host_transport_reviewed: true,
+        }
+    }
+
+    /// A batch that was marked unknown without its child's row being touched still stops
+    /// the child at the save that precedes a write. A move of its own has no batch to ask.
+    #[tokio::test]
+    async fn a_move_under_a_fenced_batch_is_refused_at_the_save_that_precedes_a_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut journal = Journal::open(dir.path()).unwrap();
+        let (source, away): (PoolId, PoolId) = (id(1).into(), id(101).into());
+        let (_, mut parent) = crate::resources::channel(
+            OperationId::new(),
+            observed(source),
+            ResourceAction::VmWorkflowBatch(VmWorkflowBatch {
+                items: vec![BatchVmWorkflow::move_to_pool(operation(away))],
+            }),
+            tokio::runtime::Handle::current(),
+        );
+        assert!(journal.resource_admit(&mut parent.record).unwrap());
+        let child_id = parent.record.workflow_batch_plan.as_ref().unwrap().children[0];
+        let (_, mut child) = crate::resources::channel(
+            child_id,
+            observed(source),
+            ResourceAction::CrossPoolVm(operation(away)),
+            tokio::runtime::Handle::current(),
+        );
+        child.record.batch_parent = Some(parent.record.id);
+        let permit = journal.workflow_permit(parent.record.id, 0).unwrap();
+        assert!(
+            journal
+                .resource_admit_permitted(&mut child.record, Some(&permit))
+                .unwrap()
+        );
+        child.record.detail = "First dispatch".into();
+        child.save_cross_dispatch(&mut journal).await.unwrap();
+
+        let mut fenced = journal.resource_load(parent.record.id).unwrap().unwrap();
+        fenced.state = OperationState::OutcomeUnknown;
+        journal.resource_save(&mut fenced).unwrap();
+        let stored = journal.resource_load(child_id).unwrap().unwrap();
+        assert_eq!(stored.revision(), child.record.revision());
+        assert_eq!(stored.state, OperationState::Preparing);
+        child.record.detail = "Second dispatch".into();
+        assert!(matches!(
+            child.save_cross_dispatch(&mut journal).await,
+            Err(Error::JournalChanged)
+        ));
+        assert_eq!(
+            journal.resource_load(child_id).unwrap().unwrap().detail,
+            "First dispatch"
+        );
+
+        let (other, far): (PoolId, PoolId) = (id(201).into(), id(301).into());
+        let (_, mut single) = crate::resources::channel(
+            OperationId::new(),
+            observed(other),
+            ResourceAction::CrossPoolVm(operation(far)),
+            tokio::runtime::Handle::current(),
+        );
+        assert!(journal.resource_admit(&mut single.record).unwrap());
+        single.record.detail = "Own dispatch".into();
+        single.save_cross_dispatch(&mut journal).await.unwrap();
+        assert_eq!(
+            journal
+                .resource_load(single.record.id)
+                .unwrap()
+                .unwrap()
+                .detail,
+            "Own dispatch"
+        );
     }
 }

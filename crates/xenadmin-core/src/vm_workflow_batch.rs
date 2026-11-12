@@ -1,7 +1,7 @@
 use crate::{
-    CheckpointMemory, Error, ExportSource, OperationAction, OperationId, OperationState,
-    PowerState, ResourceAction, ResourceOperationRecord, ResourceTarget, SnapshotDeletionSelection,
-    SnapshotId, VdiId, VmId, VmLifecycleOperation,
+    CheckpointMemory, CrossPoolVmOperation, Error, ExportSource, OperationAction, OperationId,
+    OperationState, PoolId, PowerState, ResourceAction, ResourceOperationRecord, ResourceTarget,
+    SnapshotDeletionSelection, SnapshotId, VdiId, VmId, VmLifecycleOperation,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -21,6 +21,10 @@ pub enum VmWorkflow {
         format: VmExportFormat,
     },
     Move(crate::VmMigration),
+    /// The item's VM moved to another connected pool by the single cross-pool move, with
+    /// the destination and the disk and NIC mappings reviewed for it. Journal format 5 may
+    /// hold this variant; the release that stops at format 4 has no such item.
+    MoveToPool(CrossPoolVmOperation),
     Delete {
         expected_template: bool,
         disks: Vec<VdiId>,
@@ -45,6 +49,7 @@ impl VmWorkflow {
         match self {
             Self::Delete { .. } => "Delete VM",
             Self::Move(_) => "Move VM",
+            Self::MoveToPool(_) => "Move VM to another pool",
             Self::Export { .. } => "Export VM",
             Self::ExportSnapshot { .. } => "Export snapshot",
         }
@@ -52,8 +57,8 @@ impl VmWorkflow {
     pub(crate) fn action(&self) -> OperationAction {
         match self {
             Self::Move(operation) => OperationAction::Migration(operation.clone()),
-            Self::Export { .. } | Self::ExportSnapshot { .. } => {
-                unreachable!("resource transfer children have no VM action")
+            Self::Export { .. } | Self::ExportSnapshot { .. } | Self::MoveToPool(_) => {
+                unreachable!("resource children have no VM action")
             }
             Self::Delete {
                 expected_template,
@@ -99,7 +104,7 @@ impl VmWorkflow {
                 },
                 format,
             ),
-            Self::Move(_) | Self::Delete { .. } => return None,
+            Self::Move(_) | Self::MoveToPool(_) | Self::Delete { .. } => return None,
         };
         Some(match format {
             VmExportFormat::Xva { compression } => crate::TransferAction::ExportXva {
@@ -112,8 +117,20 @@ impl VmWorkflow {
             },
         })
     }
+    /// The cross-pool move a child of this item runs, with its reviewed mappings.
+    pub fn cross_pool(&self) -> Option<&CrossPoolVmOperation> {
+        match self {
+            Self::MoveToPool(operation) => Some(operation),
+            _ => None,
+        }
+    }
+    /// Which journal table holds a child of this item: a VM operation, or a resource
+    /// operation (an archive transfer or a cross-pool move).
     pub(crate) fn kind(&self) -> &'static str {
-        if matches!(self, Self::Export { .. } | Self::ExportSnapshot { .. }) {
+        if matches!(
+            self,
+            Self::Export { .. } | Self::ExportSnapshot { .. } | Self::MoveToPool(_)
+        ) {
             "resource"
         } else {
             "vm"
@@ -130,6 +147,19 @@ pub struct BatchVmWorkflow {
     pub workflow: VmWorkflow,
 }
 impl BatchVmWorkflow {
+    /// The batch item that moves a guest to another pool exactly as the reviewed single
+    /// move would: a running guest live, a halted guest halted.
+    pub fn move_to_pool(operation: CrossPoolVmOperation) -> Self {
+        Self {
+            vm: operation.vm,
+            expected_state: if operation.mode.live() {
+                PowerState::Running
+            } else {
+                PowerState::Halted
+            },
+            workflow: VmWorkflow::MoveToPool(operation),
+        }
+    }
     /// The batch item that exports what a single snapshot or checkpoint export of `source`
     /// would, in `format`. None for a source that is not a snapshot.
     pub fn snapshot_export(source: &ExportSource, format: VmExportFormat) -> Option<Self> {
@@ -181,7 +211,26 @@ pub struct VmWorkflowBatch {
 }
 impl VmWorkflowBatch {
     pub(crate) fn is_export(&self) -> bool {
-        !self.items.is_empty() && self.items.iter().all(|i| i.workflow.kind() == "resource")
+        !self.items.is_empty()
+            && self.items.iter().all(|i| {
+                matches!(
+                    i.workflow,
+                    VmWorkflow::Export { .. } | VmWorkflow::ExportSnapshot { .. }
+                )
+            })
+    }
+    /// The pool every item of a batch of cross-pool moves goes to. None for any other
+    /// batch; a valid batch never mixes kinds or destinations.
+    pub fn cross_pool_destination(&self) -> Option<PoolId> {
+        match self.items.first().map(|i| &i.workflow) {
+            Some(VmWorkflow::MoveToPool(operation)) => Some(operation.destination_pool),
+            _ => None,
+        }
+    }
+    /// The reviewed move of each item, in order, when this is a batch of cross-pool moves.
+    pub(crate) fn cross_pool_operations(&self) -> Option<Vec<&CrossPoolVmOperation>> {
+        self.cross_pool_destination()?;
+        self.items.iter().map(|i| i.workflow.cross_pool()).collect()
     }
     pub fn is_snapshot_export(&self) -> bool {
         !self.items.is_empty()
@@ -238,6 +287,42 @@ impl VmWorkflowBatch {
                 }
                 continue;
             }
+            if let VmWorkflow::MoveToPool(operation) = &item.workflow {
+                // Each item is the single cross-pool move of its own guest, with the
+                // transport acknowledgement that move requires. A batch has one
+                // destination pool, host and migration address, holds moves only, and
+                // names no disk or NIC twice.
+                let ResourceTarget::Pool(source) = target else {
+                    return Err(Error::InvalidResourceCommand);
+                };
+                operation.validate(source)?;
+                let Some(VmWorkflow::MoveToPool(first)) = self.items.first().map(|i| &i.workflow)
+                else {
+                    return Err(Error::InvalidResourceCommand);
+                };
+                if operation.vm != item.vm
+                    || operation.mode.copy()
+                    || item.expected_state
+                        != if operation.mode.live() {
+                            PowerState::Running
+                        } else {
+                            PowerState::Halted
+                        }
+                    || operation.destination_pool != first.destination_pool
+                    || operation.destination_host != first.destination_host
+                    || operation.transfer_network != first.transfer_network
+                    || operation.transfer_address != first.transfer_address
+                    || operation
+                        .disks
+                        .iter()
+                        .map(|d| d.vdi.uuid())
+                        .chain(operation.networks.iter().map(|n| n.vif.uuid()))
+                        .any(|id| !identities.insert(id))
+                {
+                    return Err(Error::InvalidMigration);
+                }
+                continue;
+            }
             if let VmWorkflow::Move(operation) = &item.workflow {
                 operation.validate()?;
                 if item.expected_state
@@ -286,6 +371,9 @@ impl VmWorkflowBatch {
         for item in &self.items {
             match &item.workflow {
                 VmWorkflow::Export { .. } | VmWorkflow::ExportSnapshot { .. } => {}
+                // The source pool sends the guest; what the destination pool is asked for
+                // is in `peer_permission_requirements`.
+                VmWorkflow::MoveToPool(_) => writes.push("VM.migrate_send".to_owned()),
                 VmWorkflow::Move(operation) => writes.extend(
                     operation
                         .permission_requirements()
@@ -306,6 +394,12 @@ impl VmWorkflowBatch {
         } else {
             crate::PermissionRequirements::writes(writes)
         }
+    }
+    /// What a batch of cross-pool moves asks of the session on the destination pool: the
+    /// receiver each move is prepared with. None for a batch that stays in its pool.
+    pub fn peer_permission_requirements(&self) -> Option<crate::PermissionRequirements> {
+        self.cross_pool_destination()
+            .map(|_| crate::PermissionRequirements::writes(["host.migrate_receive"]))
     }
 }
 

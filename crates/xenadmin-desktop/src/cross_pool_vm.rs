@@ -5,14 +5,17 @@ use xenadmin_core::{
     ProfileId, ResourceAction, ResourceOperationRecord, ResourceTarget, SrId,
 };
 
+/// One connected pool as a transfer review captured it: the connection it came from, the
+/// observation of the pool and its inventory. The batch review of cross-pool moves uses
+/// the same capture for its source and its destination.
 #[derive(Clone)]
-struct Peer {
-    profile: Option<ProfileId>,
-    observed: Option<ObservedResource>,
-    inventory: Arc<Inventory>,
+pub(super) struct Peer {
+    pub(super) profile: Option<ProfileId>,
+    pub(super) observed: Option<ObservedResource>,
+    pub(super) inventory: Arc<Inventory>,
 }
 impl Peer {
-    fn connection(&self, s: &State) -> Option<Connection> {
+    pub(super) fn connection(&self, s: &State) -> Option<Connection> {
         let connection = profiles_view::inspection_connections(s)
             .find(|(id, _)| Some(*id) == self.profile)?
             .1;
@@ -28,7 +31,7 @@ impl Peer {
         }
         Some(connection)
     }
-    fn current(&self, s: &State) -> Option<Arc<Inventory>> {
+    pub(super) fn current(&self, s: &State) -> Option<Arc<Inventory>> {
         if s.demo {
             return Some(self.inventory.clone());
         }
@@ -67,7 +70,8 @@ pub(super) fn history(s: &mut State) {
         ..Default::default()
     };
 }
-fn peers(s: &State) -> Vec<Peer> {
+/// The writable connected pools, one capture per pool.
+pub(super) fn peers(s: &State) -> Vec<Peer> {
     let mut pools = std::collections::BTreeSet::new();
     profiles_view::inspection_connections(s)
         .filter_map(|(profile, c)| {
@@ -363,8 +367,20 @@ fn apply(s: &mut State) {
         Err(error) => s.cross_pool.notice = Some(error),
     }
 }
+/// Whether a transfer between two pools can be rechecked now: a single move or copy, or a
+/// batch of moves, with both of its pools connected for writing. A move that is part of a
+/// batch is read through its batch.
 pub(super) fn can_recheck(s: &State, id: OperationId) -> bool {
-    s.resource_rows.iter().find(|r|r.id==id).is_some_and(|r|matches!(&r.action,ResourceAction::CrossPoolVm(o) if connection_for_pool(s,r.pool).is_some()&&connection_for_pool(s,o.destination_pool).is_some()))
+    s.resource_rows
+        .iter()
+        .find(|r| r.id == id)
+        .is_some_and(|r| {
+            r.action.spans_pools()
+                && r.batch_parent.is_none()
+                && connection_for_pool(s, r.pool).is_some()
+                && r.peer_pool()
+                    .is_some_and(|peer| connection_for_pool(s, peer).is_some())
+        })
 }
 pub(super) fn recheck(s: &mut State, id: OperationId) -> Result<(), xenadmin_core::Error> {
     let r = s
@@ -372,12 +388,18 @@ pub(super) fn recheck(s: &mut State, id: OperationId) -> Result<(), xenadmin_cor
         .iter()
         .find(|r| r.id == id)
         .ok_or(xenadmin_core::Error::OperationConflict)?;
-    let ResourceAction::CrossPoolVm(o) = &r.action else {
-        return Err(xenadmin_core::Error::InvalidMigration);
-    };
+    let peer = r
+        .peer_pool()
+        .filter(|_| r.action.spans_pools())
+        .ok_or(xenadmin_core::Error::InvalidMigration)?;
+    let batch = matches!(r.action, ResourceAction::VmWorkflowBatch(_));
     let source = connection_for_pool(s, r.pool).ok_or(xenadmin_core::Error::Closed)?;
-    let dest = connection_for_pool(s, o.destination_pool).ok_or(xenadmin_core::Error::Closed)?;
-    let handle = source.recheck_cross_pool_vm(id, &dest)?;
+    let dest = connection_for_pool(s, peer).ok_or(xenadmin_core::Error::Closed)?;
+    let handle = if batch {
+        source.recheck_cross_pool_batch(id, &dest)?
+    } else {
+        source.recheck_cross_pool_vm(id, &dest)?
+    };
     if let Some(w) = &s.waker {
         handle.notify_on_change(w.clone());
     }
@@ -385,6 +407,10 @@ pub(super) fn recheck(s: &mut State, id: OperationId) -> Result<(), xenadmin_cor
     Ok(())
 }
 fn control(s: &mut State, id: OperationId, control: OperationControl) {
+    let batch = s
+        .resource_rows
+        .iter()
+        .any(|r| r.id == id && matches!(r.action, ResourceAction::VmWorkflowBatch(_)));
     let result = if matches!(control, OperationControl::Recheck) {
         recheck(s, id)
     } else {
@@ -396,8 +422,14 @@ fn control(s: &mut State, id: OperationId, control: OperationControl) {
         result
             .map(|()| {
                 match control {
+                    OperationControl::Recheck if batch => {
+                        "Checking the moves that were started; no transfer is repeated and no remaining VM is started."
+                    }
                     OperationControl::Recheck => {
                         "Checking existing evidence; the transfer is never repeated."
+                    }
+                    OperationControl::RequestCancellation if batch => {
+                        "Stop requested; the current VM's move finishes and the remaining VMs are not started."
                     }
                     OperationControl::RequestCancellation => {
                         "Cancellation requested; the hosts may still be transferring data."
@@ -478,6 +510,24 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
     ui::dialog(s, k)
 }
 
+/// A second synthetic pool for renders and tests: the synthetic pool's hosts,
+/// repositories and networks under another identity, with no guests.
+pub(super) fn scene_destination(s: &State) -> Peer {
+    let mut destination = s.inventory.as_ref().unwrap().as_ref().clone();
+    destination.pool_id = PoolId::from(uuid::Uuid::from_u128(85001));
+    destination.pool_name = "Destination lab pool".into();
+    destination.vms.clear();
+    destination.details.vms.clear();
+    destination.details.vdis.clear();
+    destination.details.vbds.clear();
+    destination.details.vifs.clear();
+    destination.details.vdi_attachments.clear();
+    Peer {
+        profile: None,
+        observed: None,
+        inventory: Arc::new(destination),
+    }
+}
 pub(super) fn scene(s: &mut State) {
     vm_migration::scene(s);
     s.vm_migration = None;
@@ -507,20 +557,7 @@ pub(super) fn scene(s: &mut State) {
         observed: None,
         inventory: s.inventory.as_ref().unwrap().clone(),
     };
-    let mut destination = source.inventory.as_ref().clone();
-    destination.pool_id = PoolId::from(uuid::Uuid::from_u128(85001));
-    destination.pool_name = "Destination lab pool".into();
-    destination.vms.clear();
-    destination.details.vms.clear();
-    destination.details.vdis.clear();
-    destination.details.vbds.clear();
-    destination.details.vifs.clear();
-    destination.details.vdi_attachments.clear();
-    let dest = Peer {
-        profile: None,
-        observed: None,
-        inventory: Arc::new(destination),
-    };
+    let dest = scene_destination(s);
     let mut e = editor(source, None, vm, vec![dest]);
     e.destination = Some(0);
     let dest = &e.peers[0].inventory;

@@ -37,14 +37,24 @@ impl WorkflowChild {
                     && r.batch_parent == Some(parent.id)
                     && r.pool == parent.pool
                     && r.target == crate::ResourceTarget::Pool(parent.pool)
-                    && item
-                        .workflow
-                        .transfer(item.vm)
-                        .is_some_and(|a| r.action == crate::ResourceAction::Transfer(a))
-                    && r.transfer_plan
-                        .as_ref()
-                        .is_some_and(|p| plan.outputs.get(index) == Some(&p.file))
                     && r.workflow_batch_plan.is_none()
+                    && match item.workflow.cross_pool() {
+                        // The child of a cross-pool item is the single move of exactly the
+                        // reviewed operation: the guest, the destination and every mapping.
+                        Some(operation) => {
+                            item.vm == operation.vm
+                                && r.action == crate::ResourceAction::CrossPoolVm(operation.clone())
+                                && r.transfer_plan.is_none()
+                        }
+                        None => {
+                            item.workflow
+                                .transfer(item.vm)
+                                .is_some_and(|a| r.action == crate::ResourceAction::Transfer(a))
+                                && r.transfer_plan
+                                    .as_ref()
+                                    .is_some_and(|p| plan.outputs.get(index) == Some(&p.file))
+                        }
+                    }
             }
         };
         if valid {
@@ -282,11 +292,23 @@ impl Journal {
                 self.save(r)
             }
             WorkflowChild::Resource(r) => {
+                // The row is fenced the same way for every kind of child. Only the words
+                // differ for a move between pools: one that was already unknown keeps
+                // what its own worker or a recheck found, which is what tells an operator
+                // whether to recheck again or to acknowledge.
+                let already_unknown = r.interrupted && r.state == OperationState::OutcomeUnknown;
                 r.state = state;
                 r.interrupted = true;
                 r.can_cancel = false;
-                r.detail =
-                    "Batch interrupted; no further transfer or publication is authorized".into();
+                if !matches!(r.action, crate::ResourceAction::CrossPoolVm(_)) {
+                    r.detail =
+                        "Batch interrupted; no further transfer or publication is authorized"
+                            .into();
+                } else if acknowledge {
+                    r.detail = "Acknowledged with its batch; the outcome of this move was not verified. Partial source or destination resources may remain and nothing was removed".into();
+                } else if !already_unknown {
+                    r.detail = "Batch interrupted; nothing further is sent for this move. Its outcome is read only by a recheck of the batch with both pools connected; no transfer is replayed".into();
+                }
                 self.resource_save(r)
             }
         }

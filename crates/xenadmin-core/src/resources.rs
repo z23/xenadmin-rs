@@ -449,6 +449,12 @@ impl ResourceAction {
         matches!(self, Self::Transfer(action) if action.is_export())
             || matches!(self, Self::VmWorkflowBatch(selection) if selection.is_export())
     }
+    /// Whether this is a transfer between two connected pools: a single cross-pool move or
+    /// copy, or a batch of cross-pool moves. Such an operation reserves both pools and is
+    /// rechecked only with both connected.
+    pub fn spans_pools(&self) -> bool {
+        crate::cross_pool::destination(self).is_some()
+    }
     pub fn label(&self) -> &'static str {
         match self {
             Self::DissolvePool(_) => "Dissolve pool",
@@ -463,6 +469,7 @@ impl ResourceAction {
             Self::VmWorkflowBatch(selection) => {
                 match selection.items.first().map(|i| &i.workflow) {
                     Some(crate::VmWorkflow::Move(_)) => "Move selected VMs",
+                    Some(crate::VmWorkflow::MoveToPool(_)) => "Move selected VMs to another pool",
                     Some(crate::VmWorkflow::Export { .. }) => "Export selected VMs",
                     Some(crate::VmWorkflow::ExportSnapshot { .. }) => "Export selected snapshots",
                     _ => "Delete selected VMs",

@@ -5,6 +5,8 @@ use crate::{
     VmWorkflowBatch,
 };
 use std::{collections::BTreeMap, sync::Mutex};
+#[path = "vm_workflow_cross_pool_tests.rs"]
+mod cross_pool;
 #[path = "vm_workflow_move_tests.rs"]
 mod moves;
 

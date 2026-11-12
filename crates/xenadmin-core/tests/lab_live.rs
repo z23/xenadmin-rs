@@ -4785,6 +4785,532 @@ async fn lab_cross_pool_move_round_trip() {
     away.close().await;
 }
 
+/// One halted guest's part of a batch of cross-pool moves, reviewed from what the two
+/// pools report now: its home host as the source pool has it (finding 62), every disk
+/// mapped by `repository` and every NIC by `network`, to `destination_host` over that
+/// host's management address. An error says why the single cross-pool move would not take
+/// the guest.
+fn cross_pool_batch_item(
+    from: &Connection,
+    to: &Connection,
+    vm: xenadmin_core::VmId,
+    destination_host: HostId,
+    repository: &dyn Fn(xenadmin_core::VbdId) -> Option<xenadmin_core::SrId>,
+    network: &dyn Fn(xenadmin_core::VifId, &str) -> Option<xenadmin_core::NetworkId>,
+) -> Result<xenadmin_core::CrossPoolVmOperation, String> {
+    use xenadmin_core::{CrossPoolMode, CrossPoolVmOperation, DiskPlacement, NicPlacement};
+    let source = from
+        .latest()
+        .inventory()
+        .ok_or("no source inventory")?
+        .clone();
+    let destination = to
+        .latest()
+        .inventory()
+        .ok_or("no destination inventory")?
+        .clone();
+    let mut disks = Vec::new();
+    for block in source
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.vm == Some(vm) && b.kind == "Disk")
+    {
+        let vdi = block.vdi.ok_or("a disk attachment names no disk")?;
+        disks.push(DiskPlacement {
+            vdi,
+            expected_sr: source
+                .details
+                .vdis
+                .get(&vdi)
+                .and_then(|d| d.sr)
+                .ok_or("a disk reports no repository")?,
+            destination_sr: repository(block.id).ok_or("a disk has no destination repository")?,
+        });
+    }
+    let mut networks = Vec::new();
+    for nic in source.details.vifs.values().filter(|v| v.vm == Some(vm)) {
+        let current = nic.network.ok_or("a NIC reports no network")?;
+        let name = source
+            .networks
+            .iter()
+            .find(|n| xenadmin_core::NetworkId::from(n.uuid) == current)
+            .map(|n| n.name.clone())
+            .ok_or("a NIC's network is not in the inventory")?;
+        networks.push(NicPlacement {
+            vif: nic.id,
+            expected_network: current,
+            destination_network: network(nic.id, &name)
+                .ok_or("a NIC has no destination network")?,
+        });
+    }
+    let address = destination
+        .hosts
+        .get(&destination_host)
+        .ok_or("the destination host is not in the inventory")?
+        .address
+        .clone();
+    let transfer_network = destination
+        .details
+        .pifs
+        .values()
+        .find(|p| {
+            p.host == Some(destination_host)
+                && p.currently_attached == Some(true)
+                && p.ip == address
+        })
+        .and_then(|p| p.network)
+        .ok_or("the destination host's address is on no attached interface")?;
+    let operation = CrossPoolVmOperation {
+        vm,
+        destination_pool: destination.pool_id,
+        destination_host,
+        expected_host: None,
+        expected_affinity: source.details.vms.get(&vm).and_then(|d| d.affinity),
+        transfer_network,
+        transfer_address: address,
+        mode: CrossPoolMode::MoveHalted,
+        disks,
+        networks,
+        host_transport_reviewed: true,
+    };
+    let availability = operation.availability(&source, &destination);
+    if availability.is_available() {
+        Ok(operation)
+    } else {
+        Err(availability.explanation())
+    }
+}
+
+/// Where a guest's disks and NICs are, by the attachment and interface identities a move
+/// keeps: the repository of each disk and the network of each NIC.
+fn guest_placement(
+    inventory: &xenadmin_core::Inventory,
+    vm: xenadmin_core::VmId,
+) -> (
+    std::collections::BTreeMap<xenadmin_core::VbdId, xenadmin_core::SrId>,
+    std::collections::BTreeMap<xenadmin_core::VifId, xenadmin_core::NetworkId>,
+) {
+    let disks = inventory
+        .details
+        .vbds
+        .values()
+        .filter(|b| b.vm == Some(vm) && b.kind == "Disk")
+        .filter_map(|b| Some((b.id, inventory.details.vdis.get(&b.vdi?)?.sr?)))
+        .collect();
+    let nics = inventory
+        .details
+        .vifs
+        .values()
+        .filter(|v| v.vm == Some(vm))
+        .filter_map(|v| Some((v.id, v.network?)))
+        .collect();
+    (disks, nics)
+}
+
+/// P15-06, cross-pool bulk moves: the lab guest (two local disks) and the tools guest
+/// (shared NFS) are halted, moved to the standalone pool in one reviewed batch and moved
+/// back in a second, each disk to the repository it came from and each NIC to its
+/// network. After each batch every guest must be halted on the destination pool with its
+/// disks and NICs where they were mapped, and gone from the source. Guests that were
+/// running are started again on their home pool at the end. A guest the single cross-pool
+/// move would not take is left out and the evidence says why; with one eligible guest the
+/// batch is a batch of one, and the evidence says so.
+#[tokio::test]
+#[ignore]
+async fn lab_cross_pool_batch_move_round_trip() {
+    use xenadmin_core::{
+        BatchVmWorkflow, CrossPoolBatchSelection, PowerAction, PowerState, VmCommand,
+        VmWorkflowBatch,
+    };
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let home = connect(&lab, &backend, 0, false).await;
+    let away = connect(&lab, &backend, 2, false).await;
+    let home_pool = home.latest().inventory().unwrap().pool_id;
+    let away_pool = away.latest().inventory().unwrap().pool_id;
+    assert_ne!(
+        home_pool, away_pool,
+        "the third host must be a separate pool"
+    );
+    let mut steps = Vec::new();
+    let mut left_out = Vec::new();
+    // The lab guest first, then the tools guest, as the home pool reports them.
+    let mut candidates = home
+        .latest()
+        .inventory()
+        .map(|i| {
+            i.guests()
+                .filter(|v| v.name.starts_with("lab-guest-") || v.name.starts_with("lab-tools-"))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    candidates.sort_by_key(|v| (!v.name.starts_with("lab-guest-"), v.name.clone()));
+    assert!(
+        !candidates.is_empty(),
+        "neither lab guest is on the home pool; lab_cross_pool_move_round_trip brings the lab guest home"
+    );
+
+    // What the lab looks like before anything is changed.
+    struct Guest {
+        vm: xenadmin_core::Vm,
+        was_running: bool,
+        home_host: Option<HostId>,
+        disks: std::collections::BTreeMap<xenadmin_core::VbdId, xenadmin_core::SrId>,
+        nics: std::collections::BTreeMap<xenadmin_core::VifId, xenadmin_core::NetworkId>,
+    }
+    let mut guests = Vec::new();
+    for vm in candidates {
+        if !matches!(vm.power_state, PowerState::Running | PowerState::Halted) {
+            left_out.push(json!({"guest": vm.name, "reason": format!("it is {:?}; a batch moves running and halted guests", vm.power_state)}));
+            continue;
+        }
+        let inventory = home.latest().inventory().unwrap().clone();
+        let (disks, nics) = guest_placement(&inventory, vm.id);
+        guests.push(Guest {
+            was_running: vm.power_state == PowerState::Running,
+            home_host: inventory.details.vms.get(&vm.id).and_then(|d| d.affinity),
+            disks,
+            nics,
+            vm,
+        });
+    }
+
+    // This scenario moves halted guests, as the single round trip does. A running guest is
+    // shut down cleanly first and started again at the end.
+    let mut halted = Vec::new();
+    for guest in guests {
+        if guest.was_running {
+            let shutdown = match home.submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: home.latest().observe_vm(guest.vm.id).unwrap(),
+                    action: PowerAction::CleanShutdown,
+                },
+            ) {
+                Ok(operation) => operation,
+                Err(error) => {
+                    left_out.push(json!({"guest": guest.vm.name, "reason": format!("a clean shutdown was not accepted: {error}")}));
+                    continue;
+                }
+            };
+            let outcome = wait_vm_outcome(&shutdown, 300).await;
+            let verified = settle(120, || {
+                home.latest().inventory().is_some_and(|i| {
+                    i.vms
+                        .get(&guest.vm.id)
+                        .is_some_and(|v| v.power_state == PowerState::Halted)
+                })
+            })
+            .await;
+            steps.push(json!({"step": "clean shutdown", "guest": guest.vm.name, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": verified}));
+            assert!(
+                outcome.state == OperationState::Succeeded && verified,
+                "{} was not halted: {}",
+                guest.vm.name,
+                outcome.detail
+            );
+        }
+        halted.push(guest);
+    }
+
+    // One destination host on each pool for a batch. On the standalone pool it is the one
+    // host there is. On the way back it is a home-pool host that has every repository the
+    // selected guests' disks came from; a guest that leaves no such host is left out.
+    let away_inventory = away.latest().inventory().unwrap().clone();
+    let away_host = away_inventory
+        .coordinator
+        .or_else(|| away_inventory.hosts.keys().next().copied())
+        .expect("a host on the standalone pool");
+    let away_sr = local_sr_of(&away_inventory, away_host).expect("a local repository there");
+    let home_inventory = home.latest().inventory().unwrap().clone();
+    let attached_on =
+        |host: HostId, sr: xenadmin_core::SrId| {
+            home_inventory.details.pbds.values().any(|p| {
+                p.host == Some(host) && p.sr == Some(sr) && p.currently_attached == Some(true)
+            })
+        };
+    let mut selected: Vec<Guest> = Vec::new();
+    let mut home_host = None;
+    for guest in halted {
+        let repositories = selected
+            .iter()
+            .flat_map(|g| g.disks.values())
+            .chain(guest.disks.values())
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let host = home_inventory
+            .hosts
+            .values()
+            .filter(|h| h.enabled)
+            .map(|h| h.id)
+            .find(|h| repositories.iter().all(|sr| attached_on(*h, *sr)));
+        let Some(host) = host else {
+            left_out.push(json!({"guest": guest.vm.name, "reason": "no one home-pool host has the repositories of this guest and of those already selected, and a batch has one destination host"}));
+            continue;
+        };
+        let reviewed = cross_pool_batch_item(
+            &home,
+            &away,
+            guest.vm.id,
+            away_host,
+            &|_| Some(away_sr),
+            &|_, name| {
+                away_inventory
+                    .networks
+                    .iter()
+                    .find(|n| n.name == name)
+                    .map(|n| n.uuid.into())
+            },
+        );
+        match reviewed {
+            Ok(_) => {
+                home_host = Some(host);
+                selected.push(guest);
+            }
+            Err(reason) => left_out.push(json!({"guest": guest.vm.name, "reason": reason})),
+        }
+    }
+    assert!(
+        !selected.is_empty(),
+        "no guest is eligible for a cross-pool move: {left_out:?}"
+    );
+    let home_host = home_host.expect("a home-pool host for the way back");
+
+    // Each leg is one batch. What the destination pool shows afterwards is compared with
+    // what was reviewed for each guest.
+    let mut legs = Vec::new();
+    let mut failures = Vec::new();
+    for (label, from, to, outward) in [
+        ("to the standalone pool", &home, &away, true),
+        ("back home", &away, &home, false),
+    ] {
+        // Only guests that are on the source pool now: after a first leg that stopped
+        // early, the second brings back those that went.
+        let present = selected
+            .iter()
+            .filter(|g| {
+                from.latest()
+                    .inventory()
+                    .is_some_and(|i| i.vms.contains_key(&g.vm.id))
+            })
+            .collect::<Vec<_>>();
+        if present.is_empty() {
+            legs.push(json!({"leg": label, "skipped": "no selected guest is on the source pool"}));
+            continue;
+        }
+        let to_inventory = to.latest().inventory().unwrap().clone();
+        let mut items = Vec::new();
+        let mut reviewed = Vec::new();
+        for guest in &present {
+            let operation = if outward {
+                cross_pool_batch_item(
+                    from,
+                    to,
+                    guest.vm.id,
+                    away_host,
+                    &|_| Some(away_sr),
+                    &|_, name| {
+                        to_inventory
+                            .networks
+                            .iter()
+                            .find(|n| n.name == name)
+                            .map(|n| n.uuid.into())
+                    },
+                )
+            } else {
+                cross_pool_batch_item(
+                    from,
+                    to,
+                    guest.vm.id,
+                    home_host,
+                    &|vbd| guest.disks.get(&vbd).copied(),
+                    &|vif, _| guest.nics.get(&vif).copied(),
+                )
+            };
+            match operation {
+                Ok(operation) => {
+                    reviewed.push((guest.vm.id, guest.vm.name.clone(), operation.clone()));
+                    items.push(BatchVmWorkflow::move_to_pool(operation));
+                }
+                Err(reason) => failures.push(format!(
+                    "{label}: {} cannot be reviewed: {reason}",
+                    guest.vm.name
+                )),
+            }
+        }
+        if items.is_empty() {
+            legs.push(json!({"leg": label, "skipped": "no guest could be reviewed"}));
+            continue;
+        }
+        let selection = CrossPoolBatchSelection {
+            source: from
+                .latest()
+                .observe_resource(ResourceTarget::Pool(
+                    from.latest().inventory().unwrap().pool_id,
+                ))
+                .unwrap(),
+            destination: to
+                .latest()
+                .observe_resource(ResourceTarget::Pool(to_inventory.pool_id))
+                .unwrap(),
+            batch: VmWorkflowBatch { items },
+        };
+        let started = std::time::Instant::now();
+        let operation = from
+            .move_vms_to_pool(OperationId::new(), selection, to)
+            .expect("cross-pool batch accepted");
+        let outcome = wait_outcome(&operation, 3600).await;
+        let mut placed = Vec::new();
+        for (vm, name, operation) in &reviewed {
+            let arrived = settle(120, || {
+                to.latest().inventory().is_some_and(|i| {
+                    i.vms
+                        .get(vm)
+                        .is_some_and(|v| &v.name == name && v.power_state == PowerState::Halted)
+                })
+            })
+            .await;
+            let departed = settle(120, || {
+                from.latest()
+                    .inventory()
+                    .is_some_and(|i| !i.vms.contains_key(vm))
+            })
+            .await;
+            // A move keeps the attachment and NIC identities, so the reviewed mapping can
+            // be read back by them: each disk on its mapped repository, each NIC on its
+            // mapped network.
+            let wanted_disks = present
+                .iter()
+                .find(|g| g.vm.id == *vm)
+                .map(|g| {
+                    g.disks
+                        .keys()
+                        .map(|vbd| (*vbd, if outward { away_sr } else { g.disks[vbd] }))
+                        .collect::<std::collections::BTreeMap<_, _>>()
+                })
+                .unwrap_or_default();
+            let wanted_nics = operation
+                .networks
+                .iter()
+                .map(|n| (n.vif, n.destination_network))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mapped = settle(120, || {
+                to.latest().inventory().is_some_and(|i| {
+                    let (disks, nics) = guest_placement(i, *vm);
+                    disks == wanted_disks && nics == wanted_nics
+                })
+            })
+            .await;
+            let state = outcome
+                .workflow_batch
+                .iter()
+                .find(|r| r.vm == *vm)
+                .map(|r| (r.state.clone(), r.detail.clone()));
+            placed.push(json!({
+                "guest": name, "vm": vm.to_string(),
+                "child_state": state.as_ref().map(|(s, _)| format!("{s:?}")),
+                "child_detail": state.as_ref().map(|(_, d)| d.clone()),
+                "arrived_halted": arrived, "departed_from_source": departed,
+                "disks_and_nics_as_reviewed": mapped,
+                "disks": operation.disks.len(), "nics": operation.networks.len(),
+            }));
+            if !(arrived && departed && mapped) {
+                failures.push(format!(
+                    "{label}: {name} arrived halted {arrived}, departed {departed}, placed as reviewed {mapped}"
+                ));
+            }
+        }
+        legs.push(json!({
+            "leg": label, "guests": reviewed.len(),
+            "state": format!("{:?}", outcome.state), "detail": outcome.detail,
+            "elapsed_ms": started.elapsed().as_millis() as u64, "placed": placed,
+        }));
+        if outcome.state != OperationState::Succeeded {
+            failures.push(format!("{label}: {:?}: {}", outcome.state, outcome.detail));
+        }
+    }
+
+    // Back on the home pool, the guests that were running are started again.
+    for guest in selected.iter().filter(|g| g.was_running) {
+        let Ok(observed) = home.latest().observe_vm(guest.vm.id) else {
+            failures.push(format!(
+                "{} is not on the home pool to be started",
+                guest.vm.name
+            ));
+            continue;
+        };
+        let start = home
+            .submit(
+                OperationId::new(),
+                VmCommand::Power {
+                    vm: observed,
+                    action: PowerAction::Start,
+                },
+            )
+            .expect("start accepted");
+        let outcome = wait_vm_outcome(&start, 300).await;
+        let running = settle(120, || {
+            home.latest().inventory().is_some_and(|i| {
+                i.vms
+                    .get(&guest.vm.id)
+                    .is_some_and(|v| v.power_state == PowerState::Running)
+            })
+        })
+        .await;
+        steps.push(json!({"step": "start on the home pool", "guest": guest.vm.name, "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": running}));
+        if !running {
+            failures.push(format!(
+                "{} did not start again: {}",
+                guest.vm.name, outcome.detail
+            ));
+        }
+    }
+
+    // What the lab looks like afterwards, beside what it looked like before.
+    let after = home.latest().inventory().unwrap().clone();
+    let summary = selected
+        .iter()
+        .map(|g| {
+            let (disks, nics) = guest_placement(&after, g.vm.id);
+            let home_host_after = after.details.vms.get(&g.vm.id).and_then(|d| d.affinity);
+            json!({
+                "guest": g.vm.name, "vm": g.vm.id.to_string(), "was_running": g.was_running,
+                "on_home_pool": after.vms.contains_key(&g.vm.id),
+                "disks_on_their_repositories": disks == g.disks,
+                "nics_on_their_networks": nics == g.nics,
+                "home_host_before": g.home_host.map(|h| h.to_string()),
+                "home_host_after": home_host_after.map(|h| h.to_string()),
+            })
+        })
+        .collect::<Vec<_>>();
+    for guest in &selected {
+        let (disks, nics) = guest_placement(&after, guest.vm.id);
+        if !after.vms.contains_key(&guest.vm.id) || disks != guest.disks || nics != guest.nics {
+            failures.push(format!(
+                "{} is not back on the home pool with its disks and NICs where they were",
+                guest.vm.name
+            ));
+        }
+    }
+    lab.record(
+        "cross-pool-batch-move-round-trip",
+        json!({
+            "home_pool": home_pool.to_string(), "away_pool": away_pool.to_string(),
+            "guests_in_each_batch": selected.len(),
+            "batch_of_one": selected.len() == 1,
+            "left_out": left_out, "steps": steps, "legs": legs, "guests": summary,
+            "failures": failures,
+        }),
+    );
+    assert!(failures.is_empty(), "{failures:#?}");
+    home.close().await;
+    away.close().await;
+}
+
 /// P11-06: the halted guest is exported to an XVA file on the workstation, the file is
 /// imported into the standalone pool as a new VM with its own disks, the import is deleted
 /// with those disks, the file is removed and the guest is started again.

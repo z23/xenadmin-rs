@@ -320,33 +320,61 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .child(body)
 }
 fn history_view(s: &State, mut body: El, k: &Kit) -> El {
-    body=body.child(caption("Reconnect both pools to recheck an unresolved transfer. Missing or uncertain task receipts never trigger another transfer.",k).wrap());
+    body=body.child(caption("Reconnect both pools to recheck an unresolved transfer or batch. Missing or uncertain task receipts never trigger another transfer, and a recheck never starts a VM that a batch had not started.",k).wrap());
+    // Single transfers, batches of moves, and the moves a batch has started. A move that
+    // belongs to a batch is listed for what it created; it is rechecked, stopped and
+    // acknowledged through its batch.
     for r in s
         .resource_rows
         .iter()
         .rev()
-        .filter(|r| matches!(r.action, ResourceAction::CrossPoolVm(_)))
+        .filter(|r| r.action.spans_pools())
         .take(100)
     {
         let id = r.id;
-        let ResourceAction::CrossPoolVm(operation) = &r.action else {
+        let Some(peer) = r.peer_pool() else {
             continue;
         };
-        body = body
-            .child(heading(format!("{} · {:?}", r.action.label(), r.state), k))
-            .child(
-                caption(
-                    format!(
-                        "Source pool: {}\nSource VM: {}\nDestination pool: {}\n{}",
+        let batch = matches!(r.action, ResourceAction::VmWorkflowBatch(_));
+        body = body.child(heading(format!("{} · {:?}", r.action.label(), r.state), k));
+        body = body.child(
+            caption(
+                match &r.action {
+                    ResourceAction::CrossPoolVm(operation) => format!(
+                        "Source pool: {}\nSource VM: {}\nDestination pool: {peer}\n{}{}",
                         r.pool,
                         operation.vm,
-                        r.peer_pool().unwrap(),
-                        r.detail
+                        r.detail,
+                        r.batch_parent
+                            .map(|parent| format!("\nPart of batch {parent}"))
+                            .unwrap_or_default()
+                    ),
+                    _ => format!(
+                        "Source pool: {}\nDestination pool: {peer}\n{}",
+                        r.pool, r.detail
+                    ),
+                },
+                k,
+            )
+            .wrap_anywhere(),
+        );
+        for result in &r.workflow_batch {
+            body = body.child(
+                caption(
+                    format!(
+                        "VM {} · {}\n{}",
+                        result.vm,
+                        result
+                            .state
+                            .as_ref()
+                            .map_or_else(|| "Not started".into(), |s| format!("{s:?}")),
+                        result.detail
                     ),
                     k,
                 )
                 .wrap_anywhere(),
             );
+        }
         for (kind, ids) in [
             (
                 "VM",
@@ -388,7 +416,7 @@ fn history_view(s: &State, mut body: El, k: &Kit) -> El {
         for step in &r.steps {
             body = body.child(caption(format!("{} · {:?}", step.label, step.state), k).wrap());
         }
-        if !r.state.terminal() {
+        if !r.state.terminal() && r.batch_parent.is_none() {
             body = body.child(
                 Button::new("Recheck both pools")
                     .disabled(!can_recheck(s, id) || r.state != OperationState::OutcomeUnknown)
@@ -398,29 +426,38 @@ fn history_view(s: &State, mut body: El, k: &Kit) -> El {
             );
             if r.can_cancel && !r.cancel_requested {
                 body = body.child(
-                    Button::new("Request host cancellation")
-                        .disabled(
-                            profiles_view::resource_control_connection(
-                                s,
-                                id,
-                                OperationControl::RequestCancellation,
-                            )
-                            .is_none(),
+                    Button::new(if batch {
+                        "Finish current VM and stop"
+                    } else {
+                        "Request host cancellation"
+                    })
+                    .disabled(
+                        profiles_view::resource_control_connection(
+                            s,
+                            id,
+                            OperationControl::RequestCancellation,
                         )
-                        .on_press(move |s: &mut State| {
-                            control(s, id, OperationControl::RequestCancellation)
-                        })
-                        .build(k),
+                        .is_none(),
+                    )
+                    .on_press(move |s: &mut State| {
+                        control(s, id, OperationControl::RequestCancellation)
+                    })
+                    .build(k)
+                    .key(format!("cross-stop-{id}")),
                 );
             }
             if r.state == OperationState::OutcomeUnknown {
                 body = body.child(
-                    Button::new("Acknowledge unresolved transfer…")
-                        .on_press(move |s: &mut State| s.cross_pool.acknowledge = Some(id))
-                        .build(k),
+                    Button::new(if batch {
+                        "Acknowledge unresolved batch…"
+                    } else {
+                        "Acknowledge unresolved transfer…"
+                    })
+                    .on_press(move |s: &mut State| s.cross_pool.acknowledge = Some(id))
+                    .build(k),
                 );
             }
-        } else if r.state == OperationState::Succeeded {
+        } else if r.state == OperationState::Succeeded && !batch {
             let console = matches!(&r.action,ResourceAction::CrossPoolVm(o) if o.mode.live());
             body = body.child(
                 Button::new(if console {

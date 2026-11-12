@@ -245,6 +245,8 @@ done
 "$check_binary" --snap artifacts/lifecycle-permissions-compact.png --tree artifacts/lifecycle-permissions-compact.json --scene lifecycle-permissions --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/batch-move.png --tree artifacts/batch-move.json --scene batch-move --theme dark --size 1440x900 --scale 1 --at 1
 "$check_binary" --snap artifacts/batch-move-compact.png --tree artifacts/batch-move-compact.json --scene batch-move --theme dark --size 513x652 --scale 1 --at 1
+"$check_binary" --snap artifacts/batch-cross-pool.png --tree artifacts/batch-cross-pool.json --scene batch-cross-pool --theme dark --size 1440x900 --scale 1 --at 1
+"$check_binary" --snap artifacts/batch-cross-pool-compact.png --tree artifacts/batch-cross-pool-compact.json --scene batch-cross-pool --theme dark --size 513x652 --scale 1 --at 1
 
 "$check_binary" --snap artifacts/snapshot-schedule-review.png --scene snapshot-schedule-review --theme dark --size 513x652 --scale 1 --at 1
 "$check_binary" --snap artifacts/organization-review.png --scene organization-review --theme dark --size 1440x900 --scale 1 --at 1

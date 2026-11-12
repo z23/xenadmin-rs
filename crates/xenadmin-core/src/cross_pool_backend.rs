@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{on_boot, primary_address_type, vm_operations, vm_power_state};
-use xenadmin_xapi::records::{PifRecord, PoolRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{PifRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Shape {
@@ -513,6 +513,63 @@ pub(crate) struct Prepared {
     pub disks: Value,
     pub nics: Value,
 }
+/// Each destination repository must report at least the free space asked of it.
+async fn capacity(
+    destination: &Session,
+    required: &BTreeMap<crate::SrId, u64>,
+    refusal: &'static str,
+) -> Result<(), Error> {
+    let whole = |field: xenadmin_xapi::WholeField| {
+        field
+            .number()
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or(Error::MigrationConflict)
+    };
+    for (sr, size) in required {
+        let (_, record) = m::fresh(destination, "SR", sr.uuid()).await?;
+        let view = SrRecord::new(&record);
+        unmet(
+            whole(view.physical_size())?.saturating_sub(whole(view.physical_utilisation())?)
+                >= *size,
+            refusal,
+        )?;
+    }
+    Ok(())
+}
+/// The checks a batch of moves makes before its first transfer: the single transfer's own
+/// preparation for every guest, which reads both pools and prepares no receiver, and then
+/// each destination repository's free space against the disks of all the guests mapped to
+/// it, where a single transfer asks only for its own.
+pub(crate) async fn preflight_selection(
+    source_session: &Session,
+    destination: &Session,
+    source_pool: PoolId,
+    operations: &[&CrossPoolVmOperation],
+) -> Result<(), Error> {
+    let mut required = BTreeMap::<crate::SrId, u64>::new();
+    for operation in operations {
+        let (plan, _) = prepare(source_session, destination, source_pool, operation).await?;
+        for mapping in &operation.disks {
+            let disk = plan
+                .graph
+                .disks
+                .iter()
+                .filter_map(|a| a.disk.as_ref())
+                .find(|d| d.id == mapping.vdi)
+                .ok_or(Error::MigrationConflict)?;
+            let size = required.entry(mapping.destination_sr).or_default();
+            *size = size
+                .checked_add(disk.size)
+                .ok_or(Error::MigrationConflict)?;
+        }
+    }
+    capacity(
+        destination,
+        &required,
+        "Destination storage does not report enough space for the disks of the whole selection",
+    )
+    .await
+}
 async fn destinations(
     source_session: &Session,
     destination: &Session,
@@ -570,15 +627,12 @@ async fn destinations(
         let sr = m::sr_visible(destination, mapping.destination_sr, &host, true).await?;
         disks.insert(reference, json!(sr));
     }
-    for (sr, size) in required {
-        let (_, record) = m::fresh(destination, "SR", sr.uuid()).await?;
-        unmet(
-            m::number(&record, "physical_size")?
-                .saturating_sub(m::number(&record, "physical_utilisation")?)
-                >= size,
-            "Destination storage does not report enough space for the reviewed disks",
-        )?;
-    }
+    capacity(
+        destination,
+        &required,
+        "Destination storage does not report enough space for the reviewed disks",
+    )
+    .await?;
     let mut nics = serde_json::Map::new();
     for mapping in &operation.networks {
         let (reference, _) = m::fresh(source_session, "VIF", mapping.vif.uuid()).await?;

@@ -441,6 +441,7 @@ pub(super) fn clear_view(s: &mut State) {
     s.bulk_properties = None;
     s.bulk_delete = None;
     s.bulk_move = None;
+    s.bulk_cross_pool = None;
     s.bulk_export = None;
     s.row_menu = None;
     for (name, width) in &s.preferences.columns {
@@ -1729,7 +1730,7 @@ pub(super) fn resource_control_connection(
         return None;
     }
     if matches!(control, xenadmin_core::OperationControl::Recheck)
-        && matches!(record.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
+        && record.action.spans_pools()
         && !cross_pool_vm::can_recheck(s, id)
     {
         return None;

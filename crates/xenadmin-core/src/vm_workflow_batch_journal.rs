@@ -244,7 +244,9 @@ impl Journal {
         let result = (|| {
             let mut parent = self.resource_load(id)?.ok_or(Error::Journal)?;
             self.workflow_validate_links(&parent)?;
-            if parent.pool != pool
+            // A batch of cross-pool moves reserves two pools, and either may be the one
+            // that recovers or acknowledges it. Any other batch belongs to one pool.
+            if !parent.applies_to_pool(pool)
                 || parent.state.terminal()
                 || (acknowledge && parent.state != OperationState::OutcomeUnknown)
             {
@@ -287,8 +289,15 @@ impl Journal {
                 OperationState::OutcomeUnknown
             };
             parent.can_cancel = false;
-            parent.detail = if acknowledge {
+            let cross_pool = plan.selection.cross_pool_destination().is_some();
+            parent.detail = if acknowledge && cross_pool {
+                "Unknown batch and active move acknowledged together; both pools are released. This does not establish host success, and partial source or destination resources may remain".into()
+            } else if acknowledge {
                 "Unknown batch and active child acknowledged together; this does not establish host success".into()
+            } else if cross_pool {
+                // The receiver a move was prepared with lived only in the worker that
+                // prepared it, so an interrupted move can only be read, not continued.
+                "Batch interrupted; both pools stay reserved. Reconnect both pools and recheck: it reads the moves that were started, sends nothing, and never starts remaining VMs".into()
             } else {
                 format!(
                     "Batch interrupted; recheck reads admitted children and never starts remaining {}s",

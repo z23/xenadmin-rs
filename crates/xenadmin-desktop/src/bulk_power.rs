@@ -173,6 +173,7 @@ pub(super) fn selection_bar(s: &State, k: &Kit) -> El {
         .flex_wrap()
         .child(bulk_delete::button(s, k))
         .child(bulk_move::button(s, k))
+        .child(bulk_cross_pool::button(s, k))
         .child(bulk_export::button(s, k))
         .child(
             caption(
@@ -184,7 +185,10 @@ pub(super) fn selection_bar(s: &State, k: &Kit) -> El {
                 k,
             )
             .wrap()
-            .grow(1.0),
+            .grow(1.0)
+            // Wide enough to be read in two lines: in a narrow window the caption moves
+            // to the next row of the bar instead of taking a sliver beside the buttons.
+            .min_w(170.0),
         )
         .child(bulk_properties::selection_button(s, k))
         .child(

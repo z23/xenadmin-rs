@@ -18,6 +18,13 @@ impl ResourceRequest {
             .workflow_batch_plan
             .clone()
             .ok_or(Error::Journal)?;
+        // A batch of cross-pool moves is submitted with the destination pool's connection
+        // as it was reviewed. Without it there is nothing to check the selection against.
+        let peer = if plan.selection.cross_pool_destination().is_some() {
+            Some(self.cross_pool.take().ok_or(Error::InvalidMigration)?)
+        } else {
+            None
+        };
         self.record.detail = format!(
             "Checking every selected {} and reviewed workflow before the first child",
             plan.selection.noun()
@@ -29,9 +36,14 @@ impl ResourceRequest {
                 .await
                 .map_err(|_| Error::TransferFile)??;
         }
+        if let Some(inputs) = &peer {
+            self.preflight_cross_pool_batch(s, c, inputs, &plan).await?;
+        }
         tokio::select! { _=c.cancelled()=>return Err(Error::Closed), value=async {
             crate::power_batch::pool(s, &self.record).await?;
             for item in &plan.selection.items {
+                // A cross-pool item was checked above, on both pools.
+                if item.workflow.cross_pool().is_some() { continue; }
                 if let Some(action) = item.workflow.transfer(item.vm) {
                     match &action {
                         crate::TransferAction::ExportOvf { source, .. } => { crate::ovf::export::capture(s,self.record.pool,source).await?; },
@@ -63,7 +75,26 @@ impl ResourceRequest {
             let directory = self.directory.clone().ok_or(Error::Journal)?;
             let updates = self.updates.clone().ok_or(Error::Journal)?;
             let permit = j.workflow_permit(self.record.id, index)?;
-            if let Some(action) = item.workflow.transfer(item.vm) {
+            if let Some(operation) = item.workflow.cross_pool() {
+                // The child is the single cross-pool move of this guest with the mappings
+                // reviewed for it. It fetches the destination session itself, checks both
+                // pools again and prepares its own receiver, which nothing stores.
+                let observed = crate::ObservedResource {
+                    pool: self.record.pool,
+                    target: crate::ResourceTarget::Pool(self.record.pool),
+                    generation: self.generation,
+                };
+                let (_, mut child) = crate::resources::channel(
+                    plan.children[index],
+                    observed,
+                    crate::ResourceAction::CrossPoolVm(operation.clone()),
+                    tokio::runtime::Handle::current(),
+                );
+                child.record.batch_parent = Some(self.record.id);
+                child.batch_permit = Some(permit);
+                child.cross_pool = Some(peer.clone().ok_or(Error::Journal)?);
+                Box::pin(child.run_session(s, directory, c.clone(), updates)).await;
+            } else if let Some(action) = item.workflow.transfer(item.vm) {
                 let observed = crate::ObservedResource {
                     pool: self.record.pool,
                     target: crate::ResourceTarget::Pool(self.record.pool),
@@ -121,6 +152,16 @@ impl ResourceRequest {
         if self.record.state.terminal() {
             return Ok(());
         }
+        // A move between pools can only be read with both pools connected. A recheck that
+        // was not given the destination changes nothing and says what is needed.
+        let peer = self.cross_pool.take();
+        if crate::cross_pool::destination(&self.record.action).is_some() && peer.is_none() {
+            self.record.local_error = Some(
+                "Reconnect both pools and recheck this batch from its transfer history; no transfer will be replayed"
+                    .into(),
+            );
+            return Ok(());
+        }
         self.record = j.workflow_interrupt(self.record.pool, self.record.id, false)?;
         self.record.state = OperationState::Verifying;
         let plan = self
@@ -154,6 +195,9 @@ impl ResourceRequest {
                 WorkflowChild::Resource(record) => {
                     let mut child = Self::tracking(*record);
                     child.batch_permit = Some(permit);
+                    if crate::cross_pool::destination(&child.record.action).is_some() {
+                        child.cross_pool = peer.clone();
+                    }
                     Box::pin(child.run_session(s, directory, c.clone(), updates)).await;
                 }
             }
@@ -164,6 +208,41 @@ impl ResourceRequest {
             }
         }
         self.finish_workflow_batch(j).await
+    }
+    /// The whole-selection check of a batch of cross-pool moves. It reads both pools with
+    /// the single move's own preparation for every guest and asks the destination for room
+    /// for all of them. It prepares no receiver and sends nothing.
+    async fn preflight_cross_pool_batch(
+        &self,
+        s: &Session,
+        c: &CancellationToken,
+        inputs: &crate::cross_pool::Inputs,
+        plan: &crate::vm_workflow_batch::Plan,
+    ) -> Result<(), Error> {
+        let operations = plan
+            .selection
+            .cross_pool_operations()
+            .ok_or(Error::Journal)?;
+        let peer = tokio::select! { _=c.cancelled()=>return Err(Error::Closed), peer=inputs.destination.get(inputs.observation)=>peer? };
+        super::cross_pool_worker::peer_current(inputs, &peer)?;
+        if let Some(required) = plan.selection.peer_permission_requirements() {
+            let assessment = required.assess(peer.session.permissions());
+            if assessment.decision().is_denied() {
+                return Err(Error::RoleDenied(format!(
+                    "{} on the destination pool (RBAC_PERMISSION_DENIED)",
+                    assessment.denied_methods().join(", ")
+                )));
+            }
+        }
+        tokio::select! {
+            _=c.cancelled()=>return Err(Error::Closed),
+            _=peer.cancel.cancelled()=>return Err(Error::Closed),
+            result=async {
+                crate::power_batch::pool(s, &self.record).await?;
+                crate::cross_pool_backend::preflight_selection(s, &peer.session, self.record.pool, &operations).await
+            }=>result?
+        }
+        super::cross_pool_worker::peer_current(inputs, &peer)
     }
     async fn refresh_workflow_results(&mut self, j: &mut Journal) -> Result<(), Error> {
         for _ in 0..16 {

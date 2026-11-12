@@ -398,6 +398,9 @@ export's fresh checks, receipts and archive verification apply unchanged, and a 
 is admitted only with its memory image reviewed and only as XVA. Outputs are bound to
 snapshots, not to the VM several of them share. See the
 [batch snapshot export report](reports/2026-11-12-batch-snapshot-export.md).
+Version 5 batch rows may also hold a cross-pool move item, described under
+[Cross-pool VM transfers](#cross-pool-vm-transfers). The number was not raised for it,
+because no released version reads version 5.
 
 The [console adapter decision](decisions/0003-console-protocol-adapter.md) documents the
 vendored protocol fixes. Console target identity is independent of table selection. Clipboard
@@ -601,6 +604,25 @@ replays receiver preparation or transfer. The original worker stops after recove
 state even if a late positive receipt arrives. Public Activity exports include the destination
 pool so UUIDs are unambiguous. See the [cross-pool report](reports/2026-11-08-cross-pool-transfers.md)
 for the supported subset, host-to-host transport policy and qualification gaps.
+
+A batch of cross-pool moves is the workflow batch of journal version 4 with an item that
+holds one reviewed `CrossPoolVmOperation`. The parent reserves the source and the
+destination pool and is listed in both pools' histories. Its child for an item is the
+single cross-pool move of exactly that operation, a resource operation that reserves the
+same two pools and whose permit excludes its parent alone, in both. A batch has one
+destination pool, host and migration address, holds moves only, and names no disk or NIC
+twice; the journal refuses any other on load and on save. Before the first child the
+parent runs the single move's read-only preparation for every item with both sessions
+and asks each destination repository for the space of all the disks mapped to it. The
+destination connection is handed to the parent at submission and by the parent to each
+child, and is never stored, so recovery starts no worker for such a batch on either
+pool. Either pool's recovery or acknowledgement fences the parent and its active child
+together. A child's saves that precede a write to a host are also refused once its
+parent is fenced, whatever the child's own row says. A recheck needs both connections,
+reads the children that were admitted and starts none. A child without a stored plan
+sent nothing, since the plan is stored by the save that precedes the first write, and a
+recheck ends it as not sent. See the
+[batch of cross-pool moves report](reports/2026-11-12-cross-pool-bulk-move.md).
 
 ## Authenticated storage credentials
 

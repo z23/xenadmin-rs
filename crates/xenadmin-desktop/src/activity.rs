@@ -298,6 +298,11 @@ fn rebuild(s: &mut State) {
                         "\nSource VM: {}\nDestination pool: {}",
                         operation.vm, operation.destination_pool
                     ));
+                } else if let Some(destination) =
+                    record.peer_pool().filter(|_| record.action.spans_pools())
+                {
+                    // A batch of cross-pool moves: the pool every one of its VMs goes to.
+                    details.push_str(&format!("\nDestination pool: {destination}"));
                 }
                 if let Some(created) = record.created {
                     details.push_str(&format!("\nCreated resource: {}", created.uuid()));
@@ -498,9 +503,9 @@ fn recheck(s: &mut State) {
         return;
     }
     if matches!(key.family, Family::Resource)
-        && s.resource_rows.iter().any(|r| {
-            r.id == key.id && matches!(r.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
-        })
+        && s.resource_rows
+            .iter()
+            .any(|r| r.id == key.id && r.action.spans_pools())
     {
         s.activity.notice = Some(
             cross_pool_vm::recheck(s, key.id)

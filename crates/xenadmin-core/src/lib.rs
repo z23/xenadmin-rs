@@ -146,7 +146,9 @@ pub use resources::{
 pub use storage_local::{DiscoveredLocalRepository, LocalDeviceDeclaration, LocalStorageKind};
 mod cross_pool;
 mod cross_pool_backend;
-pub use cross_pool::{CrossPoolMode, CrossPoolVmOperation, CrossPoolVmSelection};
+pub use cross_pool::{
+    CrossPoolBatchSelection, CrossPoolMode, CrossPoolVmOperation, CrossPoolVmSelection,
+};
 mod migration;
 mod migration_backend;
 pub use storage::{NfsVersion, StorageAllocation, StorageLocation, StorageOperation};

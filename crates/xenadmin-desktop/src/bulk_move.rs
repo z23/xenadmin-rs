@@ -31,7 +31,7 @@ struct Review {
 fn edit(s: &mut State) -> &mut Editor {
     s.bulk_move.as_mut().expect("move editor")
 }
-fn selected(s: &State) -> Result<Vec<Vm>, String> {
+pub(super) fn selected(s: &State) -> Result<Vec<Vm>, String> {
     if s.page != Page::Guests {
         return Err("Select ordinary VM rows".into());
     }

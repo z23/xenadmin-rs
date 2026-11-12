@@ -732,7 +732,9 @@ impl Connection {
             return Err(Error::ReadOnly);
         }
         let (observed, action, inputs) = command.submission();
-        if crate::pool_join::destination(&action).is_some() {
+        // A join and a batch of cross-pool moves need a second connection, which only
+        // their own submissions carry.
+        if crate::pool_join::destination(&action).is_some() || action.spans_pools() {
             return Err(Error::InvalidResourceCommand);
         }
         if let crate::ResourceAction::Pool(crate::PoolOperation::Security(op)) = &action
@@ -761,7 +763,8 @@ impl Connection {
         outputs: Vec<(crate::VmId, crate::TransferFile)>,
     ) -> Result<crate::ResourceOperation, Error> {
         // Several snapshots of one VM share that VM, so their outputs are named by snapshot.
-        if selection.is_snapshot_export() {
+        // Moves to another pool are submitted with that pool's connection.
+        if selection.is_snapshot_export() || selection.cross_pool_destination().is_some() {
             return Err(Error::InvalidResourceCommand);
         }
         let outputs = outputs.into_iter().map(|(vm, file)| (vm.uuid(), file));
@@ -1060,7 +1063,7 @@ impl Connection {
             && self
                 .resource_history()
                 .iter()
-                .any(|r| r.id == id && matches!(r.action, crate::ResourceAction::CrossPoolVm(_)))
+                .any(|r| r.id == id && r.action.spans_pools())
         {
             return Err(Error::Protocol(
                 "Use the cross-pool transfer view to recheck with both connected pools",
@@ -1484,7 +1487,7 @@ async fn run(
                                     }
                                     if !resource_counts.contains_key(&id)&&resource_rechecks.remove(&id) {
                                         match operations::Journal::open(&directory).and_then(|journal|journal.resource_load(id)) {
-                                            Ok(Some(record)) if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_))=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts,&credentials),
+                                            Ok(Some(record)) if !record.state.terminal() && !record.action.spans_pools()=>start_resource(crate::resources::ResourceRequest::tracking(record),&mut resource_workers,&mut resource_counts,&credentials),
                                             Err(error)=>publish(&sender,generation,session_state(&token),&last_inventory,Some(error.to_string()),last_update),
                                             _=>{},
                                         }
@@ -1558,7 +1561,7 @@ async fn run(
                                     else if matches!(request.record.action,crate::ResourceAction::RootPassword(_)) && credentials.username != "root" {request.reject(Error::HostPrerequisite("Reconnect as local root before changing the pool root password"));}
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|i|i.pool_id==request.record.pool) {request.reject(Error::Stale);}
                                     else if journal_error.is_some() {request.reject(Error::Journal);}
-                                    else if matches!(request.record.action,crate::ResourceAction::CrossPoolVm(_)) && request.record.revision()>0 && resource_counts.contains_key(&request.record.id) {
+                                    else if request.record.action.spans_pools() && request.record.revision()>0 && resource_counts.contains_key(&request.record.id) {
                                         match cross_pool_rechecks.entry(request.record.id) {
                                             std::collections::btree_map::Entry::Vacant(entry)=>{request.queued_recheck();entry.insert(*request);},
                                             std::collections::btree_map::Entry::Occupied(_)=>request.reject(Error::Busy),
@@ -1574,7 +1577,7 @@ async fn run(
                                         let journal=operations::Journal::open(&directory)?;
                                         if options.read_only && !journal.resource_load(id)?.is_some_and(|r|r.pool==pool&&r.action.read_only_export()){return Err(Error::ReadOnly)}
                                         let record=journal.resource_control(pool,id,control)?;
-                                        if !record.state.terminal() && !matches!(record.action,crate::ResourceAction::CrossPoolVm(_)) {
+                                        if !record.state.terminal() && !record.action.spans_pools() {
                                             if !resource_counts.contains_key(&id) {start_resource(crate::resources::ResourceRequest::tracking(record.clone()),&mut resource_workers,&mut resource_counts,&credentials);}
                                             else if record.state==crate::OperationState::OutcomeUnknown {resource_rechecks.insert(id);}
                                         }
@@ -1868,10 +1871,10 @@ async fn run(
                                             for record in rows {
                                                 if record.batch_parent.is_none()
                                                     && !record.state.terminal()
+                                                    && !record.action.spans_pools()
                                                     && !matches!(
                                                         record.action,
-                                                        crate::ResourceAction::CrossPoolVm(_)
-                                                            | crate::ResourceAction::HostPower(_)
+                                                        crate::ResourceAction::HostPower(_)
                                                             | crate::ResourceAction::RootPassword(
                                                                 _
                                                             )
@@ -2207,6 +2210,7 @@ pub(crate) struct JoinPeer {
     pub receiver: watch::Receiver<Arc<ConnectionSnapshot>>,
     pub cancel: CancellationToken,
 }
+#[derive(Clone)]
 pub(crate) struct JoinPeerHandle {
     requests: mpsc::Sender<Request>,
     pub cancel: CancellationToken,
@@ -2310,6 +2314,58 @@ impl Connection {
         Ok(handle)
     }
 
+    /// Submits a reviewed batch of cross-pool moves under the single move's own rules:
+    /// both connections writable, current and owned by one backend. The destination
+    /// connection is handed to the batch and to each of its children; nothing of it is
+    /// stored.
+    pub(crate) fn submit_cross_pool_batch(
+        &self,
+        id: crate::OperationId,
+        selection: crate::cross_pool::CrossPoolBatchSelection,
+        destination: &Connection,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if self.read_only || destination.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let Some(destination_pool) = selection.batch.cross_pool_destination() else {
+            return Err(Error::InvalidMigration);
+        };
+        if self.backend_scope != destination.backend_scope
+            || selection.source.target != crate::ResourceTarget::Pool(selection.source.pool)
+            || selection.destination.target != crate::ResourceTarget::Pool(destination_pool)
+        {
+            return Err(Error::InvalidMigration);
+        }
+        if self.latest().observe_resource(selection.source.target)? != selection.source
+            || destination
+                .latest()
+                .observe_resource(selection.destination.target)?
+                != selection.destination
+        {
+            return Err(Error::Stale);
+        }
+        selection.batch.validate(selection.source.target)?;
+        let (handle, mut request) = crate::resources::channel(
+            id,
+            selection.source,
+            crate::ResourceAction::VmWorkflowBatch(selection.batch),
+            self.runtime.clone(),
+        );
+        request.cross_pool = Some(crate::cross_pool::Inputs {
+            destination: JoinPeerHandle {
+                requests: destination.requests.clone(),
+                cancel: destination.cancel.clone(),
+            },
+            observation: selection.destination,
+        });
+        self.requests
+            .try_send(Request::ResourceSubmit(Box::new(request)))
+            .map_err(|_| Error::Busy)?;
+        Ok(handle)
+    }
+
+    /// Rechecks a single cross-pool transfer or a batch of cross-pool moves. A move that
+    /// is a child of a batch is read through its batch only.
     pub(crate) fn recheck_cross_pool(
         &self,
         id: crate::OperationId,
@@ -2327,15 +2383,18 @@ impl Connection {
             .find(|r| r.id == id && !r.state.terminal())
             .cloned()
             .ok_or(Error::OperationConflict)?;
-        let crate::ResourceAction::CrossPoolVm(operation) = &record.action else {
+        let Some(destination_pool) = crate::cross_pool::destination(&record.action) else {
             return Err(Error::InvalidMigration);
         };
+        if record.batch_parent.is_some() {
+            return Err(Error::UnavailableAction);
+        }
         let observed = self
             .latest()
             .observe_resource(crate::ResourceTarget::Pool(record.pool))?;
         let peer = destination
             .latest()
-            .observe_resource(crate::ResourceTarget::Pool(operation.destination_pool))?;
+            .observe_resource(crate::ResourceTarget::Pool(destination_pool))?;
         let (handle, mut request) =
             crate::resources::channel(id, observed, record.action.clone(), self.runtime.clone());
         request.record = record;

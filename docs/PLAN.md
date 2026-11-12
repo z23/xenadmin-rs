@@ -83,7 +83,10 @@ ownership. Its scope and recovery evidence are recorded in the
 children under the same reservation.
 [Batch snapshot and checkpoint exports](reports/2026-11-12-batch-snapshot-export.md) run
 several snapshots of a VM through those children; they are verified by fixtures and by
-one run on the lab. Cross-pool bulk moves remain open.
+one run on the lab.
+[Batches of cross-pool moves](reports/2026-11-12-cross-pool-bulk-move.md) run the single
+cross-pool move as their children, with both pools reserved by the batch. They are
+verified by fixtures only; their lab scenario is written and has not been run.
 
 The disposable nested lab is now provisioned: three XCP-ng 8.3.0 hosts installed unattended
 by the harness on 2026-11-09. The [first live qualification report](reports/2026-11-09-lab-qualification.md)

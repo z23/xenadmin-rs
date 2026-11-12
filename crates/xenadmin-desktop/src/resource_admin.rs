@@ -815,9 +815,7 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
                     .on_press(move |s: &mut State| control(s, id, OperationControl::Recheck))
                     .build(k),
             );
-            if !can_recheck
-                && matches!(record.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
-            {
+            if !can_recheck && record.action.spans_pools() {
                 view = view.child(
                     caption(
                         "Reconnect both source and destination pools to recheck this transfer.",
@@ -881,9 +879,9 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
 }
 fn control(s: &mut State, id: OperationId, control: OperationControl) {
     if matches!(control, OperationControl::Recheck)
-        && s.resource_rows.iter().any(|r| {
-            r.id == id && matches!(r.action, xenadmin_core::ResourceAction::CrossPoolVm(_))
-        })
+        && s.resource_rows
+            .iter()
+            .any(|r| r.id == id && r.action.spans_pools())
     {
         s.error = cross_pool_vm::recheck(s, id).err().map(|e| e.to_string());
         return;

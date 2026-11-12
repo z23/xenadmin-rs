@@ -15,7 +15,9 @@ from 4. This version marks a journal as format 5 the first time it opens it. 0.1
 refuses that journal, says it was written by a newer application and leaves it as it is,
 so 0.19.0 cannot submit changes from a state directory this version has used. Nothing
 stored is rewritten: no table and no recorded operation changes. Format 5 is the first
-that may hold a batch of snapshot exports, which 0.19.0 cannot read.
+that may hold a batch of snapshot exports, which 0.19.0 cannot read. It may also hold a
+batch of cross-pool moves, which 0.19.0 cannot read either. The number is not raised
+again for that, because no published version reads format 5.
 
 ### Added
 
@@ -34,8 +36,41 @@ that may hold a batch of snapshot exports, which 0.19.0 cannot read.
   is verified by fixtures and by one run on the lab, where a disk snapshot and a
   checkpoint with its memory were exported in one batch and read back; nobody has used
   the dialog ([report](docs/reports/2026-11-12-batch-snapshot-export.md)).
+- Several VMs can be moved to another connected pool in one reviewed batch. With 1 to 32
+  VMs selected in the inventory, "Move selection to another pool…", beside "Move
+  selection…" and in the row menu, opens a review in the three stages of the single
+  cross-pool move. The first takes the destination pool and host. The second takes one
+  destination repository for every disk of the selection, one destination network for
+  each source network, and the destination host's migration address. The third lists,
+  for each VM, how it moves and where each of its disks and NICs goes, shows what the
+  sessions on both pools are allowed, and asks once for the whole batch for the
+  acknowledgement that host-to-host transfer may be unencrypted HTTP or TLS without
+  certificate verification. A running guest moves live and stays running, a halted guest
+  stays halted, and both may be in one batch. A suspended or paused guest, a template,
+  or a VM the single move would refuse makes the whole selection unavailable; none is
+  left out. A batch moves and does not copy. Before the first transfer every VM is
+  checked on both pools as the single move checks it, and the destination repository
+  must have room for the disks of all of them. The VMs then move one after another, each
+  by the single cross-pool move, with both pools reserved until the batch ends. Stop
+  finishes the current VM's move and skips the rest. It does not ask the hosts to cancel
+  a transfer, and a transfer that is under way in a batch cannot be cancelled from the
+  client. After an interruption or a restart nothing continues by itself, because the
+  receiver a move is prepared with is not kept. With both pools connected again, Recheck
+  reads the moves that had started, repeats no transfer and starts no remaining VM. A
+  move whose outcome cannot be read stays unknown, with both pools reserved, until it is
+  acknowledged. The batch is experimental and verified by fixtures only: nothing of it
+  has run against a host, and nobody has used the dialog
+  ([report](docs/reports/2026-11-12-cross-pool-bulk-move.md)).
 
 ### Changed
+
+- The bar above the VM table has the new entry. In a window 513 points wide it takes
+  three rows where it took two, and the table shows one row fewer. In a window 1440
+  points wide the table keeps its place.
+- A recheck of a cross-pool move or copy that was interrupted before it had prepared
+  anything ends it as not sent. The journal shows that case exactly, because the
+  transfer's plan is stored before the first call that changes a host. It used to stay
+  unknown until it was acknowledged.
 
 - The review of a forced shutdown or reboot warns when a task it would interrupt is a
   migration of the VM. The host admits a forced action during a migration and does not

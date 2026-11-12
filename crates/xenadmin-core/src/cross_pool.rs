@@ -280,18 +280,50 @@ pub(crate) fn usable_address(value: &str) -> bool {
             }
     })
 }
+/// The destination pool's connection as it was reviewed. A batch hands each of its
+/// children a copy; none of it is stored.
+#[derive(Clone)]
 pub(crate) struct Inputs {
     pub destination: crate::connection::JoinPeerHandle,
     pub observation: ObservedResource,
 }
+/// The other pool a transfer reserves and needs connected: the destination of a single
+/// cross-pool move or copy, or of a batch of cross-pool moves.
 pub(crate) fn destination(action: &ResourceAction) -> Option<PoolId> {
-    if let ResourceAction::CrossPoolVm(op) = action {
-        Some(op.destination_pool)
-    } else {
-        None
+    match action {
+        ResourceAction::CrossPoolVm(op) => Some(op.destination_pool),
+        ResourceAction::VmWorkflowBatch(selection) => selection.cross_pool_destination(),
+        _ => None,
     }
 }
+/// A reviewed batch of moves from one connected pool to another: both pools as they were
+/// observed, and one item per guest with the mappings reviewed for it.
+#[derive(Clone, Debug)]
+pub struct CrossPoolBatchSelection {
+    pub source: ObservedResource,
+    pub destination: ObservedResource,
+    pub batch: crate::VmWorkflowBatch,
+}
 impl Connection {
+    /// Moves 1 to 32 guests of this pool to another connected pool, one after another,
+    /// each by the single cross-pool move with its own reviewed mappings.
+    pub fn move_vms_to_pool(
+        &self,
+        id: OperationId,
+        selection: CrossPoolBatchSelection,
+        destination: &Connection,
+    ) -> Result<ResourceOperation, Error> {
+        self.submit_cross_pool_batch(id, selection, destination)
+    }
+    /// Rechecks an unresolved batch of cross-pool moves with both pools connected. It
+    /// reads the children that were started and never starts another.
+    pub fn recheck_cross_pool_batch(
+        &self,
+        id: OperationId,
+        destination: &Connection,
+    ) -> Result<ResourceOperation, Error> {
+        self.recheck_cross_pool(id, destination)
+    }
     pub fn transfer_vm_to_pool(
         &self,
         id: OperationId,

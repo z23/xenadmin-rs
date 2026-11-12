@@ -1111,11 +1111,13 @@ impl ResourceRequest {
         }
     }
     async fn finish_error(&mut self, journal: &mut Journal, error: Error) {
+        // A transfer between pools reads the destination too, and a redirect from that
+        // pool must not move this connection.
         if let Error::Coordinator(endpoint) = &error
+            && !self.record.action.spans_pools()
             && !matches!(
                 self.record.action,
-                super::ResourceAction::CrossPoolVm(_)
-                    | super::ResourceAction::ManagementIpv6Bond(_)
+                super::ResourceAction::ManagementIpv6Bond(_)
                     | super::ResourceAction::ManagementNetwork(_)
             )
             && let Some(updates) = &self.updates

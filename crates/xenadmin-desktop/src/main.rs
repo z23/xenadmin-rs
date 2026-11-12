@@ -2,6 +2,7 @@ mod activity;
 mod activity_export;
 mod alarms_view;
 mod appliance_view;
+mod bulk_cross_pool;
 mod bulk_delete;
 mod bulk_export;
 mod bulk_move;
@@ -191,6 +192,7 @@ struct State {
     bulk_properties: Option<bulk_properties::Editor>,
     bulk_delete: Option<bulk_delete::Editor>,
     bulk_move: Option<bulk_move::Editor>,
+    bulk_cross_pool: Option<bulk_cross_pool::Editor>,
     bulk_export: Option<bulk_export::Editor>,
     row_menu: Option<inventory_menu::Context>,
     searches: Option<search_view::Workspace>,
@@ -333,6 +335,7 @@ fn init_with_preferences(
         bulk_properties: None,
         bulk_delete: None,
         bulk_move: None,
+        bulk_cross_pool: None,
         bulk_export: None,
         row_menu: None,
         searches: None,
@@ -1700,6 +1703,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         rune_kit::root(root, [bulk_export::dialog(s, &k)])
     } else if s.bulk_move.is_some() {
         rune_kit::root(root, [bulk_move::dialog(s, &k)])
+    } else if s.bulk_cross_pool.is_some() {
+        rune_kit::root(root, [bulk_cross_pool::dialog(s, &k)])
     } else if s.bulk_delete.is_some() {
         rune_kit::root(root, [bulk_delete::dialog(s, &k)])
     } else if s.bulk_power.is_some() {
@@ -1789,6 +1794,7 @@ fn experimental_dialog_open(s: &State) -> bool {
         (s.bulk_properties.is_some(), true),
         (s.bulk_export.is_some(), true),
         (s.bulk_move.is_some(), true),
+        (s.bulk_cross_pool.is_some(), true),
         (s.bulk_delete.is_some(), true),
         (s.bulk_power.is_some(), false),
         (s.searches.is_some(), false),
@@ -2651,6 +2657,7 @@ fn main() -> std::process::ExitCode {
             ("batch-delete", bulk_delete::scene),
             ("lifecycle-permissions", vm_lifecycle::review_scene),
             ("batch-move", bulk_move::scene),
+            ("batch-cross-pool", bulk_cross_pool::scene),
             ("batch-export", bulk_export::scene),
             ("snapshot-batch-export", bulk_export::snapshot_scene),
             ("console-recovery", console_view::recovery_scene),

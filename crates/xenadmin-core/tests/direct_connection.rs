@@ -3171,6 +3171,8 @@ fn journal_text(directory: &std::path::Path) -> String {
 }
 #[path = "fixtures/cross_pool.rs"]
 mod cross_pool;
+#[path = "fixtures/cross_pool_batch.rs"]
+mod cross_pool_batch;
 #[path = "fixtures/pool_join.rs"]
 mod pool_join;
 
