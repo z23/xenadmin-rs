@@ -55,14 +55,16 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.
 
 ### Known issues
 
-Those of 0.18.0 stand, with two changes. The details pane's width is now saved. And the
-operator has since used "Type clipboard as keys" from their own seat, on a graphical
-guest and on a text console of the lab, and it worked (2026-11-12); a guest with a
-keyboard layout other than US has still not been tried.
+Those of 0.18.0 stand, with these changes, each from the operator's own seat on
+2026-11-12:
 
-New in this version and not yet seen on a real seat: a console window following a
-change of the interface size made in the main window, and the details pane's width
-coming back after a restart. Each is covered by tests of the window on its own.
+- The details pane's width is saved, and they saw it kept.
+- "Type clipboard as keys" worked for them on a graphical guest and on a text console of
+  the lab. A guest with a keyboard layout other than US has still not been tried.
+- In a graphical guest, dragging works and the wheel scrolls in the expected direction.
+
+They also saw a console window follow a change of the interface size made in the main
+window, and the main window follow one made in the console window.
 
 ## 0.18.0 (2026-11-11)
 
