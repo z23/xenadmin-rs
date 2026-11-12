@@ -5381,10 +5381,14 @@ fn guest_placement(
 #[ignore]
 async fn lab_cross_pool_batch_move_round_trip() {
     use xenadmin_core::{
-        BatchVmWorkflow, CrossPoolBatchSelection, PowerAction, PowerState, VmCommand,
-        VmWorkflowBatch,
+        BatchVmWorkflow, CrossPoolBatchSelection, OperationControl, PowerAction, PowerState,
+        VmCommand, VmWorkflowBatch,
     };
     let lab = Lab::load();
+    // `XENADMIN_LAB_CROSS_POOL_BATCH=live` leaves running guests running, so that they
+    // move live; `=stop` asks the first batch to stop during its first move.
+    let mode = std::env::var("XENADMIN_LAB_CROSS_POOL_BATCH").unwrap_or_default();
+    let (live, stop) = (mode == "live", mode == "stop");
     assert!(lab.hosts.len() >= 3, "three hosts are required");
     let state = tempfile::tempdir().unwrap();
     let backend = Backend::with_state_directory(state.path().into()).unwrap();
@@ -5444,7 +5448,7 @@ async fn lab_cross_pool_batch_move_round_trip() {
     // shut down cleanly first and started again at the end.
     let mut halted = Vec::new();
     for guest in guests {
-        if guest.was_running {
+        if guest.was_running && !live {
             let shutdown = match home.submit(
                 OperationId::new(),
                 VmCommand::Power {
@@ -5624,14 +5628,65 @@ async fn lab_cross_pool_batch_move_round_trip() {
         let operation = from
             .move_vms_to_pool(OperationId::new(), selection, to)
             .expect("cross-pool batch accepted");
+        // Stop is asked for while the first move is under way: it lets that move finish
+        // and starts no other.
+        let mut stopped = false;
+        if stop && outward && reviewed.len() > 1 {
+            let under_way = settle(120, || {
+                operation
+                    .latest()
+                    .workflow_batch
+                    .first()
+                    .is_some_and(|r| r.state.as_ref().is_some_and(|s| !s.terminal()))
+            })
+            .await;
+            let asked = from
+                .control_resource(operation.latest().id, OperationControl::RequestCancellation)
+                .map(|_| true)
+                .map_err(|e| e.to_string());
+            steps.push(json!({"step": "stop the batch during its first move", "first_move_under_way": under_way, "asked": asked}));
+            stopped = true;
+        }
         let outcome = wait_outcome(&operation, 3600).await;
         let mut placed = Vec::new();
-        for (vm, name, operation) in &reviewed {
+        for (index, (vm, name, operation)) in reviewed.iter().enumerate() {
+            let state = outcome
+                .workflow_batch
+                .iter()
+                .find(|r| r.vm == *vm)
+                .map(|r| (r.state.clone(), r.detail.clone()));
+            if stopped && index > 0 {
+                // Never started: still on the source pool, nowhere on the destination,
+                // and its child was never admitted.
+                let stayed = from
+                    .latest()
+                    .inventory()
+                    .is_some_and(|i| i.vms.contains_key(vm))
+                    && to
+                        .latest()
+                        .inventory()
+                        .is_some_and(|i| !i.vms.contains_key(vm));
+                let never_admitted = state.as_ref().is_none_or(|(s, _)| s.is_none());
+                placed.push(
+                    json!({"guest": name, "vm": vm.to_string(), "not_started": true,
+                    "stayed_on_source": stayed, "child_never_admitted": never_admitted}),
+                );
+                if !(stayed && never_admitted) {
+                    failures.push(format!("{label}: {name} was to be left alone by Stop: stayed {stayed}, never admitted {never_admitted}"));
+                }
+                continue;
+            }
+            let moved_running = live && present.iter().any(|g| g.vm.id == *vm && g.was_running);
+            let expected_power = if moved_running {
+                PowerState::Running
+            } else {
+                PowerState::Halted
+            };
             let arrived = settle(120, || {
                 to.latest().inventory().is_some_and(|i| {
                     i.vms
                         .get(vm)
-                        .is_some_and(|v| &v.name == name && v.power_state == PowerState::Halted)
+                        .is_some_and(|v| &v.name == name && v.power_state == expected_power)
                 })
             })
             .await;
@@ -5666,22 +5721,17 @@ async fn lab_cross_pool_batch_move_round_trip() {
                 })
             })
             .await;
-            let state = outcome
-                .workflow_batch
-                .iter()
-                .find(|r| r.vm == *vm)
-                .map(|r| (r.state.clone(), r.detail.clone()));
             placed.push(json!({
-                "guest": name, "vm": vm.to_string(),
+                "guest": name, "vm": vm.to_string(), "moved_running": moved_running,
                 "child_state": state.as_ref().map(|(s, _)| format!("{s:?}")),
                 "child_detail": state.as_ref().map(|(_, d)| d.clone()),
-                "arrived_halted": arrived, "departed_from_source": departed,
+                "arrived_in_its_power_state": arrived, "departed_from_source": departed,
                 "disks_and_nics_as_reviewed": mapped,
                 "disks": operation.disks.len(), "nics": operation.networks.len(),
             }));
             if !(arrived && departed && mapped) {
                 failures.push(format!(
-                    "{label}: {name} arrived halted {arrived}, departed {departed}, placed as reviewed {mapped}"
+                    "{label}: {name} arrived in its power state {arrived}, departed {departed}, placed as reviewed {mapped}"
                 ));
             }
         }
@@ -5690,13 +5740,21 @@ async fn lab_cross_pool_batch_move_round_trip() {
             "state": format!("{:?}", outcome.state), "detail": outcome.detail,
             "elapsed_ms": started.elapsed().as_millis() as u64, "placed": placed,
         }));
-        if outcome.state != OperationState::Succeeded {
+        if stopped {
+            let left = format!("{} not started", reviewed.len() - 1);
+            if !outcome.detail.contains(&left) || outcome.state == OperationState::Succeeded {
+                failures.push(format!(
+                    "{label}: a stopped batch ended {:?}: {}",
+                    outcome.state, outcome.detail
+                ));
+            }
+        } else if outcome.state != OperationState::Succeeded {
             failures.push(format!("{label}: {:?}: {}", outcome.state, outcome.detail));
         }
     }
 
     // Back on the home pool, the guests that were running are started again.
-    for guest in selected.iter().filter(|g| g.was_running) {
+    for guest in selected.iter().filter(|g| g.was_running && !live) {
         let Ok(observed) = home.latest().observe_vm(guest.vm.id) else {
             failures.push(format!(
                 "{} is not on the home pool to be started",
@@ -5760,7 +5818,7 @@ async fn lab_cross_pool_batch_move_round_trip() {
     lab.record(
         "cross-pool-batch-move-round-trip",
         json!({
-            "home_pool": home_pool.to_string(), "away_pool": away_pool.to_string(),
+            "mode": mode, "home_pool": home_pool.to_string(), "away_pool": away_pool.to_string(),
             "guests_in_each_batch": selected.len(),
             "batch_of_one": selected.len() == 1,
             "left_out": left_out, "steps": steps, "legs": legs, "guests": summary,
@@ -16300,6 +16358,355 @@ async fn lab_snapshot_batch_xva_export() {
             assert_eq!(step["read_back"], true, "{step}");
         }
     }
+}
+
+/// P15-06, failure column of the batch of snapshot exports: Stop and an interruption. A
+/// memory checkpoint and two disk snapshots of the running guest are taken. A first batch
+/// exports the checkpoint with its memory, which takes long enough to act on, and the two
+/// snapshots; Stop is asked for during the first export, which must finish and be the only
+/// archive. A second batch, the checkpoint again and one snapshot, is cut off by the
+/// application closing during its first export. On restart the batch is unknown and a
+/// recheck reads what there is: nothing is downloaded again, nothing is published and the
+/// second export is never started. Whatever is left unknown is acknowledged, and a third
+/// batch of one snapshot shows the pool is free again. Everything made is removed.
+#[tokio::test]
+#[ignore]
+async fn lab_snapshot_batch_stop_and_interruption() {
+    use xenadmin_core::{
+        BatchVmWorkflow, ExportSource, OperationControl, PowerAction, PowerState, SnapshotName,
+        TransferFile, VmCommand, VmExportFormat, VmWorkflowBatch, XvaCompression,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let directory = lab.evidence.parent().unwrap().join("transfers");
+    std::fs::create_dir_all(&directory).unwrap();
+    let format = VmExportFormat::Xva {
+        compression: XvaCompression::Uncompressed,
+    };
+    let mut steps = Vec::new();
+    let mut failures = Vec::new();
+    let names = [
+        format!("lab-stop-checkpoint-{stamp}"),
+        format!("lab-stop-snapshot-a-{stamp}"),
+        format!("lab-stop-snapshot-b-{stamp}"),
+    ];
+    let path = |leg: &str, name: &str| directory.join(format!("{name}-{leg}.xva"));
+    let children = |row: &xenadmin_core::ResourceOperationRecord| {
+        row.workflow_batch
+            .iter()
+            .map(|r| json!({"state": r.state.as_ref().map(|s| format!("{s:?}")), "detail": r.detail}))
+            .collect::<Vec<_>>()
+    };
+
+    // First process: the snapshots, the stopped batch, and the batch that is cut off.
+    let interrupted = OperationId::new();
+    let (vm, ids) = {
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let c = connect(&lab, &backend, 0, false).await;
+        let guest = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .guests()
+            .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+            .expect("lab guest")
+            .clone();
+        let vm = guest.id;
+        if guest.power_state != PowerState::Running {
+            power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        }
+        let listed = |c: &Connection, name: &str| {
+            c.latest().inventory().and_then(|i| {
+                i.snapshots
+                    .for_vm(vm)
+                    .find(|s| s.name == name)
+                    .map(|s| s.id)
+            })
+        };
+        for (index, name) in names.iter().enumerate() {
+            let observed = c.latest().observe_vm(vm).unwrap();
+            let name = SnapshotName::new(name).unwrap();
+            let command = if index == 0 {
+                VmCommand::CreateCheckpoint { vm: observed, name }
+            } else {
+                VmCommand::CreateSnapshot { vm: observed, name }
+            };
+            let row = wait_vm_outcome(
+                &c.submit(OperationId::new(), command).expect("accepted"),
+                300,
+            )
+            .await;
+            let seen = settle(60, || listed(&c, &names[index]).is_some()).await;
+            assert!(
+                row.state == OperationState::Succeeded && seen,
+                "{} was not taken: {}",
+                names[index],
+                row.detail
+            );
+        }
+        let ids = names
+            .iter()
+            .map(|n| listed(&c, n).expect("listed"))
+            .collect::<Vec<_>>();
+        let memory_known = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| ExportSource::checkpoint(i, ids[0], vm, true).is_some())
+        })
+        .await;
+        assert!(memory_known, "the checkpoint's memory image is not listed");
+        let source = |c: &Connection, index: usize| {
+            if index == 0 {
+                ExportSource::checkpoint(c.latest().inventory().unwrap(), ids[0], vm, true).unwrap()
+            } else {
+                ExportSource::Snapshot {
+                    snapshot: ids[index],
+                    parent: vm,
+                }
+            }
+        };
+        let submit = |c: &Connection, id: OperationId, leg: &str, which: &[usize]| {
+            let batch = VmWorkflowBatch {
+                items: which
+                    .iter()
+                    .map(|i| {
+                        BatchVmWorkflow::snapshot_export(&source(c, *i), format.clone()).unwrap()
+                    })
+                    .collect(),
+            };
+            let outputs = which
+                .iter()
+                .map(|i| {
+                    (
+                        ids[*i],
+                        TransferFile::destination(path(leg, &names[*i])).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let pool = c.latest().inventory().unwrap().pool_id;
+            c.submit_snapshot_export_batch(
+                id,
+                c.latest()
+                    .observe_resource(ResourceTarget::Pool(pool))
+                    .unwrap(),
+                batch,
+                outputs,
+            )
+            .expect("batch accepted")
+        };
+        let first_under_way = |operation: &xenadmin_core::ResourceOperation| {
+            operation.latest().workflow_batch.first().is_some_and(|r| {
+                r.state
+                    .as_ref()
+                    .is_some_and(|s| *s == OperationState::Tracking)
+            })
+        };
+
+        // Stop during the first export.
+        let stopped = submit(&c, OperationId::new(), "stop", &[0, 1, 2]);
+        let under_way = settle(120, || first_under_way(&stopped)).await;
+        let asked = c
+            .control_resource(stopped.latest().id, OperationControl::RequestCancellation)
+            .map(|_| true)
+            .map_err(|e| e.to_string());
+        let row = wait_outcome(&stopped, 1800).await;
+        let files = [0, 1, 2].map(|i| path("stop", &names[i]).exists());
+        steps.push(json!({"step": "stop a batch of three during its first export", "first_export_under_way": under_way, "asked": asked,
+            "state": format!("{:?}", row.state), "detail": row.detail, "children": children(&row), "archives_present": files}));
+        if !(under_way
+            && files == [true, false, false]
+            && row.workflow_batch[0].state == Some(OperationState::Succeeded)
+            && row.workflow_batch[1..].iter().all(|r| r.state.is_none()))
+        {
+            failures.push(format!(
+                "Stop: {:?}: {}; archives {files:?}",
+                row.state, row.detail
+            ));
+        }
+
+        // Cut off during the first export of a second batch.
+        let cut = submit(&c, interrupted, "cut", &[0, 1]);
+        let under_way = settle(120, || first_under_way(&cut)).await;
+        // Let some of the archive arrive, so that there is a transfer to cut.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let state_at_close = format!("{:?}", cut.latest().state);
+        let children_at_close = children(&cut.latest());
+        c.close().await;
+        drop(backend);
+        steps.push(json!({"step": "close the application during the first export of a batch of two", "first_export_under_way": under_way,
+            "state_at_close": state_at_close, "children_at_close": children_at_close}));
+        if !under_way {
+            failures.push("the second batch was not under way when the application closed".into());
+        }
+        (vm, ids)
+    };
+
+    // Second process, same state directory.
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let row =
+        |c: &Connection, id: OperationId| c.resource_history().iter().find(|r| r.id == id).cloned();
+    let recovered = settle(120, || {
+        row(&c, interrupted)
+            .is_some_and(|r| r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+    })
+    .await;
+    let after_restart = row(&c, interrupted);
+    let present_after_restart = [0, 1].map(|i| path("cut", &names[i]).exists());
+    steps.push(json!({"step": "after the restart", "record_found": after_restart.is_some(), "settled": recovered,
+        "state": after_restart.as_ref().map(|r| format!("{:?}", r.state)), "detail": after_restart.as_ref().map(|r| r.detail.clone()),
+        "children": after_restart.as_ref().map(&children),
+        "archives_present": present_after_restart}));
+    let mut last = after_restart.clone();
+    let mut rechecks = Vec::new();
+    while last
+        .as_ref()
+        .is_some_and(|r| r.state == OperationState::OutcomeUnknown)
+        && rechecks.len() < 6
+    {
+        let before = last
+            .as_ref()
+            .map(|r| (format!("{:?}", r.state), r.detail.clone(), children(r)));
+        let asked = c
+            .control_resource(interrupted, OperationControl::Recheck)
+            .map(|_| true)
+            .map_err(|e| e.to_string());
+        let moved = settle(60, || {
+            row(&c, interrupted).map(|r| (format!("{:?}", r.state), r.detail.clone(), children(&r)))
+                != before
+        })
+        .await;
+        settle(120, || {
+            row(&c, interrupted)
+                .is_some_and(|r| r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+        })
+        .await;
+        last = row(&c, interrupted);
+        rechecks.push(json!({"asked": asked, "moved": moved, "state": last.as_ref().map(|r| format!("{:?}", r.state)),
+            "detail": last.as_ref().map(|r| r.detail.clone()), "children": last.as_ref().map(&children)}));
+        if !moved {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+    let published = [0, 1].map(|i| path("cut", &names[i]).exists());
+    steps.push(json!({"step": "recheck the interrupted batch", "rechecks": rechecks, "archives_present": published}));
+    match &last {
+        Some(r) => {
+            // Nothing is published by a recheck, and the second export was never started.
+            if published != [false, false] {
+                failures.push(format!(
+                    "an archive appeared after the interruption: {published:?}"
+                ));
+            }
+            if r.workflow_batch
+                .get(1)
+                .is_some_and(|child| child.state.is_some())
+            {
+                failures.push(format!("the second export was started: {:?}", children(r)));
+            }
+        }
+        None => failures.push("the interrupted batch has no record after the restart".into()),
+    }
+    if last
+        .as_ref()
+        .is_some_and(|r| r.state == OperationState::OutcomeUnknown)
+    {
+        let asked = c
+            .control_resource(interrupted, OperationControl::AcknowledgeUnknown)
+            .map(|_| true)
+            .map_err(|e| e.to_string());
+        let released = settle(60, || {
+            row(&c, interrupted).is_some_and(|r| r.state == OperationState::AcknowledgedUnknown)
+        })
+        .await;
+        steps.push(json!({"step": "acknowledge what stayed unknown", "asked": asked, "acknowledged": released}));
+        if !released {
+            failures.push("the unknown batch could not be acknowledged".into());
+        }
+    }
+
+    // The pool is free again: a batch of one snapshot goes through.
+    let source = ExportSource::Snapshot {
+        snapshot: ids[1],
+        parent: vm,
+    };
+    let pool = c.latest().inventory().unwrap().pool_id;
+    let free = c.submit_snapshot_export_batch(
+        OperationId::new(),
+        c.latest()
+            .observe_resource(ResourceTarget::Pool(pool))
+            .unwrap(),
+        VmWorkflowBatch {
+            items: vec![BatchVmWorkflow::snapshot_export(&source, format.clone()).unwrap()],
+        },
+        vec![(
+            ids[1],
+            TransferFile::destination(path("after", &names[1])).unwrap(),
+        )],
+    );
+    match free {
+        Ok(operation) => {
+            let row = wait_outcome(&operation, 900).await;
+            let present = path("after", &names[1]).exists();
+            steps.push(json!({"step": "a batch of one afterwards", "state": format!("{:?}", row.state), "detail": row.detail, "archive_present": present}));
+            if row.state != OperationState::Succeeded || !present {
+                failures.push(format!(
+                    "a batch afterwards did not go through: {:?}: {}",
+                    row.state, row.detail
+                ));
+            }
+        }
+        Err(error) => failures.push(format!("a batch afterwards was not accepted: {error}")),
+    }
+
+    // Remove the archives, then the snapshots and the checkpoint with their disks.
+    for leg in ["stop", "cut", "after"] {
+        for name in &names {
+            let _ = std::fs::remove_file(path(leg, name));
+        }
+    }
+    for (index, id) in ids.iter().enumerate() {
+        let disks = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(*id) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(vm, *id).unwrap(),
+                    disks,
+                },
+            )
+            .expect("deletion accepted");
+        let row = wait_vm_outcome(&deletion, 300).await;
+        let gone = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.snapshots.get(id).is_none())
+        })
+        .await;
+        if row.state != OperationState::Succeeded || !gone {
+            failures.push(format!("{} was not deleted: {}", names[index], row.detail));
+        }
+    }
+    c.close().await;
+    lab.record(
+        "snapshot-batch-stop-and-interruption",
+        json!({"steps": steps, "failures": failures}),
+    );
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 /// P10-04, P10-09, P09-02, P09-03, P09-05, P09-06, P09-08: rescan each pool host's physical
