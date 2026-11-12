@@ -749,6 +749,11 @@ fn journal_file_failure(stage: &'static str, error: std::io::Error) -> Error {
     );
     Error::Journal
 }
+/// The journal format this build writes, kept in SQLite's `user_version`. An older format
+/// is migrated when the file is opened and a newer one is refused. Formats 2 to 4 added
+/// tables. Format 5 adds none: it is the first whose batch rows may name a snapshot
+/// export, which the release that stops at format 4 cannot parse.
+pub(crate) const JOURNAL_FORMAT: u64 = 5;
 static JOURNAL_INITIALIZATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) struct Journal(pub(crate) rusqlite::Connection);
@@ -790,7 +795,7 @@ impl Journal {
         let version: u64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|error| journal_sqlite_failure("read-version", error))?;
-        if version > 4 {
+        if version > JOURNAL_FORMAT {
             return Err(Error::JournalVersion);
         }
         let journal_mode: String = connection
@@ -807,7 +812,7 @@ impl Journal {
         connection
             .execute_batch("PRAGMA synchronous=FULL;")
             .map_err(|error| journal_sqlite_failure("full-durability", error))?;
-        if version < 4 {
+        if version < JOURNAL_FORMAT {
             let transaction = rusqlite::Transaction::new_unchecked(
                 &connection,
                 rusqlite::TransactionBehavior::Immediate,
@@ -816,21 +821,29 @@ impl Journal {
             let locked_version: u64 = transaction
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .map_err(|error| journal_sqlite_failure("migration-read-version", error))?;
-            if locked_version > 4 {
+            if locked_version > JOURNAL_FORMAT {
                 return Err(Error::JournalVersion);
             }
-            transaction.execute_batch("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|error| journal_sqlite_failure("migration-create-vm-table",error))?;
-            let has_revision:bool=transaction.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')",[],|row|row.get(0)).map_err(|error| journal_sqlite_failure("migration-inspect-columns",error))?;
-            if !has_revision {
+            if locked_version < 4 {
+                transaction.execute_batch("CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, vm TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0);").map_err(|error| journal_sqlite_failure("migration-create-vm-table",error))?;
+                let has_revision:bool=transaction.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('operations') WHERE name='revision')",[],|row|row.get(0)).map_err(|error| journal_sqlite_failure("migration-inspect-columns",error))?;
+                if !has_revision {
+                    transaction
+                        .execute_batch(
+                            "ALTER TABLE operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;",
+                        )
+                        .map_err(|error| journal_sqlite_failure("migration-add-revision", error))?;
+                }
                 transaction
-                    .execute_batch(
-                        "ALTER TABLE operations ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;",
-                    )
-                    .map_err(|error| journal_sqlite_failure("migration-add-revision", error))?;
+                    .execute_batch("CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, result_reference TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS workflow_batch_children (parent TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal >= 0 AND ordinal < 32), child TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK(kind IN ('vm','resource')), PRIMARY KEY(parent,ordinal));")
+                    .map_err(|error| journal_sqlite_failure("migration-create-resource-table",error))?;
             }
+            // Format 5 changes no table and no row: everything a format 4 journal holds is
+            // read as it stands. The number is raised so that a build which stops at
+            // format 4 refuses the file instead of meeting a batch row it cannot parse.
             transaction
-                .execute_batch("CREATE TABLE IF NOT EXISTS resource_operations (id TEXT PRIMARY KEY, pool TEXT NOT NULL, payload TEXT NOT NULL, task TEXT, result_reference TEXT, terminal INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS workflow_batch_children (parent TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal >= 0 AND ordinal < 32), child TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK(kind IN ('vm','resource')), PRIMARY KEY(parent,ordinal)); PRAGMA user_version=4;")
-                .map_err(|error| journal_sqlite_failure("migration-create-resource-table",error))?;
+                .execute_batch(&format!("PRAGMA user_version={JOURNAL_FORMAT};"))
+                .map_err(|error| journal_sqlite_failure("migration-set-format", error))?;
             transaction
                 .commit()
                 .map_err(|error| journal_sqlite_failure("migration-commit", error))?;

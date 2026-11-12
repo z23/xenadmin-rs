@@ -10,7 +10,29 @@ checkpoints.
 
 ## 0.20.0 (in development)
 
-Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.19.0.
+Stored formats: operation journal 5, connection profiles 3. The journal format changes
+from 4. This version marks a journal as format 5 the first time it opens it. 0.19.0 then
+refuses that journal, says it was written by a newer application and leaves it as it is,
+so 0.19.0 cannot submit changes from a state directory this version has used. Nothing
+stored is rewritten: no table and no recorded operation changes. Format 5 is the first
+that may hold a batch of snapshot exports, which 0.19.0 cannot read.
+
+### Added
+
+- Several snapshots of a VM can be exported in one reviewed batch. In the VM's Snapshots
+  view, Shift or Ctrl with a click selects 1 to 32 snapshots, and "Export selection…"
+  opens a review that lists each snapshot's name and UUID, its own new output path, the
+  format and the permission assessment. The snapshots are exported one after another,
+  each as an archive of its own: plain, gzip or zstd XVA, or for disk snapshots an OVF
+  directory or an OVA file. A memory checkpoint is exported as XVA only, and its archive
+  holds the guest's memory only where "Include guest memory" is chosen for that
+  checkpoint; otherwise it holds configuration and disks. Every snapshot and destination
+  is checked before the first transfer, Stop finishes the current archive and skips the
+  rest, and a recheck reads what exists without downloading or publishing anything. While
+  several snapshots are selected, restore, edit, copy, inspect, delete and the single
+  export are unavailable, because each takes one snapshot. The batch is experimental: it
+  is verified by fixtures and has not been run against a host
+  ([report](docs/reports/2026-11-12-batch-snapshot-export.md)).
 
 ### Changed
 

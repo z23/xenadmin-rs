@@ -14934,6 +14934,231 @@ async fn lab_snapshot_xva_export() {
     }
 }
 
+/// P15-06, P05-01: take a disk snapshot and a memory checkpoint of the running guest and
+/// export both in one reviewed batch as uncompressed XVA into the lab's private transfer
+/// directory, the checkpoint with its memory chosen for that item. Each archive is then read
+/// back with the client's own inspection: one guest each, under the snapshot's UUID, with one
+/// memory image in the checkpoint's archive and none in the disk snapshot's. The archives,
+/// the snapshot and the checkpoint are removed afterwards. Not yet run on the lab.
+#[tokio::test]
+#[ignore]
+async fn lab_snapshot_batch_xva_export() {
+    use xenadmin_core::{
+        BatchVmWorkflow, ExportSource, PowerAction, PowerState, SnapshotName, TransferAction,
+        TransferFile, VmCommand, VmExportFormat, VmWorkflowBatch, XvaCompression,
+    };
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let guest = inventory
+        .guests()
+        .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+        .expect("lab guest")
+        .clone();
+    let vm = guest.id;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut steps = Vec::new();
+    if guest.power_state != PowerState::Running {
+        let mut start = power_to(&c, vm, PowerAction::Start, PowerState::Running).await;
+        start["step"] = json!("start the guest");
+        steps.push(start);
+    }
+    let listed = |name: &str| {
+        c.latest().inventory().and_then(|i| {
+            i.snapshots
+                .for_vm(vm)
+                .find(|s| s.name == name)
+                .map(|s| s.id)
+        })
+    };
+    let snapshot_name = format!("lab-batch-snapshot-{stamp}");
+    let snapshot = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                name: SnapshotName::new(&snapshot_name).unwrap(),
+            },
+        )
+        .expect("snapshot accepted");
+    let row = wait_vm_outcome(&snapshot, 300).await;
+    let read_back = settle(60, || listed(&snapshot_name).is_some()).await;
+    steps.push(json!({"step": "take a disk snapshot", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": read_back}));
+    let checkpoint_name = format!("lab-batch-checkpoint-{stamp}");
+    let checkpoint = c
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateCheckpoint {
+                vm: c.latest().observe_vm(vm).unwrap(),
+                name: SnapshotName::new(&checkpoint_name).unwrap(),
+            },
+        )
+        .expect("checkpoint accepted");
+    let row = wait_vm_outcome(&checkpoint, 300).await;
+    let read_back = settle(60, || listed(&checkpoint_name).is_some()).await;
+    steps.push(json!({"step": "take a memory checkpoint", "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": read_back}));
+    let snapshot_id = listed(&snapshot_name).expect("snapshot listed");
+    let checkpoint_id = listed(&checkpoint_name).expect("checkpoint listed");
+
+    // What a review shows: the checkpoint's memory image as the inventory has it, with
+    // its memory chosen, and the availability of each single export.
+    let reviewed = |preserve_memory: bool| {
+        c.latest()
+            .inventory()
+            .and_then(|i| ExportSource::checkpoint(i, checkpoint_id, vm, preserve_memory))
+    };
+    let memory_known = settle(120, || reviewed(true).is_some()).await;
+    // Without a memory image to review there is nothing to export; what was created is
+    // still removed below, and the missing review fails the scenario at the end.
+    let sources = [
+        Some(ExportSource::Snapshot {
+            snapshot: snapshot_id,
+            parent: vm,
+        }),
+        reviewed(true),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    let current = c.latest().inventory().unwrap().clone();
+    let available = sources
+        .iter()
+        .map(|source| {
+            TransferAction::ExportXva {
+                source: source.clone(),
+                compression: XvaCompression::Uncompressed,
+            }
+            .availability(&current)
+            .explanation()
+        })
+        .collect::<Vec<_>>();
+    let reviewable = sources.len() == 2 && available.iter().all(|a| a == "Available");
+    steps.push(json!({"step": "review both sources", "memory_image_listed": memory_known, "availability": available,
+        "read_back": reviewable}));
+    let format = VmExportFormat::Xva {
+        compression: XvaCompression::Uncompressed,
+    };
+    let batch = VmWorkflowBatch {
+        items: sources
+            .iter()
+            .map(|source| BatchVmWorkflow::snapshot_export(source, format.clone()).unwrap())
+            .collect(),
+    };
+    let directory = lab.evidence.parent().unwrap().join("transfers");
+    std::fs::create_dir_all(&directory).unwrap();
+    let paths =
+        [&snapshot_name, &checkpoint_name].map(|name| directory.join(format!("{name}.xva")));
+    let outputs = [snapshot_id, checkpoint_id]
+        .into_iter()
+        .zip(&paths)
+        .filter_map(|(id, path)| Some((id, TransferFile::destination(path).ok()?)))
+        .collect::<Vec<_>>();
+    let started = std::time::Instant::now();
+    let export = if reviewable && outputs.len() == 2 {
+        c.submit_snapshot_export_batch(
+            OperationId::new(),
+            c.latest()
+                .observe_resource(ResourceTarget::Pool(current.pool_id))
+                .unwrap(),
+            batch,
+            outputs,
+        )
+        .map_err(|error| error.to_string())
+    } else {
+        Err("the review or a destination was not available".to_owned())
+    };
+    match export {
+        Ok(export) => {
+            let outcome = wait_outcome(&export, 3600).await;
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            // Read each archive back whole, as an import would before it is offered.
+            let archives = paths
+                .iter()
+                .map(|path| match TransferFile::source(path) {
+                    Ok(file) => {
+                        let archive = file.archive().expect("an XVA archive");
+                        json!({"bytes": file.size(), "guests": archive.guests.len(),
+                            "guest": archive.guests.first().map(|g| g.uuid.to_string()),
+                            "memory_images": archive.memory_images(), "data_disks": archive.data_disks})
+                    }
+                    Err(error) => json!({"error": error.to_string()}),
+                })
+                .collect::<Vec<_>>();
+            let verified = [(snapshot_id, 0), (checkpoint_id, 1)]
+                .iter()
+                .zip(&archives)
+                .all(|((id, memory_images), archive)| {
+                    archive["guests"] == 1
+                        && archive["guest"] == id.to_string()
+                        && archive["memory_images"] == *memory_images
+                });
+            steps.push(json!({"step": "export the snapshot and the checkpoint with its memory in one batch", "accepted": true,
+                "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": elapsed_ms,
+                "children": outcome.workflow_batch.iter().map(|r| json!({"child": r.child.to_string(), "state": r.state.as_ref().map(|s| format!("{s:?}")), "detail": r.detail})).collect::<Vec<_>>(),
+                "steps": outcome.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>(),
+                "archives": archives, "read_back": verified}));
+        }
+        Err(error) => steps.push(json!({"step": "export the snapshot and the checkpoint with its memory in one batch", "accepted": false, "state": "Not submitted", "detail": error})),
+    }
+    for path in &paths {
+        let _ = std::fs::remove_file(path);
+    }
+    let removed = paths.iter().all(|path| !path.exists());
+    steps.push(json!({"step": "remove the archives", "read_back": removed}));
+
+    for (label, id) in [("snapshot", snapshot_id), ("checkpoint", checkpoint_id)] {
+        let disks = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .details
+            .vbds
+            .values()
+            .filter(|b| b.snapshot == Some(id) && b.kind == "Disk")
+            .filter_map(|b| b.vdi)
+            .collect::<Vec<_>>();
+        let deletion = c
+            .submit(
+                OperationId::new(),
+                VmCommand::DeleteSnapshot {
+                    snapshot: c.latest().observe_snapshot(vm, id).unwrap(),
+                    disks,
+                },
+            )
+            .expect("deletion accepted");
+        let row = wait_vm_outcome(&deletion, 300).await;
+        let gone = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.snapshots.get(&id).is_none())
+        })
+        .await;
+        steps.push(json!({"step": format!("delete the {label}"), "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "read_back": gone}));
+    }
+    c.close().await;
+    lab.record(
+        "snapshot-batch-xva-export",
+        json!({"guest": guest.name, "snapshot": snapshot_name, "checkpoint": checkpoint_name, "steps": steps}),
+    );
+    for step in &steps {
+        if step.get("accepted").is_some() {
+            assert_eq!(step["accepted"], true, "{step}");
+            assert_eq!(step["state"], "Succeeded", "{step}");
+        }
+        if step.get("reached").is_some() {
+            assert_eq!(step["reached"], true, "{step}");
+        }
+        if step.get("read_back").is_some() {
+            assert_eq!(step["read_back"], true, "{step}");
+        }
+    }
+}
+
 /// P10-04, P10-09, P09-02, P09-03, P09-05, P09-06, P09-08: rescan each pool host's physical
 /// interfaces so its storage NIC appears, give that NIC a static address on the isolated
 /// storage network, probe the appliance's NFS exports through the coordinator, create a

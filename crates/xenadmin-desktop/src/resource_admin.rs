@@ -765,11 +765,23 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
                 view = view.child(caption(format!("{label}: {id}"), k).wrap_anywhere());
             }
         }
-        for result in &record.workflow_batch {
+        for (index, result) in record.workflow_batch.iter().enumerate() {
+            // Several snapshots of one VM share its UUID, so each line names its snapshot.
+            let snapshot = match &record.action {
+                xenadmin_core::ResourceAction::VmWorkflowBatch(batch) => {
+                    match batch.items.get(index).map(|item| &item.workflow) {
+                        Some(xenadmin_core::VmWorkflow::ExportSnapshot { snapshot, .. }) => {
+                            format!("Snapshot {snapshot} of ")
+                        }
+                        _ => String::new(),
+                    }
+                }
+                _ => String::new(),
+            };
             view = view.child(
                 caption(
                     format!(
-                        "VM {} · child {} · {}\n{}",
+                        "{snapshot}VM {} · child {} · {}\n{}",
                         result.vm,
                         result.child,
                         result
@@ -836,6 +848,12 @@ fn history(s: &State, target: ResourceTarget, pool: PoolId, k: &Kit) -> El {
             view = view.child(
                 Button::new(
                     if matches!(
+                        &record.action,
+                        xenadmin_core::ResourceAction::VmWorkflowBatch(batch)
+                            if batch.is_snapshot_export()
+                    ) {
+                        "Finish current snapshot and stop"
+                    } else if matches!(
                         record.action,
                         xenadmin_core::ResourceAction::VmWorkflowBatch(_)
                     ) {

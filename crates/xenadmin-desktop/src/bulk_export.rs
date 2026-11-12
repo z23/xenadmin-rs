@@ -1,16 +1,20 @@
 use super::*;
 use std::{path::PathBuf, sync::mpsc};
 use xenadmin_core::{
-    BatchVmWorkflow, ObservedResource, OvfPackageFormat, ResourceTarget, TransferAction,
-    TransferFile, VmExportFormat, VmWorkflow, VmWorkflowBatch, XvaCompression,
+    BatchVmWorkflow, ExportSource, ObservedResource, OvfPackageFormat, ResourceTarget,
+    TransferAction, TransferFile, VmExportFormat, VmWorkflow, VmWorkflowBatch, XvaCompression,
 };
+#[path = "bulk_export_snapshots.rs"]
+mod snapshots;
+use snapshots::SnapshotTarget;
+pub(super) use snapshots::{button as snapshots_button, scene as snapshot_scene};
 
 pub(super) struct Editor {
     id: uuid::Uuid,
     pool: PoolId,
     pool_name: String,
     observed: Option<ObservedResource>,
-    targets: Vec<Vm>,
+    targets: Vec<Target>,
     format: VmExportFormat,
     files: Vec<Option<(PathBuf, TransferFile)>>,
     pending: Option<usize>,
@@ -18,10 +22,32 @@ pub(super) struct Editor {
     review: Option<Review>,
     error: Option<String>,
 }
+/// What one item of the editor exports. An editor holds VMs or snapshots, never both.
+#[derive(Clone)]
+enum Target {
+    Vm(Vm),
+    Snapshot(SnapshotTarget),
+}
+impl Target {
+    /// The UUID of the exported object. Its output is bound to it.
+    fn id(&self) -> uuid::Uuid {
+        match self {
+            Self::Vm(vm) => vm.id.uuid(),
+            Self::Snapshot(target) => target.snapshot.id.uuid(),
+        }
+    }
+    fn name(&self) -> &str {
+        match self {
+            Self::Vm(vm) => &vm.name,
+            Self::Snapshot(target) => &target.snapshot.name,
+        }
+    }
+}
 #[derive(Clone, PartialEq)]
 struct Review {
     batch: VmWorkflowBatch,
-    outputs: Vec<(VmId, TransferFile)>,
+    /// One output for each item of the batch, in its order.
+    outputs: Vec<TransferFile>,
     paths: Vec<String>,
 }
 fn selected(s: &State) -> Result<Vec<Vm>, String> {
@@ -52,14 +78,16 @@ fn selected(s: &State) -> Result<Vec<Vm>, String> {
         .collect()
 }
 pub(super) fn open(s: &mut State) {
-    let targets = match selected(s) {
-        Ok(v) => v,
-        Err(e) => {
-            s.error = Some(e);
-            return;
-        }
+    match selected(s) {
+        Ok(vms) => begin(s, vms.into_iter().map(Target::Vm).collect()),
+        Err(e) => s.error = Some(e),
+    }
+}
+/// Opens the editor on captured targets of the current inventory.
+fn begin(s: &mut State, targets: Vec<Target>) {
+    let Some(i) = s.inventory.as_ref() else {
+        return;
     };
-    let i = s.inventory.as_ref().unwrap();
     s.bulk_export = Some(Editor {
         id: uuid::Uuid::new_v4(),
         pool: i.pool_id,
@@ -91,11 +119,8 @@ fn current(s: &State, e: &Editor) -> bool {
             .and_then(|v| v.observe_resource(ResourceTarget::Pool(e.pool)).ok())
             == e.observed
 }
-fn action(vm: &Vm, format: &VmExportFormat) -> TransferAction {
-    let source = xenadmin_core::ExportSource::Vm {
-        vm: vm.id,
-        expected_template: vm.is_template,
-    };
+/// The single export of `source` in `format`: its availability is the batch item's.
+fn action(source: ExportSource, format: &VmExportFormat) -> TransferAction {
     match format {
         VmExportFormat::Xva { compression } => TransferAction::ExportXva {
             source,
@@ -107,6 +132,42 @@ fn action(vm: &Vm, format: &VmExportFormat) -> TransferAction {
         },
     }
 }
+fn vm_item(
+    i: &Inventory,
+    captured: &Vm,
+    format: &VmExportFormat,
+) -> Result<BatchVmWorkflow, String> {
+    let v = i
+        .vms
+        .get(&captured.id)
+        .filter(|v| {
+            !v.is_control_domain
+                && v.is_template == captured.is_template
+                && v.power_state == captured.power_state
+        })
+        .ok_or_else(|| {
+            format!(
+                "{} ({}): identity or power state changed",
+                captured.name, captured.id
+            )
+        })?;
+    let source = ExportSource::Vm {
+        vm: v.id,
+        expected_template: v.is_template,
+    };
+    let status = action(source, format).availability(i);
+    if !status.is_available() {
+        return Err(format!("{} ({}): {}", v.name, v.id, status.explanation()));
+    }
+    Ok(BatchVmWorkflow {
+        vm: v.id,
+        expected_state: v.power_state.clone(),
+        workflow: VmWorkflow::Export {
+            expected_template: v.is_template,
+            format: format.clone(),
+        },
+    })
+}
 fn proposal(s: &State, e: &Editor) -> Result<Review, String> {
     let i = s
         .inventory
@@ -116,28 +177,14 @@ fn proposal(s: &State, e: &Editor) -> Result<Review, String> {
     let mut items = Vec::new();
     let mut outputs = Vec::new();
     let mut paths = Vec::new();
-    for (index, captured) in e.targets.iter().enumerate() {
-        let v = i
-            .vms
-            .get(&captured.id)
-            .filter(|v| {
-                !v.is_control_domain
-                    && v.is_template == captured.is_template
-                    && v.power_state == captured.power_state
-            })
-            .ok_or_else(|| {
-                format!(
-                    "{} ({}): identity or power state changed",
-                    captured.name, captured.id
-                )
-            })?;
-        let status = action(v, &e.format).availability(i);
-        if !status.is_available() {
-            return Err(format!("{} ({}): {}", v.name, v.id, status.explanation()));
-        }
+    for (index, target) in e.targets.iter().enumerate() {
+        let item = match target {
+            Target::Vm(captured) => vm_item(i, captured, &e.format)?,
+            Target::Snapshot(captured) => captured.item(i, &e.format)?,
+        };
         let (path, file) = e.files[index]
             .as_ref()
-            .ok_or_else(|| format!("Choose the output for {} ({})", v.name, v.id))?;
+            .ok_or_else(|| format!("Choose the output for {} ({})", target.name(), target.id()))?;
         if paths
             .iter()
             .any(|p: &String| PathBuf::from(p).starts_with(path) || path.starts_with(p))
@@ -148,15 +195,8 @@ fn proposal(s: &State, e: &Editor) -> Result<Review, String> {
             );
         }
         paths.push(path.to_string_lossy().into_owned());
-        outputs.push((v.id, file.clone()));
-        items.push(BatchVmWorkflow {
-            vm: v.id,
-            expected_state: v.power_state.clone(),
-            workflow: VmWorkflow::Export {
-                expected_template: v.is_template,
-                format: e.format.clone(),
-            },
-        });
+        outputs.push(file.clone());
+        items.push(item);
     }
     let batch = VmWorkflowBatch { items };
     let permission = session_permissions_view::assess(s, &batch.permission_requirements());
@@ -171,6 +211,9 @@ fn proposal(s: &State, e: &Editor) -> Result<Review, String> {
 }
 fn change_format(s: &mut State, format: VmExportFormat) {
     let e = edit(s);
+    if !formats(e).iter().any(|(_, _, offered)| *offered == format) {
+        return;
+    }
     e.id = uuid::Uuid::new_v4();
     e.format = format;
     e.files.fill(None);
@@ -186,7 +229,7 @@ fn choose(s: &mut State, tx: &mut Tx, index: usize) {
     }
     let id = e.id;
     let format = e.format.clone();
-    let vm = e.targets[index].id;
+    let target = e.targets[index].id();
     e.pending = Some(index);
     e.error = None;
     e.review = None;
@@ -201,14 +244,14 @@ fn choose(s: &mut State, tx: &mut Tx, index: usize) {
     tx.save_file(
         rune::FileDialogOptions {
             title: "Choose a new export file or package directory".into(),
-            file_name: Some(format!("{vm}.{extension}")),
+            file_name: Some(format!("{target}.{extension}")),
             ..Default::default()
         },
         move |s: &mut State, result, _| {
             let Some(e) = s.bulk_export.as_mut().filter(|e| {
                 e.id == id
                     && e.format == format
-                    && e.targets.get(index).is_some_and(|v| v.id == vm)
+                    && e.targets.get(index).is_some_and(|v| v.id() == target)
                     && e.pending == Some(index)
             }) else {
                 return;
@@ -284,15 +327,28 @@ fn submit(s: &mut State) {
         {
             return Err(xenadmin_core::Error::Stale);
         }
-        s.connection
-            .as_ref()
-            .ok_or(xenadmin_core::Error::Closed)?
-            .submit_vm_workflow_batch(
-                xenadmin_core::OperationId::new(),
-                e.observed.unwrap(),
-                r.batch.clone(),
-                r.outputs.clone(),
-            )
+        let connection = s.connection.as_ref().ok_or(xenadmin_core::Error::Closed)?;
+        let id = xenadmin_core::OperationId::new();
+        let observed = e.observed.ok_or(xenadmin_core::Error::Stale)?;
+        // Each output goes with the object its destination was chosen for.
+        let targets = e.targets.iter().zip(&r.outputs);
+        if r.batch.is_snapshot_export() {
+            let outputs = targets
+                .filter_map(|(target, file)| match target {
+                    Target::Snapshot(t) => Some((t.snapshot.id, file.clone())),
+                    Target::Vm(_) => None,
+                })
+                .collect();
+            connection.submit_snapshot_export_batch(id, observed, r.batch.clone(), outputs)
+        } else {
+            let outputs = targets
+                .filter_map(|(target, file)| match target {
+                    Target::Vm(vm) => Some((vm.id, file.clone())),
+                    Target::Snapshot(_) => None,
+                })
+                .collect();
+            connection.submit_vm_workflow_batch(id, observed, r.batch.clone(), outputs)
+        }
     })();
     match result {
         Ok(op) => {
@@ -315,6 +371,7 @@ pub(super) fn button(s: &State, k: &Kit) -> El {
 }
 pub(super) fn dialog(s: &State, k: &Kit) -> El {
     let e = s.bulk_export.as_ref().unwrap();
+    let of_snapshots = matches!(e.targets.first(), Some(Target::Snapshot(_)));
     let proposed = proposal(s, e);
     let mut body = col()
         .w_full()
@@ -326,19 +383,29 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         })
         .child(
             caption(
-                format!(
-                    "{} · {}\n{} captured targets",
-                    e.pool_name,
-                    e.pool,
-                    e.targets.len()
-                ),
+                match e.targets.first() {
+                    Some(Target::Snapshot(first)) => format!(
+                        "{} · {}\nSnapshots of {} · {}\n{} captured snapshots",
+                        e.pool_name,
+                        e.pool,
+                        first.parent_name,
+                        first.parent,
+                        e.targets.len()
+                    ),
+                    _ => format!(
+                        "{} · {}\n{} captured targets",
+                        e.pool_name,
+                        e.pool,
+                        e.targets.len()
+                    ),
+                },
                 k,
             )
             .wrap_anywhere(),
         );
     if e.review.is_none() {
         let mut choices = row().w_full().flex_wrap().gap(6.0);
-        for (index, label, format) in formats() {
+        for (index, label, format) in formats(e) {
             let selected = e.format == format;
             choices = choices.child(
                 Button::new(label)
@@ -350,11 +417,21 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
         body = body.child(choices);
+        if has_checkpoint(e) {
+            body = body.child(
+                caption(
+                    "A memory checkpoint is exported as XVA only, so OVF and OVA are not offered for this selection.",
+                    k,
+                )
+                .wrap()
+                .key("batch-export-xva-only"),
+            );
+        }
     }
-    for (index, vm) in e.targets.iter().enumerate() {
-        body = body
-            .child(heading(format!("{} · {}", index + 1, vm.name), k))
-            .child(
+    for (index, target) in e.targets.iter().enumerate() {
+        body = body.child(heading(format!("{} · {}", index + 1, target.name()), k));
+        body = match target {
+            Target::Vm(vm) => body.child(
                 caption(
                     format!(
                         "{} · {:?}{}",
@@ -365,7 +442,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     k,
                 )
                 .wrap_anywhere(),
-            );
+            ),
+            Target::Snapshot(snapshot) => {
+                snapshot.describe(body, index, e.review.is_none(), e.pending.is_some(), k)
+            }
+        };
         if let Some((path, _)) = &e.files[index] {
             body = body.child(caption(format!("Output: {}", path.display()), k).wrap_anywhere());
         }
@@ -383,8 +464,12 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             );
         }
     }
-    body=body.child(caption("Every source and destination is checked before the first transfer. Exports run serially without stopping or changing guests. Stop finishes the current archive and skips the remainder. Recovery reads existing evidence; it never starts another transfer or publishes a new output. Existing files and directories are never overwritten.",k).wrap());
-    body=body.child(caption("XVA preserves native guest configuration and disks; full XVA does not include snapshot ancestry. OVF/OVA uses the supported ordinary HVM subset. Memory checkpoints and snapshots are exported separately. Read-only connections may export, subject to host permission.",k).wrap());
+    if of_snapshots {
+        body = snapshots::explain(body, k);
+    } else {
+        body=body.child(caption("Every source and destination is checked before the first transfer. Exports run serially without stopping or changing guests. Stop finishes the current archive and skips the remainder. Recovery reads existing evidence; it never starts another transfer or publishes a new output. Existing files and directories are never overwritten.",k).wrap());
+        body=body.child(caption("XVA preserves native guest configuration and disks; full XVA does not include snapshot ancestry. OVF/OVA uses the supported ordinary HVM subset. Snapshots and memory checkpoints are exported from a VM's Snapshots view. Read-only connections may export, subject to host permission.",k).wrap());
+    }
     if let Some(r) = &e.review {
         body = body
             .child(caption(format!("Format: {}", format_name(&e.format)), k).wrap())
@@ -438,15 +523,19 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                     .key("batch-export-back"),
             )
             .child(
-                Button::new("Export reviewed VMs")
-                    .disabled(
-                        !current(s, e)
-                            || proposed.as_ref().ok() != Some(r)
-                            || s.resource_operations.len() >= 64,
-                    )
-                    .on_press(submit)
-                    .build(k)
-                    .key("batch-export-submit"),
+                Button::new(if of_snapshots {
+                    "Export reviewed snapshots"
+                } else {
+                    "Export reviewed VMs"
+                })
+                .disabled(
+                    !current(s, e)
+                        || proposed.as_ref().ok() != Some(r)
+                        || s.resource_operations.len() >= 64,
+                )
+                .on_press(submit)
+                .build(k)
+                .key("batch-export-submit"),
             );
     } else {
         footer = footer.child(
@@ -465,10 +554,11 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .fill(k.c.bg_base)
         .radius(12.0)
         .child(heading(
-            if e.review.is_some() {
-                "Review selected VM exports"
-            } else {
-                "Export selected VMs"
+            match (of_snapshots, e.review.is_some()) {
+                (false, false) => "Export selected VMs",
+                (false, true) => "Review selected VM exports",
+                (true, false) => "Export selected snapshots",
+                (true, true) => "Review selected snapshot exports",
             },
             k,
         ))
@@ -480,11 +570,29 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         .center()
         .fill(rune::Color::BLACK.alpha(0.5))
         .role("dialog")
-        .label("Selected VM exports")
+        .label(if of_snapshots {
+            "Selected snapshot exports"
+        } else {
+            "Selected VM exports"
+        })
         .modal(false, |s: &mut State| s.bulk_export = None)
         .child(panel)
 }
-fn formats() -> Vec<(usize, &'static str, VmExportFormat)> {
+fn has_checkpoint(e: &Editor) -> bool {
+    e.targets
+        .iter()
+        .any(|target| matches!(target, Target::Snapshot(t) if t.is_checkpoint()))
+}
+/// The formats the editor offers. A selection with a memory checkpoint gets the XVA
+/// formats only, as the single export of a checkpoint does.
+fn formats(e: &Editor) -> Vec<(usize, &'static str, VmExportFormat)> {
+    let mut formats = all_formats();
+    if has_checkpoint(e) {
+        formats.retain(|(_, _, format)| matches!(format, VmExportFormat::Xva { .. }));
+    }
+    formats
+}
+fn all_formats() -> Vec<(usize, &'static str, VmExportFormat)> {
     vec![
         (
             0,
@@ -524,7 +632,7 @@ fn formats() -> Vec<(usize, &'static str, VmExportFormat)> {
     ]
 }
 fn format_name(format: &VmExportFormat) -> &'static str {
-    formats()
+    all_formats()
         .into_iter()
         .find(|(_, _, f)| f == format)
         .unwrap()
@@ -557,14 +665,18 @@ pub(super) fn scene(s: &mut State) {
     open(s);
     let second = s.inventory.as_ref().unwrap().vms[&ids[1]].clone();
     let e = edit(s);
-    e.targets.push(second);
+    e.targets.push(Target::Vm(second));
     e.files.push(None);
+    demo_outputs(s);
+    review(s);
+}
+/// Gives every target of a synthetic scene a destination that does not exist.
+fn demo_outputs(s: &mut State) {
     let e = edit(s);
-    for (index, vm) in e.targets.iter().enumerate() {
-        let path = std::env::temp_dir().join(format!("xenadmin-demo-{}-{}.xva", e.id, vm.id));
+    for (index, target) in e.targets.iter().enumerate() {
+        let path = std::env::temp_dir().join(format!("xenadmin-demo-{}-{}.xva", e.id, target.id()));
         e.files[index] = Some((path.clone(), TransferFile::destination(path).unwrap()));
     }
-    review(s);
 }
 
 #[cfg(test)]

@@ -760,6 +760,37 @@ impl Connection {
         selection: crate::VmWorkflowBatch,
         outputs: Vec<(crate::VmId, crate::TransferFile)>,
     ) -> Result<crate::ResourceOperation, Error> {
+        // Several snapshots of one VM share that VM, so their outputs are named by snapshot.
+        if selection.is_snapshot_export() {
+            return Err(Error::InvalidResourceCommand);
+        }
+        let outputs = outputs.into_iter().map(|(vm, file)| (vm.uuid(), file));
+        self.submit_workflow_batch(id, pool, selection, outputs.collect())
+    }
+    /// Submits a reviewed batch of snapshot and checkpoint exports, each output named by
+    /// the snapshot it is for.
+    pub fn submit_snapshot_export_batch(
+        &self,
+        id: crate::OperationId,
+        pool: crate::ObservedResource,
+        selection: crate::VmWorkflowBatch,
+        outputs: Vec<(crate::SnapshotId, crate::TransferFile)>,
+    ) -> Result<crate::ResourceOperation, Error> {
+        if !selection.is_snapshot_export() {
+            return Err(Error::InvalidResourceCommand);
+        }
+        let outputs = outputs
+            .into_iter()
+            .map(|(snapshot, file)| (snapshot.uuid(), file));
+        self.submit_workflow_batch(id, pool, selection, outputs.collect())
+    }
+    fn submit_workflow_batch(
+        &self,
+        id: crate::OperationId,
+        pool: crate::ObservedResource,
+        selection: crate::VmWorkflowBatch,
+        outputs: Vec<(uuid::Uuid, crate::TransferFile)>,
+    ) -> Result<crate::ResourceOperation, Error> {
         if self.read_only && !selection.is_export() {
             return Err(Error::ReadOnly);
         }

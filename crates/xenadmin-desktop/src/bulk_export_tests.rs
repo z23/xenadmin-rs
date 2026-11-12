@@ -115,7 +115,7 @@ fn overlapping_destinations_and_changed_sources_block_entire_review() {
             .unwrap()
             .contains("overlap")
     );
-    let id = r.state.bulk_export.as_ref().unwrap().targets[0].id;
+    let id = VmId::from(r.state.bulk_export.as_ref().unwrap().targets[0].id());
     Arc::make_mut(r.state.inventory.as_mut().unwrap())
         .vms
         .get_mut(&id)

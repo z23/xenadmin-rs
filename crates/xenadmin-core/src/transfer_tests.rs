@@ -4,6 +4,8 @@ mod batch_tests;
 mod checkpoint_tests;
 #[path = "transfer_compression_tests.rs"]
 mod compression_tests;
+#[path = "transfer_snapshot_batch_tests.rs"]
+mod snapshot_batch_tests;
 use super::*;
 use crate::{
     ConnectionOptions, Credentials, Endpoint, OperationId, OperationState, ResourceTarget,
@@ -527,6 +529,24 @@ impl Fixture {
                                         10
                                     };
                                     checkpoint_tests::archive(2, memory, preserve)
+                                } else if data.contains_key("fixture:batch_snapshot_export") {
+                                    // A suspended source is a checkpoint: its archive carries
+                                    // the memory image only when the request asks for it.
+                                    let id = uuid::Uuid::parse_str(&q["uuid"]).unwrap();
+                                    let preserve = q["preserve_power_state"] == "true";
+                                    if data.values().any(|v| {
+                                        v["uuid"] == json!(id) && v["power_state"] == "Suspended"
+                                    }) {
+                                        let always = "fixture:batch_snapshot_memory_always";
+                                        checkpoint_tests::archive(
+                                            id.as_u128(),
+                                            10,
+                                            preserve || data.contains_key(always),
+                                        )
+                                    } else {
+                                        assert!(!preserve);
+                                        archive(id.as_u128())
+                                    }
                                 } else if data.contains_key("fixture:batch_export") {
                                     archive(uuid::Uuid::parse_str(&q["uuid"]).unwrap().as_u128())
                                 } else if fault == Fault::Snapshot {
@@ -639,6 +659,10 @@ impl Fixture {
                         } else if method == "host.get_system_status_capabilities" {
                             json!({"result":host_support_tests::CAPS})
                         } else if method == "task.create" {
+                            // Holds the reply to the task of a batch's second child.
+                            pause_response = data.get("fixture:batch_next_task_gate")
+                                == Some(&json!(true))
+                                && c.lock().unwrap().iter().any(|v| v == "GET /export");
                             data.insert("OpaqueRef:task:t".into(),json!({"uuid":uuid(100),"name_label":p[1],"status":"pending","progress":0.0,"allowed_operations":["cancel"]}));
                             json!({"result":"OpaqueRef:task:t"})
                         } else if method == "task.cancel" {

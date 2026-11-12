@@ -126,12 +126,18 @@ impl SnapshotReview {
         .wrap_anywhere()
     }
 }
+/// The selected snapshots of the open view, in the table's order.
+pub(super) fn selected_snapshots(s: &State) -> impl Iterator<Item = &xenadmin_core::Snapshot> {
+    s.snapshot_rows
+        .iter()
+        .filter(|snapshot| s.snapshot_table.is_selected(&snapshot.id.to_string()))
+}
+/// The one selected snapshot. Restore, edit, copy, inspect, delete and the single export
+/// act on one snapshot, so with several selected none of them has a target.
 pub(super) fn selected_snapshot(s: &State) -> Option<&xenadmin_core::Snapshot> {
-    s.snapshot_table.selected().next().and_then(|id| {
-        s.snapshot_rows
-            .iter()
-            .find(|snapshot| snapshot.id.to_string() == id)
-    })
+    let mut selected = selected_snapshots(s);
+    let first = selected.next()?;
+    selected.next().is_none().then_some(first)
 }
 fn begin_edit(s: &mut State) {
     match SnapshotReview::capture(s) {
@@ -232,6 +238,10 @@ pub(super) fn refresh(s: &mut State) {
             .sort_by_key(|row| positions.get(&row.id).copied().unwrap_or(usize::MAX));
     }
 }
+/// The snapshot table's state. Several rows can be selected, for the batch export.
+pub(super) fn table_state() -> TableState {
+    TableState::new().key("snapshots-table").multi_select(true)
+}
 pub(super) fn open(s: &mut State) {
     s.metrics = None;
     let Some(vm) = s.selected().and_then(|r| r.vm) else {
@@ -240,7 +250,7 @@ pub(super) fn open(s: &mut State) {
     s.console = None;
     s.devices = None;
     s.snapshot_view = Some(vm);
-    s.snapshot_table = TableState::new().key("snapshots-table");
+    s.snapshot_table = table_state();
     s.show_details = false;
     refresh(s);
 }
@@ -320,12 +330,7 @@ pub(super) fn begin_restore(s: &mut State) {
             .as_ref()
             .and_then(|i| i.vms.get(&vm))
             .ok_or(xenadmin_core::Error::Stale)?;
-        let selected = s
-            .snapshot_table
-            .selected()
-            .next()
-            .and_then(|id| s.snapshot_rows.iter().find(|r| r.id.to_string() == id))
-            .ok_or(xenadmin_core::Error::Stale)?;
+        let selected = selected_snapshot(s).ok_or(xenadmin_core::Error::Stale)?;
         let target = if s.demo {
             Target::Demo
         } else {
@@ -569,7 +574,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
     let mut content = col().w_full().h_full().min_h(0.0).padding(20.0).gap(12.0)
         .child(row().w_full().justify_between().center_y().child(heading("Snapshots",k)).child(Button::new("Back to inventory").variant(ButtonVariant::Outline).on_press(|s:&mut State|s.snapshot_view=None).build(k).key("back-from-snapshots")))
         .child(heading(vm.map(|vm|vm.name.as_str()).unwrap_or("VM unavailable"),k))
-        .child(caption(if s.window_width < 700.0 { "Select a snapshot to restore, copy or delete." } else { "Disk snapshots capture VM configuration and virtual disks. Choose Include guest memory for a memory checkpoint when supported. Application quiescing is not available on XCP-ng 8.1 and later." },k).wrap())
+        .child(caption(if s.window_width < 700.0 { "Select a snapshot to restore, copy or delete. Shift/Ctrl-click selects several to export." } else { "Disk snapshots capture VM configuration and virtual disks. Choose Include guest memory for a memory checkpoint when supported. Application quiescing is not available on XCP-ng 8.1 and later. Shift/Ctrl-click selects several snapshots to export together." },k).wrap())
         .child(row().gap(8.0).flex_wrap()
             .child(Button::new("Create snapshot").variant(ButtonVariant::Outline).disabled(!s.demo && !can_create).on_press(begin_create).build(k).key("create-snapshot"))
             .child(Button::new("Restore snapshot").variant(ButtonVariant::Outline).disabled(selected.is_none() || (!s.demo && !can_restore)).on_press(begin_restore).build(k).key("restore-snapshot"))
@@ -579,6 +584,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             .child(Button::new("Inspect snapshot").variant(ButtonVariant::Outline).disabled(selected.is_none()).on_press(snapshot_inspection::open).build(k).key("inspect-snapshot"))
             .child(Button::new(if s.snapshot_tree {"Show list"}else{"Show ancestry"}).variant(ButtonVariant::Outline).on_press(|s:&mut State|{s.snapshot_tree = !s.snapshot_tree;refresh(s);}).build(k).key("snapshot-tree-toggle"))
             .child(Button::new("Activity").variant(ButtonVariant::Outline).on_press(activity::open).build(k).key("snapshot-activity"))
+            .child(bulk_export::snapshots_button(s, k))
             .child(Button::new("Delete snapshot").variant(ButtonVariant::Danger).disabled(selected.is_none() || (!s.demo && !can_delete)).on_press(begin_delete).build(k).key("delete-snapshot")));
     if let Some(snapshot) = selected
         && let Some(parent) = snapshot.vm
@@ -728,6 +734,20 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
             )
             .wrap_anywhere(),
         );
+    } else {
+        let count = selected_snapshots(s).count();
+        if count > 1 {
+            content = content.child(
+                caption(
+                    format!(
+                        "{count} snapshots selected. Export selection reviews them together; the other actions take one snapshot."
+                    ),
+                    k,
+                )
+                .wrap()
+                .key("snapshot-selection-count"),
+            );
+        }
     }
     for operation in s
         .operation_rows

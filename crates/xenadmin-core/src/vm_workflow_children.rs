@@ -251,11 +251,9 @@ impl Journal {
             .resource_load_linked(permit.parent, false)?
             .ok_or(Error::Journal)?;
         child.matches(&parent, permit.index)?;
-        parent
-            .workflow_batch_plan
-            .as_mut()
-            .ok_or(Error::Journal)?
-            .admitted += 1;
+        let plan = parent.workflow_batch_plan.as_mut().ok_or(Error::Journal)?;
+        plan.admitted += 1;
+        let noun = plan.selection.noun();
         parent.workflow_batch[permit.index].state = Some(child.state().clone());
         parent.workflow_batch[permit.index].detail =
             "Child admitted; no completion inferred".into();
@@ -263,7 +261,7 @@ impl Journal {
         parent.can_cancel = true;
         parent.steps[permit.index].state = crate::StepState::Dispatching;
         parent.steps[permit.index].detail =
-            "Child admitted; its durable workflow owns this VM".into();
+            format!("Child admitted; its durable workflow owns this {noun}");
         self.resource_save(&mut parent)
     }
     pub(crate) fn workflow_interrupt_child(

@@ -80,8 +80,10 @@ ownership. Its scope and recovery evidence are recorded in the
 [batch deletion report](reports/2026-11-08-bulk-vm-deletion.md). Reviewed
 [same-pool bulk moves](reports/2026-11-08-bulk-vm-move.md) reuse those child ownership rules;
 [bulk archive exports](reports/2026-11-08-bulk-vm-export.md) now use exact resource-transfer
-children under the same reservation. Cross-pool bulk moves and batch snapshot/checkpoint
-exports remain open.
+children under the same reservation.
+[Batch snapshot and checkpoint exports](reports/2026-11-12-batch-snapshot-export.md) run
+several snapshots of a VM through those children; they are verified by fixtures and have
+not been run on the lab. Cross-pool bulk moves remain open.
 
 The disposable nested lab is now provisioned: three XCP-ng 8.3.0 hosts installed unattended
 by the harness on 2026-11-09. The [first live qualification report](reports/2026-11-09-lab-qualification.md)

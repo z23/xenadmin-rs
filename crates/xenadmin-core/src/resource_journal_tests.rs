@@ -581,7 +581,7 @@ fn v2_migration_preserves_vm_evidence_and_installs_resource_and_batch_tables() {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u64>(0))
             .unwrap(),
-        4
+        JOURNAL_FORMAT
     );
     assert!(matches!(
         journal.resource_admit(&mut resource(pool)),
@@ -618,7 +618,7 @@ fn v3_migration_preserves_resource_evidence_and_installs_empty_child_links() {
                 .0
                 .query_row("PRAGMA user_version", [], |row| row.get::<_, u64>(0))
                 .unwrap(),
-            4
+            JOURNAL_FORMAT
         );
     }
 }

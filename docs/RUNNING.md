@@ -254,6 +254,14 @@ Stop finishes the current transfer and skips the remainder. Recheck inspects exi
 evidence and never publishes a new file. Snapshot and checkpoint exports have their own
 reviews; full XVA does not include snapshot ancestry.
 
+Several snapshots of one VM can go out in one such batch. In the VM's Snapshots view,
+Shift-click or Ctrl-click selects 1 to 32 snapshots and **Export selection…** opens the
+review. Each snapshot becomes an archive of its own at its own new destination. A memory
+checkpoint is exported as XVA only; its archive holds the guest's memory only where
+**Include guest memory** is chosen for that checkpoint, and such an archive may contain
+credentials and imports as a suspended guest. This batch is fixture-verified and has not
+been run against a host.
+
 ## Dissolve a pool
 
 Pool administration offers **Dissolve pool…**. Review the retained coordinator and exact

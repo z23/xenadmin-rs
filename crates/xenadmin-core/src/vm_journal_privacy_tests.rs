@@ -149,7 +149,7 @@ fn legacy_flat_private_payload_loads_without_schema_change_and_task_column_remai
             .0
             .query_row("PRAGMA user_version", [], |row| row.get::<_, u64>(0))
             .unwrap(),
-        4
+        JOURNAL_FORMAT
     );
 }
 #[test]

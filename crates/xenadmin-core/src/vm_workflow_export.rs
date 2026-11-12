@@ -1,8 +1,10 @@
-use crate::{Error, TransferFile, VmId, VmWorkflowBatch};
+use crate::{Error, TransferFile, VmWorkflowBatch};
 
+/// Puts each output beside the item it was chosen for. An output is named by the UUID of
+/// what its item exports: the VM, or the snapshot.
 pub(crate) fn bind(
     selection: &VmWorkflowBatch,
-    outputs: Vec<(VmId, TransferFile)>,
+    outputs: Vec<(uuid::Uuid, TransferFile)>,
 ) -> Result<Vec<TransferFile>, Error> {
     if !selection.is_export() {
         return if outputs.is_empty() {
@@ -23,7 +25,7 @@ pub(crate) fn bind(
     let files = selection
         .items
         .iter()
-        .map(|i| outputs.remove(&i.vm).ok_or(Error::TransferFile))
+        .map(|i| outputs.remove(&i.subject()).ok_or(Error::TransferFile))
         .collect::<Result<Vec<_>, _>>()?;
     validate(&files)?;
     Ok(files)

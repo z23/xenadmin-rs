@@ -464,6 +464,7 @@ impl ResourceAction {
                 match selection.items.first().map(|i| &i.workflow) {
                     Some(crate::VmWorkflow::Move(_)) => "Move selected VMs",
                     Some(crate::VmWorkflow::Export { .. }) => "Export selected VMs",
+                    Some(crate::VmWorkflow::ExportSnapshot { .. }) => "Export selected snapshots",
                     _ => "Delete selected VMs",
                 }
             }
@@ -1026,7 +1027,7 @@ pub(crate) fn channel(
             .items
             .iter()
             .map(|item| OperationStep {
-                label: format!("{} {}", item.workflow.label(), item.vm),
+                label: item.step_label(),
                 state: crate::StepState::Pending,
                 detail: "Not started".into(),
             })

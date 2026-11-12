@@ -287,7 +287,14 @@ impl Journal {
                 OperationState::OutcomeUnknown
             };
             parent.can_cancel = false;
-            parent.detail = if acknowledge { "Unknown batch and active child acknowledged together; this does not establish host success" } else { "Batch interrupted; recheck reads admitted children and never starts remaining VMs" }.into();
+            parent.detail = if acknowledge {
+                "Unknown batch and active child acknowledged together; this does not establish host success".into()
+            } else {
+                format!(
+                    "Batch interrupted; recheck reads admitted children and never starts remaining {}s",
+                    plan.selection.noun()
+                )
+            };
             self.resource_save(&mut parent)?;
             Ok(parent)
         })();

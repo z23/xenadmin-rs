@@ -23,7 +23,7 @@ fn parent(dir: &Path) -> (crate::ResourceOperation, ResourceRequest) {
         .into_iter()
         .map(|n| {
             (
-                uuid(n).into(),
+                uuid(n),
                 TransferFile::destination(dir.join(format!("vm-{n}.xva"))).unwrap(),
             )
         })

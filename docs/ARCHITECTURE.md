@@ -387,6 +387,18 @@ receiver-token preparation belongs to the admitted child. Migration evidence has
 monotonic interruption fence, so recheck can observe final placement without permitting
 an original worker to submit another setter or batch target.
 
+Journal version 5 adds no table and rewrites no row; opening a version 4 journal only raises
+its number. It is the first version whose batch rows may hold a snapshot export item, which
+the release that stops at version 4 cannot parse, so that release refuses the file whole
+instead of failing on one row. A snapshot batch is the same pool-scoped parent with
+resource-transfer children. An item names a snapshot and the VM it is a snapshot of, and for
+a memory checkpoint the memory image that was reviewed and whether the archive carries it.
+Its child is the single snapshot or checkpoint export of exactly that source, so the single
+export's fresh checks, receipts and archive verification apply unchanged, and a checkpoint
+is admitted only with its memory image reviewed and only as XVA. Outputs are bound to
+snapshots, not to the VM several of them share. See the
+[batch snapshot export report](reports/2026-11-12-batch-snapshot-export.md).
+
 The [console adapter decision](decisions/0003-console-protocol-adapter.md) documents the
 vendored protocol fixes. Console target identity is independent of table selection. Clipboard
 requests are explicit and fenced by a console epoch, including reconnection; passwords and

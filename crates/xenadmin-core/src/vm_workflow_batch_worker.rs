@@ -13,14 +13,16 @@ impl ResourceRequest {
             .permission_requirements(self.record.target)
             .guard(s.permissions())?;
         self.record.can_cancel = true;
-        self.record.detail =
-            "Checking every selected VM and reviewed workflow before the first child".into();
-        self.save(j).await?;
         let plan = self
             .record
             .workflow_batch_plan
             .clone()
             .ok_or(Error::Journal)?;
+        self.record.detail = format!(
+            "Checking every selected {} and reviewed workflow before the first child",
+            plan.selection.noun()
+        );
+        self.save(j).await?;
         if plan.selection.is_export() {
             let outputs = plan.outputs.clone();
             tokio::task::spawn_blocking(move || crate::vm_workflow_export::preflight(&outputs))
@@ -121,13 +123,16 @@ impl ResourceRequest {
         }
         self.record = j.workflow_interrupt(self.record.pool, self.record.id, false)?;
         self.record.state = OperationState::Verifying;
-        self.record.detail = "Reading admitted child evidence; no remaining VM will start".into();
-        self.save(j).await?;
         let plan = self
             .record
             .workflow_batch_plan
             .clone()
             .ok_or(Error::Journal)?;
+        self.record.detail = format!(
+            "Reading admitted child evidence; no remaining {} will start",
+            plan.selection.noun()
+        );
+        self.save(j).await?;
         for index in 0..plan.admitted {
             let record = j
                 .workflow_load_child(&self.record, index)?
@@ -239,8 +244,9 @@ impl ResourceRequest {
         self.record.can_cancel = false;
         self.record.progress = Some(succeeded as f64 / p.children.len() as f64);
         self.record.detail = format!(
-            "{succeeded} of {} VM workflows verified; {} not started. No rollback or automatic continuation.",
+            "{succeeded} of {} {} workflows verified; {} not started. No rollback or automatic continuation.",
             p.children.len(),
+            p.selection.noun(),
             p.children.len() - p.admitted
         );
         for step in self.record.steps.iter_mut().skip(p.admitted) {

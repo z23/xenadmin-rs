@@ -1,7 +1,7 @@
 use crate::{
-    Error, OperationAction, OperationId, OperationState, PowerState, ResourceAction,
-    ResourceOperationRecord, ResourceTarget, SnapshotDeletionSelection, VdiId, VmId,
-    VmLifecycleOperation,
+    CheckpointMemory, Error, ExportSource, OperationAction, OperationId, OperationState,
+    PowerState, ResourceAction, ResourceOperationRecord, ResourceTarget, SnapshotDeletionSelection,
+    SnapshotId, VdiId, VmId, VmLifecycleOperation,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -12,12 +12,28 @@ pub enum VmWorkflow {
         expected_template: bool,
         format: VmExportFormat,
     },
+    /// One snapshot of the item's VM, exported as an archive of its own. Journal format 5
+    /// is the first that may hold this variant.
+    ExportSnapshot {
+        snapshot: SnapshotId,
+        /// Present exactly when the snapshot is a memory checkpoint.
+        checkpoint: Option<ReviewedCheckpoint>,
+        format: VmExportFormat,
+    },
     Move(crate::VmMigration),
     Delete {
         expected_template: bool,
         disks: Vec<VdiId>,
         snapshots: Vec<SnapshotDeletionSelection>,
     },
+}
+/// The memory image a review showed for a checkpoint, and that review's choice of whether
+/// the archive carries it. Leaving the memory out is the default; including it is chosen
+/// for each checkpoint by itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewedCheckpoint {
+    pub memory: CheckpointMemory,
+    pub preserve_memory: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VmExportFormat {
@@ -30,12 +46,15 @@ impl VmWorkflow {
             Self::Delete { .. } => "Delete VM",
             Self::Move(_) => "Move VM",
             Self::Export { .. } => "Export VM",
+            Self::ExportSnapshot { .. } => "Export snapshot",
         }
     }
     pub(crate) fn action(&self) -> OperationAction {
         match self {
             Self::Move(operation) => OperationAction::Migration(operation.clone()),
-            Self::Export { .. } => unreachable!("resource transfer children have no VM action"),
+            Self::Export { .. } | Self::ExportSnapshot { .. } => {
+                unreachable!("resource transfer children have no VM action")
+            }
             Self::Delete {
                 expected_template,
                 disks,
@@ -47,17 +66,40 @@ impl VmWorkflow {
             }),
         }
     }
+    /// The single-source transfer a child of this item runs. `vm` is the item's VM: the
+    /// exported guest itself, or the parent of the exported snapshot.
     pub(crate) fn transfer(&self, vm: VmId) -> Option<crate::TransferAction> {
-        let Self::Export {
-            expected_template,
-            format,
-        } = self
-        else {
-            return None;
-        };
-        let source = crate::ExportSource::Vm {
-            vm,
-            expected_template: *expected_template,
+        let (source, format) = match self {
+            Self::Export {
+                expected_template,
+                format,
+            } => (
+                ExportSource::Vm {
+                    vm,
+                    expected_template: *expected_template,
+                },
+                format,
+            ),
+            Self::ExportSnapshot {
+                snapshot,
+                checkpoint,
+                format,
+            } => (
+                match checkpoint {
+                    None => ExportSource::Snapshot {
+                        snapshot: *snapshot,
+                        parent: vm,
+                    },
+                    Some(reviewed) => ExportSource::Checkpoint {
+                        snapshot: *snapshot,
+                        parent: vm,
+                        memory: reviewed.memory.clone(),
+                        preserve_memory: reviewed.preserve_memory,
+                    },
+                },
+                format,
+            ),
+            Self::Move(_) | Self::Delete { .. } => return None,
         };
         Some(match format {
             VmExportFormat::Xva { compression } => crate::TransferAction::ExportXva {
@@ -71,18 +113,67 @@ impl VmWorkflow {
         })
     }
     pub(crate) fn kind(&self) -> &'static str {
-        if matches!(self, Self::Export { .. }) {
+        if matches!(self, Self::Export { .. } | Self::ExportSnapshot { .. }) {
             "resource"
         } else {
             "vm"
         }
     }
 }
+/// One item of a batch. For `VmWorkflow::ExportSnapshot`, `vm` is the snapshot's parent and
+/// `expected_state` is the snapshot's own recorded state: halted for a disk snapshot,
+/// suspended for a memory checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchVmWorkflow {
     pub vm: VmId,
     pub expected_state: PowerState,
     pub workflow: VmWorkflow,
+}
+impl BatchVmWorkflow {
+    /// The batch item that exports what a single snapshot or checkpoint export of `source`
+    /// would, in `format`. None for a source that is not a snapshot.
+    pub fn snapshot_export(source: &ExportSource, format: VmExportFormat) -> Option<Self> {
+        let (vm, snapshot, checkpoint) = match source {
+            ExportSource::Vm { .. } => return None,
+            ExportSource::Snapshot { snapshot, parent } => (*parent, *snapshot, None),
+            ExportSource::Checkpoint {
+                snapshot,
+                parent,
+                memory,
+                preserve_memory,
+            } => (
+                *parent,
+                *snapshot,
+                Some(ReviewedCheckpoint {
+                    memory: memory.clone(),
+                    preserve_memory: *preserve_memory,
+                }),
+            ),
+        };
+        Some(Self {
+            vm,
+            expected_state: if checkpoint.is_some() {
+                PowerState::Suspended
+            } else {
+                PowerState::Halted
+            },
+            workflow: VmWorkflow::ExportSnapshot {
+                snapshot,
+                checkpoint,
+                format,
+            },
+        })
+    }
+    /// The object this item is about: the exported snapshot, or the VM.
+    pub(crate) fn subject(&self) -> uuid::Uuid {
+        match &self.workflow {
+            VmWorkflow::ExportSnapshot { snapshot, .. } => snapshot.uuid(),
+            _ => self.vm.uuid(),
+        }
+    }
+    pub(crate) fn step_label(&self) -> String {
+        format!("{} {}", self.workflow.label(), self.subject())
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VmWorkflowBatch {
@@ -90,11 +181,22 @@ pub struct VmWorkflowBatch {
 }
 impl VmWorkflowBatch {
     pub(crate) fn is_export(&self) -> bool {
+        !self.items.is_empty() && self.items.iter().all(|i| i.workflow.kind() == "resource")
+    }
+    pub fn is_snapshot_export(&self) -> bool {
         !self.items.is_empty()
             && self
                 .items
                 .iter()
-                .all(|i| matches!(i.workflow, VmWorkflow::Export { .. }))
+                .all(|i| matches!(i.workflow, VmWorkflow::ExportSnapshot { .. }))
+    }
+    /// What one item is called in progress text: a batch is of VMs or of snapshots.
+    pub(crate) fn noun(&self) -> &'static str {
+        if self.is_snapshot_export() {
+            "snapshot"
+        } else {
+            "VM"
+        }
     }
     pub(crate) fn validate(&self, target: ResourceTarget) -> Result<(), Error> {
         let mut identities = BTreeSet::new();
@@ -103,11 +205,38 @@ impl VmWorkflowBatch {
         }
         for item in &self.items {
             if item.vm.uuid().is_nil()
-                || !identities.insert(item.vm.uuid())
+                || item.subject().is_nil()
+                || !identities.insert(item.subject())
                 || std::mem::discriminant(&item.workflow)
                     != std::mem::discriminant(&self.items[0].workflow)
             {
                 return Err(Error::InvalidResourceCommand);
+            }
+            if let VmWorkflow::ExportSnapshot {
+                snapshot,
+                checkpoint,
+                format,
+            } = &item.workflow
+            {
+                // A checkpoint is exported only with its memory image reviewed, and only
+                // as XVA: the single export offers no package format for one either.
+                let valid = snapshot.uuid() != item.vm.uuid()
+                    && match checkpoint {
+                        None => item.expected_state == PowerState::Halted,
+                        Some(reviewed) => {
+                            item.expected_state == PowerState::Suspended
+                                && matches!(format, VmExportFormat::Xva { .. })
+                                && !reviewed.memory.sr.uuid().is_nil()
+                                && (1..=crate::transfer::MAX_TRANSFER_BYTES)
+                                    .contains(&reviewed.memory.virtual_size)
+                                && !reviewed.memory.vdi.uuid().is_nil()
+                                && identities.insert(reviewed.memory.vdi.uuid())
+                        }
+                    };
+                if !valid {
+                    return Err(Error::InvalidResourceCommand);
+                }
+                continue;
             }
             if let VmWorkflow::Move(operation) = &item.workflow {
                 operation.validate()?;
@@ -156,7 +285,7 @@ impl VmWorkflowBatch {
         let mut writes = Vec::new();
         for item in &self.items {
             match &item.workflow {
-                VmWorkflow::Export { .. } => {}
+                VmWorkflow::Export { .. } | VmWorkflow::ExportSnapshot { .. } => {}
                 VmWorkflow::Move(operation) => writes.extend(
                     operation
                         .permission_requirements()
@@ -277,7 +406,7 @@ pub(crate) fn validate_record(r: &ResourceOperationRecord) -> Result<(), Error> 
             || result.child != *id
             || result.detail.len() > 4096
             || (index >= p.admitted) == result.state.is_some()
-            || r.steps[index].label != format!("{} {}", item.workflow.label(), item.vm)
+            || r.steps[index].label != item.step_label()
             || (r.steps[index].state == crate::StepState::Verified
                 && result.state != Some(OperationState::Succeeded))
             || (r.state == OperationState::Succeeded

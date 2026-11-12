@@ -923,7 +923,7 @@ async fn batch_ovf_and_ova_exports_keep_each_manifest_and_child_identity() {
             .into_iter()
             .map(|id| {
                 (
-                    uuid(id).into(),
+                    uuid(id),
                     TransferFile::destination(dir.path().join(format!(
                         "guest-{id}.{}",
                         if format == crate::OvfPackageFormat::Ova {
