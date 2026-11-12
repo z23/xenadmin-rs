@@ -8,6 +8,12 @@ authority on what is implemented and what is qualified.
 0.18.0 is the first published version. Versions up to 0.17.0 were local development
 checkpoints.
 
+## 0.20.0 (in development)
+
+Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.19.0.
+
+Nothing has changed for someone running the client yet.
+
 ## 0.19.0 (2026-11-12)
 
 The second published version, a beta for XCP-ng 8.3 with the same supported part as

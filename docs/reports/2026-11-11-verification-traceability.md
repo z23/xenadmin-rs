@@ -76,14 +76,14 @@ through the packaged desktop client" row).
 
 | Requirement | State |
 | --- | --- |
-| Clean Arch and Ubuntu 24.04 installation | Installed, rendered and started offline on untouched cloud images of both ([clean-install report](2026-11-11-clean-install.md)); the released 0.18.0 packages were installed, rendered and used for a read-only lab login on Ubuntu before publication ([release report](2026-11-11-release-0.18.md)); nobody has used the window on a clean system |
+| Clean Arch and Ubuntu 24.04 installation | Installed, rendered and started offline on untouched cloud images of both ([clean-install report](2026-11-11-clean-install.md)); the released 0.18.0 packages were installed, rendered and used for a read-only lab login on Ubuntu before publication ([release report](2026-11-11-release-0.18.md)), and the 0.19.0 packages likewise ([release report](2026-11-12-release-0.19.md)); nobody has used the window on a clean system |
 | Wayland compositor and X11 window manager actually used | Nested Hyprland 0.56.2 as a Wayland client, and its Xwayland server as an X11 client; the operator's own Hyprland session as a Wayland client; the X.Org server with Openbox and no Wayland, in a virtual machine with injected input and synthetic data ([clean install](2026-11-11-clean-install.md)). No person has used an X session, and no host connection or console was tried under X.Org |
 | Hardware rendering and one software Vulkan setup | Hardware Vulkan on the workstation; software Vulkan on the two clean images, headless and in a window under Weston |
 | Theme contrast, keyboard-only operation, HiDPI | Open. Dialogs were driven by Tab and Space, with the clipped-control gap of finding 22 |
 | File chooser | The portal's save dialog wrote a console screenshot in the second desktop session |
 | Orca | Open, with the accessibility-tree gap of finding 6 |
 | Performance measurements | A first synthetic measurement at 16 hosts and 2,000 guests ([baseline](2026-11-11-performance-baseline.md)); nothing against a live host |
-| Report links the actual CI run and lab evidence | The [0.17 checkpoint](2026-11-11-checkpoint-0.17.md) and the [0.18.0 release report](2026-11-11-release-0.18.md) do |
+| Report links the actual CI run and lab evidence | The [0.17 checkpoint](2026-11-11-checkpoint-0.17.md) and the release reports for [0.18.0](2026-11-11-release-0.18.md) and [0.19.0](2026-11-12-release-0.19.md) do |
 
 ## What this leaves
 

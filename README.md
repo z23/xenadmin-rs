@@ -30,7 +30,7 @@ The pictures are of version 0.19.0 connected to the project's
 
 Beta. Version 0.19.0 is the current release
 ([packages](https://github.com/z23/xenadmin-rs/releases/tag/v0.19.0),
-[changelog](CHANGELOG.md)), for
+[changelog](CHANGELOG.md), [release report](docs/reports/2026-11-12-release-0.19.md)), for
 XCP-ng 8.3 with the client running as a Wayland application. Its supported part is
 connections and certificate trust, the live inventory, VM power, the console, snapshots,
 performance charts and activity. Everything else below is experimental: implemented, in
@@ -155,7 +155,8 @@ recorded their verification:
   qualified toolstack, kept in one crate under upstream's LGPL terms; the defects that
   move found, fixed; the operation areas whose code moved run again on the lab; console
   windows drawn at the interface size and the details pane's width kept. See the
-  [changelog](CHANGELOG.md).
+  [changelog](CHANGELOG.md) and the
+  [release report](docs/reports/2026-11-12-release-0.19.md).
 
 The per-increment reports under `docs/reports/` are linked from the ledger rows they verify.
 

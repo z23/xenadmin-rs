@@ -316,4 +316,5 @@ report). The operation areas that had rested on fixture tests since their move
 reconfiguration, host maintenance and pool membership) were run again on the lab on
 2026-11-12. The decision record lists what is left: the remaining reads by key, typed
 values and call descriptions. The operator decided that day to release this state as
-0.19.0, again a beta cut from the main branch.
+0.19.0, again a beta cut from the main branch, and it was published that day
+([release report](reports/2026-11-12-release-0.19.md)).
