@@ -846,7 +846,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    record coming back. The lab guest had been moved to the standalone pool and back
    some two to three minutes before the cut, and a move between pools gives a guest new
    disks and new attachments where it arrives; a checkpoint of it had been deleted some
-   eight minutes before. After the cut the guest had no disk attachment at all, only its
+   five minutes before. After the cut the guest had no disk attachment at all, only its
    CD drive. Its two disks were on the coordinator's repository as records without a
    name and without a user. The checkpoint was back as a record with neither disks nor
    memory image. The outage scenario's own start of the guest failed with
