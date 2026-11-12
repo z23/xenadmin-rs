@@ -742,7 +742,7 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    reached no outcome within the scenario's limit, and the scenario failed. Clearing it
    took most of an hour and shows how far the damage reached:
    - a toolstack restart on the coordinator removed the task, and a snapshot the
-     migration had left on the guest was deleted;
+     migration had left behind was deleted;
    - two unattached copies of the guest's image stayed on the member's local
      repository, one with the 62 MiB already copied. Deleting one did not return (a
      `VDI.destroy` pending at no progress beside a `host.call_plugin`), neither before

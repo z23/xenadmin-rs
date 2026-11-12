@@ -89,9 +89,13 @@ depends on the description alone and is sorted.
   for each field of that class. A read through a view says which class it is of, and a
   field the class lacks has no method. The methods return the value as sent, so bounds
   and the refusal of malformed values stay with the core's decoders.
-- A type for one field of a record, `FieldValue`, which every view method returns and
-  which reads as the JSON value it wraps. The core's readers of a field take that type,
-  so a whole record handed to one of them does not compile.
+- A type for one field of a record, which every view method returns and which reads as
+  the JSON value it wraps. The core's readers of a field take such a type, so a whole
+  record handed to one of them does not compile. At first there was one type,
+  `FieldValue`; since 0.19.0 there is one for each kind of field the API has (a flag,
+  text, a time, a reference, an enumeration's value, a whole number, a real number, a
+  set, a map), and `FieldValue` remains for a kind without a type and for where the kind
+  does not matter.
 - Constants for every enumeration value, such as the four VM power states.
 - A check a view makes of its record in debug builds, when asked to. A record does not
   say which class it is of, but it carries every field of its class, so a record of
@@ -239,6 +243,25 @@ classes.
    here: those compared with a value of the client's own, such as a reviewed power
    state or an address mode, and the operation names the client carries in its own
    types.
+
+   Part of this is done since 0.19.0. A view's method returns the type of its field's
+   kind, and a field compares only with what its kind allows: a flag with a boolean,
+   text, a reference and an enumeration's value with a string, a number with a number
+   or its digits, and two fields with each other only when they are of one kind. The
+   core's readers take the kind they read (a UUID reader takes text, a link reader a
+   reference, a size reader a whole number, an operation list a set), so a field of
+   another kind handed to one does not compile; 255 calls were retyped that way and
+   none of them turned out to pass the wrong kind. Each type has a reader that gives
+   the Rust value or nothing (`get`, `text`, `reference`, `name`, `number`, `members`,
+   `entries`).
+
+   What is not done: a field still reads as the JSON value it wraps, so `as_bool` on a
+   text field compiles and gives nothing. A test scans the core's sources for a view's
+   field followed by such an accessor and fails where the accessor does not fit the
+   kind; it judged 375 reads and found none wrong, but it sees only reads written
+   directly on a view. A value taken out of a map-valued field has no kind of its own
+   and is given one by hand where it is read. The core's bounds are still applied by
+   its own readers, not by generated ones, and the literals named above remain.
 3. Calls: generated descriptions of each message's parameters, so that a call's
    arguments are checked where it is made. A test checks their number for the calls
    written with their arguments. Since 0.19.0 a debug build can also compare every call

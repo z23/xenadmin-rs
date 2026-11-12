@@ -83,6 +83,15 @@ its tag, commit and digest in `data/SOURCE`. `lab/description_check.py` compares
 description with the fields of a lab pool's live records, read-only, and is how a
 description is shown to match the hosts it is for.
 
+A view's method returns its field in the type of the field's kind: `FlagField`,
+`TextField`, `TimeField`, `RefField`, `ChoiceField` (an enumeration's value), `WholeField`,
+`RealField`, `SetField` or `MapField`, and `FieldValue` for a kind without a type. Compare a
+field with the Rust type of its kind, and give a reader the kind it reads; a value taken
+out of a map by key has no kind, so wrap it where it is read (`TextField::of(&map["key"])`).
+Prefer the types' own readers (`get`, `text`, `reference`, `name`, `number`, `members`,
+`entries`) to the JSON accessors: a field still reads as the JSON value it wraps, and a
+test fails where a view's field is asked for a kind of value the API does not give it.
+
 A view reads a field of its class from whatever record it is given, so a record of
 another class reads without complaint where the field has the same name. To look for
 that, run the tests or a lab scenario from a debug build with
