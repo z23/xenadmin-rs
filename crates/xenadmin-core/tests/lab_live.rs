@@ -5322,15 +5322,26 @@ fn cross_pool_batch_item(
         })
         .and_then(|p| p.network)
         .ok_or("the destination host's address is on no attached interface")?;
+    let (running, resident) = source
+        .vms
+        .get(&vm)
+        .map(|v| (v.power_state == xenadmin_core::PowerState::Running, v.host))
+        .ok_or("the guest is not in the source inventory")?;
     let operation = CrossPoolVmOperation {
         vm,
         destination_pool: destination.pool_id,
         destination_host,
-        expected_host: None,
+        // A running guest is reviewed on the host it runs on and moves live; a halted one
+        // has no host and moves halted.
+        expected_host: running.then_some(resident).flatten(),
         expected_affinity: source.details.vms.get(&vm).and_then(|d| d.affinity),
         transfer_network,
         transfer_address: address,
-        mode: CrossPoolMode::MoveHalted,
+        mode: if running {
+            CrossPoolMode::MoveRunning
+        } else {
+            CrossPoolMode::MoveHalted
+        },
         disks,
         networks,
         host_transport_reviewed: true,
