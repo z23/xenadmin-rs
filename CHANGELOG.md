@@ -58,9 +58,10 @@ again for that, because no published version reads format 5.
   receiver a move is prepared with is not kept. With both pools connected again, Recheck
   reads the moves that had started, repeats no transfer and starts no remaining VM. A
   move whose outcome cannot be read stays unknown, with both pools reserved, until it is
-  acknowledged. The batch is experimental and verified by fixtures only: nothing of it
-  has run against a host, and nobody has used the dialog
-  ([report](docs/reports/2026-11-12-cross-pool-bulk-move.md)).
+  acknowledged. The batch is experimental. It is verified by fixtures and by one lab
+  run in which two halted guests were moved to another pool and back; a running guest,
+  Stop and an interruption have not been tried against a host, and nobody has used the
+  dialog ([report](docs/reports/2026-11-12-cross-pool-bulk-move.md)).
 
 ### Changed
 

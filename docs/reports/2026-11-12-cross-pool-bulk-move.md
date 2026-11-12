@@ -203,14 +203,29 @@ is rewritten. A child is a cross-pool transfer row as a single transfer is.
 
 ## What this does not show
 
-Nothing has run against a host. `lab_cross_pool_batch_move_round_trip` is written and
-compiles and has not been run. It halts the lab guest and the tools guest, moves them to
-the standalone pool in one batch and back in a second, each disk to the repository it
-came from and each NIC to its network, checks placement and power state after each
-batch, and starts again the guests that were running. It reviews each guest's home host
-as the pool reports it. It moves halted guests, as the single round trip does: a live
-cross-pool move has not been run on the lab by this client at all, alone or in a batch,
-and the fixtures are the only evidence for a running guest in a batch.
+When this was written nothing had run against a host. Later that day
+`lab_cross_pool_batch_move_round_trip` was run on the disposable lab
+([live report](2026-11-09-lab-qualification.md)). It halts the lab guest and the tools
+guest, moves them to the standalone pool in one batch and back in a second, each disk
+to the repository it came from and each NIC to its network, and checks placement and
+power state after each batch. It reviews each guest's home host as the pool reports it.
+
+- Its first run found no eligible guest and stopped, rightly: the lab guest had a
+  snapshot record that a power cut had brought back (finding 65 of the live report),
+  and the tools guest carried an HA restart priority.
+- With the snapshot record removed, the tools guest was still left out, because its
+  disk attachment was not marked as owned by the guest, and the batch was a batch of
+  one: the lab guest moved to the standalone pool in 46 s and back in 29 s, verified.
+- With the tools guest's attachment marked as owned and its restart priority cleared
+  for the run, both guests moved in one batch in 72 s and back in a second in 61 s:
+  "2 of 2 VM workflows verified" each way, every disk on the repository it was mapped
+  to, the tools guest's back on the shared NFS repository, and every NIC on its
+  network (evidence 1794478141-cross-pool-batch-move-round-trip.json).
+
+That is halted guests only, two of them, through the core and not through the window.
+A running guest has not been moved between pools on the lab by this client, alone or
+in a batch, and the fixtures are the only evidence for one. Stop, an interruption and
+the recheck after it have not been tried against a host.
 
 The fixtures enter at `Connection::move_vms_to_pool` and
 `Connection::recheck_cross_pool_batch`. The desktop's submission and its recheck through
