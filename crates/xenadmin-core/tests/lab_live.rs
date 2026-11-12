@@ -16559,7 +16559,7 @@ async fn lab_snapshot_batch_stop_and_interruption() {
     let present_after_restart = [0, 1].map(|i| path("cut", &names[i]).exists());
     steps.push(json!({"step": "after the restart", "record_found": after_restart.is_some(), "settled": recovered,
         "state": after_restart.as_ref().map(|r| format!("{:?}", r.state)), "detail": after_restart.as_ref().map(|r| r.detail.clone()),
-        "children": after_restart.as_ref().map(&children),
+        "children": after_restart.as_ref().map(children),
         "archives_present": present_after_restart}));
     let mut last = after_restart.clone();
     let mut rechecks = Vec::new();
@@ -16587,7 +16587,7 @@ async fn lab_snapshot_batch_stop_and_interruption() {
         .await;
         last = row(&c, interrupted);
         rechecks.push(json!({"asked": asked, "moved": moved, "state": last.as_ref().map(|r| format!("{:?}", r.state)),
-            "detail": last.as_ref().map(|r| r.detail.clone()), "children": last.as_ref().map(&children)}));
+            "detail": last.as_ref().map(|r| r.detail.clone()), "children": last.as_ref().map(children)}));
         if !moved {
             break;
         }
