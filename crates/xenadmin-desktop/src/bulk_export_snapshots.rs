@@ -235,6 +235,19 @@ fn demo_checkpoint(s: &mut State, snapshot: SnapshotId, memory: VdiId) {
 /// a selected row is and added to the editor.
 fn demo_editor(s: &mut State, snapshots: &[SnapshotId]) {
     let parent = VmId::parse(DEMO_PARENT).unwrap();
+    // The synthetic host offers each of them for export, as a real one says of a snapshot
+    // in its allowed operations; a snapshot it does not offer is not exported.
+    {
+        let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+        for snapshot in snapshots {
+            i.details
+                .snapshots
+                .entry(*snapshot)
+                .or_default()
+                .can_export
+                .get_or_insert(true);
+        }
+    }
     s.table.select(parent.to_string());
     vm_snapshots::open(s);
     s.snapshot_table.select(snapshots[0].to_string());

@@ -253,6 +253,11 @@ impl TransferAction {
                         "Choose a current disk snapshot, or use a reviewed memory checkpoint export",
                     );
                 }
+                // As for a VM and a checkpoint: a snapshot the host does not offer for
+                // export is not offered here, instead of being refused at preflight.
+                if i.details.snapshots.get(snapshot).and_then(|s| s.can_export) != Some(true) {
+                    return ActionAvailability::Unavailable;
+                }
             }
         }
         if let Self::ImportOvf { networks, .. } = self

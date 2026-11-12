@@ -59,6 +59,13 @@ that may hold a batch of snapshot exports, which 0.19.0 cannot read.
   it takes, which of them may be left out, and the type of each. The repository's tests
   run with that check and it reported nothing. Release builds contain none of it.
 
+### Fixed
+
+- A disk snapshot that the host does not offer for export, because it is busy or the
+  export is blocked on it, is no longer shown as ready to export and then refused when
+  the transfer is prepared. It is shown as unavailable, as a VM and a memory checkpoint
+  already were.
+
 ### Known issues
 
 Those of 0.19.0 stand, with these from the lab on 2026-11-12:

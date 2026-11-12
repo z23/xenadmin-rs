@@ -1274,6 +1274,64 @@ mod tests {
     }
 
     #[test]
+    fn a_disk_snapshot_is_offered_for_export_only_when_the_host_offers_it() {
+        use crate::{ActionAvailability, ExportSource, TransferAction, XvaCompression};
+        let export = TransferAction::ExportXva {
+            source: ExportSource::Snapshot {
+                snapshot: uuid(3).into(),
+                parent: uuid(2).into(),
+            },
+            compression: XvaCompression::Uncompressed,
+        };
+        let mut snapshot = vm(3);
+        snapshot["is_a_snapshot"] = json!(true);
+        snapshot["snapshot_of"] = json!("OpaqueRef:vm");
+        snapshot["power_state"] = json!("Halted");
+        snapshot["allowed_operations"] = json!(["export"]);
+        snapshot["current_operations"] = json!({});
+        snapshot["blocked_operations"] = json!({});
+        let mut events = initial();
+        events.push(event("VM", "snapshot", snapshot.clone()));
+        let mut store = Store::default();
+        let i = store.apply(&batch(events)).unwrap();
+        assert_eq!(export.availability(&i), ActionAvailability::Available);
+        // The host stops offering the export, has the snapshot busy, or blocks it: each is
+        // seen before a review instead of at the transfer's preflight.
+        for (key, value) in [
+            ("allowed_operations", json!(["destroy"])),
+            ("current_operations", json!({"OpaqueRef:task": "export"})),
+            ("blocked_operations", json!({"export": "fixture block"})),
+        ] {
+            let mut changed = snapshot.clone();
+            changed[key] = value;
+            let i = store
+                .apply(&batch(vec![event("VM", "snapshot", changed)]))
+                .unwrap();
+            assert_eq!(
+                export.availability(&i),
+                ActionAvailability::Unavailable,
+                "{key}"
+            );
+        }
+        // Back as it was, it is offered again; a snapshot of another VM never is.
+        let i = store
+            .apply(&batch(vec![event("VM", "snapshot", snapshot)]))
+            .unwrap();
+        assert_eq!(export.availability(&i), ActionAvailability::Available);
+        let foreign = TransferAction::ExportXva {
+            source: ExportSource::Snapshot {
+                snapshot: uuid(3).into(),
+                parent: uuid(9).into(),
+            },
+            compression: XvaCompression::Uncompressed,
+        };
+        assert!(!matches!(
+            foreign.availability(&i),
+            ActionAvailability::Available
+        ));
+    }
+
+    #[test]
     fn graph_resolves_out_of_order_records_and_preserves_shared_disk_consumers() {
         let mut events = vec![
             event(
