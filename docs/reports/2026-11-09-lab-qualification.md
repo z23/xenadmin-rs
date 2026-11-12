@@ -817,8 +817,9 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    run above stands alone and its cause is still not known. What was changed instead is
    that the client no longer relies on events alone: a ready session reads the host
    records directly once a minute, and when the same host differs from its inventory at
-   two checks running it reads the whole inventory again (protocol fixtures: events
-   withheld, one disagreement, agreement, switched off). That bounds a state like this
+   two checks running, with no event for that host applied in between, it reads the
+   whole inventory again (protocol fixtures: events withheld, one disagreement,
+   agreement, a host that keeps changing while its events arrive, switched off). That bounds a state like this
    one to about two minutes whether the host withheld the events or the client lost
    them. It would not help if the session's own loop had stopped, which the lost record
    of that run cannot rule out.

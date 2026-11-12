@@ -86,8 +86,9 @@ again for that, because no published version reads format 5.
   unknown until it was acknowledged.
 - A connected session now checks its inventory against the hosts once a minute: it reads
   the host records directly and compares them with the ones its inventory holds. If the
-  same host differs at two checks running, the events that keep the inventory current are
-  not arriving, and the whole inventory is read again; the connection shows itself as
+  same host differs at two checks running and no event for it arrived in between, the
+  events that keep the inventory current are not arriving, and the whole inventory is
+  read again; the connection shows itself as
   synchronizing for that moment. This is a safeguard after one lab run in which the
   inventory did not follow a host for fifteen minutes (finding 64), which twelve further
   attempts under the same conditions did not reproduce.

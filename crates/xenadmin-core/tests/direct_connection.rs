@@ -858,6 +858,14 @@ async fn lost_mutation_reply_remains_unknown_and_blocks_a_second_mutation() {
 async fn silent_event_stream(
     read_enabled: impl Fn(usize) -> bool + Send + Sync + 'static,
 ) -> (Mock, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    event_stream(read_enabled, false).await
+}
+/// The same server; when `host_events` is set its event stream keeps sending the host's
+/// record as the first inventory had it, a few times a second.
+async fn event_stream(
+    read_enabled: impl Fn(usize) -> bool + Send + Sync + 'static,
+    host_events: bool,
+) -> (Mock, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let full_reads = Arc::new(AtomicUsize::new(0));
     let host_reads = Arc::new(AtomicUsize::new(0));
     let read_enabled = Arc::new(read_enabled);
@@ -873,6 +881,14 @@ async fn silent_event_stream(
                         let mut all = batch("initial", "Halted");
                         all["events"][1]["snapshot"]["enabled"] = json!(n == 0);
                         Some(RpcReply::Json(json!({"result": all})))
+                    }
+                    "event.from" if host_events => {
+                        tokio::time::sleep(Duration::from_millis(40)).await;
+                        let mut host = batch("initial", "Halted")["events"][1].clone();
+                        host["operation"] = json!("mod");
+                        Some(RpcReply::Json(
+                            json!({"result": {"token": "initial", "events": [host]}}),
+                        ))
                     }
                     "event.from" => {
                         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -960,6 +976,16 @@ async fn an_inventory_that_agrees_with_the_hosts_or_disagrees_once_is_left_alone
     assert!(host_reads.load(Ordering::SeqCst) >= 4);
     assert_eq!(full_reads.load(Ordering::SeqCst), 1);
     assert_eq!(host_enabled(&connection), Some(true));
+    connection.close().await;
+    // Disagreeing at every check while events for the host keep arriving: an event
+    // carries the whole record, so the host is changing, not lost, and nothing is read
+    // again.
+    let (server, full_reads, host_reads) = event_stream(|_| false, true).await;
+    let (_directory, _backend, connection) =
+        connect_checking(&server, Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(host_reads.load(Ordering::SeqCst) >= 4);
+    assert_eq!(full_reads.load(Ordering::SeqCst), 1);
     connection.close().await;
     // Switched off: the hosts are never read.
     let (server, full_reads, host_reads) = silent_event_stream(|_| false).await;

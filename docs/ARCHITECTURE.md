@@ -179,9 +179,12 @@ Events alone keep the inventory current, and nothing in them says when one has g
 missing. A ready session therefore reads the host records directly at an interval
 (`ConnectionOptions::inventory_check_interval`, a minute by default) and compares what the
 client decides by, each host's enabled flag, `other_config`, address and resident guests,
-with the records its inventory holds. A difference at one check is an event on its way. The
-same host differing at two checks running means events are not arriving or not being
-applied: the session then asks for the whole inventory again from an empty token, reports
+with the records its inventory holds. A difference at one check is an event on its way. An
+event carries its object's whole record, so a host that differs at two checks running
+with no event for it applied in between is one whose events are not arriving or not being
+applied; a host that differs twice while its events do arrive is only changing, and is
+left alone. In the first case the session asks for the whole inventory again from an
+empty token, reports
 itself synchronizing until that batch is applied, which replaces the store, and stays the
 same generation, so observations remain valid and are judged against the inventory that
 replaces the stale one. The read runs beside the pool owner and only its result is handled

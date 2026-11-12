@@ -666,6 +666,13 @@ impl EventBatch {
     pub(crate) fn rebuild(&mut self) {
         self.reset = true;
     }
+    /// The references of the objects of one class that this batch has an event for.
+    pub(crate) fn touched<'a>(&'a self, class: &'a str) -> impl Iterator<Item = &'a str> {
+        self.events
+            .iter()
+            .filter(move |event| event.class_name.eq_ignore_ascii_case(class))
+            .map(|event| event.reference.as_str())
+    }
 }
 
 #[derive(Deserialize)]
