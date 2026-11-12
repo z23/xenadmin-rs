@@ -510,6 +510,30 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
         )
 }
 
+/// Whether the dialog is on a change outside the supported part. Entering and leaving
+/// maintenance, evacuation, a reboot, a shutdown and a toolstack restart are supported
+/// (docs/FEATURES.md); the other changes a host or pool offers here are not. The list of
+/// changes itself carries no notice.
+pub(super) fn experimental(s: &State) -> bool {
+    s.host_workspace.as_ref().is_some_and(|w| {
+        !matches!(
+            w.kind,
+            Kind::Browse
+                | Kind::Maintenance
+                | Kind::Evacuate
+                | Kind::Exit
+                | Kind::Reboot
+                | Kind::Shutdown
+                | Kind::Restart
+        )
+    })
+}
+/// The synthetic host with a change of its control domain's memory open: a change outside
+/// the supported part.
+pub(super) fn memory_scene(s: &mut State) {
+    scene(s);
+    select(s, Kind::Memory);
+}
 pub(super) fn scene(s: &mut State) {
     crate::demo(s);
     s.page = Page::Hosts;

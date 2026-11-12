@@ -1807,7 +1807,7 @@ fn experimental_dialog_open(s: &State) -> bool {
         (s.storage_graph.is_some(), true),
         (s.local_conversion.show, true),
         (s.host_monitoring.is_some(), true),
-        (s.host_workspace.is_some(), true),
+        (s.host_workspace.is_some(), host_admin::experimental(s)),
         (s.network_workspace.is_some(), true),
         (s.appliances.is_some(), true),
         (s.organization.is_some(), true),
@@ -1822,7 +1822,7 @@ fn experimental_dialog_open(s: &State) -> bool {
         (s.transfers.show, true),
         (s.cross_pool.show, true),
         (s.vm_recovery.is_some(), true),
-        (s.vm_migration.is_some(), true),
+        (s.vm_migration.is_some(), false),
         (s.vm_lifecycle.is_some(), true),
         (s.placement.is_some(), true),
         (s.properties.is_some(), true),
@@ -2765,6 +2765,7 @@ fn main() -> std::process::ExitCode {
                 network_admin::management_vlan_bond_scene,
             ),
             ("host-administration", host_admin::scene),
+            ("host-memory", host_admin::memory_scene),
             ("host-monitoring", host_monitoring_view::scene),
             ("local-conversion", local_conversion_view::scene),
             (
@@ -3326,7 +3327,11 @@ mod tests {
             rt.find("experimental-notice").is_some()
         };
         assert!(!shows(|_| {}), "the main window");
-        assert!(shows(host_admin::scene), "host administration");
+        // Host maintenance and moving a VM within its pool are supported; the other
+        // changes the host dialog offers are not.
+        assert!(!shows(host_admin::scene), "host maintenance");
+        assert!(!shows(vm_migration::scene), "same-pool migration");
+        assert!(shows(host_admin::memory_scene), "control-domain memory");
         assert!(shows(vm_lifecycle::scene), "VM creation");
         assert!(shows(bulk_delete::scene), "bulk deletion");
         assert!(!shows(activity::scene), "activity");
@@ -3335,12 +3340,12 @@ mod tests {
         // A supported dialog in front of an experimental one decides.
         assert!(
             !shows(|s| {
-                host_admin::scene(s);
+                host_admin::memory_scene(s);
                 activity::scene(s);
                 s.failure_help = None;
                 s.show_connect = true;
             }),
-            "the connection dialog over host administration"
+            "the connection dialog over an experimental host change"
         );
     }
 

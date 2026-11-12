@@ -65,6 +65,15 @@ again for that, because no published version reads format 5.
 
 ### Changed
 
+- Host maintenance and moving a VM within its pool join the supported part
+  ([feature scope](docs/FEATURES.md)): entering and leaving maintenance with evacuation,
+  a toolstack restart, a reboot or shutdown through maintenance, a live migration with
+  or without the VM's disks, and a halted VM's move between repositories. Their dialogs
+  no longer carry the experimental notice. What changed is the evidence, not the code:
+  their failure paths were recorded on the lab, among them a member's reboot and a
+  storage live migration each cut off by the client closing and settled from the journal
+  on restart without being sent again. The other changes the host dialog offers keep
+  the notice.
 - The bar above the VM table has the new entry. In a window 513 points wide it takes
   three rows where it took two, and the table shows one row fewer. In a window 1440
   points wide the table keeps its place.

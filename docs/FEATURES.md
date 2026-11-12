@@ -48,7 +48,8 @@ Milestone order and dependencies are defined in the [implementation plan](PLAN.m
 ## Supported and experimental
 
 Decided by the operator on 2026-11-11, for XCP-ng 8.3 with the client running as a Wayland
-application.
+application, and extended on 2026-11-12 by host maintenance and moving a VM within its
+pool, which the operator asked to have promoted once their failure paths were recorded.
 
 Supported means that a workflow has recorded live evidence of its successful path and of a
 failure or interruption path, and that a defect in it holds a release back:
@@ -60,7 +61,27 @@ failure or interruption path, and that a defect in it holds a release back:
 - the VM and host console: display, keyboard and pointer;
 - snapshots: create, inspect, restore and delete;
 - performance charts;
-- activity: progress, unknown outcomes, recheck, acknowledgement and history.
+- activity: progress, unknown outcomes, recheck, acknowledgement and history;
+- host maintenance (since 2026-11-12, not in the 0.19.0 release): entering and leaving
+  maintenance with the evacuation of the host's guests, restarting a host's toolstack,
+  and rebooting or shutting a host down through maintenance;
+- moving a VM within its pool (since 2026-11-12, not in the 0.19.0 release): a running
+  VM live to another host, with or without its disks, and a halted VM's disks to
+  another repository.
+
+For the two areas added on 2026-11-12 the recorded failure and interruption paths are: a
+member's reboot and a storage live migration each cut off by the client closing and
+reconciled from the journal on restart, with no second reboot and no second migration; a
+migration cancelled by the client that started it, leaving the guest verified where it
+was; a maintenance review refused for a stale set of resident guests, and the host's own
+refusal of an evacuation; a reboot refused because the host was enabled; a storage move
+refused while a snapshot exists; and a forced shutdown during a migration refused unless
+its consequence is accepted (findings 63 and 64 and the rows of 2026-11-12 in the
+[live report](reports/2026-11-09-lab-qualification.md)). Not among them: a host that
+loses power in the middle of a migration or an evacuation, a halted move interrupted,
+and several of these at once in a batch, which stays experimental. The other changes the
+host dialog offers (remote power-on, control-domain memory, remote logging, multipathing,
+VM autostart, forgetting a dead host) stay experimental and keep their notice.
 
 Everything else in the [ledger](PARITY-IMPLEMENTATION.md) is experimental. It is
 implemented, in most cases with a recorded successful run on the lab, but how it fails is

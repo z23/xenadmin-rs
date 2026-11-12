@@ -33,7 +33,8 @@ Beta. Version 0.19.0 is the current release
 [changelog](CHANGELOG.md), [release report](docs/reports/2026-11-12-release-0.19.md)), for
 XCP-ng 8.3 with the client running as a Wayland application. Its supported part is
 connections and certificate trust, the live inventory, VM power, the console, snapshots,
-performance charts and activity. Everything else below is experimental: implemented, in
+performance charts and activity; on the main branch, towards 0.20.0, host maintenance
+and moving a VM within its pool have joined it. Everything else below is experimental: implemented, in
 most cases with one recorded successful run, and marked with a notice in the client. The
 [feature scope](docs/FEATURES.md) draws that line. The Cargo workspace builds the Rune
 desktop application, a read-only host probe and a small sandbox helper. No Xen Orchestra
