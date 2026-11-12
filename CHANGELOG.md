@@ -81,6 +81,12 @@ Those of 0.19.0 stand, with these from the lab on 2026-11-12:
   was refused on its fresh read of the host, so nothing was changed by mistake. It did
   not happen again in two further runs (finding 64).
 
+And one that a fixture test showed while the batch of snapshot exports was written:
+
+- An export in a batch, of a VM or of a snapshot, that is interrupted after its task
+  was created on the host and before anything was transferred stays unknown. A recheck
+  does not settle it, although nothing was written, and it has to be acknowledged.
+
 ## 0.19.0 (2026-11-12)
 
 The second published version, a beta for XCP-ng 8.3 with the same supported part as
