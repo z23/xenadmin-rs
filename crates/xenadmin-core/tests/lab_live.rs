@@ -16498,17 +16498,23 @@ async fn lab_snapshot_batch_stop_and_interruption() {
             )
             .expect("batch accepted")
         };
-        let first_under_way = |operation: &xenadmin_core::ResourceOperation| {
-            operation.latest().workflow_batch.first().is_some_and(|r| {
-                r.state
-                    .as_ref()
-                    .is_some_and(|s| *s == OperationState::Tracking)
-            })
+        // A child is a record of its own; the batch lists it with a state only once it
+        // has ended. Under way means that record is streaming.
+        let first_under_way = |c: &Connection, operation: &xenadmin_core::ResourceOperation| {
+            operation
+                .latest()
+                .workflow_batch
+                .first()
+                .is_some_and(|first| {
+                    c.resource_history()
+                        .iter()
+                        .any(|r| r.id == first.child && r.state == OperationState::Tracking)
+                })
         };
 
         // Stop during the first export.
         let stopped = submit(&c, OperationId::new(), "stop", &[0, 1, 2]);
-        let under_way = settle(120, || first_under_way(&stopped)).await;
+        let under_way = settle(120, || first_under_way(&c, &stopped)).await;
         let asked = c
             .control_resource(stopped.latest().id, OperationControl::RequestCancellation)
             .map(|_| true)
@@ -16530,7 +16536,7 @@ async fn lab_snapshot_batch_stop_and_interruption() {
 
         // Cut off during the first export of a second batch.
         let cut = submit(&c, interrupted, "cut", &[0, 1]);
-        let under_way = settle(120, || first_under_way(&cut)).await;
+        let under_way = settle(120, || first_under_way(&c, &cut)).await;
         // Let some of the archive arrive, so that there is a transfer to cut.
         tokio::time::sleep(Duration::from_secs(3)).await;
         let state_at_close = format!("{:?}", cut.latest().state);
