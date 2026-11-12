@@ -201,7 +201,12 @@ Two checks made since look for this, neither of them complete:
   record another's fields. What it still reports there is meant: fixtures' own
   switches, two records given a foreign field to show it is not passed on, repository
   fixtures that carry an empty `blocked_operations`, and one key the client adds to a
-  record it holds. It sees only the reads a test or a scenario exercises.
+  record it holds. It sees only the reads a test or a scenario exercises. How many
+  that is has been measured since 0.19.0, the check now listing each place that makes
+  a view: the core writes 1,509 views on 1,472 lines, and the workspace's tests make
+  a view at 1,408 of those lines. The 64 lines no test reaches are where a record of
+  the wrong class would still go unseen by the tests; 13 are in the VM lifecycle
+  backend and the rest are spread over twenty files.
 
 ## What follows, in order
 

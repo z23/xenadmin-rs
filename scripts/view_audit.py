@@ -15,7 +15,8 @@ The file also holds a line for every call that was sent with an argument the API
 for that parameter does not admit, or with a number of arguments the API does not take:
 `call`, the call's name, the parameter's position or `count`, and what was wrong. No call
 is expected to be reported, so each of those fails the check. Lines that start with `sent`
-name the calls that were made at all; they are counted and never fail anything.
+name the calls that were made at all, and lines that start with `viewed` the places that
+made a view; both are counted and never fail anything.
 """
 import sys
 
@@ -34,7 +35,7 @@ def unexpected(lines):
     found = set()
     for line in lines:
         parts = line.rstrip("\n").split("\t")
-        if len(parts) != 3:
+        if len(parts) != 3 or parts[0] in ("viewed", "call"):
             continue
         cls, key, place = parts
         if key.startswith("fixture_"):  # a fixture's own switches
@@ -76,6 +77,11 @@ def main(arguments):
             for line in lines if line.startswith("sent\t") and line.count("\t") == 1}
     if sent:
         print(f"view_audit: {len(sent)} distinct calls were sent and compared with the API")
+    viewed = {line.rstrip("\n").split("\t")[2]
+              for line in lines if line.startswith("viewed\t") and line.count("\t") == 2}
+    if viewed:
+        print(f"view_audit: views were made at {len(viewed)} distinct places and compared "
+              "with their classes")
     return 1 if found or misfits else 0
 
 

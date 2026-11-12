@@ -305,8 +305,9 @@ impl<'a> MapField<'a> {
 /// given. A call given more arguments than the API takes, or fewer than it requires, is
 /// reported with `count` for its position; parameters the API marks as optional may be
 /// left out from the end. Here too only names and kinds are written, never a value.
-/// Every call observed is also listed once per process, as `sent` and its name, so that
-/// what the check covered can be counted afterwards.
+/// Every call observed is also listed once per process, as `sent` and its name, and every
+/// place that made a view as `viewed`, its class and the place, so that what the two
+/// checks covered can be counted afterwards.
 #[cfg(debug_assertions)]
 pub mod audit {
     use std::collections::BTreeSet;
@@ -497,6 +498,21 @@ pub mod audit {
         let Some(sink) = sink() else {
             return;
         };
+        // Each place is listed once; a thread asks the shared record only about a place
+        // it has not met itself, so that views made in a loop cost a lookup and no lock.
+        thread_local! {
+            static MET: std::cell::RefCell<BTreeSet<(usize, u32, u32)>> =
+                const { std::cell::RefCell::new(BTreeSet::new()) };
+        }
+        let key = (place.file().as_ptr() as usize, place.line(), place.column());
+        if MET.with(|met| met.borrow_mut().insert(key))
+            && let Ok(mut sink) = sink.lock()
+        {
+            let line = format!("viewed\t{class}\t{}:{}\n", place.file(), place.line());
+            if sink.calls.insert(line.clone()) {
+                let _ = sink.file.write_all(line.as_bytes());
+            }
+        }
         let foreign = foreign_keys(class, record);
         if foreign.is_empty() {
             return;

@@ -107,8 +107,9 @@ With the same variable set, a debug build compares every call it sends with the 
 appends a line for each that does not fit: `call`, the call's name, the position of the
 parameter (the session is the first) or `count`, and what was wrong, such as
 `bool given a string` or `takes 3 to 4, given 2`. Parameters the API marks as optional
-may be left out from the end. A line `sent` and a name records each call made, so that
-what the check covered can be counted. `scripts/view_audit.py` fails on any `call` line;
+may be left out from the end. A line `sent` and a name records each call made, and a
+line `viewed`, a class and a place each place that made a view, so that what the two
+checks covered can be counted. `scripts/view_audit.py` fails on any `call` line;
 `scripts/check.sh` runs it over the workspace's tests. A reference of the wrong class is
 a string like any other and is not seen. Write
 enumeration values as the generated constants (`vm_power_state::HALTED`,
