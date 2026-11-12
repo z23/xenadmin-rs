@@ -14939,7 +14939,7 @@ async fn lab_snapshot_xva_export() {
 /// directory, the checkpoint with its memory chosen for that item. Each archive is then read
 /// back with the client's own inspection: one guest each, under the snapshot's UUID, with one
 /// memory image in the checkpoint's archive and none in the disk snapshot's. The archives,
-/// the snapshot and the checkpoint are removed afterwards. Not yet run on the lab.
+/// the snapshot and the checkpoint are removed afterwards.
 #[tokio::test]
 #[ignore]
 async fn lab_snapshot_batch_xva_export() {

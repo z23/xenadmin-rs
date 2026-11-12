@@ -31,8 +31,9 @@ that may hold a batch of snapshot exports, which 0.19.0 cannot read.
   rest, and a recheck reads what exists without downloading or publishing anything. While
   several snapshots are selected, restore, edit, copy, inspect, delete and the single
   export are unavailable, because each takes one snapshot. The batch is experimental: it
-  is verified by fixtures and has not been run against a host
-  ([report](docs/reports/2026-11-12-batch-snapshot-export.md)).
+  is verified by fixtures and by one run on the lab, where a disk snapshot and a
+  checkpoint with its memory were exported in one batch and read back; nobody has used
+  the dialog ([report](docs/reports/2026-11-12-batch-snapshot-export.md)).
 
 ### Changed
 
@@ -57,6 +58,21 @@ that may hold a batch of snapshot exports, which 0.19.0 cannot read.
 - Inside, debug builds can compare every call they send with the API: how many arguments
   it takes, which of them may be left out, and the type of each. The repository's tests
   run with that check and it reported nothing. Release builds contain none of it.
+
+### Known issues
+
+Those of 0.19.0 stand, with these from the lab on 2026-11-12:
+
+- A forced shutdown or reboot during a storage migration can leave the migration's task
+  pending on the host and partial copies of the disks on the destination. On the lab
+  that happened in two runs of two that day, and clearing it took toolstack restarts and
+  a power cycle of the destination host (finding 63 of the live report). The client
+  warns before such a forced action. It cannot repair the result.
+- Once, in a session opened less than a minute after the coordinator's toolstack had
+  been restarted, the inventory did not show a member's toolstack restart, or that the
+  restart had enabled the host again, for fifteen minutes. The operation that followed
+  was refused on its fresh read of the host, so nothing was changed by mistake. It did
+  not happen again in two further runs (finding 64).
 
 ## 0.19.0 (2026-11-12)
 

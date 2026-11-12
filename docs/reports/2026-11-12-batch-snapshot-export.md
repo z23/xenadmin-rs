@@ -94,16 +94,22 @@ batch is stored, so this holds for someone who never uses the batch.
 
 ## What this does not show
 
-Nothing here ran against a host. No snapshot or checkpoint of a real guest was exported
-in a batch, and a checkpoint export with memory has not run on the lab even singly
-(P11-07). `lab_snapshot_batch_xva_export` in the lab harness takes a disk snapshot and a
-memory checkpoint of the lab guest, exports both in one batch with the checkpoint's
-memory, reads the archives back and removes everything it made; it is compile-checked
-and has not been run.
+When this was written nothing had run against a host. Later that day
+`lab_snapshot_batch_xva_export` was run on the disposable lab and passed on its first
+run: a disk snapshot and a memory checkpoint of the running lab guest were exported in
+one batch as uncompressed XVA, the checkpoint with its memory chosen for it, in 45 s.
+The archives were 74.6 MB and 756 MB, and the client's own inspection read each back as
+one guest under its snapshot's UUID, with one memory image in the checkpoint's archive
+and none in the disk snapshot's. The archives, the snapshot and the checkpoint were then
+removed ([live report](2026-11-09-lab-qualification.md), evidence
+1794466851-snapshot-batch-xva-export.json). That is one run, of two snapshots of one
+guest, through the core and not through the window. It is also the first time a
+checkpoint was exported with its memory on the lab at all (P11-07). The other formats,
+Stop and recovery have not been tried against a host.
 
 The fixture tests enter at the batch request, as the bulk VM export tests do. The
 desktop's submission through `Connection::submit_snapshot_export_batch` is exercised
-only by that unrun lab scenario; the Rune tests stop at a review that a synthetic
+only by that lab scenario; the Rune tests stop at a review that a synthetic
 session cannot submit. Headless renders and Rune tests do not establish the behaviour of
 a real desktop: the file portal, keyboard focus and assistive technology were not
 checked, and selecting with Shift or Ctrl and a pointer click was not exercised at all,
