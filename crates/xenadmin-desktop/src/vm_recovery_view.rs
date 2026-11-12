@@ -3,6 +3,8 @@ use xenadmin_core::{
     ForceRecoveryAction, ObservedVm, OperationAction, OperationControl, OperationId,
     OperationState, RecoveryBootConfiguration, VmRecoveryOperation,
 };
+/// Shown in a forced-action review that would interrupt a migration (lab finding 63).
+const MIGRATION_CAUTION: &str = "A migration of this VM is running. The host admits a forced action during one and does not always end the migration afterwards: on the project's test lab its task then stayed pending and left partial disk copies that took a host restart to clear. If the client that started the migration can still cancel it, do that first and wait for it to end.";
 #[derive(Clone)]
 enum Review {
     Cancel {
@@ -200,6 +202,13 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
             match o {
                 VmRecoveryOperation::Force { tasks, .. } => {
                     body=body.child(caption("This can interrupt guest writes and lose data. The host will freshly validate the force action even when it is missing from the host’s usual action list. Administrative blocks and session permissions still apply. No task listed here will be cancelled by this action.",k).wrap());
+                    if tasks.iter().any(|t| t.is_migration()) {
+                        body = body.child(
+                            caption(MIGRATION_CAUTION, k)
+                                .wrap()
+                                .key("recovery-migration-caution"),
+                        );
+                    }
                     for t in tasks {
                         body =
                             body.child(caption(format!("{} · {}", t.operation, t.task), k).wrap())

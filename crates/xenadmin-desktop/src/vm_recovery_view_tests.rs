@@ -84,6 +84,12 @@ fn force_review_captures_exact_tasks_and_refuses_changed_tasks_or_admin_blocks()
             .to_string()
             .contains("No task listed here will be cancelled")
     );
+    // An export is not a migration, so the review does not warn of one.
+    assert!(
+        !r.accessibility_json()
+            .to_string()
+            .contains("A migration of this VM is running")
+    );
     r.update(|s, _| {
         Arc::make_mut(s.inventory.as_mut().unwrap())
             .details
@@ -120,6 +126,43 @@ fn force_review_captures_exact_tasks_and_refuses_changed_tasks_or_admin_blocks()
             .to_string()
             .contains("Administratively blocked: Protected guest")
     );
+}
+#[test]
+fn force_review_warns_when_the_task_it_would_interrupt_is_a_migration() {
+    for (operation, warns) in [
+        ("migrate_send", true),
+        ("pool_migrate", true),
+        ("snapshot", false),
+    ] {
+        let mut s = init();
+        scene(&mut s);
+        let id = s.vm_recovery.as_ref().unwrap().vm;
+        let task = xenadmin_core::TaskId::from(uuid::Uuid::from_u128(901));
+        {
+            let i = Arc::make_mut(s.inventory.as_mut().unwrap());
+            i.vms.get_mut(&id).unwrap().power_state = PowerState::Running;
+            i.details.vms.get_mut(&id).unwrap().current_operations =
+                vec![xenadmin_core::RunningOperation {
+                    task: Some(task),
+                    operation: operation.into(),
+                }];
+        }
+        open(&mut s, id);
+        let mut r = runtime(s, (513.0, 652.0));
+        click(&mut r, "recovery-force-shutdown");
+        let tree = r.accessibility_json().to_string();
+        // The review still names the task and still promises to cancel nothing.
+        assert!(
+            tree.contains(&format!("{operation} · {task}")),
+            "{operation}"
+        );
+        assert!(tree.contains("No task listed here will be cancelled"));
+        assert_eq!(
+            tree.contains("A migration of this VM is running"),
+            warns,
+            "{operation}"
+        );
+    }
 }
 #[test]
 fn unsupported_guest_and_missing_task_identity_do_not_offer_recovery_dispatch() {

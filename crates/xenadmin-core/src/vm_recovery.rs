@@ -31,6 +31,17 @@ pub struct RecoveryTask {
     pub task: TaskId,
     pub operation: String,
 }
+impl RecoveryTask {
+    /// Whether the captured task is moving the VM between hosts or repositories. A forced
+    /// action during one is admitted by the host, which does not always unwind the
+    /// migration afterwards (lab finding 63), so a review says so.
+    pub fn is_migration(&self) -> bool {
+        matches!(
+            self.operation.as_str(),
+            vm_operations::MIGRATE_SEND | vm_operations::POOL_MIGRATE
+        )
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecoveryBootConfiguration {
     pub order: Option<String>,
