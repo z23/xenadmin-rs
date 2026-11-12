@@ -311,5 +311,8 @@ are written as generated constants, and debug builds can check that each record 
 as the class it is of, which the repository's check now does over the tests. The move
 has found four defects and, since, a comparison that could not hold and seven reads
 through the wrong class that changed nothing (findings 55 to 58, 60 and 61 of the lab
-report). The decision record lists what is left: the remaining reads by key, typed
+report). The operation areas that had rested on fixture tests since their move
+(migration, transfers, cross-pool work, storage creation and repair, bonds, management
+reconfiguration, host maintenance and pool membership) were run again on the lab on
+2026-11-12. The decision record lists what is left: the remaining reads by key, typed
 values and call descriptions.

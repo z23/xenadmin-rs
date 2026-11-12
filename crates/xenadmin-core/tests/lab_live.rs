@@ -14080,11 +14080,17 @@ async fn lab_tags_custom_fields_and_vapp_round_trip() {
             start_delay: 0,
             shutdown_delay: 0,
         });
-    let order = ApplianceOrder {
-        order: 1,
-        start_delay: 5,
-        shutdown_delay: 5,
-    };
+    // A value other than the one found: the client refuses an edit that changes nothing,
+    // and a run before this one restored its values may have left the same ones behind.
+    let order = [(1, 5), (2, 7)]
+        .into_iter()
+        .map(|(order, delay)| ApplianceOrder {
+            order,
+            start_delay: delay,
+            shutdown_delay: delay,
+        })
+        .find(|candidate| *candidate != previous_order)
+        .unwrap();
     let mut entry = appliance_op(
         &c,
         pool,
@@ -14174,6 +14180,25 @@ async fn lab_tags_custom_fields_and_vapp_round_trip() {
     )
     .await;
     entry["read_back"] = json!(settle(60, || appliance_of(&c, &renamed).is_some()).await);
+    steps.push(entry);
+    let mut entry = appliance_op(
+        &c,
+        pool,
+        "put the guest's vApp order and delays back",
+        ApplianceOperation::SetOrder {
+            appliance,
+            vm,
+            previous: order,
+            value: previous_order,
+        },
+        120,
+    )
+    .await;
+    entry["read_back"] = json!(
+        settle(60, || member_of(&c)
+            .is_some_and(|(_, o)| o == Some(previous_order)))
+        .await
+    );
     steps.push(entry);
     let mut entry = appliance_op(
         &c,
