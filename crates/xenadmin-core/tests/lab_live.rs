@@ -1548,6 +1548,19 @@ async fn lab_guest_power_matrix() {
     ];
     let mut results = Vec::new();
     for (action, expected) in sequence {
+        // A guest that is still booting loses a clean shutdown or reboot, and the host then
+        // holds the task open for minutes (finding 59): give a just-started guest its time.
+        // The host also advertises an action a few seconds after the state that allows it,
+        // and an action taken before that would be recorded here as not offered.
+        if matches!(action, PowerAction::CleanShutdown | PowerAction::Reboot) {
+            guest_booted(&c, guest.id).await;
+        }
+        settle(30, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest.id].allowed_actions.contains(&action))
+        })
+        .await;
         let before = c.latest().inventory().unwrap().vms[&guest.id].clone();
         if !before.allowed_actions.contains(&action) {
             results.push(json!({"action": format!("{action:?}"), "advertised": false, "power_state": format!("{:?}", before.power_state)}));

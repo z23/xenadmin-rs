@@ -8,9 +8,21 @@ authority on what is implemented and what is qualified.
 0.18.0 is the first published version. Versions up to 0.17.0 were local development
 checkpoints.
 
-## 0.19.0 (in development)
+## 0.19.0 (2026-11-12)
 
-Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.0.
+The second published version, a beta for XCP-ng 8.3 with the same supported part as
+0.18.0 ([feature scope](docs/FEATURES.md)). Most of what changed is inside: the client now
+reads host records through bindings generated from the API description of the toolstack
+it is qualified on, and that work found and fixed defects that test fixtures had hidden.
+The [live report](docs/reports/2026-11-09-lab-qualification.md) says which lab scenarios
+were run again on this code and which were not.
+
+The packages are a portable archive and an AppImage for x86-64 Linux, each with its
+SHA-256 checksum; [installation](docs/INSTALLATION.md) says how to check and install
+them. This is an independent project, not an official XCP-ng or Vates application.
+
+Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.0. The
+preferences file gains the details pane's width, which 0.18.0 ignores.
 
 ### Changed
 
@@ -52,6 +64,8 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.
 - A cross-pool copy or move of a guest that had changed since its review (its power
   state, or the host it runs on or belongs to) was refused as "Invalid XAPI response".
   The refusal now says that the guest changed and asks for a new review.
+- The performance page ran to the edge of its panel, with its button to go back
+  overhanging. It has the margin the other pages have.
 
 ### Known issues
 

@@ -133,7 +133,10 @@ content. A completed fixture test is not evidence of a completed live scenario.
    from [the implementation ledger](../docs/PARITY-IMPLEMENTATION.md). Record unsupported
    host capabilities as unsupported rather than successful or silently absent.
 8. Export only sanitized reports. Private screenshots, inventories, passwords, private
-   keys, packet captures and guest disk images stay outside the repository.
+   keys, packet captures and guest disk images stay outside the repository. The
+   pictures in the project's README are the exception the operator asked for: they are of
+   this lab, and were checked to show nothing but its own names, identifiers and isolated
+   addresses.
 
 Recovery utilities in the harness (ignored tests like the scenarios) put the lab back
 together through the client after a failed experiment: `lab_forget_dead_coordinator_through_survivor`

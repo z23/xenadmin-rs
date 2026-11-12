@@ -315,4 +315,5 @@ report). The operation areas that had rested on fixture tests since their move
 (migration, transfers, cross-pool work, storage creation and repair, bonds, management
 reconfiguration, host maintenance and pool membership) were run again on the lab on
 2026-11-12. The decision record lists what is left: the remaining reads by key, typed
-values and call descriptions.
+values and call descriptions. The operator decided that day to release this state as
+0.19.0, again a beta cut from the main branch.

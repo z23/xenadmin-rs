@@ -200,6 +200,7 @@ pub(super) fn view(s: &State, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
+        .padding(20.0)
         .gap(12.0)
         .child(
             row()

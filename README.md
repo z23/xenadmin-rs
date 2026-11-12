@@ -7,11 +7,30 @@ The client must work when Xen Orchestra is unavailable. Connections, credentials
 inventory, VM consoles, and host discovery must work without an XO service.
 The client requires a reachable XAPI service and the user's host permissions.
 
+![XenAdmin RS listing the virtual machines of a two-host XCP-ng pool, with the selected guest's details and actions beside the table](docs/images/lab-inventory.png)
+
+*The inventory of a pool the client is connected to directly: its two hosts and their
+guests in the tree, each guest's state, host and size in the table, and the selected
+guest's details and actions on the right.*
+
+![A guest's graphical desktop shown in the client's console view, with a terminal open in the guest](docs/images/lab-console.png)
+
+*A guest's console, opened through the host that runs the guest. Keyboard and pointer go
+to the guest, and text on the clipboard can be typed into it as key presses.*
+
+![Live CPU charts for one guest in the client's performance view](docs/images/lab-performance.png)
+
+*A guest's performance, read from its host every five seconds, with longer ranges and a
+choice of data sources.*
+
+The pictures are of version 0.19.0 connected to the project's
+[disposable lab](lab/README.md), a pool of two nested XCP-ng 8.3 hosts.
+
 ## Project status
 
-Beta. Version 0.18.0 is the first published release
-([packages](https://github.com/z23/xenadmin-rs/releases/tag/v0.18.0),
-[changelog](CHANGELOG.md), [release report](docs/reports/2026-11-11-release-0.18.md)), for
+Beta. Version 0.19.0 is the current release
+([packages](https://github.com/z23/xenadmin-rs/releases/tag/v0.19.0),
+[changelog](CHANGELOG.md)), for
 XCP-ng 8.3 with the client running as a Wayland application. Its supported part is
 connections and certificate trust, the live inventory, VM power, the console, snapshots,
 performance charts and activity. Everything else below is experimental: implemented, in
@@ -36,7 +55,7 @@ failure and interruption paths are recorded.
 Verification so far. The offline suite (core, protocol, TLS and Rune fixtures) runs in CI.
 Live qualification runs against a disposable nested XCP-ng 8.3.0 lab:
 the [live qualification report](docs/reports/2026-11-09-lab-qualification.md) records
-a hundred and three scenarios, including three driven desktop sessions, the last with the packaged
+a hundred and four scenarios, including three driven desktop sessions, the last with the packaged
 AppImage, and the operator's sessions on a real seat, covering connections and recovery, power and consoles, snapshots and checkpoints,
 devices, storage and networking, shared NFS and iSCSI repositories with HA, live migration
 and evacuation, host maintenance, reboots and power cycles, coordinator handover and
@@ -104,9 +123,10 @@ console and the client's connections observed going to the two pool hosts only.
 
 ## Release history
 
-0.18.0 is the first published version, a beta, with its packages on the project's releases
-page and its notes in the [changelog](CHANGELOG.md). The versions before it were
-development checkpoints that froze source locally and recorded their verification:
+0.18.0 was the first published version and 0.19.0 is the second, both betas, with their
+packages on the project's releases page and their notes in the [changelog](CHANGELOG.md).
+The versions before them were development checkpoints that froze source locally and
+recorded their verification:
 
 - 0.1 to 0.2: [alpha results](docs/reports/2026-11-07-alpha.md),
   [connection fixes](docs/reports/2026-11-07-connection-fixes.md),
@@ -131,6 +151,11 @@ development checkpoints that froze source locally and recorded their verificatio
   failure paths of the supported part recorded on the lab; clipboard text typed as key
   presses. See the [changelog](CHANGELOG.md) and the
   [release report](docs/reports/2026-11-11-release-0.18.md).
+- 0.19: host records read through bindings generated from the API description of the
+  qualified toolstack, kept in one crate under upstream's LGPL terms; the defects that
+  move found, fixed; the operation areas whose code moved run again on the lab; console
+  windows drawn at the interface size and the details pane's width kept. See the
+  [changelog](CHANGELOG.md).
 
 The per-increment reports under `docs/reports/` are linked from the ledger rows they verify.
 
