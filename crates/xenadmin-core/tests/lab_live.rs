@@ -5851,6 +5851,314 @@ async fn lab_cross_pool_batch_move_round_trip() {
     away.close().await;
 }
 
+/// P15-06, failure column of the batch of cross-pool moves: an interruption. The lab guest
+/// and the tools guest are put into one batch to the standalone pool, and the application
+/// closes while the first move is under way. On restart, with both pools connected again,
+/// the batch is unknown; the hosts go on with the move that was sent; Recheck on the batch
+/// reads it, until its task has ended, and starts nothing: the second guest must still be
+/// on its own pool with its move never begun. Whatever stays unknown is acknowledged, and
+/// a second batch brings back the guest that went, each disk to the repository it came
+/// from and each NIC to its network.
+#[tokio::test]
+#[ignore]
+async fn lab_cross_pool_batch_interrupted_and_rechecked() {
+    use xenadmin_core::{
+        BatchVmWorkflow, CrossPoolBatchSelection, OperationControl, VmWorkflowBatch,
+    };
+    let lab = Lab::load();
+    assert!(lab.hosts.len() >= 3, "three hosts are required");
+    let state = tempfile::tempdir().unwrap();
+    let id = OperationId::new();
+    let children = |row: &xenadmin_core::ResourceOperationRecord| {
+        row.workflow_batch
+            .iter()
+            .map(|r| json!({"vm": r.vm.to_string(), "state": r.state.as_ref().map(|s| format!("{s:?}")), "detail": r.detail}))
+            .collect::<Vec<_>>()
+    };
+    let mut steps = Vec::new();
+    let mut failures = Vec::new();
+
+    // First process: review both guests, submit, and close during the first move.
+    let (guests, home_host) = {
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let home = connect(&lab, &backend, 0, false).await;
+        let away = connect(&lab, &backend, 2, false).await;
+        let home_inventory = home.latest().inventory().unwrap().clone();
+        let away_inventory = away.latest().inventory().unwrap().clone();
+        assert_ne!(home_inventory.pool_id, away_inventory.pool_id);
+        let mut found = home_inventory
+            .guests()
+            .filter(|v| v.name.starts_with("lab-guest-") || v.name.starts_with("lab-tools-"))
+            .cloned()
+            .collect::<Vec<_>>();
+        found.sort_by_key(|v| (!v.name.starts_with("lab-guest-"), v.name.clone()));
+        assert_eq!(found.len(), 2, "both lab guests must be on the home pool");
+        let away_host = away_inventory
+            .coordinator
+            .or_else(|| away_inventory.hosts.keys().next().copied())
+            .expect("a host on the standalone pool");
+        let away_sr = local_sr_of(&away_inventory, away_host).expect("a local repository there");
+        let home_host = home_inventory.coordinator.expect("coordinator");
+        let mut guests = Vec::new();
+        let mut items = Vec::new();
+        for vm in &found {
+            let (disks, nics) = guest_placement(&home_inventory, vm.id);
+            let reviewed = cross_pool_batch_item(
+                &home,
+                &away,
+                vm.id,
+                away_host,
+                &|_| Some(away_sr),
+                &|_, name| {
+                    away_inventory
+                        .networks
+                        .iter()
+                        .find(|n| n.name == name)
+                        .map(|n| n.uuid.into())
+                },
+            )
+            .unwrap_or_else(|reason| panic!("{} cannot be reviewed: {reason}", vm.name));
+            items.push(BatchVmWorkflow::move_to_pool(reviewed));
+            guests.push((vm.id, vm.name.clone(), vm.power_state.clone(), disks, nics));
+        }
+        let selection = CrossPoolBatchSelection {
+            source: home
+                .latest()
+                .observe_resource(ResourceTarget::Pool(home_inventory.pool_id))
+                .unwrap(),
+            destination: away
+                .latest()
+                .observe_resource(ResourceTarget::Pool(away_inventory.pool_id))
+                .unwrap(),
+            batch: VmWorkflowBatch { items },
+        };
+        let operation = home
+            .move_vms_to_pool(id, selection, &away)
+            .expect("cross-pool batch accepted");
+        let under_way = settle(120, || {
+            operation
+                .latest()
+                .workflow_batch
+                .first()
+                .is_some_and(|first| {
+                    home.resource_history().iter().any(|r| {
+                        r.id == first.child
+                            && matches!(
+                                r.state,
+                                OperationState::Dispatching | OperationState::Tracking
+                            )
+                    })
+                })
+        })
+        .await;
+        let first_child = operation.latest().workflow_batch.first().map(|r| r.child);
+        let child_state = first_child.and_then(|child| {
+            home.resource_history()
+                .iter()
+                .find(|r| r.id == child)
+                .map(|r| format!("{:?}", r.state))
+        });
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let state_at_close = format!("{:?}", operation.latest().state);
+        home.close().await;
+        away.close().await;
+        drop(backend);
+        steps.push(json!({"step": "close the application during the first move of a batch of two", "first_move_under_way": under_way,
+            "first_move_state": child_state, "batch_state_at_close": state_at_close}));
+        if !under_way {
+            failures
+                .push("the first move was not under way when the application closed".to_owned());
+        }
+        (guests, home_host)
+    };
+
+    // Second process, same state directory, both pools connected again.
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let home = connect(&lab, &backend, 0, false).await;
+    let away = connect(&lab, &backend, 2, false).await;
+    let row = |c: &Connection| c.resource_history().iter().find(|r| r.id == id).cloned();
+    settle(120, || {
+        row(&home).is_some_and(|r| r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+    })
+    .await;
+    let after_restart = row(&home);
+    steps.push(json!({"step": "after the restart", "state": after_restart.as_ref().map(|r| format!("{:?}", r.state)),
+        "detail": after_restart.as_ref().map(|r| r.detail.clone()), "children": after_restart.as_ref().map(children),
+        "listed_on_the_destination_pool": row(&away).is_some()}));
+    let on = |c: &Connection, vm: xenadmin_core::VmId| {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.vms.contains_key(&vm))
+    };
+    let idle = |c: &Connection, vm: xenadmin_core::VmId| {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vms
+                .get(&vm)
+                .is_some_and(|v| v.current_operations.is_empty())
+        })
+    };
+    let (first, second) = (guests[0].0, guests[1].0);
+    // The hosts go on with a move that was sent: wait for the first guest to be on one
+    // pool only, with nothing running on it.
+    let settled = settle(900, || {
+        (on(&away, first) && !on(&home, first) && idle(&away, first))
+            || (on(&home, first) && !on(&away, first) && idle(&home, first))
+    })
+    .await;
+    let first_went = on(&away, first) && !on(&home, first);
+    steps.push(json!({"step": "the hosts finish what was sent", "first_guest_on_one_pool_and_idle": settled, "first_guest_went": first_went}));
+    if !settled {
+        failures.push("the first guest did not settle on one pool".to_owned());
+    }
+    // Recheck on the batch, until it stops saying that something is still active.
+    let mut last = after_restart;
+    let mut rechecks = Vec::new();
+    while last
+        .as_ref()
+        .is_some_and(|r| r.state == OperationState::OutcomeUnknown)
+        && rechecks.len() < 12
+    {
+        let before = last
+            .as_ref()
+            .map(|r| (format!("{:?}", r.state), r.detail.clone(), children(r)));
+        let asked = home
+            .recheck_cross_pool_batch(id, &away)
+            .map(|_| true)
+            .map_err(|e| e.to_string());
+        let moved = settle(120, || {
+            row(&home).map(|r| (format!("{:?}", r.state), r.detail.clone(), children(&r))) != before
+        })
+        .await;
+        settle(300, || {
+            row(&home)
+                .is_some_and(|r| r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+        })
+        .await;
+        last = row(&home);
+        rechecks.push(json!({"asked": asked, "moved": moved, "state": last.as_ref().map(|r| format!("{:?}", r.state)),
+            "detail": last.as_ref().map(|r| r.detail.clone()), "children": last.as_ref().map(children)}));
+        if !moved {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+    steps
+        .push(json!({"step": "recheck the batch with both pools connected", "rechecks": rechecks}));
+    // The second guest was never started: on its own pool, nowhere else, no child admitted.
+    let second_untouched = on(&home, second) && !on(&away, second);
+    let second_child = last.as_ref().and_then(|r| {
+        r.workflow_batch
+            .iter()
+            .find(|c| c.vm == second)
+            .map(|c| c.state.clone())
+    });
+    steps.push(
+        json!({"step": "the second guest", "on_its_own_pool_only": second_untouched,
+        "child_state": second_child.as_ref().map(|s| s.as_ref().map(|s| format!("{s:?}")))}),
+    );
+    if !second_untouched || second_child.is_some_and(|s| s.is_some()) {
+        failures.push("the second guest's move was started".to_owned());
+    }
+    if on(&home, first) && on(&away, first) {
+        failures.push("the first guest is listed on both pools".to_owned());
+    }
+    if last
+        .as_ref()
+        .is_some_and(|r| r.state == OperationState::OutcomeUnknown)
+    {
+        let asked = home
+            .control_resource(id, OperationControl::AcknowledgeUnknown)
+            .map(|_| true)
+            .map_err(|e| e.to_string());
+        let released = settle(60, || {
+            row(&home).is_some_and(|r| r.state == OperationState::AcknowledgedUnknown)
+        })
+        .await;
+        steps.push(json!({"step": "acknowledge what stayed unknown", "asked": asked, "acknowledged": released}));
+        if !released {
+            failures.push("the unknown batch could not be acknowledged".to_owned());
+        }
+    }
+
+    // Bring back whichever guest went, by a batch of its own.
+    let gone = guests
+        .iter()
+        .filter(|g| on(&away, g.0) && !on(&home, g.0))
+        .collect::<Vec<_>>();
+    if !gone.is_empty() {
+        let mut items = Vec::new();
+        for (vm, name, _, disks, nics) in &gone {
+            match cross_pool_batch_item(
+                &away,
+                &home,
+                *vm,
+                home_host,
+                &|vbd| disks.get(&vbd).copied(),
+                &|vif, _| nics.get(&vif).copied(),
+            ) {
+                Ok(reviewed) => items.push(BatchVmWorkflow::move_to_pool(reviewed)),
+                Err(reason) => failures.push(format!(
+                    "{name} cannot be reviewed for its way back: {reason}"
+                )),
+            }
+        }
+        if !items.is_empty() {
+            let selection = CrossPoolBatchSelection {
+                source: away
+                    .latest()
+                    .observe_resource(ResourceTarget::Pool(
+                        away.latest().inventory().unwrap().pool_id,
+                    ))
+                    .unwrap(),
+                destination: home
+                    .latest()
+                    .observe_resource(ResourceTarget::Pool(
+                        home.latest().inventory().unwrap().pool_id,
+                    ))
+                    .unwrap(),
+                batch: VmWorkflowBatch { items },
+            };
+            match away.move_vms_to_pool(OperationId::new(), selection, &home) {
+                Ok(operation) => {
+                    let outcome = wait_outcome(&operation, 3600).await;
+                    steps.push(json!({"step": "bring back what went", "guests": gone.len(), "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+                    if outcome.state != OperationState::Succeeded {
+                        failures.push(format!(
+                            "the way back: {:?}: {}",
+                            outcome.state, outcome.detail
+                        ));
+                    }
+                }
+                Err(error) => failures.push(format!("the way back was not accepted: {error}")),
+            }
+        }
+    }
+    // As it was: both guests on the home pool, in the power state they had, with their
+    // disks and NICs where they were.
+    for (vm, name, power, disks, nics) in &guests {
+        let back = settle(180, || {
+            home.latest().inventory().is_some_and(|i| {
+                let (now_disks, now_nics) = guest_placement(i, *vm);
+                i.vms.get(vm).is_some_and(|v| v.power_state == *power)
+                    && now_disks == *disks
+                    && now_nics == *nics
+            })
+        })
+        .await;
+        if !back {
+            failures.push(format!("{name} is not back as it was"));
+        }
+    }
+    home.close().await;
+    away.close().await;
+    lab.record(
+        "cross-pool-batch-interrupted-and-rechecked",
+        json!({"guests": guests.iter().map(|g| g.1.clone()).collect::<Vec<_>>(), "steps": steps, "failures": failures}),
+    );
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// P11-06: the halted guest is exported to an XVA file on the workstation, the file is
 /// imported into the standalone pool as a new VM with its own disks, the import is deleted
 /// with those disks, the file is removed and the guest is started again.

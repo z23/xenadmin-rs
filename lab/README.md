@@ -154,7 +154,7 @@ coordinator through the client first, and with `XENADMIN_LAB_XO_HOST=member` bac
 The live storage migration scenario moves the lab guest to the other host, so a second run
 of it brings the guest home.
 
-Three scenarios take a switch from the environment.
+Two scenarios take a switch from the environment.
 `XENADMIN_LAB_FORCE_DURING_MIGRATION=accept` makes the forced-shutdown scenario give the
 acceptance and send the forced shutdown during a storage migration, to look at the host's
 behaviour (finding 63); expect to restart toolstacks and power-cycle the member
