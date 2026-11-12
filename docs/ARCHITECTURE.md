@@ -402,6 +402,18 @@ Version 5 batch rows may also hold a cross-pool move item, described under
 [Cross-pool VM transfers](#cross-pool-vm-transfers). The number was not raised for it,
 because no released version reads version 5.
 
+The number is raised when the file is opened, not when the first such row is stored.
+Raising it late would let a state directory go back to the older release for as long as
+no batch of the new kinds had been stored, which is kinder to someone trying a new
+version. It was decided against on 2026-11-12, the operator leaving the choice to the
+implementation: a journal would then have two formats it may be written in, every later
+addition to what a row may hold would have to remember to raise the number at the right
+write, and the cost of forgetting is an older release meeting a row of an unresolved
+operation that it cannot parse. With the number raised on open the older release never
+sees such a row, and going back is what the [installation guide](INSTALLATION.md)
+already describes: a backup of the state directory taken before the newer version first
+ran.
+
 The [console adapter decision](decisions/0003-console-protocol-adapter.md) documents the
 vendored protocol fixes. Console target identity is independent of table selection. Clipboard
 requests are explicit and fenced by a console epoch, including reconnection; passwords and
