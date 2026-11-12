@@ -116,6 +116,13 @@ again for that, because no published version reads format 5.
 
 ### Fixed
 
+- An export or import that was interrupted after its task was created on the host and
+  before its transfer was sent stayed unknown, a recheck could not settle it, and in a
+  batch it kept the whole batch unknown until it was acknowledged, although nothing had
+  been read or written. A recheck now ends it as not sent: the journal records a
+  transfer as sent before its request goes out, so one without that mark sent nothing.
+  In a batch the task the client created for it is left on the host, because a batch's
+  recheck only reads.
 - A disk snapshot that the host does not offer for export, because it is busy or the
   export is blocked on it, is no longer shown as ready to export and then refused when
   the transfer is prepared. It is shown as unavailable, as a VM and a memory checkpoint
@@ -145,12 +152,6 @@ Those of 0.19.0 stand, with these from the lab on 2026-11-12:
   record without disks, the pool's database not having been written out in between
   (finding 65). The client's history still shows the deletion as verified, which it
   was at the time.
-
-And one that a fixture test showed while the batch of snapshot exports was written:
-
-- An export in a batch, of a VM or of a snapshot, that is interrupted after its task
-  was created on the host and before anything was transferred stays unknown. A recheck
-  does not settle it, although nothing was written, and it has to be acknowledged.
 
 ## 0.19.0 (2026-11-12)
 

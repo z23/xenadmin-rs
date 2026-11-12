@@ -116,9 +116,11 @@ checked, and selecting with Shift or Ctrl and a pointer click was not exercised 
 in a test or on a seat. The core accepts snapshots of different VMs of one pool in one
 batch; the desktop offers those of one VM, and nothing else was reviewed on screen.
 
-An interruption after a child's task was created and before anything was streamed
-leaves that child, and so the batch, unknown. A recheck does not settle it, although
-nothing was transferred, and the operator acknowledges it; the fixture shows this for a
-snapshot batch, and the code is the one bulk VM export runs. Restoring an exported
+When this was written, an interruption after a child's task was created and before
+anything was streamed left that child, and so the batch, unknown until it was
+acknowledged. That was changed the same day for every transfer: a recheck ends such a
+child as not sent, because the journal marks a transfer as sent before its request goes
+out, and the batch then ends as partly completed (fixture covered for a snapshot batch;
+the code is the one bulk VM export runs). Restoring an exported
 archive, compressed checkpoint archives against a host, snapshot ancestry in an archive
 and cross-pool bulk moves remain open.

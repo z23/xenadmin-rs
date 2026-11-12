@@ -608,7 +608,8 @@ async fn stop_finishes_the_current_snapshot_and_recovery_never_publishes_or_star
 }
 
 #[tokio::test]
-async fn recheck_after_an_interruption_between_snapshots_downloads_nothing() {
+async fn recheck_after_an_interruption_between_snapshots_downloads_nothing_and_settles_the_unsent_child()
+ {
     let f = fixture().await;
     let dir = tempfile::tempdir().unwrap();
     let items = vec![
@@ -646,26 +647,24 @@ async fn recheck_after_an_interruption_between_snapshots_downloads_nothing() {
         );
         assert!(!output(dir.path(), &items[1]).exists());
         let p = j.resource_load(id).unwrap().unwrap();
-        // The second child's task was created and nothing was streamed. That cannot be
-        // settled by reading, so the batch stays unknown until it is acknowledged.
-        assert_eq!(p.state, OperationState::OutcomeUnknown, "{}", p.detail);
+        // The second child's task was created and nothing was streamed. The journal shows
+        // that exactly, because a transfer is marked as sent by the save that precedes
+        // its request: the child ends as not sent and the batch as partly completed,
+        // with nothing left for the operator to vouch for. A second recheck changes
+        // nothing.
+        assert_eq!(p.state, OperationState::PartiallyCompleted, "{}", p.detail);
         assert_eq!(p.workflow_batch[0].state, Some(OperationState::Succeeded));
-        assert_eq!(
-            p.workflow_batch[1].state,
-            Some(OperationState::OutcomeUnknown)
+        assert_eq!(p.workflow_batch[1].state, Some(OperationState::Cancelled));
+        let second = j.resource_load(p.workflow_batch[1].child).unwrap().unwrap();
+        assert_eq!(second.state, OperationState::Cancelled);
+        assert!(
+            second
+                .detail
+                .contains("Interrupted before the transfer was sent"),
+            "{}",
+            second.detail
         );
     }
-    let p = j
-        .resource_control(p.pool, id, OperationControl::AcknowledgeUnknown)
-        .unwrap();
-    assert_eq!(p.state, OperationState::AcknowledgedUnknown);
-    assert_eq!(
-        j.resource_load(p.workflow_batch[1].child)
-            .unwrap()
-            .unwrap()
-            .state,
-        OperationState::AcknowledgedUnknown
-    );
     assert_eq!(f.count("GET /export"), 1);
     assert_eq!(
         std::fs::read(output(dir.path(), &items[0])).unwrap(),

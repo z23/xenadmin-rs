@@ -582,10 +582,21 @@ impl ResourceRequest {
         if !self.transfer_plan()?.dispatched && self.transfer_plan()?.disk_creation.is_some() {
             return self.recover_transfer_disk_creation(journal, session).await;
         }
-        let task = self.record.task.clone().ok_or(Error::TransferConflict)?;
         if !self.transfer_plan()?.dispatched {
-            return Err(Error::TransferConflict);
+            // `dispatched` is stored by the save that precedes the request that carries
+            // the image. A transfer without it sent no such request: no byte was read from
+            // the host or written to it, and nothing was published. That is read from the
+            // journal and is no inference about the host. The task the client created
+            // for the transfer is its own and is removed.
+            self.record.state = OperationState::Cancelled;
+            self.record.can_cancel = false;
+            self.record.detail = "Interrupted before the transfer was sent: no image data was read or written, and nothing was published".into();
+            self.save(journal).await?;
+            self.cleanup_transfer_task(session).await;
+            files::cleanup(self.transfer_plan()?);
+            return Ok(());
         }
+        let task = self.record.task.clone().ok_or(Error::TransferConflict)?;
         loop {
             self.reload(journal)?;
             if self.record.state.terminal()
