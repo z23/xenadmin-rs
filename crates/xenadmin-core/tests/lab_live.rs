@@ -5632,12 +5632,22 @@ async fn lab_cross_pool_batch_move_round_trip() {
         // and starts no other.
         let mut stopped = false;
         if stop && outward && reviewed.len() > 1 {
+            // A child is a record of its own; the batch lists it with a state only once
+            // it has ended. Under way means that record is being dispatched or tracked.
             let under_way = settle(120, || {
                 operation
                     .latest()
                     .workflow_batch
                     .first()
-                    .is_some_and(|r| r.state.as_ref().is_some_and(|s| !s.terminal()))
+                    .is_some_and(|first| {
+                        from.resource_history().iter().any(|r| {
+                            r.id == first.child
+                                && matches!(
+                                    r.state,
+                                    OperationState::Dispatching | OperationState::Tracking
+                                )
+                        })
+                    })
             })
             .await;
             let asked = from
