@@ -58,6 +58,10 @@ operator has since used "Type clipboard as keys" from their own seat, on a graph
 guest and on a text console of the lab, and it worked (2026-11-12); a guest with a
 keyboard layout other than US has still not been tried.
 
+New in this version and not yet seen on a real seat: a console window following a
+change of the interface size made in the main window, and the details pane's width
+coming back after a restart. Each is covered by tests of the window on its own.
+
 ## 0.18.0 (2026-11-11)
 
 The first published version, a beta for XCP-ng 8.3. Its supported part is connections and
