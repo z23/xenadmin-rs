@@ -15874,20 +15874,31 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                 .as_deref()
                 .and_then(HaRestartPriority::parse)
                 .unwrap_or(HaRestartPriority::Disabled);
-            for (label, expected, priority, wire) in [
-                (
-                    "protect the tools guest with the restart priority",
-                    from,
-                    HaRestartPriority::Restart,
-                    "restart",
-                ),
-                (
-                    "remove the tools guest's restart priority",
-                    HaRestartPriority::Restart,
-                    from,
-                    "",
-                ),
-            ] {
+            // The guest may carry the restart priority already, from an earlier scenario.
+            // An edit that changes nothing is refused, so the round trip starts from what
+            // the guest has: to the other value and back, with the tolerance checked
+            // while the guest is protected.
+            let protect = "protect the tools guest with the restart priority";
+            let unprotect = "remove the tools guest's restart priority";
+            let round_trip = if from == HaRestartPriority::Restart {
+                [
+                    (unprotect, from, HaRestartPriority::Disabled),
+                    (protect, HaRestartPriority::Disabled, from),
+                ]
+            } else {
+                [
+                    (protect, from, HaRestartPriority::Restart),
+                    (unprotect, HaRestartPriority::Restart, from),
+                ]
+            };
+            // The tolerance likewise moves to a value it does not have, and back.
+            let tolerated = if failures_before == 1 { 0 } else { 1 };
+            for (label, expected, priority) in round_trip {
+                let wire = if priority == HaRestartPriority::Restart {
+                    "restart"
+                } else {
+                    ""
+                };
                 let mut entry = resource_op(
                     &c,
                     label,
@@ -15911,15 +15922,15 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                 );
                 note(&mut steps, entry);
                 if label.starts_with("protect") {
-                    // Tolerate one host failure while the guest is protected.
+                    // Change the tolerated host failures while the guest is protected.
                     let mut entry = resource_op(
                         &c,
-                        "tolerate one host failure",
+                        &format!("tolerate {tolerated} host failures"),
                         ResourceCommand::Pool {
                             target: pool_target(&c),
                             operation: PoolOperation::SetHaFailuresToTolerate {
                                 expected: failures_before,
-                                failures: 1,
+                                failures: tolerated,
                             },
                         },
                         300,
@@ -15927,7 +15938,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                     .await;
                     entry["read_back"] = json!(
                         settle(120, || administration(&c)
-                            .is_some_and(|a| a.ha_failures_to_tolerate == Some(1)))
+                            .is_some_and(|a| a.ha_failures_to_tolerate == Some(tolerated)))
                         .await
                     );
                     entry["plan_exists_for"] =
@@ -15939,7 +15950,7 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
                         ResourceCommand::Pool {
                             target: pool_target(&c),
                             operation: PoolOperation::SetHaFailuresToTolerate {
-                                expected: 1,
+                                expected: tolerated,
                                 failures: failures_before,
                             },
                         },
