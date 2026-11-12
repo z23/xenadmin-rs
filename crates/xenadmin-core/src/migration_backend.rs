@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{storage_operations, vm_power_state};
 use xenadmin_xapi::records::{
-    HostRecord, PbdRecord, PifRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord,
+    HostMetricsRecord, HostRecord, PbdRecord, PifRecord, SrRecord, VbdRecord, VdiRecord, VifRecord,
+    VmRecord,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,7 +375,7 @@ pub(crate) async fn host(session: &Session, target: HostId) -> Result<String, Er
     }
     let metrics = snapshots::reference(&HostRecord::new(&h).metrics())?;
     let m = read(session, "host_metrics", &metrics).await?;
-    if m["live"] != true {
+    if HostMetricsRecord::new(&m).live() != true {
         return Err(Error::UnavailableAction);
     }
     Ok(reference)
@@ -484,7 +485,7 @@ async fn validate_destinations(
     for p in &plan.operation.networks {
         let (_, vif) = fresh(session, "VIF", p.vif.uuid()).await?;
         let network = network_visible(session, p.destination_network, hostref, false).await?;
-        if vif["network"] != network {
+        if VifRecord::new(&vif).network() != network {
             return Err(Error::UnsupportedMigration);
         }
     }

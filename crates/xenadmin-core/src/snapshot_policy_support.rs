@@ -167,8 +167,8 @@ pub(crate) async fn read(
         ));
     }
     let pool2 = session.call("pool.get_record", vec![json!(&pr)]).await?;
-    if pool2["uuid"] != PoolRecord::new(&pool).uuid()
-        || pool2["master"] != PoolRecord::new(&pool).master()
+    if PoolRecord::new(&pool2).uuid() != PoolRecord::new(&pool).uuid()
+        || PoolRecord::new(&pool2).master() != PoolRecord::new(&pool).master()
     {
         return Err(Error::Stale);
     }

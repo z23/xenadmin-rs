@@ -271,8 +271,12 @@ impl ResourceRequest {
                 && let Ok(Ok((_, task))) =
                     tokio::time::timeout_at(deadline, disk::task(s, &self.record, index)).await
                 && matches!(
-                    task["status"].as_str(),
-                    Some("success" | "failure" | "cancelled")
+                    TaskRecord::new(&task).status().as_str(),
+                    Some(
+                        task_status_type::SUCCESS
+                            | task_status_type::FAILURE
+                            | task_status_type::CANCELLED
+                    )
                 )
             {
                 let _ = tokio::time::timeout_at(

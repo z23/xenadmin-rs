@@ -483,8 +483,12 @@ impl ResourceRequest {
             )?;
             require(
                 matches!(
-                    status["status"].as_str(),
-                    Some("success" | "failure" | "cancelled")
+                    TaskRecord::new(&status).status().as_str(),
+                    Some(
+                        task_status_type::SUCCESS
+                            | task_status_type::FAILURE
+                            | task_status_type::CANCELLED
+                    )
                 ),
                 "Storage provisioning is still active; its Secrets cannot be deleted",
             )?;

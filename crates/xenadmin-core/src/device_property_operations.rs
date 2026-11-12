@@ -1,7 +1,7 @@
 use super::*;
 use crate::{DeviceProperty as Change, DeviceQos, DiskAccess};
 use xenadmin_xapi::enumerations::{vbd_type, vm_power_state};
-use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{VbdRecord, VdiRecord, VifRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Field {
@@ -109,7 +109,9 @@ async fn current(
     }
     if let Change::NicRate { vif, .. } = change {
         let (reference, record) = fresh(session, "VIF", vif.uuid()).await?;
-        if record["VM"] != vm_ref || (!verify && record["currently_attached"] != false) {
+        if VifRecord::new(&record).vm() != vm_ref
+            || (!verify && VifRecord::new(&record).currently_attached() != false)
+        {
             return Err(Error::DeviceConflict);
         }
         idle(&record)?;

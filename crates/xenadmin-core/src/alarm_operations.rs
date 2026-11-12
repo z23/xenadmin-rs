@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{AlarmOperation, Error, HostId, alarm_policies, xapi::Session};
 use serde_json::{Value, json};
-use xenadmin_xapi::records::{HostRecord, VmRecord};
+use xenadmin_xapi::records::{HostMetricsRecord, HostRecord, VmRecord};
 
 async fn read(
     session: &Session,
@@ -47,11 +47,11 @@ async fn read(
 }
 async fn refresh_host(session: &Session, host: HostId) -> Result<String, Error> {
     let (reference, fresh) = super::xapi::read(session, ResourceTarget::Host(host)).await?;
-    let metrics = super::xapi::reply_reference(&fresh["metrics"])?;
+    let metrics = super::xapi::reply_reference(&HostRecord::new(&fresh).metrics())?;
     let metrics = session
         .call("host_metrics.get_record", vec![json!(metrics)])
         .await?;
-    if metrics["live"] != true {
+    if HostMetricsRecord::new(&metrics).live() != true {
         return Err(Error::UnavailableAction);
     }
     Ok(reference)

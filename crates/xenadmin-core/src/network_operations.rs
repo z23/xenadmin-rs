@@ -217,7 +217,7 @@ pub(super) async fn arguments(
             }
             for existing in refs(&fresh["PIFs"])? {
                 let p = related(session, "PIF", &json!(existing)).await?;
-                if p["host"] == PifRecord::new(&pif).host() {
+                if PifRecord::new(&p).host() == PifRecord::new(&pif).host() {
                     return Err(Error::ResourceInUse);
                 }
             }
@@ -283,7 +283,7 @@ pub(super) async fn arguments(
             }
             for existing in refs(&fresh["PIFs"])? {
                 let p = related(session, "PIF", &json!(existing)).await?;
-                if Some(&p["host"]) == host.as_ref() {
+                if Some(PifRecord::new(&p).host().value()) == host.as_ref() {
                     return Err(Error::ResourceInUse);
                 }
             }
@@ -614,7 +614,7 @@ async fn verify_created(
             (
                 ResourceTarget::Vlan(id),
                 VlanRecord::new(&vlan).untagged_pif().value().clone(),
-                parent_record["host"].clone(),
+                PifRecord::new(&parent_record).host().value().clone(),
                 id.uuid(),
             )
         }
@@ -639,7 +639,7 @@ async fn verify_created(
             (
                 ResourceTarget::Bond(id),
                 BondRecord::new(&bond).master().value().clone(),
-                member["host"].clone(),
+                PifRecord::new(&member).host().value().clone(),
                 id.uuid(),
             )
         }

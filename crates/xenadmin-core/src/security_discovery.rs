@@ -224,7 +224,7 @@ pub(crate) async fn certificate(
     let record = session
         .call("host.get_record", vec![json!(&reference)])
         .await?;
-    if record["uuid"] != host.to_string() {
+    if HostRecord::new(&record).uuid() != host.to_string() {
         return Err(Error::Stale);
     }
     let pem = session

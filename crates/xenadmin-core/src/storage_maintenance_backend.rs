@@ -7,7 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use xenadmin_xapi::records::{PbdRecord, SrRecord};
+use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, TaskRecord};
 fn conflict<T>() -> Result<T, Error> {
     Err(Error::ResourceConflict)
 }
@@ -108,7 +108,7 @@ async fn coordinator(
 ) -> Result<(), Error> {
     let p = super::disk::pool(s, r.pool).await?;
     let (h, _) = xapi::read(s, ResourceTarget::Host(expected)).await?;
-    if p["master"] != h {
+    if PoolRecord::new(&p).master() != h {
         return conflict();
     }
     Ok(())
@@ -332,7 +332,8 @@ pub(super) async fn task(
         "Storage task receipt unavailable; no write will be replayed",
     ))?;
     let value = s.call("task.get_record", vec![json!(reference)]).await?;
-    let id = value["uuid"]
+    let id = TaskRecord::new(&value)
+        .uuid()
         .as_str()
         .and_then(|v| TaskId::parse(v).ok())
         .ok_or(Error::ResourceConflict)?;

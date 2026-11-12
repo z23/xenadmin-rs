@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 use xenadmin_xapi::records::{
-    HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord, PoolRecord, VmRecord,
+    HostMetricsRecord, HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord, PoolRecord,
+    VmRecord,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,7 +308,7 @@ impl Fresh {
         }
         let (input_ref, input) = self.by_id("PIF", r.input.id.uuid())?;
         let host_ref = self.by_id("host", r.host.uuid())?.0;
-        if input["host"] != host_ref {
+        if PifRecord::new(input).host() != host_ref {
             return Err(Error::ResourceConflict);
         }
         let (parent, child, parents, children) = fields(r.kind);
@@ -361,10 +362,14 @@ impl Fresh {
             };
             for p in r.driver_interfaces.values() {
                 let (pr, raw) = self.by_id("PIF", p.id.uuid())?;
-                if raw["other_config"]
+                if PifRecord::new(raw)
+                    .other_config()
                     .as_object()
                     .is_none_or(|m| !m.is_empty())
-                    || raw["properties"].as_object().is_none_or(|m| !m.is_empty())
+                    || PifRecord::new(raw)
+                        .properties()
+                        .as_object()
+                        .is_none_or(|m| !m.is_empty())
                 {
                     return Err(Error::ResourceInUse);
                 }
@@ -400,7 +405,7 @@ impl Fresh {
                 .as_str()
                 .and_then(|r| self.raw["host_metrics"].get(r))
                 .ok_or(Error::ResourceConflict)?;
-            if metrics["live"] != true {
+            if HostMetricsRecord::new(metrics).live() != true {
                 return Err(Error::Protocol("The selected host must be live"));
             }
         }

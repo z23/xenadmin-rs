@@ -5,7 +5,9 @@ use super::{
 use crate::{Error, HaRestartPriority, HostId, PoolOperation, SrId, VmId, xapi::Session};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use xenadmin_xapi::records::{HostRecord, PbdRecord, PifRecord, PoolRecord, SrRecord, VmRecord};
+use xenadmin_xapi::records::{
+    HostRecord, PbdRecord, PifRecord, PoolRecord, SrRecord, VdiRecord, VmApplianceRecord, VmRecord,
+};
 
 pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&PoolOperation, Error> {
     match &record.action {
@@ -82,7 +84,8 @@ async fn related(session: &Session, class: &str, value: &Value) -> Result<Value,
 }
 async fn coordinator(session: &Session, fresh: &Value) -> Result<HostId, Error> {
     let host = related(session, "host", &fresh["master"]).await?;
-    host["uuid"]
+    HostRecord::new(&host)
+        .uuid()
         .as_str()
         .and_then(|v| HostId::parse(v).ok())
         .ok_or(Error::Protocol("pool coordinator identity unavailable"))
@@ -106,7 +109,7 @@ async fn vm_record(session: &Session, vm: VmId) -> Result<(String, Value), Error
     Ok((reference, fresh))
 }
 async fn host_live(session: &Session, host: &Value) -> Result<(), Error> {
-    if related(session, "host_metrics", &host["metrics"]).await?["live"] != true {
+    if related(session, "host_metrics", &HostRecord::new(host).metrics()).await?["live"] != true {
         return Err(Error::UnavailableAction);
     }
     Ok(())
@@ -484,8 +487,9 @@ pub(super) async fn verify(
                         .await?
                 };
                 let vdi = related(session, "VDI", &file_ref).await?;
-                let sr = related(session, "SR", &vdi["SR"]).await?;
-                let id = sr["uuid"]
+                let sr = related(session, "SR", &VdiRecord::new(&vdi).sr()).await?;
+                let id = SrRecord::new(&sr)
+                    .uuid()
                     .as_str()
                     .and_then(|v| SrId::parse(v).ok())
                     .ok_or(Error::Protocol("HA storage identity unavailable"))?;
@@ -557,7 +561,7 @@ async fn startup_appliance(
         None if VmRecord::new(vm).appliance() == "OpaqueRef:NULL" => Ok(()),
         Some(id) => {
             let group = related(session, "VM_appliance", &VmRecord::new(vm).appliance()).await?;
-            if group["uuid"] != id.to_string() {
+            if VmApplianceRecord::new(&group).uuid() != id.to_string() {
                 return Err(Error::ResourceConflict);
             }
             empty(&group, "current_operations")

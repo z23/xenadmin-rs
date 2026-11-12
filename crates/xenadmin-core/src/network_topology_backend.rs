@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
-use xenadmin_xapi::records::{NetworkRecord, PifRecord, VlanRecord};
+use xenadmin_xapi::records::{HostMetricsRecord, HostRecord, NetworkRecord, PifRecord, VlanRecord};
 
 pub(super) fn now() -> u64 {
     SystemTime::now()
@@ -240,9 +240,10 @@ async fn host_coverage(
     )?;
     for host in hosts {
         let (_, host) = xapi::read(session, ResourceTarget::Host(host)).await?;
-        let metrics = network::related(session, "host_metrics", &host["metrics"]).await?;
+        let metrics =
+            network::related(session, "host_metrics", &HostRecord::new(&host).metrics()).await?;
         require(
-            metrics["live"].as_bool() == Some(true),
+            HostMetricsRecord::new(&metrics).live().as_bool() == Some(true),
             "Every pool host must be online for a pool-wide network change",
         )?;
     }
@@ -419,7 +420,7 @@ pub(super) async fn prepare(
         let (_, pif) = uplink(session, parent).await?;
         require(
             network::number(&target["MTU"])
-                .zip(network::number(&pif["MTU"]))
+                .zip(network::number(&PifRecord::new(&pif).mtu()))
                 .is_some_and(|(net, pif)| net >= 576 && net <= pif),
             "The VLAN network MTU must not exceed its uplink MTU",
         )?;
@@ -471,7 +472,7 @@ pub(super) async fn arguments(
             let (reference, pif) = uplink(session, parent).await?;
             require(
                 network::number(&target["MTU"])
-                    .zip(network::number(&pif["MTU"]))
+                    .zip(network::number(&PifRecord::new(&pif).mtu()))
                     .is_some_and(|(net, pif)| net >= 576 && net <= pif),
                 "The VLAN network MTU must not exceed its uplink MTU",
             )?;
@@ -591,7 +592,7 @@ pub(super) async fn verify(
             require(step.created == Some(ids), "Created VLAN evidence changed")?;
             let (_, child) = xapi::read(session, ResourceTarget::Pif(ids.1)).await?;
             require(
-                child["currently_attached"].as_bool() == Some(true),
+                PifRecord::new(&child).currently_attached().as_bool() == Some(true),
                 "The created VLAN interface is not attached",
             )?;
         }
@@ -599,7 +600,7 @@ pub(super) async fn verify(
             let (_, id) = creation_identity(session, plan, *create_step).await?;
             let (_, pif) = xapi::read(session, ResourceTarget::Pif(id)).await?;
             require(
-                pif["currently_attached"].as_bool() == Some(false),
+                PifRecord::new(&pif).currently_attached().as_bool() == Some(false),
                 "The replacement VLAN is still attached",
             )?;
         }

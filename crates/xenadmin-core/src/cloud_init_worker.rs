@@ -90,7 +90,11 @@ impl ResourceRequest {
                             )?)],
                         )
                         .await?;
-                    if vdi["other_config"].get(cloud_init::MARKER).is_some() {
+                    if VdiRecord::new(&vdi)
+                        .other_config()
+                        .get(cloud_init::MARKER)
+                        .is_some()
+                    {
                         return Err(Error::HostPrerequisite(
                             "This VM already has an app-created cloud-init drive; review its removal separately",
                         ));

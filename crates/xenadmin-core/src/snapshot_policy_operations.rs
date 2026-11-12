@@ -121,7 +121,8 @@ async fn members(session: &Session, r: &Value) -> Result<Vec<VmId>, Error> {
     for vr in refs {
         let vr = xapi::reply_reference(vr)?;
         let v = session.call("VM.get_record", vec![json!(vr)]).await?;
-        let id = v["uuid"]
+        let id = VmRecord::new(&v)
+            .uuid()
             .as_str()
             .and_then(|s| VmId::parse(s).ok())
             .ok_or(Error::ResourceConflict)?;
@@ -542,7 +543,8 @@ pub(super) async fn verify(
             Op::Create { config, .. } => {
                 let rr = r.result_reference.as_ref().ok_or(Error::ResourceConflict)?;
                 let v = session.call("VMSS.get_record", vec![json!(rr)]).await?;
-                let id = v["uuid"]
+                let id = VmssRecord::new(&v)
+                    .uuid()
                     .as_str()
                     .and_then(|s| SnapshotPolicyId::parse(s).ok())
                     .ok_or(Error::ResourceConflict)?;

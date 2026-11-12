@@ -1,5 +1,7 @@
 use super::*;
 use crate::{management_network::Plan, resources::management};
+use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::records::TaskRecord;
 impl ResourceRequest {
     fn management_plan(&self) -> Result<&Plan, Error> {
         self.record
@@ -132,20 +134,20 @@ impl ResourceRequest {
                     "Management task identity differs from this operation",
                 ));
             }
-            if v["status"] == "success"
+            if TaskRecord::new(&v).status() == task_status_type::SUCCESS
                 && matches!(&self.management_plan()?.operation, crate::ManagementNetworkOperation::Bond { operation, .. } if operation.creates())
             {
                 self.record.result_reference = Some(crate::xapi::snapshot_task_result(&v)?);
             }
             let plan = self.management_plan_mut()?;
             plan.task_uuid = Some(id);
-            match v["status"].as_str() {
-                Some("success") => {
+            match TaskRecord::new(&v).status().as_str() {
+                Some(task_status_type::SUCCESS) => {
                     plan.completed = true;
                     plan.ended = true;
                 }
-                Some("failure" | "cancelled") => plan.ended = true,
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => plan.ended = true,
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Management task status unavailable")),
             }
             self.project_management()?;

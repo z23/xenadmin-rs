@@ -7,7 +7,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{host_allowed_operations, task_status_type, vm_power_state};
-use xenadmin_xapi::records::{HostRecord, PoolRecord, TaskRecord, VmRecord};
+use xenadmin_xapi::records::{HostRecord, PbdRecord, PoolRecord, TaskRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -361,8 +361,9 @@ async fn evacuation(
             let record = session
                 .call("host.get_record", vec![json!(candidate)])
                 .await?;
-            if record["enabled"] == true
-                && record["uuid"]
+            if HostRecord::new(&record).enabled() == true
+                && HostRecord::new(&record)
+                    .uuid()
                     .as_str()
                     .is_some_and(|uuid| uuid::Uuid::parse_str(uuid).is_ok())
                 && metrics(session, &record).await?["live"] == true
@@ -423,7 +424,8 @@ async fn detached_storage(
             .call("PBD.get_record", vec![json!(reference(pbd)?)])
             .await?;
         require(
-            record["host"] == reference_host && record["currently_attached"] == false,
+            PbdRecord::new(&record).host() == reference_host
+                && PbdRecord::new(&record).currently_attached() == false,
             "Detach the host's storage connections before changing multipathing",
         )?;
     }

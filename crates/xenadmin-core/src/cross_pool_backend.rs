@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{on_boot, primary_address_type, vm_operations, vm_power_state};
-use xenadmin_xapi::records::{PifRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{PifRecord, PoolRecord, VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Shape {
@@ -283,6 +283,24 @@ fn require(value: bool, message: &'static str) -> Result<(), Error> {
         Err(Error::Protocol(message))
     }
 }
+/// Something the operator can put right before a transfer. It is said as it is: the host
+/// answered correctly, so this is not an invalid response.
+fn unmet(value: bool, message: &'static str) -> Result<(), Error> {
+    if value {
+        Ok(())
+    } else {
+        Err(Error::MigrationPrerequisite(message))
+    }
+}
+/// Something that no longer is as it was reviewed: the review is stale, the answer is not
+/// wrong, and the operator is asked to review again.
+fn unchanged(value: bool) -> Result<(), Error> {
+    if value {
+        Ok(())
+    } else {
+        Err(Error::MigrationConflict)
+    }
+}
 fn shape(record: &Value) -> Result<Shape, Error> {
     let text = |key: &str, limit: usize| {
         record[key]
@@ -303,7 +321,7 @@ fn shape(record: &Value) -> Result<Shape, Error> {
                     .ok_or(Error::MigrationConflict)
             })
     };
-    require(
+    unmet(
         VmRecord::new(record).hvm_boot_policy() == "BIOS order",
         "This cross-pool workflow supports ordinary HVM guests",
     )?;
@@ -328,10 +346,7 @@ fn shape(record: &Value) -> Result<Shape, Error> {
 pub(crate) async fn pool(session: &Session, expected: PoolId) -> Result<Value, Error> {
     let rows = crate::security_discovery::records(session, "pool", 1).await?;
     let row = rows.values().next().ok_or(Error::MigrationConflict)?;
-    require(
-        rows.len() == 1 && row["uuid"] == expected.to_string(),
-        "Connected pool identity changed",
-    )?;
+    unchanged(rows.len() == 1 && row["uuid"] == expected.to_string())?;
     m::idle(row)?;
     Ok(row.clone())
 }
@@ -340,7 +355,7 @@ async fn source(
     operation: &CrossPoolVmOperation,
 ) -> Result<(String, Value, m::Graph, Shape), Error> {
     let (reference, record) = m::fresh(session, "VM", operation.vm.uuid()).await?;
-    require(
+    unmet(
         VmRecord::new(&record).is_a_template() == false
             && VmRecord::new(&record).is_a_snapshot() == false
             && VmRecord::new(&record).is_control_domain() == false,
@@ -358,7 +373,7 @@ async fn source(
         return Err(Error::MigrationConflict);
     }
     m::idle(&record)?;
-    require(
+    unmet(
         crate::xapi::advertises(&record, vm_operations::MIGRATE_SEND),
         "The host does not currently allow cross-pool migration",
     )?;
@@ -370,13 +385,13 @@ async fn source(
         return Err(Error::MigrationConflict);
     }
     for field in ["snapshots", "VGPUs", "attached_PCIs", "VUSBs"] {
-        require(
+        unmet(
             m::refs(&record, field)?.is_empty(),
             "Snapshot chains or specialized guest devices require another workflow",
         )?;
     }
     if record.get("VTPMs").is_some() {
-        require(
+        unmet(
             m::refs(&record, "VTPMs")?.is_empty(),
             "vTPM guests are outside this transfer workflow",
         )?;
@@ -387,12 +402,12 @@ async fn source(
         "protection_policy",
         "snapshot_schedule",
     ] {
-        require(
+        unmet(
             record[field] == "OpaqueRef:NULL",
             "Suspension, vApp or snapshot schedule membership requires a separate transfer",
         )?;
     }
-    require(
+    unmet(
         VmRecord::new(&record).ha_always_run() == false
             && VmRecord::new(&record).ha_restart_priority() == "",
         "Disable VM HA protection separately before transfer",
@@ -408,7 +423,7 @@ async fn source(
         .iter()
         .filter_map(|a| a.disk.as_ref().map(|d| (d.id, d.sr)))
         .collect();
-    require(
+    unchanged(
         disks
             == operation
                 .disks
@@ -425,7 +440,6 @@ async fn source(
                     .iter()
                     .map(|n| (n.vif, n.expected_network))
                     .collect(),
-        "Reviewed device mappings changed",
     )?;
     require(
         graph
@@ -446,19 +460,19 @@ async fn source(
     )?;
     for attachment in &graph.disks {
         if attachment.kind == "CD" {
-            require(
+            unmet(
                 attachment.disk.is_none(),
                 "Eject installation media separately before transfer",
             )?;
             continue;
         }
-        require(
+        unmet(
             attachment.owner && attachment.mode == "RW",
             "Only owned writable data disks can be transferred",
         )?;
         let disk = attachment.disk.as_ref().ok_or(Error::MigrationConflict)?;
         let (_, record) = m::fresh(session, "VDI", disk.id.uuid()).await?;
-        require(
+        unmet(
             disk.kind == "user"
                 && VdiRecord::new(&record).read_only() == false
                 && VdiRecord::new(&record).sharable() == false
@@ -468,11 +482,11 @@ async fn source(
             "Shared, snapshot, CBT or reset-on-boot disks cannot use this transfer",
         )?;
         let consumers = m::refs(&record, "VBDs")?;
-        require(consumers.len() == 1, "A data disk has other consumers")?;
+        unmet(consumers.len() == 1, "A data disk has other consumers")?;
         let block = m::read(session, "VBD", &consumers[0]).await?;
-        require(
-            m::id::<crate::VbdId>(&block)? == attachment.id && block["VM"] == reference,
-            "Disk ownership changed",
+        unchanged(
+            m::id::<crate::VbdId>(&block)? == attachment.id
+                && VbdRecord::new(&block).vm() == reference,
         )?;
     }
     let shape = shape(&record)?;
@@ -506,9 +520,14 @@ async fn destinations(
 ) -> Result<Prepared, Error> {
     let operation = &plan.operation;
     let pool = pool(destination, operation.destination_pool).await?;
-    let coordinator = m::read(destination, "host", &snapshots::reference(&pool["master"])?).await?;
+    let coordinator = m::read(
+        destination,
+        "host",
+        &snapshots::reference(&PoolRecord::new(&pool).master())?,
+    )
+    .await?;
     let coordinator_address = m::text(&coordinator, "address")?;
-    require(
+    unmet(
         crate::cross_pool::usable_address(&coordinator_address),
         "Destination coordinator address is unavailable",
     )?;
@@ -532,10 +551,7 @@ async fn destinations(
             && PifRecord::new(&pif).currently_attached() == true
             && address_matches;
     }
-    require(
-        transfer_address_matches,
-        "The reviewed migration PIF address changed",
-    )?;
+    unchanged(transfer_address_matches)?;
     let mut disks = serde_json::Map::new();
     let mut required = BTreeMap::<crate::SrId, u64>::new();
     for mapping in &operation.disks {
@@ -556,7 +572,7 @@ async fn destinations(
     }
     for (sr, size) in required {
         let (_, record) = m::fresh(destination, "SR", sr.uuid()).await?;
-        require(
+        unmet(
             m::number(&record, "physical_size")?
                 .saturating_sub(m::number(&record, "physical_utilisation")?)
                 >= size,
@@ -571,10 +587,7 @@ async fn destinations(
         nics.insert(reference, json!(network));
     }
     let (vm, _, graph, shape) = source(source_session, operation).await?;
-    require(
-        graph == plan.graph && shape == plan.shape,
-        "The source guest changed since preflight",
-    )?;
+    unchanged(graph == plan.graph && shape == plan.shape)?;
     Ok(Prepared {
         vm,
         host,
@@ -647,10 +660,7 @@ pub(crate) async fn revalidate(
                 .is_some_and(|known| known.contains(id))
         })
     });
-    require(
-        !arrivals,
-        "Destination identities appeared during preflight; reopen this review",
-    )?;
+    unchanged(!arrivals)?;
     // Fresh collision checks immediately before dispatch also cover arrivals since review.
     let mut latest = plan.clone();
     latest.baseline = current;
@@ -839,7 +849,7 @@ pub(crate) async fn verify_destination(
                 )?;
                 let block = m::read(destination, "VBD", &consumers[0]).await?;
                 require(
-                    block["VM"] == reference,
+                    VbdRecord::new(&block).vm() == reference,
                     "Destination disk belongs to another guest",
                 )?;
                 created.disks.push(new.id);

@@ -12,7 +12,17 @@ checkpoints.
 
 Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.19.0.
 
-Nothing has changed for someone running the client yet.
+### Changed
+
+- A cross-pool copy or move that the client declines because of the guest itself (a
+  snapshot chain, a vTPM, HA protection, vApp membership, installation media left in a
+  drive, a disk that is shared or has other consumers) or because the host does not
+  allow the migration is refused in those words. It used to be reported as "Invalid
+  XAPI response" followed by them, as if the host had answered wrongly. The cross-pool
+  workflows remain experimental.
+- Inside, 111 more reads of host records go through the generated bindings, leaving 538
+  by key ([decision record](docs/decisions/0004-generated-bindings.md)). Nothing in the
+  client's behaviour changes with them.
 
 ## 0.19.0 (2026-11-12)
 

@@ -5,7 +5,7 @@ use crate::{
     root_password::Plan,
 };
 use std::collections::BTreeSet;
-use xenadmin_xapi::records::SessionRecord;
+use xenadmin_xapi::records::{PoolRecord, SessionRecord};
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -35,7 +35,8 @@ async fn expected(
             .map_err(|_| Error::Protocol("invalid host UUID"))
         })
         .collect::<Result<_, Error>>()?;
-    let coordinator = pool["master"]
+    let coordinator = PoolRecord::new(&pool)
+        .master()
         .as_str()
         .and_then(|r| hosts.get(r))
         .and_then(|h| h["uuid"].as_str());

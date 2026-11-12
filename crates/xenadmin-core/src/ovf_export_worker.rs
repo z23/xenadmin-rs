@@ -484,7 +484,11 @@ impl ResourceRequest {
                 s.call("task.get_record", vec![json!(task)]),
             )
             .await
-            && v["uuid"].as_str().and_then(|v| v.parse::<Uuid>().ok()) == Some(id)
+            && TaskRecord::new(&v)
+                .uuid()
+                .as_str()
+                .and_then(|v| v.parse::<Uuid>().ok())
+                == Some(id)
         {
             if j.workflow_child_stopped(self.record.id).unwrap_or(true) {
                 return;

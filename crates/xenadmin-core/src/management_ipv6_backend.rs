@@ -11,7 +11,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use xenadmin_xapi::records::{HostRecord, PifRecord, PoolRecord, VifRecord};
+use xenadmin_xapi::records::{HostRecord, NetworkRecord, PifRecord, PoolRecord, VifRecord};
 fn require(v: bool, message: &'static str) -> Result<(), Error> {
     if v {
         Ok(())
@@ -510,8 +510,8 @@ pub(super) async fn verify(s: &Session, p: &Plan, prefix: usize) -> Result<Recor
     {
         let (n, v) = bond::lookup(t.records("network"), network.uuid())?;
         require(
-            v["managed"] == true
-                && network::number(&v["MTU"]) == Some(1500)
+            NetworkRecord::new(v).managed() == true
+                && network::number(&NetworkRecord::new(v).mtu()) == Some(1500)
                 && t.pifs().values().all(|p| p["network"] != n),
             "Destination network is no longer empty, managed at MTU 1500",
         )?;

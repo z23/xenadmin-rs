@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
 use xenadmin_xapi::records::{
-    HostRecord, PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord,
+    HostMetricsRecord, HostRecord, PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord,
 };
 fn require(ok: bool, msg: &'static str) -> Result<(), Error> {
     if ok {
@@ -137,10 +137,13 @@ async fn host(s: &Session, id: crate::HostId, live: bool) -> Result<(String, Val
         let m = s
             .call(
                 "host_metrics.get_record",
-                vec![json!(reference(&v["metrics"])?)],
+                vec![json!(reference(&HostRecord::new(&v).metrics())?)],
             )
             .await?;
-        require(m["live"] == true, "Selected host must be online")?;
+        require(
+            HostMetricsRecord::new(&m).live() == true,
+            "Selected host must be online",
+        )?;
     }
     Ok((h, v))
 }
@@ -202,7 +205,10 @@ async fn repair_graph(
     };
     let pool = super::disk::pool(s, r.pool).await?;
     let (master, _) = host(s, *coordinator, true).await?;
-    require(pool["master"] == master, "Pool coordinator changed")?;
+    require(
+        PoolRecord::new(&pool).master() == master,
+        "Pool coordinator changed",
+    )?;
     let (sr_ref, sr) = storage(s, source.sr).await?;
     require(
         SrRecord::new(&sr).shared() == true

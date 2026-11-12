@@ -7,7 +7,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{vbd_operations, vbd_type, vm_power_state};
-use xenadmin_xapi::records::{PbdRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{HostRecord, PbdRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuestToolsMediaSource {
@@ -224,7 +224,7 @@ async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Resu
             }
         } else {
             let record = session.call("host.get_record", vec![json!(host)]).await?;
-            if record["enabled"] == true {
+            if HostRecord::new(&record).enabled() == true {
                 reachable = true;
                 break;
             }
@@ -346,7 +346,7 @@ pub(crate) async fn verify(session: &Session, vm: VmId, step: &Step) -> Result<b
             let (sr_ref, _) = fresh(session, "SR", sr.uuid()).await?;
             Ok(VbdRecord::new(&record).empty() == false
                 && VbdRecord::new(&record).vdi() == image_ref
-                && disk["SR"] == sr_ref)
+                && VdiRecord::new(&disk).sr() == sr_ref)
         }
     }
 }

@@ -5,6 +5,7 @@ use super::{
 use crate::{Error, HostCrashdump, HostId, OperationState, PoolId, StepState, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::records::{HostCrashdumpRecord, HostMetricsRecord};
 
 pub(super) const COMPLETION: &str = "Host accepted deletion and the crashdump record is absent; host filesystem contents were not independently inspected";
 const LABEL: &str = "Delete retained host crashdump";
@@ -113,7 +114,7 @@ async fn host(
         let metrics = session
             .call("host_metrics.get_record", vec![json!(metrics)])
             .await?;
-        if metrics["live"] != true {
+        if HostMetricsRecord::new(&metrics).live() != true {
             return Err(Error::UnavailableAction);
         }
     }
@@ -129,7 +130,9 @@ async fn selected(session: &Session, record: &ResourceOperationRecord) -> Result
         crate::snapshots::optional_record(session, "host_crashdump", &expected.uuid.to_string())
             .await?
             .ok_or(Error::Stale)?;
-    if fresh["host"] != owner || crate::host_support::decode_crashdump(&fresh)? != *expected {
+    if HostCrashdumpRecord::new(&fresh).host() != owner
+        || crate::host_support::decode_crashdump(&fresh)? != *expected
+    {
         return Err(Error::ResourceConflict);
     }
     Ok(reference)

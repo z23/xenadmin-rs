@@ -2,6 +2,7 @@ use super::*;
 use crate::{Endpoint, Inventory, xapi::Session};
 use serde_json::{Value, json};
 use url::Url;
+use xenadmin_xapi::records::PoolRecord;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Route {
@@ -71,10 +72,10 @@ pub(super) async fn resolve(
                 let pool = session
                     .call("pool.get_record", vec![json!(reference(&pool)?)])
                     .await?;
-                if pool["uuid"] != target.pool.to_string() {
+                if PoolRecord::new(&pool).uuid() != target.pool.to_string() {
                     return Err(Error::Stale);
                 }
-                reference(&pool["master"])?.to_owned()
+                reference(&PoolRecord::new(&pool).master())?.to_owned()
             } else {
                 reference(&object["resident_on"])?.to_owned()
             };

@@ -3,6 +3,8 @@ use crate::{
     management_ipv6_bond::{Plan, Stage},
     resources::management_ipv6 as backend,
 };
+use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::records::TaskRecord;
 impl ResourceRequest {
     fn ipv6_plan(&self) -> Result<&Plan, Error> {
         self.record
@@ -173,16 +175,18 @@ impl ResourceRequest {
             let create = p.stage() == Stage::ChangeBond && p.intent.operation.creates();
             let receipt = p.current_mut();
             receipt.task_uuid = Some(id);
-            match v["status"].as_str() {
-                Some("success") => {
+            match TaskRecord::new(&v).status().as_str() {
+                Some(task_status_type::SUCCESS) => {
                     receipt.completed = true;
                     receipt.ended = true;
                     if create {
                         receipt.result = Some(crate::xapi::snapshot_task_result(&v)?);
                     }
                 }
-                Some("failure" | "cancelled") => receipt.ended = true,
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
+                    receipt.ended = true
+                }
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("IPv6 stage task status unavailable")),
             }
             self.record.result_reference = p.current().result.clone();

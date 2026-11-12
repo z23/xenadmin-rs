@@ -435,7 +435,7 @@ async fn guest(session: &Session, vm: VmId, halted: bool) -> Result<String, Erro
 }
 async fn network(session: &Session, id: NetworkId) -> Result<(String, u64), Error> {
     let (reference, record) = fresh(session, "network", id.uuid()).await?;
-    let mtu = number(&record["MTU"])
+    let mtu = number(&NetworkRecord::new(&record).mtu())
         .filter(|n| *n >= 576 && *n <= 65535)
         .ok_or(Error::DeviceConflict)?;
     Ok((reference, mtu))
@@ -505,7 +505,7 @@ async fn attachment(
 }
 async fn nic(session: &Session, vm: &str, id: VifId) -> Result<(String, Value), Error> {
     let (reference, record) = fresh(session, "VIF", id.uuid()).await?;
-    if record["VM"] != vm || record["currently_attached"] != false {
+    if VifRecord::new(&record).vm() != vm || VifRecord::new(&record).currently_attached() != false {
         return Err(Error::DeviceConflict);
     }
     idle(&record)?;

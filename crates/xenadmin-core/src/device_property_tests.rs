@@ -23,7 +23,9 @@ fn enrich(records: &Records) {
     disk["allowed_operations"] = json!(["destroy", "disable_cbt"]);
     for id in ["OpaqueRef:VBD:disk", "OpaqueRef:VIF:nic"] {
         let device = r.get_mut(id).unwrap();
-        device["bootable"] = json!(false);
+        if id == "OpaqueRef:VBD:disk" {
+            device["bootable"] = json!(false);
+        }
         device["qos_algorithm_type"] = json!("");
         device["qos_algorithm_params"] = json!(config().parameters);
         device["qos_supported_algorithms"] = json!(["ionice", "ratelimit"]);

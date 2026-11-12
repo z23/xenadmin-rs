@@ -541,7 +541,11 @@ impl ResourceRequest {
                 s.call("task.get_record", vec![json!(task)]),
             )
             .await
-            && v["uuid"].as_str().and_then(|v| v.parse::<Uuid>().ok()) == Some(id)
+            && TaskRecord::new(&v)
+                .uuid()
+                .as_str()
+                .and_then(|v| v.parse::<Uuid>().ok())
+                == Some(id)
         {
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),

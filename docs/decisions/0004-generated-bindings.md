@@ -187,6 +187,10 @@ Two checks made since look for this, neither of them complete:
   by a class name that stood nearby as a field key and were read by hand, and the rest
   could not be traced: records handed on through several functions or kept in the
   client's own structures. The comparison was a script and is not in the repository.
+  Run again after the move of 2026-11-12 described below, it counted 1,440 reads
+  through views: 1,062 traced and agreeing, 14 flagged in four functions and read by
+  hand (each is given the class its view names; the script had followed a shadowed
+  name or a parameter called after another class), and 364 it could not trace.
 - The check in debug builds, described above, was switched on for the core's whole test
   suite and for the lab scenarios run since. Over the tests it showed three of the seven
   places, which the comparison could not trace, and fixtures that gave one class's
@@ -205,12 +209,24 @@ only at run time having gone back to keys. Not all of them are fields: some are 
 inside map-valued fields, parts of the JSON-RPC envelope, disk image and archive
 metadata or the client's own structures.
 
+After 0.19.0, 111 more moved onto views, leaving 538 over 182. A read moved only where
+the class of its record is written down next to it: the class named in the call that
+binds the record, a function that reads one class throughout, or a parameter whose
+every caller could be traced and passes the same class. Two looser attempts, which also
+took the class from the fields read, were undone: the check in debug builds showed
+helpers given records of other classes under them. With the stricter rule the check
+over the core's tests reported one thing, a test fixture that gave a VIF a VBD's
+`bootable`, which was the fixture's mistake.
+
 1. The reads by key that are left. Most are where the class of a record depends on a
    value at run time (network and storage operations read "the target's record", whose
    class follows the kind of target), where the fields read are too few to tell the
    class (a `uuid` alone), or in helpers that take a record of any class; each needs
    its class from the call that produced the record, or a helper per class. The loops
-   that handle several classes at once stay by key.
+   that handle several classes at once stay by key. Of the 538, the four inventory
+   decoders hold 101 and some 113 are not fields at all; about 240 are reads whose
+   class could not be traced, 31 are in code given several classes, and 26 sit in match
+   arms where the class follows the arm.
 2. Typed values: generated readers that turn a field into its Rust type, with the core's
    bounds applied to the result. The enumeration values still written as literals are
    here: those compared with a value of the client's own, such as a reviewed power

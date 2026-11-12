@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use xenadmin_xapi::records::{PbdRecord, SrRecord};
+use xenadmin_xapi::records::{PbdRecord, SrRecord, TaskRecord};
 
 pub(super) fn require(ok: bool, message: &'static str) -> Result<(), Error> {
     if ok {
@@ -392,7 +392,8 @@ pub(super) async fn absent(session: &Session, id: SecretId) -> Result<bool, Erro
 }
 
 pub(super) fn task_uuid(value: &Value) -> Result<crate::TaskId, Error> {
-    value["uuid"]
+    TaskRecord::new(value)
+        .uuid()
         .as_str()
         .and_then(|v| crate::TaskId::parse(v).ok())
         .filter(|id| !id.uuid().is_nil())

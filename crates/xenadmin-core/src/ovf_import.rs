@@ -3,7 +3,7 @@ use crate::{NetworkId, OperationId, SrId, transfer::Plan as TransferPlan, xapi::
 use serde_json::{Value, json};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::vm_power_state;
-use xenadmin_xapi::records::{VdiRecord, VmRecord};
+use xenadmin_xapi::records::{NetworkRecord, VdiRecord, VmRecord};
 pub(crate) const MARKER: &str = "xenadmin-rs-ovf-import";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -125,7 +125,8 @@ fn number(v: &Value) -> Option<u64> {
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
 }
 fn idle(v: &Value) -> Result<(), Error> {
-    if v["current_operations"]
+    if VmRecord::new(v)
+        .current_operations()
         .as_object()
         .is_none_or(|m| !m.is_empty())
     {
@@ -141,7 +142,7 @@ pub(crate) async fn fresh(s: &Session, class: &str, id: Uuid) -> Result<(String,
 }
 async fn network(s: &Session, id: NetworkId) -> Result<(String, u64), Error> {
     let (r, v) = fresh(s, "network", id.uuid()).await?;
-    let mtu = number(&v["MTU"])
+    let mtu = number(&NetworkRecord::new(&v).mtu())
         .filter(|n| (576..=65535).contains(n))
         .ok_or(Error::TransferConflict)?;
     Ok((r, mtu))

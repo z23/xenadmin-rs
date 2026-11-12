@@ -1,6 +1,7 @@
 use super::*;
 use crate::network_topology::{Kind as StepKind, Plan as TopologyPlan, Receipt};
 use crate::{NetworkTopologyOperation, OperationState, StepState};
+use xenadmin_xapi::records::{HostMetricsRecord, HostRecord};
 
 fn operation(p: &TopologyPlan) -> Result<&crate::NetworkFabricPool, Error> {
     match &p.operation {
@@ -51,11 +52,12 @@ fn live(f: &Fresh, p: &TopologyPlan) -> Result<(), Error> {
     }
     for host in &first.review.hosts {
         let (_, h) = f.by_id("host", host.uuid())?;
-        let metrics = h["metrics"]
+        let metrics = HostRecord::new(h)
+            .metrics()
             .as_str()
             .and_then(|r| f.raw["host_metrics"].get(r))
             .ok_or(Error::ResourceConflict)?;
-        if metrics["live"] != true {
+        if HostMetricsRecord::new(metrics).live() != true {
             return Err(Error::Protocol(
                 "Every pool host must be live for a pool-wide fabric change",
             ));

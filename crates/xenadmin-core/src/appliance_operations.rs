@@ -9,7 +9,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::vm_power_state;
-use xenadmin_xapi::records::VmRecord;
+use xenadmin_xapi::records::{VmApplianceRecord, VmRecord};
 
 #[derive(Clone)]
 pub(super) enum Verify {
@@ -83,7 +83,8 @@ async fn members(session: &Session, record: &Value) -> Result<BTreeSet<VmId>, Er
         let r = session
             .call("VM.get_record", vec![json!(ref_value(reference)?)])
             .await?;
-        let id = r["uuid"]
+        let id = VmRecord::new(&r)
+            .uuid()
             .as_str()
             .and_then(|s| VmId::parse(s).ok())
             .ok_or(Error::Protocol("vApp member UUID unavailable"))?;
@@ -404,7 +405,8 @@ pub(super) async fn verify(
             let r = session
                 .call("VM_appliance.get_record", vec![json!(reference)])
                 .await?;
-            let id = r["uuid"]
+            let id = VmApplianceRecord::new(&r)
+                .uuid()
                 .as_str()
                 .and_then(|s| ApplianceId::parse(s).ok())
                 .ok_or(Error::ResourceConflict)?;
@@ -413,8 +415,8 @@ pub(super) async fn verify(
                 .as_ref()
                 .ok_or(Error::ResourceConflict)?
                 .contains(&id)
-                || r["name_label"] != *name
-                || r["name_description"] != *description
+                || VmApplianceRecord::new(&r).name_label() != *name
+                || VmApplianceRecord::new(&r).name_description() != *description
                 || !members(session, &r).await?.is_empty()
             {
                 return Err(Error::ResourceConflict);

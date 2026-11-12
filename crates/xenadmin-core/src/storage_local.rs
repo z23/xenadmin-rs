@@ -2,7 +2,7 @@
 use crate::{Error, HostId, StorageLocation, storage_discovery, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord};
+use xenadmin_xapi::records::{HostRecord, PbdRecord, SmRecord, SrRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalStorageKind {
@@ -139,7 +139,8 @@ pub(crate) async fn preflight(
         return Err(Error::InvalidResourceCommand);
     };
     let (host_ref, host_record) = read_host(session, host).await?;
-    if !host_record["current_operations"]
+    if !HostRecord::new(&host_record)
+        .current_operations()
         .as_object()
         .is_some_and(|m| m.is_empty())
     {
@@ -215,7 +216,7 @@ async fn read_host(session: &Session, host: HostId) -> Result<(String, Value), E
     let record = session
         .call("host.get_record", vec![json!(&reference)])
         .await?;
-    if record["uuid"] != host.to_string() {
+    if HostRecord::new(&record).uuid() != host.to_string() {
         return Err(Error::Stale);
     }
     Ok((reference, record))

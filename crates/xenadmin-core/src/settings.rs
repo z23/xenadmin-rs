@@ -757,7 +757,7 @@ impl SettingsStep {
                 let record = session
                     .call("host.get_record", vec![reference.clone()])
                     .await?;
-                if record["uuid"] != id.to_string() {
+                if HostRecord::new(&record).uuid() != id.to_string() {
                     return Err(Error::SettingsConflict);
                 }
                 reference

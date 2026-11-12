@@ -255,6 +255,8 @@ pub enum Error {
     MigrationConflict,
     #[error("This migration topology or resource configuration is not supported")]
     UnsupportedMigration,
+    #[error("{0}")]
+    MigrationPrerequisite(&'static str),
     #[error("Choose valid resource settings and a change to apply")]
     InvalidResourceCommand,
     #[error("{0}")]

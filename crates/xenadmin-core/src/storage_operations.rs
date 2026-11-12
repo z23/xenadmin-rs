@@ -4,8 +4,8 @@ use super::{
 };
 use crate::{Error, PbdId, SrId, StorageOperation, VdiId, storage::StorageBaseline, xapi::Session};
 use serde_json::{Value, json};
-use xenadmin_xapi::enumerations::storage_operations;
-use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord, TaskRecord};
+use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
+use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&StorageOperation, Error> {
     match &record.action {
@@ -133,11 +133,12 @@ async fn no_consumers(
         }
         let vdi = by_ref(session, "VDI", reference).await?;
         empty_current(&vdi)?;
-        if require_unused && vdi["type"] != "user" {
+        if require_unused && VdiRecord::new(&vdi).type_() != vdi_type::USER {
             return Err(Error::StorageInUse);
         }
         ids.push(
-            vdi["uuid"]
+            VdiRecord::new(&vdi)
+                .uuid()
                 .as_str()
                 .and_then(|id| VdiId::parse(id).ok())
                 .ok_or(Error::Protocol("storage disk identity unavailable"))?,
@@ -153,7 +154,7 @@ async fn no_consumers(
                 ));
             }
             let vbd = by_ref(session, "VBD", reference).await?;
-            if vbd["currently_attached"] != false {
+            if VbdRecord::new(&vbd).currently_attached() != false {
                 return Err(Error::StorageInUse);
             }
         }

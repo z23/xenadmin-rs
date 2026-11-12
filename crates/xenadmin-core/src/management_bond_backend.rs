@@ -12,7 +12,7 @@ pub(in crate::resources) use vlans::replacements;
 use xenadmin_xapi::enumerations::{
     ip_configuration_mode, ipv6_configuration_mode, primary_address_type,
 };
-use xenadmin_xapi::records::{BondRecord, HostRecord, PifRecord, PoolRecord};
+use xenadmin_xapi::records::{BondRecord, HostRecord, NetworkRecord, PifRecord, PoolRecord};
 fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, &Op), Error> {
     match operation(r)? {
         ManagementNetworkOperation::Bond {
@@ -199,7 +199,8 @@ pub(super) async fn before(
         } => {
             let (net_ref, net) = lookup(t.records("network"), target.uuid())?;
             require(
-                net["managed"] == true && network::number(&net["MTU"]) == Some(1500),
+                NetworkRecord::new(net).managed() == true
+                    && network::number(&NetworkRecord::new(net).mtu()) == Some(1500),
                 "Management bond destination network must be managed at MTU 1500",
             )?;
             require(
@@ -252,7 +253,7 @@ pub(super) async fn before(
             pif(s, source, None, Some(&t)).await?;
             let (bond_ref, b) = lookup(t.records("bond"), bond.uuid())?;
             require(
-                b["master"] == t.pif(parent)?.0,
+                BondRecord::new(b).master() == t.pif(parent)?.0,
                 "Management bond identity changed",
             )?;
             props = properties(t.pif(parent)?.1)?;

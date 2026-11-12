@@ -10,7 +10,10 @@ pub(in crate::resources) fn before(
         let (_, v) = lookup(t.records("vlan"), captured.vlan.id.uuid())?;
         let (_, p) = t.pif(captured.interface.id)?;
         require(
-            v["other_config"].as_object().is_some_and(|v| v.is_empty())
+            VlanRecord::new(v)
+                .other_config()
+                .as_object()
+                .is_some_and(|v| v.is_empty())
                 && p["other_config"].as_object().is_some_and(|v| v.is_empty())
                 && properties(p)?.is_empty(),
             "VLAN metadata or interface properties would be reset by the host migration; review or clear them separately",

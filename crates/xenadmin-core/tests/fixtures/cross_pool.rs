@@ -573,37 +573,62 @@ async fn recorded_completion_survives_removed_task_and_reconnect_without_a_secon
 
 #[tokio::test]
 async fn unsupported_source_devices_and_membership_fail_before_receiver_creation() {
-    for (reference, key, value) in [
-        ("OpaqueRef:VBD:disk", "other_config", json!({})),
-        ("OpaqueRef:VDI:disk", "sharable", json!(true)),
-        ("OpaqueRef:VDI:disk", "managed", json!(false)),
+    // Each is refused in its own words: these are things to put right before a transfer,
+    // not wrong answers from the host.
+    let owned = "Only owned writable data disks can be transferred";
+    let plain = "Shared, snapshot, CBT or reset-on-boot disks cannot use this transfer";
+    let separate = "Suspension, vApp or snapshot schedule membership requires a separate transfer";
+    for (reference, key, value, refusal) in [
+        ("OpaqueRef:VBD:disk", "other_config", json!({}), owned),
+        ("OpaqueRef:VDI:disk", "sharable", json!(true), plain),
+        (
+            "OpaqueRef:VDI:disk",
+            "managed",
+            json!(false),
+            "This migration topology or resource configuration is not supported",
+        ),
         (
             "OpaqueRef:VDI:disk",
             "VBDs",
             json!(["OpaqueRef:VBD:disk", "OpaqueRef:VBD:other"]),
+            "A data disk has other consumers",
         ),
         (
             "OpaqueRef:VM:guest",
             "snapshots",
             json!(["OpaqueRef:VM:snapshot"]),
+            "Snapshot chains or specialized guest devices require another workflow",
         ),
         (
             "OpaqueRef:VM:guest",
             "appliance",
             json!("OpaqueRef:VM_appliance:group"),
+            separate,
         ),
-        ("OpaqueRef:VM:guest", "ha_always_run", json!(true)),
+        (
+            "OpaqueRef:VM:guest",
+            "ha_always_run",
+            json!(true),
+            "Disable VM HA protection separately before transfer",
+        ),
         (
             "OpaqueRef:VM:guest",
             "snapshot_schedule",
             json!("OpaqueRef:VMSS:policy"),
+            separate,
         ),
         (
             "OpaqueRef:VM:guest",
             "blocked_operations",
             json!({"migrate_send":"Transfer restricted"}),
+            "The host does not currently allow cross-pool migration",
         ),
-        ("OpaqueRef:VBD:disk", "type", json!("CD")),
+        (
+            "OpaqueRef:VBD:disk",
+            "type",
+            json!("CD"),
+            "Eject installation media separately before transfer",
+        ),
     ] {
         let f = fixture(Fault::None, false).await;
         let dir = tempfile::tempdir().unwrap();
@@ -623,6 +648,7 @@ async fn unsupported_source_devices_and_membership_fail_before_receiver_creation
             "{reference}/{key}: {}",
             result.detail
         );
+        assert_eq!(result.detail, refusal, "{reference}/{key}");
         assert_eq!(count(&f.destination, "host.migrate_receive"), 0);
         assert_eq!(count(&f.source, "Async.VM.migrate_send"), 0);
         source.close().await;

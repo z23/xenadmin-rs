@@ -1173,13 +1173,15 @@ pub(crate) async fn verify_created_snapshot(
 }
 
 fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
-    Ok(match required(FieldValue::of(&record["power_state"]))? {
-        vm_power_state::RUNNING => PowerState::Running,
-        vm_power_state::HALTED => PowerState::Halted,
-        vm_power_state::PAUSED => PowerState::Paused,
-        vm_power_state::SUSPENDED => PowerState::Suspended,
-        other => PowerState::Unknown(other.into()),
-    })
+    Ok(
+        match required(FieldValue::of(&VmRecord::new(record).power_state()))? {
+            vm_power_state::RUNNING => PowerState::Running,
+            vm_power_state::HALTED => PowerState::Halted,
+            vm_power_state::PAUSED => PowerState::Paused,
+            vm_power_state::SUSPENDED => PowerState::Suspended,
+            other => PowerState::Unknown(other.into()),
+        },
+    )
 }
 
 // The readers below take one field of a record, as a record view gives it. A field the

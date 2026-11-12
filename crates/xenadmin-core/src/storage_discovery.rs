@@ -1,6 +1,6 @@
 use crate::{Error, HostId, ObservedResource, SrId, StorageLocation, xapi::Session};
 use serde::{Deserialize, Serialize};
-use xenadmin_xapi::records::SmRecord;
+use xenadmin_xapi::records::{HostRecord, SmRecord};
 #[path = "storage_discovery_xml.rs"]
 mod xml;
 use serde_json::{Value, json};
@@ -258,7 +258,7 @@ impl DiscoveryRequest {
                 let fresh = session
                     .call("host.get_record", vec![json!(&host_ref)])
                     .await?;
-                if fresh["uuid"] != host.to_string() {
+                if HostRecord::new(&fresh).uuid() != host.to_string() {
                     return Err(Error::Stale);
                 }
                 let result = session

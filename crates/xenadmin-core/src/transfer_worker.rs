@@ -498,7 +498,8 @@ impl ResourceRequest {
                 session.call("task.get_record", vec![json!(task)]),
             )
             .await
-            && record["uuid"]
+            && TaskRecord::new(&record)
+                .uuid()
                 .as_str()
                 .and_then(|v| v.parse::<uuid::Uuid>().ok())
                 == Some(uuid)

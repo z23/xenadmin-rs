@@ -11,7 +11,7 @@ use xenadmin_xapi::enumerations::{
     storage_operations, vbd_operations, vbd_type, vdi_operations, vdi_type, vm_operations,
     vm_power_state,
 };
-use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{HostRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Change {
@@ -422,7 +422,7 @@ pub(crate) async fn plan(
             if let Some(host) = bios_host {
                 bios_eligible(&record, *firmware)?;
                 let (_, h) = fresh(session, "host", host.uuid()).await?;
-                let map = string_map(&h["bios_strings"])?;
+                let map = string_map(&HostRecord::new(&h).bios_strings())?;
                 if map.is_empty() {
                     return Err(Error::UnsupportedVmLifecycle);
                 }
@@ -439,7 +439,7 @@ pub(crate) async fn plan(
                 let r = session
                     .call("VBD.get_record", vec![json!(attachment)])
                     .await?;
-                has_disks |= r["type"] == "Disk";
+                has_disks |= VbdRecord::new(&r).type_() == vbd_type::DISK;
             }
             let mode = if has_disks {
                 let VmLifecycleOperation::Create { sr, .. } = operation else {
@@ -561,7 +561,7 @@ async fn guard_creation_permissions(
         }
     }
     if let VmLifecycleOperation::Create { network, iso, .. } = &plan.operation {
-        if record["other_config"].get("disks").is_some() {
+        if VmRecord::new(record).other_config().get("disks").is_some() {
             methods.push("VM.remove_from_other_config".into());
         }
         let nics = refs(record, "VIFs")?;
@@ -573,7 +573,7 @@ async fn guard_creation_permissions(
             let net = session
                 .call(
                     "network.get_record",
-                    vec![json!(reference(&vif["network"])?)],
+                    vec![json!(reference(&VifRecord::new(&vif).network())?)],
                 )
                 .await?;
             if id::<crate::NetworkId>(&net)? != *network {
@@ -722,7 +722,9 @@ pub(crate) async fn prepare(
                 if let Some(host) = bios_host {
                     bios_eligible(&current, *firmware)?;
                     let (_, h) = fresh(session, "host", host.uuid()).await?;
-                    if plan.bios_identity.as_ref() != Some(&string_map(&h["bios_strings"])?) {
+                    if plan.bios_identity.as_ref()
+                        != Some(&string_map(&HostRecord::new(&h).bios_strings())?)
+                    {
                         return Err(Error::VmLifecycleConflict);
                     }
                 }
@@ -737,7 +739,9 @@ pub(crate) async fn prepare(
             let (vr, r) = target(session, plan, vm).await?;
             bios_eligible(&r, GuestFirmware::Inherited)?;
             let (hr, h) = fresh(session, "host", host.uuid()).await?;
-            if plan.bios_identity.as_ref() != Some(&string_map(&h["bios_strings"])?) {
+            if plan.bios_identity.as_ref()
+                != Some(&string_map(&HostRecord::new(&h).bios_strings())?)
+            {
                 return Err(Error::VmLifecycleConflict);
             }
             Ok(call("VM.copy_bios_strings", vec![json!(vr), json!(hr)]))
@@ -836,7 +840,7 @@ pub(crate) async fn prepare(
         Step::Provision { vm } => {
             let (vm_ref, r) = target(session, plan, vm).await?;
             permits(&r, vm_operations::PROVISION)?;
-            if r["other_config"].get("disks").is_some() {
+            if VmRecord::new(&r).other_config().get("disks").is_some() {
                 return Err(Error::VmLifecycleConflict);
             }
             Ok(call("Async.VM.provision", vec![json!(vm_ref)]))
@@ -996,7 +1000,7 @@ async fn first_cd(session: &Session, vm: &Value) -> Result<Option<(VbdId, Value)
         let mut r = session
             .call("VBD.get_record", vec![json!(&attachment)])
             .await?;
-        if r["type"] == "CD" {
+        if VbdRecord::new(&r).type_() == vbd_type::CD {
             let id = id(&r)?;
             r["ref"] = json!(attachment);
             return Ok(Some((id, r)));
@@ -1095,13 +1099,14 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
     } else {
         for nic in nics {
             let r = session.call("VIF.get_record", vec![json!(nic)]).await?;
-            let old_ref = reference(&r["network"])?;
+            let old_ref = reference(&VifRecord::new(&r).network())?;
             let old = session
                 .call("network.get_record", vec![json!(old_ref)])
                 .await?;
             let from = id(&old)?;
             if from != network {
-                let mac = r["MAC"]
+                let mac = VifRecord::new(&r)
+                    .mac()
                     .as_str()
                     .ok_or(Error::VmLifecycleConflict)?
                     .to_owned();
@@ -1204,7 +1209,7 @@ async fn capture_graph(
     for nic in refs(r, "VIFs")? {
         let vif = session.call("VIF.get_record", vec![json!(nic)]).await?;
         let vif_id: VifId = id(&vif)?;
-        if vif["VM"] != vm_ref
+        if VifRecord::new(&vif).vm() != vm_ref
             || plan
                 .baseline
                 .get("VIF")
@@ -1521,9 +1526,12 @@ pub(crate) async fn verify(
             let (vm_ref, _) = fresh(session, "VM", vm.uuid()).await?;
             let (_, v) = fresh(session, "VBD", vbd.uuid()).await?;
             let (disk_ref, _) = fresh(session, "VDI", disk.uuid()).await?;
-            Ok(v["VM"] == vm_ref
-                && v["VDI"] == disk_ref
-                && v["other_config"].get("owner").is_some_and(Value::is_string))
+            Ok(VbdRecord::new(&v).vm() == vm_ref
+                && VbdRecord::new(&v).vdi() == disk_ref
+                && VbdRecord::new(&v)
+                    .other_config()
+                    .get("owner")
+                    .is_some_and(Value::is_string))
         }
         Step::DestroySnapshot { snapshot, .. } => {
             Ok(
@@ -1605,9 +1613,13 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
     for vif in refs(vm, "VIFs")? {
         let v = session.call("VIF.get_record", vec![json!(vif)]).await?;
         let network = session
-            .call("network.get_record", vec![json!(reference(&v["network"])?)])
+            .call(
+                "network.get_record",
+                vec![json!(reference(&VifRecord::new(&v).network())?)],
+            )
             .await?;
-        let slot = v["device"]
+        let slot = VifRecord::new(&v)
+            .device()
             .as_str()
             .ok_or(Error::VmLifecycleConflict)?
             .to_owned();
@@ -1622,7 +1634,10 @@ fn bios_eligible(r: &Value, firmware: GuestFirmware) -> Result<(), Error> {
         || firmware == GuestFirmware::Inherited && crate::guest_boot::firmware(r) == Some("bios");
     if !bios
         || !crate::guest_boot::is_hvm(r)
-        || !r["bios_strings"].as_object().is_some_and(|v| v.is_empty())
+        || !VmRecord::new(r)
+            .bios_strings()
+            .as_object()
+            .is_some_and(|v| v.is_empty())
     {
         return Err(Error::UnsupportedVmLifecycle);
     }
@@ -1644,7 +1659,7 @@ async fn validate_firmware_change(
     }
     for vr in refs(r, "VBDs")? {
         let v = session.call("VBD.get_record", vec![json!(vr)]).await?;
-        if v["type"] != "CD" {
+        if VbdRecord::new(&v).type_() != vbd_type::CD {
             return Err(Error::UnsupportedVmLifecycle);
         }
     }

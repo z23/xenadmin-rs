@@ -7,7 +7,7 @@ use xenadmin_xapi::enumerations::{
     storage_operations, vbd_type, vdi_type, vm_operations, vm_power_state,
 };
 use xenadmin_xapi::records::{
-    HostRecord, PbdRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord, VmRecord,
+    HostRecord, PbdRecord, PoolRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord, VmRecord,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Baseline {
@@ -459,7 +459,8 @@ pub(crate) async fn storage_route(
             }
         }
     }
-    candidates.sort_by_key(|(r, _)| r != pool["master"].as_str().unwrap_or_default());
+    candidates
+        .sort_by_key(|(r, _)| r != PoolRecord::new(&pool).master().as_str().unwrap_or_default());
     let (_, host) = candidates.first().ok_or(Error::UnavailableAction)?;
     let address = HostRecord::new(host)
         .address()

@@ -187,7 +187,8 @@ pub(super) async fn arguments(
             )?;
             let (reference, host) = super::xapi::read(session, ResourceTarget::Host(*host)).await?;
             require(
-                host["current_operations"]
+                HostRecord::new(&host)
+                    .current_operations()
                     .as_object()
                     .is_some_and(|v| v.is_empty()),
                 "Finish host operations before replacing its certificate",

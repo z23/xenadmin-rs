@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use xenadmin_xapi::records::PoolRecord;
+use xenadmin_xapi::records::{PoolRecord, TaskRecord};
 fn operation(r: &ResourceOperationRecord) -> Result<&PoolDissolve, Error> {
     match &r.action {
         ResourceAction::DissolvePool(op) => Ok(op),
@@ -142,7 +142,8 @@ pub(super) async fn arguments(
         Kind::Eject(host) => eject_arguments(s, r, *host).await?,
         Kind::ClearName | Kind::ClearDescription => {
             let (_, fresh) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
-            if !fresh["current_operations"]
+            if !PoolRecord::new(&fresh)
+                .current_operations()
                 .as_object()
                 .is_some_and(|m| m.is_empty())
             {
@@ -165,7 +166,8 @@ pub(super) async fn task(
         "Ejection reply was lost; host disappearance cannot prove task completion",
     ))?;
     let value = s.call("task.get_record", vec![json!(reference)]).await?;
-    let id = value["uuid"]
+    let id = TaskRecord::new(&value)
+        .uuid()
         .as_str()
         .and_then(|v| TaskId::parse(v).ok())
         .ok_or(Error::ResourceConflict)?;

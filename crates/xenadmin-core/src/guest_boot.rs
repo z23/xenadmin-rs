@@ -4,7 +4,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::enumerations::domain_type;
-use xenadmin_xapi::records::VmRecord;
+use xenadmin_xapi::records::{PoolRecord, VmRecord};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootReadiness {
     Ready,
@@ -221,7 +221,7 @@ pub(crate) async fn read(
         .call("pool.get_by_uuid", vec![json!(pool.to_string())])
         .await?;
     let p = session.call("pool.get_record", vec![pr.clone()]).await?;
-    if p["uuid"] != pool.to_string() {
+    if PoolRecord::new(&p).uuid() != pool.to_string() {
         return Err(Error::Stale);
     }
     let guest = readiness(
