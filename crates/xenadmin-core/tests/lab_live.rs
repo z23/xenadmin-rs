@@ -2961,24 +2961,33 @@ async fn lab_interrupted_storage_migration_resolves_on_restart() {
     })
     .await;
     evidence["host_task_ended"] = json!(settled);
-    let record = if record.state == OperationState::OutcomeUnknown {
+    // A recheck reads the saved task and continues nothing. While the host is still
+    // finishing the migration it says so and asks to be made again later, which is what an
+    // operator does: recheck until the record says something else, a few seconds apart.
+    let mut record = record;
+    let mut rechecks = Vec::new();
+    while record.state == OperationState::OutcomeUnknown && rechecks.len() < 20 {
         let before = (format!("{:?}", record.state), record.detail.clone());
         c.control_operation(id, OperationControl::Recheck)
             .expect("recheck accepted");
-        let moved = settle(300, || {
+        let moved = settle(60, || {
             c.operation_history()
                 .iter()
                 .find(|r| r.id == id)
                 .is_some_and(|r| (format!("{:?}", r.state), r.detail.clone()) != before)
         })
         .await;
-        let (after, more) = wait_history_outcome(&c, id, 600).await;
-        let after = after.expect("record after recheck");
-        evidence["recheck"] = json!({"moved": moved, "timeline": more, "state": format!("{:?}", after.state), "detail": after.detail});
-        after
-    } else {
-        record
-    };
+        let (after, _) = wait_history_outcome(&c, id, 300).await;
+        record = after.expect("record after recheck");
+        rechecks.push(json!({"moved": moved, "state": format!("{:?}", record.state), "detail": record.detail}));
+        if record.state == OperationState::OutcomeUnknown {
+            if !record.detail.contains("still active") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    }
+    evidence["rechecks"] = json!(rechecks);
     // Host truth: the guest runs on one host with both disks on that host's repository.
     let placed = settle(300, || {
         c.latest().inventory().is_some_and(|i| {
@@ -3000,7 +3009,7 @@ async fn lab_interrupted_storage_migration_resolves_on_restart() {
         json!(c.operation_history().iter().filter(|r| r.id == id).count());
     // Baseline: the guest back on the host it came from, by an ordinary migration.
     let mut returned = json!(null);
-    if placed && moved_to_destination {
+    if placed && moved_to_destination && record.state.terminal() {
         let inventory = c.latest().inventory().unwrap().clone();
         settle(120, || {
             c.latest().inventory().is_some_and(|i| {
@@ -3039,13 +3048,9 @@ async fn lab_interrupted_storage_migration_resolves_on_restart() {
         "the guest is not running on one host with its disks together: {evidence}"
     );
     assert_eq!(evidence["records_with_this_id"], 1, "{evidence}");
-    assert!(
-        matches!(
-            record.state,
-            OperationState::Succeeded | OperationState::OutcomeUnknown
-        ),
-        "{evidence}"
-    );
+    // The migration ended on the host and the guest is where it was sent: once the task
+    // has ended the record must say so, without the operator having to vouch for it.
+    assert_eq!(record.state, OperationState::Succeeded, "{evidence}");
     if moved_to_destination {
         assert_eq!(returned["state"], "Succeeded", "{returned}");
         assert_eq!(returned["home"], true, "{returned}");
