@@ -15680,7 +15680,9 @@ async fn lab_tools_guest_on_shared_storage() {
     }
 }
 
-/// P13-05, P06-07: enable HA on the pool with the shared NFS repository as its heartbeat
+/// P13-05, P06-07: record that enabling HA is refused while a storage interface the
+/// heartbeat repository is reached over is not protected from unplug (finding 36), protect
+/// those interfaces, enable HA on the pool with the shared NFS repository as its heartbeat
 /// store, protect the tools guest with the restart priority, raise the tolerated host
 /// failures to one and read every value back, then restore the priority and tolerance and
 /// disable HA. HA left enabled by an interrupted run is disabled first; the scenario always
@@ -15688,7 +15690,9 @@ async fn lab_tools_guest_on_shared_storage() {
 #[tokio::test]
 #[ignore]
 async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
-    use xenadmin_core::{HaRestartPriority, PoolOperation, ResourceCommand};
+    use xenadmin_core::{
+        HaRestartPriority, NetworkOperation, PifIdentity, PoolOperation, ResourceCommand,
+    };
     let lab = Lab::load();
     let state = tempfile::tempdir().unwrap();
     let backend = Backend::with_state_directory(state.path().into()).unwrap();
@@ -15743,6 +15747,94 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
     let failures_before = administration(&c)
         .and_then(|a| a.ha_failures_to_tolerate)
         .unwrap_or(0);
+
+    // Finding 36: the storage interfaces the heartbeat repository is reached over must be
+    // kept attached at boot. While one is not, the client refuses to enable HA; that
+    // refusal is recorded first, then each is protected for the length of this scenario.
+    let shared_server: std::net::Ipv4Addr = lab
+        .storage
+        .as_ref()
+        .and_then(|s| s.nas_ip.parse().ok())
+        .expect("appliance storage address");
+    let heartbeat_pifs = inventory
+        .details
+        .pifs
+        .values()
+        .filter(|p| {
+            let (Ok(ip), Ok(mask)) = (
+                p.ip.parse::<std::net::Ipv4Addr>(),
+                p.netmask.parse::<std::net::Ipv4Addr>(),
+            ) else {
+                return false;
+            };
+            p.management != Some(true)
+                && (u32::from(ip) & u32::from(mask)) == (u32::from(shared_server) & u32::from(mask))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let unplug_protected = |c: &Connection, pif: xenadmin_core::PifId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.pifs.get(&pif).and_then(|p| p.disallow_unplug))
+    };
+    let unprotected = heartbeat_pifs
+        .iter()
+        .filter(|p| p.disallow_unplug != Some(true))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut refusal = None;
+    if !unprotected.is_empty() {
+        let entry = resource_op(
+            &c,
+            "enable HA while a heartbeat interface is not protected from unplug",
+            ResourceCommand::Pool {
+                target: pool_target(&c),
+                operation: PoolOperation::EnableHa {
+                    heartbeat_srs: vec![shared],
+                    expected_failures: failures_before,
+                },
+            },
+            300,
+        )
+        .await;
+        // Kept apart from the steps that must succeed: this one must be refused.
+        refusal = Some(
+            json!({"step": entry["step"], "refused": entry["state"] == "Rejected", "detail": entry["detail"],
+                              "ha_enabled_after": administration(&c).and_then(|a| a.ha_enabled)}),
+        );
+    }
+    let mut protected = Vec::new();
+    for pif in &unprotected {
+        let host_name = pif
+            .host
+            .and_then(|h| inventory.hosts.get(&h))
+            .map(|h| h.name.clone())
+            .unwrap_or_default();
+        let mut entry = resource_op(
+            &c,
+            &format!(
+                "protect the heartbeat interface {} on {host_name} from unplug",
+                pif.device
+            ),
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(pif.id))
+                    .unwrap(),
+                operation: NetworkOperation::SetUnplugProtection {
+                    expected: PifIdentity::from_inventory(pif).expect("interface identity"),
+                    before: false,
+                    enabled: true,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] =
+            json!(settle(120, || unplug_protected(&c, pif.id) == Some(true)).await);
+        note(&mut steps, entry);
+        protected.push(pif.id);
+    }
 
     let started = std::time::Instant::now();
     let mut entry = resource_op(
@@ -15886,11 +15978,45 @@ async fn lab_ha_enable_with_shared_heartbeat_and_protected_guest() {
         );
         note(&mut steps, entry);
     }
+    // The protection this scenario set is taken off again, as the takeover scenario does.
+    for pif in protected {
+        let Some(current) = c
+            .latest()
+            .inventory()
+            .and_then(|i| i.details.pifs.get(&pif).cloned())
+        else {
+            continue;
+        };
+        let mut entry = resource_op(
+            &c,
+            &format!("remove the unplug protection of {}", current.device),
+            ResourceCommand::Network {
+                target: c
+                    .latest()
+                    .observe_resource(ResourceTarget::Pif(pif))
+                    .unwrap(),
+                operation: NetworkOperation::SetUnplugProtection {
+                    expected: PifIdentity::from_inventory(&current).expect("interface identity"),
+                    before: true,
+                    enabled: false,
+                },
+            },
+            300,
+        )
+        .await;
+        entry["read_back"] = json!(settle(120, || unplug_protected(&c, pif) == Some(false)).await);
+        note(&mut steps, entry);
+    }
     c.close().await;
     lab.record(
         "ha-enable-with-shared-heartbeat-and-protected-guest",
-        json!({"heartbeat_repository": shared.to_string(), "guest": guest.as_ref().map(|g| g.name.clone()), "steps": steps}),
+        json!({"heartbeat_repository": shared.to_string(), "guest": guest.as_ref().map(|g| g.name.clone()),
+               "refusal_while_unprotected": refusal, "steps": steps}),
     );
+    if let Some(refusal) = &refusal {
+        assert_eq!(refusal["refused"], true, "{refusal}");
+        assert_eq!(refusal["ha_enabled_after"], false, "{refusal}");
+    }
     for step in &steps {
         if step.get("accepted").is_some() {
             assert_eq!(step["accepted"], true, "{step}");
