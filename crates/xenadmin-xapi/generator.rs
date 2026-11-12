@@ -34,6 +34,12 @@ struct Message {
 struct Parameter {
     #[serde(rename = "type")]
     kind: String,
+    /// Absent in a description that does not say: every parameter is then required.
+    #[serde(default = "yes")]
+    required: bool,
+}
+fn yes() -> bool {
+    true
 }
 #[derive(Deserialize)]
 struct Enumeration {
@@ -195,9 +201,18 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
         }
         out.push_str("        ],\n        messages: &[\n");
         for message in &class.messages {
+            // A caller may leave parameters out only from the end, so the optional ones
+            // have to be the last: one count then says which they are.
+            let required = message.params.iter().take_while(|p| p.required).count();
+            if message.params[required..].iter().any(|p| p.required) {
+                return Err(format!(
+                    "{}.{} has a required parameter after an optional one",
+                    class.name, message.name
+                ));
+            }
             let _ = writeln!(
                 out,
-                "            Message {{ name: {}, parameters: &[{}], result: {}, state: {} }},",
+                "            Message {{ name: {}, parameters: &[{}], required: {required}, result: {}, state: {} }},",
                 literal(&message.name),
                 list(message.params.iter().map(|p| literal(&p.kind))),
                 literal(message.result.first().map_or("void", String::as_str)),

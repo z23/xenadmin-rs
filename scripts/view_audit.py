@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks what the record views reported while the tests ran.
+"""Checks what the record views and the calls reported while the tests ran.
 
     view_audit.py FILE
 
@@ -10,6 +10,12 @@ is seen that way, and so is a fixture with a field the API does not have.
 
 The tests give a few records such keys on purpose; those are listed here. Anything else
 fails the check and is printed. An absent or empty file passes: nothing was reported.
+
+The file also holds a line for every call that was sent with an argument the API's type
+for that parameter does not admit, or with a number of arguments the API does not take:
+`call`, the call's name, the parameter's position or `count`, and what was wrong. No call
+is expected to be reported, so each of those fails the check. Lines that start with `sent`
+name the calls that were made at all; they are counted and never fail anything.
 """
 import sys
 
@@ -39,19 +45,38 @@ def unexpected(lines):
     return sorted(found)
 
 
+def calls(lines):
+    """The calls reported with arguments that do not fit, as (call, position, what)."""
+    found = set()
+    for line in lines:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) == 4 and parts[0] == "call":
+            found.add(tuple(parts[1:]))
+    return sorted(found)
+
+
 def main(arguments):
     if len(arguments) != 1:
         print("usage: view_audit.py FILE", file=sys.stderr)
         return 2
     try:
         with open(arguments[0], encoding="utf-8") as file:
-            found = unexpected(file)
+            lines = file.readlines()
     except FileNotFoundError:
         return 0
+    found = unexpected(lines)
     for cls, key, place in found:
         print(f"view_audit: a {cls} view at {place} was given a record with the key {key!r}, "
               f"which {cls} does not have", file=sys.stderr)
-    return 1 if found else 0
+    misfits = calls(lines)
+    for call, position, what in misfits:
+        where = "its arguments" if position == "count" else f"parameter {position}"
+        print(f"view_audit: {call} was sent with {where} wrong: {what}", file=sys.stderr)
+    sent = {line.rstrip("\n").split("\t")[1].removeprefix("Async.")
+            for line in lines if line.startswith("sent\t") and line.count("\t") == 1}
+    if sent:
+        print(f"view_audit: {len(sent)} distinct calls were sent and compared with the API")
+    return 1 if found or misfits else 0
 
 
 if __name__ == "__main__":

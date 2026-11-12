@@ -156,8 +156,9 @@ of it brings the guest home.
 
 Setting `XENADMIN_XAPI_VIEW_AUDIT` to a file while scenarios run makes the client's record
 views write there any key of a live record that the view's class lacks (names only): a
-record read as another class would show up. See the
-[development notes](../docs/DEVELOPMENT.md).
+record read as another class would show up. The same file receives a line for any call
+sent with arguments the API's types do not admit, and the names of the calls made. See
+the [development notes](../docs/DEVELOPMENT.md).
 
 The harness reads its inputs from the environment: `XENADMIN_LAB_MANIFEST` (the manifest),
 `XENADMIN_LAB_PASSWORD_FILE` (the lab-only root password), `XENADMIN_LAB_EVIDENCE_DIR`

@@ -159,14 +159,19 @@ const SESSION_WRITTEN: &[&str] = &["session.get_record", "event.from", "session.
 
 #[test]
 fn every_call_written_with_its_arguments_passes_as_many_as_the_api_takes() {
-    let takes: BTreeMap<String, usize> = CLASSES
+    // The fewest and the most arguments each call takes after the session: parameters the
+    // API marks as optional may be left out from the end.
+    let takes: BTreeMap<String, (usize, usize)> = CLASSES
         .iter()
         .flat_map(|class| {
             class.messages.iter().map(move |message| {
                 let session = usize::from(message.parameters.first() == Some(&"session ref"));
                 (
                     format!("{}.{}", class.name, message.name),
-                    message.parameters.len() - session,
+                    (
+                        message.required - session,
+                        message.parameters.len() - session,
+                    ),
                 )
             })
         })
@@ -190,7 +195,8 @@ fn every_call_written_with_its_arguments_passes_as_many_as_the_api_takes() {
             from = close + 1;
             let literal = &text[open + 1..close];
             let name = literal.strip_prefix("Async.").unwrap_or(literal);
-            let (Some(&takes), Some(start)) = (takes.get(name), arguments_start(&text, from))
+            let (Some(&(least, most)), Some(start)) =
+                (takes.get(name), arguments_start(&text, from))
             else {
                 continue;
             };
@@ -200,11 +206,11 @@ fn every_call_written_with_its_arguments_passes_as_many_as_the_api_takes() {
             let below_session = SESSION_WRITTEN
                 .iter()
                 .find(|call| file == "xapi.rs" && **call == name);
-            if let Some(call) = below_session.filter(|_| passes == takes + 1) {
+            if let Some(call) = below_session.filter(|_| passes == most + 1) {
                 seen_session_written.insert(*call);
-            } else if passes != takes {
+            } else if !(least..=most).contains(&passes) {
                 wrong.push(format!(
-                    "{literal} ({file}) passes {passes}, the API takes {takes}"
+                    "{literal} ({file}) passes {passes}, the API takes {least} to {most}"
                 ));
             }
         }

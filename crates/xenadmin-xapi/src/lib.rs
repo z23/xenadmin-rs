@@ -30,10 +30,12 @@ pub struct Field {
     pub state: &'static str,
 }
 /// One message of a class: a call. `parameters` are the types in order, the session
-/// included where the call takes one.
+/// included where the call takes one. The first `required` of them must be given; the
+/// rest may be left out from the end, and the host then uses its defaults.
 pub struct Message {
     pub name: &'static str,
     pub parameters: &'static [&'static str],
+    pub required: usize,
     pub result: &'static str,
     pub state: &'static str,
 }
@@ -100,6 +102,16 @@ impl serde::Serialize for FieldValue<'_> {
 /// appends a line for each key the class lacks: the class, the key and where the view was
 /// made, separated by tabs, once per process. Only names are written, never a value.
 /// Without the variable nothing is compared, and release builds contain none of this.
+///
+/// The same file receives what is wrong with the arguments of the calls a debug build
+/// sends, when the caller hands them to [`audit::observe_call`]: a line that starts with
+/// `call`, then the call's name, the position of the parameter in the API's order (the
+/// session is the first) and the type the API gives it with the kind of value it was
+/// given. A call given more arguments than the API takes, or fewer than it requires, is
+/// reported with `count` for its position; parameters the API marks as optional may be
+/// left out from the end. Here too only names and kinds are written, never a value.
+/// Every call observed is also listed once per process, as `sent` and its name, so that
+/// what the check covered can be counted afterwards.
 #[cfg(debug_assertions)]
 pub mod audit {
     use std::collections::BTreeSet;
@@ -109,8 +121,160 @@ pub mod audit {
     struct Sink {
         file: std::fs::File,
         seen: BTreeSet<(&'static str, String, &'static str, u32)>,
+        calls: BTreeSet<String>,
     }
     static SINK: OnceLock<Option<Mutex<Sink>>> = OnceLock::new();
+
+    fn sink() -> Option<&'static Mutex<Sink>> {
+        SINK.get_or_init(|| {
+            let path = std::env::var_os("XENADMIN_XAPI_VIEW_AUDIT")?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()?;
+            Some(Mutex::new(Sink {
+                file,
+                seen: BTreeSet::new(),
+                calls: BTreeSet::new(),
+            }))
+        })
+        .as_ref()
+    }
+
+    fn given(value: &serde_json::Value) -> &'static str {
+        match value {
+            serde_json::Value::Null => "null",
+            serde_json::Value::Bool(_) => "a boolean",
+            serde_json::Value::Number(_) => "a number",
+            serde_json::Value::String(_) => "a string",
+            serde_json::Value::Array(_) => "a list",
+            serde_json::Value::Object(_) => "a map",
+        }
+    }
+
+    /// What `value` is, when it is not what the API's type `kind` asks for: the kind of
+    /// JSON value, or for a list or a map the first member that does not fit. A type this
+    /// does not know fits anything.
+    ///
+    /// Whole numbers may be sent as numbers or as strings of digits, which is how the
+    /// toolstack reads them. A reference is any string: a record's reference and the
+    /// null reference look alike to it.
+    pub fn misfit(kind: &str, value: &serde_json::Value) -> Option<String> {
+        use serde_json::Value;
+        if let Some(member) = kind.strip_suffix(" set") {
+            let Value::Array(members) = value else {
+                return Some(given(value).into());
+            };
+            return members
+                .iter()
+                .find_map(|v| misfit(member, v))
+                .map(|what| format!("a list holding {what}"));
+        }
+        if let Some((key, member)) = kind
+            .strip_prefix('(')
+            .and_then(|k| k.strip_suffix(") map"))
+            .and_then(|k| k.split_once(" -> "))
+        {
+            let Value::Object(members) = value else {
+                return Some(given(value).into());
+            };
+            return members.iter().find_map(|(k, v)| {
+                if let Some(what) = misfit(key, &Value::String(k.clone())) {
+                    return Some(format!("a map with a key that is {what}"));
+                }
+                misfit(member, v).map(|what| format!("a map holding {what}"))
+            });
+        }
+        if let Some(name) = kind.strip_prefix("enum ") {
+            let Value::String(text) = value else {
+                return Some(given(value).into());
+            };
+            let known = super::ENUMERATIONS
+                .binary_search_by(|e| e.name.cmp(name))
+                .is_ok_and(|at| super::ENUMERATIONS[at].values.contains(&text.as_str()));
+            return (!known).then(|| "a string that is none of its values".into());
+        }
+        let fits = match kind {
+            "string" | "datetime" => value.is_string(),
+            "bool" => value.is_boolean(),
+            "int" => {
+                value.is_i64()
+                    || value.is_u64()
+                    || value.as_str().is_some_and(|v| v.parse::<i64>().is_ok())
+            }
+            "float" => {
+                value.is_number() || value.as_str().is_some_and(|v| v.parse::<f64>().is_ok())
+            }
+            _ if kind.ends_with(" ref") => value.is_string(),
+            _ if kind.ends_with(" record") => value.is_object(),
+            _ => true,
+        };
+        if fits {
+            None
+        } else if kind == "int" && value.is_string() {
+            Some("a string that is not a whole number".into())
+        } else {
+            Some(given(value).into())
+        }
+    }
+
+    /// What is wrong with the arguments of one call, the session's token included where
+    /// the call takes a session: for each, the position and what [`misfit`] says, as the
+    /// lines' last two fields. Nothing for a call the catalogue does not have.
+    pub fn call_misfits(method: &str, arguments: &[serde_json::Value]) -> Vec<String> {
+        let name = method.strip_prefix("Async.").unwrap_or(method);
+        let Some(message) = name.split_once('.').and_then(|(class, message)| {
+            let class = &super::CLASSES[super::CLASSES
+                .binary_search_by(|c| c.name.cmp(class))
+                .ok()?];
+            let at = class
+                .messages
+                .binary_search_by(|m| m.name.cmp(message))
+                .ok()?;
+            Some(&class.messages[at])
+        }) else {
+            return Vec::new();
+        };
+        if !(message.required..=message.parameters.len()).contains(&arguments.len()) {
+            let takes = if message.required == message.parameters.len() {
+                message.required.to_string()
+            } else {
+                format!("{} to {}", message.required, message.parameters.len())
+            };
+            return vec![format!("count\ttakes {takes}, given {}", arguments.len())];
+        }
+        message
+            .parameters
+            .iter()
+            .zip(arguments)
+            .enumerate()
+            .filter_map(|(at, (kind, value))| {
+                misfit(kind, value).map(|what| format!("{}\t{kind} given {what}", at + 1))
+            })
+            .collect()
+    }
+
+    /// Called by whatever sends a call, with the arguments as they go on the wire.
+    pub fn observe_call(method: &str, arguments: &[serde_json::Value]) {
+        let Some(sink) = sink() else {
+            return;
+        };
+        let misfits = call_misfits(method, arguments);
+        let Ok(mut sink) = sink.lock() else {
+            return;
+        };
+        let lines = std::iter::once(format!("sent\t{method}\n")).chain(
+            misfits
+                .into_iter()
+                .map(|misfit| format!("call\t{method}\t{misfit}\n")),
+        );
+        for line in lines {
+            if sink.calls.insert(line.clone()) {
+                let _ = sink.file.write_all(line.as_bytes());
+            }
+        }
+    }
 
     /// The keys of `record` that are not fields of `class`; none for a value that is not
     /// an object or a class the catalogue does not have.
@@ -135,19 +299,7 @@ pub mod audit {
         record: &serde_json::Value,
         place: &'static std::panic::Location<'static>,
     ) {
-        let sink = SINK.get_or_init(|| {
-            let path = std::env::var_os("XENADMIN_XAPI_VIEW_AUDIT")?;
-            let file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .ok()?;
-            Some(Mutex::new(Sink {
-                file,
-                seen: BTreeSet::new(),
-            }))
-        });
-        let Some(sink) = sink else {
+        let Some(sink) = sink() else {
             return;
         };
         let foreign = foreign_keys(class, record);
@@ -203,7 +355,18 @@ mod tests {
         let vm = CLASSES.iter().find(|c| c.name == "VM").unwrap();
         let start = vm.messages.iter().find(|m| m.name == "start").unwrap();
         assert_eq!(start.parameters, ["session ref", "VM ref", "bool", "bool"]);
-        assert_eq!(start.result, "void");
+        assert_eq!((start.required, start.result), (4, "void"));
+        // A snapshot may leave out the disks to ignore, which the description marks.
+        let snapshot = vm.messages.iter().find(|m| m.name == "snapshot").unwrap();
+        assert_eq!((snapshot.required, snapshot.parameters.len()), (3, 4));
+        assert_eq!(
+            CLASSES
+                .iter()
+                .flat_map(|c| c.messages)
+                .map(|m| m.parameters.len() - m.required)
+                .sum::<usize>(),
+            77
+        );
         assert!(vm.enumerations.contains(&"vm_power_state"));
         let field = vm.fields.iter().find(|f| f.name == "VCPUs_max").unwrap();
         assert_eq!((field.kind, field.qualifier), ("int", "RO/constructor"));
@@ -264,6 +427,101 @@ mod tests {
         assert_eq!(records::VmRecord::new(&sr).uuid(), "u");
     }
 
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_audit_judges_a_call_by_the_types_the_api_gives_its_parameters() {
+        use audit::{call_misfits, misfit};
+        // VM.start takes the session, the VM, and two booleans.
+        let good = [
+            json!("OpaqueRef:s"),
+            json!("OpaqueRef:vm"),
+            json!(false),
+            json!(true),
+        ];
+        assert!(call_misfits("VM.start", &good).is_empty());
+        assert!(call_misfits("Async.VM.start", &good).is_empty());
+        // Two arguments in each other's places are both named, by position and type.
+        let swapped = [
+            json!("OpaqueRef:s"),
+            json!(false),
+            json!("OpaqueRef:vm"),
+            json!(true),
+        ];
+        assert_eq!(
+            call_misfits("VM.start", &swapped),
+            ["2\tVM ref given a boolean", "3\tbool given a string"]
+        );
+        // One too few is a matter of count, and nothing more is said about it.
+        assert_eq!(
+            call_misfits("VM.start", &good[..3]),
+            ["count\ttakes 4, given 3"]
+        );
+        // A parameter the API marks as optional may be left out, and is judged when given.
+        let snapshot = [json!("OpaqueRef:s"), json!("OpaqueRef:vm"), json!("name")];
+        assert!(call_misfits("VM.snapshot", &snapshot).is_empty());
+        assert_eq!(
+            call_misfits("VM.snapshot", &snapshot[..2]),
+            ["count\ttakes 3 to 4, given 2"]
+        );
+        let mut with_disks = snapshot.to_vec();
+        with_disks.push(json!("OpaqueRef:vdi"));
+        assert_eq!(
+            call_misfits("VM.snapshot", &with_disks),
+            ["4\tVDI ref set given a string"]
+        );
+        with_disks.push(json!(true));
+        assert_eq!(
+            call_misfits("VM.snapshot", &with_disks),
+            ["count\ttakes 3 to 4, given 5"]
+        );
+        // A call the API does not have is for the conformance test, not for this one.
+        assert!(call_misfits("VM.no_such_call", &good).is_empty());
+        assert!(call_misfits("nothing", &[]).is_empty());
+        // Whole numbers go as numbers or as digits; anything else is named.
+        assert_eq!(misfit("int", &json!(4)), None);
+        assert_eq!(misfit("int", &json!("2147483648")), None);
+        assert_eq!(
+            misfit("int", &json!("4 GiB")).as_deref(),
+            Some("a string that is not a whole number")
+        );
+        assert_eq!(misfit("int", &json!(1.5)).as_deref(), Some("a number"));
+        assert_eq!(misfit("float", &json!(1.5)), None);
+        // An enumeration takes its own values and no others, in their own case.
+        assert_eq!(misfit("enum vm_power_state", &json!("Halted")), None);
+        assert_eq!(
+            misfit("enum vm_power_state", &json!("halted")).as_deref(),
+            Some("a string that is none of its values")
+        );
+        // Lists and maps are judged by their members, and say which kind did not fit.
+        assert_eq!(misfit("string set", &json!(["a", "b"])), None);
+        assert_eq!(
+            misfit("string set", &json!(["a", 1])).as_deref(),
+            Some("a list holding a number")
+        );
+        assert_eq!(
+            misfit("VM ref set", &json!("OpaqueRef:vm")).as_deref(),
+            Some("a string")
+        );
+        assert_eq!(misfit("(string -> string) map", &json!({"k": "v"})), None);
+        assert_eq!(
+            misfit("(string -> string) map", &json!({"k": true})).as_deref(),
+            Some("a map holding a boolean")
+        );
+        assert_eq!(
+            misfit(
+                "(enum vm_power_state -> string) map",
+                &json!({"Stopped": "v"})
+            )
+            .as_deref(),
+            Some("a map with a key that is a string that is none of its values")
+        );
+        assert_eq!(misfit("VM record", &json!({})), None);
+        assert_eq!(misfit("VM record", &json!([])).as_deref(), Some("a list"));
+        assert_eq!(misfit("datetime", &Value::Null).as_deref(), Some("null"));
+        // A type this does not know is not judged.
+        assert_eq!(misfit("some new type", &json!(1)), None);
+    }
+
     #[test]
     fn enumeration_constants_are_the_api_values() {
         use enumerations::vm_power_state;
@@ -287,16 +545,17 @@ mod tests {
           {"name":"A","enums":[{"name":"mode","values":[{"name":"on"},{"name":"On"},{"name":"9p"}]}],
            "fields":[{"name":"type","type":"string","qualifier":"RW","lifecycle":{"state":"Published_s"}},
                      {"name":"Max_size","type":"int","qualifier":"RO/runtime","lifecycle":{"state":"Deprecated_s"}}],
-           "messages":[{"name":"start","params":[{"type":"session ref"},{"type":"A ref"}],
+           "messages":[{"name":"start","params":[{"type":"session ref"},{"type":"A ref"},
+                                                 {"type":"bool","required":false}],
                         "result":["void"],"lifecycle":{"state":"Published_s"}},
                        {"name":"get","params":[],"result":["string","the value"],"lifecycle":{"state":"Published_s"}}]}
         ]"#;
         let out = generator::generate(description).unwrap();
         assert!(out.find("name: \"A\"").unwrap() < out.find("name: \"b_thing\"").unwrap());
         assert!(out.contains(
-            "Message { name: \"start\", parameters: &[\"session ref\", \"A ref\"], result: \"void\", state: \"Published_s\" },"
+            "Message { name: \"start\", parameters: &[\"session ref\", \"A ref\", \"bool\"], required: 2, result: \"void\", state: \"Published_s\" },"
         ));
-        assert!(out.contains("Message { name: \"get\", parameters: &[], result: \"string\", state: \"Published_s\" },"));
+        assert!(out.contains("Message { name: \"get\", parameters: &[], required: 0, result: \"string\", state: \"Published_s\" },"));
         assert!(out.contains("pub struct ARecord<'a>(&'a Value);"));
         assert!(out.contains("pub struct BThingRecord<'a>(&'a Value);"));
         assert!(out.contains("pub fn type_(self) -> FieldValue<'a> {"));
@@ -312,5 +571,16 @@ mod tests {
                     {"name":"mtu","type":"int","qualifier":"RW","lifecycle":{"state":"Published_s"}}]}]"#;
         let error = generator::generate(clash).unwrap_err();
         assert!(error.contains("MTU and mtu both become mtu"), "{error}");
+
+        // Arguments can only be left out from the end, so a required parameter after an
+        // optional one could not be described by a count and is refused.
+        let gap = br#"[{"name":"A","enums":[],"fields":[],
+          "messages":[{"name":"go","params":[{"type":"bool","required":false},{"type":"A ref"}],
+                       "result":["void"],"lifecycle":{"state":"Published_s"}}]}]"#;
+        let error = generator::generate(gap).unwrap_err();
+        assert!(
+            error.contains("A.go has a required parameter after an optional one"),
+            "{error}"
+        );
     }
 }

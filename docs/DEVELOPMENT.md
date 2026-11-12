@@ -92,7 +92,16 @@ place, separated by tabs; names only). A record of another class shows up by the
 only its own class has, and a fixture that carries a field the API does not have shows
 up too. Over the core's tests the file holds only what is meant: fixtures' own switches
 (`fixture_…`), a storage backend and a crash dump given a foreign field to show it is
-not passed on, and the `ref` the client adds to a CD drive's record it holds. Write
+not passed on, and the `ref` the client adds to a CD drive's record it holds.
+
+With the same variable set, a debug build compares every call it sends with the API and
+appends a line for each that does not fit: `call`, the call's name, the position of the
+parameter (the session is the first) or `count`, and what was wrong, such as
+`bool given a string` or `takes 3 to 4, given 2`. Parameters the API marks as optional
+may be left out from the end. A line `sent` and a name records each call made, so that
+what the check covered can be counted. `scripts/view_audit.py` fails on any `call` line;
+`scripts/check.sh` runs it over the workspace's tests. A reference of the wrong class is
+a string like any other and is not seen. Write
 enumeration values as the generated constants (`vm_power_state::HALTED`,
 `vdi_operations::DESTROY`), not as literals: a value the API does not have then does
 not compile.

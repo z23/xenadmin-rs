@@ -233,9 +233,22 @@ over the core's tests reported one thing, a test fixture that gave a VIF a VBD's
    state or an address mode, and the operation names the client carries in its own
    types.
 3. Calls: generated descriptions of each message's parameters, so that a call's
-   arguments are checked where it is made. A test now checks their number for the calls
-   written with their arguments; their order and types, and the calls whose arguments
-   are assembled elsewhere, are not checked.
+   arguments are checked where it is made. A test checks their number for the calls
+   written with their arguments. Since 0.19.0 a debug build can also compare every call
+   it sends with the API, where the call leaves the client: the number of arguments,
+   and each one against the type the API gives its place (a boolean, a whole number, a
+   string, a value of the named enumeration, a list or a map of those). It reports to
+   the file the view check writes, names only, and the repository's check fails on any
+   report. The catalogue gained, for this, how many of each call's parameters are
+   required: the description marks 77 as optional, all of them last, and the client
+   leaves some out (`host.disable`, `host.evacuate`, `VM.snapshot`, `VM.migrate_send`).
+   Over the workspace's tests the check saw 280 distinct calls and reported none. Of the
+   223 calls the core's sources name, the tests send 217; five of the rest are network
+   and power operations that only the lab exercises, and one is named for a permission
+   table alone. What it cannot see: a reference of the wrong class, which is a string
+   like any other, two arguments of one type in each other's places, and any call that
+   no test or scenario makes. Checking those needs the arguments typed where they are
+   written, which is not done.
 4. The experimental areas, class by class, each with the fixture tests that cover it.
 
 A workflow whose decoding moves onto the generated crate is run again on the lab before

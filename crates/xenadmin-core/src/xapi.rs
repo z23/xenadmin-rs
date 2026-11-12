@@ -210,6 +210,9 @@ impl Session {
     ) -> Result<Value, Error> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let client = if event { &self.events } else { &self.commands };
+        // Debug builds can record a call whose arguments are not of the API's types.
+        #[cfg(debug_assertions)]
+        xenadmin_xapi::audit::observe_call(method, &params);
         let mut response = client
             .post(self.options.endpoint.rpc_url())
             .json(&json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}))
