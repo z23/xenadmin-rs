@@ -72,7 +72,13 @@ again for that, because no published version reads format 5.
   anything ends it as not sent. The journal shows that case exactly, because the
   transfer's plan is stored before the first call that changes a host. It used to stay
   unknown until it was acknowledged.
-
+- A connected session now checks its inventory against the hosts once a minute: it reads
+  the host records directly and compares them with the ones its inventory holds. If the
+  same host differs at two checks running, the events that keep the inventory current are
+  not arriving, and the whole inventory is read again; the connection shows itself as
+  synchronizing for that moment. This is a safeguard after one lab run in which the
+  inventory did not follow a host for fifteen minutes (finding 64), which twelve further
+  attempts under the same conditions did not reproduce.
 - A forced shutdown or reboot that would interrupt a migration of the VM is refused
   unless its consequence is accepted. The host admits a forced action during a migration
   and does not always end the migration afterwards; on the lab that left a task pending
@@ -120,7 +126,10 @@ Those of 0.19.0 stand, with these from the lab on 2026-11-12:
   been restarted, the inventory did not show a member's toolstack restart, or that the
   restart had enabled the host again, for fifteen minutes. The operation that followed
   was refused on its fresh read of the host, so nothing was changed by mistake. It did
-  not happen again in two further runs (finding 64).
+  not happen again in fourteen further runs, twelve of them made to provoke it, and its
+  cause is not known. The client now checks its inventory against the hosts once a minute
+  and reads it again if they disagree, which bounds how long such a state can last
+  (finding 64).
 
 - After a coordinator loses power, changes made in the last minutes before it can be
   undone: on the lab a VM that the client had deleted and verified gone was back as a

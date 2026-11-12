@@ -800,6 +800,23 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    session opened that soon after its start, or the client lost them, is not
    established. The scenario now writes its steps, and what the inventory showed, before
    it fails.
+
+   It was then hunted. A scenario of its own puts the member into maintenance, restarts
+   its toolstack, times how long the session's inventory takes to show the newer start
+   marker and the host enabled again, and compares it with what a second session reads
+   fresh. It was run twelve times, each started between 14 and 44 seconds after the
+   coordinator's toolstack had been restarted from outside, six of them with the
+   appliance migrated to the coordinator in between as before the failing run, and with
+   the client's event trace on. The inventory had followed by the time the restart's
+   own operation ended in all twelve; the trace shows the host's events arriving. So the
+   run above stands alone and its cause is still not known. What was changed instead is
+   that the client no longer relies on events alone: a ready session reads the host
+   records directly once a minute, and when the same host differs from its inventory at
+   two checks running it reads the whole inventory again (protocol fixtures: events
+   withheld, one disagreement, agreement, switched off). That bounds a state like this
+   one to about two minutes whether the host withheld the events or the client lost
+   them. It would not help if the session's own loop had stopped, which the lost record
+   of that run cannot rule out.
 65. **A coordinator's power cut took back a deletion made minutes before it.** In the
    supported core's rerun of 2026-11-12 the batch power scenario cloned the guest,
    deleted the clone with its two disks and verified both gone: the VM was no longer in
