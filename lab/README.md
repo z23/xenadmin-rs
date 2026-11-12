@@ -154,6 +154,16 @@ coordinator through the client first, and with `XENADMIN_LAB_XO_HOST=member` bac
 The live storage migration scenario moves the lab guest to the other host, so a second run
 of it brings the guest home.
 
+Three scenarios take a switch from the environment.
+`XENADMIN_LAB_FORCE_DURING_MIGRATION=accept` makes the forced-shutdown scenario give the
+acceptance and send the forced shutdown during a storage migration, to look at the host's
+behaviour (finding 63); expect to restart toolstacks and power-cycle the member
+afterwards. Without it the scenario records the client's refusal and leaves the lab clean.
+`XENADMIN_LAB_CROSS_POOL_BATCH=stop` or `=live` makes the cross-pool batch scenario ask
+its first batch to stop during its first move, or leave running guests running so that
+they move live. The cross-pool scenarios take only guests the client's own check accepts:
+no snapshot, no HA restart priority, disks marked as owned by the guest.
+
 Setting `XENADMIN_XAPI_VIEW_AUDIT` to a file while scenarios run makes the client's record
 views write there any key of a live record that the view's class lacks (names only): a
 record read as another class would show up. The same file receives a line for any call

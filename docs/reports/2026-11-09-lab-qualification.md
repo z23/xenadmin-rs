@@ -784,7 +784,10 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    confirmed, and the core refuses it at admission, when it is planned and before it is
    sent (fixture covered in the core and in the window). The scenario records that
    refusal by default and forces with the acceptance only when told to. The review has
-   not been seen on a real seat.
+   not been seen on a real seat. The host's behaviour is written up by itself, for
+   handing to the XCP-ng project, in a
+   [separate report](2026-11-12-upstream-forced-shutdown-during-migration.md); it has
+   not been filed.
 64. **Once, the inventory did not follow a member's toolstack restart. Not reproduced.**
    While clearing finding 63, the member's restart-and-reboot scenario was started some
    forty seconds after the coordinator's toolstack had been restarted. It put the member
