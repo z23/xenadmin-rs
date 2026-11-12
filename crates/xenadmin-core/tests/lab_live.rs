@@ -5139,6 +5139,24 @@ async fn lab_member_toolstack_restart_and_reboot() {
         "the member must not host guests"
     );
     let mut steps = Vec::new();
+    // A step that does not succeed ends the scenario, after what was seen so far is
+    // recorded: a failure without its steps cannot be told from a fault of the lab.
+    macro_rules! must_succeed {
+        ($outcome:expr) => {
+            if $outcome.state != OperationState::Succeeded {
+                let seen = c.latest().inventory().map(|i| {
+                    json!({"enabled": i.hosts[&member].enabled,
+                           "maintenance": i.details.hosts.get(&member).and_then(|h| h.maintenance_mode),
+                           "agent_start_time": i.details.hosts.get(&member).and_then(|h| h.agent_start_time.clone())})
+                });
+                lab.record(
+                    "member-toolstack-restart-and-reboot",
+                    json!({"member": member_name, "steps": steps, "failed": true, "inventory_at_failure": seen}),
+                );
+                panic!("{:?}: {}", $outcome.state, $outcome.detail);
+            }
+        };
+    }
     async fn host_op(
         c: &Connection,
         host: xenadmin_core::HostId,
@@ -5172,12 +5190,7 @@ async fn lab_member_toolstack_restart_and_reboot() {
     {
         let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
         steps.push(json!({"step": "clear a stale maintenance marker", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
-        assert_eq!(
-            outcome.state,
-            OperationState::Succeeded,
-            "{}",
-            outcome.detail
-        );
+        must_succeed!(outcome);
     }
 
     // Maintenance.
@@ -5198,12 +5211,7 @@ async fn lab_member_toolstack_restart_and_reboot() {
     })
     .await;
     steps.push(json!({"step": "enter maintenance", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": disabled}));
-    assert_eq!(
-        outcome.state,
-        OperationState::Succeeded,
-        "{}",
-        outcome.detail
-    );
+    must_succeed!(outcome);
 
     // Toolstack restart.
     let agent_before = details(&c)
@@ -5226,12 +5234,7 @@ async fn lab_member_toolstack_restart_and_reboot() {
     })
     .await;
     steps.push(json!({"step": "restart toolstack", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "agent_start_time_changed": restarted}));
-    assert_eq!(
-        outcome.state,
-        OperationState::Succeeded,
-        "{}",
-        outcome.detail
-    );
+    must_succeed!(outcome);
 
     // The toolstack restart re-enables the host while the client's maintenance marker
     // stays (finding 12); the operator's way back is exiting maintenance, which clears the
@@ -5242,12 +5245,7 @@ async fn lab_member_toolstack_restart_and_reboot() {
     {
         let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
         steps.push(json!({"step": "clear the marker the restart left", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
-        assert_eq!(
-            outcome.state,
-            OperationState::Succeeded,
-            "{}",
-            outcome.detail
-        );
+        must_succeed!(outcome);
         let outcome = host_op(
             &c,
             member,
@@ -5265,12 +5263,7 @@ async fn lab_member_toolstack_restart_and_reboot() {
         })
         .await;
         steps.push(json!({"step": "enter maintenance again", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "verified": disabled}));
-        assert_eq!(
-            outcome.state,
-            OperationState::Succeeded,
-            "{}",
-            outcome.detail
-        );
+        must_succeed!(outcome);
     }
 
     // Reboot.
@@ -5292,12 +5285,7 @@ async fn lab_member_toolstack_restart_and_reboot() {
     })
     .await;
     steps.push(json!({"step": "reboot", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "elapsed_ms": started.elapsed().as_millis() as u64, "boot_time_changed": rebooted}));
-    assert_eq!(
-        outcome.state,
-        OperationState::Succeeded,
-        "{}",
-        outcome.detail
-    );
+    must_succeed!(outcome);
     assert!(
         rebooted,
         "the member did not come back with a new boot time"
