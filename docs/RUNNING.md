@@ -33,6 +33,9 @@ To explore synthetic inventory without connecting to a host:
 
 The demo is explicitly labeled and cannot issue host actions.
 
+`xenadmin-rs --version` prints the version and exits without opening a window or
+touching the state directory.
+
 On the development workstation, native Wayland presentation works. The X11 path through
 Xwayland needs explicit GPU selection on its hybrid Intel/NVIDIA setup; automatic selection
 failed during surface configuration. This command passed the local X11 smoke test:

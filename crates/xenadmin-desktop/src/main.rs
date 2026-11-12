@@ -2606,6 +2606,12 @@ fn demo_sized(s: &mut State, host_count: usize, vm_count: usize) {
     s.rebuild();
 }
 fn main() -> std::process::ExitCode {
+    // Before anything is claimed or opened: an unanswered `--version` used to start the
+    // client like no argument at all.
+    if instance_launch::version_requested(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        println!("xenadmin-rs {}", env!("CARGO_PKG_VERSION"));
+        return std::process::ExitCode::SUCCESS;
+    }
     let launch = match instance_launch::prepare() {
         Ok(instance_launch::Launch::Forwarded) => return std::process::ExitCode::SUCCESS,
         Ok(launch) => launch,

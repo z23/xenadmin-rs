@@ -36,6 +36,8 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.
   Ctrl with plus, minus or 0 works in such a window while its console is not holding
   the keyboard.
 - The details pane's width is kept between runs, as the sidebar's and the columns' are.
+- `xenadmin-rs --version` prints the version and exits. It used to start the client as
+  if no argument had been given.
 
 ### Fixed
 

@@ -12,6 +12,13 @@ pub(super) fn preview(arguments: &[String]) -> bool {
             .iter()
             .any(|a| matches!(a.as_str(), "--help" | "-h"))
 }
+/// Whether the command line asks which version this is. That is answered and nothing
+/// else is done: no window, no state directory, no connection.
+pub(super) fn version_requested(arguments: &[String]) -> bool {
+    arguments
+        .iter()
+        .any(|a| matches!(a.as_str(), "--version" | "-V"))
+}
 pub(super) fn prepare() -> Result<Launch, String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     if preview(&args) {
@@ -67,6 +74,15 @@ mod tests {
         assert!(!preview(&[]));
         assert!(!preview(&["--theme".into(), "dark".into()]));
         assert!(!preview(&["--scene-lookalike".into()]));
+    }
+    #[test]
+    fn a_version_question_is_recognised_wherever_it_stands() {
+        assert!(version_requested(&["--version".into()]));
+        assert!(version_requested(&["-V".into()]));
+        assert!(version_requested(&["--".into(), "--version".into()]));
+        assert!(!version_requested(&[]));
+        assert!(!version_requested(&["--demo".into()]));
+        assert!(!version_requested(&["--versions".into(), "-v".into()]));
     }
     #[test]
     fn quiet_state_has_no_backend_ownership_profile_restore_or_inspection() {
