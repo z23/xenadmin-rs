@@ -152,10 +152,12 @@ Those of 0.19.0 stand, with these from the lab on 2026-11-12:
   (finding 64).
 
 - After a coordinator loses power, changes made in the last minutes before it can be
-  undone: on the lab a VM that the client had deleted and verified gone was back as a
-  record without disks, the pool's database not having been written out in between
-  (finding 65). The client's history still shows the deletion as verified, which it
-  was at the time.
+  undone, the pool's database not having been written out in between (finding 65). On
+  the lab a VM that the client had deleted and verified gone was back as a record
+  without disks; and, worse, a guest that had been moved between pools two to three
+  minutes before a second power cut was left with no disk attachment, its disks sitting
+  unattached and unnamed on the repository. The disks were intact and could be attached
+  again. The client's history still shows what it verified at the time.
 
 ## 0.19.0 (2026-11-12)
 
