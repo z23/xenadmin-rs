@@ -442,6 +442,10 @@ pub enum Error {
     #[error("The requested action is unavailable for this VM")]
     UnavailableAction,
     #[error(
+        "A migration of this VM is running. Cancel it from the client that started it and wait for it to end, or accept in the review that it may be left unfinished on the hosts"
+    )]
+    ForceDuringMigration,
+    #[error(
         "The host does not advertise this operation for the device in its current state. Connecting or disconnecting a device while the VM runs needs guest tools that support it"
     )]
     DeviceNotAdvertised,

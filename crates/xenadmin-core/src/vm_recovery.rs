@@ -98,6 +98,13 @@ pub enum VmRecoveryOperation {
     Force {
         action: ForceRecoveryAction,
         tasks: Vec<RecoveryTask>,
+        /// The operator's acceptance, given in the review, that a migration among the
+        /// captured tasks may be left unfinished on the hosts. The host admits a forced
+        /// action during a migration and does not always end the migration afterwards
+        /// (lab finding 63), so without this such a forced action is refused. It is set
+        /// only when a captured task is a migration.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        interrupts_migration: bool,
     },
     Boot {
         configuration: RecoveryBootConfiguration,
@@ -128,6 +135,17 @@ impl VmRecoveryOperation {
             }
             Self::RestoreBoot { .. } => PermissionRequirements::writes(["VM.set_HVM_boot_params"]),
         }
+    }
+    /// Whether this is a forced action that would interrupt a migration without the
+    /// operator having accepted what that can leave behind.
+    pub fn migration_unaccepted(&self) -> bool {
+        matches!(self, Self::Force { tasks, interrupts_migration, .. }
+            if !interrupts_migration && tasks.iter().any(RecoveryTask::is_migration))
+    }
+    /// An acceptance is recorded only where there is a migration to accept.
+    fn acceptance_fits(&self) -> bool {
+        !matches!(self, Self::Force { tasks, interrupts_migration, .. }
+            if *interrupts_migration && !tasks.iter().any(RecoveryTask::is_migration))
     }
     pub fn tasks(inventory: &Inventory, vm: VmId) -> Result<Vec<RecoveryTask>, Error> {
         let v = inventory.vms.get(&vm).ok_or(Error::Stale)?;
@@ -160,7 +178,7 @@ impl VmRecoveryOperation {
             return Some("Recovery requires an ordinary VM".into());
         }
         match self {
-            Self::Force { action, tasks } => {
+            Self::Force { action, tasks, .. } => {
                 if let Some(reason) = d.blocked_operations.get(action.wire()) {
                     return Some(format!("Administratively blocked: {reason}"));
                 }
@@ -201,8 +219,10 @@ impl VmRecoveryOperation {
     pub(crate) fn allows(&self, r: &Value) -> bool {
         normal(r)
             && match self {
-                Self::Force { action, tasks } => {
+                Self::Force { action, tasks, .. } => {
                     validate_tasks(tasks).is_ok()
+                        && !self.migration_unaccepted()
+                        && self.acceptance_fits()
                         && VmRecord::new(r).power_state() == vm_power_state::RUNNING
                         && VmRecord::new(r)
                             .blocked_operations()
@@ -335,7 +355,11 @@ impl Plan {
             return false;
         };
         let operation_valid = match operation {
-            VmRecoveryOperation::Force { tasks, .. } => validate_tasks(tasks).is_ok(),
+            VmRecoveryOperation::Force { tasks, .. } => {
+                validate_tasks(tasks).is_ok()
+                    && !operation.migration_unaccepted()
+                    && operation.acceptance_fits()
+            }
             VmRecoveryOperation::Boot { configuration } => configuration.validate().is_ok(),
             VmRecoveryOperation::RestoreBoot {
                 source,
@@ -401,6 +425,9 @@ pub(crate) async fn plan(
     operation: &VmRecoveryOperation,
 ) -> Result<Plan, Error> {
     operation.permission_requirements().guard(s.permissions())?;
+    if operation.migration_unaccepted() {
+        return Err(Error::ForceDuringMigration);
+    }
     let (_, r) = guest(s, vm).await?;
     if !operation.allows(&r) {
         return Err(Error::UnavailableAction);

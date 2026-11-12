@@ -128,7 +128,7 @@ fn force_review_captures_exact_tasks_and_refuses_changed_tasks_or_admin_blocks()
     );
 }
 #[test]
-fn force_review_warns_when_the_task_it_would_interrupt_is_a_migration() {
+fn a_forced_action_over_a_migration_warns_and_waits_for_the_operator_to_accept_it() {
     for (operation, warns) in [
         ("migrate_send", true),
         ("pool_migrate", true),
@@ -162,6 +162,34 @@ fn force_review_warns_when_the_task_it_would_interrupt_is_a_migration() {
             warns,
             "{operation}"
         );
+        let unaccepted =
+            |r: &rune::Runtime<State>| match &r.state.vm_recovery.as_ref().unwrap().review {
+                Some(Review::Action(operation)) => operation.migration_unaccepted(),
+                _ => panic!("no review of an action"),
+            };
+        if !warns {
+            // Nothing to accept: the review has no such choice and is not held back by one.
+            assert!(r.find("recovery-accept-migration").is_none(), "{operation}");
+            assert!(!unaccepted(&r), "{operation}");
+            continue;
+        }
+        // The forced action is refused until its consequence is accepted: the review
+        // says so, starts unaccepted and submits nothing.
+        assert!(tree.contains("This action is refused unless you accept"));
+        assert!(unaccepted(&r), "{operation}");
+        apply(&mut r.state);
+        assert!(r.state.operations.is_empty(), "{operation}");
+        assert!(r.state.vm_recovery.as_ref().unwrap().review.is_some());
+        // Ticking the choice records the acceptance in the reviewed operation, and
+        // unticking it withdraws it.
+        click(&mut r, "recovery-accept-migration");
+        assert!(!unaccepted(&r), "{operation}");
+        assert!(matches!(
+            &r.state.vm_recovery.as_ref().unwrap().review,
+            Some(Review::Action(VmRecoveryOperation::Force { interrupts_migration: true, tasks, .. })) if tasks[0].task == task
+        ));
+        click(&mut r, "recovery-accept-migration");
+        assert!(unaccepted(&r), "{operation}");
     }
 }
 #[test]

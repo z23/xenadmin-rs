@@ -35,6 +35,7 @@ fn force(action: ForceRecoveryAction) -> VmRecoveryOperation {
             task: TaskId::parse(&uuid(40)).unwrap(),
             operation: "export".into(),
         }],
+        interrupts_migration: false,
     }
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -177,6 +178,85 @@ async fn force_refuses_admin_blocks_task_rebinding_and_halted_reboot() {
         );
         assert_eq!(count(&calls, "Async.VM.hard_shutdown"), 0);
     }
+}
+/// A forced action whose captured task is of the given kind, accepted or not.
+fn force_over(operation: &str, accepted: bool) -> VmRecoveryOperation {
+    VmRecoveryOperation::Force {
+        action: ForceRecoveryAction::Shutdown,
+        tasks: vec![RecoveryTask {
+            task: TaskId::parse(&uuid(40)).unwrap(),
+            operation: operation.into(),
+        }],
+        interrupts_migration: accepted,
+    }
+}
+#[tokio::test]
+async fn a_forced_action_during_a_migration_is_refused_until_the_operator_accepts_it() {
+    for kind in ["migrate_send", "pool_migrate"] {
+        // Not accepted: refused in its own words, and nothing is asked of the host.
+        let (f, records, calls) = fixture(true, Some("cdn"), Fault::None, None).await;
+        records
+            .lock()
+            .unwrap()
+            .get_mut("OpaqueRef:VM:guest")
+            .unwrap()["current_operations"] = json!({"OpaqueRef:task:existing": kind});
+        let d = tempfile::tempdir().unwrap();
+        let r = execute(&f, d.path(), force_over(kind, false)).await;
+        assert!(
+            matches!(r.state, OperationState::Failed | OperationState::Rejected),
+            "{kind}: {:?}: {}",
+            r.state,
+            r.detail
+        );
+        assert!(
+            r.detail.contains("A migration of this VM is running"),
+            "{}",
+            r.detail
+        );
+        assert_eq!(count(&calls, "Async.VM.hard_shutdown"), 0, "{kind}");
+        assert_eq!(count(&calls, "VM.assert_operation_valid"), 0, "{kind}");
+        assert_eq!(count(&calls, "VM.get_record"), 0, "{kind}");
+        // Accepted: the forced action goes ahead as for any other captured task, and
+        // still cancels nobody's task.
+        let (f, records, calls) = fixture(true, Some("cdn"), Fault::None, None).await;
+        records
+            .lock()
+            .unwrap()
+            .get_mut("OpaqueRef:VM:guest")
+            .unwrap()["current_operations"] = json!({"OpaqueRef:task:existing": kind});
+        let d = tempfile::tempdir().unwrap();
+        let r = execute(&f, d.path(), force_over(kind, true)).await;
+        assert_eq!(r.state, OperationState::Succeeded, "{kind}: {}", r.detail);
+        assert_eq!(count(&calls, "Async.VM.hard_shutdown"), 1, "{kind}");
+        assert_eq!(count(&calls, "task.cancel"), 0, "{kind}");
+    }
+}
+#[tokio::test]
+async fn an_acceptance_is_recorded_only_where_a_migration_is_captured() {
+    // An acceptance with no migration among the tasks is not a reviewed operation.
+    let (f, _, calls) = fixture(true, Some("cdn"), Fault::None, None).await;
+    let d = tempfile::tempdir().unwrap();
+    let r = execute(&f, d.path(), force_over("export", true)).await;
+    assert!(
+        matches!(r.state, OperationState::Failed | OperationState::Rejected),
+        "{:?}: {}",
+        r.state,
+        r.detail
+    );
+    assert_eq!(count(&calls, "Async.VM.hard_shutdown"), 0);
+    assert!(force_over("migrate_send", false).migration_unaccepted());
+    assert!(!force_over("migrate_send", true).migration_unaccepted());
+    assert!(!force_over("export", false).migration_unaccepted());
+    // The stored form of an operation without the acceptance is what it was before the
+    // acceptance existed, and a row written then reads as not accepted.
+    let plain = serde_json::to_value(force_over("export", false)).unwrap();
+    assert!(plain.get("interrupts_migration").is_none(), "{plain}");
+    assert_eq!(
+        serde_json::from_value::<VmRecoveryOperation>(plain).unwrap(),
+        force_over("export", false)
+    );
+    let accepted = serde_json::to_value(force_over("migrate_send", true)).unwrap();
+    assert_eq!(accepted["interrupts_migration"], true);
 }
 #[tokio::test]
 async fn force_keeps_unresolved_local_reservations() {

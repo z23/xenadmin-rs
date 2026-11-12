@@ -5841,6 +5841,163 @@ async fn lab_member_toolstack_restart_and_reboot() {
     c.close().await;
 }
 
+/// Finding 64: whether the inventory follows a member's toolstack restart. The empty member
+/// is put into maintenance and its toolstack restarted; the scenario then times how long
+/// the session's inventory takes to show the member's newer start marker and that the
+/// restart enabled the host again, and compares it with what a second session, opened
+/// afterwards, reads fresh. An inventory that has not followed within three minutes is
+/// watched for two more and the scenario fails; its record is written first either way.
+/// Meant to be run in a loop, each time shortly after the coordinator's own toolstack was
+/// restarted from outside, with `XENADMIN_DEV_RPC_TRACE=1` to see the events that arrive.
+#[tokio::test]
+#[ignore]
+async fn lab_inventory_follows_a_member_toolstack_restart() {
+    use xenadmin_core::{HostOperation, ResourceCommand, ResourceTarget};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let connected = std::time::Instant::now();
+    let c = connect(&lab, &backend, 0, false).await;
+    let connect_ms = connected.elapsed().as_millis() as u64;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory.coordinator.expect("coordinator");
+    let member = *inventory
+        .hosts
+        .keys()
+        .find(|h| **h != coordinator)
+        .expect("a member");
+    assert!(
+        !inventory
+            .vms
+            .values()
+            .any(|v| v.host == Some(member) && !v.is_control_domain),
+        "the member must not host guests"
+    );
+    async fn host_op(
+        c: &Connection,
+        host: xenadmin_core::HostId,
+        operation: HostOperation,
+        seconds: u64,
+    ) -> std::sync::Arc<xenadmin_core::ResourceOperationRecord> {
+        let op = c
+            .submit_resource(
+                OperationId::new(),
+                ResourceCommand::Host {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Host(host))
+                        .unwrap(),
+                    operation,
+                },
+            )
+            .expect("host operation accepted");
+        wait_outcome(&op, seconds).await
+    }
+    let seen = |c: &Connection| {
+        c.latest().inventory().map(|i| {
+            (
+                i.hosts[&member].enabled,
+                i.details
+                    .hosts
+                    .get(&member)
+                    .and_then(|h| h.agent_start_time.clone()),
+                i.details
+                    .hosts
+                    .get(&member)
+                    .and_then(|h| h.maintenance_mode),
+            )
+        })
+    };
+    let mut steps = Vec::new();
+    if inventory.hosts[&member].enabled && seen(&c).and_then(|s| s.2) == Some(true) {
+        let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
+        steps.push(json!({"step": "clear a stale maintenance marker", "state": format!("{:?}", outcome.state), "detail": outcome.detail}));
+    }
+    let enabled_before = c.latest().inventory().unwrap().hosts[&member].enabled;
+    let outcome = host_op(
+        &c,
+        member,
+        HostOperation::EnterMaintenance {
+            expected_enabled: enabled_before,
+            resident_vms: Vec::new(),
+        },
+        300,
+    )
+    .await;
+    let entered = std::time::Instant::now();
+    let disabled_seen = settle(60, || seen(&c).is_some_and(|s| !s.0)).await;
+    steps.push(json!({"step": "enter maintenance", "state": format!("{:?}", outcome.state), "detail": outcome.detail,
+        "inventory_shows_disabled": disabled_seen, "after_ms": entered.elapsed().as_millis() as u64}));
+    let entered_ok = outcome.state == OperationState::Succeeded;
+
+    let agent_before = seen(&c).and_then(|s| s.1);
+    let mut followed = json!(null);
+    let mut ok = false;
+    if entered_ok && let Some(agent_before) = agent_before.clone() {
+        let started = std::time::Instant::now();
+        let outcome = host_op(
+            &c,
+            member,
+            HostOperation::RestartToolstack {
+                expected_agent_start_time: agent_before.clone(),
+            },
+            600,
+        )
+        .await;
+        let operation_ms = started.elapsed().as_millis() as u64;
+        let waited = std::time::Instant::now();
+        let marker = settle(180, || {
+            seen(&c).is_some_and(|s| s.1.as_ref().is_some_and(|t| *t != agent_before))
+        })
+        .await;
+        let marker_ms = waited.elapsed().as_millis() as u64;
+        let enabled = settle(60, || seen(&c).is_some_and(|s| s.0)).await;
+        let enabled_ms = waited.elapsed().as_millis() as u64;
+        // What a session opened now reads fresh, to tell a stale inventory from a host
+        // that has not yet written its new state.
+        let second_state = tempfile::tempdir().unwrap();
+        let second_backend = Backend::with_state_directory(second_state.path().into()).unwrap();
+        let second = connect(&lab, &second_backend, 0, false).await;
+        let fresh = seen(&second);
+        second.close().await;
+        let first = seen(&c);
+        // A session that had not followed is watched a little longer: whether it catches
+        // up by itself is part of what happened.
+        let mut later = json!(null);
+        if !(marker && enabled) {
+            let more = std::time::Instant::now();
+            let caught_up = settle(120, || {
+                seen(&c).is_some_and(|s| s.0 && s.1.as_ref().is_some_and(|t| *t != agent_before))
+            })
+            .await;
+            later = json!({"caught_up": caught_up, "after_ms": more.elapsed().as_millis() as u64});
+        }
+        ok = outcome.state == OperationState::Succeeded && marker && enabled;
+        followed = json!({
+            "operation": format!("{:?}", outcome.state), "operation_detail": outcome.detail, "operation_ms": operation_ms,
+            "inventory_shows_newer_start_marker": marker, "marker_after_ms": marker_ms,
+            "inventory_shows_enabled": enabled, "enabled_after_ms": enabled_ms,
+            "first_session": first.as_ref().map(|s| json!({"enabled": s.0, "agent_start_time_changed": s.1.as_ref() != Some(&agent_before), "maintenance": s.2})),
+            "fresh_session": fresh.as_ref().map(|s| json!({"enabled": s.0, "agent_start_time_changed": s.1.as_ref() != Some(&agent_before), "maintenance": s.2})),
+            "watched_longer": later,
+        });
+    }
+    // Back out of maintenance, whatever the inventory shows: the operation reads the host.
+    let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
+    let out_seen = settle(60, || seen(&c).is_some_and(|s| s.0 && s.2 != Some(true))).await;
+    steps.push(json!({"step": "exit maintenance", "state": format!("{:?}", outcome.state), "detail": outcome.detail, "inventory_shows_it": out_seen}));
+    c.close().await;
+    lab.record(
+        "inventory-follows-a-member-toolstack-restart",
+        json!({"connect_ms": connect_ms, "steps": steps, "restart": followed, "followed": ok}),
+    );
+    assert!(entered_ok, "the member did not enter maintenance");
+    assert!(
+        ok,
+        "the inventory did not follow the member's toolstack restart: {followed}"
+    );
+}
+
 /// P05-05, P05-08 and P07-10: a memory checkpoint of the running, tool-less guest is
 /// created and deleted through the reviewed deletion, then a CD drive is added to the
 /// halted guest, the host's guest tools image inserted through the reviewed tools-media
@@ -11860,9 +12017,13 @@ async fn lab_inventory_tables_and_certificate_opt_out() {
 }
 
 /// P03-07, P11-01, P14-02: while another client's storage live migration of the guest
-/// runs, review a force shutdown with the captured running task and record the host's
-/// admission answer; the other client then cancels its own migration, and once the VM has
-/// no task the force shutdown is reviewed again, applied, and the guest started.
+/// runs, review a force shutdown with the captured running task. The client refuses it
+/// without the operator's acceptance that the migration may be left unfinished (finding
+/// 63), and that refusal is recorded with the guest still running; the other client then
+/// cancels its own migration, and once the VM has no task the guest is forced off by the
+/// ordinary power action and started again. With
+/// `XENADMIN_LAB_FORCE_DURING_MIGRATION=accept` the acceptance is given and the host's
+/// answer to the forced shutdown is recorded instead.
 #[tokio::test]
 #[ignore]
 async fn lab_force_shutdown_review_with_a_running_task() {
@@ -11871,6 +12032,13 @@ async fn lab_force_shutdown_review_with_a_running_task() {
         VmRecoveryOperation,
     };
     let lab = Lab::load();
+    // Finding 63: a forced shutdown during a storage migration can leave the migration
+    // stuck on the hosts. Without the operator's acceptance the client refuses it, and
+    // that refusal is what this scenario records. `XENADMIN_LAB_FORCE_DURING_MIGRATION=accept`
+    // gives the acceptance and sends the forced shutdown, to look at the host's behaviour;
+    // budget a recovery of the lab for that.
+    let accept_migration =
+        std::env::var("XENADMIN_LAB_FORCE_DURING_MIGRATION").as_deref() == Ok("accept");
     let first_state = tempfile::tempdir().unwrap();
     let second_state = tempfile::tempdir().unwrap();
     let first_backend = Backend::with_state_directory(first_state.path().into()).unwrap();
@@ -11937,6 +12105,7 @@ async fn lab_force_shutdown_review_with_a_running_task() {
             let operation = VmRecoveryOperation::Force {
                 action: ForceRecoveryAction::Shutdown,
                 tasks: tasks.clone(),
+                interrupts_migration: accept_migration,
             };
             let reason = operation.unavailable_reason(&now, guest.id);
             match c.latest().observe_vm(guest.id).and_then(|target| {
@@ -12006,43 +12175,14 @@ async fn lab_force_shutdown_review_with_a_running_task() {
         })
     })
     .await;
+    // With no task left there is nothing to capture, and the forced shutdown is the
+    // ordinary power action the host advertises again.
     let mut forced = None;
     if c.latest().inventory().unwrap().vms[&guest.id].power_state == PowerState::Running {
-        let now = c.latest().inventory().unwrap().clone();
-        forced = Some(match VmRecoveryOperation::tasks(&now, guest.id) {
-            Ok(tasks) => match c.latest().observe_vm(guest.id).and_then(|target| {
-                c.submit(
-                    OperationId::new(),
-                    VmCommand::Recovery {
-                        vm: target,
-                        operation: VmRecoveryOperation::Force {
-                            action: ForceRecoveryAction::Shutdown,
-                            tasks: tasks.clone(),
-                        },
-                    },
-                )
-            }) {
-                Ok(op) => {
-                    let row = wait_vm_outcome(&op, 300).await;
-                    let halted = settle(120, || {
-                        c.latest().inventory().is_some_and(|i| {
-                            i.vms
-                                .get(&guest.id)
-                                .is_some_and(|v| v.power_state == PowerState::Halted)
-                        })
-                    })
-                    .await;
-                    json!({"captured_tasks": tasks.len(), "accepted": true, "state": format!("{:?}", row.state), "detail": row.detail, "halted": halted,
-                           "steps": row.steps.iter().map(|s| json!({"label": s.label, "state": format!("{:?}", s.state), "detail": s.detail})).collect::<Vec<_>>()})
-                }
-                Err(error) => {
-                    json!({"captured_tasks": tasks.len(), "accepted": false, "error": error.to_string()})
-                }
-            },
-            Err(error) => {
-                json!({"accepted": false, "error": format!("capture: {error}"), "power_state": format!("{:?}", now.vms[&guest.id].power_state)})
-            }
-        });
+        let entry = power_to(&c, guest.id, PowerAction::HardShutdown, PowerState::Halted).await;
+        forced = Some(
+            json!({"state": entry["state"], "detail": entry["detail"], "halted": entry["reached"]}),
+        );
     }
     // The owner rechecks its unknown migration once the VM has settled.
     let owner_recheck = if migration_row.state == OperationState::OutcomeUnknown {
@@ -12100,7 +12240,7 @@ async fn lab_force_shutdown_review_with_a_running_task() {
     other.close().await;
     c.close().await;
     lab.record("force-shutdown-review-with-a-running-task", json!({
-        "guest": guest.name, "migration_advertised": advertised, "task_seen": seen, "running_operations_at_review": running,
+        "guest": guest.name, "accepting_an_unfinished_migration": accept_migration, "migration_advertised": advertised, "task_seen": seen, "running_operations_at_review": running,
         "force_review_during_task": review, "migration_state_at_review": migration_state_at_review, "task_present_after_review": task_still_present,
         "cancellation_requested_by_owner": cancel_requested, "migration": {"state": format!("{:?}", migration_row.state), "detail": migration_row.detail},
         "placement_consistent": consistent, "capturable_after": capturable, "owner_recheck": owner_recheck, "placement_after": placement_after,
@@ -12108,10 +12248,26 @@ async fn lab_force_shutdown_review_with_a_running_task() {
     }));
     assert!(seen, "the migration task never appeared on the VM");
     assert_eq!(review["accepted"], true, "{review}");
-    assert!(
-        ["Succeeded", "Rejected", "Failed"].contains(&review["state"].as_str().unwrap_or("")),
-        "{review}"
-    );
+    if accept_migration {
+        assert!(
+            ["Succeeded", "Rejected", "Failed"].contains(&review["state"].as_str().unwrap_or("")),
+            "{review}"
+        );
+    } else {
+        // Refused by the client in its own words, with nothing sent: the guest ran on and
+        // the migration's task was still there.
+        assert_eq!(review["state"], "Rejected", "{review}");
+        assert!(
+            review["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("migration")),
+            "{review}"
+        );
+        assert!(
+            task_still_present > 0,
+            "the migration's task was gone after the refusal"
+        );
+    }
     assert_eq!(placement_after["together"], true, "{placement_after}");
     if let Some(forced) = &forced {
         assert_eq!(forced["state"], "Succeeded", "{forced}");

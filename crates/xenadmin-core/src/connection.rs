@@ -1591,6 +1591,11 @@ async fn run(
                                     else if request.generation!=generation || token.is_empty() || !last_inventory.as_ref().is_some_and(|inventory|inventory.pool_id==request.record.pool) {
                                         request.reject(Error::Stale);
                                     } else if journal_error.is_some() {request.reject(Error::Journal);}
+                                    else if matches!(&request.record.action, crate::OperationAction::Recovery(operation) if operation.migration_unaccepted()) {
+                                        // Refused in its own words, before the fresh check
+                                        // that would only call it unavailable.
+                                        request.reject(Error::ForceDuringMigration);
+                                    }
                                     else if !store.allows(request.record.vm,&request.record.action)
                                         && !operations::Journal::open(&directory).is_ok_and(|journal|journal.knows(&request.record)) {
                                         request.reject(Error::UnavailableAction);

@@ -774,10 +774,15 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    20, two days earlier) or does not (both runs of this day), and that the second case
    is not repaired by cancelling the task or by restarting toolstacks alone. The client did what was reviewed: it captured the
    running task, sent the forced shutdown that was confirmed and cancelled nobody else's
-   task. Its review of a forced action now says, when a captured task is a migration,
-   that the host may not end the migration afterwards and that cancelling it from the
-   client that started it comes first (Rune fixture covered). The warning has not been
-   seen on a real seat.
+   task. After the first of these runs its review of a forced action said, when a
+   captured task is a migration, that the host may not end the migration afterwards and
+   that cancelling it from the client that started it comes first. After the second the
+   client refuses such a forced action unless the operator ticks, in the review, that
+   the migration may be left unfinished on the hosts; without it the action cannot be
+   confirmed, and the core refuses it at admission, when it is planned and before it is
+   sent (fixture covered in the core and in the window). The scenario records that
+   refusal by default and forces with the acceptance only when told to. The review has
+   not been seen on a real seat.
 64. **Once, the inventory did not follow a member's toolstack restart. Not reproduced.**
    While clearing finding 63, the member's restart-and-reboot scenario was started some
    forty seconds after the coordinator's toolstack had been restarted. It put the member

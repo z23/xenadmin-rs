@@ -73,11 +73,15 @@ again for that, because no published version reads format 5.
   transfer's plan is stored before the first call that changes a host. It used to stay
   unknown until it was acknowledged.
 
-- The review of a forced shutdown or reboot warns when a task it would interrupt is a
-  migration of the VM. The host admits a forced action during a migration and does not
-  always end the migration afterwards; on the lab that left a task pending and partial
-  disk copies that took a host restart to clear (finding 63 of the
-  [live report](docs/reports/2026-11-09-lab-qualification.md)).
+- A forced shutdown or reboot that would interrupt a migration of the VM is refused
+  unless its consequence is accepted. The host admits a forced action during a migration
+  and does not always end the migration afterwards; on the lab that left a task pending
+  and partial disk copies that took a host restart to clear, twice in two runs (finding
+  63 of the [live report](docs/reports/2026-11-09-lab-qualification.md)). The review
+  says so and has a box to tick, "Force anyway: I accept that the migration may be left
+  unfinished on the hosts"; until it is ticked the action cannot be confirmed, and the
+  client's core refuses it as well. A forced action over any other running task is
+  reviewed as before.
 - A cross-pool copy or move that the client declines because of the guest itself (a
   snapshot chain, a vTPM, HA protection, vApp membership, installation media left in a
   drive, a disk that is shared or has other consumers) or because the host does not
@@ -110,7 +114,8 @@ Those of 0.19.0 stand, with these from the lab on 2026-11-12:
   pending on the host and partial copies of the disks on the destination. On the lab
   that happened in two runs of two that day, and clearing it took toolstack restarts and
   a power cycle of the destination host (finding 63 of the live report). The client
-  warns before such a forced action. It cannot repair the result.
+  refuses such a forced action unless that is accepted in its review. It cannot repair
+  the result.
 - Once, in a session opened less than a minute after the coordinator's toolstack had
   been restarted, the inventory did not show a member's toolstack restart, or that the
   restart had enabled the host again, for fifteen minutes. The operation that followed

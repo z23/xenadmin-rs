@@ -400,7 +400,41 @@ impl Session {
                 ],
             )
             .await?;
-        serde_json::from_value(value).map_err(|_| Error::Protocol("invalid event batch"))
+        let batch: EventBatch =
+            serde_json::from_value(value).map_err(|_| Error::Protocol("invalid event batch"))?;
+        if rpc_trace_enabled() && !batch.events.is_empty() {
+            // Development diagnostics only: how many events of each class and kind came,
+            // and over how many objects. Never a record, a value or a reference.
+            let mut seen =
+                BTreeMap::<(String, &str), (usize, std::collections::BTreeSet<&str>)>::new();
+            for event in &batch.events {
+                let entry = seen
+                    .entry((
+                        event.class_name.to_ascii_lowercase(),
+                        event.operation.as_str(),
+                    ))
+                    .or_default();
+                entry.0 += 1;
+                entry.1.insert(event.reference.as_str());
+            }
+            let summary = seen
+                .iter()
+                .map(|((class, operation), (count, objects))| {
+                    format!("{class} {operation} {count}/{}", objects.len())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!(
+                "xenadmin event trace: {} events ({summary}){}",
+                batch.events.len(),
+                if token.is_empty() {
+                    ", first batch"
+                } else {
+                    ""
+                }
+            );
+        }
+        Ok(batch)
     }
 
     pub(crate) async fn logout(&self) {

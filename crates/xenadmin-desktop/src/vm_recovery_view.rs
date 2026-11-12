@@ -4,7 +4,7 @@ use xenadmin_core::{
     OperationState, RecoveryBootConfiguration, VmRecoveryOperation,
 };
 /// Shown in a forced-action review that would interrupt a migration (lab finding 63).
-const MIGRATION_CAUTION: &str = "A migration of this VM is running. The host admits a forced action during one and does not always end the migration afterwards: on the project's test lab its task then stayed pending and left partial disk copies that took a host restart to clear. If the client that started the migration can still cancel it, do that first and wait for it to end.";
+const MIGRATION_CAUTION: &str = "A migration of this VM is running. The host admits a forced action during one and does not always end the migration afterwards: on the project's test lab its task then stayed pending and left partial disk copies that took a host restart to clear. If the client that started the migration can still cancel it, do that first and wait for it to end. This action is refused unless you accept below what it can leave behind.";
 #[derive(Clone)]
 enum Review {
     Cancel {
@@ -112,6 +112,7 @@ fn apply(s: &mut State) {
                 .inventory
                 .as_ref()
                 .is_some_and(|i| operation.unavailable_reason(i, p.vm).is_none())
+                || operation.migration_unaccepted()
                 || !session_permissions_view::check(s, &operation.permission_requirements())
             {
                 return;
@@ -124,6 +125,19 @@ fn apply(s: &mut State) {
                 close(s)
             }
         }
+    }
+}
+/// Gives or withdraws, in the open review of a forced action, the operator's acceptance
+/// that a captured migration may be left unfinished.
+fn accept_migration(s: &mut State) {
+    if let Some(Review::Action(VmRecoveryOperation::Force {
+        tasks,
+        interrupts_migration,
+        ..
+    })) = s.vm_recovery.as_mut().and_then(|p| p.review.as_mut())
+        && tasks.iter().any(|t| t.is_migration())
+    {
+        *interrupts_migration = !*interrupts_migration;
     }
 }
 fn order(c: &RecoveryBootConfiguration) -> String {
@@ -203,11 +217,22 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 VmRecoveryOperation::Force { tasks, .. } => {
                     body=body.child(caption("This can interrupt guest writes and lose data. The host will freshly validate the force action even when it is missing from the host’s usual action list. Administrative blocks and session permissions still apply. No task listed here will be cancelled by this action.",k).wrap());
                     if tasks.iter().any(|t| t.is_migration()) {
-                        body = body.child(
-                            caption(MIGRATION_CAUTION, k)
-                                .wrap()
-                                .key("recovery-migration-caution"),
-                        );
+                        // Refused unless the operator accepts what it can leave behind.
+                        enabled &= !o.migration_unaccepted();
+                        body = body
+                            .child(
+                                caption(MIGRATION_CAUTION, k)
+                                    .wrap()
+                                    .color(k.c.danger.icon)
+                                    .key("recovery-migration-caution"),
+                            )
+                            .child(
+                                Checkbox::new(!o.migration_unaccepted())
+                                    .label("Force anyway: I accept that the migration may be left unfinished on the hosts")
+                                    .on_toggle(accept_migration)
+                                    .build(k)
+                                    .key("recovery-accept-migration"),
+                            );
                     }
                     for t in tasks {
                         body =
@@ -293,7 +318,7 @@ pub(super) fn dialog(s: &State, k: &Kit) -> El {
                 body = body.child(caption("No unfinished local VM operations are listed.", k));
             }
             body=body.child(caption("Unresolved local operations retain their reservations. Inspect unknown outcomes in Activity before acknowledging them; cancellation requests do not release reservations or prove host cancellation.",k).wrap());
-            match VmRecoveryOperation::tasks(&p.initial,p.vm){Ok(tasks)=>{for (a,key) in [(ForceRecoveryAction::Shutdown,"recovery-force-shutdown"),(ForceRecoveryAction::Reboot,"recovery-force-reboot")]{body=body.child(action_button(s,p,VmRecoveryOperation::Force{action:a,tasks:tasks.clone()},key,k));}},Err(_)=>body=body.child(caption("Task-aware force recovery requires a running VM with known current task identities. For an idle VM, use its normal power actions.",k).wrap())}
+            match VmRecoveryOperation::tasks(&p.initial,p.vm){Ok(tasks)=>{for (a,key) in [(ForceRecoveryAction::Shutdown,"recovery-force-shutdown"),(ForceRecoveryAction::Reboot,"recovery-force-reboot")]{body=body.child(action_button(s,p,VmRecoveryOperation::Force{action:a,tasks:tasks.clone(),interrupts_migration:false},key,k));}},Err(_)=>body=body.child(caption("Task-aware force recovery requires a running VM with known current task identities. For an idle VM, use its normal power actions.",k).wrap())}
             match RecoveryBootConfiguration::from_inventory(&p.initial,p.vm){Ok(configuration)=>body=body.child(action_button(s,p,VmRecoveryOperation::Boot{configuration},"recovery-boot",k)),Err(_)=>body=body.child(caption("Recovery boot requires a halted, idle HVM guest. PV guests and changing installed BIOS/UEFI firmware are unsupported.",k).wrap())}
             for r in s.operation_rows.iter().filter(|r| {
                 r.pool == p.pool
@@ -428,6 +453,7 @@ pub(super) fn force_scene(s: &mut State) {
     p.review = Some(Review::Action(VmRecoveryOperation::Force {
         action: ForceRecoveryAction::Shutdown,
         tasks,
+        interrupts_migration: false,
     }));
 }
 #[cfg(test)]
