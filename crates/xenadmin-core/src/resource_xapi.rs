@@ -1,6 +1,7 @@
 use super::*;
 use crate::xapi::Session;
 use serde_json::{Value, json};
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::{NetworkRecord, PoolRecord, SrRecord, TaskRecord};
 
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
@@ -448,7 +449,7 @@ pub(super) fn reply_reference(value: &Value) -> Result<String, Error> {
     reference(value)
 }
 fn cancellable_task(record: &Value) -> Result<(), Error> {
-    if TaskRecord::new(record).status() != "pending"
+    if TaskRecord::new(record).status() != task_status_type::PENDING
         || !TaskRecord::new(record)
             .allowed_operations()
             .as_array()

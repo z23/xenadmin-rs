@@ -1,5 +1,6 @@
 use super::*;
 use crate::{pool_dissolve::Evidence, resources::dissolution as pool_dissolve};
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 impl ResourceRequest {
     fn pool_dissolve_step(&self, index: usize) -> Result<&Evidence, Error> {
@@ -195,12 +196,14 @@ impl ResourceRequest {
             let (uuid, value) = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=pool_dissolve::task(s,&self.record,index)=>v?};
             self.pool_dissolve_step_mut(index)?.task_uuid = Some(uuid);
             match TaskRecord::new(&value).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     self.pool_dissolve_step_mut(index)?.completed = true;
                     self.pool_dissolve_step_mut(index)?.ended = true;
                 }
-                Some("failure" | "cancelled") => self.pool_dissolve_step_mut(index)?.ended = true,
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
+                    self.pool_dissolve_step_mut(index)?.ended = true
+                }
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Pool dissolution task status unavailable")),
             }
             self.record = j.pool_dissolve_evidence(&self.record, index)?;

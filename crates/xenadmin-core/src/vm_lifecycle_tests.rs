@@ -85,9 +85,15 @@ async fn fixture_with_authority(
             "OpaqueRef:VIF:source".into(),
             json!({"uuid":uuid(8),"VM":"OpaqueRef:VM:source","network":"OpaqueRef:network:source","device":"0","MAC":"02:00:00:00:00:08","MTU":"1500","currently_attached":false,"current_operations":{},"other_config":{}}),
         ),
+        // An installation image as hosts record it: a read-only disk of type `user` in a
+        // repository whose content type is `iso`. The API has no disk type `iso`.
         (
             "OpaqueRef:VDI:iso".into(),
-            json!({"uuid":uuid(9),"type":"iso","read_only":true,"missing":false,"VBDs":[]}),
+            json!({"uuid":uuid(9),"type":"user","read_only":true,"missing":false,"VBDs":[],"SR":"OpaqueRef:SR:library"}),
+        ),
+        (
+            "OpaqueRef:SR:library".into(),
+            json!({"uuid":uuid(14),"content_type":"iso","current_operations":{},"allowed_operations":[]}),
         ),
     ])));
     let calls: Calls = Arc::new(Mutex::new(vec![]));
@@ -313,7 +319,10 @@ async fn fixture_with_authority(
                 let mut value = p[1].clone();
                 value["uuid"] = json!(uuid(count));
                 value["current_operations"] = json!({});
-                value["currently_attached"] = json!(false);
+                // A disk has no attachment state of its own; its attachment and a NIC have.
+                if class != "VDI" {
+                    value["currently_attached"] = json!(false);
+                }
                 match class {
                     "VDI" => {
                         value["managed"] = json!(true);
@@ -481,25 +490,29 @@ fn deleting(disks: Vec<VdiId>) -> VmLifecycleOperation {
     }
 }
 #[tokio::test]
-async fn iso_library_images_recorded_as_user_disks_are_installation_sources() {
+async fn an_installation_image_is_a_read_only_disk_in_an_iso_library() {
     for (content_type, expected) in [
         ("iso", OperationState::Succeeded),
         ("user", OperationState::Rejected),
     ] {
         let (f, r, _) = fixture(Fault::None).await;
-        {
-            let mut records = r.lock().unwrap();
-            records.get_mut("OpaqueRef:VDI:iso").unwrap()["type"] = json!("user");
-            records.get_mut("OpaqueRef:VDI:iso").unwrap()["SR"] = json!("OpaqueRef:SR:library");
-            records.insert(
-                "OpaqueRef:SR:library".into(),
-                json!({"uuid":uuid(14),"content_type":content_type,"current_operations":{},"allowed_operations":[]}),
-            );
-        }
+        r.lock().unwrap().get_mut("OpaqueRef:SR:library").unwrap()["content_type"] =
+            json!(content_type);
         let dir = tempfile::tempdir().unwrap();
         let result = execute(&f, dir.path(), creating()).await;
         assert_eq!(result.state, expected, "{content_type}: {}", result.detail);
     }
+    // The disk's own type does not decide: the API has no type for images, and a disk
+    // that claims one outside an ISO library is refused like any other.
+    let (f, r, _) = fixture(Fault::None).await;
+    {
+        let mut records = r.lock().unwrap();
+        records.get_mut("OpaqueRef:VDI:iso").unwrap()["type"] = json!("iso");
+        records.get_mut("OpaqueRef:SR:library").unwrap()["content_type"] = json!("user");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let result = execute(&f, dir.path(), creating()).await;
+    assert_eq!(result.state, OperationState::Rejected, "{}", result.detail);
 }
 #[tokio::test]
 async fn fast_clone_and_full_copy_preserve_source_and_verify_new_resource_ids() {

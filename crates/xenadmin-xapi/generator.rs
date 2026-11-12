@@ -236,7 +236,11 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
             "\n    /// A `{class}` record.\n    #[derive(Clone, Copy)]\n    pub struct {name}<'a>(&'a Value);\n    \
              #[allow(clippy::wrong_self_convention)]\n    impl<'a> {name}<'a> {{\n        \
              /// The class these records are of.\n        pub const CLASS: &'static str = {literal};\n        \
-             pub fn new(record: &'a Value) -> Self {{\n            Self(record)\n        }}\n        \
+             #[cfg_attr(debug_assertions, track_caller)]\n        \
+             pub fn new(record: &'a Value) -> Self {{\n            \
+             #[cfg(debug_assertions)]\n            \
+             crate::audit::observe(Self::CLASS, record, std::panic::Location::caller());\n            \
+             Self(record)\n        }}\n        \
              /// The whole record, as the host sent it.\n        pub fn record(self) -> &'a Value {{\n            self.0\n        }}\n",
             class = class.name,
             literal = literal(&class.name),

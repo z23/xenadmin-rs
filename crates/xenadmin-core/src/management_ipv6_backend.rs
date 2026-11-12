@@ -11,7 +11,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use xenadmin_xapi::records::{HostRecord, PifRecord, PoolRecord};
+use xenadmin_xapi::records::{HostRecord, PifRecord, PoolRecord, VifRecord};
 fn require(v: bool, message: &'static str) -> Result<(), Error> {
     if v {
         Ok(())
@@ -376,7 +376,7 @@ async fn environment(
     }
     require(
         network::all(s, "VIF").await?.values().all(|v| {
-            PifRecord::new(v)
+            VifRecord::new(v)
                 .network()
                 .as_str()
                 .is_some_and(|n| !temp_refs.contains(n))

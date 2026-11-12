@@ -4,6 +4,7 @@ use crate::{
     transfer::{self, Plan, files, http},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::{TaskRecord, VdiRecord};
 fn now() -> u64 {
     SystemTime::now()
@@ -344,7 +345,7 @@ impl ResourceRequest {
             .filter(|id| !previous_tasks.contains(id))
             .ok_or(Error::TransferConflict)?;
         if TaskRecord::new(&fresh_task).name_label() != task_name
-            || TaskRecord::new(&fresh_task).status() != "pending"
+            || TaskRecord::new(&fresh_task).status() != task_status_type::PENDING
         {
             return Err(Error::TransferConflict);
         }
@@ -621,7 +622,7 @@ impl ResourceRequest {
                 .as_array()
                 .is_some_and(|a| a.iter().any(|v| v == "cancel"));
             match TaskRecord::new(&value).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     let imported = !self.transfer_action()?.is_export()
                         && !self.transfer_action()?.is_host_restore();
                     let result = if imported {
@@ -640,7 +641,7 @@ impl ResourceRequest {
                     plan.task_success = true;
                     plan.result = result;
                 }
-                Some("failure") => {
+                Some(task_status_type::FAILURE) => {
                     self.transfer_plan_mut()?.task_failed = true;
                     let code = TaskRecord::new(&value).error_info().value()[0]
                         .as_str()
@@ -650,11 +651,11 @@ impl ResourceRequest {
                         crate::xapi::safe_error_code(code)
                     );
                 }
-                Some("cancelled") => {
+                Some(task_status_type::CANCELLED) => {
                     self.transfer_plan_mut()?.task_cancelled = true;
                     self.record.detail = "Host confirmed transfer cancellation".into();
                 }
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::TransferConflict),
             }
             if self.fenced_transfer() {

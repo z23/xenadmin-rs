@@ -7,6 +7,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use vnc::{VncConnector, VncEncoding, VncEvent, X11Event};
+use xenadmin_xapi::enumerations::{console_protocol, vm_power_state};
 use xenadmin_xapi::records::{ConsoleRecord, HostRecord, VmRecord};
 
 #[path = "console_clipboard.rs"]
@@ -220,7 +221,7 @@ impl ConsoleRequest {
                 let console = session
                     .call("console.get_record", vec![json!(console_ref)])
                     .await?;
-                if ConsoleRecord::new(&console).protocol().as_str() == Some("rfb") {
+                if ConsoleRecord::new(&console).protocol().as_str() == Some(console_protocol::RFB) {
                     if ConsoleRecord::new(&console).vm() != reference {
                         return Err(Error::Stale);
                     }
@@ -421,7 +422,7 @@ async fn host_reference(
         || VmRecord::new(&vm_record).is_a_template() != false
         || VmRecord::new(&vm_record).is_a_snapshot() != false
         || VmRecord::new(&vm_record).resident_on() != host_ref
-        || VmRecord::new(&vm_record).power_state() != "Running"
+        || VmRecord::new(&vm_record).power_state() != vm_power_state::RUNNING
     {
         return Err(Error::Stale);
     }

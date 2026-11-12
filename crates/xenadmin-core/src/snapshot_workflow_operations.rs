@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OperationStep, StepState, snapshot_workflow as workflow};
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 impl Journal {
@@ -132,7 +133,7 @@ impl MutationRequest {
         if !plan.evidence[index].completed
             && let Some(task) = &plan.evidence[index].task
             && let Ok(record) = session.call("task.get_record", vec![json!(task)]).await
-            && TaskRecord::new(&record).status() == "success"
+            && TaskRecord::new(&record).status() == task_status_type::SUCCESS
         {
             if plan.steps[index] == workflow::Step::Create {
                 plan.evidence[index].result = Some(crate::xapi::snapshot_task_result(&record)?);
@@ -208,12 +209,12 @@ impl MutationRequest {
                         }
                     };
                     match TaskRecord::new(&record).status().as_str() {
-                        Some("success")=>{
+                        Some(task_status_type::SUCCESS)=>{
                             if plan.steps[index]==workflow::Step::Create {plan.evidence[index].result=Some(crate::xapi::snapshot_task_result(&record)?)}
                             plan.evidence[index].completed=true;break;
                         }
-                        Some("failure")|Some("cancelled")=>return self.snapshot_workflow_error(journal,&plan,index,Error::Protocol("Host task ended without success; inspect the VM and snapshot before acknowledging this outcome"),false).await,
-                        Some("pending")|Some("cancelling")=>{
+                        Some(task_status_type::FAILURE)|Some(task_status_type::CANCELLED)=>return self.snapshot_workflow_error(journal,&plan,index,Error::Protocol("Host task ended without success; inspect the VM and snapshot before acknowledging this outcome"),false).await,
+                        Some(task_status_type::PENDING)|Some(task_status_type::CANCELLING)=>{
                             self.record.detail="Waiting for host task; stopping the workflow prevents later steps only".into();
                             if self.save_snapshot_evidence(journal,false).await? { return Ok(()); }
                             tokio::select! {_=cancel.cancelled()=>return self.snapshot_workflow_error(journal,&plan,index,Error::Closed,false).await,_=tokio::time::sleep(Duration::from_millis(250))=>{}}
@@ -324,7 +325,9 @@ impl MutationRequest {
                 };
                 let record = session.call("task.get_record", vec![json!(task)]).await;
                 match record {
-                    Ok(record) if TaskRecord::new(&record).status() == "success" => {
+                    Ok(record)
+                        if TaskRecord::new(&record).status() == task_status_type::SUCCESS =>
+                    {
                         if plan.steps[index] == workflow::Step::Create {
                             plan.evidence[index].result =
                                 Some(crate::xapi::snapshot_task_result(&record)?)

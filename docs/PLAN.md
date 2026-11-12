@@ -117,7 +117,7 @@ guest with NIC hot plug, shared-storage live migration and a real member evacuat
 bond round trip and a member power cycle, iSCSI target discovery with an LVM-over-iSCSI
 repository on both hosts and a CHAP-protected repository created with transient credentials
 and removed, a member multipath round trip with two active iSCSI paths and ISO libraries
-over NFS and SMB 3 listing a seeded image. The report numbers fifty-nine findings and
+over NFS and SMB 3 listing a seeded image. The report numbers sixty-one findings and
 observations: host behaviours the client now handles, host observations, client fixes, four
 product decisions since settled and one open upstream accessibility finding; it owns that list.
 
@@ -304,9 +304,12 @@ main branch and published once the packages the tag workflow built had been chec
 was published that day ([release report](reports/2026-11-11-release-0.18.md)). The
 next piece of work is the bindings, generated from the upstream API description in a
 crate of its own under upstream's LGPL terms, which the operator chose over hand-written
-bindings ([decision](decisions/0004-generated-bindings.md)). As of 2026-11-11 the
+bindings ([decision](decisions/0004-generated-bindings.md)). As of 2026-11-12 the
 description is the one upstream's generator writes for the lab's toolstack release, the
-decoders and most operation reads go through the generated views, and the move has found
-four defects (findings 55 to 58 of the lab report); the decision record lists what is
-left: the remaining reads by key, enumeration constants, typed values and call
-descriptions.
+decoders and most operation reads go through the generated views, enumeration values
+are written as generated constants, and debug builds can check that each record is read
+as the class it is of, which the repository's check now does over the tests. The move
+has found four defects and, since, a comparison that could not hold and seven reads
+through the wrong class that changed nothing (findings 55 to 58, 60 and 61 of the lab
+report). The decision record lists what is left: the remaining reads by key, typed
+values and call descriptions.

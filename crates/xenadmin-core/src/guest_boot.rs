@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::enumerations::domain_type;
 use xenadmin_xapi::records::VmRecord;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootReadiness {
@@ -115,8 +116,8 @@ impl Request {
 
 pub(crate) fn is_hvm(r: &Value) -> bool {
     match VmRecord::new(r).domain_type().as_str() {
-        Some("hvm") => true,
-        None | Some("unspecified") => VmRecord::new(r).hvm_boot_policy() == "BIOS order",
+        Some(domain_type::HVM) => true,
+        None | Some(domain_type::UNSPECIFIED) => VmRecord::new(r).hvm_boot_policy() == "BIOS order",
         _ => false,
     }
 }

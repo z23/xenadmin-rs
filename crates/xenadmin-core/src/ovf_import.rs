@@ -2,6 +2,7 @@ use super::*;
 use crate::{NetworkId, OperationId, SrId, transfer::Plan as TransferPlan, xapi::Session};
 use serde_json::{Value, json};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::{VdiRecord, VmRecord};
 pub(crate) const MARKER: &str = "xenadmin-rs-ovf-import";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,7 +223,7 @@ async fn guest(s: &Session, p: &ImportPlan, g: usize) -> Result<(String, Value),
         || VmRecord::new(&v).is_a_template() != false
         || VmRecord::new(&v).is_a_snapshot() != false
         || VmRecord::new(&v).is_control_domain() != false
-        || VmRecord::new(&v).power_state() != "Halted"
+        || VmRecord::new(&v).power_state() != vm_power_state::HALTED
     {
         return Err(Error::TransferConflict);
     }

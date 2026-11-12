@@ -3,6 +3,7 @@ use crate::{
     disk_administration::{Evidence, Kind},
     resources::disk,
 };
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 impl ResourceRequest {
     fn disk_step(&self, index: usize) -> Result<&Evidence, Error> {
@@ -172,7 +173,7 @@ impl ResourceRequest {
             let (uuid, value) = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=disk::task(s,&self.record,index)=>v?};
             self.disk_step_mut(index)?.task_uuid = Some(uuid);
             match TaskRecord::new(&value).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     self.disk_step_mut(index)?.completed = true;
                     self.disk_step_mut(index)?.ended = true;
                     if self.record.disk_plan.as_ref().ok_or(Error::Journal)?.kinds[index]
@@ -182,8 +183,10 @@ impl ResourceRequest {
                             Some(crate::xapi::snapshot_task_result(&value)?);
                     }
                 }
-                Some("failure" | "cancelled") => self.disk_step_mut(index)?.ended = true,
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
+                    self.disk_step_mut(index)?.ended = true
+                }
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Disk task status unavailable")),
             }
             self.record = j.disk_evidence(&self.record, index)?;

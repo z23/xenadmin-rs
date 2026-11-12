@@ -1,5 +1,6 @@
 use super::*;
 use crate::{DeviceProperty as Change, DeviceQos, DiskAccess};
+use xenadmin_xapi::enumerations::{vbd_type, vm_power_state};
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +102,7 @@ async fn current(
         idle(&v)?;
         if !matches!(
             VmRecord::new(&v).power_state().as_str(),
-            Some("Halted" | "Running")
+            Some(vm_power_state::HALTED | vm_power_state::RUNNING)
         ) {
             return Err(Error::UnavailableAction);
         }
@@ -131,7 +132,7 @@ async fn current(
     let (reference, record) = fresh(session, "VDI", vdi.uuid()).await?;
     if VbdRecord::new(&v).vm() != vm_ref
         || VbdRecord::new(&v).vdi() != reference
-        || VbdRecord::new(&v).type_() != "Disk"
+        || VbdRecord::new(&v).type_() != vbd_type::DISK
         || (!verify && change.requires_halted() && VbdRecord::new(&v).currently_attached() != false)
         || !ordinary_disk(&record)
         || refs(&record, "VBDs")? != vec![vr.clone()]

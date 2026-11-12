@@ -3,6 +3,7 @@ use crate::model::*;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 use xenadmin_xapi::FieldValue;
+use xenadmin_xapi::enumerations::vm_operations;
 use xenadmin_xapi::records::{
     BondRecord, HostMetricsRecord, MessageRecord, NetworkRecord, PbdRecord, PifMetricsRecord,
     PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VlanRecord,
@@ -670,7 +671,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     can_export: view.allowed_operations().as_array().and_then(|_| {
                         view.current_operations()
                             .as_object()
-                            .map(|ops| ops.is_empty() && advertises(record, "export"))
+                            .map(|ops| ops.is_empty() && advertises(record, vm_operations::EXPORT))
                     }),
                     parent: refs.snapshot_parent(view.parent()),
                     memory_vdi: refs.link("vdi", view.suspend_vdi()),

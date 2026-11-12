@@ -1,6 +1,7 @@
 use crate::{Error, HostId, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::enumerations::{domain_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{HostRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,7 +133,7 @@ impl VmSettingsPatch {
             return Err(Error::SettingsConflict);
         }
         if self.is_template()
-            && (VmRecord::new(r).power_state() != "Halted"
+            && (VmRecord::new(r).power_state() != vm_power_state::HALTED
                 || !crate::guest_boot::custom_template(r))
         {
             return Err(Error::UnavailableAction);
@@ -542,8 +543,8 @@ enum SettingsGuard {
 }
 impl SettingsGuard {
     fn preflight(&self, record: &Value) -> Result<(), Error> {
-        let halted = VmRecord::new(record).power_state() == "Halted";
-        let running = VmRecord::new(record).power_state() == "Running";
+        let halted = VmRecord::new(record).power_state() == vm_power_state::HALTED;
+        let running = VmRecord::new(record).power_state() == vm_power_state::RUNNING;
         if !halted && !running {
             return Err(Error::UnavailableAction);
         }
@@ -573,12 +574,12 @@ impl SettingsGuard {
             Self::LiveCpus(max) => {
                 running
                     && integer(&VmRecord::new(record).vcpus_max()) == Some(*max)
-                    && crate::xapi::advertises(record, "changing_VCPUs_live")
+                    && crate::xapi::advertises(record, vm_operations::CHANGING_VCPUS_LIVE)
             }
             Self::DynamicMemory(min, max) => {
                 integer(&VmRecord::new(record).memory_static_min()) == Some(*min)
                     && integer(&VmRecord::new(record).memory_static_max()) == Some(*max)
-                    && crate::xapi::advertises(record, "changing_dynamic_range")
+                    && crate::xapi::advertises(record, vm_operations::CHANGING_DYNAMIC_RANGE)
             }
             Self::Topology(cores) => {
                 halted
@@ -599,12 +600,16 @@ impl SettingsGuard {
             Self::OrdinaryState => true,
             Self::Shadow(live) => {
                 (if *live {
-                    running && crate::xapi::advertises(record, "changing_shadow_memory_live")
+                    running
+                        && crate::xapi::advertises(
+                            record,
+                            vm_operations::CHANGING_SHADOW_MEMORY_LIVE,
+                        )
                 } else {
-                    halted && crate::xapi::advertises(record, "changing_shadow_memory")
+                    halted && crate::xapi::advertises(record, vm_operations::CHANGING_SHADOW_MEMORY)
                 }) && match VmRecord::new(record).domain_type().as_str() {
-                    Some("hvm") => true,
-                    None | Some("unspecified") => VmRecord::new(record)
+                    Some(domain_type::HVM) => true,
+                    None | Some(domain_type::UNSPECIFIED) => VmRecord::new(record)
                         .hvm_boot_policy()
                         .as_str()
                         .is_some_and(|p| !p.is_empty()),
@@ -709,7 +714,7 @@ impl SettingsStep {
         if self.map_key.is_some() && !record[&self.fields[0]].is_object() {
             return Err(Error::SettingsConflict);
         }
-        if self.requires_halted && VmRecord::new(record).power_state() != "Halted" {
+        if self.requires_halted && VmRecord::new(record).power_state() != vm_power_state::HALTED {
             return Err(Error::SettingsRequiresHaltedVm);
         }
         if let Some(guard) = &self.guard {

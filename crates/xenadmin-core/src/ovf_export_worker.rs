@@ -9,6 +9,7 @@ use crate::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 struct StopOnDrop(Arc<AtomicBool>);
 impl Drop for StopOnDrop {
@@ -166,7 +167,7 @@ impl ResourceRequest {
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?;
         if TaskRecord::new(&v).name_label() != name
-            || TaskRecord::new(&v).status() != "pending"
+            || TaskRecord::new(&v).status() != task_status_type::PENDING
             || self.ovf_export()?.task_baseline.contains(&id)
             || self
                 .ovf_export()?

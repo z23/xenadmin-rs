@@ -9,6 +9,9 @@ use crate::{
 };
 use std::collections::BTreeMap;
 pub(in crate::resources) use vlans::replacements;
+use xenadmin_xapi::enumerations::{
+    ip_configuration_mode, ipv6_configuration_mode, primary_address_type,
+};
 use xenadmin_xapi::records::{BondRecord, HostRecord, PifRecord, PoolRecord};
 fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, &Op), Error> {
     match operation(r)? {
@@ -155,12 +158,12 @@ fn source_networks(
         .collect()
 }
 fn no_ip(p: &Value) -> bool {
-    PifRecord::new(p).ip_configuration_mode() == "None"
+    PifRecord::new(p).ip_configuration_mode() == ip_configuration_mode::NONE
         && PifRecord::new(p).ip() == ""
         && PifRecord::new(p).netmask() == ""
         && PifRecord::new(p).gateway() == ""
         && PifRecord::new(p).dns() == ""
-        && PifRecord::new(p).ipv6_configuration_mode() == "None"
+        && PifRecord::new(p).ipv6_configuration_mode() == ipv6_configuration_mode::NONE
         && addresses(&PifRecord::new(p).ipv6()).is_ok_and(|v| v.is_empty())
         && PifRecord::new(p).ipv6_gateway() == ""
 }
@@ -440,7 +443,7 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
             && PifRecord::new(p).currently_attached() == true
             && PifRecord::new(p).management() == true
             && PifRecord::new(p).network() == net_ref
-            && PifRecord::new(p).primary_address_type() == "IPv4"
+            && PifRecord::new(p).primary_address_type() == primary_address_type::IPV4
             && PifRecord::new(p).ip_configuration_mode() == source.ipv4.mode.as_str()
             && PifRecord::new(p).ip() == source.ipv4.address
             && PifRecord::new(p).netmask() == source.ipv4.netmask
@@ -450,7 +453,7 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
                 .as_str()
                 .ok_or(Error::ResourceConflict)?)?
                 == dns(&source.ipv4.dns)?
-            && PifRecord::new(p).ipv6_configuration_mode() == "None"
+            && PifRecord::new(p).ipv6_configuration_mode() == ipv6_configuration_mode::NONE
             && addresses(&PifRecord::new(p).ipv6())?.is_empty()
             && PifRecord::new(p).ipv6_gateway() == "",
         "Management bond receiver does not have the reviewed configuration",

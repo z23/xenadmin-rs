@@ -52,6 +52,7 @@ use serde_json::json;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 pub(crate) struct ResourceRequest {
@@ -765,27 +766,31 @@ impl ResourceRequest {
             // Only status establishes completion. The original task remains owned
             // by its creator and is never destroyed by this cancellation observer.
             let (state, detail) = match TaskRecord::new(&task).status().as_str() {
-                Some("pending") if self.record.steps[0].state != StepState::Verified => (
-                    OperationState::OutcomeUnknown,
-                    "Cancellation request delivery is unknown; task is still pending. No request was replayed",
-                ),
-                Some("pending") => (
+                Some(task_status_type::PENDING)
+                    if self.record.steps[0].state != StepState::Verified =>
+                {
+                    (
+                        OperationState::OutcomeUnknown,
+                        "Cancellation request delivery is unknown; task is still pending. No request was replayed",
+                    )
+                }
+                Some(task_status_type::PENDING) => (
                     OperationState::CancellationRequested,
                     "Cancellation requested; host task is still pending",
                 ),
-                Some("cancelling") => (
+                Some(task_status_type::CANCELLING) => (
                     OperationState::CancellationRequested,
                     "Host task is cancelling; completion is not confirmed",
                 ),
-                Some("cancelled") => (
+                Some(task_status_type::CANCELLED) => (
                     OperationState::Succeeded,
                     "Host confirmed that the task was cancelled",
                 ),
-                Some("success") => (
+                Some(task_status_type::SUCCESS) => (
                     OperationState::PartiallyCompleted,
                     "Task completed successfully instead of being cancelled",
                 ),
-                Some("failure") => (
+                Some(task_status_type::FAILURE) => (
                     OperationState::PartiallyCompleted,
                     "Task failed instead of reporting cancellation",
                 ),
@@ -881,7 +886,7 @@ impl ResourceRequest {
                 ))
                 && matches!(
                     TaskRecord::new(&task).status().as_str(),
-                    Some("failure" | "cancelled")
+                    Some(task_status_type::FAILURE | task_status_type::CANCELLED)
                 )
             {
                 let code = TaskRecord::new(&task)
@@ -893,7 +898,7 @@ impl ResourceRequest {
                     .map(crate::xapi::safe_error_code);
                 self.record.state = OperationState::OutcomeUnknown;
                 self.record.can_cancel = false;
-                let outcome = if TaskRecord::new(&task).status() == "failure" {
+                let outcome = if TaskRecord::new(&task).status() == task_status_type::FAILURE {
                     "failed"
                 } else {
                     "was cancelled"
@@ -910,7 +915,7 @@ impl ResourceRequest {
                 return self.save(journal).await;
             }
             match TaskRecord::new(&task).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     if let super::ResourceAction::SnapshotPolicy(op) = &self.record.action {
                         if matches!(op, crate::SnapshotPolicyOperation::Create { .. })
                             && self.record.result_reference.is_none()
@@ -1046,7 +1051,7 @@ impl ResourceRequest {
                         step.detail = "Host task completed".into();
                     }
                 }
-                Some("failure") => {
+                Some(task_status_type::FAILURE) => {
                     self.record.state = OperationState::Failed;
                     let code = TaskRecord::new(&task)
                         .error_info()
@@ -1062,11 +1067,11 @@ impl ResourceRequest {
                         step.detail = self.record.detail.clone();
                     }
                 }
-                Some("cancelled") => {
+                Some(task_status_type::CANCELLED) => {
                     self.record.state = OperationState::Cancelled;
                     self.record.detail = "Host confirmed task cancellation".into();
                 }
-                Some("pending" | "cancelling") => {
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {
                     self.record.state = OperationState::Tracking;
                     self.record.detail = "Waiting for the host task".into();
                 }

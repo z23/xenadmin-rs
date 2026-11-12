@@ -88,6 +88,89 @@ impl serde::Serialize for FieldValue<'_> {
     }
 }
 
+/// A check, in debug builds, that the records given to views are of the views' classes.
+///
+/// A view cannot know that its record is of its class: a record does not say what it is,
+/// and a field of the same name in another class reads just as well. A record does carry
+/// every field of its class, though, so a record of another class has keys the view's
+/// class lacks, and so has a test fixture that carries a field the API does not have.
+///
+/// When the environment variable `XENADMIN_XAPI_VIEW_AUDIT` names a file, every view made
+/// in a debug build compares the keys of its record with the fields of its class and
+/// appends a line for each key the class lacks: the class, the key and where the view was
+/// made, separated by tabs, once per process. Only names are written, never a value.
+/// Without the variable nothing is compared, and release builds contain none of this.
+#[cfg(debug_assertions)]
+pub mod audit {
+    use std::collections::BTreeSet;
+    use std::io::Write as _;
+    use std::sync::{Mutex, OnceLock};
+
+    struct Sink {
+        file: std::fs::File,
+        seen: BTreeSet<(&'static str, String, &'static str, u32)>,
+    }
+    static SINK: OnceLock<Option<Mutex<Sink>>> = OnceLock::new();
+
+    /// The keys of `record` that are not fields of `class`; none for a value that is not
+    /// an object or a class the catalogue does not have.
+    pub fn foreign_keys<'a>(class: &str, record: &'a serde_json::Value) -> Vec<&'a str> {
+        let (Some(object), Ok(index)) = (
+            record.as_object(),
+            super::CLASSES.binary_search_by(|c| c.name.cmp(class)),
+        ) else {
+            return Vec::new();
+        };
+        let fields = super::CLASSES[index].fields;
+        object
+            .keys()
+            .map(String::as_str)
+            .filter(|key| fields.binary_search_by(|f| f.name.cmp(key)).is_err())
+            .collect()
+    }
+
+    /// Called by every view when it is made, with the place that made it.
+    pub fn observe(
+        class: &'static str,
+        record: &serde_json::Value,
+        place: &'static std::panic::Location<'static>,
+    ) {
+        let sink = SINK.get_or_init(|| {
+            let path = std::env::var_os("XENADMIN_XAPI_VIEW_AUDIT")?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .ok()?;
+            Some(Mutex::new(Sink {
+                file,
+                seen: BTreeSet::new(),
+            }))
+        });
+        let Some(sink) = sink else {
+            return;
+        };
+        let foreign = foreign_keys(class, record);
+        if foreign.is_empty() {
+            return;
+        }
+        let Ok(mut sink) = sink.lock() else {
+            return;
+        };
+        for key in foreign {
+            if sink
+                .seen
+                .insert((class, key.to_owned(), place.file(), place.line()))
+            {
+                // One short line at a time, so that processes appending to one file do not
+                // interleave within a line.
+                let line = format!("{class}\t{key}\t{}:{}\n", place.file(), place.line());
+                let _ = sink.file.write_all(line.as_bytes());
+            }
+        }
+    }
+}
+
 /// The upstream tag, commit and digest of the description the bindings were generated from.
 pub const SOURCE: &str = include_str!("../data/SOURCE");
 
@@ -155,6 +238,30 @@ mod tests {
             records::VdiRecord::new(&json!({"type": "user"})).type_(),
             "user"
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_audit_names_the_keys_a_class_lacks_and_nothing_else() {
+        // A VM's own fields are not reported, whatever their values.
+        let vm =
+            json!({"uuid": "u", "power_state": "Halted", "VBDs": [], "other_config": {"k": "v"}});
+        assert!(audit::foreign_keys("VM", &vm).is_empty());
+        // A repository's record read as a VM is told apart by the keys only it has, and a
+        // field the API does not have at all is reported the same way.
+        let sr = json!({"uuid": "u", "allowed_operations": [], "PBDs": [], "content_type": "user"});
+        assert_eq!(audit::foreign_keys("VM", &sr), ["PBDs", "content_type"]);
+        assert!(audit::foreign_keys("SR", &sr).is_empty());
+        assert_eq!(
+            audit::foreign_keys("VBD", &json!({"uuid": "u", "reserved": false})),
+            ["reserved"]
+        );
+        // Values that are not records, and classes the catalogue lacks, report nothing.
+        assert!(audit::foreign_keys("VM", &Value::Null).is_empty());
+        assert!(audit::foreign_keys("VM", &json!("OpaqueRef:NULL")).is_empty());
+        assert!(audit::foreign_keys("no such class", &sr).is_empty());
+        // Making a view without the variable set compares nothing and changes nothing.
+        assert_eq!(records::VmRecord::new(&sr).uuid(), "u");
     }
 
     #[test]

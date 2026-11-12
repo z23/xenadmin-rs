@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::enumerations::{host_allowed_operations, task_status_type, vm_power_state};
 use xenadmin_xapi::records::{HostRecord, PoolRecord, TaskRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -279,14 +280,19 @@ async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Ve
         require(
             matches!(
                 VmRecord::new(&vm).power_state().as_str(),
-                Some("Running" | "Paused" | "Halted" | "Suspended")
+                Some(
+                    vm_power_state::RUNNING
+                        | vm_power_state::PAUSED
+                        | vm_power_state::HALTED
+                        | vm_power_state::SUSPENDED
+                )
             ),
             "Resident VM power state is unavailable",
         )?;
         if !control
             && matches!(
                 VmRecord::new(&vm).power_state().as_str(),
-                Some("Running" | "Paused")
+                Some(vm_power_state::RUNNING | vm_power_state::PAUSED)
             )
         {
             idle(&vm)?;
@@ -586,7 +592,7 @@ pub(crate) async fn arguments(
                 "Disable scheduling before evacuating",
             )?;
             live(session, &host, true).await?;
-            allowed(&host, "evacuate")?;
+            allowed(&host, host_allowed_operations::EVACUATE)?;
             evacuation(session, &reference, &host, expected).await?;
             (kind.method(), vec![json!(&reference)])
         }
@@ -629,7 +635,7 @@ pub(crate) async fn arguments(
             )?;
             live(session, &host, true).await?;
             if HostRecord::new(&host).enabled() != true {
-                allowed(&host, "enable")?;
+                allowed(&host, host_allowed_operations::ENABLE)?;
             }
             (kind.method(), vec![json!(&reference)])
         }
@@ -646,9 +652,9 @@ pub(crate) async fn arguments(
             allowed(
                 &host,
                 if *kind == Kind::Reboot {
-                    "reboot"
+                    host_allowed_operations::REBOOT
                 } else {
-                    "shutdown"
+                    host_allowed_operations::SHUTDOWN
                 },
             )?;
             (kind.method(), vec![json!(&reference)])
@@ -673,7 +679,11 @@ pub(crate) async fn arguments(
                         && tasks.values().all(|task| {
                             matches!(
                                 TaskRecord::new(task).status().as_str(),
-                                Some("success" | "failure" | "cancelled")
+                                Some(
+                                    task_status_type::SUCCESS
+                                        | task_status_type::FAILURE
+                                        | task_status_type::CANCELLED
+                                )
                             )
                         })
                 }),
@@ -683,7 +693,7 @@ pub(crate) async fn arguments(
         }
         Kind::PowerOn => {
             live(session, &host, false).await?;
-            allowed(&host, "power_on")?;
+            allowed(&host, host_allowed_operations::POWER_ON)?;
             require(
                 HostRecord::new(&host)
                     .power_on_mode()

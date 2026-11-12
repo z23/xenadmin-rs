@@ -2,6 +2,9 @@ use crate::{Error, Inventory, SnapshotId, VdiId, VmId, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{
+    vbd_type, vdi_operations, vdi_type, vm_operations, vm_power_state,
+};
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,6 +127,7 @@ fn refs(record: &Value, key: &str) -> Result<Vec<String>, Error> {
         .ok_or(Error::SnapshotConflict)?;
     values.iter().map(reference).collect()
 }
+/// Whether a VM (a snapshot is one) offers `operation` and no administrator blocked it.
 fn can(record: &Value, operation: &str) -> bool {
     VmRecord::new(record)
         .allowed_operations()
@@ -139,7 +143,7 @@ fn disk_is_snapshot(record: &Value) -> bool {
         && VdiRecord::new(record).sharable() == false
         && VdiRecord::new(record).managed() == true
         && VdiRecord::new(record).missing() == false
-        && VdiRecord::new(record).type_() == "user"
+        && VdiRecord::new(record).type_() == vdi_type::USER
 }
 
 pub(crate) async fn deletion_plan(
@@ -152,14 +156,14 @@ pub(crate) async fn deletion_plan(
         return Err(Error::SnapshotConflict);
     }
     let (snapshot_ref, record) = snapshot_record(session, parent, snapshot).await?;
-    let checkpoint = VmRecord::new(&record).power_state() == "Suspended";
-    if (!checkpoint && VmRecord::new(&record).power_state() != "Halted")
+    let checkpoint = VmRecord::new(&record).power_state() == vm_power_state::SUSPENDED;
+    if (!checkpoint && VmRecord::new(&record).power_state() != vm_power_state::HALTED)
         || !can(
             &record,
             if checkpoint {
-                "hard_shutdown"
+                vm_operations::HARD_SHUTDOWN
             } else {
-                "destroy"
+                vm_operations::DESTROY
             },
         )
     {
@@ -181,7 +185,7 @@ pub(crate) async fn deletion_plan(
             let attachment = session.call("VBD.get_record", vec![json!(vbd)]).await?;
             if VbdRecord::new(&attachment).vm() != snapshot_ref
                 || VbdRecord::new(&attachment).vdi() != disk_ref
-                || VbdRecord::new(&attachment).type_() != "Disk"
+                || VbdRecord::new(&attachment).type_() != vbd_type::DISK
                 || !VbdRecord::new(&attachment)
                     .other_config()
                     .get("owner")
@@ -196,7 +200,7 @@ pub(crate) async fn deletion_plan(
         let disk = session
             .call("VDI.get_record", vec![json!(&reference)])
             .await?;
-        if VdiRecord::new(&disk).type_() != "suspend"
+        if VdiRecord::new(&disk).type_() != vdi_type::SUSPEND
             || VdiRecord::new(&disk).sharable() != false
             || !refs(&disk, "VBDs")?.is_empty()
         {
@@ -237,7 +241,9 @@ pub(crate) async fn stop_checkpoint(
     memory: Option<VdiId>,
 ) -> Result<(), Error> {
     let (reference, record) = snapshot_record(session, parent, snapshot).await?;
-    if VmRecord::new(&record).power_state() != "Suspended" || !can(&record, "hard_shutdown") {
+    if VmRecord::new(&record).power_state() != vm_power_state::SUSPENDED
+        || !can(&record, vm_operations::HARD_SHUTDOWN)
+    {
         return Err(Error::SnapshotConflict);
     }
     let memory_ref = self::reference(&VmRecord::new(&record).suspend_vdi())?;
@@ -259,7 +265,9 @@ pub(crate) async fn destroy_snapshot(
     snapshot: SnapshotId,
 ) -> Result<(), Error> {
     let (reference, record) = snapshot_record(session, parent, snapshot).await?;
-    if VmRecord::new(&record).power_state() != "Halted" || !can(&record, "destroy") {
+    if VmRecord::new(&record).power_state() != vm_power_state::HALTED
+        || !can(&record, vm_operations::DESTROY)
+    {
         return Err(Error::SnapshotConflict);
     }
     session.call("VM.destroy", vec![json!(reference)]).await?;
@@ -271,7 +279,12 @@ pub(crate) async fn destroy_disk(session: &Session, disk: VdiId) -> Result<(), E
     else {
         return Ok(());
     };
-    if !disk_is_snapshot(&record) || !refs(&record, "VBDs")?.is_empty() || !can(&record, "destroy")
+    if !disk_is_snapshot(&record)
+        || !refs(&record, "VBDs")?.is_empty()
+        || !crate::xapi::offers(
+            VdiRecord::new(&record).allowed_operations(),
+            vdi_operations::DESTROY,
+        )
     {
         return Err(Error::SnapshotConflict);
     }
@@ -307,7 +320,7 @@ pub(crate) async fn verify_clone(
         || VmRecord::new(&record).is_a_snapshot() != false
         || VmRecord::new(&record).is_control_domain() != false
         || !VmRecord::new(&record).is_a_template().is_boolean()
-        || VmRecord::new(&record).power_state() != "Halted"
+        || VmRecord::new(&record).power_state() != vm_power_state::HALTED
         || VmRecord::new(&record).snapshot_of() != "OpaqueRef:NULL"
     {
         return Err(Error::Protocol("invalid cloned VM result"));

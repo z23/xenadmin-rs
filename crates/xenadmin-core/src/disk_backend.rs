@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::{vbd_type, vdi_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 fn conflict<T>() -> Result<T, Error> {
@@ -54,7 +55,7 @@ fn ordinary(record: &Value) -> Result<(), Error> {
         || VdiRecord::new(record).read_only() != false
         || VdiRecord::new(record).sharable() != false
         || VdiRecord::new(record).is_a_snapshot() != false
-        || VdiRecord::new(record).type_() != "user"
+        || VdiRecord::new(record).type_() != vdi_type::USER
         || VdiRecord::new(record).snapshot_of() != "OpaqueRef:NULL"
         || VdiRecord::new(record).cbt_enabled() != false
     {
@@ -145,7 +146,7 @@ async fn checked_disk(
         idle(vbd)?;
         if VbdRecord::new(vbd).currently_attached() != false
             || VbdRecord::new(vbd).empty() != false
-            || VbdRecord::new(vbd).type_() != "Disk"
+            || VbdRecord::new(vbd).type_() != vbd_type::DISK
         {
             return Err(Error::StorageInUse);
         }
@@ -157,7 +158,7 @@ async fn checked_disk(
             || VmRecord::new(vm).is_control_domain() != false
             || !matches!(
                 VmRecord::new(vm).power_state().as_str(),
-                Some("Halted" | "Running")
+                Some(vm_power_state::HALTED | vm_power_state::RUNNING)
             )
             || !refs(vm, "VBDs")?.contains(vbd_ref)
         {
@@ -188,7 +189,7 @@ async fn checked_disk(
         .any(|v| VmRecord::new(v).suspend_vdi() == reference)
         || vdis
             .iter()
-            .any(|(key, v)| key != &reference && VmRecord::new(v).snapshot_of() == reference)
+            .any(|(key, v)| key != &reference && VdiRecord::new(v).snapshot_of() == reference)
         || statefiles
             .iter()
             .any(|v| v == &reference || v == &disk.to_string())
@@ -288,14 +289,14 @@ pub(super) async fn arguments(
     let (reference, vdi) = checked_disk(s, plan.disk, plan.operation.expected(), None, &p).await?;
     match &plan.operation {
         DiskOperation::Grow { size, .. } => {
-            permits(&vdi, "resize")?;
+            permits(&vdi, vdi_operations::RESIZE)?;
             Ok((
                 "Async.VDI.resize",
                 vec![json!(reference), json!(size.to_string())],
             ))
         }
         DiskOperation::Copy { destination, .. } => {
-            permits(&vdi, "copy")?;
+            permits(&vdi, vdi_operations::COPY)?;
             let sr = storage(s, *destination).await?;
             Ok((
                 "Async.VDI.copy",
@@ -308,7 +309,7 @@ pub(super) async fn arguments(
             ))
         }
         DiskOperation::Cleanup { source, .. } => {
-            permits(&vdi, "destroy")?;
+            permits(&vdi, vdi_operations::DESTROY)?;
             j.disk_ownership(r.pool, plan.disk, *source, &vdi)?;
             Ok(("Async.VDI.destroy", vec![json!(reference)]))
         }

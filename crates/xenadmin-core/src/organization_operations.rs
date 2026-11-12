@@ -25,7 +25,8 @@ async fn read(session: &Session, id: OrganizationObjectId) -> Result<(String, Va
             vec![json!(&reference)],
         )
         .await?;
-    if VmRecord::new(&fresh).uuid() != id.uuid().to_string() {
+    // A record of whichever class `id` names; every class has a `uuid`.
+    if fresh["uuid"] != id.uuid().to_string() {
         return Err(Error::Stale);
     }
     if matches!(

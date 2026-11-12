@@ -14,6 +14,7 @@ use std::{
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::{TaskRecord, VmRecord};
 
 #[path = "device_lifecycle_operations.rs"]
@@ -1797,7 +1798,7 @@ impl MutationRequest {
                 OperationState::Tracking
             };
             match TaskRecord::new(&task).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     if matches!(
                         self.record.action,
                         OperationAction::Snapshot(SnapshotOperation::Clone { .. })
@@ -1876,7 +1877,7 @@ impl MutationRequest {
                     };
                     self.record.progress = Some(1.0);
                 }
-                Some("failure") => {
+                Some(task_status_type::FAILURE) => {
                     self.record.state = OperationState::Failed;
                     let code = TaskRecord::new(&task)
                         .error_info()
@@ -1888,11 +1889,11 @@ impl MutationRequest {
                     self.record.detail =
                         format!("Host task failed: {}", crate::xapi::safe_error_code(code));
                 }
-                Some("cancelled") => {
+                Some(task_status_type::CANCELLED) => {
                     self.record.state = OperationState::Cancelled;
                     self.record.detail = "Host confirmed task cancellation".into();
                 }
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("unknown task status")),
             }
             if self.record.state.terminal() {

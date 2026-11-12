@@ -6,7 +6,11 @@ trap 'rm -rf -- "$check_state_dir"' EXIT
 export XENADMIN_STATE_DIR="$check_state_dir"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+# Debug builds report, when asked to, every record a view was given that carries a key the
+# view's class lacks: a record read as another class, or a fixture with a field the API
+# does not have. Only what the tests mean may be reported.
+XENADMIN_XAPI_VIEW_AUDIT="$check_state_dir/view-audit.tsv" cargo test --workspace --locked
+python3 scripts/view_audit.py "$check_state_dir/view-audit.tsv"
 cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
 python3 -m unittest discover -s lab -p 'test_*.py'
 python3 -m unittest discover -s packaging -p 'test_*.py'

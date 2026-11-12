@@ -2,6 +2,7 @@ use super::*;
 use crate::{ClassAvailability, DiskImageFormat, VdiId, xapi::Session};
 use serde_json::{Value, json};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::{storage_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
 pub(crate) const MARKER: &str = "xenadmin-rs-disk-transfer";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +102,7 @@ pub(crate) async fn disk_record(
 ) -> Result<(String, Value), Error> {
     let (reference, d) = fresh(s, "VDI", vdi.uuid()).await?;
     idle(&d)?;
-    if VdiRecord::new(&d).type_() != "user"
+    if VdiRecord::new(&d).type_() != vdi_type::USER
         || VdiRecord::new(&d).managed() != true
         || VdiRecord::new(&d).missing() != false
         || VdiRecord::new(&d).sharable() != false
@@ -145,7 +146,7 @@ pub(crate) async fn disk_record(
             )
             .await?;
         idle(&vm)?;
-        if VmRecord::new(&vm).power_state() != "Halted"
+        if VmRecord::new(&vm).power_state() != vm_power_state::HALTED
             || VmRecord::new(&vm).is_control_domain() != false
         {
             return Err(Error::TransferConflict);
@@ -207,7 +208,12 @@ pub(crate) async fn creation_arguments(
     }
     let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
     idle(&r)?;
-    if SrRecord::new(&r).content_type() != "user" || !crate::xapi::advertises(&r, "vdi_create") {
+    if SrRecord::new(&r).content_type() != "user"
+        || !crate::xapi::offers(
+            SrRecord::new(&r).allowed_operations(),
+            storage_operations::VDI_CREATE,
+        )
+    {
         return Err(Error::UnavailableAction);
     }
     Ok(vec![

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OperationStep, StepState, snapshots};
+use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::VmRecord;
 
 #[derive(Clone, Copy)]
@@ -38,7 +39,7 @@ impl DeleteStep {
                 }
                 let (_, record) =
                     snapshots::snapshot_record(session, parent, plan.snapshot).await?;
-                Ok(VmRecord::new(&record).power_state() == "Halted")
+                Ok(VmRecord::new(&record).power_state() == vm_power_state::HALTED)
             }
             Self::Snapshot => {
                 Ok(

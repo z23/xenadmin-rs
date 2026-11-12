@@ -1,6 +1,7 @@
 use crate::{Error, PowerState, SnapshotId, SnapshotName, VdiId, VmId, snapshots, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::enumerations::{vdi_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,9 +127,14 @@ impl SnapshotWorkflow {
             return false;
         }
         match self {
-            Self::Create { memory, .. } => {
-                can(parent, if *memory { "checkpoint" } else { "snapshot" })
-            }
+            Self::Create { memory, .. } => can(
+                parent,
+                if *memory {
+                    vm_operations::CHECKPOINT
+                } else {
+                    vm_operations::SNAPSHOT
+                },
+            ),
             Self::Edit {
                 expected_name,
                 expected_description,
@@ -145,12 +151,16 @@ impl SnapshotWorkflow {
                 ..
             } => {
                 VmRecord::new(parent).power_state() == expected_state.to_string()
-                    && (!shutdown || can(parent, "clean_shutdown"))
+                    && (!shutdown || can(parent, vm_operations::CLEAN_SHUTDOWN))
                     && snapshot.is_some_and(|s| {
                         idle(s)
-                            && can(s, "revert")
+                            && can(s, vm_operations::REVERT)
                             && VmRecord::new(s).power_state()
-                                == if *checkpoint { "Suspended" } else { "Halted" }
+                                == if *checkpoint {
+                                    vm_power_state::SUSPENDED
+                                } else {
+                                    vm_power_state::HALTED
+                                }
                     })
             }
         }
@@ -261,14 +271,14 @@ impl Plan {
     }
 }
 async fn memory(session: &Session, record: &Value) -> Result<Option<VdiId>, Error> {
-    if VmRecord::new(record).power_state() != "Suspended" {
+    if VmRecord::new(record).power_state() != vm_power_state::SUSPENDED {
         return Ok(None);
     }
     let reference = snapshots::reference(&VmRecord::new(record).suspend_vdi())?;
     let disk = session
         .call("VDI.get_record", vec![json!(reference)])
         .await?;
-    if VdiRecord::new(&disk).type_() != "suspend" {
+    if VdiRecord::new(&disk).type_() != vdi_type::SUSPEND {
         return Err(Error::SnapshotConflict);
     }
     Ok(Some(
@@ -329,7 +339,11 @@ async fn source(session: &Session, vm: VmId, plan: &Plan) -> Result<(String, Val
     }
     if let SnapshotWorkflow::Restore { checkpoint, .. } = plan.operation
         && (VmRecord::new(&result.1).power_state()
-            != if checkpoint { "Suspended" } else { "Halted" }
+            != if checkpoint {
+                vm_power_state::SUSPENDED
+            } else {
+                vm_power_state::HALTED
+            }
             || memory(session, &result.1).await? != plan.memory)
     {
         return Err(Error::SnapshotConflict);
@@ -351,7 +365,14 @@ pub(crate) async fn prepare(
         let SnapshotWorkflow::Create { name, memory, .. } = &plan.operation else {
             return Err(Error::SnapshotConflict);
         };
-        if !can(&guest, if *memory { "checkpoint" } else { "snapshot" }) {
+        if !can(
+            &guest,
+            if *memory {
+                vm_operations::CHECKPOINT
+            } else {
+                vm_operations::SNAPSHOT
+            },
+        ) {
             return Err(Error::UnavailableAction);
         }
         return Ok(Prepared {
@@ -405,9 +426,9 @@ pub(crate) async fn prepare(
             })
         }
         Step::Shutdown => {
-            if VmRecord::new(&guest).power_state() != "Running"
-                || !can(&guest, "clean_shutdown")
-                || !can(&snapshot, "revert")
+            if VmRecord::new(&guest).power_state() != vm_power_state::RUNNING
+                || !can(&guest, vm_operations::CLEAN_SHUTDOWN)
+                || !can(&snapshot, vm_operations::REVERT)
             {
                 return Err(Error::UnavailableAction);
             }
@@ -423,7 +444,9 @@ pub(crate) async fn prepare(
             })
         }
         Step::Revert => {
-            if VmRecord::new(&guest).power_state() != "Halted" || !can(&snapshot, "revert") {
+            if VmRecord::new(&guest).power_state() != vm_power_state::HALTED
+                || !can(&snapshot, vm_operations::REVERT)
+            {
                 return Err(Error::UnavailableAction);
             }
             session
@@ -442,7 +465,11 @@ pub(crate) async fn prepare(
             let op = if resume { "resume" } else { "start" };
             if VmRecord::new(&guest).parent() != snapshot_ref
                 || VmRecord::new(&guest).power_state()
-                    != if resume { "Suspended" } else { "Halted" }
+                    != if resume {
+                        vm_power_state::SUSPENDED
+                    } else {
+                        vm_power_state::HALTED
+                    }
                 || !can(&guest, op)
             {
                 return Err(Error::UnavailableAction);
@@ -497,7 +524,12 @@ pub(crate) async fn verify(
             return Err(Error::SnapshotConflict);
         };
         if VmRecord::new(&record).name_label() != *name
-            || VmRecord::new(&record).power_state() != if *memory { "Suspended" } else { "Halted" }
+            || VmRecord::new(&record).power_state()
+                != if *memory {
+                    vm_power_state::SUSPENDED
+                } else {
+                    vm_power_state::HALTED
+                }
             || !idle(&record)
         {
             return Ok(false);
@@ -532,17 +564,17 @@ pub(crate) async fn verify(
             }
             _ => false,
         },
-        Step::Shutdown => VmRecord::new(&guest).power_state() == "Halted",
+        Step::Shutdown => VmRecord::new(&guest).power_state() == vm_power_state::HALTED,
         Step::Revert => {
             VmRecord::new(&guest).parent() == reference
                 && VmRecord::new(&guest).power_state() == VmRecord::new(&snapshot).power_state()
-                && (VmRecord::new(&snapshot).power_state() != "Suspended"
+                && (VmRecord::new(&snapshot).power_state() != vm_power_state::SUSPENDED
                     || memory(session, &guest)
                         .await?
                         .is_some_and(|id| Some(id) != plan.memory))
         }
         Step::Start | Step::Resume => {
-            VmRecord::new(&guest).power_state() == "Running"
+            VmRecord::new(&guest).power_state() == vm_power_state::RUNNING
                 && VmRecord::new(&guest).parent() == reference
         }
         Step::Create => false,

@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{Error, PbdId, SrId, StorageOperation, VdiId, storage::StorageBaseline, xapi::Session};
 use serde_json::{Value, json};
+use xenadmin_xapi::enumerations::storage_operations;
 use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord, TaskRecord};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&StorageOperation, Error> {
@@ -354,7 +355,7 @@ pub(super) async fn arguments(
             }
             crate::storage_provisioning::allocation_capability(session, location).await?;
             crate::storage_provisioning::verify_allocation(&fresh, location)?;
-            allowed(&fresh, "pbd_create")?;
+            allowed(&fresh, storage_operations::PBD_CREATE)?;
             empty_current(&fresh)?;
             let (host_ref, _) = xapi::read(session, ResourceTarget::Host(*host)).await?;
             if !location.shared() && !array(&fresh, "PBDs")?.is_empty() {
@@ -406,7 +407,14 @@ pub(super) async fn arguments(
             if fresh["currently_attached"] != *expected_attached {
                 return Err(Error::ResourceConflict);
             }
-            allowed(&sr_record, if *attached { "plug" } else { "unplug" })?;
+            allowed(
+                &sr_record,
+                if *attached {
+                    storage_operations::PLUG
+                } else {
+                    storage_operations::UNPLUG
+                },
+            )?;
             empty_current(&sr_record)?;
             if !attached {
                 no_consumers(session, &sr_record, false).await?;
@@ -418,7 +426,7 @@ pub(super) async fn arguments(
             if fresh["currently_attached"] != false {
                 return Err(Error::StorageInUse);
             }
-            allowed(&sr_record, "pbd_destroy")?;
+            allowed(&sr_record, storage_operations::PBD_DESTROY)?;
             empty_current(&sr_record)?;
             Ok(vec![json!(reference)])
         }

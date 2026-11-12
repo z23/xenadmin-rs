@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::FieldValue;
+use xenadmin_xapi::enumerations::{
+    storage_operations, vbd_type, vdi_operations, vdi_type, vm_power_state,
+};
 use xenadmin_xapi::records::{NetworkRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 
 const MARKER: &str = "xenadmin-rs-operation";
@@ -404,17 +408,11 @@ fn idle(record: &Value) -> Result<(), Error> {
     }
     Ok(())
 }
-fn permits(record: &Value, operation: &str) -> Result<(), Error> {
+/// An idle record whose host offers `operation` on it now. `allowed` is the record's
+/// `allowed_operations`, read through the view of the record's own class.
+fn permits(record: &Value, allowed: FieldValue<'_>, operation: &str) -> Result<(), Error> {
     idle(record)?;
-    if VmRecord::new(record)
-        .allowed_operations()
-        .as_array()
-        .is_none_or(|ops| !ops.iter().any(|op| op == operation))
-        || VmRecord::new(record)
-            .blocked_operations()
-            .get(operation)
-            .is_some()
-    {
+    if !crate::xapi::offers(allowed, operation) {
         return Err(Error::UnavailableAction);
     }
     Ok(())
@@ -428,7 +426,7 @@ async fn guest(session: &Session, vm: VmId, halted: bool) -> Result<String, Erro
         return Err(Error::Stale);
     }
     if halted {
-        if VmRecord::new(&record).power_state() != "Halted" {
+        if VmRecord::new(&record).power_state() != vm_power_state::HALTED {
             return Err(Error::DeviceLifecycleRequiresHaltedVm);
         }
         idle(&record)?;
@@ -455,7 +453,7 @@ async fn allowed_slot(session: &Session, vm: &str, class: &str, device: &str) ->
     Ok(())
 }
 fn ordinary_disk(record: &Value) -> bool {
-    VdiRecord::new(record).type_() == "user"
+    VdiRecord::new(record).type_() == vdi_type::USER
         && VdiRecord::new(record).managed() == true
         && VdiRecord::new(record).missing() == false
         && VdiRecord::new(record).sharable() == false
@@ -481,7 +479,7 @@ async fn attachment(
     let (disk_ref, disk_record) = fresh(session, "VDI", disk.uuid()).await?;
     if VbdRecord::new(&record).vm() != vm
         || VbdRecord::new(&record).vdi() != disk_ref
-        || VbdRecord::new(&record).type_() != "Disk"
+        || VbdRecord::new(&record).type_() != vbd_type::DISK
         || VbdRecord::new(&record).currently_attached() != false
     {
         return Err(Error::DeviceConflict);
@@ -497,7 +495,11 @@ async fn attachment(
         {
             return Err(Error::DeviceInUse);
         }
-        permits(&disk_record, "destroy")?;
+        permits(
+            &disk_record,
+            VdiRecord::new(&disk_record).allowed_operations(),
+            vdi_operations::DESTROY,
+        )?;
     }
     Ok((reference, record))
 }
@@ -534,7 +536,11 @@ pub(crate) async fn plan(
             if SrRecord::new(&record).content_type() == "iso" {
                 return Err(Error::DeviceConflict);
             }
-            permits(&record, "vdi_create")?;
+            permits(
+                &record,
+                SrRecord::new(&record).allowed_operations(),
+                storage_operations::VDI_CREATE,
+            )?;
             allowed_slot(session, &vm_ref, "VBD", device).await?;
             vec![
                 Step::CreateDisk {
@@ -760,7 +766,11 @@ pub(crate) async fn prepare_step(
             if SrRecord::new(&record).content_type() == "iso" {
                 return Err(Error::DeviceConflict);
             }
-            permits(&record, "vdi_create")?;
+            permits(
+                &record,
+                SrRecord::new(&record).allowed_operations(),
+                storage_operations::VDI_CREATE,
+            )?;
             Prepared {
                 method: "VDI.create",
                 parameters: vec![
@@ -816,7 +826,11 @@ pub(crate) async fn prepare_step(
             if !ordinary_disk(&record) || !refs(&record, "VBDs")?.is_empty() {
                 return Err(Error::DeviceInUse);
             }
-            permits(&record, "destroy")?;
+            permits(
+                &record,
+                VdiRecord::new(&record).allowed_operations(),
+                vdi_operations::DESTROY,
+            )?;
             let vms = session.call("VM.get_all_records", vec![]).await?;
             if vms
                 .as_object()
@@ -996,9 +1010,11 @@ pub(crate) async fn verify_step(
                 .as_object()
                 .filter(|values| values.len() <= 10_000)
                 .ok_or(Error::DeviceConflict)?;
-            let mut candidates = records.iter().filter(|(_, record)| {
-                VifRecord::new(record).other_config()[MARKER] == id.to_string()
-            });
+            // A disk, an attachment or a network interface, as `class` says: the two
+            // fields read here are fields of all three, so they are read by key.
+            let mut candidates = records
+                .iter()
+                .filter(|(_, record)| record["other_config"][MARKER] == id.to_string());
             let Some((reference, record)) = candidates.next() else {
                 return Ok(false);
             };
@@ -1007,8 +1023,7 @@ pub(crate) async fn verify_step(
             }
             (self::reference(&json!(reference))?, record.clone())
         };
-        let uuid = VifRecord::new(&record)
-            .uuid()
+        let uuid = record["uuid"]
             .as_str()
             .and_then(|id| Uuid::parse_str(id).ok())
             .ok_or(Error::DeviceConflict)?;

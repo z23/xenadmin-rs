@@ -8,6 +8,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 use xenadmin_xapi::records::{BondRecord, PifRecord, VlanRecord};
 
 pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&NetworkOperation, Error> {
@@ -262,8 +263,9 @@ pub(super) async fn arguments(
                 if PifRecord::new(&pif).physical() != true
                     || number(&PifRecord::new(&pif).vlan()) != Some(-1)
                     || PifRecord::new(&pif).bond_slave_of() != "OpaqueRef:NULL"
-                    || PifRecord::new(&pif).ip_configuration_mode() != "None"
-                    || PifRecord::new(&pif).ipv6_configuration_mode() != "None"
+                    || PifRecord::new(&pif).ip_configuration_mode() != ip_configuration_mode::NONE
+                    || PifRecord::new(&pif).ipv6_configuration_mode()
+                        != ipv6_configuration_mode::NONE
                 {
                     return Err(Error::ResourceInUse);
                 }
@@ -306,8 +308,8 @@ pub(super) async fn arguments(
                 return Err(Error::ResourceConflict);
             }
             nonmanagement(&pif)?;
-            if PifRecord::new(&pif).ip_configuration_mode() != "None"
-                || PifRecord::new(&pif).ipv6_configuration_mode() != "None"
+            if PifRecord::new(&pif).ip_configuration_mode() != ip_configuration_mode::NONE
+                || PifRecord::new(&pif).ipv6_configuration_mode() != ipv6_configuration_mode::NONE
             {
                 return Err(Error::ResourceInUse);
             }

@@ -3,6 +3,9 @@ use crate::{Endpoint, NetworkId, VdiId, xapi::Session};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::{
+    storage_operations, vbd_type, vdi_type, vm_operations, vm_power_state,
+};
 use xenadmin_xapi::records::{
     HostRecord, PbdRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord, VmRecord,
 };
@@ -176,7 +179,7 @@ pub(crate) async fn prepare(
                     .blocked_operations()
                     .as_object()
                     .is_some_and(|v| v.contains_key("export"))
-                || !crate::xapi::advertises(&r, "export")
+                || !crate::xapi::advertises(&r, vm_operations::EXPORT)
             {
                 return Err(Error::UnavailableAction);
             }
@@ -263,7 +266,7 @@ pub(crate) async fn created(
             idle(r)?;
             if !matches!(
                 VmRecord::new(r).power_state().as_str(),
-                Some("Halted" | "Suspended")
+                Some(vm_power_state::HALTED | vm_power_state::SUSPENDED)
             ) || VmRecord::new(r).is_a_snapshot() != false
             {
                 return Err(Error::TransferConflict);
@@ -283,7 +286,9 @@ pub(crate) async fn created(
             }
             _ => None,
         };
-        if complete && ((VmRecord::new(r).power_state() == "Suspended") != memory.is_some()) {
+        if complete
+            && ((VmRecord::new(r).power_state() == vm_power_state::SUSPENDED) != memory.is_some())
+        {
             return Err(Error::TransferConflict);
         }
         names.push((
@@ -302,7 +307,7 @@ pub(crate) async fn created(
             if VbdRecord::new(&a).vm() != *reference {
                 return Err(Error::TransferConflict);
             }
-            if VbdRecord::new(&a).type_() == "Disk" && VbdRecord::new(&a).empty() == false {
+            if VbdRecord::new(&a).type_() == vbd_type::DISK && VbdRecord::new(&a).empty() == false {
                 graph_disks.insert(crate::snapshots::reference(&VbdRecord::new(&a).vdi())?);
             }
         }
@@ -313,9 +318,9 @@ pub(crate) async fn created(
             continue;
         }
         let uuid = id(r)?;
-        let memory = VdiRecord::new(r).type_() == "suspend";
+        let memory = VdiRecord::new(r).type_() == vdi_type::SUSPEND;
         if baseline.disks.contains(&uuid)
-            || (!memory && VdiRecord::new(r).type_() != "user")
+            || (!memory && VdiRecord::new(r).type_() != vdi_type::USER)
             || VdiRecord::new(r).managed() != true
             || (memory
                 && (!graph_memory.contains(reference)
@@ -432,7 +437,11 @@ pub(crate) async fn storage_route(
     let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
     idle(&r)?;
     if SrRecord::new(&r).content_type() != "user"
-        || (write && !crate::xapi::advertises(&r, "vdi_create"))
+        || (write
+            && !crate::xapi::offers(
+                SrRecord::new(&r).allowed_operations(),
+                storage_operations::VDI_CREATE,
+            ))
     {
         return Err(Error::UnavailableAction);
     }

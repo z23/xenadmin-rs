@@ -47,7 +47,7 @@ impl OvfFixture {
             ),
             (
                 "OpaqueRef:SR:s".into(),
-                json!({"uuid":uuid(4),"content_type":"user","allowed_operations":["vdi_create"],"blocked_operations":{},"current_operations":{},"PBDs":["OpaqueRef:PBD:p"]}),
+                json!({"uuid":uuid(4),"content_type":"user","allowed_operations":["vdi_create"],"current_operations":{},"PBDs":["OpaqueRef:PBD:p"]}),
             ),
             (
                 "OpaqueRef:PBD:p".into(),

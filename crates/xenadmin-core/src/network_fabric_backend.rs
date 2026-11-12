@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 use xenadmin_xapi::records::{
     HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord, PoolRecord, VmRecord,
 };
@@ -245,8 +246,8 @@ impl Fresh {
             || PifRecord::new(p).managed() != true
             || PifRecord::new(p).physical() != false
             || PifRecord::new(p).disallow_unplug() != false
-            || PifRecord::new(p).ip_configuration_mode() != "None"
-            || PifRecord::new(p).ipv6_configuration_mode() != "None"
+            || PifRecord::new(p).ip_configuration_mode() != ip_configuration_mode::NONE
+            || PifRecord::new(p).ipv6_configuration_mode() != ipv6_configuration_mode::NONE
             || ["IP", "netmask", "gateway", "DNS", "ipv6_gateway"]
                 .iter()
                 .any(|f| p[f] != "")

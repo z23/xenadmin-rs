@@ -104,7 +104,16 @@ pub(super) async fn request(
         } else {
             new["MAC"] = json!("fe:ff:ff:ff:ff:ff");
         }
-        m.insert(object_key.clone(),json!({"uuid":object_id,parent:r["params"][1],child:child_ref,"protocol":r["params"].get(3).cloned().unwrap_or(json!("gre")),"status":{"active":"false"},"requires_reboot":false,"configuration_mode":"sysfs"}));
+        // A tunnel and an SR-IOV network each carry their own class's fields.
+        let mut object = json!({"uuid":object_id,parent:r["params"][1],child:child_ref});
+        if class == "Tunnel" {
+            object["protocol"] = r["params"].get(3).cloned().unwrap_or(json!("gre"));
+            object["status"] = json!({"active":"false"});
+        } else {
+            object["requires_reboot"] = json!(false);
+            object["configuration_mode"] = json!("sysfs");
+        }
+        m.insert(object_key.clone(), object);
         m.insert(child_key, new);
         m.get_mut(input).unwrap()[parents] = json!([object_ref]);
         m.get_mut("network").unwrap()["PIFs"]

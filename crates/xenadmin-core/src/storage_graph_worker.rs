@@ -1,5 +1,6 @@
 use super::*;
 use crate::{resources::storage_graph, storage_graph::Evidence};
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 impl ResourceRequest {
     fn storage_graph_step(&self, index: usize) -> Result<&Evidence, Error> {
@@ -186,7 +187,7 @@ impl ResourceRequest {
             let (uuid, value) = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=storage_graph::task(s,&self.record,index)=>v?};
             self.storage_graph_step_mut(index)?.task_uuid = Some(uuid);
             match TaskRecord::new(&value).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     if matches!(
                         self.record
                             .storage_graph_plan
@@ -201,8 +202,10 @@ impl ResourceRequest {
                     self.storage_graph_step_mut(index)?.completed = true;
                     self.storage_graph_step_mut(index)?.ended = true;
                 }
-                Some("failure" | "cancelled") => self.storage_graph_step_mut(index)?.ended = true,
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
+                    self.storage_graph_step_mut(index)?.ended = true
+                }
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Storage task status unavailable")),
             }
             self.record = j.storage_graph_evidence(&self.record, index)?;

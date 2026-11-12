@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::{vbd_mode, vbd_type};
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VifRecord, VmRecord};
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskSource {
@@ -148,12 +149,12 @@ pub(crate) async fn capture(
         {
             return Err(Error::TransferConflict);
         }
-        if VbdRecord::new(&d).type_() == "CD" && VbdRecord::new(&d).empty() == true {
+        if VbdRecord::new(&d).type_() == vbd_type::CD && VbdRecord::new(&d).empty() == true {
             continue;
         }
-        if VbdRecord::new(&d).type_() != "Disk"
+        if VbdRecord::new(&d).type_() != vbd_type::DISK
             || VbdRecord::new(&d).empty() != false
-            || VbdRecord::new(&d).mode() != "RW"
+            || VbdRecord::new(&d).mode() != vbd_mode::RW
         {
             return Err(Error::Ovf(
                 "eject installation media; read-only and non-disk devices are not supported in OVF export",

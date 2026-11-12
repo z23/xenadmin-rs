@@ -5,6 +5,7 @@ use crate::{
     storage_auth::{CleanupPlan, CleanupStep},
 };
 use backend::require;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 async fn bounded<T>(
@@ -241,7 +242,8 @@ impl ResourceRequest {
                 .call("task.get_record", vec![json!(reference)])
                 .await?;
             require(
-                backend::task_uuid(&task)? == id && TaskRecord::new(&task).status() == "success",
+                backend::task_uuid(&task)? == id
+                    && TaskRecord::new(&task).status() == task_status_type::SUCCESS,
                 "Storage task identity changed before cleanup",
             )?;
             session.call("task.destroy", vec![json!(reference)]).await?;
@@ -291,7 +293,7 @@ impl ResourceRequest {
                 return Ok(false);
             }
             match TaskRecord::new(&task).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     self.record.result_reference = Some(crate::xapi::snapshot_task_result(&task)?);
                     self.record
                         .storage_auth_plan
@@ -300,12 +302,12 @@ impl ResourceRequest {
                         .provision_succeeded = true;
                     return self.auth_merge(journal).await;
                 }
-                Some("failure" | "cancelled") => {
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
                     return Err(Error::Protocol(
                         "Storage task did not succeed. Partial storage and Secrets may remain; inspect before cleanup",
                     ));
                 }
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Storage task status unavailable")),
             }
             if tokio::time::Instant::now() >= deadline {

@@ -79,7 +79,9 @@ async fn fixture(fault: Fault) -> (Fixture, Records, Calls) {
             let number=match class{"VDI"=>201,"VBD"=>202,"VIF"=>203,_=>panic!("unexpected create")};
             let reference=format!("OpaqueRef:{class}:created");
             let mut record=request["params"][1].clone();
-            record["uuid"]=json!(uuid(number));record["current_operations"]=json!({});record["currently_attached"]=json!(false);
+            record["uuid"]=json!(uuid(number));record["current_operations"]=json!({});
+            // A disk has no attachment state of its own; its attachment and a NIC have.
+            if class!="VDI"{record["currently_attached"]=json!(false);}
             match class{
                 "VDI"=>{record["managed"]=json!(true);record["missing"]=json!(false);record["is_a_snapshot"]=json!(false);record["VBDs"]=json!([]);record["allowed_operations"]=json!(["destroy"]);},
                 "VBD"=>{if record["VDI"]!="OpaqueRef:NULL"{records.get_mut(record["VDI"].as_str().unwrap()).unwrap()["VBDs"]=json!([&reference]);}},

@@ -9,6 +9,7 @@ use std::{
     collections::BTreeSet,
     time::{SystemTime, UNIX_EPOCH},
 };
+use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 use xenadmin_xapi::records::{NetworkRecord, PifRecord, VlanRecord};
 
 pub(super) fn now() -> u64 {
@@ -300,8 +301,8 @@ async fn retaggable(
             && PifRecord::new(&pif).physical().as_bool() == Some(false)
             && PifRecord::new(&pif).bond_slave_of() == "OpaqueRef:NULL"
             && network::number(&PifRecord::new(&pif).vlan()) == Some(i64::from(review.tag))
-            && PifRecord::new(&pif).ip_configuration_mode() == "None"
-            && PifRecord::new(&pif).ipv6_configuration_mode() == "None"
+            && PifRecord::new(&pif).ip_configuration_mode() == ip_configuration_mode::NONE
+            && PifRecord::new(&pif).ipv6_configuration_mode() == ipv6_configuration_mode::NONE
             && PifRecord::new(&pif).ip() == ""
             && PifRecord::new(&pif).netmask() == ""
             && PifRecord::new(&pif).gateway() == ""

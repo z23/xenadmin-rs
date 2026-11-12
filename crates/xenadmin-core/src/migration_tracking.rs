@@ -1,4 +1,5 @@
 use super::*;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 impl MutationRequest {
@@ -56,22 +57,22 @@ impl MutationRequest {
                     .as_array()
                     .is_some_and(|v| v.iter().any(|v| v == "cancel"));
             match TaskRecord::new(&task).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     return self
                         .complete_migration(session, journal, &task, !rechecking)
                         .await;
                 }
-                Some("failure") => {
+                Some(task_status_type::FAILURE) => {
                     return self
                         .failed_migration(session, journal, &task, false, rechecking)
                         .await;
                 }
-                Some("cancelled") => {
+                Some(task_status_type::CANCELLED) => {
                     return self
                         .failed_migration(session, journal, &task, true, rechecking)
                         .await;
                 }
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("unknown migration task status")),
             }
             if rechecking {

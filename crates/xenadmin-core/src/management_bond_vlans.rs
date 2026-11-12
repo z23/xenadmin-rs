@@ -1,5 +1,6 @@
 use super::*;
 use crate::{ManagementVlanReplacement, VlanId, management_bond::CapturedVlan};
+use xenadmin_xapi::enumerations::{ipv6_configuration_mode, primary_address_type};
 use xenadmin_xapi::records::{PifRecord, VlanRecord};
 pub(in crate::resources) fn before(
     t: &Records,
@@ -160,7 +161,7 @@ pub(super) fn verify(
                 && PifRecord::new(p).device() == t.pif(parent)?.1["device"]
                 && PifRecord::new(p).management().as_bool() == before.management
                 && PifRecord::new(p).currently_attached().as_bool() == before.currently_attached
-                && PifRecord::new(p).primary_address_type() == "IPv4"
+                && PifRecord::new(p).primary_address_type() == primary_address_type::IPV4
                 && PifRecord::new(p).ip_configuration_mode() == before.ip_configuration_mode
                 && PifRecord::new(p).ip() == before.ip
                 && PifRecord::new(p).netmask() == before.netmask
@@ -170,7 +171,7 @@ pub(super) fn verify(
                     .as_str()
                     .ok_or(Error::ResourceConflict)?)?
                     == dns(&before.dns)?
-                && PifRecord::new(p).ipv6_configuration_mode() == "None"
+                && PifRecord::new(p).ipv6_configuration_mode() == ipv6_configuration_mode::NONE
                 && addresses(&PifRecord::new(p).ipv6())?.is_empty()
                 && PifRecord::new(p).ipv6_gateway() == ""
                 && PifRecord::new(p)

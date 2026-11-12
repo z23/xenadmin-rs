@@ -8,6 +8,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::VmRecord;
 
 #[derive(Clone)]
@@ -108,10 +109,10 @@ fn order(record: &Value) -> Result<ApplianceOrder, Error> {
 }
 fn power(record: &Value) -> Result<PowerState, Error> {
     match VmRecord::new(record).power_state().as_str() {
-        Some("Running") => Ok(PowerState::Running),
-        Some("Halted") => Ok(PowerState::Halted),
-        Some("Paused") => Ok(PowerState::Paused),
-        Some("Suspended") => Ok(PowerState::Suspended),
+        Some(vm_power_state::RUNNING) => Ok(PowerState::Running),
+        Some(vm_power_state::HALTED) => Ok(PowerState::Halted),
+        Some(vm_power_state::PAUSED) => Ok(PowerState::Paused),
+        Some(vm_power_state::SUSPENDED) => Ok(PowerState::Suspended),
         _ => Err(Error::ResourceConflict),
     }
 }

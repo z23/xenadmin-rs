@@ -1,6 +1,7 @@
 use super::*;
 use crate::{OperationStep, StepState, vm_lifecycle_backend as lifecycle};
 use serde_json::Value;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 impl MutationRequest {
@@ -129,7 +130,7 @@ impl MutationRequest {
                         }
                     };
                     match TaskRecord::new(&record).status().as_str() {
-                        Some("success") => {
+                        Some(task_status_type::SUCCESS) => {
                             if matches!(plan.steps[index], lifecycle::Step::Copy { .. }) {
                                 plan.evidence[index].result =
                                     Some(crate::xapi::snapshot_task_result(&record)?);
@@ -137,7 +138,7 @@ impl MutationRequest {
                             plan.evidence[index].completed = true;
                             break;
                         }
-                        Some("failure") | Some("cancelled") => {
+                        Some(task_status_type::FAILURE) | Some(task_status_type::CANCELLED) => {
                             let code = TaskRecord::new(&record)
                                 .error_info()
                                 .value()
@@ -155,7 +156,7 @@ impl MutationRequest {
                                 )
                                 .await;
                         }
-                        Some("pending") | Some("cancelling") => {
+                        Some(task_status_type::PENDING) | Some(task_status_type::CANCELLING) => {
                             self.record.state = OperationState::Tracking;
                             self.record.detail="Waiting for the host task; stopping here only prevents later steps".into();
                             self.record.can_cancel = true;

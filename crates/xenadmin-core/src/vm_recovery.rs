@@ -4,6 +4,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{domain_type, task_status_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{TaskRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +71,7 @@ impl RecoveryBootConfiguration {
         Ok(())
     }
     fn matches(&self, record: &Value, order: Option<&str>) -> bool {
-        VmRecord::new(record).domain_type() == "hvm"
+        VmRecord::new(record).domain_type() == domain_type::HVM
             && VmRecord::new(record).hvm_boot_policy() == "BIOS order"
             && crate::guest_boot::firmware(record) == Some(self.firmware.as_str())
             && crate::guest_boot::policy(record) == self.secure_boot
@@ -191,7 +192,7 @@ impl VmRecoveryOperation {
             && match self {
                 Self::Force { action, tasks } => {
                     validate_tasks(tasks).is_ok()
-                        && VmRecord::new(r).power_state() == "Running"
+                        && VmRecord::new(r).power_state() == vm_power_state::RUNNING
                         && VmRecord::new(r)
                             .blocked_operations()
                             .as_object()
@@ -204,9 +205,9 @@ impl VmRecoveryOperation {
                 Self::Boot { configuration } => {
                     configuration.validate().is_ok()
                         && configuration.matches(r, configuration.order.as_deref())
-                        && VmRecord::new(r).power_state() == "Halted"
+                        && VmRecord::new(r).power_state() == vm_power_state::HALTED
                         && idle(r)
-                        && advertised(r, "start")
+                        && advertised(r, vm_operations::START)
                 }
                 Self::RestoreBoot { configuration, .. } => {
                     configuration.validate().is_ok()
@@ -494,12 +495,14 @@ pub(crate) async fn prepare(
     if !config.matches(&r, expected) || !idle(&r) {
         return Err(Error::Stale);
     }
-    if matches!(step, Step::Start | Step::Override) && VmRecord::new(&r).power_state() != "Halted" {
+    if matches!(step, Step::Start | Step::Override)
+        && VmRecord::new(&r).power_state() != vm_power_state::HALTED
+    {
         return Err(Error::Stale);
     }
     match step {
         Step::Start => {
-            if !advertised(&r, "start") {
+            if !advertised(&r, vm_operations::START) {
                 return Err(Error::UnavailableAction);
             }
             s.call(
@@ -550,7 +553,7 @@ pub(crate) async fn task(s: &Session, plan: &mut Plan, index: usize) -> Result<V
         return Err(Error::Stale);
     }
     e.task_id = Some(id);
-    if TaskRecord::new(&r).status() == "success" {
+    if TaskRecord::new(&r).status() == task_status_type::SUCCESS {
         e.completed = true
     }
     Ok(r)
@@ -569,9 +572,9 @@ pub(crate) async fn verify(
         Step::Force(a) => {
             VmRecord::new(&r).power_state()
                 == if *a == ForceRecoveryAction::Shutdown {
-                    "Halted"
+                    vm_power_state::HALTED
                 } else {
-                    "Running"
+                    vm_power_state::RUNNING
                 }
         }
         step => {
@@ -582,7 +585,8 @@ pub(crate) async fn verify(
                 Some("dn")
             };
             c.matches(&r, order)
-                && (*step != Step::Start || VmRecord::new(&r).power_state() == "Running")
+                && (*step != Step::Start
+                    || VmRecord::new(&r).power_state() == vm_power_state::RUNNING)
         }
     })
 }

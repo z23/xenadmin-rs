@@ -1,5 +1,6 @@
 use super::*;
 use crate::{ResourceAction, cross_pool_backend as backend};
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 struct ReceiverSession {
@@ -238,15 +239,15 @@ impl ResourceRequest {
             }
             self.cross_plan_mut()?.task_uuid = Some(uuid);
             match TaskRecord::new(&value).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     self.cross_plan_mut()?.completed = true;
                     self.cross_plan_mut()?.ended = true;
                     self.record.result_reference = Some(crate::xapi::snapshot_task_result(&value)?);
                 }
-                Some("failure" | "cancelled") => {
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
                     self.cross_plan_mut()?.ended = true;
                 }
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Unknown cross-pool task state")),
             }
             self.record = journal.resource_evidence(&self.record)?;

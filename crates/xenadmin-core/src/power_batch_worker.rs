@@ -1,5 +1,6 @@
 use super::*;
 use crate::power_batch::{self, Item, Plan};
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 impl ResourceRequest {
@@ -207,7 +208,7 @@ impl ResourceRequest {
             ))?;
             let task = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=session.call("task.get_record",vec![json!(&reference)])=>result? };
             match TaskRecord::new(&task).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     self.record
                         .power_batch_plan
                         .as_mut()
@@ -216,7 +217,7 @@ impl ResourceRequest {
                         .succeeded = true;
                     return self.merge_batch_evidence(journal, index).await;
                 }
-                Some("failure" | "cancelled") => {
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
                     let code = TaskRecord::new(&task)
                         .error_info()
                         .value()
@@ -241,7 +242,7 @@ impl ResourceRequest {
                     self.save(journal).await?;
                     return Ok(false);
                 }
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Unknown power task status")),
             }
             // User stop is deliberately not forwarded as task.cancel: finish the

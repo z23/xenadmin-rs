@@ -26,6 +26,11 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.
   writes for the toolstack release the client is qualified on (26.1.11). The description
   first used was a copy upstream keeps in its repository, which turned out to date from
   2024 and to lack 3 classes, 54 fields and 115 calls of that release.
+- Inside, values of the API's enumerations (power states, task states, disk types,
+  operation names) are written as generated constants, so one the API does not have
+  cannot be written, and debug builds can check that each record is read as the class it
+  is of. Seven reads through the wrong class and one comparison with a disk type that
+  does not exist were found and corrected; none of them changed what the client did.
 - A console opened in a window of its own is drawn at the interface size, its picture
   included, and follows a change of the size or the appearance made in the main window.
   Ctrl with plus, minus or 0 works in such a window while its console is not holding

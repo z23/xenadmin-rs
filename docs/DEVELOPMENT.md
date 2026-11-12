@@ -83,6 +83,20 @@ its tag, commit and digest in `data/SOURCE`. `lab/description_check.py` compares
 description with the fields of a lab pool's live records, read-only, and is how a
 description is shown to match the hosts it is for.
 
+A view reads a field of its class from whatever record it is given, so a record of
+another class reads without complaint where the field has the same name. To look for
+that, run the tests or a lab scenario from a debug build with
+`XENADMIN_XAPI_VIEW_AUDIT=/path/to/file`: every view then appends to that file the keys
+of its record that its class lacks, with the place the view was made (class, key and
+place, separated by tabs; names only). A record of another class shows up by the keys
+only its own class has, and a fixture that carries a field the API does not have shows
+up too. Over the core's tests the file holds only what is meant: fixtures' own switches
+(`fixture_…`), a storage backend and a crash dump given a foreign field to show it is
+not passed on, and the `ref` the client adds to a CD drive's record it holds. Write
+enumeration values as the generated constants (`vm_power_state::HALTED`,
+`vdi_operations::DESTROY`), not as literals: a value the API does not have then does
+not compile.
+
 The development and inspection launchers use Cargo to select the current build executable.
 They honor `CARGO_TARGET_DIR` and target-specific output paths; inspection builds the local
 probe when necessary without starting a second host session.

@@ -4,6 +4,7 @@ use crate::{
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::{HostRecord, PoolRecord, SrRecord, VmRecord};
 
 struct JoinSpec {
@@ -149,7 +150,7 @@ async fn source(session: &Session, spec: &JoinSpec) -> Result<(), Error> {
             Some(true) => {}
             Some(false) => {
                 require(
-                    VmRecord::new(vm).power_state() == "Halted"
+                    VmRecord::new(vm).power_state() == vm_power_state::HALTED
                         && VmRecord::new(vm).scheduled_to_be_resident_on() == "OpaqueRef:NULL",
                     "All source guests must already be halted and unscheduled before joining",
                 )?;

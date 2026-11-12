@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::{on_boot, primary_address_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{PifRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,15 +349,15 @@ async fn source(
     require(
         VmRecord::new(&record).power_state()
             == if operation.mode.live() {
-                "Running"
+                vm_power_state::RUNNING
             } else {
-                "Halted"
+                vm_power_state::HALTED
             },
         "The VM power state changed",
     )?;
     m::idle(&record)?;
     require(
-        crate::xapi::advertises(&record, "migrate_send"),
+        crate::xapi::advertises(&record, vm_operations::MIGRATE_SEND),
         "The host does not currently allow cross-pool migration",
     )?;
     require(
@@ -461,7 +462,7 @@ async fn source(
                 && VdiRecord::new(&record).sharable() == false
                 && VdiRecord::new(&record).is_a_snapshot() == false
                 && VdiRecord::new(&record).cbt_enabled() == false
-                && VdiRecord::new(&record).on_boot() == "persist",
+                && VdiRecord::new(&record).on_boot() == on_boot::PERSIST,
             "Shared, snapshot, CBT or reset-on-boot disks cannot use this transfer",
         )?;
         let consumers = m::refs(&record, "VBDs")?;
@@ -515,15 +516,16 @@ async fn destinations(
     let mut transfer_address_matches = false;
     for pif in m::refs(&network_record, "PIFs")? {
         let pif = m::read(destination, "PIF", &pif).await?;
-        let address_matches = if PifRecord::new(&pif).primary_address_type() == "IPv6" {
-            PifRecord::new(&pif).ipv6().as_array().is_some_and(|ips| {
-                ips.iter()
-                    .filter_map(Value::as_str)
-                    .any(|ip| ip.split('/').next() == Some(operation.transfer_address.as_str()))
-            })
-        } else {
-            PifRecord::new(&pif).ip() == operation.transfer_address
-        };
+        let address_matches =
+            if PifRecord::new(&pif).primary_address_type() == primary_address_type::IPV6 {
+                PifRecord::new(&pif).ipv6().as_array().is_some_and(|ips| {
+                    ips.iter()
+                        .filter_map(Value::as_str)
+                        .any(|ip| ip.split('/').next() == Some(operation.transfer_address.as_str()))
+                })
+            } else {
+                PifRecord::new(&pif).ip() == operation.transfer_address
+            };
         transfer_address_matches |= PifRecord::new(&pif).host() == host
             && PifRecord::new(&pif).currently_attached() == true
             && address_matches;
@@ -763,9 +765,9 @@ pub(crate) async fn verify_destination(
         shape(&record)? == plan.shape
             && VmRecord::new(&record).power_state()
                 == if plan.operation.mode.live() {
-                    "Running"
+                    vm_power_state::RUNNING
                 } else {
-                    "Halted"
+                    vm_power_state::HALTED
                 },
         "The destination guest configuration or state is not yet verified",
     )?;

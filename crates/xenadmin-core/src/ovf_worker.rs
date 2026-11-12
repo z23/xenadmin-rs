@@ -5,6 +5,7 @@ use crate::{
     transfer::{Plan, files, http},
 };
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 fn now() -> u64 {
     std::time::SystemTime::now()
@@ -376,7 +377,7 @@ impl ResourceRequest {
             .get("task")
             .is_none_or(|ids| ids.contains(&id))
             || TaskRecord::new(v).name_label() != name
-            || TaskRecord::new(v).status() != "pending"
+            || TaskRecord::new(v).status() != task_status_type::PENDING
             || self.ovf_plan()?.steps.iter().enumerate().any(|(i, st)| {
                 i != index && st.stream.as_ref().is_some_and(|p| p.task_uuid == Some(id))
             })
@@ -459,13 +460,13 @@ impl ResourceRequest {
                 .as_mut()
                 .ok_or(Error::TransferConflict)?;
             match TaskRecord::new(&v).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     stream.task_success = true;
                     stream.result = Some(vec![crate::xapi::snapshot_task_result(&v)?]);
                 }
-                Some("failure") => stream.task_failed = true,
-                Some("cancelled") => stream.task_cancelled = true,
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::FAILURE) => stream.task_failed = true,
+                Some(task_status_type::CANCELLED) => stream.task_cancelled = true,
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::TransferConflict),
             }
             self.save(j).await?;

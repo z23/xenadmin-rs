@@ -3,6 +3,7 @@ use crate::{
     network_topology::{Kind, Receipt},
     resources::topology,
 };
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 impl ResourceRequest {
@@ -183,15 +184,15 @@ impl ResourceRequest {
             let step = self.topology_step_mut(index)?;
             step.task_uuid = Some(uuid);
             match TaskRecord::new(&value).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     step.completed = true;
                     step.ended = true;
                     if step.kind.creates() {
                         step.result = Some(crate::xapi::snapshot_task_result(&value)?);
                     }
                 }
-                Some("failure" | "cancelled") => step.ended = true,
-                Some("pending" | "cancelling") => {}
+                Some(task_status_type::FAILURE | task_status_type::CANCELLED) => step.ended = true,
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {}
                 _ => return Err(Error::Protocol("Topology task status unavailable")),
             }
             self.record = j.topology_evidence(&self.record, index)?;

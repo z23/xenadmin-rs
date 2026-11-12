@@ -1,5 +1,6 @@
 use super::*;
 use crate::resources::host;
+use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
 
 impl ResourceRequest {
@@ -177,14 +178,14 @@ impl ResourceRequest {
                 .ok_or(Error::Protocol("host task receipt unavailable"))?;
             let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&task_ref)])=>result?};
             match TaskRecord::new(&task).status().as_str() {
-                Some("success") => {
+                Some(task_status_type::SUCCESS) => {
                     self.record.host_plan.as_mut().ok_or(Error::Journal)?.steps[index]
                         .task_succeeded = true;
                     self.record = journal.host_evidence(&self.record, index)?;
                     self.announce().await;
                     return Ok(!self.stopped_after_recovery());
                 }
-                Some(status @ ("failure" | "cancelled")) => {
+                Some(status @ (task_status_type::FAILURE | task_status_type::CANCELLED)) => {
                     let code = TaskRecord::new(&task)
                         .error_info()
                         .as_array()
@@ -252,7 +253,7 @@ impl ResourceRequest {
                     }
                     return Ok(false);
                 }
-                Some("pending" | "cancelling") => {
+                Some(task_status_type::PENDING | task_status_type::CANCELLING) => {
                     self.record.state = OperationState::Tracking;
                     self.record.can_cancel = true;
                     self.record.detail=if self.record.cancel_requested{"Waiting for the current host task; remaining steps will stop afterward"}else{"Waiting for the host task; stopping this workflow does not cancel in-flight host work"}.into();

@@ -671,6 +671,41 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    within the last 75 seconds the rest of them before asking it to shut down, cancels a
    clean shutdown the guest did not act on before forcing, and the NIC scenario removes
    what an interrupted run of it left behind.
+60. **A disk type the API does not have.** The check of an installation image for a new
+   VM first accepted a disk whose type is `iso`. The API's disk types have none for
+   images: hosts record an image as a disk of type `user` in a repository whose content
+   type is `iso` (finding 21), which the same check goes on to test. So the first test
+   never held, nothing was wrongly allowed or refused by it, and the fixture, which
+   carried a disk of type `iso`, kept the tests from reaching the test that decides.
+   The dead test is removed, the fixture has the API's shape, and a test shows that a
+   disk claiming such a type outside an ISO library is refused. Found when the literal
+   values that the core compares enumeration fields with were replaced by the generated
+   constants: 247 literals, each a value of its field's enumeration but this one. The
+   VM creation scenario was run again on the lab afterwards.
+61. **Seven places read a record through the view of another class.** When the core's
+   reads moved onto generated views, a variable got its class from the fields read from
+   it where exactly one class has them all. Three helpers that ask whether a record
+   offers an operation read `allowed_operations` and `blocked_operations`; only a VM has
+   both, so they got the VM's view, but one was only ever handed repositories and
+   disks, one a CD drive, and one a disk among VMs. A loop over virtual interfaces read
+   them as physical ones, a search of disks for snapshots of a disk read them as VMs,
+   and two places read a record whose class is chosen at run time as a NIC and as a VM.
+   All seven read what they meant to, because the field has the same name in both
+   classes; the read of `blocked_operations` from a class without it was a guard that
+   cannot fire, as in finding 58. Nothing was wrongly allowed or refused. Each now
+   reads through its record's own class, or by key where the class is known only at run
+   time. Four were found by comparing every view with the call that produced its record
+   (946 of 1,329 reads through views can be traced that way and agree), and three by a
+   check added to the generated views for debug builds: asked to, a view reports the
+   keys of its record that its class lacks, which a record of another class always
+   has. Run over the core's test suite, that check also showed fixtures giving one
+   class's record another's fields (a created disk with an attachment state, tunnels
+   and SR-IOV networks sharing one record shape, a repository with blocked
+   operations), now corrected; what it still reports there is deliberate. It records
+   during the lab scenarios run from here on. The claim in the
+   [decision record](../decisions/0004-generated-bindings.md) that an assignment from
+   fields cannot choose a wrong class where one class fits was wrong and is corrected
+   there.
 
 ## Console observation
 

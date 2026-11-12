@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::{vdi_type, vm_power_state};
 use xenadmin_xapi::records::{SrRecord, VdiRecord, VmRecord};
 
 impl ExportSource {
@@ -88,8 +89,8 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
     for object in objects.iter().filter(|o| o["class"] == "VM") {
         let record = &object["snapshot"];
         let suspended = match VmRecord::new(record).power_state().as_str() {
-            Some("Halted") => false,
-            Some("Suspended") => true,
+            Some(vm_power_state::HALTED) => false,
+            Some(vm_power_state::SUSPENDED) => true,
             _ => return Err(Error::TransferArchive),
         };
         let memory = VmRecord::new(record).suspend_vdi().value().as_str();
@@ -114,7 +115,7 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
             .and_then(|r| records.get(r))
             .ok_or(Error::TransferArchive)?;
         if disk["class"] != "VDI"
-            || VdiRecord::new(d).type_() != "suspend"
+            || VdiRecord::new(d).type_() != vdi_type::SUSPEND
             || uuid.is_nil()
             || sr["class"] != "SR"
             || sr["snapshot"]["content_type"] != "user"
@@ -159,8 +160,8 @@ pub(crate) async fn fresh(
         .await?
         .ok_or(Error::TransferConflict)?;
     if VmRecord::new(vm).suspend_vdi() != reference
-        || VmRecord::new(vm).power_state() != "Suspended"
-        || VdiRecord::new(&disk).type_() != "suspend"
+        || VmRecord::new(vm).power_state() != vm_power_state::SUSPENDED
+        || VdiRecord::new(&disk).type_() != vdi_type::SUSPEND
         || VdiRecord::new(&disk).managed() != true
         || VdiRecord::new(&disk).missing() != false
         || size(&disk)? != expected.virtual_size

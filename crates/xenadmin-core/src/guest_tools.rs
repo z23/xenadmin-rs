@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::enumerations::{vbd_operations, vbd_type, vm_power_state};
 use xenadmin_xapi::records::{PbdRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,17 +167,10 @@ fn idle(record: &Value) -> Result<(), Error> {
         Ok(())
     }
 }
-fn permits(record: &Value, operation: &str) -> Result<(), Error> {
-    idle(record)?;
-    if VmRecord::new(record)
-        .allowed_operations()
-        .as_array()
-        .is_some_and(|ops| ops.iter().any(|s| s == operation))
-        && VmRecord::new(record)
-            .blocked_operations()
-            .get(operation)
-            .is_none()
-    {
+/// An idle CD drive whose host offers `operation` on it now.
+fn permits(drive: &Value, operation: &str) -> Result<(), Error> {
+    idle(drive)?;
+    if crate::xapi::offers(VbdRecord::new(drive).allowed_operations(), operation) {
         Ok(())
     } else {
         Err(Error::UnavailableAction)
@@ -193,7 +187,7 @@ async fn guest(session: &Session, vm: VmId, writing: bool) -> Result<(String, Va
     if writing {
         if !matches!(
             VmRecord::new(&record).power_state().as_str(),
-            Some("Running" | "Halted")
+            Some(vm_power_state::RUNNING | vm_power_state::HALTED)
         ) {
             return Err(Error::UnavailableAction);
         }
@@ -223,7 +217,7 @@ async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Resu
         PbdRecord::new(p).sr() == sr_ref && PbdRecord::new(p).currently_attached() == true
     }) {
         let host = crate::snapshots::reference(&pbd["host"])?;
-        if VmRecord::new(guest).power_state() == "Running" {
+        if VmRecord::new(guest).power_state() == vm_power_state::RUNNING {
             if VmRecord::new(guest).resident_on() == host {
                 reachable = true;
                 break;
@@ -249,7 +243,7 @@ async fn cd(
 ) -> Result<String, Error> {
     let (reference, record) = fresh(session, "VBD", id.uuid()).await?;
     if VbdRecord::new(&record).vm() != vm
-        || VbdRecord::new(&record).type_() != "CD"
+        || VbdRecord::new(&record).type_() != vbd_type::CD
         || VbdRecord::new(&record).empty() != previous.is_none()
     {
         return Err(Error::DeviceConflict);
@@ -265,9 +259,9 @@ async fn cd(
     permits(
         &record,
         if previous.is_some() {
-            "eject"
+            vbd_operations::EJECT
         } else {
-            "insert"
+            vbd_operations::INSERT
         },
     )?;
     Ok(reference)
@@ -341,7 +335,7 @@ pub(crate) async fn verify(session: &Session, vm: VmId, step: &Step) -> Result<b
         Step::Eject { cd, .. } | Step::Insert { cd, .. } => *cd,
     };
     let (_, record) = fresh(session, "VBD", id.uuid()).await?;
-    if VbdRecord::new(&record).vm() != vm_ref || VbdRecord::new(&record).type_() != "CD" {
+    if VbdRecord::new(&record).vm() != vm_ref || VbdRecord::new(&record).type_() != vbd_type::CD {
         return Err(Error::DeviceConflict);
     }
     match step {

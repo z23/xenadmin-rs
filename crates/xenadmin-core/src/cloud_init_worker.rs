@@ -4,6 +4,7 @@ use crate::{
     cloud_init::{self, Attachment, Plan},
 };
 use serde_json::Value;
+use xenadmin_xapi::enumerations::{vbd_mode, vbd_type, vm_power_state};
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
 
 impl ResourceRequest {
@@ -38,7 +39,7 @@ impl ResourceRequest {
         if VmRecord::new(&vm).is_a_snapshot() != false
             || VmRecord::new(&vm).is_a_template() != false
             || VmRecord::new(&vm).is_control_domain() != false
-            || VmRecord::new(&vm).power_state() != "Halted"
+            || VmRecord::new(&vm).power_state() != vm_power_state::HALTED
         {
             return Err(Error::DeviceLifecycleRequiresHaltedVm);
         }
@@ -80,7 +81,7 @@ impl ResourceRequest {
                         "This VM already has an app-created cloud-init drive; review its removal separately",
                     ));
                 }
-                if VbdRecord::new(&vbd).type_() == "Disk" {
+                if VbdRecord::new(&vbd).type_() == vbd_type::DISK {
                     let vdi = session
                         .call(
                             "VDI.get_record",
@@ -386,8 +387,8 @@ impl ResourceRequest {
             || VbdRecord::new(&fresh).vm() != vm_ref
             || VbdRecord::new(&fresh).vdi() != disk_ref
             || VbdRecord::new(&fresh).userdevice() != config.device
-            || VbdRecord::new(&fresh).mode() != "RO"
-            || VbdRecord::new(&fresh).type_() != "Disk"
+            || VbdRecord::new(&fresh).mode() != vbd_mode::RO
+            || VbdRecord::new(&fresh).type_() != vbd_type::DISK
             || VbdRecord::new(&fresh).empty() != false
             || VbdRecord::new(&fresh).bootable() != false
             || VbdRecord::new(&fresh).currently_attached() != false

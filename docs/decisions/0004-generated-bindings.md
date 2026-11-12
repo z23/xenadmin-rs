@@ -93,6 +93,12 @@ depends on the description alone and is sorted.
   which reads as the JSON value it wraps. The core's readers of a field take that type,
   so a whole record handed to one of them does not compile.
 - Constants for every enumeration value, such as the four VM power states.
+- A check a view makes of its record in debug builds, when asked to. A record does not
+  say which class it is of, but it carries every field of its class, so a record of
+  another class has keys the view's class lacks. With the environment variable
+  `XENADMIN_XAPI_VIEW_AUDIT` naming a file, each view writes there the keys of its
+  record that its class lacks and the place the view was made: names only, never a
+  value. Release builds do not contain the check.
 
 ## Use in the core so far
 
@@ -113,7 +119,11 @@ depends on the description alone and is sorted.
   read names its view where it
   is made (`VmRecord::new(&record).power_state()`), so a view is never held across a
   point where the variable is bound to another record.
-- VM power states are compared with the generated constants in the event decoder.
+- Enumeration values are written as the generated constants: 247 literals in
+  comparisons and match arms on enumeration fields (power states, task states, disk and
+  attachment types, address modes and the like), and 72 operation names passed to the
+  helpers that ask whether a record offers an operation, each from the enumeration of
+  that record's class. A value its enumeration does not have has no constant.
 - `xapi_conformance_tests.rs` checks every string of the form `Class.name` or
   `Async.Class.name` in the core against the catalogue: a call must be a message of that
   class, and a field named by a decoder must be a field of it. It has a list for calls
@@ -138,27 +148,61 @@ What the move found:
 - The description itself was two years older than the toolstack it was taken to describe
   (finding 56, above).
 
-The last three came from looking at the variables no class fits. A variable whose fields
-fit a class but for one is either two records under one name or a wrong field name.
+- The check of an installation image compared a disk's type with `iso`, which is not
+  one of the API's disk types, so that test never held; the fixture carried such a
+  disk (finding 60). It was the one literal of the 247 that was not a value of its
+  field's enumeration.
+- Seven places read a record through the view of another class (finding 61, and below).
+
+Findings 56 to 58 came from looking at the variables no class fits. A variable whose
+fields fit a class but for one is either two records under one name or a wrong field
+name.
 
 What the views alone did not protect against: a reader that takes a field's value took
 a JSON value, as a whole record is. One call that passed the record where its UUID was
 expected compiled, and a test caught it. `FieldValue` closed that: the same call, put
 back as a check, is refused by the compiler ("expected `FieldValue`, found `&Value`").
 A field of the wrong class or the wrong meaning passed to a reader still compiles;
-typed values, step 3 below, narrow that further. A variable given the wrong class
-compiles too when that class has the fields read; the assignment from fields cannot
-make that mistake where one class fits, and the assignments by hand were read against
-the calls that produce each record.
+typed values, step 2 below, narrow that further.
+
+A variable given the wrong class compiles too when that class has the fields read, and
+this record first said that the assignment from fields could not make that mistake
+where one class fits. It can, and did in seven places. Three helpers that ask whether a
+record offers an operation read `allowed_operations` and `blocked_operations`; only a VM
+has both, so they were given the VM's view, but they were handed repositories and
+disks, a CD drive, and a disk among VMs. Three more places read a field that several
+classes have (`uuid`, `other_config`, `network`, `snapshot_of`) from a record whose
+class is another, or is only known at run time. All seven read what they meant to,
+because the field has the same name in both classes, and the read of
+`blocked_operations` from a class without it was a guard that cannot fire. Each now
+reads through its record's own class, or by key where the class is not known until run
+time.
+
+Two checks made since look for this, neither of them complete:
+
+- Every view was compared with the call that produced its record (`fresh(session,
+  "VM", ..)`, a `Class.get_record`, a store key, or what a helper's callers pass). Of
+  1,329 reads through views, 946 could be traced that way and agree, 16 were flagged
+  by a class name that stood nearby as a field key and were read by hand, and the rest
+  could not be traced: records handed on through several functions or kept in the
+  client's own structures. The comparison was a script and is not in the repository.
+- The check in debug builds, described above, was switched on for the core's whole test
+  suite and for the lab scenarios run since. Over the tests it showed three of the seven
+  places, which the comparison could not trace, and fixtures that gave one class's
+  record another's fields. What it still reports there is meant: fixtures' own
+  switches, two records given a foreign field to show it is not passed on, repository
+  fixtures that carry an empty `blocked_operations`, and one key the client adds to a
+  record it holds. It sees only the reads a test or a scenario exercises.
 
 ## What follows, in order
 
 The count used here is of indexes by a string literal on an expression (`record["key"]`)
 in the core's sources outside its test files, which is how a field is read without a
 view. Before the move the core had 2,094 of them over 252 distinct keys; on 2026-11-11
-it has 646 over 185. Not all of them are fields: some are keys inside map-valued
-fields, parts of the JSON-RPC envelope, disk image and archive metadata or the client's
-own structures.
+it had 646 over 185, and on 2026-11-12 649, three reads of a record whose class is known
+only at run time having gone back to keys. Not all of them are fields: some are keys
+inside map-valued fields, parts of the JSON-RPC envelope, disk image and archive
+metadata or the client's own structures.
 
 1. The reads by key that are left. Most are where the class of a record depends on a
    value at run time (network and storage operations read "the target's record", whose
@@ -166,12 +210,14 @@ own structures.
    class (a `uuid` alone), or in helpers that take a record of any class; each needs
    its class from the call that produced the record, or a helper per class. The loops
    that handle several classes at once stay by key.
-2. Enumeration constants replace the remaining literal values.
-3. Typed values: generated readers that turn a field into its Rust type, with the core's
-   bounds applied to the result.
-4. Calls: generated descriptions of each message's parameters, so that a call's argument
+2. Typed values: generated readers that turn a field into its Rust type, with the core's
+   bounds applied to the result. The enumeration values still written as literals are
+   here: those compared with a value of the client's own, such as a reviewed power
+   state or an address mode, and the operation names the client carries in its own
+   types.
+3. Calls: generated descriptions of each message's parameters, so that a call's argument
    count and order are checked where it is made.
-5. The experimental areas, class by class, each with the fixture tests that cover it.
+4. The experimental areas, class by class, each with the fixture tests that cover it.
 
 A workflow whose decoding moves onto the generated crate is run again on the lab before
 it is called qualified on it: the live evidence gathered before is not carried over by

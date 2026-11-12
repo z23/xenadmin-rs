@@ -196,10 +196,20 @@ async fn fixture(kind: Kind, fault: Fault) -> (Mock, Records, Arc<AtomicUsize>) 
                 if method.ends_with(".create") {
                     assert_eq!(request["params"][1], "OpaqueRef:PIF");
                     assert_eq!(request["params"][2], "OpaqueRef:network");
-                    let mut obj = json!({"uuid":OBJECT,parent:"OpaqueRef:PIF",child:"OpaqueRef:PIF-child","protocol":"gre","status":{"active":"false"},"requires_reboot":fault==Fault::Reboot,"configuration_mode":if fault==Fault::Reboot{"modprobe"}else{"sysfs"}});
+                    // A tunnel and an SR-IOV network each carry their own class's fields.
+                    let mut obj =
+                        json!({"uuid":OBJECT,parent:"OpaqueRef:PIF",child:"OpaqueRef:PIF-child"});
                     if let Kind::Tunnel(protocol) = kind {
                         assert_eq!(request["params"][3], protocol.as_str());
                         obj["protocol"] = json!(protocol.as_str());
+                        obj["status"] = json!({"active":"false"});
+                    } else {
+                        obj["requires_reboot"] = json!(fault == Fault::Reboot);
+                        obj["configuration_mode"] = json!(if fault == Fault::Reboot {
+                            "modprobe"
+                        } else {
+                            "sysfs"
+                        });
                     }
                     map.insert(class.into(), obj);
                     map.get_mut("PIF").unwrap()[parents] = json!([object_ref]);

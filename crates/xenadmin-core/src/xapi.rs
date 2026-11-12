@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 
 use xenadmin_xapi::{
     FieldValue,
-    enumerations::vm_power_state,
+    enumerations::{vm_operations, vm_power_state},
     records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord, VmRecord},
 };
 
@@ -695,7 +695,7 @@ impl Store {
                         crate::OperationAction::Settings(p) => p.target_guard(value).is_ok(),
                         crate::OperationAction::Snapshot(
                             crate::SnapshotOperation::Checkpoint { .. },
-                        ) => advertises(value, "checkpoint"),
+                        ) => advertises(value, vm_operations::CHECKPOINT),
                         crate::OperationAction::Placement(p) => {
                             view.allowed_operations().as_array().is_some_and(|ops| {
                                 ops.iter().any(|op| {
@@ -709,7 +709,7 @@ impl Store {
                         }
                         crate::OperationAction::Snapshot(crate::SnapshotOperation::Create {
                             ..
-                        }) => advertises(value, "snapshot"),
+                        }) => advertises(value, vm_operations::SNAPSHOT),
                         crate::OperationAction::Snapshot(crate::SnapshotOperation::Revert {
                             snapshot,
                         }) => {
@@ -722,7 +722,7 @@ impl Store {
                                         && snapshot_view.snapshot_of().as_str()
                                             == self.vm_reference(vm).as_deref()
                                         && reference != "OpaqueRef:NULL"
-                                        && advertises(candidate, "revert")
+                                        && advertises(candidate, vm_operations::REVERT)
                                 })
                         }
                         crate::OperationAction::Snapshot(
@@ -737,7 +737,7 @@ impl Store {
                                 && match action {
                                     crate::OperationAction::Snapshot(
                                         crate::SnapshotOperation::Clone { .. },
-                                    ) => advertises(candidate, "clone"),
+                                    ) => advertises(candidate, vm_operations::CLONE),
                                     _ => can_delete_snapshot(candidate),
                                 }
                         }),
@@ -880,13 +880,13 @@ impl Store {
             let view = VmRecord::new(value);
             if *view.is_a_snapshot() == true {
                 let mut actions = Vec::new();
-                if advertises(value, "revert") {
+                if advertises(value, vm_operations::REVERT) {
                     actions.push(crate::SnapshotAction::Revert);
                 }
                 if can_delete_snapshot(value) {
                     actions.push(crate::SnapshotAction::Delete);
                 }
-                if advertises(value, "clone") {
+                if advertises(value, vm_operations::CLONE) {
                     actions.push(crate::SnapshotAction::Clone);
                 }
                 snapshots.insert(crate::Snapshot {
@@ -915,7 +915,7 @@ impl Store {
             vms.insert(
                 id,
                 Vm {
-                    can_snapshot: advertises(value, "snapshot"),
+                    can_snapshot: advertises(value, vm_operations::SNAPSHOT),
                     allowed_actions: crate::PowerAction::ALL
                         .into_iter()
                         .filter(|action| advertises(value, action.wire()))
@@ -975,6 +975,18 @@ impl Store {
     }
 }
 
+/// Whether `allowed`, a record's `allowed_operations` read through its own class's view,
+/// includes `operation`. Only a VM also has operations blocked by an administrator; that
+/// is checked where a VM is read.
+pub(crate) fn offers(allowed: FieldValue<'_>, operation: &str) -> bool {
+    allowed
+        .as_array()
+        .is_some_and(|operations| operations.iter().any(|value| value == operation))
+}
+
+/// Whether a VM offers `action` and no administrator has blocked it. (Given a record of
+/// another class it asks only the first: no other class has blocked operations. Such a
+/// record is better asked through `offers` and its own view.)
 pub(crate) fn advertises(record: &Value, action: &str) -> bool {
     record["allowed_operations"]
         .as_array()
@@ -984,8 +996,8 @@ pub(crate) fn advertises(record: &Value, action: &str) -> bool {
 
 fn can_delete_snapshot(record: &Value) -> bool {
     match VmRecord::new(record).power_state().as_str() {
-        Some(vm_power_state::HALTED) => advertises(record, "destroy"),
-        Some(vm_power_state::SUSPENDED) => advertises(record, "hard_shutdown"),
+        Some(vm_power_state::HALTED) => advertises(record, vm_operations::DESTROY),
+        Some(vm_power_state::SUSPENDED) => advertises(record, vm_operations::HARD_SHUTDOWN),
         _ => false,
     }
 }
@@ -1020,14 +1032,14 @@ pub(crate) async fn prepare_mutation(
         }
         OperationAction::Snapshot(SnapshotOperation::Checkpoint { name }) => {
             crate::SnapshotName::new(name)?;
-            if !advertises(&record, "checkpoint") {
+            if !advertises(&record, vm_operations::CHECKPOINT) {
                 return Err(Error::UnavailableAction);
             }
             Ok(parent)
         }
         OperationAction::Snapshot(SnapshotOperation::Create { name }) => {
             crate::SnapshotName::new(name)?;
-            if !advertises(&record, "snapshot") {
+            if !advertises(&record, vm_operations::SNAPSHOT) {
                 return Err(Error::UnavailableAction);
             }
             Ok(parent)
@@ -1051,7 +1063,7 @@ pub(crate) async fn prepare_mutation(
             {
                 return Err(Error::Stale);
             }
-            if !advertises(&candidate, "revert") {
+            if !advertises(&candidate, vm_operations::REVERT) {
                 return Err(Error::UnavailableAction);
             }
             Ok(reference)
@@ -1065,7 +1077,7 @@ pub(crate) async fn prepare_mutation(
             crate::SnapshotName::new(name)?;
             let (reference, candidate) =
                 crate::snapshots::snapshot_record(session, operation.vm, *snapshot).await?;
-            if !advertises(&candidate, "clone") {
+            if !advertises(&candidate, vm_operations::CLONE) {
                 return Err(Error::UnavailableAction);
             }
             Ok(reference)

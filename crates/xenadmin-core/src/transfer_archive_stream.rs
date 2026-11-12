@@ -2,6 +2,7 @@ use super::{Error, MAX_TRANSFER_BYTES, archive, files};
 use sha1::{Digest, Sha1};
 use std::{collections::BTreeMap, io::Read};
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::enumerations::vdi_type;
 use xenadmin_xapi::records::VdiRecord;
 
 const CHUNK: u64 = 1024 * 1024;
@@ -120,7 +121,9 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
         {
             continue;
         }
-        if VdiRecord::new(record).type_() != "user" && VdiRecord::new(record).type_() != "suspend" {
+        if VdiRecord::new(record).type_() != vdi_type::USER
+            && VdiRecord::new(record).type_() != vdi_type::SUSPEND
+        {
             return invalid();
         }
         let id = object["id"]

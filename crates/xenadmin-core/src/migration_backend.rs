@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::enumerations::{storage_operations, vm_power_state};
 use xenadmin_xapi::records::{
     HostRecord, PbdRecord, PifRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord,
 };
@@ -225,9 +226,9 @@ async fn guest(session: &Session, plan: &Plan, original: bool) -> Result<(String
         || VmRecord::new(&r).is_control_domain() != false
         || VmRecord::new(&r).power_state()
             != if plan.operation.live {
-                "Running"
+                vm_power_state::RUNNING
             } else {
-                "Halted"
+                vm_power_state::HALTED
             }
     {
         return Err(Error::MigrationConflict);
@@ -388,7 +389,10 @@ pub(crate) async fn sr_visible(
     idle(&r)?;
     if write
         && (SrRecord::new(&r).content_type() != "user"
-            || !crate::xapi::advertises(&r, "vdi_create"))
+            || !crate::xapi::offers(
+                SrRecord::new(&r).allowed_operations(),
+                storage_operations::VDI_CREATE,
+            ))
     {
         return Err(Error::UnavailableAction);
     }

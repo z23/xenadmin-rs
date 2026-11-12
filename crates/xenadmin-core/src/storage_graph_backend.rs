@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
 use xenadmin_xapi::records::{
     HostRecord, PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord,
 };
@@ -546,7 +547,7 @@ async fn multipath_graph(
             }
             idle(d)?;
             require(
-                VdiRecord::new(d).type_() != "metadata",
+                VdiRecord::new(d).type_() != vdi_type::METADATA,
                 "Storage metadata replication requires separate maintenance",
             )?;
             for b in vbds.values().filter(|b| VbdRecord::new(b).vdi() == *dref) {
@@ -674,7 +675,10 @@ pub(super) async fn arguments(
             match p.kinds[index] {
                 Kind::Create(host_id) => {
                     require(
-                        crate::xapi::advertises(&sr, "pbd_create"),
+                        crate::xapi::offers(
+                            SrRecord::new(&sr).allowed_operations(),
+                            storage_operations::PBD_CREATE,
+                        ),
                         "Host currently refuses creating a storage attachment",
                     )?;
                     let (h, _) = host(s, host_id, true).await?;
@@ -698,7 +702,10 @@ pub(super) async fn arguments(
                     let id = p.attachment(h, storage_id).ok_or(Error::Journal)?;
                     let reference = latest_attachment(s, &graph, id).await?;
                     require(
-                        crate::xapi::advertises(&sr, "plug"),
+                        crate::xapi::offers(
+                            SrRecord::new(&sr).allowed_operations(),
+                            storage_operations::PLUG,
+                        ),
                         "Storage currently refuses connection",
                     )?;
                     Ok(("Async.PBD.plug", vec![json!(reference)]))

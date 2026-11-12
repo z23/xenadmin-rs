@@ -10,6 +10,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::vmss_type;
 use xenadmin_xapi::records::{TaskRecord, VmRecord, VmssRecord};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,8 +77,8 @@ fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, 
             .ok_or(Error::ResourceConflict)?
             .into(),
         kind: match VmssRecord::new(r).type_().as_str() {
-            Some("snapshot") => ScheduledSnapshotKind::Disk,
-            Some("checkpoint") => ScheduledSnapshotKind::Checkpoint,
+            Some(vmss_type::SNAPSHOT) => ScheduledSnapshotKind::Disk,
+            Some(vmss_type::CHECKPOINT) => ScheduledSnapshotKind::Checkpoint,
             _ => return Err(Error::UnavailableAction),
         },
         retained: VmssRecord::new(r)
