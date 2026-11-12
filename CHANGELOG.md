@@ -14,6 +14,11 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.19.
 
 ### Changed
 
+- The review of a forced shutdown or reboot warns when a task it would interrupt is a
+  migration of the VM. The host admits a forced action during a migration and does not
+  always end the migration afterwards; on the lab that left a task pending and partial
+  disk copies that took a host restart to clear (finding 63 of the
+  [live report](docs/reports/2026-11-09-lab-qualification.md)).
 - A cross-pool copy or move that the client declines because of the guest itself (a
   snapshot chain, a vTPM, HA protection, vApp membership, installation media left in a
   drive, a disk that is shared or has other consumers) or because the host does not

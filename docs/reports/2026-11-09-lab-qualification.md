@@ -730,7 +730,42 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    (fixture covered), and the scenarios review the guest's home host as the pool
    reports it. The other refusals of the cross-pool preflight take the same route and
    read as invalid responses where they are unmet prerequisites; that area is
-   experimental and they are left for a pass of its own.
+   experimental and they are left for a pass of its own. That pass was made after
+   0.19.0: the thirteen refusals that are about the guest's own shape or the host's
+   permission are given in their own words, and six more that mean the guest changed
+   since its review are given as that (fixture covered, each text asserted).
+63. **A forced shutdown during a storage migration is not always unwound by the host.**
+   On 2026-11-12 the scenario of finding 20 was run again. As then, the host admitted the
+   forced shutdown while another client's `migrate_send` ran, and the guest was halted.
+   This time the migration did not end: its task stayed pending at 5 % for fifteen
+   minutes, through its owner's cancellation request, the owning client's record
+   reached no outcome within the scenario's limit, and the scenario failed. Clearing it
+   took most of an hour and shows how far the damage reached:
+   - a toolstack restart on the coordinator removed the task, and a snapshot the
+     migration had left on the guest was deleted;
+   - two unattached copies of the guest's image stayed on the member's local
+     repository, one with the 62 MiB already copied. Deleting one did not return (a
+     `VDI.destroy` pending at no progress beside a `host.call_plugin`), neither before
+     nor after a toolstack restart on the member;
+   - a live migration of the Xen Orchestra appliance off the member then stopped at
+     91 % with the appliance no longer answering;
+   - the member was power-cycled through libvirt, after which both copies were deleted
+     in two seconds each and the appliance, halted by the power cycle, was started;
+   - the next migration of the appliance stayed at 0 % until the coordinator's
+     toolstack was restarted a second time, the coordinator having kept its half of the
+     migration the power cycle cut off; it then took seconds. A task record a storage
+     collector had left on the coordinator was removed by hand.
+
+   Nothing inside the hosts was inspected (the lab keeps dom0 off limits), so the cause
+   is not established. What the two runs show together is that XCP-ng 8.3.0 admits a
+   forced shutdown during a storage migration and either unwinds the migration (finding
+   20) or does not, and that the second case is not repaired by cancelling the task or
+   by restarting toolstacks alone. The client did what was reviewed: it captured the
+   running task, sent the forced shutdown that was confirmed and cancelled nobody else's
+   task. Its review of a forced action now says, when a captured task is a migration,
+   that the host may not end the migration afterwards and that cancelling it from the
+   client that started it comes first (Rune fixture covered). The warning has not been
+   seen on a real seat.
 
 ## Console observation
 
