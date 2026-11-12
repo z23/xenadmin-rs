@@ -2,13 +2,13 @@ use super::*;
 use crate::model::*;
 use std::collections::BTreeSet;
 use uuid::Uuid;
-use xenadmin_xapi::FieldValue;
 use xenadmin_xapi::enumerations::vm_operations;
 use xenadmin_xapi::records::{
     BondRecord, HostMetricsRecord, HostRecord, MessageRecord, NetworkRecord, PbdRecord,
     PifMetricsRecord, PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord,
     VlanRecord, VmApplianceRecord, VmGuestMetricsRecord, VmMetricsRecord, VmssRecord,
 };
+use xenadmin_xapi::{FlagField, MapField, RefField, SetField, TextField, Textual, WholeField};
 #[path = "xapi_network_fabric.rs"]
 mod network_fabric;
 
@@ -34,7 +34,7 @@ impl References {
         }
         Self { classes, snapshots }
     }
-    fn link<T: From<Uuid>>(&self, class: &str, reference: FieldValue<'_>) -> Option<T> {
+    fn link<T: From<Uuid>>(&self, class: &str, reference: RefField<'_>) -> Option<T> {
         self.linked(class, reference.value())
     }
     /// The object a reference names, for a reference that is an element of a field.
@@ -45,19 +45,19 @@ impl References {
             .copied()
             .map(T::from)
     }
-    fn vm(&self, reference: FieldValue<'_>) -> Option<VmId> {
+    fn vm(&self, reference: RefField<'_>) -> Option<VmId> {
         if self.snapshots.contains(reference.as_str()?) {
             return None;
         }
         self.link("vm", reference)
     }
-    fn snapshot(&self, reference: FieldValue<'_>) -> Option<crate::SnapshotId> {
+    fn snapshot(&self, reference: RefField<'_>) -> Option<crate::SnapshotId> {
         if !self.snapshots.contains(reference.as_str()?) {
             return None;
         }
         self.link("vm", reference)
     }
-    fn snapshot_parent(&self, value: FieldValue<'_>) -> crate::SnapshotParent {
+    fn snapshot_parent(&self, value: RefField<'_>) -> crate::SnapshotParent {
         if value == "OpaqueRef:NULL" {
             crate::SnapshotParent::Root
         } else if let Some(id) = self.snapshot(value) {
@@ -68,7 +68,7 @@ impl References {
             crate::SnapshotParent::Unresolved
         }
     }
-    fn links<T: From<Uuid>>(&self, class: &str, references: FieldValue<'_>) -> Vec<T> {
+    fn links<T: From<Uuid>>(&self, class: &str, references: SetField<'_>) -> Vec<T> {
         references
             .as_array()
             .into_iter()
@@ -78,19 +78,19 @@ impl References {
     }
 }
 
-fn id<T: From<Uuid>>(uuid: FieldValue<'_>) -> Result<T, Error> {
+fn id<T: From<Uuid>>(uuid: TextField<'_>) -> Result<T, Error> {
     required(uuid)?
         .parse::<Uuid>()
         .map(T::from)
         .map_err(|_| Error::Protocol("invalid optional inventory UUID"))
 }
-fn text_option(value: FieldValue<'_>) -> Option<String> {
+fn text_option<'a>(value: impl Textual<'a>) -> Option<String> {
     value
-        .as_str()
+        .text()
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
 }
-fn map_bool(other_config: FieldValue<'_>, key: &str) -> Option<bool> {
+fn map_bool(other_config: MapField<'_>, key: &str) -> Option<bool> {
     match other_config.as_object()?.get(key) {
         None => Some(false),
         Some(value) => match value.as_str()? {
@@ -112,14 +112,14 @@ pub(crate) fn decode_server_message(record: &Value) -> Result<ServerMessage, Err
         body: string(view.body()),
     })
 }
-fn strings(value: FieldValue<'_>) -> Option<Vec<String>> {
+fn strings(value: SetField<'_>) -> Option<Vec<String>> {
     value
         .as_array()?
         .iter()
         .map(|v| v.as_str().map(str::to_owned))
         .collect()
 }
-fn string_map(value: FieldValue<'_>) -> BTreeMap<String, String> {
+fn string_map(value: MapField<'_>) -> BTreeMap<String, String> {
     value
         .as_object()
         .into_iter()
@@ -128,7 +128,7 @@ fn string_map(value: FieldValue<'_>) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn blocked_operations(value: FieldValue<'_>) -> BTreeMap<String, String> {
+fn blocked_operations(value: MapField<'_>) -> BTreeMap<String, String> {
     value
         .as_object()
         .into_iter()
@@ -179,10 +179,10 @@ pub(super) fn power_availability(record: &Value, action: crate::PowerAction) -> 
     }
     .power_availability(action, true)
 }
-fn size(value: FieldValue<'_>, field: &'static str) -> Result<Option<u64>, Error> {
+fn size(value: WholeField<'_>, field: &'static str) -> Result<Option<u64>, Error> {
     storage_number(value, field)
 }
-fn boolean(value: FieldValue<'_>) -> Result<Option<bool>, Error> {
+fn boolean(value: FlagField<'_>) -> Result<Option<bool>, Error> {
     match value.value() {
         Value::Null => Ok(None),
         Value::Bool(value) => Ok(Some(*value)),
@@ -602,7 +602,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 vms_known: view
                     .vms()
                     .as_array()
-                    .is_some_and(|v| v.iter().all(|r| refs.vm(FieldValue::of(r)).is_some())),
+                    .is_some_and(|v| v.iter().all(|r| refs.vm(RefField::of(r)).is_some())),
                 id,
                 name: label(view.name_label()),
                 description: string(view.name_description()),
@@ -611,7 +611,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter_map(|r| refs.vm(FieldValue::of(r)))
+                    .filter_map(|r| refs.vm(RefField::of(r)))
                     .collect(),
                 allowed_operations: strings(view.allowed_operations()),
             },
@@ -626,7 +626,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 vms_known: view
                     .vms()
                     .as_array()
-                    .is_some_and(|v| v.iter().all(|r| refs.vm(FieldValue::of(r)).is_some())),
+                    .is_some_and(|v| v.iter().all(|r| refs.vm(RefField::of(r)).is_some())),
                 last_run_time: view.last_run_time().as_str().map(str::to_owned),
                 id,
                 name: label(view.name_label()),
@@ -641,7 +641,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter_map(|r| refs.vm(FieldValue::of(r)))
+                    .filter_map(|r| refs.vm(RefField::of(r)))
                     .collect(),
             },
         ))
@@ -698,14 +698,14 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 VmDetails {
                     snapshot_parent: refs.snapshot_parent(view.parent()),
                     domain_type: text_option(view.domain_type()),
-                    cores_per_socket: text_option(FieldValue::of(
+                    cores_per_socket: text_option(TextField::of(
                         &view.platform()["cores-per-socket"],
                     )),
                     topology_known: view
                         .platform()
                         .as_object()
                         .is_some_and(|m| m.get("cores-per-socket").is_none_or(Value::is_string)),
-                    cpu_weight: text_option(FieldValue::of(&view.vcpus_params()["weight"])),
+                    cpu_weight: text_option(TextField::of(&view.vcpus_params()["weight"])),
                     cpu_weight_known: view
                         .vcpus_params()
                         .as_object()
@@ -750,9 +750,9 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     memory_target: size(view.memory_target(), "VM.memory_target")
                         .ok()
                         .flatten(),
-                    boot_order: text_option(FieldValue::of(&view.hvm_boot_params()["order"])),
+                    boot_order: text_option(TextField::of(&view.hvm_boot_params()["order"])),
                     boot_policy: text_option(view.hvm_boot_policy()),
-                    firmware: text_option(FieldValue::of(&view.hvm_boot_params()["firmware"]))
+                    firmware: text_option(TextField::of(&view.hvm_boot_params()["firmware"]))
                         .or_else(|| crate::guest_boot::firmware(record).map(str::to_owned)),
                     secure_boot: crate::guest_boot::policy(record),
                     bios_identity_empty: view.bios_strings().as_object().map(|v| v.is_empty()),
@@ -1058,7 +1058,7 @@ fn decode_alarms(store: &Store, refs: &References, result: &mut InventoryDetails
                     match record["is_control_domain"].as_bool() {
                         Some(false) => {}
                         Some(true) => {
-                            dom0 = refs.link("host", FieldValue::of(&record["resident_on"]));
+                            dom0 = refs.link("host", RefField::of(&record["resident_on"]));
                             if dom0.is_none()
                                 || !store.class("host").any(|(r, h)| {
                                     Some(r.as_str()) == record["resident_on"].as_str()

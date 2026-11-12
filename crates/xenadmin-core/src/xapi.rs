@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use xenadmin_xapi::{
-    FieldValue,
+    SetField, TextField, Textual, WholeField,
     enumerations::{vm_operations, vm_power_state},
     records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord, VmRecord},
 };
@@ -981,7 +981,7 @@ impl Store {
 /// Whether `allowed`, a record's `allowed_operations` read through its own class's view,
 /// includes `operation`. Only a VM also has operations blocked by an administrator; that
 /// is checked where a VM is read.
-pub(crate) fn offers(allowed: FieldValue<'_>, operation: &str) -> bool {
+pub(crate) fn offers(allowed: SetField<'_>, operation: &str) -> bool {
     allowed
         .as_array()
         .is_some_and(|operations| operations.iter().any(|value| value == operation))
@@ -1176,37 +1176,34 @@ pub(crate) async fn verify_created_snapshot(
 }
 
 fn decode_power_state(record: &Value) -> Result<PowerState, Error> {
-    Ok(
-        match required(FieldValue::of(&VmRecord::new(record).power_state()))? {
-            vm_power_state::RUNNING => PowerState::Running,
-            vm_power_state::HALTED => PowerState::Halted,
-            vm_power_state::PAUSED => PowerState::Paused,
-            vm_power_state::SUSPENDED => PowerState::Suspended,
-            other => PowerState::Unknown(other.into()),
-        },
-    )
+    Ok(match required(VmRecord::new(record).power_state())? {
+        vm_power_state::RUNNING => PowerState::Running,
+        vm_power_state::HALTED => PowerState::Halted,
+        vm_power_state::PAUSED => PowerState::Paused,
+        vm_power_state::SUSPENDED => PowerState::Suspended,
+        other => PowerState::Unknown(other.into()),
+    })
 }
 
 // The readers below take one field of a record, as a record view gives it. A field the
 // record does not carry is null there, which each reader treats as absent. A whole record
 // is another type and cannot be passed.
-fn required(value: FieldValue<'_>) -> Result<&str, Error> {
+fn required<'a>(value: impl Textual<'a>) -> Result<&'a str, Error> {
     value
-        .value()
-        .as_str()
+        .text()
         .ok_or(Error::Protocol("missing required inventory field"))
 }
-fn string(value: FieldValue<'_>) -> String {
-    value.as_str().unwrap_or_default().into()
+fn string<'a>(value: impl Textual<'a>) -> String {
+    value.text().unwrap_or_default().into()
 }
-fn label(name_label: FieldValue<'_>) -> String {
+fn label(name_label: TextField<'_>) -> String {
     name_label
         .as_str()
         .filter(|v| !v.is_empty())
         .unwrap_or("Unnamed")
         .into()
 }
-fn integer(value: FieldValue<'_>, field: &'static str) -> Result<Option<i64>, Error> {
+fn integer(value: WholeField<'_>, field: &'static str) -> Result<Option<i64>, Error> {
     let invalid = || Error::InventoryNumber {
         field,
         expected: "a signed 64-bit integer",
@@ -1218,13 +1215,13 @@ fn integer(value: FieldValue<'_>, field: &'static str) -> Result<Option<i64>, Er
         _ => Err(invalid()),
     }
 }
-fn number(value: FieldValue<'_>, field: &'static str) -> Result<u64, Error> {
+fn number(value: WholeField<'_>, field: &'static str) -> Result<u64, Error> {
     u64::try_from(integer(value, field)?.unwrap_or(0)).map_err(|_| Error::InventoryNumber {
         field,
         expected: "a non-negative integer",
     })
 }
-fn storage_number(value: FieldValue<'_>, field: &'static str) -> Result<Option<u64>, Error> {
+fn storage_number(value: WholeField<'_>, field: &'static str) -> Result<Option<u64>, Error> {
     match integer(value, field)? {
         None | Some(-1) => Ok(None),
         Some(value) => u64::try_from(value)

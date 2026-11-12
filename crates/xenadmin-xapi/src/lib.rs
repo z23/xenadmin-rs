@@ -90,6 +90,201 @@ impl serde::Serialize for FieldValue<'_> {
     }
 }
 
+/// The types a view's methods return, one for each kind of field the API has.
+///
+/// The API gives every field a type. A view's method returns the field as the host sent
+/// it, wrapped in the type for that kind, so that what is done with the field is checked
+/// against its kind where it is written: a boolean field compares with a boolean and not
+/// with a string, a reference is not accepted where a set is read, and a reader that
+/// takes one kind is not handed another. Each still reads as the JSON value it wraps,
+/// and turns into a [`FieldValue`] where the kind does not matter.
+///
+/// The readers here turn a well-formed value into its Rust type and give `None` for
+/// anything else. Limits on sizes and what a malformed value means stay with the caller.
+macro_rules! typed_field {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, Debug)]
+        pub struct $name<'a>(&'a serde_json::Value);
+        impl<'a> $name<'a> {
+            /// A value of this kind that did not come through a record view, such as a
+            /// key inside a map-valued field.
+            pub fn of(value: &'a serde_json::Value) -> Self {
+                Self(value)
+            }
+            /// The value with the record's lifetime, for a result that outlives this field.
+            pub fn value(self) -> &'a serde_json::Value {
+                self.0
+            }
+        }
+        impl std::ops::Deref for $name<'_> {
+            type Target = serde_json::Value;
+            fn deref(&self) -> &serde_json::Value {
+                self.0
+            }
+        }
+        impl<'a> From<$name<'a>> for FieldValue<'a> {
+            fn from(field: $name<'a>) -> Self {
+                FieldValue(field.0)
+            }
+        }
+        /// Two fields of one kind compare as their values do.
+        impl PartialEq for $name<'_> {
+            fn eq(&self, other: &Self) -> bool {
+                self.0 == other.0
+            }
+        }
+        impl PartialEq<serde_json::Value> for $name<'_> {
+            fn eq(&self, other: &serde_json::Value) -> bool {
+                self.0 == other
+            }
+        }
+        impl PartialEq<$name<'_>> for serde_json::Value {
+            fn eq(&self, other: &$name<'_>) -> bool {
+                self == other.0
+            }
+        }
+        impl serde::Serialize for $name<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                self.0.serialize(serializer)
+            }
+        }
+    };
+}
+/// The Rust types a field of one kind compares with.
+macro_rules! compares_with {
+    ($name:ident: $($other:ty),+) => {
+        $(impl PartialEq<$other> for $name<'_> {
+            fn eq(&self, other: &$other) -> bool {
+                *self.0 == *other
+            }
+        })+
+    };
+}
+typed_field!(
+    /// A `bool` field.
+    FlagField
+);
+typed_field!(
+    /// A `string` field.
+    TextField
+);
+typed_field!(
+    /// A `datetime` field, which hosts send as text.
+    TimeField
+);
+typed_field!(
+    /// A reference to an object: a field of a type `X ref`.
+    RefField
+);
+typed_field!(
+    /// A field whose type is an enumeration; its values are in [`enumerations`].
+    ChoiceField
+);
+typed_field!(
+    /// An `int` field. Hosts send whole numbers as numbers or as strings of digits.
+    WholeField
+);
+typed_field!(
+    /// A `float` field.
+    RealField
+);
+typed_field!(
+    /// A field that is a set of values.
+    SetField
+);
+typed_field!(
+    /// A field that is a map from keys to values.
+    MapField
+);
+/// A field that hosts send as text and that is read as text: a string, a time or the
+/// name of an enumeration's value. A reference is text as well, but it is not read as
+/// what it says, so it is not one of these.
+pub trait Textual<'a>: Copy + Into<FieldValue<'a>> {
+    /// The text, when the host sent a string.
+    fn text(self) -> Option<&'a str>;
+}
+impl<'a> Textual<'a> for TextField<'a> {
+    fn text(self) -> Option<&'a str> {
+        self.0.as_str()
+    }
+}
+impl<'a> Textual<'a> for TimeField<'a> {
+    fn text(self) -> Option<&'a str> {
+        self.0.as_str()
+    }
+}
+impl<'a> Textual<'a> for ChoiceField<'a> {
+    fn text(self) -> Option<&'a str> {
+        self.0.as_str()
+    }
+}
+compares_with!(FlagField: bool);
+compares_with!(TextField: str, &str, String);
+compares_with!(TimeField: str, &str, String);
+compares_with!(RefField: str, &str, String);
+compares_with!(ChoiceField: str, &str, String);
+compares_with!(WholeField: i32, i64, u32, u64, usize, str, &str, String);
+compares_with!(RealField: f64, i64, u64);
+impl FlagField<'_> {
+    /// The boolean, when the host sent one.
+    pub fn get(self) -> Option<bool> {
+        self.0.as_bool()
+    }
+}
+impl<'a> TextField<'a> {
+    /// The text, when the host sent a string.
+    pub fn text(self) -> Option<&'a str> {
+        self.0.as_str()
+    }
+}
+impl<'a> TimeField<'a> {
+    /// The time as the host wrote it, when it sent a string.
+    pub fn text(self) -> Option<&'a str> {
+        self.0.as_str()
+    }
+}
+impl<'a> RefField<'a> {
+    /// The reference, when the host sent a string. The null reference is a reference.
+    pub fn reference(self) -> Option<&'a str> {
+        self.0.as_str()
+    }
+}
+impl<'a> ChoiceField<'a> {
+    /// The value's name, when the host sent a string.
+    pub fn name(self) -> Option<&'a str> {
+        self.0.as_str()
+    }
+}
+impl WholeField<'_> {
+    /// The number, sent as a number or as a string of digits.
+    pub fn number(self) -> Option<i64> {
+        self.0
+            .as_i64()
+            .or_else(|| self.0.as_str().and_then(|digits| digits.parse().ok()))
+    }
+}
+impl RealField<'_> {
+    /// The number, sent as a number or as its text.
+    pub fn number(self) -> Option<f64> {
+        self.0
+            .as_f64()
+            .or_else(|| self.0.as_str().and_then(|text| text.parse().ok()))
+    }
+}
+impl<'a> SetField<'a> {
+    /// The members, when the host sent a list.
+    pub fn members(self) -> Option<&'a [serde_json::Value]> {
+        self.0.as_array().map(Vec::as_slice)
+    }
+}
+impl<'a> MapField<'a> {
+    /// The entries, when the host sent a map.
+    pub fn entries(self) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
+        self.0.as_object()
+    }
+}
+
 /// A check, in debug builds, that the records given to views are of the views' classes.
 ///
 /// A view cannot know that its record is of its class: a record does not say what it is,
@@ -390,9 +585,10 @@ mod tests {
         assert_eq!(name, "u");
         assert_eq!(FieldValue::of(&record["VCPUs_max"]), 2);
         assert_eq!(vm.vcpus_max().as_u64(), Some(2));
-        // Two fields compare as their values do.
+        // Two fields of one kind compare as their values do. Fields of different kinds,
+        // such as a UUID and a power state, do not compare at all: that does not compile.
         assert!(vm.uuid() == records::VmRecord::new(&record).uuid());
-        assert!(vm.uuid() != vm.power_state());
+        assert!(vm.uuid() != vm.name_label());
         // A JSON value compares with a field, and a field serializes as its value.
         assert!(json!("u") == vm.uuid());
         assert_eq!(json!([vm.uuid(), vm.vcpus_max()]), json!(["u", 2]));
@@ -401,6 +597,69 @@ mod tests {
             records::VdiRecord::new(&json!({"type": "user"})).type_(),
             "user"
         );
+    }
+
+    #[test]
+    fn a_field_has_the_type_of_its_kind_and_reads_as_it() {
+        let record = json!({
+            "is_a_snapshot": true, "name_label": "guest", "power_state": "Running",
+            "resident_on": "OpaqueRef:host", "VCPUs_max": "4", "memory_overhead": 1048576,
+            "VBDs": ["OpaqueRef:a", "OpaqueRef:b"], "other_config": {"k": "v"},
+            "snapshot_time": "20261112T00:00:00Z",
+        });
+        let vm = records::VmRecord::new(&record);
+        // Each kind has its own type, named here so that a change of kind does not compile.
+        let flag: FlagField = vm.is_a_snapshot();
+        let text: TextField = vm.name_label();
+        let choice: ChoiceField = vm.power_state();
+        let reference: RefField = vm.resident_on();
+        let whole: WholeField = vm.vcpus_max();
+        let set: SetField = vm.vbds();
+        let map: MapField = vm.other_config();
+        let time: TimeField = vm.snapshot_time();
+        // A field compares with the Rust type of its kind.
+        assert!(flag == true && text == "guest" && choice == enumerations::vm_power_state::RUNNING);
+        let owned = String::from("OpaqueRef:host");
+        assert!(reference == "OpaqueRef:host" && reference == owned);
+        // A whole number is read whether the host sent digits or a number.
+        assert_eq!(
+            (whole.number(), vm.memory_overhead().number()),
+            (Some(4), Some(1048576))
+        );
+        assert!(whole == "4" && vm.memory_overhead() == 1048576_u64);
+        // The readers give the Rust value, or nothing when the host sent something else.
+        assert_eq!(flag.get(), Some(true));
+        assert_eq!(
+            (text.text(), choice.name(), time.text()),
+            (Some("guest"), Some("Running"), Some("20261112T00:00:00Z"))
+        );
+        assert_eq!(reference.reference(), Some("OpaqueRef:host"));
+        assert_eq!(set.members().map(<[Value]>::len), Some(2));
+        assert_eq!(map.entries().and_then(|m| m.get("k")), Some(&json!("v")));
+        assert_eq!(vm.is_control_domain().get(), None);
+        assert_eq!(vm.tags().members(), None);
+        assert_eq!(FlagField::of(&json!("true")).get(), None);
+        assert_eq!(WholeField::of(&json!("four")).number(), None);
+        assert_eq!(RealField::of(&json!("1.5")).number(), Some(1.5));
+        // Text, a time and an enumeration's value are read as text by one reader; a
+        // reference is not text to read, and a set or a flag is no text at all.
+        fn read<'a>(field: impl Textual<'a>) -> Option<&'a str> {
+            field.text()
+        }
+        assert_eq!(
+            (read(text), read(choice), read(time)),
+            (Some("guest"), Some("Running"), Some("20261112T00:00:00Z"))
+        );
+        // Any of them is a plain field where the kind does not matter, and still reads
+        // as the JSON value it wraps.
+        let plain: FieldValue = set.into();
+        assert_eq!(plain.as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            json!({"f": flag, "t": text}),
+            json!({"f": true, "t": "guest"})
+        );
+        // A field of a kind there is no type for stays a plain field.
+        let _: FieldValue = records::EventRecord::new(&record).snapshot();
     }
 
     #[cfg(debug_assertions)]
@@ -558,8 +817,8 @@ mod tests {
         assert!(out.contains("Message { name: \"get\", parameters: &[], required: 0, result: \"string\", state: \"Published_s\" },"));
         assert!(out.contains("pub struct ARecord<'a>(&'a Value);"));
         assert!(out.contains("pub struct BThingRecord<'a>(&'a Value);"));
-        assert!(out.contains("pub fn type_(self) -> FieldValue<'a> {"));
-        assert!(out.contains("pub fn max_size(self) -> FieldValue<'a> {"));
+        assert!(out.contains("pub fn type_(self) -> TextField<'a> {"));
+        assert!(out.contains("pub fn max_size(self) -> WholeField<'a> {"));
         assert!(out.contains("pub const ON: &str = \"on\";"));
         assert!(out.contains("pub const ON_: &str = \"On\";"));
         assert!(out.contains("pub const _9P: &str = \"9p\";"));

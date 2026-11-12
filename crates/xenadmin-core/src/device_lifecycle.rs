@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use xenadmin_xapi::FieldValue;
+use xenadmin_xapi::SetField;
 use xenadmin_xapi::enumerations::{
     storage_operations, vbd_type, vdi_operations, vdi_type, vm_power_state,
 };
@@ -410,7 +410,7 @@ fn idle(record: &Value) -> Result<(), Error> {
 }
 /// An idle record whose host offers `operation` on it now. `allowed` is the record's
 /// `allowed_operations`, read through the view of the record's own class.
-fn permits(record: &Value, allowed: FieldValue<'_>, operation: &str) -> Result<(), Error> {
+fn permits(record: &Value, allowed: SetField<'_>, operation: &str) -> Result<(), Error> {
     idle(record)?;
     if !crate::xapi::offers(allowed, operation) {
         return Err(Error::UnavailableAction);

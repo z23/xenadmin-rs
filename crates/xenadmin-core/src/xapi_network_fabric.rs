@@ -3,11 +3,12 @@ use crate::{
     NetworkFabricInventory, NetworkPciDevice, NetworkSriov, NetworkTunnel, SdnController,
     SdnControllerConfiguration, SriovConfigurationMode, TunnelProtocol,
 };
+use xenadmin_xapi::TextField;
 use xenadmin_xapi::records::{
     NetworkSriovRecord, PciRecord, PifRecord, PoolRecord, SdnControllerRecord, TunnelRecord,
 };
 
-fn text(field: FieldValue<'_>, limit: usize) -> Option<String> {
+fn text(field: TextField<'_>, limit: usize) -> Option<String> {
     field
         .as_str()
         .filter(|v| !v.is_empty() && v.len() <= limit && !v.chars().any(char::is_control))

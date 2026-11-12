@@ -135,6 +135,23 @@ fn distinct<'a>(what: &str, names: impl Iterator<Item = (&'a str, String)>) -> R
     Ok(())
 }
 
+/// The type a view returns for a field of the API type `kind`: one for each kind of
+/// value, and the untyped `FieldValue` for a kind there is no type for.
+fn typed(kind: &str) -> &'static str {
+    match kind {
+        "bool" => "FlagField",
+        "string" | "string option" => "TextField",
+        "datetime" => "TimeField",
+        "int" => "WholeField",
+        "float" => "RealField",
+        _ if kind.ends_with(" set") => "SetField",
+        _ if kind.starts_with('(') && kind.ends_with(") map") => "MapField",
+        _ if kind.starts_with("enum ") => "ChoiceField",
+        _ if kind.ends_with(" ref") => "RefField",
+        _ => "FieldValue",
+    }
+}
+
 /// The generated source for a description, or why it cannot be generated.
 pub fn generate(description: &[u8]) -> Result<String, String> {
     let mut classes: Vec<Class> =
@@ -242,7 +259,7 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
     out.push_str(
         "/// A view of a record for every class: one method for each field, which returns the\n\
          /// field as the host sent it, null when the record does not carry it.\n\
-         pub mod records {\n    use super::FieldValue;\n    use serde_json::Value;\n",
+         pub mod records {\n    #[allow(unused_imports)]\n    use super::{ChoiceField, FieldValue, FlagField, MapField, RealField, RefField, SetField, TextField, TimeField, WholeField};\n    use serde_json::Value;\n",
     );
     for class in &classes {
         let name = view(&class.name);
@@ -263,9 +280,10 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
         for field in &class.fields {
             let _ = write!(
                 out,
-                "        /// `{field}`: `{kind}`, {qualifier}.\n        pub fn {method}(self) -> FieldValue<'a> {{\n            \
-                 FieldValue(&self.0[{literal}])\n        }}\n",
+                "        /// `{field}`: `{kind}`, {qualifier}.\n        pub fn {method}(self) -> {typed}<'a> {{\n            \
+                 {typed}(&self.0[{literal}])\n        }}\n",
                 field = field.name,
+                typed = typed(&field.kind),
                 kind = field.kind,
                 qualifier = field.qualifier,
                 method = snake(&field.name),

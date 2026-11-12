@@ -1,8 +1,10 @@
 //! Checks the XAPI names this crate writes as strings against the generated catalogue of
 //! the API the qualified hosts run: the calls it makes and the fields its decoders name,
 //! and for a call written with its arguments beside it, how many it passes.
-//! Reads through the generated record views need no check, because a view has no method
-//! for a field its class lacks.
+//! Reads through the generated record views need no check of their names, because a view
+//! has no method for a field its class lacks, and a field's type refuses a comparison with
+//! a value of another kind. A field still reads as the JSON value it wraps, so the last
+//! test here checks that each is asked for the kind of value the API gives it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::CLASSES;
@@ -246,4 +248,167 @@ fn the_argument_count_reads_nested_expressions_and_strings_as_one_argument() {
     let start = arguments_start(text, text.find(',').unwrap()).unwrap();
     assert_eq!(argument_count(text, start), Some(3));
     assert_eq!(arguments_start("\"VM.start\" => true", 10), None);
+}
+
+/// The name the generator gives a class's view, and a field's method on it.
+fn view_name(class: &str) -> String {
+    let mut name: String = class
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| part[..1].to_uppercase() + &part[1..].to_lowercase())
+        .collect();
+    name.push_str("Record");
+    name
+}
+fn method_name(field: &str) -> String {
+    let name: String = field
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // The generator sets apart the names Rust or the view itself already uses.
+    if matches!(name.as_str(), "type" | "ref" | "new" | "record") {
+        name + "_"
+    } else {
+        name
+    }
+}
+
+/// The JSON accessors that fit a field of the API type `kind`; none for a kind that is
+/// not judged.
+fn accessors(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "bool" => &["as_bool", "is_boolean"],
+        "string" | "string option" | "datetime" => &["as_str", "is_string"],
+        // Hosts send whole numbers as numbers or as strings of digits.
+        "int" => &[
+            "as_i64",
+            "as_u64",
+            "as_str",
+            "is_i64",
+            "is_u64",
+            "is_number",
+            "is_string",
+        ],
+        "float" => &["as_f64", "as_str", "is_f64", "is_number", "is_string"],
+        _ if kind.ends_with(" set") => &["as_array", "is_array"],
+        _ if kind.starts_with('(') && kind.ends_with(") map") => &["as_object", "is_object"],
+        _ if kind.starts_with("enum ") || kind.ends_with(" ref") => &["as_str", "is_string"],
+        _ => &[],
+    }
+}
+
+/// The identifier that ends at `end` in `text`.
+fn identifier_before(text: &str, end: usize) -> &str {
+    let start = text[..end]
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map_or(0, |at| at + 1);
+    &text[start..end]
+}
+
+/// After `from`, skipping white space: `.name(` and where its arguments start.
+fn method_after(text: &str, from: usize) -> Option<(&str, usize)> {
+    let rest = text[from..].trim_start();
+    let rest = rest.strip_prefix('.')?.trim_start();
+    let length = rest
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(rest.len());
+    let after = &rest[length..];
+    after
+        .starts_with('(')
+        .then(|| (&rest[..length], text.len() - after.len() + 1))
+}
+
+#[test]
+fn every_field_read_through_a_view_is_asked_for_the_kind_of_value_the_api_gives_it() {
+    let fields: BTreeMap<(String, String), &'static str> = CLASSES
+        .iter()
+        .flat_map(|class| {
+            class
+                .fields
+                .iter()
+                .map(move |field| ((view_name(class.name), method_name(field.name)), field.kind))
+        })
+        .collect();
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let (mut judged, mut wrong) = (0, Vec::new());
+    for entry in std::fs::read_dir(&directory).unwrap() {
+        let path = entry.unwrap().path();
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !file.ends_with(".rs") || file == "xapi_conformance_tests.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut from = 0;
+        while let Some(at) = text[from..].find("Record::new(").map(|at| from + at) {
+            from = at + "Record::new(".len();
+            let view = identifier_before(&text, at + "Record".len());
+            // The view's argument is one expression: skip to its closing parenthesis.
+            let mut depth = 0usize;
+            let Some(length) = text[from - 1..].char_indices().find_map(|(i, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(i)
+            }) else {
+                continue;
+            };
+            let Some((field, arguments)) = method_after(&text, from + length) else {
+                continue;
+            };
+            let Some(kind) = fields.get(&(view.to_owned(), field.to_owned())) else {
+                continue;
+            };
+            // `.value()` only lends the value for longer; what follows it is the read.
+            let mut next = method_after(&text, arguments + 1);
+            if let Some(("value", after)) = next {
+                next = method_after(&text, after + 1);
+            }
+            let Some((accessor, _)) = next else {
+                continue;
+            };
+            let fits = accessors(kind);
+            if fits.is_empty() || !(accessor.starts_with("as_") || accessor.starts_with("is_")) {
+                continue;
+            }
+            judged += 1;
+            if accessor != "is_null" && !fits.contains(&accessor) {
+                let line = text[..at].matches('\n').count() + 1;
+                wrong.push(format!(
+                    "{file}:{line}: {view}.{field} is `{kind}` and is read with {accessor}()"
+                ));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    // The scan reaches the reads: a change in how they are written would pass empty.
+    println!("{judged} reads judged");
+    assert!(judged > 300, "{judged} reads judged");
+}
+
+#[test]
+fn the_names_of_views_and_their_methods_are_the_generators() {
+    assert_eq!(view_name("VM"), "VmRecord");
+    assert_eq!(view_name("VM_appliance"), "VmApplianceRecord");
+    assert_eq!(view_name("host_metrics"), "HostMetricsRecord");
+    assert_eq!(method_name("VCPUs_max"), "vcpus_max");
+    assert_eq!(method_name("type"), "type_");
+    assert_eq!(method_name("MAC"), "mac");
+    assert_eq!(method_after("x) .as_str()", 2), Some(("as_str", 11)));
+    assert_eq!(
+        method_after("x)\n    .value()\n.as_bool()", 2),
+        Some(("value", 14))
+    );
+    assert_eq!(method_after("x) == 1", 2), None);
+    assert_eq!(identifier_before("a.VmRecord::new(", 10), "VmRecord");
+    assert_eq!(accessors("VM ref set"), ["as_array", "is_array"]);
+    assert_eq!(accessors("bool"), ["as_bool", "is_boolean"]);
+    assert!(accessors("VM record").is_empty());
 }
