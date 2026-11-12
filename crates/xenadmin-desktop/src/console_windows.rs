@@ -98,6 +98,7 @@ pub(super) fn register(app: &mut rune::App<State>) {
             poll: Some(poll),
             scenes: &[("console-window", scene)],
             min_size: Some((480.0, 640.0)),
+            on_key: Some(app_key),
             ..AppSpec::new("XenAdmin RS console", (1100.0, 800.0), empty, view)
         };
         let child = rune::App::new(spec)
@@ -260,6 +261,31 @@ fn acknowledge_close(s: &mut State, lease: u64, tx: &mut Tx) {
         parent.wake();
     }
 }
+/// Hands the main window's options to every open console window, so that a change made
+/// there (the interface size, the appearance) shows in them as well. A window opened
+/// later takes them when it adopts its console.
+pub(super) fn follow_options(s: &State) {
+    let options = s.preferences.options;
+    for slot in &s.console_windows.slots {
+        if slot.target().is_some() {
+            slot.app.update(move |s, _| follow(s, options));
+        }
+    }
+}
+fn follow(s: &mut State, options: settings::Options) {
+    s.preferences.options = options;
+}
+/// An interface size chosen with the keys in a console window is the main window's to
+/// keep: it saves it and hands it to every console window.
+pub(super) fn forward_scale(s: &State, percent: u16) {
+    if let Some(parent) = s
+        .console_seat
+        .as_ref()
+        .and_then(|seat| seat.parent.as_ref())
+    {
+        parent.update(move |s, _| s.set_interface_scale(percent));
+    }
+}
 pub(super) fn close_all(s: &mut State) {
     for slot in &s.console_windows.slots {
         slot.close();
@@ -335,7 +361,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(heading("Console closed", &k))
             .child(caption("Open a console from the main window.", &k))
     };
-    rune_kit::root(
+    let root = rune_kit::root(
         col()
             .w_full()
             .h_full()
@@ -347,7 +373,13 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     .on_layout_tx(|s: &mut State, rect, _| {
         s.window_width = rect[2];
         s.window_height = rect[3];
-    })
+        // At 100 percent the view fills the window, so its size is the window's.
+        if (s.preferences.options.zoom() - 1.0).abs() < 0.005 {
+            s.viewport = [rect[2], rect[3]];
+        }
+    });
+    // The same interface size as the main window: controls and the console's picture.
+    zoomed(s, root)
 }
 pub(super) fn button(s: &State, k: &Kit) -> El {
     let count = s
@@ -738,6 +770,106 @@ mod tests {
             click(&mut rt, "console-windows-close");
             assert!(!rt.state.console_windows.show);
         }
+    }
+    #[test]
+    fn a_console_window_is_drawn_at_the_interface_size_and_follows_changes_to_it() {
+        use rune::{Key, KeyEvent, Mods};
+        let canvas = |rt: &rune::Runtime<State>| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("console-canvas"))
+                .expect("the console canvas is part of the view")
+                .rect
+        };
+        let size = (1100.0, 800.0);
+        // The window of a console detached while the main window is at 100 percent.
+        let slot_at_100 = slot();
+        let mut main = prepared(40);
+        let lease = slot_at_100
+            .reserve(main.console_ui.target().unwrap().clone())
+            .unwrap();
+        let packet = take(&mut main, lease);
+        let mut plain = child(&slot_at_100, size);
+        plain.update(|s, tx| adopt(s, packet, tx));
+        settle(&mut plain);
+        assert_eq!(plain.state.window_width, 1100.0);
+        assert!(plain.find("interface-zoom").is_none());
+        let plain_bounds = plain.state.console_bounds;
+
+        // The same console detached while the main window is at 150 percent: the window
+        // takes the size with the console, lays its view out in the space that is left and
+        // draws it that much larger, the console's picture included.
+        let slot = slot();
+        let mut main = prepared(40);
+        main.preferences.options.interface_scale = 150;
+        let lease = slot
+            .reserve(main.console_ui.target().unwrap().clone())
+            .unwrap();
+        let packet = take(&mut main, lease);
+        let mut window = child(&slot, size);
+        window.update(|s, tx| adopt(s, packet, tx));
+        settle(&mut window);
+        assert_eq!(window.state.preferences.options.interface_scale, 150);
+        assert!(window.find("interface-zoom").is_some());
+        assert!((window.state.window_width - 1100.0 / 1.5).abs() < 1.0);
+        assert!((window.state.window_height - 800.0 / 1.5).abs() < 1.0);
+        assert_eq!(window.state.viewport, [1100.0, 800.0]);
+        let bounds = window.state.console_bounds;
+        assert!(
+            bounds[0] > 100.0 && bounds[0] < plain_bounds[0] && bounds[1] < plain_bounds[1],
+            "the canvas is laid out in the smaller space: {bounds:?} against {plain_bounds:?}"
+        );
+        let drawn = canvas(&window);
+        assert!(
+            (drawn[2] - bounds[0] * 1.5).abs() < 1.0 && (drawn[3] - bounds[1] * 1.5).abs() < 1.0,
+            "the picture is drawn larger with the controls: {drawn:?} for {bounds:?}"
+        );
+        assert!(
+            drawn[0] >= 0.0 && drawn[0] + drawn[2] <= 1100.5 && drawn[1] + drawn[3] <= 800.5,
+            "and stays inside the window: {drawn:?}"
+        );
+        // The pointer is read in the canvas's own points, so a position on the enlarged
+        // picture is still the same position in the guest's frame.
+        // (The first move onto the canvas only enters it.)
+        let over = [drawn[0] + drawn[2] * 0.25, drawn[1] + drawn[3] * 0.75];
+        window.pointer_move(over[0] - 1.0, over[1]);
+        window.frame(1.0 / 60.0);
+        window.pointer_move(over[0], over[1]);
+        let pointer = window.state.console_ui.pointer();
+        assert!(
+            (pointer[0] - bounds[0] * 0.25).abs() < 1.0
+                && (pointer[1] - bounds[1] * 0.75).abs() < 1.0,
+            "a quarter across and three quarters down: {pointer:?} in {bounds:?}"
+        );
+
+        // A change made in the main window reaches an open console window.
+        window.update(|s, _| {
+            follow(
+                s,
+                settings::Options {
+                    interface_scale: 100,
+                    ..s.preferences.options
+                },
+            )
+        });
+        settle(&mut window);
+        assert_eq!(window.state.window_width, 1100.0);
+        assert!(window.find("interface-zoom").is_none());
+        assert_eq!(window.state.console_bounds, plain_bounds);
+
+        // With the console not holding the keyboard, the size keys work in its window.
+        window.on_key = Some(app_key);
+        window.key(KeyEvent {
+            key: Key::Command('='),
+            mods: Mods {
+                cmd: true,
+                ctrl: true,
+                ..Default::default()
+            },
+        });
+        settle(&mut window);
+        assert_eq!(window.state.preferences.options.interface_scale, 110);
+        assert!((window.state.window_width - 1100.0 / 1.1).abs() < 1.0);
     }
     #[test]
     fn moving_console_invalidates_old_file_dialog_without_disabling_new_window_export() {

@@ -79,7 +79,8 @@ no console was tried.
 Typing clipboard text into a console as key presses is new in this release and is offered
 as part of the console. Through the core it reached a lab guest exactly, every printable
 character; its refusal of text a US keyboard cannot type and its stopping are verified by
-fixtures; nobody has used the desktop's button on a real seat yet.
+fixtures; the operator has used the desktop's button from their own seat on the lab's
+graphical guest and its plain guest and reported that it works (2026-11-12).
 
 Not supported: screen readers. The accessibility tree has known gaps (findings 6 and 22 of
 the [live report](reports/2026-11-09-lab-qualification.md)) and no screen reader has been

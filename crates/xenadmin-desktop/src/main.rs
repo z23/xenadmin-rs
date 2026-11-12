@@ -299,12 +299,18 @@ fn init() -> State {
     state
 }
 fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State {
-    let live_state = instance.is_some();
-    let preferences = if live_state {
+    let preferences = if instance.is_some() {
         Preferences::load()
     } else {
         Preferences::default()
     };
+    init_with_preferences(instance, preferences)
+}
+fn init_with_preferences(
+    instance: Option<xenadmin_core::DesktopInstance>,
+    preferences: Preferences,
+) -> State {
+    let live_state = instance.is_some();
     let backend = if live_state {
         Backend::start().map_err(|e| e.to_string())
     } else {
@@ -408,7 +414,7 @@ fn init_with_instance(instance: Option<xenadmin_core::DesktopInstance>) -> State
         tree: TreeModel::new().key("inventory-tree"),
         table,
         sidebar: PaneState::new(preferences.sidebar_width).range(180.0, 420.0),
-        inspector: PaneState::new(300.0).range(230.0, 480.0),
+        inspector: PaneState::new(preferences.inspector_width).range(230.0, 480.0),
         host_filter: None,
         search: TextEdit::new(""),
         endpoint: TextEdit::new(&preferences.endpoint),
@@ -617,13 +623,18 @@ impl State {
     fn connect(&mut self) {
         profiles_view::connect(self);
     }
-    /// Copies the sidebar width and the column widths the user set into the preferences.
-    /// Returns whether any of them changed.
+    /// Copies the sidebar and details pane widths and the column widths the user set into
+    /// the preferences. Returns whether any of them changed.
     fn capture_layout(&mut self) -> bool {
         let mut changed = false;
         let sidebar = self.sidebar.width();
         if (self.preferences.sidebar_width - sidebar).abs() > 0.5 {
             self.preferences.sidebar_width = sidebar;
+            changed = true;
+        }
+        let inspector = self.inspector.width();
+        if (self.preferences.inspector_width - inspector).abs() > 0.5 {
+            self.preferences.inspector_width = inspector;
             changed = true;
         }
         for name in ["name", "state", "location", "cpu", "memory"] {
@@ -657,6 +668,7 @@ impl State {
         }
         self.preferences.options.interface_scale = percent;
         self.save_preferences();
+        console_windows::follow_options(self);
     }
     fn rebuild(&mut self) {
         vm_snapshots::refresh(self);
@@ -1919,6 +1931,7 @@ fn app_key(s: &mut State, event: &rune::KeyEvent, tx: &mut Tx) -> bool {
     };
     tx.instant();
     s.set_interface_scale(scale);
+    console_windows::forward_scale(s, scale);
     true
 }
 fn details(s: &State, k: &Kit) -> El {
@@ -3410,6 +3423,38 @@ mod tests {
         assert!(s.capture_layout());
         assert!(!s.preferences.columns.contains_key("name"));
         assert_eq!(s.preferences.columns.get("state"), Some(&150.0));
+    }
+
+    #[test]
+    fn the_details_pane_width_reaches_the_preferences_and_the_next_start_uses_it() {
+        let mut s = init();
+        demo(&mut s);
+        assert_eq!(s.inspector.width(), 300.0, "the declared width");
+        s.inspector.set_width(412.0);
+        assert!(s.capture_layout());
+        assert_eq!(s.preferences.inspector_width, 412.0);
+        assert!(!s.capture_layout(), "an unchanged width is not a change");
+
+        // What the preferences file holds is what the next start reads.
+        let stored = serde_json::to_string(&s.preferences).unwrap();
+        let read = serde_json::from_str::<Preferences>(&stored)
+            .unwrap()
+            .normalized();
+        let next = init_with_preferences(None, read);
+        assert_eq!(next.inspector.width(), 412.0);
+        assert_eq!(next.sidebar.width(), s.sidebar.width());
+
+        // A file written before the width was kept starts at the declared width, and a
+        // width outside what the pane allows is brought inside it.
+        let earlier = serde_json::from_str::<Preferences>(r#"{"sidebar_width":300.0}"#)
+            .unwrap()
+            .normalized();
+        assert_eq!(earlier.inspector_width, 300.0);
+        let wide = serde_json::from_str::<Preferences>(r#"{"inspector_width":9000.0}"#)
+            .unwrap()
+            .normalized();
+        assert_eq!(wide.inspector_width, 480.0);
+        assert_eq!(init_with_preferences(None, wide).inspector.width(), 480.0);
     }
 
     #[test]

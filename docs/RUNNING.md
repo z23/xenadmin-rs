@@ -69,7 +69,8 @@ read-only mode and timeout live under connection options. See [connection detail
 
 **Options** in the toolbar holds the appearance, the interface size and the console
 defaults. Ctrl with plus, minus or 0 makes the whole interface larger, smaller or 100
-percent again from anywhere outside a console, and the choice is kept between runs. Buttons
+percent again from anywhere outside a console, and the choice is kept between runs. A
+console opened in a window of its own is drawn at the same size. Buttons
 follow one scheme: outlined buttons open a view or dismiss a dialog, filled buttons act on
 the selected object, red labels mark destructive or forced actions, and the accent colour
 marks the one action a view is for.

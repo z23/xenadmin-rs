@@ -151,6 +151,7 @@ fn apply(s: &mut State) {
     };
     s.set_interface_scale(scale);
     s.save_preferences();
+    crate::console_windows::follow_options(s);
     s.application_panel = None;
 }
 fn check(

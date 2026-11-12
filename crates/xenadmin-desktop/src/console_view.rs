@@ -44,6 +44,11 @@ impl ConsoleUi {
     pub fn target(&self) -> Option<&ConsoleTarget> {
         self.target.as_ref()
     }
+    /// Where the pointer last was over the canvas, in the canvas's own points.
+    #[cfg(test)]
+    pub(super) fn pointer(&self) -> [f32; 2] {
+        self.pointer
+    }
 }
 pub(super) fn opened(s: &mut State, pool: PoolId, vm: VmId, name: String) {
     release(s);

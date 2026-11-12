@@ -16,6 +16,7 @@ pub struct Preferences {
     pub host_certificates: String,
     pub accept_invalid_certificates: bool,
     pub sidebar_width: f32,
+    pub inspector_width: f32,
     pub columns: BTreeMap<String, f32>,
 }
 impl Default for Preferences {
@@ -33,6 +34,7 @@ impl Default for Preferences {
             host_certificates: String::new(),
             accept_invalid_certificates: false,
             sidebar_width: 260.0,
+            inspector_width: 300.0,
             columns: BTreeMap::new(),
         }
     }
@@ -49,14 +51,23 @@ pub(super) fn directory() -> Option<PathBuf> {
 }
 impl Preferences {
     pub fn load() -> Self {
-        let mut prefs: Self = directory()
+        directory()
             .and_then(|dir| std::fs::read(dir.join("preferences.json")).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
+            .unwrap_or_default()
+            .normalized()
+    }
+    /// Brings what a file held inside what the client accepts.
+    pub(super) fn normalized(self) -> Self {
+        let mut prefs = self;
         if !prefs.sidebar_width.is_finite() {
             prefs.sidebar_width = 260.0;
         }
         prefs.sidebar_width = prefs.sidebar_width.clamp(180.0, 420.0);
+        if !prefs.inspector_width.is_finite() {
+            prefs.inspector_width = 300.0;
+        }
+        prefs.inspector_width = prefs.inspector_width.clamp(230.0, 480.0);
         prefs.hidden_history.truncate(5000);
         if prefs.metric_presets.validate().is_err() {
             prefs.metric_presets = Default::default();

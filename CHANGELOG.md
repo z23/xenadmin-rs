@@ -26,6 +26,11 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.
   writes for the toolstack release the client is qualified on (26.1.11). The description
   first used was a copy upstream keeps in its repository, which turned out to date from
   2024 and to lack 3 classes, 54 fields and 115 calls of that release.
+- A console opened in a window of its own is drawn at the interface size, its picture
+  included, and follows a change of the size or the appearance made in the main window.
+  Ctrl with plus, minus or 0 works in such a window while its console is not holding
+  the keyboard.
+- The details pane's width is kept between runs, as the sidebar's and the columns' are.
 
 ### Fixed
 
@@ -37,6 +42,13 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.
   that hosts do not send. A disk attached to a guest that is not using it can now be
   grown and copied. For the same reason multipath maintenance treated every attached
   disk as active; it now looks only at disks that are plugged in.
+
+### Known issues
+
+Those of 0.18.0 stand, with two changes. The details pane's width is now saved. And the
+operator has since used "Type clipboard as keys" from their own seat, on a graphical
+guest and on a text console of the lab, and it worked (2026-11-12); a guest with a
+keyboard layout other than US has still not been tried.
 
 ## 0.18.0 (2026-11-11)
 
