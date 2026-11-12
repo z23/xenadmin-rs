@@ -1469,11 +1469,54 @@ async fn run(
                     };
                 let mut refresh = tokio::time::interval(Duration::from_secs(2));
                 refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                // The inventory is kept current by events alone. As a check on that, the
+                // host records are read directly now and then and compared with it; the
+                // same host differing at two checks running means events are not arriving
+                // or not being applied, and the whole inventory is read again (lab
+                // finding 64). The read runs beside the loop and only its result is
+                // handled here, so the inventory keeps its one writer.
+                let check_every = options.inventory_check_interval;
+                let mut inventory_check = tokio::time::interval_at(
+                    tokio::time::Instant::now() + check_every.max(Duration::from_millis(1)),
+                    check_every.max(Duration::from_millis(1)),
+                );
+                inventory_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut host_reads =
+                    tokio::task::JoinSet::<Result<serde_json::Value, Error>>::new();
+                let mut drifting = std::collections::BTreeSet::<String>::new();
+                let mut rebuilding = false;
                 let events = next_events(session.clone(), token.clone());
                 tokio::pin!(events);
                 let error = loop {
-                    let batch = tokio::select! {
+                    let mut batch = tokio::select! {
                         _=cancel.cancelled()=>break None,
+                        _=inventory_check.tick(), if !check_every.is_zero() && !token.is_empty() && host_reads.is_empty()=>{
+                            let session = session.clone();
+                            host_reads.spawn(async move { session.call("host.get_all_records", vec![]).await });
+                            continue;
+                        }
+                        read=host_reads.join_next(), if !host_reads.is_empty()=>{
+                            // A read that failed says nothing: the event stream reports
+                            // a connection that is going away by itself.
+                            if let Some(Ok(Ok(fresh))) = read
+                                && !token.is_empty()
+                            {
+                                let now = store.host_drift(&fresh);
+                                if now.iter().any(|host| drifting.contains(host)) {
+                                    if crate::xapi::rpc_trace_enabled() {
+                                        eprintln!("xenadmin inventory check: host records differed from the inventory at two checks running; reading the inventory again");
+                                    }
+                                    drifting.clear();
+                                    rebuilding = true;
+                                    token.clear();
+                                    events.set(next_events(session.clone(), String::new()));
+                                    publish(&sender,generation,session_state(&token),&last_inventory,journal_error.clone(),last_update);
+                                } else {
+                                    drifting = now;
+                                }
+                            }
+                            continue;
+                        }
                         _=diagnostics.join_next(), if !diagnostics.is_empty()=>{continue;}
                         _=discoveries.join_next(), if !discoveries.is_empty()=>{continue;}
                         _=metrics.join_next(), if !metrics.is_empty()=>{continue;}
@@ -1728,6 +1771,10 @@ async fn run(
                     };
                     if batch.token.is_empty() {
                         break Some(Error::Protocol("empty event continuation token"));
+                    }
+                    if rebuilding && token.is_empty() {
+                        batch.rebuild();
+                        rebuilding = false;
                     }
                     if !batch.events.is_empty() || token.is_empty() {
                         match store.apply(&batch) {

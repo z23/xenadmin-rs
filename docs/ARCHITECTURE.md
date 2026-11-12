@@ -175,6 +175,22 @@ the batch and resynchronize. Never advance past partially applied data. If conti
 lost, keep the last snapshot visibly stale, build a replacement inventory, then swap it.
 Event batches describe current inventory. They are not a durable audit log.
 
+Events alone keep the inventory current, and nothing in them says when one has gone
+missing. A ready session therefore reads the host records directly at an interval
+(`ConnectionOptions::inventory_check_interval`, a minute by default) and compares what the
+client decides by, each host's enabled flag, `other_config`, address and resident guests,
+with the records its inventory holds. A difference at one check is an event on its way. The
+same host differing at two checks running means events are not arriving or not being
+applied: the session then asks for the whole inventory again from an empty token, reports
+itself synchronizing until that batch is applied, which replaces the store, and stays the
+same generation, so observations remain valid and are judged against the inventory that
+replaces the stale one. The read runs beside the pool owner and only its result is handled
+by it; nothing but an applied batch writes the inventory. The check was added after one lab
+run in which an inventory did not follow a host for fifteen minutes and that could not be
+made to happen again ([finding 64](reports/2026-11-09-lab-qualification.md)). It covers
+events withheld by the host and events dropped by the client's store. It does not cover a
+pool owner that has stopped running.
+
 Use independent event, command, heartbeat, console, and transfer budgets. A long poll must
 not exhaust command connections. An actor starts asynchronous work and continues receiving
 messages while network requests are pending. Coordinator discovery uses remembered members,

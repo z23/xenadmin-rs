@@ -156,6 +156,11 @@ pub struct ConnectionOptions {
     /// How long a reviewed host reboot or toolstack restart waits for the host to come back
     /// with a newer start marker before its outcome is left unknown.
     pub host_restart_wait: Duration,
+    /// How often a ready session compares the host records of its inventory with a direct
+    /// read of them. Host records that differ at two checks running mean the event stream
+    /// is not keeping the inventory current, and the inventory is then read again in
+    /// full. Zero switches the check off.
+    pub inventory_check_interval: Duration,
     pub expected_pool: Option<crate::PoolId>,
     pub fallback_endpoints: Vec<Endpoint>,
     additional_pins: BTreeMap<String, CertificateFingerprint>,
@@ -174,6 +179,7 @@ impl ConnectionOptions {
             request_timeout: Duration::from_secs(45),
             cross_pool_cleanup_wait: Duration::from_secs(60),
             host_restart_wait: Duration::from_secs(600),
+            inventory_check_interval: Duration::from_secs(60),
             expected_pool: None,
             fallback_endpoints: Vec::new(),
             additional_pins: BTreeMap::new(),

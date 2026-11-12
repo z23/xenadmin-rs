@@ -852,6 +852,124 @@ async fn lost_mutation_reply_remains_unknown_and_blocks_a_second_mutation() {
     connection.close().await;
 }
 
+/// A server whose event stream says nothing after the first inventory, and whose direct
+/// read of the hosts gives `enabled` as `read_enabled` decides from the number of the read.
+/// A second full inventory, if the client asks for one, has the host disabled.
+async fn silent_event_stream(
+    read_enabled: impl Fn(usize) -> bool + Send + Sync + 'static,
+) -> (Mock, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    let full_reads = Arc::new(AtomicUsize::new(0));
+    let host_reads = Arc::new(AtomicUsize::new(0));
+    let read_enabled = Arc::new(read_enabled);
+    let server = mock_overridden(override_rpc({
+        let (full_reads, host_reads) = (full_reads.clone(), host_reads.clone());
+        move |request| {
+            let (full_reads, host_reads, read_enabled) =
+                (full_reads.clone(), host_reads.clone(), read_enabled.clone());
+            async move {
+                match request["method"].as_str()? {
+                    "event.from" if request["params"][2] == "" => {
+                        let n = full_reads.fetch_add(1, Ordering::SeqCst);
+                        let mut all = batch("initial", "Halted");
+                        all["events"][1]["snapshot"]["enabled"] = json!(n == 0);
+                        Some(RpcReply::Json(json!({"result": all})))
+                    }
+                    "event.from" => {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        None
+                    }
+                    "host.get_all_records" => {
+                        let n = host_reads.fetch_add(1, Ordering::SeqCst);
+                        let mut host = batch("initial", "Halted")["events"][1]["snapshot"].clone();
+                        host["enabled"] = json!(read_enabled(n));
+                        Some(RpcReply::Json(json!({"result": {"OpaqueRef:host": host}})))
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }))
+    .await;
+    (server, full_reads, host_reads)
+}
+async fn connect_checking(
+    server: &Mock,
+    every: Duration,
+) -> (tempfile::TempDir, Backend, xenadmin_core::Connection) {
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let mut options = ConnectionOptions::new(server.endpoint.clone());
+    options.inventory_check_interval = every;
+    let connection = backend.connect(
+        options,
+        Credentials::new("fixture".into(), "fixture".into()),
+    );
+    connection.wait_ready(deadline(3)).await.unwrap();
+    (directory, backend, connection)
+}
+fn host_enabled(connection: &xenadmin_core::Connection) -> Option<bool> {
+    connection
+        .latest()
+        .inventory()
+        .and_then(|i| i.hosts.values().next().map(|h| h.enabled))
+}
+
+#[tokio::test]
+async fn an_inventory_the_events_no_longer_keep_current_is_read_again_in_full() {
+    // The host is disabled, no event says so, and every direct read shows it.
+    let (server, full_reads, host_reads) = silent_event_stream(|_| false).await;
+    let (_directory, _backend, connection) =
+        connect_checking(&server, Duration::from_millis(100)).await;
+    assert_eq!(host_enabled(&connection), Some(true));
+    let generation = connection.latest().generation();
+    tokio::time::timeout(deadline(5), async {
+        while host_enabled(&connection) != Some(false) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the inventory must be read again once two checks running disagree with it");
+    // One disagreement was not enough, the second was, and the session is the same one.
+    assert_eq!(full_reads.load(Ordering::SeqCst), 2);
+    assert!(host_reads.load(Ordering::SeqCst) >= 2);
+    assert_eq!(connection.latest().generation(), generation);
+    assert_eq!(server.logins.load(Ordering::SeqCst), 1);
+    // With the inventory current again the checks agree and nothing more is read in full.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(full_reads.load(Ordering::SeqCst), 2);
+    assert_eq!(host_enabled(&connection), Some(false));
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn an_inventory_that_agrees_with_the_hosts_or_disagrees_once_is_left_alone() {
+    // Agreeing at every check: nothing is read again.
+    let (server, full_reads, host_reads) = silent_event_stream(|_| true).await;
+    let (_directory, _backend, connection) =
+        connect_checking(&server, Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(host_reads.load(Ordering::SeqCst) >= 3);
+    assert_eq!(full_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(host_enabled(&connection), Some(true));
+    connection.close().await;
+    // Disagreeing at one check only, as when an event is on its way: nothing is read again.
+    let (server, full_reads, host_reads) = silent_event_stream(|n| n != 1).await;
+    let (_directory, _backend, connection) =
+        connect_checking(&server, Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(host_reads.load(Ordering::SeqCst) >= 4);
+    assert_eq!(full_reads.load(Ordering::SeqCst), 1);
+    assert_eq!(host_enabled(&connection), Some(true));
+    connection.close().await;
+    // Switched off: the hosts are never read.
+    let (server, full_reads, host_reads) = silent_event_stream(|_| false).await;
+    let (_directory, _backend, connection) = connect_checking(&server, Duration::ZERO).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(host_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(full_reads.load(Ordering::SeqCst), 1);
+    connection.close().await;
+}
+
 #[tokio::test]
 async fn task_progress_does_not_cancel_the_inventory_long_poll() {
     let polls = Arc::new(AtomicUsize::new(0));

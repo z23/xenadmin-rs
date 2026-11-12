@@ -660,6 +660,14 @@ pub(crate) struct EventBatch {
     classes: BTreeMap<String, crate::model::ClassAvailability>,
 }
 
+impl EventBatch {
+    /// Makes this batch replace what the store holds instead of adding to it: for a full
+    /// batch read again because the inventory was found out of step with the hosts.
+    pub(crate) fn rebuild(&mut self) {
+        self.reset = true;
+    }
+}
+
 #[derive(Deserialize)]
 pub(crate) struct Event {
     #[serde(rename = "class")]
@@ -787,6 +795,42 @@ impl Store {
                 VmRecord::new(value).uuid().as_str() == Some(id.to_string().as_str())
             })
             .map(|(reference, _)| reference.clone())
+    }
+    /// The hosts whose record here differs, in what the client decides by, from a direct
+    /// read of all host records, or that only one of the two has. Events normally make
+    /// the two agree within moments; see `ConnectionOptions::inventory_check_interval`.
+    pub(crate) fn host_drift(&self, fresh: &Value) -> std::collections::BTreeSet<String> {
+        let held: BTreeMap<&String, &Value> = self.class("host").collect();
+        // A set is the same set in any order.
+        let members = |set: xenadmin_xapi::SetField<'_>| {
+            set.members().map(|all| {
+                all.iter()
+                    .map(Value::to_string)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+        };
+        let mut drift = std::collections::BTreeSet::new();
+        let Some(fresh) = fresh.as_object() else {
+            return drift;
+        };
+        for (reference, record) in fresh {
+            let same = held.get(reference).is_some_and(|mine| {
+                let (mine, theirs) = (HostRecord::new(mine), HostRecord::new(record));
+                mine.enabled() == theirs.enabled()
+                    && mine.other_config() == theirs.other_config()
+                    && mine.address() == theirs.address()
+                    && members(mine.resident_vms()) == members(theirs.resident_vms())
+            });
+            if !same {
+                drift.insert(reference.clone());
+            }
+        }
+        drift.extend(
+            held.keys()
+                .filter(|reference| !fresh.contains_key(reference.as_str()))
+                .map(|reference| (*reference).clone()),
+        );
+        drift
     }
     pub(crate) fn apply(&mut self, batch: &EventBatch) -> Result<Inventory, Error> {
         let mut next = self.clone();
