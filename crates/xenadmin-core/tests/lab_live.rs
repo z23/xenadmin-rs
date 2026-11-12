@@ -2828,6 +2828,462 @@ async fn lab_interrupted_shutdown_and_start_resolve_on_restart() {
     assert!(failures.is_empty(), "{failures:?}");
 }
 
+/// Same-pool migration, failure column: a storage live migration of the running lab guest
+/// to the other pool member is cut off by the application closing as soon as the request
+/// is on its way. On restart the journal reconciles it without sending it again: the
+/// record is followed to its end, by itself or by a recheck, and the guest ends running on
+/// one host with both disks on that host's repository. The guest is then migrated back.
+#[tokio::test]
+#[ignore]
+async fn lab_interrupted_storage_migration_resolves_on_restart() {
+    use xenadmin_core::{OperationControl, PowerAction, PowerState, VmCommand};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let id = OperationId::new();
+    let disks_on =
+        |i: &xenadmin_core::Inventory, vm: xenadmin_core::VmId| -> Vec<xenadmin_core::SrId> {
+            i.details
+                .vm_disks
+                .get(&vm)
+                .map(|vbds| {
+                    vbds.iter()
+                        .filter_map(|b| i.details.vbds.get(b))
+                        .filter(|b| b.kind == "Disk")
+                        .filter_map(|b| i.details.vdis.get(&b.vdi?)?.sr)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+    let (guest_id, source_host, destination, source_sr, destination_sr, states, state_at_close) = {
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let c = connect(&lab, &backend, 0, false).await;
+        let guest = c
+            .latest()
+            .inventory()
+            .unwrap()
+            .guests()
+            .find(|v| v.name.starts_with("lab-guest-") && !v.is_template)
+            .expect("lab guest")
+            .clone();
+        if guest.power_state != PowerState::Running {
+            power_to(&c, guest.id, PowerAction::Start, PowerState::Running).await;
+        }
+        let advertised = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details.vms.get(&guest.id).is_some_and(|v| {
+                    v.allowed_operations
+                        .as_ref()
+                        .is_some_and(|ops| ops.iter().any(|op| op == "migrate_send"))
+                })
+            })
+        })
+        .await;
+        assert!(
+            advertised,
+            "storage migration is not advertised for the lab guest"
+        );
+        let inventory = c.latest().inventory().unwrap().clone();
+        let source_host = inventory.vms[&guest.id].host.expect("resident host");
+        let destination = inventory
+            .hosts
+            .keys()
+            .copied()
+            .find(|h| *h != source_host && inventory.hosts[h].enabled)
+            .expect("another enabled host");
+        let plan = migration_plan(&inventory, guest.id, destination);
+        let source_sr = plan.disks[0].expected_sr;
+        let destination_sr = plan.disks[0].destination_sr;
+        let operation = c
+            .submit(
+                id,
+                VmCommand::Migrate {
+                    vm: c.latest().observe_vm(guest.id).unwrap(),
+                    operation: plan,
+                },
+            )
+            .expect("migration accepted");
+        let mut states = Vec::new();
+        let admitted = tokio::time::timeout(deadline(60), async {
+            loop {
+                let latest = operation.latest();
+                let entry = format!("{:?}", latest.state);
+                if states.last() != Some(&entry) {
+                    states.push(entry);
+                }
+                if matches!(
+                    latest.state,
+                    OperationState::Dispatching | OperationState::Tracking
+                ) {
+                    return true;
+                }
+                if latest.state.terminal() {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        let state_at_close = format!("{:?}", operation.latest().state);
+        c.close().await;
+        drop(backend);
+        assert!(
+            admitted,
+            "the migration ended before it could be interrupted: {states:?}"
+        );
+        (
+            guest.id,
+            source_host,
+            destination,
+            source_sr,
+            destination_sr,
+            states,
+            state_at_close,
+        )
+    };
+
+    // Same state directory, new process: the journal must reconcile, not replay.
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let (record, timeline) = wait_history_outcome(&c, id, 900).await;
+    let mut evidence = json!({"states_before_close": states, "state_at_close": state_at_close, "recovered_timeline": timeline});
+    let record = record.expect("the migration's record after the restart");
+    evidence["recovered"] =
+        json!({"state": format!("{:?}", record.state), "detail": record.detail});
+    // The host goes on with a migration whose client left. Let it end before judging.
+    let settled = settle(900, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details
+                .vms
+                .get(&guest_id)
+                .is_some_and(|v| v.current_operations.is_empty())
+        })
+    })
+    .await;
+    evidence["host_task_ended"] = json!(settled);
+    let record = if record.state == OperationState::OutcomeUnknown {
+        let before = (format!("{:?}", record.state), record.detail.clone());
+        c.control_operation(id, OperationControl::Recheck)
+            .expect("recheck accepted");
+        let moved = settle(300, || {
+            c.operation_history()
+                .iter()
+                .find(|r| r.id == id)
+                .is_some_and(|r| (format!("{:?}", r.state), r.detail.clone()) != before)
+        })
+        .await;
+        let (after, more) = wait_history_outcome(&c, id, 600).await;
+        let after = after.expect("record after recheck");
+        evidence["recheck"] = json!({"moved": moved, "timeline": more, "state": format!("{:?}", after.state), "detail": after.detail});
+        after
+    } else {
+        record
+    };
+    // Host truth: the guest runs on one host with both disks on that host's repository.
+    let placed = settle(300, || {
+        c.latest().inventory().is_some_and(|i| {
+            let srs = disks_on(i, guest_id);
+            let v = &i.vms[&guest_id];
+            v.power_state == PowerState::Running
+                && srs.len() == 2
+                && ((v.host == Some(destination) && srs.iter().all(|s| *s == destination_sr))
+                    || (v.host == Some(source_host) && srs.iter().all(|s| *s == source_sr)))
+        })
+    })
+    .await;
+    let now = c.latest().inventory().unwrap().clone();
+    let moved_to_destination = now.vms[&guest_id].host == Some(destination);
+    evidence["placement"] = json!({"consistent": placed, "on_destination": moved_to_destination,
+        "power_state": format!("{:?}", now.vms[&guest_id].power_state)});
+    evidence["final"] = json!({"state": format!("{:?}", record.state), "detail": record.detail});
+    evidence["records_with_this_id"] =
+        json!(c.operation_history().iter().filter(|r| r.id == id).count());
+    // Baseline: the guest back on the host it came from, by an ordinary migration.
+    let mut returned = json!(null);
+    if placed && moved_to_destination {
+        let inventory = c.latest().inventory().unwrap().clone();
+        settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.details.vms.get(&guest_id).is_some_and(|v| {
+                    v.allowed_operations
+                        .as_ref()
+                        .is_some_and(|ops| ops.iter().any(|op| op == "migrate_send"))
+                })
+            })
+        })
+        .await;
+        let back = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Migrate {
+                    vm: c.latest().observe_vm(guest_id).unwrap(),
+                    operation: migration_plan(&inventory, guest_id, source_host),
+                },
+            )
+            .expect("return migration accepted");
+        let row = wait_vm_outcome(&back, 1200).await;
+        let home = settle(120, || {
+            c.latest()
+                .inventory()
+                .is_some_and(|i| i.vms[&guest_id].host == Some(source_host))
+        })
+        .await;
+        returned = json!({"state": format!("{:?}", row.state), "detail": row.detail, "home": home});
+    }
+    evidence["returned"] = returned.clone();
+    c.close().await;
+    lab.record("interrupted-storage-migration", evidence.clone());
+    assert!(settled, "the host's migration task did not end: {evidence}");
+    assert!(
+        placed,
+        "the guest is not running on one host with its disks together: {evidence}"
+    );
+    assert_eq!(evidence["records_with_this_id"], 1, "{evidence}");
+    assert!(
+        matches!(
+            record.state,
+            OperationState::Succeeded | OperationState::OutcomeUnknown
+        ),
+        "{evidence}"
+    );
+    if moved_to_destination {
+        assert_eq!(returned["state"], "Succeeded", "{returned}");
+        assert_eq!(returned["home"], true, "{returned}");
+    }
+}
+
+/// Host operations, failure column: the reviewed reboot of the empty member, in
+/// maintenance, is cut off by the application closing as soon as the request is on its way.
+/// On restart the journal reconciles it without sending it again: the member comes back
+/// with one newer boot time, the record is followed to its end, by itself or by a recheck,
+/// and the boot time does not change a second time. The member then leaves maintenance.
+#[tokio::test]
+#[ignore]
+async fn lab_interrupted_member_reboot_resolves_on_restart() {
+    use xenadmin_core::{HostOperation, OperationControl, ResourceCommand, ResourceTarget};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let id = OperationId::new();
+    async fn host_op(
+        c: &Connection,
+        host: xenadmin_core::HostId,
+        operation: HostOperation,
+        seconds: u64,
+    ) -> std::sync::Arc<xenadmin_core::ResourceOperationRecord> {
+        let op = c
+            .submit_resource(
+                OperationId::new(),
+                ResourceCommand::Host {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Host(host))
+                        .unwrap(),
+                    operation,
+                },
+            )
+            .expect("host operation accepted");
+        wait_outcome(&op, seconds).await
+    }
+    let boot_time = |c: &Connection, host: xenadmin_core::HostId| {
+        c.latest()
+            .inventory()
+            .and_then(|i| i.details.hosts.get(&host).and_then(|h| h.boot_time.clone()))
+    };
+    let (member, boot_before, states, state_at_close, entered) = {
+        let backend = Backend::with_state_directory(state.path().into()).unwrap();
+        let c = connect(&lab, &backend, 0, false).await;
+        let inventory = c.latest().inventory().unwrap().clone();
+        let coordinator = inventory.coordinator.expect("coordinator");
+        let member = *inventory
+            .hosts
+            .keys()
+            .find(|h| **h != coordinator)
+            .expect("a member");
+        assert!(
+            !inventory
+                .vms
+                .values()
+                .any(|v| v.host == Some(member) && !v.is_control_domain),
+            "the member must not host guests"
+        );
+        let mut entered = json!({"skipped": "the member was already disabled"});
+        if inventory.hosts[&member].enabled {
+            let outcome = host_op(
+                &c,
+                member,
+                HostOperation::EnterMaintenance {
+                    expected_enabled: true,
+                    resident_vms: Vec::new(),
+                },
+                300,
+            )
+            .await;
+            settle(120, || {
+                c.latest()
+                    .inventory()
+                    .is_some_and(|i| !i.hosts[&member].enabled)
+            })
+            .await;
+            entered = json!({"state": format!("{:?}", outcome.state), "detail": outcome.detail});
+            assert_eq!(
+                outcome.state,
+                OperationState::Succeeded,
+                "{}",
+                outcome.detail
+            );
+        }
+        let boot_before = boot_time(&c, member).expect("boot time");
+        let operation = c
+            .submit_resource(
+                id,
+                ResourceCommand::Host {
+                    target: c
+                        .latest()
+                        .observe_resource(ResourceTarget::Host(member))
+                        .unwrap(),
+                    operation: HostOperation::Reboot {
+                        expected_boot_time: boot_before.clone(),
+                    },
+                },
+            )
+            .expect("reboot accepted");
+        let mut states = Vec::new();
+        let admitted = tokio::time::timeout(deadline(60), async {
+            loop {
+                let latest = operation.latest();
+                let entry = format!("{:?}", latest.state);
+                if states.last() != Some(&entry) {
+                    states.push(entry);
+                }
+                if matches!(
+                    latest.state,
+                    OperationState::Dispatching | OperationState::Tracking
+                ) {
+                    return true;
+                }
+                if latest.state.terminal() {
+                    return false;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        let state_at_close = format!("{:?}", operation.latest().state);
+        c.close().await;
+        drop(backend);
+        assert!(
+            admitted,
+            "the reboot ended before it could be interrupted: {states:?}"
+        );
+        (member, boot_before, states, state_at_close, entered)
+    };
+
+    // Same state directory, new process: the journal must reconcile, not replay.
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let row = |c: &Connection| c.resource_history().iter().find(|r| r.id == id).cloned();
+    let started = std::time::Instant::now();
+    let mut timeline = Vec::new();
+    let mut last = None;
+    let _ = tokio::time::timeout(deadline(900), async {
+        loop {
+            let record = row(&c);
+            let key = record.as_ref().map(|r| (format!("{:?}", r.state), r.detail.clone()));
+            if key != last {
+                if let Some((state, detail)) = &key {
+                    timeline.push(json!({"at_ms": started.elapsed().as_millis() as u64, "state": state, "detail": detail}));
+                }
+                last = key;
+            }
+            if record
+                .as_ref()
+                .is_some_and(|r| r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await;
+    let record = row(&c).expect("the reboot's record after the restart");
+    let mut evidence = json!({"enter_maintenance": entered, "states_before_close": states, "state_at_close": state_at_close,
+        "recovered_timeline": timeline, "recovered": {"state": format!("{:?}", record.state), "detail": record.detail}});
+    // Host truth first: the member is back, live, with a newer boot time.
+    let back = settle(900, || {
+        c.latest().inventory().is_some_and(|i| {
+            i.details.hosts.get(&member).is_some_and(|h| {
+                h.metrics
+                    .and_then(|m| i.details.host_metrics.get(&m))
+                    .and_then(|m| m.live)
+                    == Some(true)
+                    && h.boot_time.as_ref().is_some_and(|t| *t != boot_before)
+            })
+        })
+    })
+    .await;
+    let boot_after = boot_time(&c, member);
+    evidence["member_back_with_a_newer_boot_time"] = json!(back);
+    let record = if record.state == OperationState::OutcomeUnknown {
+        let before = (format!("{:?}", record.state), record.detail.clone());
+        c.control_resource(id, OperationControl::Recheck)
+            .expect("recheck accepted");
+        let moved = settle(300, || {
+            row(&c).is_some_and(|r| (format!("{:?}", r.state), r.detail.clone()) != before)
+        })
+        .await;
+        let settled = settle(600, || {
+            row(&c).is_some_and(|r| r.state.terminal() || r.state == OperationState::OutcomeUnknown)
+        })
+        .await;
+        let after = row(&c).expect("record after recheck");
+        evidence["recheck"] = json!({"moved": moved, "settled": settled, "state": format!("{:?}", after.state), "detail": after.detail});
+        after
+    } else {
+        record
+    };
+    // A second reboot would show as another boot time: watch for two minutes.
+    let rebooted_again = settle(120, || boot_time(&c, member) != boot_after).await;
+    evidence["boot_time_changed_again"] = json!(rebooted_again);
+    evidence["final"] = json!({"state": format!("{:?}", record.state), "detail": record.detail});
+    evidence["records_with_this_id"] =
+        json!(c.resource_history().iter().filter(|r| r.id == id).count());
+    // Baseline: out of maintenance.
+    let outcome = host_op(&c, member, HostOperation::ExitMaintenance, 300).await;
+    let enabled = settle(120, || {
+        c.latest()
+            .inventory()
+            .is_some_and(|i| i.hosts[&member].enabled)
+    })
+    .await;
+    evidence["exit_maintenance"] = json!({"state": format!("{:?}", outcome.state), "detail": outcome.detail, "enabled": enabled});
+    c.close().await;
+    lab.record("interrupted-member-reboot", evidence.clone());
+    assert!(
+        back,
+        "the member did not come back with a newer boot time: {evidence}"
+    );
+    assert!(
+        !rebooted_again,
+        "the member's boot time changed a second time: {evidence}"
+    );
+    assert_eq!(evidence["records_with_this_id"], 1, "{evidence}");
+    assert!(
+        matches!(
+            record.state,
+            OperationState::Succeeded | OperationState::OutcomeUnknown
+        ),
+        "{evidence}"
+    );
+    assert_eq!(
+        outcome.state,
+        OperationState::Succeeded,
+        "{}",
+        outcome.detail
+    );
+    assert!(enabled);
+}
+
 /// Snapshot marker row, failure column: a snapshot create interrupted by the application
 /// closing mid-flight is reconciled on restart from the journal, never repeated, and the
 /// host ends with at most one snapshot of that name.
