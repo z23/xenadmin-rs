@@ -81,6 +81,12 @@ Those of 0.19.0 stand, with these from the lab on 2026-11-12:
   was refused on its fresh read of the host, so nothing was changed by mistake. It did
   not happen again in two further runs (finding 64).
 
+- After a coordinator loses power, changes made in the last minutes before it can be
+  undone: on the lab a VM that the client had deleted and verified gone was back as a
+  record without disks, the pool's database not having been written out in between
+  (finding 65). The client's history still shows the deletion as verified, which it
+  was at the time.
+
 And one that a fixture test showed while the batch of snapshot exports was written:
 
 - An export in a batch, of a VM or of a snapshot, that is interrupted after its task
