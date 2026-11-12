@@ -47,6 +47,9 @@ Stored formats: operation journal 4, connection profiles 3. Unchanged from 0.18.
   that hosts do not send. A disk attached to a guest that is not using it can now be
   grown and copied. For the same reason multipath maintenance treated every attached
   disk as active; it now looks only at disks that are plugged in.
+- A cross-pool copy or move of a guest that had changed since its review (its power
+  state, or the host it runs on or belongs to) was refused as "Invalid XAPI response".
+  The refusal now says that the guest changed and asks for a new review.
 
 ### Known issues
 

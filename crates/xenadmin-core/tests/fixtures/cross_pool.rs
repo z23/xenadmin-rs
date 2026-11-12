@@ -384,6 +384,36 @@ async fn source_and_receiver_changes_or_destination_collisions_prevent_transfer(
     }
 }
 
+/// A same-pool migration gives a guest a home host. A review made before that (the lab's
+/// cross-pool scenario said "no home host" for a guest that had since been migrated) is
+/// stale: the refusal says the guest changed, not that the host answered wrongly.
+#[tokio::test]
+async fn a_guest_whose_home_host_changed_since_review_is_refused_as_changed() {
+    let f = fixture(Fault::None, false).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let source = connect(&f.source, &backend, false).await;
+    let dest = connect(&f.destination, &backend, false).await;
+    let mut stale = selection(&source, &dest, CrossPoolMode::CopyHalted);
+    stale.operation.expected_affinity = None;
+    let refusal = match source.transfer_vm_to_pool(OperationId::new(), stale, &dest) {
+        Ok(op) => {
+            let result = done(&op).await;
+            assert_eq!(result.state, OperationState::Rejected, "{}", result.detail);
+            result.detail.clone()
+        }
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        refusal.contains("changed; refresh and review the migration again"),
+        "{refusal}"
+    );
+    assert!(!refusal.contains("Invalid XAPI response"), "{refusal}");
+    assert_eq!(count(&f.destination, "host.migrate_receive"), 0);
+    assert_eq!(count(&f.source, "Async.VM.migrate_send"), 0);
+    source.close().await;
+    dest.close().await;
+}
 #[tokio::test]
 async fn lost_or_failed_task_receipts_remain_unknown_and_rechecks_never_replay() {
     for fault in [

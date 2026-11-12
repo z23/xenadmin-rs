@@ -346,27 +346,29 @@ async fn source(
             && VmRecord::new(&record).is_control_domain() == false,
         "Choose an ordinary VM; templates, snapshots and control domains cannot use this transfer",
     )?;
-    require(
-        VmRecord::new(&record).power_state()
-            == if operation.mode.live() {
-                vm_power_state::RUNNING
-            } else {
-                vm_power_state::HALTED
-            },
-        "The VM power state changed",
-    )?;
+    // A guest that is no longer as it was reviewed is a stale review, and is said to be:
+    // the host answered correctly, so this is not an invalid response.
+    if VmRecord::new(&record).power_state()
+        != if operation.mode.live() {
+            vm_power_state::RUNNING
+        } else {
+            vm_power_state::HALTED
+        }
+    {
+        return Err(Error::MigrationConflict);
+    }
     m::idle(&record)?;
     require(
         crate::xapi::advertises(&record, vm_operations::MIGRATE_SEND),
         "The host does not currently allow cross-pool migration",
     )?;
-    require(
-        m::nullable_host(session, &VmRecord::new(&record).resident_on()).await?
-            == operation.expected_host
-            && m::nullable_host(session, &VmRecord::new(&record).affinity()).await?
-                == operation.expected_affinity,
-        "The VM resident or home host changed",
-    )?;
+    if m::nullable_host(session, &VmRecord::new(&record).resident_on()).await?
+        != operation.expected_host
+        || m::nullable_host(session, &VmRecord::new(&record).affinity()).await?
+            != operation.expected_affinity
+    {
+        return Err(Error::MigrationConflict);
+    }
     for field in ["snapshots", "VGPUs", "attached_PCIs", "VUSBs"] {
         require(
             m::refs(&record, field)?.is_empty(),

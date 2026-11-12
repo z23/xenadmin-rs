@@ -128,7 +128,8 @@ depends on the description alone and is sorted.
   `Async.Class.name` in the core against the catalogue: a call must be a message of that
   class, and a field named by a decoder must be a field of it. It has a list for calls
   the description lacks, which is empty, and an entry that no longer applies fails the
-  test.
+  test. Where a call is written with its arguments beside it, which 362 are, it also
+  checks that the call passes as many as the API gives the message; all do.
 
 What the move found:
 
@@ -215,8 +216,10 @@ metadata or the client's own structures.
    here: those compared with a value of the client's own, such as a reviewed power
    state or an address mode, and the operation names the client carries in its own
    types.
-3. Calls: generated descriptions of each message's parameters, so that a call's argument
-   count and order are checked where it is made.
+3. Calls: generated descriptions of each message's parameters, so that a call's
+   arguments are checked where it is made. A test now checks their number for the calls
+   written with their arguments; their order and types, and the calls whose arguments
+   are assembled elsewhere, are not checked.
 4. The experimental areas, class by class, each with the fixture tests that cover it.
 
 A workflow whose decoding moves onto the generated crate is run again on the lab before

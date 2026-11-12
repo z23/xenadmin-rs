@@ -4378,7 +4378,12 @@ async fn lab_cross_pool_copy_and_verify() {
             destination_pool: destination_inventory.pool_id,
             destination_host,
             expected_host: None,
-            expected_affinity: None,
+            // The guest's home host as the pool reports it: a same-pool migration sets one.
+            expected_affinity: source_inventory
+                .details
+                .vms
+                .get(&guest.id)
+                .and_then(|d| d.affinity),
             transfer_network,
             transfer_address: destination_inventory.hosts[&destination_host]
                 .address
@@ -4614,7 +4619,11 @@ fn cross_pool_selection(
             destination_pool: destination_inventory.pool_id,
             destination_host,
             expected_host: None,
-            expected_affinity: None,
+            expected_affinity: source_inventory
+                .details
+                .vms
+                .get(&vm)
+                .and_then(|d| d.affinity),
             transfer_network: networks[0].destination_network,
             transfer_address: destination_inventory.hosts[&destination_host]
                 .address
@@ -21524,6 +21533,109 @@ async fn lab_start_lab_guests() {
     lab.record("start-lab-guests", json!({"power": power}));
     for entry in &power {
         assert_eq!(entry["reached"], true, "{entry}");
+    }
+}
+
+/// Lab utility, P11-01: live-migrate the running Xen Orchestra appliance, whose disk is on
+/// shared storage, to the coordinator, so that the member holds no guest for the scenarios
+/// that put it into maintenance; `XENADMIN_LAB_XO_HOST=member` moves it back to the member.
+/// An appliance already on the wanted host is only recorded.
+#[tokio::test]
+#[ignore]
+async fn lab_move_xo_appliance() {
+    use xenadmin_core::{DiskPlacement, NicPlacement, PowerState, VmCommand, VmMigration};
+    let lab = Lab::load();
+    let state = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(state.path().into()).unwrap();
+    let c = connect(&lab, &backend, 0, false).await;
+    let inventory = c.latest().inventory().unwrap().clone();
+    let coordinator = inventory.coordinator.expect("coordinator");
+    let to_member = std::env::var("XENADMIN_LAB_XO_HOST").is_ok_and(|v| v == "member");
+    let destination = inventory
+        .hosts
+        .keys()
+        .copied()
+        .find(|h| (*h != coordinator) == to_member && inventory.hosts[h].enabled)
+        .expect("an enabled destination host");
+    let appliance = inventory
+        .guests()
+        .find(|v| v.name == "XOA" && v.power_state == PowerState::Running)
+        .cloned()
+        .expect("the running Xen Orchestra appliance");
+    let vm = appliance.id;
+    let mut steps = Vec::new();
+    if appliance.host != Some(destination) {
+        let disks = inventory.details.vm_disks[&vm]
+            .iter()
+            .filter_map(|b| inventory.details.vbds.get(b))
+            .filter(|b| b.kind == "Disk")
+            .filter_map(|b| {
+                let vdi = b.vdi?;
+                let sr = inventory.details.vdis.get(&vdi)?.sr?;
+                Some(DiskPlacement {
+                    vdi,
+                    expected_sr: sr,
+                    destination_sr: sr,
+                })
+            })
+            .collect::<Vec<_>>();
+        let networks = inventory
+            .details
+            .vifs
+            .values()
+            .filter(|v| v.vm == Some(vm))
+            .filter_map(|v| {
+                let network = v.network?;
+                Some(NicPlacement {
+                    vif: v.id,
+                    expected_network: network,
+                    destination_network: network,
+                })
+            })
+            .collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let migration = c
+            .submit(
+                OperationId::new(),
+                VmCommand::Migrate {
+                    vm: c.latest().observe_vm(vm).unwrap(),
+                    operation: VmMigration {
+                        destination,
+                        expected_host: appliance.host,
+                        expected_affinity: inventory.details.vms.get(&vm).and_then(|d| d.affinity),
+                        live: true,
+                        disks,
+                        networks,
+                        transfer_network: None,
+                    },
+                },
+            )
+            .expect("migration accepted");
+        let row = wait_vm_outcome(&migration, 900).await;
+        let placed = settle(120, || {
+            c.latest().inventory().is_some_and(|i| {
+                i.vms.get(&vm).is_some_and(|v| {
+                    v.power_state == PowerState::Running && v.host == Some(destination)
+                })
+            })
+        })
+        .await;
+        note(
+            &mut steps,
+            json!({"step": "live-migrate the appliance without moving storage", "accepted": true,
+                "state": format!("{:?}", row.state), "detail": row.detail, "read_back": placed,
+                "elapsed_ms": started.elapsed().as_millis() as u64}),
+        );
+    }
+    c.close().await;
+    lab.record(
+        "move-xo-appliance",
+        json!({"from": appliance.host.map(|h| inventory.hosts[&h].name.clone()),
+            "to": inventory.hosts[&destination].name, "steps": steps}),
+    );
+    for step in &steps {
+        assert_eq!(step["state"], "Succeeded", "{step}");
+        assert_eq!(step["read_back"], true, "{step}");
     }
 }
 

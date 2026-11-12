@@ -706,6 +706,19 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    [decision record](../decisions/0004-generated-bindings.md) that an assignment from
    fields cannot choose a wrong class where one class fits was wrong and is corrected
    there.
+62. **A review that had gone stale was reported as an invalid answer from the host.** The
+   lab's cross-pool scenarios reviewed the guest as having no home host. A halted move
+   between repositories run earlier that day had given it one (the client's move sets
+   the guest's home host to its destination), so the next cross-pool copy was refused
+   before anything was sent, which is right, but with "Invalid XAPI response: The VM
+   resident or home host changed". The host had answered correctly; it was the review
+   that no longer matched. A guest whose power state, resident host or home host
+   differs from its review is now refused in the words the same-pool migration uses,
+   "The VM, host, storage or network changed; refresh and review the migration again"
+   (fixture covered), and the scenarios review the guest's home host as the pool
+   reports it. The other refusals of the cross-pool preflight take the same route and
+   read as invalid responses where they are unmet prerequisites; that area is
+   experimental and they are left for a pass of its own.
 
 ## Console observation
 

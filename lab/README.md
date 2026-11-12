@@ -145,6 +145,17 @@ repositories through the surviving coordinator), `lab_designate_first_host_coord
 its current domain with the unattended installer attached, while `manage.py serve` answers
 its installer; the join scenario then brings it back.
 
+The scenarios that put the member into maintenance expect it to hold no guest. The Xen
+Orchestra appliance usually runs there: `lab_move_xo_appliance` live-migrates it to the
+coordinator through the client first, and with `XENADMIN_LAB_XO_HOST=member` back again.
+The live storage migration scenario moves the lab guest to the other host, so a second run
+of it brings the guest home.
+
+Setting `XENADMIN_XAPI_VIEW_AUDIT` to a file while scenarios run makes the client's record
+views write there any key of a live record that the view's class lacks (names only): a
+record read as another class would show up. See the
+[development notes](../docs/DEVELOPMENT.md).
+
 The harness reads its inputs from the environment: `XENADMIN_LAB_MANIFEST` (the manifest),
 `XENADMIN_LAB_PASSWORD_FILE` (the lab-only root password), `XENADMIN_LAB_EVIDENCE_DIR`
 (defaults to `evidence/` beside the manifest), `XENADMIN_LAB_HOST_CONTROL=libvirt` (lets a
