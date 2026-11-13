@@ -390,15 +390,16 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
         );
     }
     out.push_str(
-        "}\n\n/// For every class, a reference held as text that the caller says is of that class.\n\
-         /// The class is checked against the parameter the reference is given to; that the\n\
-         /// text is a reference of that class is the caller's word, written where it is used.\n\
-         pub mod refs {\n    use super::{Ref, class};\n",
+        "}\n\n/// For every class, a reference that the caller says is of that class, made from\n\
+         /// text or from a value a host sent. The class is checked against the parameter the\n\
+         /// reference is given to; that it is a reference of that class is the caller's\n\
+         /// word, written where it is used.\n\
+         pub mod refs {\n    use super::{Ref, RefSource, class};\n",
     );
     for class in &classes {
         let _ = writeln!(
             out,
-            "    /// A reference to a `{name}`.\n    pub fn {function}<T: AsRef<str> + ?Sized>(reference: &T) -> Ref<'_, class::{marker}> {{\n        Ref::of(reference.as_ref())\n    }}",
+            "    /// A reference to a `{name}`.\n    pub fn {function}<'a>(reference: impl Into<RefSource<'a>>) -> Ref<'a, class::{marker}> {{\n        Ref::new(reference)\n    }}",
             name = class.name,
             function = snake(&class.name),
             marker = camel(&class.name)

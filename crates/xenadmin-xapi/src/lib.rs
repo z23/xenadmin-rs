@@ -104,37 +104,60 @@ pub trait Call: Sized {
 }
 
 /// A reference to an object of class `C`, as an argument of a call. One is made with the
-/// function for its class in [`refs`], or from a value a host sent with [`Ref::sent`]. The
-/// class is the caller's word; the compiler holds it against the parameter it is given to.
+/// function for its class in [`refs`], from text or from a value a host sent. The class is
+/// the caller's word, written where the reference is used; the compiler holds it against
+/// the parameter the reference is given to.
 pub struct Ref<'a, C> {
-    value: RefValue<'a>,
+    source: RefSource<'a>,
     class: std::marker::PhantomData<fn() -> C>,
 }
-enum RefValue<'a> {
+/// What a reference is made from: text, or a value as a host sent it (a field of a
+/// record, the answer to a call), which goes back unread.
+#[derive(Clone, Copy)]
+pub struct RefSource<'a>(Sent<'a>);
+#[derive(Clone, Copy)]
+enum Sent<'a> {
     Text(&'a str),
-    Sent(&'a serde_json::Value),
+    Json(&'a serde_json::Value),
+}
+impl<'a> From<&'a str> for RefSource<'a> {
+    fn from(reference: &'a str) -> Self {
+        Self(Sent::Text(reference))
+    }
+}
+impl<'a> From<&'a String> for RefSource<'a> {
+    fn from(reference: &'a String) -> Self {
+        Self(Sent::Text(reference))
+    }
+}
+impl<'a> From<&'a serde_json::Value> for RefSource<'a> {
+    fn from(value: &'a serde_json::Value) -> Self {
+        Self(Sent::Json(value))
+    }
+}
+impl<'a> From<RefField<'a>> for RefSource<'a> {
+    fn from(field: RefField<'a>) -> Self {
+        Self(Sent::Json(field.0))
+    }
+}
+impl<'a> From<FieldValue<'a>> for RefSource<'a> {
+    fn from(field: FieldValue<'a>) -> Self {
+        Self(Sent::Json(field.0))
+    }
 }
 impl<'a, C> Ref<'a, C> {
-    /// A reference held as text.
-    pub fn of(reference: &'a str) -> Self {
+    /// A reference the caller says is of class `C`.
+    pub fn new(source: impl Into<RefSource<'a>>) -> Self {
         Self {
-            value: RefValue::Text(reference),
-            class: std::marker::PhantomData,
-        }
-    }
-    /// A reference as a host sent it, passed back unread: a field of a record or the
-    /// answer to a call.
-    pub fn sent(value: impl Reads<'a, kind::Reference>) -> Self {
-        Self {
-            value: RefValue::Sent(value.raw()),
+            source: source.into(),
             class: std::marker::PhantomData,
         }
     }
     /// The JSON that is sent for it.
     pub fn json(&self) -> serde_json::Value {
-        match self.value {
-            RefValue::Text(reference) => serde_json::Value::String(reference.to_owned()),
-            RefValue::Sent(value) => value.clone(),
+        match self.source.0 {
+            Sent::Text(reference) => serde_json::Value::String(reference.to_owned()),
+            Sent::Json(value) => value.clone(),
         }
     }
 }
@@ -144,12 +167,6 @@ impl<C> Clone for Ref<'_, C> {
     }
 }
 impl<C> Copy for Ref<'_, C> {}
-impl Clone for RefValue<'_> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-impl Copy for RefValue<'_> {}
 
 /// A whole number as an argument of a call. Calls send it as a string of digits, which is
 /// how the API's own bindings write a 64-bit integer.
@@ -1210,12 +1227,16 @@ mod tests {
         let record = json!({"resident_on": "OpaqueRef:h", "affinity": null});
         let view = records::VmRecord::new(&record);
         assert_eq!(
-            host::GetRecord(Ref::sent(view.resident_on())).arguments(),
+            host::GetRecord(refs::host(view.resident_on())).arguments(),
             [json!("OpaqueRef:h")]
         );
         assert_eq!(
-            host::GetRecord(Ref::sent(view.affinity())).arguments(),
+            host::GetRecord(refs::host(view.affinity())).arguments(),
             [Value::Null]
+        );
+        assert_eq!(
+            host::GetRecord(refs::host(&record["resident_on"])).arguments(),
+            [json!("OpaqueRef:h")]
         );
         // A set, a map and a record are JSON values, handed over whole.
         assert_eq!(
@@ -1276,7 +1297,7 @@ mod tests {
         // A parameter the description does not name is named for its place.
         assert!(out.contains("pub struct A;") && out.contains("pub struct BThing;"));
         assert!(out.contains(
-            "pub fn b_thing<T: AsRef<str> + ?Sized>(reference: &T) -> Ref<'_, class::BThing> {"
+            "pub fn b_thing<'a>(reference: impl Into<RefSource<'a>>) -> Ref<'a, class::BThing> {"
         ));
         assert!(out.contains("pub struct Start<'a>(\n"));
         assert!(out.contains("            pub Ref<'a, class::A>,\n"));
