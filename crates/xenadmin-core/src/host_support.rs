@@ -226,7 +226,10 @@ async fn crashdumps(s: &Session, reference: &str) -> Result<Vec<HostCrashdump>, 
     let values = crate::security_discovery::records(s, "host_crashdump", 4096).await?;
     let mut seen = BTreeSet::new();
     let mut out = vec![];
-    for r in values.values().filter(|r| r["host"] == reference) {
+    for r in values
+        .values()
+        .filter(|r| HostCrashdumpRecord::new(r).host() == reference)
+    {
         let dump = decode_crashdump(r)?;
         if !seen.insert(dump.uuid) {
             return Err(Error::Protocol("duplicate host crashdump UUID"));

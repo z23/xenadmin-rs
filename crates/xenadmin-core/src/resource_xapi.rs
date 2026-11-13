@@ -2,7 +2,7 @@ use super::*;
 use crate::xapi::Session;
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{storage_operations, task_allowed_operations, task_status_type};
-use xenadmin_xapi::records::{NetworkRecord, PoolRecord, SrRecord, TaskRecord};
+use xenadmin_xapi::records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord};
 use xenadmin_xapi::{Reads, kind};
 
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
@@ -236,8 +236,9 @@ pub(super) async fn prepare(
                 networks
                     .values()
                     .map(|record| {
-                        record["uuid"]
-                            .as_str()
+                        NetworkRecord::new(record)
+                            .uuid()
+                            .text()
                             .and_then(|value| NetworkId::parse(value).ok())
                             .ok_or(Error::Protocol("invalid network baseline UUID"))
                     })
@@ -253,7 +254,7 @@ pub(super) async fn prepare(
         }
         ResourceAction::ConfigureInternalNetwork { expected_mtu, mtu } => {
             empty_network(&fresh)?;
-            if number(&fresh["MTU"]) != Some(*expected_mtu) {
+            if number(NetworkRecord::new(&fresh).mtu()) != Some(*expected_mtu) {
                 return Err(Error::ResourceConflict);
             }
             steps.push(field_step(
@@ -266,7 +267,7 @@ pub(super) async fn prepare(
         }
         ResourceAction::DeleteInternalNetwork { expected_name } => {
             empty_network(&fresh)?;
-            if fresh["name_label"] != *expected_name {
+            if NetworkRecord::new(&fresh).name_label() != *expected_name {
                 return Err(Error::ResourceConflict);
             }
             steps.push(Step {
@@ -278,8 +279,9 @@ pub(super) async fn prepare(
             });
         }
         ResourceAction::ScanStorage => {
-            if !fresh["allowed_operations"]
-                .as_array()
+            if !SrRecord::new(&fresh)
+                .allowed_operations()
+                .members()
                 .is_some_and(|ops| ops.iter().any(|op| op == storage_operations::SCAN))
             {
                 return Err(Error::UnavailableAction);
@@ -296,7 +298,7 @@ pub(super) async fn prepare(
             expected_enabled,
             enabled,
         } => {
-            if fresh["enabled"] != *expected_enabled {
+            if HostRecord::new(&fresh).enabled() != *expected_enabled {
                 return Err(Error::ResourceConflict);
             }
             steps.push(Step {
@@ -430,15 +432,16 @@ pub(super) async fn arguments(
         }
         Check::Deleted => {
             empty_network(&fresh)?;
-            if fresh["name_label"] != step.expected {
+            if NetworkRecord::new(&fresh).name_label() != step.expected {
                 return Err(Error::ResourceConflict);
             }
             Ok(vec![json!(reference)])
         }
         Check::SnapshotPolicy(_) => unreachable!(),
         Check::Scan => {
-            if !fresh["allowed_operations"]
-                .as_array()
+            if !SrRecord::new(&fresh)
+                .allowed_operations()
+                .members()
                 .is_some_and(|ops| ops.iter().any(|op| op == storage_operations::SCAN))
             {
                 return Err(Error::UnavailableAction);
@@ -600,7 +603,9 @@ async fn verify_created(
             .ok_or(Error::Protocol("network reconciliation unavailable"))?;
         let candidates = records
             .values()
-            .filter(|candidate| candidate["other_config"][OPERATION_TAG] == record.id.to_string())
+            .filter(|candidate| {
+                NetworkRecord::new(candidate).other_config()[OPERATION_TAG] == record.id.to_string()
+            })
             .collect::<Vec<_>>();
         if candidates.len() != 1 {
             return Err(Error::Protocol(

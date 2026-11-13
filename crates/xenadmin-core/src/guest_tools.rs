@@ -216,7 +216,7 @@ async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Resu
     for pbd in pbds.values().filter(|p| {
         PbdRecord::new(p).sr() == sr_ref && PbdRecord::new(p).currently_attached() == true
     }) {
-        let host = crate::snapshots::reference(&pbd["host"])?;
+        let host = crate::snapshots::reference(PbdRecord::new(pbd).host())?;
         if VmRecord::new(guest).power_state() == vm_power_state::RUNNING {
             if VmRecord::new(guest).resident_on() == host {
                 reachable = true;

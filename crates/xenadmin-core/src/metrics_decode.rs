@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::records::DataSourceRecord;
+use xenadmin_xapi::{Reads, kind};
 const MAX_SOURCES: usize = 512;
 const MAX_COLUMNS: usize = 2048;
 const MAX_ROWS: usize = 2048;
@@ -16,7 +18,8 @@ fn integer(value: &Value) -> Result<u64, Error> {
         .or_else(|| value.as_str()?.parse().ok())
         .ok_or(Error::Protocol("invalid metrics timestamp or count"))
 }
-fn text(value: &Value, limit: usize) -> Result<String, Error> {
+fn text<'a>(value: impl Reads<'a, kind::Text>, limit: usize) -> Result<String, Error> {
+    let value = value.raw();
     let value = value
         .as_str()
         .filter(|v| v.len() <= limit && !v.chars().any(|c| c.is_control() && !c.is_whitespace()))
@@ -33,7 +36,7 @@ pub(super) fn sources(value: &Value) -> Result<Vec<MetricSource>, Error> {
     let mut names = BTreeSet::new();
     let mut sources = Vec::new();
     for value in values {
-        let name = text(&value["name_label"], 128)?;
+        let name = text(DataSourceRecord::new(value).name_label(), 128)?;
         // One source this client cannot name must not take every chart on the host with
         // it: such a source, or a repeat of one already listed, is left out.
         if !valid_source(&name) || !names.insert(name.clone()) {
@@ -42,10 +45,11 @@ pub(super) fn sources(value: &Value) -> Result<Vec<MetricSource>, Error> {
         sources.push(MetricSource {
             category: MetricCategory::for_name(&name),
             name,
-            description: text(&value["name_description"], 2048)?,
-            units: text(&value["units"], 128)?,
-            enabled: value["enabled"]
-                .as_bool()
+            description: text(DataSourceRecord::new(value).name_description(), 2048)?,
+            units: text(DataSourceRecord::new(value).units(), 128)?,
+            enabled: DataSourceRecord::new(value)
+                .enabled()
+                .get()
                 .ok_or(Error::Protocol("metric recording state unavailable"))?,
         });
     }

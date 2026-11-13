@@ -7,7 +7,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{host_allowed_operations, task_status_type, vm_power_state};
-use xenadmin_xapi::records::{HostRecord, PbdRecord, PoolRecord, TaskRecord, VmRecord};
+use xenadmin_xapi::records::{
+    HostMetricsRecord, HostRecord, PbdRecord, PoolRecord, TaskRecord, VmRecord,
+};
 use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,8 +201,9 @@ fn idle(record: &Value) -> Result<(), Error> {
 }
 fn allowed(record: &Value, operation: &str) -> Result<(), Error> {
     require(
-        record["allowed_operations"]
-            .as_array()
+        HostRecord::new(record)
+            .allowed_operations()
+            .members()
             .is_some_and(|ops| ops.iter().any(|op| op == operation)),
         "The host no longer advertises the reviewed operation",
     )
@@ -254,7 +257,7 @@ async fn metrics(session: &Session, host: &Value) -> Result<Value, Error> {
 }
 async fn live(session: &Session, host: &Value, expected: bool) -> Result<(), Error> {
     require(
-        metrics(session, host).await?["live"] == expected,
+        HostMetricsRecord::new(&metrics(session, host).await?).live() == expected,
         "The host's fresh liveness does not match the reviewed operation",
     )
 }
@@ -367,7 +370,7 @@ async fn evacuation(
                     .uuid()
                     .text()
                     .is_some_and(|uuid| uuid::Uuid::parse_str(uuid).is_ok())
-                && metrics(session, &record).await?["live"] == true
+                && HostMetricsRecord::new(&metrics(session, &record).await?).live() == true
             {
                 suitable = true;
                 break;
@@ -385,7 +388,7 @@ async fn evacuation(
 }
 async fn empty_disabled(session: &Session, host_ref: &str, host: &Value) -> Result<(), Error> {
     require(
-        host["enabled"] == false,
+        HostRecord::new(host).enabled() == false,
         "Disable host scheduling before this operation",
     )?;
     require(
@@ -394,7 +397,7 @@ async fn empty_disabled(session: &Session, host_ref: &str, host: &Value) -> Resu
     )
 }
 async fn safe_coordinator(session: &Session, reference: &str, pool: &Value) -> Result<(), Error> {
-    if pool["master"] == reference {
+    if PoolRecord::new(pool).master() == reference {
         let hosts = session.call("host.get_all", vec![]).await?;
         require(
             hosts.as_array().is_some_and(|hosts| hosts.len() == 1),
@@ -405,7 +408,7 @@ async fn safe_coordinator(session: &Session, reference: &str, pool: &Value) -> R
 }
 fn epoch(host: &Value, key: &str, expected: &str) -> Result<(), Error> {
     require(
-        host["other_config"][key].as_str() == Some(expected) && valid_epoch(expected),
+        HostRecord::new(host).other_config().text(key) == Some(expected) && valid_epoch(expected),
         "The host restarted after the view opened, or its start marker is unavailable",
     )
 }
@@ -414,8 +417,9 @@ async fn detached_storage(
     reference_host: &str,
     host: &Value,
 ) -> Result<(), Error> {
-    let pbds = host["PBDs"]
-        .as_array()
+    let pbds = HostRecord::new(host)
+        .pbds()
+        .members()
         .filter(|v| v.len() <= 10_000)
         .ok_or(Error::HostPrerequisite(
             "Host storage attachments are unavailable",
@@ -750,8 +754,9 @@ pub(crate) async fn arguments(
                 memory(&vm)? == *expected,
                 "Control-domain memory limits changed since review",
             )?;
-            let total = integer(&metrics(session, &host).await?["memory_total"])
-                .ok_or(Error::HostPrerequisite("Host total memory is unavailable"))?;
+            let total =
+                integer(HostMetricsRecord::new(&metrics(session, &host).await?).memory_total())
+                    .ok_or(Error::HostPrerequisite("Host total memory is unavailable"))?;
             require(
                 *desired <= total,
                 "Control-domain memory exceeds host physical memory",
@@ -961,8 +966,9 @@ pub(crate) async fn verify(
             loop {
                 let confirmed = async {
                     live(session, &current, true).await?;
-                    let fresh = current["other_config"][key]
-                        .as_str()
+                    let fresh = HostRecord::new(&current)
+                        .other_config()
+                        .text(key)
                         .filter(|s| valid_epoch(s))
                         .and_then(|s| s.parse::<f64>().ok());
                     Ok::<bool, Error>(fresh.is_some_and(|fresh| fresh > old))

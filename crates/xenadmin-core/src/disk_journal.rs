@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OwnedDiskSource, VdiId, operations::Journal};
+use xenadmin_xapi::records::VdiRecord;
 impl ResourceOperationRecord {
     pub fn owned_disk_candidates(&self) -> Vec<VdiId> {
         if !self.state.terminal() {
@@ -68,7 +69,7 @@ impl Journal {
             }
         };
         if let Some((key, value)) = marker
-            && fresh["other_config"][key] != value
+            && VdiRecord::new(fresh).other_config()[key] != value
         {
             return Err(Error::Protocol(
                 "The disk ownership marker no longer matches its originating operation",

@@ -77,7 +77,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
         if let Some(class)=method.strip_suffix(".get_record") && ["pool","host","VM","SR","PBD","VDI","host_metrics","VM_appliance"].contains(&class) {
             if fault==Fault::VerifyFailure&&writes.load(Ordering::SeqCst)>0&&class=="pool"&&verify.fetch_add(1,Ordering::SeqCst)==0 {return Some(RpcReply::Json(json!({"error":{"message":"RBAC_PERMISSION_DENIED","data":["private-secret"]}})));}
             let key=params[1].as_str().unwrap().strip_prefix("OpaqueRef:").unwrap();
-            if fault==Fault::LateCoordinator&&class=="pool"&&writes.load(Ordering::SeqCst)>0&&verify.fetch_add(1,Ordering::SeqCst)>=2 {let mut records=map.lock().unwrap();if let Some(pending)=records["pool"].get("pending_master").cloned() {records.get_mut("pool").unwrap()["master"]=pending;}}
+            if fault==Fault::LateCoordinator&&class=="pool"&&writes.load(Ordering::SeqCst)>0&&verify.fetch_add(1,Ordering::SeqCst)>=2 {let mut records=map.lock().unwrap();if let Some(pending)=records["pool"].get("fixture_pending_master").cloned() {records.get_mut("pool").unwrap()["master"]=pending;}}
             return Some(RpcReply::Json(json!({"result":map.lock().unwrap().get(key).cloned().unwrap_or(Value::Null)})));
         }
         if let Some(class)=method.strip_suffix(".get_all_records") && ["host","VM","PBD"].contains(&class) {
@@ -92,7 +92,7 @@ async fn fixture(fault: Fault) -> (Mock, Records) {
             match method {
                 "pool.set_migration_compression"=>records.get_mut("pool").unwrap()["migration_compression"]=params[2].clone(),
                 "Async.pool.set_https_only"=>for host in ["host","host-other"] {records.get_mut(host).unwrap()["https_only"]=params[2].clone();},
-                "Async.pool.designate_new_master"=>{let p=records.get_mut("pool").unwrap();if fault==Fault::LateCoordinator {p["pending_master"]=params[1].clone();} else {p["master"]=params[1].clone();}},
+                "Async.pool.designate_new_master"=>{let p=records.get_mut("pool").unwrap();if fault==Fault::LateCoordinator {p["fixture_pending_master"]=params[1].clone();} else {p["master"]=params[1].clone();}},
                 "Async.pool.set_ha_host_failures_to_tolerate"=>records.get_mut("pool").unwrap()["ha_host_failures_to_tolerate"]=params[2].clone(),
                 "Async.pool.enable_ha"=>{assert_eq!(params[1],json!(["OpaqueRef:SR"]));assert_eq!(params[2],json!({}));let p=records.get_mut("pool").unwrap();p["ha_enabled"]=json!(true);p["ha_statefiles"]=json!(["99999999-9999-9999-9999-999999999999"]);},
                 "Async.pool.disable_ha"=>records.get_mut("pool").unwrap()["ha_enabled"]=json!(false),

@@ -6,7 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use xenadmin_xapi::records::{PoolRecord, TaskRecord};
+use xenadmin_xapi::records::{HostRecord, PoolRecord, TaskRecord};
 fn operation(r: &ResourceOperationRecord) -> Result<&PoolDissolve, Error> {
     match &r.action {
         ResourceAction::DissolvePool(op) => Ok(op),
@@ -30,8 +30,9 @@ pub(super) async fn state(s: &Session, r: &ResourceOperationRecord) -> Result<St
     let mut actual = BTreeSet::new();
     let mut coordinator = false;
     for (reference, h) in hosts {
-        let id = h["uuid"]
-            .as_str()
+        let id = HostRecord::new(h)
+            .uuid()
+            .text()
             .and_then(|v| HostId::parse(v).ok())
             .ok_or(Error::ResourceConflict)?;
         if !actual.insert(id) {
@@ -108,8 +109,9 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
     let tasks_before = tasks
         .values()
         .map(|t| {
-            t["uuid"]
-                .as_str()
+            TaskRecord::new(t)
+                .uuid()
+                .text()
                 .and_then(|v| TaskId::parse(v).ok())
                 .ok_or(Error::ResourceConflict)
         })

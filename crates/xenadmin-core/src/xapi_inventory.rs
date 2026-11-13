@@ -26,7 +26,7 @@ impl References {
             for (reference, record) in records {
                 if let Some(id) = record["uuid"].as_str().and_then(|value| value.parse().ok()) {
                     ids.insert(reference.clone(), id);
-                    if class == "vm" && record["is_a_snapshot"] == true {
+                    if class == "vm" && VmRecord::new(record).is_a_snapshot() == true {
                         snapshots.insert(reference.clone());
                     }
                 }
@@ -977,11 +977,13 @@ fn decode_organization(store: &Store, result: &mut InventoryDetails) {
             let id = match class {
                 "pool" => PoolId::parse(uuid).ok().map(Id::Pool),
                 "host" => HostId::parse(uuid).ok().map(Id::Host),
-                "vm" if record["is_control_domain"] == false && record["is_a_snapshot"] == true => {
+                "vm" if VmRecord::new(record).is_control_domain() == false
+                    && VmRecord::new(record).is_a_snapshot() == true =>
+                {
                     SnapshotId::parse(uuid).ok().map(Id::Snapshot)
                 }
-                "vm" if record["is_control_domain"] == false
-                    && record["is_a_snapshot"] == false =>
+                "vm" if VmRecord::new(record).is_control_domain() == false
+                    && VmRecord::new(record).is_a_snapshot() == false =>
                 {
                     VmId::parse(uuid).ok().map(Id::Vm)
                 }
@@ -990,7 +992,8 @@ fn decode_organization(store: &Store, result: &mut InventoryDetails) {
                 "vdi" => VdiId::parse(uuid).ok().map(Id::Disk),
                 _ => None,
             };
-            if id.is_none() && !(class == "vm" && record["is_control_domain"] == true) {
+            if id.is_none() && !(class == "vm" && VmRecord::new(record).is_control_domain() == true)
+            {
                 result.organization.complete = false;
             }
             if let Some(id) = id {
@@ -1000,19 +1003,20 @@ fn decode_organization(store: &Store, result: &mut InventoryDetails) {
                     .push(organization::object(id, record));
             }
             if class == "pool" {
-                result.organization.empty_folders =
-                    record["other_config"]
-                        .as_object()
-                        .and_then(|m| match m.get("EMPTY_FOLDERS") {
-                            None => organization::folders(None),
-                            Some(v) => organization::folders(Some(v.as_str()?)),
-                        });
-                result.organization.definitions = record["gui_config"].as_object().and_then(|m| {
-                    match m.get(organization::FIELD_KEY) {
+                result.organization.empty_folders = PoolRecord::new(record)
+                    .other_config()
+                    .entries()
+                    .and_then(|m| match m.get("EMPTY_FOLDERS") {
+                        None => organization::folders(None),
+                        Some(v) => organization::folders(Some(v.as_str()?)),
+                    });
+                result.organization.definitions = PoolRecord::new(record)
+                    .gui_config()
+                    .entries()
+                    .and_then(|m| match m.get(organization::FIELD_KEY) {
                         None => organization::definitions(None),
                         Some(v) => organization::definitions(Some(v.as_str()?)),
-                    }
-                });
+                    });
             }
         }
     }
@@ -1047,16 +1051,19 @@ fn decode_alarms(store: &Store, refs: &References, result: &mut InventoryDetails
                 "host" => ResourceTarget::Host(uuid.into()),
                 "sr" => ResourceTarget::Storage(uuid.into()),
                 _ => {
-                    if record["is_a_template"] != false || record["is_a_snapshot"] != false {
+                    if VmRecord::new(record).is_a_template() != false
+                        || VmRecord::new(record).is_a_snapshot() != false
+                    {
                         continue;
                     }
-                    match record["is_control_domain"].as_bool() {
+                    match VmRecord::new(record).is_control_domain().get() {
                         Some(false) => {}
                         Some(true) => {
-                            dom0 = refs.link("host", RefField::of(&record["resident_on"]));
+                            dom0 = refs.link("host", VmRecord::new(record).resident_on());
                             if dom0.is_none()
                                 || !store.class("host").any(|(r, h)| {
-                                    Some(r.as_str()) == record["resident_on"].as_str()
+                                    Some(r.as_str())
+                                        == VmRecord::new(record).resident_on().reference()
                                         && HostRecord::new(h).control_domain().reference()
                                             == Some(reference.as_str())
                                 })

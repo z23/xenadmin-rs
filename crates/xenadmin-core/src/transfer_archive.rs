@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, io::Read};
 use xenadmin_xapi::enumerations::vdi_type;
+use xenadmin_xapi::records::{VdiRecord, VmRecord};
 const METADATA_LIMIT: usize = 8 * 1024 * 1024;
 fn octal(bytes: &[u8]) -> Result<usize, Error> {
     let s = std::str::from_utf8(bytes)
@@ -167,34 +168,32 @@ pub(crate) fn inspect_with_stop(
         if !ids.insert(id) {
             return Err(Error::TransferArchive);
         }
-        let record = object["snapshot"]
-            .as_object()
-            .ok_or(Error::TransferArchive)?;
+        if !object["snapshot"].is_object() {
+            return Err(Error::TransferArchive);
+        }
         match object["class"].as_str().ok_or(Error::TransferArchive)? {
             "VM" => {
-                if record.get("is_control_domain") != Some(&Value::Bool(false))
-                    || record.get("is_a_snapshot") == Some(&Value::Bool(true))
-                {
+                let view = VmRecord::new(&object["snapshot"]);
+                if view.is_control_domain() != false || view.is_a_snapshot() == true {
                     return Err(Error::TransferArchive);
                 }
-                let template = record
-                    .get("is_a_template")
-                    .and_then(Value::as_bool)
-                    .ok_or(Error::TransferArchive)?;
-                let name = record
-                    .get("name_label")
-                    .and_then(Value::as_str)
+                let template = view.is_a_template().get().ok_or(Error::TransferArchive)?;
+                let name = view
+                    .name_label()
+                    .text()
                     .filter(|s| s.len() <= 1024)
                     .ok_or(Error::TransferArchive)?
                     .to_owned();
-                let uuid = record
-                    .get("uuid")
-                    .and_then(Value::as_str)
+                let uuid = view
+                    .uuid()
+                    .text()
                     .and_then(|s| s.parse().ok())
                     .ok_or(Error::TransferArchive)?;
-                if record.get("other_config").is_some_and(|v| {
-                    v["default_template"] == "true" || v["is_default_template"] == "true"
-                }) {
+                // A host marks a default template in the record's own field and, as
+                // older ones did, under a key of `other_config`.
+                if view.is_default_template() == true
+                    || view.other_config()["default_template"] == "true"
+                {
                     return Err(Error::TransferArchive);
                 }
                 guests.push(ArchiveGuest {
@@ -205,20 +204,21 @@ pub(crate) fn inspect_with_stop(
                 });
             }
             "VDI" => {
+                let view = VdiRecord::new(&object["snapshot"]);
                 if matches!(
-                    record.get("type").and_then(Value::as_str),
+                    view.type_().name(),
                     Some(vdi_type::USER | vdi_type::SUSPEND)
                 ) {
-                    let bytes = record
-                        .get("virtual_size")
-                        .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                    let bytes = view
+                        .virtual_size()
+                        .unsigned()
                         .filter(|n| *n > 0 && *n <= MAX_TRANSFER_BYTES)
                         .ok_or(Error::TransferArchive)?;
                     virtual_bytes = virtual_bytes
                         .checked_add(bytes)
                         .filter(|n| *n <= MAX_TRANSFER_BYTES)
                         .ok_or(Error::TransferArchive)?;
-                    if record.get("type").and_then(Value::as_str) == Some(vdi_type::USER) {
+                    if view.type_() == vdi_type::USER {
                         disks += 1;
                     }
                 }

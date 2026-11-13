@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::records::DataSourceRecord;
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostDataSource {
@@ -148,7 +150,8 @@ impl Request {
         }));
     }
 }
-fn bound(value: &Value) -> Result<String, Error> {
+fn bound<'a>(value: impl Reads<'a, kind::Real>) -> Result<String, Error> {
+    let value = value.raw();
     let n = value
         .as_f64()
         .or_else(|| {
@@ -198,8 +201,8 @@ fn decode(value: &Value) -> Result<Vec<HostDataSource>, Error> {
             units: text("units")?,
             standard: boolean("standard")?,
             enabled: boolean("enabled")?,
-            minimum: bound(&value["min"])?,
-            maximum: bound(&value["max"])?,
+            minimum: bound(DataSourceRecord::new(value).min())?,
+            maximum: bound(DataSourceRecord::new(value).max())?,
         };
         if !source.valid() || !seen.insert(source.name.clone()) {
             return Err(Error::Protocol("Invalid or duplicated host data source"));

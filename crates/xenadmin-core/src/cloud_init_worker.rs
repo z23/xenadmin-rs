@@ -405,8 +405,9 @@ impl ResourceRequest {
                 .entries()
                 .is_none_or(|o| !o.is_empty())
             || VdiRecord::new(&d).vbds() != json!([reference])
-            || vm["VBDs"]
-                .as_array()
+            || VmRecord::new(&vm)
+                .vbds()
+                .members()
                 .is_none_or(|v| !v.iter().any(|r| r == reference))
         {
             return Err(Error::TransferConflict);

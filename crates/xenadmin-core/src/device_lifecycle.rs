@@ -931,10 +931,11 @@ async fn creation_matches(
             let (sr_ref, sr_record) = fresh(session, "SR", sr.uuid()).await?;
             idle(&sr_record)?;
             ordinary_disk(record)
-                && record["SR"] == sr_ref
-                && record["name_label"] == *name
-                && number(&record["virtual_size"]).is_some_and(|actual| actual >= *size)
-                && record["read_only"] == false
+                && VdiRecord::new(record).sr() == sr_ref
+                && VdiRecord::new(record).name_label() == *name
+                && number(VdiRecord::new(record).virtual_size())
+                    .is_some_and(|actual| actual >= *size)
+                && VdiRecord::new(record).read_only() == false
         }
         Step::Attach {
             disk,
@@ -958,18 +959,19 @@ async fn creation_matches(
                 .await?
                 .0
             };
-            record["VM"] == vm_ref
-                && record["VDI"] == disk_ref
-                && record["userdevice"] == *device
-                && record["type"] == if *cd { vbd_type::CD } else { vbd_type::DISK }
-                && record["mode"]
+            VbdRecord::new(record).vm() == vm_ref
+                && VbdRecord::new(record).vdi() == disk_ref
+                && VbdRecord::new(record).userdevice() == *device
+                && VbdRecord::new(record).type_() == if *cd { vbd_type::CD } else { vbd_type::DISK }
+                && VbdRecord::new(record).mode()
                     == if *read_only {
                         vbd_mode::RO
                     } else {
                         vbd_mode::RW
                     }
-                && record["empty"] == *cd
-                && (record["other_config"]
+                && VbdRecord::new(record).empty() == *cd
+                && (VbdRecord::new(record)
+                    .other_config()
                     .get("owner")
                     .is_some_and(Value::is_string)
                     == *owned)
@@ -981,16 +983,16 @@ async fn creation_matches(
             settings,
         } => {
             let (network_ref, _) = network(session, *id_network).await?;
-            record["VM"] == vm_ref
-                && record["network"] == network_ref
-                && record["device"] == *device
-                && record["MAC"].as_str().is_some_and(|m| {
+            VifRecord::new(record).vm() == vm_ref
+                && VifRecord::new(record).network() == network_ref
+                && VifRecord::new(record).device() == *device
+                && VifRecord::new(record).mac().text().is_some_and(|m| {
                     mac(m)
                         && address
                             .as_ref()
                             .is_none_or(|expected| m.eq_ignore_ascii_case(expected))
                 })
-                && number(&record["MTU"]) == Some(settings.mtu)
+                && number(VifRecord::new(record).mtu()) == Some(settings.mtu)
                 && NicSettings::from_record(record).is_ok_and(|actual| actual == *settings)
         }
         _ => false,

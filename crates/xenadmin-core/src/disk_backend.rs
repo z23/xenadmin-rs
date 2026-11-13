@@ -66,8 +66,9 @@ fn ordinary(record: &Value) -> Result<(), Error> {
     Ok(())
 }
 fn permits(record: &Value, operation: &str) -> Result<(), Error> {
-    if record["allowed_operations"]
-        .as_array()
+    if VdiRecord::new(record)
+        .allowed_operations()
+        .members()
         .is_some_and(|v| v.iter().any(|v| v == operation))
     {
         Ok(())

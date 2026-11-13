@@ -7,7 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{vbd_mode, vbd_type};
-use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::records::{NetworkRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskSource {
@@ -181,8 +181,9 @@ pub(crate) async fn capture(
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?
             .into();
-        let sr: SrId = sr["uuid"]
-            .as_str()
+        let sr: SrId = SrRecord::new(&sr)
+            .uuid()
+            .text()
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?
             .into();

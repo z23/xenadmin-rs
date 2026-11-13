@@ -959,6 +959,32 @@ fn source_selection_rejects_unsafe_archive_and_file_changes() {
     assert!(TransferFile::source(&p).is_err());
 }
 #[test]
+fn an_archive_of_a_default_template_is_refused_by_either_of_its_marks() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("input.xva");
+    let template = |marks: Value| {
+        let mut record = json!({"uuid":uuid(2),"name_label":"Archive template","is_control_domain":false,"is_a_template":true,"is_a_snapshot":false,"power_state":"Halted","other_config":{}});
+        for (key, value) in marks.as_object().unwrap() {
+            record[key] = value.clone();
+        }
+        archive_record(record)
+    };
+    // A template of the operator's own is an archive like any other.
+    for marks in [json!({}), json!({"is_default_template": false})] {
+        std::fs::write(&p, template(marks)).unwrap();
+        assert!(TransferFile::source(&p).is_ok());
+    }
+    // A host's default template is marked in the record's own field, and by older hosts
+    // under a key of `other_config`. Either is enough.
+    for marks in [
+        json!({"is_default_template": true}),
+        json!({"other_config": {"default_template": "true"}}),
+    ] {
+        std::fs::write(&p, template(marks)).unwrap();
+        assert!(TransferFile::source(&p).is_err());
+    }
+}
+#[test]
 fn symlinks_and_preexisting_destinations_are_not_overwritten() {
     use std::os::unix::fs::symlink;
     let d = tempfile::tempdir().unwrap();

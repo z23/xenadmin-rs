@@ -2,7 +2,7 @@ use super::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::enumerations::{vdi_type, vm_power_state};
-use xenadmin_xapi::records::{SrRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 impl ExportSource {
     pub fn checkpoint(
@@ -101,6 +101,10 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
         }
         let reference = memory.ok_or(Error::TransferArchive)?;
         let disk = records.get(reference).ok_or(Error::TransferArchive)?;
+        // The object is read as a disk below, so it has to be one first.
+        if disk["class"] != "VDI" {
+            return Err(Error::TransferArchive);
+        }
         let d = &disk["snapshot"];
         let uuid: uuid::Uuid = VdiRecord::new(d)
             .uuid()
@@ -113,16 +117,15 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
             .reference()
             .and_then(|r| records.get(r))
             .ok_or(Error::TransferArchive)?;
-        if disk["class"] != "VDI"
-            || VdiRecord::new(d).type_() != vdi_type::SUSPEND
+        if VdiRecord::new(d).type_() != vdi_type::SUSPEND
             || uuid.is_nil()
             || sr["class"] != "SR"
-            || sr["snapshot"]["content_type"] != "user"
+            || SrRecord::new(&sr["snapshot"]).content_type() != "user"
             || !used.insert(reference)
             || !identities.insert(uuid)
             || objects
                 .iter()
-                .any(|o| o["class"] == "VBD" && o["snapshot"]["VDI"] == reference)
+                .any(|o| o["class"] == "VBD" && VbdRecord::new(&o["snapshot"]).vdi() == reference)
         {
             return Err(Error::TransferArchive);
         }
@@ -139,7 +142,7 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
     }
     if objects.iter().any(|o| {
         o["class"] == "VDI"
-            && o["snapshot"]["type"] == vdi_type::SUSPEND
+            && VdiRecord::new(&o["snapshot"]).type_() == vdi_type::SUSPEND
             && o["id"].as_str().is_none_or(|r| !used.contains(r))
     }) {
         return Err(Error::TransferArchive);

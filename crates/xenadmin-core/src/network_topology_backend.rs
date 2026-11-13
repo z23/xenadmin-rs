@@ -419,7 +419,7 @@ pub(super) async fn prepare(
     for parent in operation.uplinks() {
         let (_, pif) = uplink(session, parent).await?;
         require(
-            network::number(&target["MTU"])
+            network::number(NetworkRecord::new(&target).mtu())
                 .zip(network::number(PifRecord::new(&pif).mtu()))
                 .is_some_and(|(net, pif)| net >= 576 && net <= pif),
             "The VLAN network MTU must not exceed its uplink MTU",
@@ -471,7 +471,7 @@ pub(super) async fn arguments(
         } => {
             let (reference, pif) = uplink(session, parent).await?;
             require(
-                network::number(&target["MTU"])
+                network::number(NetworkRecord::new(&target).mtu())
                     .zip(network::number(PifRecord::new(&pif).mtu()))
                     .is_some_and(|(net, pif)| net >= 576 && net <= pif),
                 "The VLAN network MTU must not exceed its uplink MTU",

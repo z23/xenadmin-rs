@@ -12,7 +12,7 @@ pub(super) use bond::{created as created_bond, replacements as bond_replacements
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::ip_configuration_mode;
-use xenadmin_xapi::records::{PifRecord, PoolRecord};
+use xenadmin_xapi::records::{HostRecord, PifRecord, PoolRecord};
 use xenadmin_xapi::{Reads, kind};
 fn require(condition: bool, message: &'static str) -> Result<(), Error> {
     if condition {
@@ -399,7 +399,11 @@ async fn graph(
         op.source().address()
     };
     require(
-        host["address"].as_str().and_then(|v| v.parse().ok()) == expected,
+        HostRecord::new(&host)
+            .address()
+            .text()
+            .and_then(|v| v.parse().ok())
+            == expected,
         "Host management address differs from the reviewed configuration",
     )?;
     let queried;

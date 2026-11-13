@@ -291,7 +291,9 @@ impl MutationRequest {
                 && let Some(task) = plan.evidence[index].task.as_ref()
             {
                 match session.call("task.get_record", vec![json!(task)]).await {
-                    Ok(record) if record["status"] == task_status_type::SUCCESS => {
+                    Ok(record)
+                        if TaskRecord::new(&record).status() == task_status_type::SUCCESS =>
+                    {
                         if matches!(plan.steps[index], lifecycle::Step::Copy { .. }) {
                             plan.evidence[index].result =
                                 Some(crate::xapi::snapshot_task_result(&record)?);
@@ -299,8 +301,8 @@ impl MutationRequest {
                         plan.evidence[index].completed = true;
                     }
                     Ok(record)
-                        if record["status"] == task_status_type::FAILURE
-                            || record["status"] == task_status_type::CANCELLED =>
+                        if TaskRecord::new(&record).status() == task_status_type::FAILURE
+                            || TaskRecord::new(&record).status() == task_status_type::CANCELLED =>
                     {
                         self.record.steps[index].state = StepState::Failed;
                         self.record.steps[index].detail="Host task reported failure or cancellation during read-only reconciliation".into();

@@ -5,7 +5,7 @@ use crate::{
     root_password::Plan,
 };
 use std::collections::BTreeSet;
-use xenadmin_xapi::records::{PoolRecord, SessionRecord};
+use xenadmin_xapi::records::{HostRecord, PoolRecord, SessionRecord};
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -28,8 +28,9 @@ async fn expected(
         .values()
         .map(|v| {
             HostId::parse(
-                v["uuid"]
-                    .as_str()
+                HostRecord::new(v)
+                    .uuid()
+                    .text()
                     .ok_or(Error::Protocol("invalid host UUID"))?,
             )
             .map_err(|_| Error::Protocol("invalid host UUID"))
@@ -39,7 +40,7 @@ async fn expected(
         .master()
         .reference()
         .and_then(|r| hosts.get(r))
-        .and_then(|h| h["uuid"].as_str());
+        .and_then(|h| HostRecord::new(h).uuid().text());
     require(
         actual.len() == hosts.len()
             && actual == change.members.iter().copied().collect()

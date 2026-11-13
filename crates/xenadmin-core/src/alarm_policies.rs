@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use xenadmin_xapi::records::PoolRecord;
 
 pub(crate) const KEY: &str = "perfmon";
 const MAX_XML: usize = 262_144;
@@ -427,8 +428,9 @@ pub struct AlarmEmailConfiguration {
 }
 const EMAIL_KEYS: [&str; 3] = ["mail-destination", "ssmtp-mailhub", "mail-language"];
 fn email_values(record: &Value) -> Result<Vec<Option<String>>, Error> {
-    let map = record["other_config"]
-        .as_object()
+    let map = PoolRecord::new(record)
+        .other_config()
+        .entries()
         .filter(|m| m.len() <= 4096)
         .ok_or(Error::Protocol(
             "pool alarm notification settings unavailable",
@@ -530,8 +532,9 @@ pub(crate) fn changed_email(
     if email_revision(&email_values(record)?) != expected {
         return Err(Error::ResourceConflict);
     }
-    let mut map = record["other_config"]
-        .as_object()
+    let mut map = PoolRecord::new(record)
+        .other_config()
+        .entries()
         .cloned()
         .ok_or(Error::ResourceConflict)?;
     for (key, value) in

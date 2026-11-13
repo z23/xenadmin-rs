@@ -74,9 +74,9 @@ fn fingerprint(v: &Value) -> Result<[u8; 32], Error> {
         fields.insert(key, value);
     }
     require(
-        v["other_config"].is_object()
-            && v["qos_algorithm_type"].is_string()
-            && v["qos_algorithm_params"].is_object(),
+        VifRecord::new(v).other_config().entries().is_some()
+            && VifRecord::new(v).qos_algorithm_type().text().is_some()
+            && VifRecord::new(v).qos_algorithm_params().entries().is_some(),
         "Guest interface settings unavailable",
     )?;
     let bytes = serde_json::to_vec(&fields)
@@ -190,11 +190,11 @@ impl Graph {
             let members = self
                 .vifs
                 .iter()
-                .filter(|(_, v)| v["network"] == *nr)
+                .filter(|(_, v)| VifRecord::new(v).network() == *nr)
                 .map(|(r, _)| r.clone())
                 .collect::<BTreeSet<_>>();
             require(
-                refs(&n["VIFs"])? == members,
+                refs(NetworkRecord::new(n).vifs())? == members,
                 "Network guest interface membership is inconsistent",
             )?;
             for reference in members {
@@ -235,7 +235,7 @@ impl Graph {
         let interfaces = self
             .vifs
             .iter()
-            .filter(|(_, v)| v["VM"] == reference)
+            .filter(|(_, v)| VifRecord::new(v).vm() == reference)
             .map(|(r, _)| r.clone())
             .collect::<BTreeSet<_>>();
         require(
@@ -250,8 +250,9 @@ impl Graph {
         reference: &str,
         vm: &Value,
     ) -> Result<ManagementVmLocality, Error> {
-        let resident = vm["resident_on"]
-            .as_str()
+        let resident = VmRecord::new(vm)
+            .resident_on()
+            .reference()
             .ok_or(Error::Protocol("Guest residency is unavailable"))?;
         if resident != "OpaqueRef:NULL" {
             return Ok(ManagementVmLocality::Resident(self.host(resident)?));
@@ -286,10 +287,16 @@ impl Graph {
         op: &crate::ManagementBondOperation,
     ) -> Result<ManagementBondConsumer, Error> {
         require(idle(v), "A guest interface is busy")?;
-        let network = self.network(v["network"].as_str().ok_or(Error::ResourceConflict)?)?;
+        let network = self.network(
+            VifRecord::new(v)
+                .network()
+                .reference()
+                .ok_or(Error::ResourceConflict)?,
+        )?;
         let power_state = text(vm, "power_state", 32)?;
-        let attached = v["currently_attached"]
-            .as_bool()
+        let attached = VifRecord::new(v)
+            .currently_attached()
+            .get()
             .ok_or(Error::Protocol("Guest attachment state unavailable"))?;
         let (_, moves, reattachments) =
             model::scope(source, op).ok_or(Error::InvalidResourceCommand)?;
@@ -321,7 +328,7 @@ impl Graph {
             change,
             device: text(v, "device", 64)?,
             mac: text(v, "MAC", 64)?.to_ascii_lowercase(),
-            mtu: network::number(&v["MTU"])
+            mtu: network::number(VifRecord::new(v).mtu())
                 .and_then(|v| u64::try_from(v).ok())
                 .ok_or(Error::ResourceConflict)?,
             attached,
@@ -342,11 +349,15 @@ pub(in crate::resources) async fn capture(
         ..Default::default()
     };
     for (id, (_, v)) in graph.consumers(&networks)? {
-        let reference = v["VM"].as_str().ok_or(Error::ResourceConflict)?;
+        let reference = VifRecord::new(v)
+            .vm()
+            .reference()
+            .ok_or(Error::ResourceConflict)?;
         if !vms.contains_key(reference) {
             let vm = graph.vm(s, reference).await?;
             require(
-                !vms.values().any(|(old, _)| old["uuid"] == vm["uuid"]),
+                !vms.values()
+                    .any(|(old, _)| VmRecord::new(old).uuid() == VmRecord::new(&vm).uuid()),
                 "VM identity is ambiguous across guest consumers",
             )?;
             let locality = graph.locality(s, reference, &vm).await?;
@@ -413,17 +424,24 @@ pub(in crate::resources) async fn verify(
     let mut vms = BTreeMap::<String, Value>::new();
     for (id, (_, v)) in actual {
         let old = &expected.interfaces[&id];
-        let reference = v["VM"].as_str().ok_or(Error::ResourceConflict)?;
+        let reference = VifRecord::new(v)
+            .vm()
+            .reference()
+            .ok_or(Error::ResourceConflict)?;
         if !vms.contains_key(reference) {
             let vm = graph.vm(s, reference).await?;
             require(
-                !vms.values().any(|old| old["uuid"] == vm["uuid"]),
+                !vms.values()
+                    .any(|old| VmRecord::new(old).uuid() == VmRecord::new(&vm).uuid()),
                 "VM identity is ambiguous across guest consumers",
             )?;
             vms.insert(reference.into(), vm);
         }
         let vm = &vms[reference];
-        let resident = vm["resident_on"].as_str().ok_or(Error::ResourceConflict)?;
+        let resident = VmRecord::new(vm)
+            .resident_on()
+            .reference()
+            .ok_or(Error::ResourceConflict)?;
         let same_resident = match &old.locality {
             ManagementVmLocality::Resident(host) => {
                 resident != "OpaqueRef:NULL" && graph.host(resident)? == *host

@@ -14,7 +14,10 @@ pub(in crate::resources) fn before(
                 .other_config()
                 .entries()
                 .is_some_and(|v| v.is_empty())
-                && p["other_config"].as_object().is_some_and(|v| v.is_empty())
+                && PifRecord::new(p)
+                    .other_config()
+                    .entries()
+                    .is_some_and(|v| v.is_empty())
                 && properties(p)?.is_empty(),
             "VLAN metadata or interface properties would be reset by the host migration; review or clear them separately",
         )?;
@@ -161,7 +164,7 @@ pub(super) fn verify(
                     .mac()
                     .text()
                     .is_some_and(|v| v.eq_ignore_ascii_case("fe:ff:ff:ff:ff:ff"))
-                && PifRecord::new(p).device() == t.pif(parent)?.1["device"]
+                && PifRecord::new(p).device() == PifRecord::new(t.pif(parent)?.1).device()
                 && PifRecord::new(p).management().get() == before.management
                 && PifRecord::new(p).currently_attached().get() == before.currently_attached
                 && PifRecord::new(p).primary_address_type() == primary_address_type::IPV4
@@ -182,7 +185,10 @@ pub(super) fn verify(
                     .entries()
                     .is_some_and(|v| v.is_empty())
                 && properties(p)?.is_empty()
-                && v["other_config"].as_object().is_some_and(|v| v.is_empty()),
+                && VlanRecord::new(v)
+                    .other_config()
+                    .entries()
+                    .is_some_and(|v| v.is_empty()),
             "Migrated VLAN configuration differs from the reviewed interface",
         )?;
     }

@@ -7,7 +7,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::pool_allowed_operations;
 use xenadmin_xapi::records::{
-    HostRecord, PbdRecord, PifRecord, PoolRecord, SrRecord, VdiRecord, VmApplianceRecord, VmRecord,
+    HostMetricsRecord, HostRecord, PbdRecord, PifRecord, PoolRecord, SrRecord, VdiRecord,
+    VmApplianceRecord, VmRecord,
 };
 use xenadmin_xapi::{Reads, kind};
 
@@ -54,8 +55,9 @@ fn expect(fresh: &Value, field: &str, value: Value) -> Result<(), Error> {
     }
 }
 fn permitted(fresh: &Value, operation: &str) -> Result<(), Error> {
-    if fresh["allowed_operations"]
-        .as_array()
+    if PoolRecord::new(fresh)
+        .allowed_operations()
+        .members()
         .is_some_and(|ops| ops.iter().any(|v| v == operation))
     {
         Ok(())
@@ -92,7 +94,7 @@ async fn related<'a>(
         .await
 }
 async fn coordinator(session: &Session, fresh: &Value) -> Result<HostId, Error> {
-    let host = related(session, "host", &fresh["master"]).await?;
+    let host = related(session, "host", PoolRecord::new(fresh).master()).await?;
     HostRecord::new(&host)
         .uuid()
         .text()
@@ -118,7 +120,8 @@ async fn vm_record(session: &Session, vm: VmId) -> Result<(String, Value), Error
     Ok((reference, fresh))
 }
 async fn host_live(session: &Session, host: &Value) -> Result<(), Error> {
-    if related(session, "host_metrics", HostRecord::new(host).metrics()).await?["live"] != true {
+    let metrics = related(session, "host_metrics", HostRecord::new(host).metrics()).await?;
+    if HostMetricsRecord::new(&metrics).live() != true {
         return Err(Error::UnavailableAction);
     }
     Ok(())
@@ -143,7 +146,10 @@ async fn heartbeat_interface_persistent(
     server: std::net::Ipv4Addr,
 ) -> Result<(), Error> {
     let pifs = all(session, "PIF", 1024).await?;
-    for pif in pifs.values().filter(|p| p["host"] == host_ref) {
+    for pif in pifs
+        .values()
+        .filter(|p| PifRecord::new(p).host() == host_ref)
+    {
         let address = PifRecord::new(pif)
             .ip()
             .text()
@@ -394,7 +400,7 @@ pub(super) async fn arguments(
                 .values()
                 .filter(|p| PbdRecord::new(p).host() == host_ref)
             {
-                let sr = related(session, "SR", &pbd["SR"]).await?;
+                let sr = related(session, "SR", PbdRecord::new(pbd).sr()).await?;
                 if SrRecord::new(&sr).shared().get().is_none()
                     || SrRecord::new(&sr).content_type().text().is_none()
                 {
@@ -534,7 +540,8 @@ pub(super) async fn verify(
         }
         PoolOperation::DisableHa => PoolRecord::new(&fresh).ha_enabled() == false,
         PoolOperation::SetVmRestartPriority { vm, priority, .. } => {
-            vm_record(session, *vm).await?.1["ha_restart_priority"] == priority.as_str()
+            VmRecord::new(&vm_record(session, *vm).await?.1).ha_restart_priority()
+                == priority.as_str()
         }
         PoolOperation::EjectHost { host, .. } => {
             match xapi::read(session, ResourceTarget::Host(*host)).await {

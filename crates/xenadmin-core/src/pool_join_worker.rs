@@ -5,7 +5,7 @@ use crate::{
 use serde_json::Value;
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::vm_power_state;
-use xenadmin_xapi::records::{HostRecord, PoolRecord, SrRecord, VmRecord};
+use xenadmin_xapi::records::{HostMetricsRecord, HostRecord, PoolRecord, SrRecord, VmRecord};
 
 struct JoinSpec {
     source: PoolId,
@@ -93,9 +93,12 @@ async fn host_ids(
 async fn live(session: &Session, host: &Value) -> Result<(), Error> {
     let reference = xapi::reply_reference(HostRecord::new(host).metrics())?;
     require(
-        session
-            .call("host_metrics.get_record", vec![json!(reference)])
-            .await?["live"]
+        HostMetricsRecord::new(
+            &session
+                .call("host_metrics.get_record", vec![json!(reference)])
+                .await?,
+        )
+        .live()
             == true,
         "Pool join requires live hosts",
     )

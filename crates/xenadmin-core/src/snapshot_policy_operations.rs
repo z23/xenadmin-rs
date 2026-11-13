@@ -304,8 +304,9 @@ pub(super) async fn prepare(
         evidence.baseline = Some(
             map.values()
                 .map(|v| {
-                    v["uuid"]
-                        .as_str()
+                    VmssRecord::new(v)
+                        .uuid()
+                        .text()
                         .and_then(|s| SnapshotPolicyId::parse(s).ok())
                         .ok_or(Error::ResourceConflict)
                 })

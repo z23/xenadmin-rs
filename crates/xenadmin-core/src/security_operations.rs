@@ -4,7 +4,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use xenadmin_xapi::records::{HostRecord, SubjectRecord};
+use xenadmin_xapi::records::{HostRecord, PoolRecord, SubjectRecord};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&PoolSecurityOperation, Error> {
     match &record.action {
@@ -78,7 +78,7 @@ pub(super) async fn prepare(
             subjects
                 .values()
                 .map(|v| {
-                    SubjectId::parse(&discovery::text(&v["uuid"], 36)?)
+                    SubjectId::parse(&discovery::text(SubjectRecord::new(v).uuid(), 36)?)
                         .map_err(|_| Error::Protocol("invalid subject UUID"))
                 })
                 .collect::<Result<Vec<_>, Error>>()?,
@@ -101,8 +101,9 @@ pub(super) async fn arguments(
     )?;
     let (pool_ref, pool) = super::xapi::read(session, record.target).await?;
     require(
-        pool["current_operations"]
-            .as_object()
+        PoolRecord::new(&pool)
+            .current_operations()
+            .entries()
             .is_some_and(|v| v.is_empty()),
         "Wait for other pool operations to finish",
     )?;

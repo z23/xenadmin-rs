@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use xenadmin_xapi::records::{HostRecord, RoleRecord, SubjectRecord};
+use xenadmin_xapi::records::{HostRecord, RoleRecord, SessionRecord, SubjectRecord};
 use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -208,10 +208,12 @@ pub(crate) async fn methods(session: &Session) -> Result<Vec<String>, Error> {
         .collect()
 }
 pub(crate) async fn local_superuser(session: &Session) -> Result<bool, Error> {
-    session
+    let record = session
         .call("session.get_record", vec![json!(session.session_cookie())])
-        .await?["is_local_superuser"]
-        .as_bool()
+        .await?;
+    SessionRecord::new(&record)
+        .is_local_superuser()
+        .get()
         .ok_or(Error::Protocol("session privilege information unavailable"))
 }
 pub(crate) async fn certificate(

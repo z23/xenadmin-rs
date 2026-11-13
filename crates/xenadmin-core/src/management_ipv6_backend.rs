@@ -12,7 +12,9 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
-use xenadmin_xapi::records::{HostRecord, NetworkRecord, PifRecord, PoolRecord, VifRecord};
+use xenadmin_xapi::records::{
+    HostRecord, NetworkRecord, PifRecord, PoolRecord, VifRecord, VlanRecord,
+};
 fn require(v: bool, message: &'static str) -> Result<(), Error> {
     if v {
         Ok(())
@@ -494,11 +496,13 @@ pub(super) async fn verify(s: &Session, p: &Plan, prefix: usize) -> Result<Recor
             .values()
         {
             require(
-                t.pif(r.new_interface)?.1["other_config"]
-                    .as_object()
+                PifRecord::new(t.pif(r.new_interface)?.1)
+                    .other_config()
+                    .entries()
                     .is_some_and(|v| v.is_empty())
-                    && bond::lookup(t.records("vlan"), r.new_vlan.uuid())?.1["other_config"]
-                        .as_object()
+                    && VlanRecord::new(bond::lookup(t.records("vlan"), r.new_vlan.uuid())?.1)
+                        .other_config()
+                        .entries()
                         .is_some_and(|v| v.is_empty()),
                 "Migrated VLAN metadata changed",
             )?;

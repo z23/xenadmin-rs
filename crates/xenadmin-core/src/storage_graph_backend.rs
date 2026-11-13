@@ -126,7 +126,9 @@ fn source_config(v: &Value, location: &crate::StorageLocation) -> Result<(), Err
     Ok(())
 }
 fn find(m: &BTreeMap<String, Value>, id: uuid::Uuid) -> Result<(String, Value), Error> {
-    let mut rows = m.iter().filter(|(_, v)| v["uuid"] == id.to_string());
+    let mut rows = m
+        .iter()
+        .filter(|(_, v)| PbdRecord::new(v).uuid() == id.to_string());
     let (k, v) = rows.next().ok_or(Error::Stale)?;
     require(rows.next().is_none(), "Duplicate storage identity")?;
     Ok((k.clone(), v.clone()))
@@ -243,7 +245,7 @@ async fn repair_graph(
             )?,
             Some(id) => {
                 require(
-                    pairs.len() == 1 && pairs[0].1["uuid"] == id.to_string(),
+                    pairs.len() == 1 && PbdRecord::new(pairs[0].1).uuid() == id.to_string(),
                     "Reviewed host attachment graph changed",
                 )?;
                 let attached = done(p, &Kind::Plug(entry.host, source.sr), after);
@@ -266,7 +268,7 @@ async fn repair_graph(
                         .ok_or(Error::Journal)?;
                     verify_clone(s, p, &source_v, pairs[0].1, Some(&evidence.secrets)).await?;
                     require(
-                        pairs[0].1["currently_attached"] == attached,
+                        PbdRecord::new(pairs[0].1).currently_attached() == attached,
                         "Created attachment state changed",
                     )?;
                 }
@@ -467,7 +469,7 @@ async fn multipath_graph(
             a.len() == attachments.len()
                 && a.iter().all(|v| {
                     v.as_str()
-                        .is_some_and(|k| pbds.get(k).is_some_and(|v| v["host"] == h))
+                        .is_some_and(|k| pbds.get(k).is_some_and(|v| PbdRecord::new(v).host() == h))
                 })
         }),
         "Host storage attachment reverse graph is incomplete",
@@ -641,7 +643,10 @@ fn now() -> u64 {
 }
 async fn storage_allowed(s: &Session, pbd: &Value, operation: &str) -> Result<(), Error> {
     let sr = s
-        .call("SR.get_record", vec![json!(reference(&pbd["SR"])?)])
+        .call(
+            "SR.get_record",
+            vec![json!(reference(PbdRecord::new(pbd).sr())?)],
+        )
         .await?;
     idle(&sr)?;
     require(

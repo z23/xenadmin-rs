@@ -14,8 +14,9 @@ pub(super) async fn current(
     xapi::read(session, ResourceTarget::Pool(record.pool)).await?;
     let (reference, host) = xapi::read(session, record.target).await?;
     require(
-        host["current_operations"]
-            .as_object()
+        HostRecord::new(&host)
+            .current_operations()
+            .entries()
             .is_some_and(|m| m.is_empty()),
         "Host operations are active or unavailable",
     )?;

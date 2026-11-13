@@ -98,8 +98,9 @@ async fn baseline(session: &Session) -> Result<StorageBaseline, Error> {
         pbds: parse(&pbds)?
             .into_iter()
             .map(|r| {
-                r["uuid"]
-                    .as_str()
+                PbdRecord::new(r)
+                    .uuid()
+                    .text()
                     .and_then(|s| PbdId::parse(s).ok())
                     .ok_or(Error::Protocol("invalid attachment baseline UUID"))
             })
@@ -221,7 +222,7 @@ async fn removable(
         }
     }
     for pbd in array(sr, "PBDs")? {
-        if by_ref(session, "PBD", pbd).await?["currently_attached"] != false {
+        if PbdRecord::new(&by_ref(session, "PBD", pbd).await?).currently_attached() != false {
             return Err(Error::StorageInUse);
         }
     }
@@ -261,14 +262,15 @@ pub(super) async fn arguments(
             host,
             expected_name,
         } => {
-            if fresh["name_label"] != *expected_name {
+            if SrRecord::new(&fresh).name_label() != *expected_name {
                 return Err(Error::ResourceConflict);
             }
             empty_current(&fresh)?;
             capability(
                 session,
-                fresh["type"]
-                    .as_str()
+                SrRecord::new(&fresh)
+                    .type_()
+                    .text()
                     .ok_or(Error::Protocol("storage type unavailable"))?,
                 "SR_TRIM",
             )
@@ -350,9 +352,9 @@ pub(super) async fn arguments(
             ])
         }
         StorageOperation::CreateAttachment { host, location } => {
-            if fresh["type"] != location.kind()
-                || fresh["content_type"] != location.content_type()
-                || fresh["shared"] != location.shared()
+            if SrRecord::new(&fresh).type_() != location.kind()
+                || SrRecord::new(&fresh).content_type() != location.content_type()
+                || SrRecord::new(&fresh).shared() != location.shared()
             {
                 return Err(Error::ResourceConflict);
             }
@@ -385,7 +387,7 @@ pub(super) async fn arguments(
                 }
                 if crate::storage::safe_location_for_kind(
                     PbdRecord::new(&attachment).device_config(),
-                    fresh["type"].as_str(),
+                    SrRecord::new(&fresh).type_().text(),
                 )
                 .as_ref()
                     != Some(location)
@@ -407,7 +409,7 @@ pub(super) async fn arguments(
             if *attached {
                 crate::storage_local::attachment_graph(&sr_record, &reference)?;
             }
-            if fresh["currently_attached"] != *expected_attached {
+            if PbdRecord::new(&fresh).currently_attached() != *expected_attached {
                 return Err(Error::ResourceConflict);
             }
             allowed(
@@ -426,7 +428,7 @@ pub(super) async fn arguments(
         }
         StorageOperation::RemoveAttachment { sr, host } => {
             let (_, sr_record) = attachment_identity(session, &fresh, *sr, *host).await?;
-            if fresh["currently_attached"] != false {
+            if PbdRecord::new(&fresh).currently_attached() != false {
                 return Err(Error::StorageInUse);
             }
             allowed(&sr_record, storage_operations::PBD_DESTROY)?;
@@ -474,7 +476,7 @@ pub(super) async fn verify(
                 ));
             }
             let (_, fresh) = xapi::read(session, record.target).await?;
-            if fresh["name_label"] != *expected_name {
+            if SrRecord::new(&fresh).name_label() != *expected_name {
                 return Err(Error::ResourceConflict);
             }
             Ok(None)
@@ -595,7 +597,7 @@ pub(super) async fn verify(
         } => {
             let (_, fresh) = xapi::read(session, record.target).await?;
             attachment_identity(session, &fresh, *sr, *host).await?;
-            if fresh["currently_attached"] != *attached {
+            if PbdRecord::new(&fresh).currently_attached() != *attached {
                 return Err(Error::ResourceConflict);
             }
             Ok(None)

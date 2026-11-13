@@ -2,7 +2,7 @@ use super::*;
 use crate::{Endpoint, Inventory, xapi::Session};
 use serde_json::json;
 use url::Url;
-use xenadmin_xapi::records::PoolRecord;
+use xenadmin_xapi::records::{HostRecord, PoolRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,7 +67,7 @@ pub(super) async fn resolve(
     let host = match target.target {
         MetricTarget::Host(_) => object,
         MetricTarget::Vm(_) => {
-            let host_ref = if object["resident_on"] == "OpaqueRef:NULL" {
+            let host_ref = if VmRecord::new(&object).resident_on() == "OpaqueRef:NULL" {
                 let pool = session
                     .call("pool.get_by_uuid", vec![json!(target.pool.to_string())])
                     .await?;
@@ -79,20 +79,22 @@ pub(super) async fn resolve(
                 }
                 reference(PoolRecord::new(&pool).master())?.to_owned()
             } else {
-                reference(&object["resident_on"])?.to_owned()
+                reference(VmRecord::new(&object).resident_on())?.to_owned()
             };
             session
                 .call("host.get_record", vec![json!(host_ref)])
                 .await?
         }
     };
-    let id = host["uuid"]
-        .as_str()
+    let id = HostRecord::new(&host)
+        .uuid()
+        .text()
         .and_then(|id| HostId::parse(id).ok())
         .ok_or(Error::Protocol("metrics host identity unavailable"))?;
     let known = inventory.hosts.get(&id).ok_or(Error::MetricsEndpoint)?;
-    let address = host["address"]
-        .as_str()
+    let address = HostRecord::new(&host)
+        .address()
+        .text()
         .filter(|address| *address == known.address)
         .ok_or(Error::MetricsEndpoint)?;
     let endpoint = if inventory.coordinator == Some(id) {

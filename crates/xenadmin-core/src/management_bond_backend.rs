@@ -24,8 +24,9 @@ fn bond_operation(r: &ResourceOperationRecord) -> Result<(&ManagementInterface, 
     }
 }
 pub(in crate::resources) fn properties(v: &Value) -> Result<BTreeMap<String, String>, Error> {
-    let p = v["properties"]
-        .as_object()
+    let p = PifRecord::new(v)
+        .properties()
+        .entries()
         .filter(|p| p.len() <= 64)
         .ok_or(Error::Protocol("Bond interface properties unavailable"))?;
     p.iter()
@@ -152,8 +153,9 @@ fn source_networks(
     ids.into_iter()
         .map(|id| {
             let (_, p) = t.pif(id)?;
-            Ok(p["network"]
-                .as_str()
+            Ok(PifRecord::new(p)
+                .network()
+                .reference()
                 .ok_or(Error::ResourceConflict)?
                 .to_owned())
         })
@@ -538,7 +540,10 @@ pub(super) async fn verify(s: &Session, r: &ResourceOperationRecord) -> Result<(
     environment(s, r, &t, &nets, receiver_ref).await
 }
 fn receiver_host(t: &Records, id: PifId) -> Result<&str, Error> {
-    t.pif(id)?.1["host"].as_str().ok_or(Error::ResourceConflict)
+    PifRecord::new(t.pif(id)?.1)
+        .host()
+        .reference()
+        .ok_or(Error::ResourceConflict)
 }
 
 pub(crate) async fn review(

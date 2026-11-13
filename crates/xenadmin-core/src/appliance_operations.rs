@@ -245,8 +245,9 @@ pub(super) async fn prepare(
         record.appliance_baseline = Some(
             all.values()
                 .map(|r| {
-                    r["uuid"]
-                        .as_str()
+                    VmApplianceRecord::new(r)
+                        .uuid()
+                        .text()
                         .and_then(|s| ApplianceId::parse(s).ok())
                         .ok_or(Error::ResourceConflict)
                 })
@@ -332,7 +333,7 @@ pub(super) async fn arguments(
         }
         Verify::Async => match op {
             Op::DeleteEmpty { expected_name, .. } => {
-                if fresh["name_label"] != *expected_name
+                if VmApplianceRecord::new(&fresh).name_label() != *expected_name
                     || !members(session, &fresh).await?.is_empty()
                 {
                     return Err(Error::ResourceConflict);
@@ -345,8 +346,9 @@ pub(super) async fn arguments(
                 ..
             } => {
                 if members(session, &fresh).await? != reviewed.iter().map(|m| m.vm).collect()
-                    || !fresh["allowed_operations"]
-                        .as_array()
+                    || !VmApplianceRecord::new(&fresh)
+                        .allowed_operations()
+                        .members()
                         .is_some_and(|v| v.iter().any(|op| op == action.wire()))
                 {
                     return Err(Error::ResourceConflict);

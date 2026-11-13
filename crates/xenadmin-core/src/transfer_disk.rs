@@ -240,14 +240,15 @@ pub(crate) async fn identify(
         .ok_or(Error::TransferLimit)?;
     let matches = records
         .iter()
-        .filter(|(_, r)| r["other_config"][MARKER] == id.to_string())
+        .filter(|(_, r)| VdiRecord::new(r).other_config()[MARKER] == id.to_string())
         .collect::<Vec<_>>();
     if matches.len() != 1 {
         return Err(Error::TransferConflict);
     }
     let (reference, r) = matches[0];
-    let uuid = r["uuid"]
-        .as_str()
+    let uuid = VdiRecord::new(r)
+        .uuid()
+        .text()
         .and_then(|s| s.parse().ok())
         .ok_or(Error::TransferConflict)?;
     if c.baseline.contains(&uuid)

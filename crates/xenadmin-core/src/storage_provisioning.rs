@@ -1,7 +1,7 @@
 //! Driver-qualified allocation and destructive HBA selection checks.
 use crate::{DiscoveredHbaDevice, Error, StorageLocation, storage_discovery, xapi::Session};
 use serde_json::{Value, json};
-use xenadmin_xapi::records::{HostRecord, SrRecord};
+use xenadmin_xapi::records::{HostRecord, SmRecord, SrRecord};
 
 pub(crate) async fn allocation_capability(
     session: &Session,
@@ -15,11 +15,14 @@ pub(crate) async fn allocation_capability(
         .as_object()
         .filter(|v| v.len() <= 256)
         .ok_or(Error::Protocol("storage driver capabilities unavailable"))?;
-    let mut matching = records.values().filter(|v| v["type"] == location.kind());
+    let mut matching = records
+        .values()
+        .filter(|v| SmRecord::new(v).type_() == location.kind());
     let driver = matching.next().ok_or(Error::UnavailableAction)?;
     if matching.next().is_some()
-        || !driver["configuration"]
-            .as_object()
+        || !SmRecord::new(driver)
+            .configuration()
+            .entries()
             .is_some_and(|v| v.contains_key("allocation"))
     {
         return Err(Error::Protocol(

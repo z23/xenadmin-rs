@@ -93,7 +93,9 @@ pub(crate) async fn probe(
         .ok_or(Error::Protocol("Storage driver capabilities unavailable"))?;
     let mut result = Vec::new();
     for kind in [LocalStorageKind::Ext, LocalStorageKind::Lvm] {
-        let mut matching = drivers.values().filter(|r| r["type"] == kind.kind());
+        let mut matching = drivers
+            .values()
+            .filter(|r| SmRecord::new(r).type_() == kind.kind());
         let driver = matching.next().ok_or(Error::Protocol(
             "Both local EXT and LVM probing drivers are required",
         ))?;
@@ -179,8 +181,9 @@ pub(crate) async fn preflight(
     }
     let srs = session.call("SR.get_all_records", vec![]).await?;
     for sr in records(&srs)?.values() {
-        let config = sr["sm_config"]
-            .as_object()
+        let config = SrRecord::new(sr)
+            .sm_config()
+            .entries()
             .ok_or(Error::Protocol("Storage serial ownership data unavailable"))?;
         for key in ["devserial", "SCSIid"] {
             if let Some(serial) = config.get(key) {
@@ -236,7 +239,10 @@ pub(crate) fn attachment_graph(sr: &Value, reference: &str) -> Result<(), Error>
 }
 pub(crate) async fn no_attachments(session: &Session, sr_ref: &str) -> Result<(), Error> {
     let pbds = session.call("PBD.get_all_records", vec![]).await?;
-    if records(&pbds)?.values().any(|p| p["SR"] == sr_ref) {
+    if records(&pbds)?
+        .values()
+        .any(|p| PbdRecord::new(p).sr() == sr_ref)
+    {
         return Err(Error::Protocol(
             "Local storage already has a host attachment; repair that attachment instead",
         ));

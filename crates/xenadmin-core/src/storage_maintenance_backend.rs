@@ -23,8 +23,9 @@ fn idle(v: &Value) -> Result<(), Error> {
     }
 }
 fn cache(v: &Value) -> Result<Option<String>, Error> {
-    let m = v["other_config"]
-        .as_object()
+    let m = SrRecord::new(v)
+        .other_config()
+        .entries()
         .ok_or(Error::ResourceConflict)?;
     match m.get("o_direct") {
         None => Ok(None),
@@ -40,8 +41,9 @@ async fn storage(
     super::disk::pool(s, r.pool).await?;
     let (reference, v) = xapi::read(s, r.target).await?;
     idle(&v)?;
-    let kind = v["type"]
-        .as_str()
+    let kind = SrRecord::new(&v)
+        .type_()
+        .text()
         .filter(|v| !v.is_empty() && v.len() <= 128)
         .ok_or(Error::ResourceConflict)?;
     if backend.is_some_and(|b| b != kind) {
@@ -122,8 +124,9 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
         return conflict();
     };
     let (sr_ref, v) = storage(s, r, None).await?;
-    let backend = v["type"]
-        .as_str()
+    let backend = SrRecord::new(&v)
+        .type_()
+        .text()
         .ok_or(Error::ResourceConflict)?
         .to_owned();
     let mut configuration = BTreeMap::new();
@@ -133,8 +136,9 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
             attachments,
         } => {
             coordinator(s, r, *host).await?;
-            if !v["allowed_operations"]
-                .as_array()
+            if !SrRecord::new(&v)
+                .allowed_operations()
+                .members()
                 .is_some_and(|a| a.iter().any(|v| v == storage_operations::PLUG))
             {
                 return Err(Error::UnavailableAction);
@@ -199,8 +203,9 @@ pub(super) async fn arguments(
             attachments,
         } => {
             coordinator(s, r, *host).await?;
-            if !v["allowed_operations"]
-                .as_array()
+            if !SrRecord::new(&v)
+                .allowed_operations()
+                .members()
                 .is_some_and(|a| a.iter().any(|v| v == storage_operations::PLUG))
             {
                 return Err(Error::UnavailableAction);

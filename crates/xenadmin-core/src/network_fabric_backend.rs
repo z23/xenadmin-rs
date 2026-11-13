@@ -16,7 +16,7 @@ use xenadmin_xapi::enumerations::{
 };
 use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord, PoolRecord,
-    VmRecord,
+    TaskRecord, TunnelRecord, VifRecord, VmRecord,
 };
 use xenadmin_xapi::{Reads, kind};
 
@@ -310,7 +310,7 @@ impl Fresh {
             || !network::refs(NetworkRecord::new(n).vifs())?.is_empty()
             || self.raw["vif"]
                 .values()
-                .any(|v| v["network"] == network_ref)
+                .any(|v| VifRecord::new(v).network() == network_ref)
         {
             return Err(Error::ResourceConflict);
         }
@@ -486,7 +486,7 @@ pub(super) fn task_receipt(r: &mut Record, task: &Value) -> Result<(), Error> {
         return Err(Error::ResourceConflict);
     }
     p.task_uuid = Some(id);
-    if task["status"] == task_status_type::SUCCESS {
+    if TaskRecord::new(task).status() == task_status_type::SUCCESS {
         if p.operation.creates() && r.result_reference.is_none() {
             r.result_reference = Some(crate::xapi::snapshot_task_result(task)?);
         }
@@ -618,16 +618,19 @@ fn verify_fresh(
             }
             match op.review.kind {
                 Kind::Tunnel(protocol) => {
-                    if o["protocol"] != protocol.as_str() || p.currently_attached != Some(true) {
+                    if TunnelRecord::new(o).protocol() != protocol.as_str()
+                        || p.currently_attached != Some(true)
+                    {
                         return Err(Error::ResourceConflict);
                     }
                 }
                 Kind::Sriov => {
-                    let reboot = o["requires_reboot"]
-                        .as_bool()
+                    let reboot = NetworkSriovRecord::new(o)
+                        .requires_reboot()
+                        .get()
                         .ok_or(Error::ResourceConflict)?;
                     if !matches!(
-                        o["configuration_mode"].as_str(),
+                        NetworkSriovRecord::new(o).configuration_mode().name(),
                         Some(
                             sriov_configuration_mode::SYSFS
                                 | sriov_configuration_mode::MODPROBE

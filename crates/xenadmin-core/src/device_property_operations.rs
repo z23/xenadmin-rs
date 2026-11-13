@@ -420,8 +420,9 @@ pub(super) async fn verify(
                 previous, priority, ..
             },
         ) => {
-            record["qos_algorithm_type"] == previous.algorithm
-                || record["qos_algorithm_type"] == if priority.is_some() { "ionice" } else { "" }
+            VbdRecord::new(record).qos_algorithm_type() == previous.algorithm
+                || VbdRecord::new(record).qos_algorithm_type()
+                    == if priority.is_some() { "ionice" } else { "" }
         }
         (
             Field::QosParameters,
@@ -431,8 +432,8 @@ pub(super) async fn verify(
                 ..
             },
         ) => {
-            record["qos_algorithm_type"] == previous.algorithm
-                || record["qos_algorithm_type"]
+            VifRecord::new(record).qos_algorithm_type() == previous.algorithm
+                || VifRecord::new(record).qos_algorithm_type()
                     == if kilobytes_per_second.is_some() {
                         "ratelimit"
                     } else {

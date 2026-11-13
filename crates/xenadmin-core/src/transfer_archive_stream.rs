@@ -3,7 +3,7 @@ use sha1::{Digest, Sha1};
 use std::{collections::BTreeMap, io::Read};
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::enumerations::vdi_type;
-use xenadmin_xapi::records::VdiRecord;
+use xenadmin_xapi::records::{SrRecord, VdiRecord};
 
 const CHUNK: u64 = 1024 * 1024;
 const METADATA: usize = 8 * 1024 * 1024;
@@ -107,7 +107,7 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
     // Full XVA exports stream user and reviewed suspend disks; ISO references are metadata only.
     let iso_srs = objects
         .iter()
-        .filter(|o| o["class"] == "SR" && o["snapshot"]["content_type"] == "iso")
+        .filter(|o| o["class"] == "SR" && SrRecord::new(&o["snapshot"]).content_type() == "iso")
         .filter_map(|o| o["id"].as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let mut disks = BTreeMap::new();
