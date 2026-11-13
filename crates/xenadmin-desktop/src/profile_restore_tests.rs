@@ -319,6 +319,156 @@ fn previews_do_not_restore_profiles_and_keyring_mutations_cannot_race_profile_sa
     assert_eq!(s.workspace.credential_tasks.len(), 1);
 }
 
+fn connect_load_queued(s: &State) -> bool {
+    let connects = |load: &CredentialLoad| load.purpose == LoadPurpose::Connect;
+    s.workspace.loads.values().any(connects)
+        || s.workspace.credential_tasks.iter().any(|(work, _)| {
+            matches!(work, CredentialWork::Load(load) if connects(load))
+        })
+}
+
+fn restore_queues_connect(arguments: &[&str]) -> bool {
+    let report = std::env::temp_dir().join(format!("xenadmin-restore-{}", uuid::Uuid::new_v4()));
+    let thread = std::thread::current();
+    let name = thread
+        .name()
+        .expect("the test harness names this thread");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .env("XENADMIN_RESTORE_REPORT", &report)
+        .args([name, "--exact", "--test-threads=1", "--"])
+        .args(arguments)
+        .output()
+        .unwrap();
+    let reported = std::fs::read_to_string(&report).ok();
+    let _ = std::fs::remove_file(&report);
+    assert!(
+        output.status.success(),
+        "restore probe {arguments:?} status {:?} failed\n{}{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    match reported.as_deref() {
+        Some("queued") => true,
+        Some("skipped") => false,
+        other => panic!("restore probe {arguments:?} wrote {other:?}"),
+    }
+}
+
+#[test]
+fn headless_flags_do_not_restore_a_saved_session() {
+    if let Ok(path) = std::env::var("XENADMIN_RESTORE_REPORT") {
+        let mut fixture = Fixture::new();
+        let s = &mut fixture.state;
+        let _profile = save_profile(s, "Saved", true, true);
+        restore_sessions(s);
+        std::fs::write(
+            path,
+            if connect_load_queued(s) {
+                "queued"
+            } else {
+                "skipped"
+            },
+        )
+        .unwrap();
+        return;
+    }
+
+    let headless = [
+        "--html",
+        "--html=out.html",
+        "--video",
+        "--video=clip.mp4",
+        "--strip",
+        "--strip=out.png",
+        "--list-scenes",
+        "--first-pixels",
+        "--list-windows",
+        "--desktop",
+        "--desktop=backdrop.png",
+        "--script",
+        "--script=replay.json",
+        "--trace",
+        "--trace=motion.jsonl",
+        "--frames",
+        "--frames=1",
+        "--duration",
+        "--duration=auto",
+        "--out",
+        "--out=frames",
+    ];
+    let mut missed = Vec::new();
+    for flag in headless {
+        let args = vec![flag.to_string()];
+        if !preview_arguments(args.iter().cloned()) {
+            missed.push(format!("preview_arguments {flag}"));
+        }
+        if !crate::instance_launch::preview(&args) {
+            missed.push(format!("instance_launch::preview {flag}"));
+        }
+    }
+    for flag in [
+        "--script",
+        "--script=replay.json",
+        "--trace",
+        "--trace=motion.jsonl",
+        "--frames",
+        "--frames=1",
+        "--duration",
+        "--duration=auto",
+        "--out",
+        "--out=frames",
+    ] {
+        let args = vec![flag.to_string(), "--native".to_string()];
+        if preview_arguments(args.iter().cloned()) {
+            missed.push(format!("preview_arguments {flag} with --native"));
+        }
+        if crate::instance_launch::preview(&args) {
+            missed.push(format!("instance_launch::preview {flag} with --native"));
+        }
+    }
+    for args in [
+        vec!["--html-template".to_string()],
+        vec!["--html-template=page.html".to_string()],
+        vec!["--html-widths".to_string()],
+        vec!["--html-widths=360,640".to_string()],
+    ] {
+        let label = args.join(" ");
+        if preview_arguments(args.iter().cloned()) {
+            missed.push(format!("preview_arguments {label}"));
+        }
+        if crate::instance_launch::preview(&args) {
+            missed.push(format!("instance_launch::preview {label}"));
+        }
+    }
+    let html_and_native = vec!["--native".to_string(), "--html=out.html".to_string()];
+    if !preview_arguments(html_and_native.iter().cloned()) {
+        missed.push("preview_arguments --native --html=out.html".into());
+    }
+    if !crate::instance_launch::preview(&html_and_native) {
+        missed.push("instance_launch::preview --native --html=out.html".into());
+    }
+    if !restore_queues_connect(&["--theme", "dark"]) {
+        missed.push("non-preview argv did not queue a Connect load".into());
+    }
+    if !restore_queues_connect(&["--native", "--frames", "1"]) {
+        missed.push("--native with --frames did not queue a Connect load".into());
+    }
+    if restore_queues_connect(&["--html", "out.html"]) {
+        missed.push("headless argv --html queued a Connect load".into());
+    }
+    if restore_queues_connect(&["--html=out.html"]) {
+        missed.push("headless argv --html=out.html queued a Connect load".into());
+    }
+    if restore_queues_connect(&["--frames", "1"]) {
+        missed.push("headless argv --frames queued a Connect load".into());
+    }
+    if restore_queues_connect(&["--frames=1"]) {
+        missed.push("headless argv --frames=1 queued a Connect load".into());
+    }
+    assert!(missed.is_empty(), "{missed:#?}");
+}
+
 #[test]
 fn rune_startup_restore_checkbox_requires_explicit_keyring_choice() {
     use rune::{Env, Runtime};

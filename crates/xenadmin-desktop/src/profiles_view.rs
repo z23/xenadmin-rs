@@ -1179,16 +1179,52 @@ pub(super) fn restore_sessions(s: &mut State) {
 }
 
 pub(super) fn preview_arguments(arguments: impl Iterator<Item = String>) -> bool {
-    arguments.into_iter().any(|argument| {
-        ["--demo", "--scene", "--snap", "--tree"]
-            .into_iter()
-            .any(|flag| {
-                argument == flag
-                    || argument
-                        .strip_prefix(flag)
-                        .is_some_and(|tail| tail.starts_with('='))
-            })
-    })
+    fn matches(argument: &str, flag: &str) -> bool {
+        argument == flag
+            || argument
+                .strip_prefix(flag)
+                .is_some_and(|tail| tail.starts_with('='))
+    }
+    let mut native = false;
+    let mut preview = false;
+    let mut unless_native = false;
+    for argument in arguments {
+        if argument == "--native" {
+            native = true;
+            continue;
+        }
+        if [
+            "--demo",
+            "--scene",
+            "--snap",
+            "--tree",
+            "--html",
+            "--video",
+            "--strip",
+            "--list-scenes",
+            "--first-pixels",
+            "--list-windows",
+            "--desktop",
+        ]
+        .into_iter()
+        .any(|flag| matches(&argument, flag))
+        {
+            preview = true;
+        // Rune's headless() is false for these when --native is set.
+        } else if [
+            "--script",
+            "--trace",
+            "--frames",
+            "--duration",
+            "--out",
+        ]
+        .into_iter()
+        .any(|flag| matches(&argument, flag))
+        {
+            unless_native = true;
+        }
+    }
+    preview || (unless_native && !native)
 }
 
 fn connect_all(s: &mut State) {
