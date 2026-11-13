@@ -322,17 +322,16 @@ fn previews_do_not_restore_profiles_and_keyring_mutations_cannot_race_profile_sa
 fn connect_load_queued(s: &State) -> bool {
     let connects = |load: &CredentialLoad| load.purpose == LoadPurpose::Connect;
     s.workspace.loads.values().any(connects)
-        || s.workspace.credential_tasks.iter().any(|(work, _)| {
-            matches!(work, CredentialWork::Load(load) if connects(load))
-        })
+        || s.workspace
+            .credential_tasks
+            .iter()
+            .any(|(work, _)| matches!(work, CredentialWork::Load(load) if connects(load)))
 }
 
 fn restore_queues_connect(arguments: &[&str]) -> bool {
     let report = std::env::temp_dir().join(format!("xenadmin-restore-{}", uuid::Uuid::new_v4()));
     let thread = std::thread::current();
-    let name = thread
-        .name()
-        .expect("the test harness names this thread");
+    let name = thread.name().expect("the test harness names this thread");
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .env("XENADMIN_RESTORE_REPORT", &report)
         .args([name, "--exact", "--test-threads=1", "--"])
