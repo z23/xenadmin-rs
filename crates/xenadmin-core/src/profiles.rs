@@ -366,11 +366,9 @@ mod tests {
         let profile = store.profiles().next().unwrap().clone();
         assert!(profile.accept_invalid_certificates);
         assert_eq!(profile.username, "operator");
-        assert!(
-            !fs::read_to_string(directory.path().join("profiles.json"))
-                .unwrap()
-                .contains("never-import-this")
-        );
+        assert!(!fs::read_to_string(directory.path().join("profiles.json"))
+            .unwrap()
+            .contains("never-import-this"));
         assert!(store.remove(profile.id).unwrap());
         assert_eq!(
             ProfileStore::open(directory.path().into())
@@ -398,6 +396,36 @@ mod tests {
         assert!(!profile.accept_invalid_certificates);
         assert!(profile.pool.is_none());
         assert!(profile.verified_members.is_empty());
+    }
+    #[test]
+    fn endpoint_change_drops_saved_certificate_pins() {
+        let mut profile = ConnectionProfile::new(
+            "Lab".into(),
+            Endpoint::parse("old.example").unwrap(),
+            "root".into(),
+        );
+        let pin: CertificateFingerprint = "aa".repeat(32).parse().unwrap();
+        profile
+            .host_certificates
+            .insert(profile.endpoint.to_string(), pin.clone());
+        profile.certificate_details.insert(
+            profile.endpoint.to_string(),
+            crate::CertificateDetails {
+                fingerprint: pin,
+                subject: "CN=old.example".into(),
+                issuer: "CN=old.example".into(),
+                names: vec!["old.example".into()],
+                valid_from: "Nov 8 00:00:00 2026 +00:00".into(),
+                valid_until: "Nov 8 00:00:00 2027 +00:00".into(),
+                serial: "01".into(),
+            },
+        );
+        profile.set_endpoint(profile.endpoint.clone());
+        assert_eq!(profile.host_certificates.len(), 1);
+        assert_eq!(profile.certificate_details.len(), 1);
+        profile.set_endpoint(Endpoint::parse("new.example").unwrap());
+        assert!(profile.host_certificates.is_empty());
+        assert!(profile.certificate_details.is_empty());
     }
     #[test]
     fn future_formats_and_invalid_profiles_are_not_overwritten() {

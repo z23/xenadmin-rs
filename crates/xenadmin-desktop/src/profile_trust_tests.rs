@@ -150,6 +150,96 @@ fn synthetic_inspection_cannot_contact_an_endpoint_or_load_a_password() {
     );
     assert!(r.state.workspace.credential_tasks.is_empty());
 }
+fn editor_for(profile: ConnectionProfile) -> (State, tempfile::TempDir) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut s = init();
+    s.workspace.store = Ok(ProfileStore::open(directory.path().into()).unwrap());
+    s.workspace
+        .store
+        .as_mut()
+        .unwrap()
+        .save(profile.clone())
+        .unwrap();
+    super::super::populate(&mut s, &profile);
+    (s, directory)
+}
+
+fn pinned_profile() -> (ConnectionProfile, String) {
+    let endpoint = Endpoint::parse("https://lab.example").unwrap();
+    let pin = "ab".repeat(32);
+    let mut profile = ConnectionProfile::new("Lab".into(), endpoint.clone(), "root".into());
+    profile
+        .host_certificates
+        .insert(endpoint.to_string(), pin.parse().unwrap());
+    (profile, pin)
+}
+
+#[test]
+fn endpoint_edit_drops_the_previous_certificate_pin() {
+    let (profile, pin) = pinned_profile();
+    let old = profile.endpoint.to_string();
+    let (mut s, _directory) = editor_for(profile);
+    assert_eq!(s.fingerprint.text, pin);
+    s.endpoint = TextEdit::new("https://other.example/");
+    let saved = form_profile(&s).unwrap();
+    assert_eq!(saved.endpoint.as_str(), "https://other.example/");
+    assert!(saved.options().unwrap().certificate_fingerprint.is_none());
+    assert!(!saved.accept_invalid_certificates);
+    assert!(!saved.host_certificates.contains_key(&old));
+}
+
+#[test]
+fn endpoint_edit_keeps_a_different_fingerprint_on_the_new_endpoint_only() {
+    let (profile, _) = pinned_profile();
+    let old = profile.endpoint.to_string();
+    let (mut s, _directory) = editor_for(profile);
+    let new_pin = "cd".repeat(32);
+    s.endpoint = TextEdit::new("https://other.example/");
+    s.fingerprint = TextEdit::new(&new_pin);
+    let saved = form_profile(&s).unwrap();
+    assert_eq!(saved.endpoint.as_str(), "https://other.example/");
+    assert_eq!(
+        saved
+            .options()
+            .unwrap()
+            .certificate_fingerprint
+            .unwrap()
+            .to_string(),
+        new_pin
+    );
+    assert!(!saved.accept_invalid_certificates);
+    assert!(!saved.host_certificates.contains_key(&old));
+    assert_eq!(saved.host_certificates.len(), 1);
+    assert_eq!(
+        saved
+            .host_certificates
+            .get("https://other.example/")
+            .unwrap()
+            .to_string(),
+        new_pin
+    );
+}
+
+#[test]
+fn unchanged_endpoint_keeps_its_certificate_pin() {
+    let (profile, pin) = pinned_profile();
+    let old = profile.endpoint.clone();
+    let (s, _directory) = editor_for(profile);
+    let saved = form_profile(&s).unwrap();
+    assert_eq!(saved.endpoint, old);
+    assert_eq!(
+        saved
+            .options()
+            .unwrap()
+            .certificate_fingerprint
+            .unwrap()
+            .to_string(),
+        pin
+    );
+    assert!(saved.host_certificates.contains_key(old.as_str()));
+    assert!(!saved.accept_invalid_certificates);
+}
+
 #[test]
 fn reviewing_failed_member_certificate_does_not_load_saved_host_credentials() {
     let mut s = init();

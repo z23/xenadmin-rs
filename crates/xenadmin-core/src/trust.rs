@@ -468,6 +468,55 @@ mod tests {
         assert!(!returned.accept_invalid_certificates);
     }
     #[test]
+    fn pinned_leaf_must_match_the_dialed_server_name() {
+        let rcgen::CertifiedKey { cert, .. } =
+            rcgen::generate_simple_self_signed(vec!["different-host.example".into()]).unwrap();
+        let fingerprint = format!("{:x}", Sha256::digest(cert.der()));
+        let verify = |pin: &str, name: &str| {
+            CertificateVerifier::Pinned(pin.parse().unwrap()).verify_server_cert(
+                cert.der(),
+                &[],
+                &ServerName::try_from(name).unwrap(),
+                &[],
+                UnixTime::now(),
+            )
+        };
+        assert!(matches!(
+            verify(&fingerprint, "127.0.0.1"),
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+            ))
+        ));
+        assert!(verify(&fingerprint, "different-host.example").is_ok());
+        assert!(verify(&"00".repeat(32), "different-host.example").is_err());
+        assert!(verify(&"00".repeat(32), "127.0.0.1").is_err());
+        assert!(CertificateVerifier::Unverified
+            .verify_server_cert(
+                cert.der(),
+                &[],
+                &ServerName::try_from("127.0.0.1").unwrap(),
+                &[],
+                UnixTime::now(),
+            )
+            .is_ok());
+        let wrapped = HostIdentityVerifier {
+            base: Arc::new(CertificateVerifier::Pinned(fingerprint.parse().unwrap())),
+            expected: fingerprint.parse().unwrap(),
+        };
+        assert!(matches!(
+            wrapped.verify_server_cert(
+                cert.der(),
+                &[],
+                &ServerName::try_from("127.0.0.1").unwrap(),
+                &[],
+                UnixTime::now(),
+            ),
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+            ))
+        ));
+    }
+    #[test]
     fn endpoints_reject_embedded_secrets_and_remote_plaintext() {
         for value in [
             "https://root:secret@host",
