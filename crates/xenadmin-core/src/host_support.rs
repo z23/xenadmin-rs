@@ -300,20 +300,7 @@ pub(crate) async fn prepare(
         .text()
         .filter(|s| !s.is_empty() && s.len() <= 253 && !s.contains(['/', '@', '?', '#']))
         .ok_or(Error::TransferEndpoint)?;
-    let mut endpoint = s.options().endpoint.clone();
-    let mut target = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
-    if target.host_str() != Some(address) {
-        target
-            .set_host(Some(address))
-            .map_err(|_| Error::TransferEndpoint)?;
-        target
-            .set_scheme("https")
-            .map_err(|_| Error::TransferEndpoint)?;
-        target
-            .set_port(Some(443))
-            .map_err(|_| Error::TransferEndpoint)?;
-        endpoint = crate::Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint)?;
-    }
+    let endpoint = crate::transfer::http::rewrite_host(&s.options().endpoint, address)?;
     let (kind, query) = match operation {
         HostArchiveOperation::Backup => (crate::transfer::http::Kind::HostBackup, vec![]),
         HostArchiveOperation::StageRestore { archive } => {
