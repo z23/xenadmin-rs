@@ -150,6 +150,36 @@ again for that, because no published version reads format 5.
   in the record's own field. The inspection looked for that mark under a key where
   hosts do not write it and so relied on the older `other_config` key alone. Importing
   archives remains experimental.
+- A host that answered a login by naming its coordinator at a plain `http` address was
+  followed there, and the pool's password went with the second login unencrypted. Only
+  a loopback address can be named that way, since no other plain address is accepted
+  as an endpoint. A coordinator is now followed over HTTPS only, and such an answer is
+  refused before the password is sent (issue 2).
+- Starting the application with one of the options that render it without a window
+  (`--html`, `--video`, `--frames`, `--script` and the like) still restored a saved
+  session and asked the keyring for its password. Those runs are now previews, as a run
+  with `--snap` was: no session is restored and the running desktop is not claimed
+  (issue 1).
+- Editing a connection's address kept the certificate pin of the old address and
+  attached it to the new one. A connection's saved pins and certificate details are
+  now dropped when its address changes, so the host at the new address has to be
+  trusted for itself (issue 7).
+- The inspection of a host backup before a restore took an entry's name from the GNU
+  long-name field when the archive had one, although a PAX path in the same archive
+  said otherwise, and likewise for a link's target. An entry whose two names disagree
+  is now refused (issue 3).
+- Cancelling that inspection did not take effect, and its ten-minute limit was not
+  applied, while the file began with a long run of empty gzip members. The stop is now
+  checked between reads of the compressed file (issue 4).
+- The address a disk transfer or a host archive is sent to was built in a way that cut
+  an IPv6 address short at its first colon and turned shorthand forms such as `127.1`
+  into another address. It is now built from the host's address as an IP address or a
+  host name, anything else is refused, and the result is checked against what was
+  asked for (issue 6).
+- Removing a secret that the client had created for a host's power-on or for storage
+  credentials took it for unused when a host or a repository still named it in another
+  spelling of the same identifier: as a URN, in braces or in capitals. The identifiers
+  are now compared as identifiers, and such a secret is kept (issue 8).
 
 ### Known issues
 
