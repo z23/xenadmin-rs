@@ -4,6 +4,7 @@ use std::{
     collections::BTreeSet,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
+use xenadmin_xapi::enumerations::{bond_mode, ip_configuration_mode, ipv6_configuration_mode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BondMode {
@@ -14,9 +15,9 @@ pub enum BondMode {
 impl BondMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::BalanceSlb => "balance-slb",
-            Self::ActiveBackup => "active-backup",
-            Self::Lacp => "lacp",
+            Self::BalanceSlb => bond_mode::BALANCE_SLB,
+            Self::ActiveBackup => bond_mode::ACTIVE_BACKUP,
+            Self::Lacp => bond_mode::LACP,
         }
     }
 }
@@ -61,9 +62,9 @@ pub enum Ipv4Mode {
 impl Ipv4Mode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::None => "None",
-            Self::Dhcp => "DHCP",
-            Self::Static => "Static",
+            Self::None => ip_configuration_mode::NONE,
+            Self::Dhcp => ip_configuration_mode::DHCP,
+            Self::Static => ip_configuration_mode::STATIC,
         }
     }
 }
@@ -112,10 +113,10 @@ pub enum Ipv6Mode {
 impl Ipv6Mode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::None => "None",
-            Self::Dhcp => "DHCP",
-            Self::Autoconf => "Autoconf",
-            Self::Static => "Static",
+            Self::None => ipv6_configuration_mode::NONE,
+            Self::Dhcp => ipv6_configuration_mode::DHCP,
+            Self::Autoconf => ipv6_configuration_mode::AUTOCONF,
+            Self::Static => ipv6_configuration_mode::STATIC,
         }
     }
 }
@@ -380,7 +381,12 @@ impl NetworkOperation {
                 expected_mode,
                 mode,
             } => {
-                bond && ["balance-slb", "active-backup", "lacp"].contains(&expected_mode.as_str())
+                bond && [
+                    bond_mode::BALANCE_SLB,
+                    bond_mode::ACTIVE_BACKUP,
+                    bond_mode::LACP,
+                ]
+                .contains(&expected_mode.as_str())
                     && expected_mode != mode.as_str()
             }
             Self::SetBondHash { expected, hash } => {

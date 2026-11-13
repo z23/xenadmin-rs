@@ -8,8 +8,11 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
+use xenadmin_xapi::enumerations::{
+    bond_mode, ip_configuration_mode, ipv6_configuration_mode, primary_address_type,
+};
 use xenadmin_xapi::records::{BondRecord, PifRecord, VlanRecord};
+use xenadmin_xapi::{Reads, kind};
 
 pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&NetworkOperation, Error> {
     match &record.action {
@@ -20,10 +23,12 @@ pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&NetworkOper
 fn reference(value: &Value) -> Result<String, Error> {
     xapi::reply_reference(value)
 }
-pub(super) fn number(value: &Value) -> Option<i64> {
+pub(super) fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<i64> {
+    let value = value.raw();
     value.as_i64().or_else(|| value.as_str()?.parse().ok())
 }
-pub(super) fn refs(value: &Value) -> Result<BTreeSet<String>, Error> {
+pub(super) fn refs<'a>(value: impl Reads<'a, kind::Set>) -> Result<BTreeSet<String>, Error> {
+    let value = value.raw();
     value
         .as_array()
         .filter(|v| v.len() <= 10_000)
@@ -32,7 +37,12 @@ pub(super) fn refs(value: &Value) -> Result<BTreeSet<String>, Error> {
         .map(reference)
         .collect()
 }
-pub(super) async fn related(session: &Session, class: &str, value: &Value) -> Result<Value, Error> {
+pub(super) async fn related<'a>(
+    session: &Session,
+    class: &str,
+    value: impl Reads<'a, kind::Reference>,
+) -> Result<Value, Error> {
+    let value = value.raw();
     session
         .call(
             &format!("{class}.get_record"),
@@ -51,17 +61,16 @@ pub(super) async fn pif_identity(
     fresh: &Value,
     expected: &PifIdentity,
 ) -> Result<(), Error> {
-    if uuid(&related(session, "host", &PifRecord::new(fresh).host()).await?)?
-        != expected.host.uuid()
-        || uuid(&related(session, "network", &PifRecord::new(fresh).network()).await?)?
+    if uuid(&related(session, "host", PifRecord::new(fresh).host()).await?)? != expected.host.uuid()
+        || uuid(&related(session, "network", PifRecord::new(fresh).network()).await?)?
             != expected.network.uuid()
         || PifRecord::new(fresh).device() != expected.device
         || PifRecord::new(fresh).mac() != expected.mac
-        || PifRecord::new(fresh).management().as_bool() != Some(expected.management)
+        || PifRecord::new(fresh).management().get() != Some(expected.management)
     {
         return Err(Error::ResourceConflict);
     }
-    if PifRecord::new(fresh).managed().as_bool() == Some(false) {
+    if PifRecord::new(fresh).managed().get() == Some(false) {
         return Err(Error::UnavailableAction);
     }
     Ok(())
@@ -74,13 +83,17 @@ fn empty(fresh: &Value, field: &str) -> Result<(), Error> {
     }
 }
 fn nonmanagement(fresh: &Value) -> Result<(), Error> {
-    if PifRecord::new(fresh).management().as_bool() == Some(false) {
+    if PifRecord::new(fresh).management().get() == Some(false) {
         Ok(())
     } else {
         Err(Error::ResourceInUse)
     }
 }
-async fn unused_network(session: &Session, reference: &Value) -> Result<(), Error> {
+async fn unused_network<'a>(
+    session: &Session,
+    reference: impl Reads<'a, kind::Reference>,
+) -> Result<(), Error> {
+    let reference = reference.raw();
     let network = related(session, "network", reference).await?;
     empty(&network, "VIFs")
 }
@@ -91,7 +104,10 @@ async fn pif_references(session: &Session, ids: &[PifId]) -> Result<BTreeSet<Str
     }
     Ok(result)
 }
-fn ipv6_addresses(value: &Value) -> Option<BTreeSet<(std::net::Ipv6Addr, u8)>> {
+fn ipv6_addresses<'a>(
+    value: impl Reads<'a, kind::Set>,
+) -> Option<BTreeSet<(std::net::Ipv6Addr, u8)>> {
+    let value = value.raw();
     value
         .as_array()
         .filter(|v| v.len() <= 64)?
@@ -102,7 +118,7 @@ fn ipv6_addresses(value: &Value) -> Option<BTreeSet<(std::net::Ipv6Addr, u8)>> {
 }
 fn unchanged_ipv6(fresh: &Value, before: &crate::Ipv6Configuration) -> bool {
     PifRecord::new(fresh).ipv6_configuration_mode() == before.mode.as_str()
-        && ipv6_addresses(&PifRecord::new(fresh).ipv6())
+        && ipv6_addresses(PifRecord::new(fresh).ipv6())
             == Some(
                 before
                     .addresses
@@ -119,13 +135,17 @@ async fn configured_ipv6_host(session: &Session, fresh: &Value) -> Result<(), Er
         .values()
         .filter(|v| {
             PifRecord::new(v).host() == fresh["host"]
-                && PifRecord::new(v).management().as_bool() == Some(true)
+                && PifRecord::new(v).management().get() == Some(true)
         })
         .collect::<Vec<_>>();
     if management.len() != 1
         || !matches!(
             management[0]["ipv6_configuration_mode"].as_str(),
-            Some("DHCP" | "Autoconf" | "Static")
+            Some(
+                ipv6_configuration_mode::DHCP
+                    | ipv6_configuration_mode::AUTOCONF
+                    | ipv6_configuration_mode::STATIC
+            )
         )
     {
         return Err(Error::Protocol(
@@ -136,8 +156,8 @@ async fn configured_ipv6_host(session: &Session, fresh: &Value) -> Result<(), Er
 }
 fn configurable_pif(fresh: &Value) -> Result<(), Error> {
     nonmanagement(fresh)?;
-    if PifRecord::new(fresh).managed().as_bool() != Some(true)
-        || PifRecord::new(fresh).bond_slave_of().as_str() != Some("OpaqueRef:NULL")
+    if PifRecord::new(fresh).managed().get() != Some(true)
+        || PifRecord::new(fresh).bond_slave_of().reference() != Some("OpaqueRef:NULL")
     {
         return Err(Error::UnavailableAction);
     }
@@ -210,7 +230,7 @@ pub(super) async fn arguments(
         } => {
             let (parent_ref, pif) = xapi::read(session, ResourceTarget::Pif(*parent)).await?;
             pif_identity(session, &pif, expected).await?;
-            if number(&PifRecord::new(&pif).vlan()) != Some(-1)
+            if number(PifRecord::new(&pif).vlan()) != Some(-1)
                 || PifRecord::new(&pif).bond_slave_of() != "OpaqueRef:NULL"
             {
                 return Err(Error::ResourceInUse);
@@ -224,7 +244,7 @@ pub(super) async fn arguments(
             let vlans = all(session, "VLAN").await?;
             if vlans.values().any(|v| {
                 VlanRecord::new(v).tagged_pif() == parent_ref
-                    && number(&VlanRecord::new(v).tag()) == Some(i64::from(*tag))
+                    && number(VlanRecord::new(v).tag()) == Some(i64::from(*tag))
             }) {
                 return Err(Error::ResourceConflict);
             }
@@ -261,7 +281,7 @@ pub(super) async fn arguments(
                 pif_identity(session, &pif, expected).await?;
                 nonmanagement(&pif)?;
                 if PifRecord::new(&pif).physical() != true
-                    || number(&PifRecord::new(&pif).vlan()) != Some(-1)
+                    || number(PifRecord::new(&pif).vlan()) != Some(-1)
                     || PifRecord::new(&pif).bond_slave_of() != "OpaqueRef:NULL"
                     || PifRecord::new(&pif).ip_configuration_mode() != ip_configuration_mode::NONE
                     || PifRecord::new(&pif).ipv6_configuration_mode()
@@ -271,19 +291,22 @@ pub(super) async fn arguments(
                 }
                 empty(&pif, "bond_master_of")?;
                 empty(&pif, "VLAN_slave_of")?;
-                unused_network(session, &PifRecord::new(&pif).network()).await?;
+                unused_network(session, PifRecord::new(&pif).network()).await?;
                 if host
                     .as_ref()
                     .is_some_and(|h| h != &PifRecord::new(&pif).host())
                 {
                     return Err(Error::ResourceConflict);
                 }
-                host = Some(PifRecord::new(&pif).host().value().clone());
+                host = Some(json!(PifRecord::new(&pif).host()));
                 member_refs.push(reference);
             }
             for existing in refs(&fresh["PIFs"])? {
                 let p = related(session, "PIF", &json!(existing)).await?;
-                if Some(PifRecord::new(&p).host().value()) == host.as_ref() {
+                if host
+                    .as_ref()
+                    .is_some_and(|h| h == &PifRecord::new(&p).host())
+                {
                     return Err(Error::ResourceInUse);
                 }
             }
@@ -314,7 +337,7 @@ pub(super) async fn arguments(
                 return Err(Error::ResourceInUse);
             }
             empty(&pif, "VLAN_slave_of")?;
-            unused_network(session, &PifRecord::new(&pif).network()).await?;
+            unused_network(session, PifRecord::new(&pif).network()).await?;
         }
         NetworkOperation::SetBondMode {
             expected_mode,
@@ -329,7 +352,7 @@ pub(super) async fn arguments(
         NetworkOperation::SetBondHash { expected, hash } => {
             let properties = string_map(&fresh["properties"])?;
             if properties.get("hashing_algorithm").and_then(Value::as_str) != expected.as_deref()
-                || fresh["mode"] != "lacp"
+                || fresh["mode"] != bond_mode::LACP
             {
                 return Err(Error::ResourceConflict);
             }
@@ -526,12 +549,14 @@ pub(super) async fn verify(
             pif_identity(session, &fresh, expected).await?;
             fresh["ipv6_configuration_mode"] == configuration.mode.as_str()
                 && (configuration.mode != crate::Ipv6Mode::Static
-                    || (ipv6_addresses(&fresh["IPv6"]).is_some_and(|addresses| {
-                        configuration.addresses.iter().all(|v| {
-                            crate::network_types::ipv6_cidr(v)
-                                .is_some_and(|v| addresses.contains(&v))
-                        })
-                    }) && fresh["ipv6_gateway"] == configuration.gateway))
+                    || (ipv6_addresses(&fresh[primary_address_type::IPV6]).is_some_and(
+                        |addresses| {
+                            configuration.addresses.iter().all(|v| {
+                                crate::network_types::ipv6_cidr(v)
+                                    .is_some_and(|v| addresses.contains(&v))
+                            })
+                        },
+                    ) && fresh["ipv6_gateway"] == configuration.gateway))
                 && (configuration.dns.is_empty() || fresh["DNS"] == configuration.dns)
         }
         NetworkOperation::SetInterfacePurpose {
@@ -604,17 +629,17 @@ async fn verify_created(
             let vlan = related(session, "VLAN", &json!(reference)).await?;
             let id = crate::VlanId::from(uuid(&vlan)?);
             let (_, parent_record) = xapi::read(session, ResourceTarget::Pif(*parent)).await?;
-            let tagged = related(session, "PIF", &VlanRecord::new(&vlan).tagged_pif()).await?;
+            let tagged = related(session, "PIF", VlanRecord::new(&vlan).tagged_pif()).await?;
             if baseline.vlans.contains(&id)
                 || uuid(&tagged)? != parent.uuid()
-                || number(&VlanRecord::new(&vlan).tag()) != Some(i64::from(*tag))
+                || number(VlanRecord::new(&vlan).tag()) != Some(i64::from(*tag))
             {
                 return Err(Error::ResourceConflict);
             }
             (
                 ResourceTarget::Vlan(id),
-                VlanRecord::new(&vlan).untagged_pif().value().clone(),
-                PifRecord::new(&parent_record).host().value().clone(),
+                json!(VlanRecord::new(&vlan).untagged_pif()),
+                json!(PifRecord::new(&parent_record).host()),
                 id.uuid(),
             )
         }
@@ -627,7 +652,7 @@ async fn verify_created(
             let id = crate::BondId::from(uuid(&bond)?);
             let member_ids = members.iter().map(|(id, _)| *id).collect::<Vec<_>>();
             if baseline.bonds.contains(&id)
-                || refs(&BondRecord::new(&bond).slaves())?
+                || refs(BondRecord::new(&bond).slaves())?
                     != pif_references(session, &member_ids).await?
                 || BondRecord::new(&bond).mode() != mode.as_str()
                 || (*mode == crate::BondMode::Lacp
@@ -638,8 +663,8 @@ async fn verify_created(
             let (_, member) = xapi::read(session, ResourceTarget::Pif(member_ids[0])).await?;
             (
                 ResourceTarget::Bond(id),
-                BondRecord::new(&bond).master().value().clone(),
-                PifRecord::new(&member).host().value().clone(),
+                json!(BondRecord::new(&bond).master()),
+                json!(PifRecord::new(&member).host()),
                 id.uuid(),
             )
         }
@@ -647,7 +672,7 @@ async fn verify_created(
     };
     let pif = related(session, "PIF", &expected_pif).await?;
     let pif_id = PifId::from(uuid(&pif)?);
-    let network = related(session, "network", &PifRecord::new(&pif).network()).await?;
+    let network = related(session, "network", PifRecord::new(&pif).network()).await?;
     if baseline.pifs.contains(&pif_id)
         || uuid(&network)? != record.target.uuid()
         || PifRecord::new(&pif).host() != expected_network

@@ -59,7 +59,7 @@ pub(crate) async fn hba_creation(
     }
     if !HostRecord::new(&host_record)
         .current_operations()
-        .as_object()
+        .entries()
         .is_some_and(|v| v.is_empty())
     {
         return Err(Error::UnavailableAction);

@@ -96,8 +96,33 @@ impl serde::Serialize for FieldValue<'_> {
 /// it, wrapped in the type for that kind, so that what is done with the field is checked
 /// against its kind where it is written: a boolean field compares with a boolean and not
 /// with a string, a reference is not accepted where a set is read, and a reader that
-/// takes one kind is not handed another. Each still reads as the JSON value it wraps,
-/// and turns into a [`FieldValue`] where the kind does not matter.
+/// takes one kind is not handed another. A typed field does not read as the JSON value
+/// it wraps: it has the readers of its kind and no others, so reading a whole number as
+/// text, or a reference as a set, does not compile.
+///
+/// ```
+/// let record = serde_json::json!({"VCPUs_max": 2, "resident_on": "OpaqueRef:host"});
+/// let vm = xenadmin_xapi::records::VmRecord::new(&record);
+/// assert_eq!(vm.vcpus_max().unsigned(), Some(2));
+/// assert_eq!(vm.resident_on().reference(), Some("OpaqueRef:host"));
+/// ```
+///
+/// The same record, read with the JSON accessor of another kind:
+///
+/// ```compile_fail,E0599
+/// let record = serde_json::json!({"VCPUs_max": 2, "resident_on": "OpaqueRef:host"});
+/// let vm = xenadmin_xapi::records::VmRecord::new(&record);
+/// assert_eq!(vm.vcpus_max().as_str(), None);
+/// ```
+///
+/// ```compile_fail,E0599
+/// let record = serde_json::json!({"VCPUs_max": 2, "resident_on": "OpaqueRef:host"});
+/// let vm = xenadmin_xapi::records::VmRecord::new(&record);
+/// assert_eq!(vm.resident_on().as_array(), None);
+/// ```
+///
+/// [`value`](TextField::value) gives the JSON value for the few reads no reader covers,
+/// and a field turns into a [`FieldValue`] where the kind does not matter.
 ///
 /// The readers here turn a well-formed value into its Rust type and give `None` for
 /// anything else. Limits on sizes and what a malformed value means stay with the caller.
@@ -112,15 +137,15 @@ macro_rules! typed_field {
             pub fn of(value: &'a serde_json::Value) -> Self {
                 Self(value)
             }
-            /// The value with the record's lifetime, for a result that outlives this field.
+            /// The JSON value as the host sent it, for the few reads no reader here covers.
+            /// What is read from it is no longer checked against the field's kind by the
+            /// compiler, so prefer the kind's own reader.
             pub fn value(self) -> &'a serde_json::Value {
                 self.0
             }
-        }
-        impl std::ops::Deref for $name<'_> {
-            type Target = serde_json::Value;
-            fn deref(&self) -> &serde_json::Value {
-                self.0
+            /// Whether the record does not carry the field, or carries null for it.
+            pub fn is_null(self) -> bool {
+                self.0.is_null()
             }
         }
         impl<'a> From<$name<'a>> for FieldValue<'a> {
@@ -197,6 +222,84 @@ typed_field!(
     /// A field that is a map from keys to values.
     MapField
 );
+/// The kinds a reader can ask for; see [`Reads`].
+pub mod kind {
+    /// A flag: a `bool` field.
+    pub struct Flag;
+    /// Text: a `string` field, a `datetime` or the name of an enumeration's value.
+    pub struct Text;
+    /// A reference to an object.
+    pub struct Reference;
+    /// A whole number.
+    pub struct Whole;
+    /// A real number.
+    pub struct Real;
+    /// A set of values.
+    pub struct Set;
+    /// A map from keys to values.
+    pub struct Map;
+}
+/// What a reader of one kind of value accepts: a field of that kind, or a JSON value that
+/// did not come through a view, whose kind the caller vouches for by passing it. A
+/// function that reads references takes `impl Reads<'a, kind::Reference>`: a reference
+/// field is accepted, a number field or a set is refused by the compiler, and a value
+/// read by key or taken out of a map goes in as before.
+///
+/// ```
+/// use xenadmin_xapi::{Reads, kind, records::VmRecord};
+/// fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Option<&'a str> {
+///     value.raw().as_str()
+/// }
+/// let record = serde_json::json!({"VCPUs_max": 2, "resident_on": "OpaqueRef:host"});
+/// let vm = VmRecord::new(&record);
+/// assert_eq!(reference(vm.resident_on()), Some("OpaqueRef:host"));
+/// assert_eq!(reference(&record["resident_on"]), Some("OpaqueRef:host"));
+/// ```
+///
+/// ```compile_fail,E0277
+/// use xenadmin_xapi::{Reads, kind, records::VmRecord};
+/// fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Option<&'a str> {
+///     value.raw().as_str()
+/// }
+/// let record = serde_json::json!({"VCPUs_max": 2, "resident_on": "OpaqueRef:host"});
+/// let vm = VmRecord::new(&record);
+/// assert_eq!(reference(vm.vcpus_max()), None);
+/// ```
+pub trait Reads<'a, K> {
+    /// The JSON value to read.
+    fn raw(self) -> &'a serde_json::Value;
+}
+impl<'a, K> Reads<'a, K> for &'a serde_json::Value {
+    fn raw(self) -> &'a serde_json::Value {
+        self
+    }
+}
+/// A plain field, whose kind is not known, is accepted like a JSON value.
+impl<'a, K> Reads<'a, K> for FieldValue<'a> {
+    fn raw(self) -> &'a serde_json::Value {
+        self.0
+    }
+}
+macro_rules! reads {
+    ($($field:ident as $kind:ident),+) => {
+        $(impl<'a> Reads<'a, kind::$kind> for $field<'a> {
+            fn raw(self) -> &'a serde_json::Value {
+                self.0
+            }
+        })+
+    };
+}
+reads!(
+    FlagField as Flag,
+    TextField as Text,
+    TimeField as Text,
+    ChoiceField as Text,
+    RefField as Reference,
+    WholeField as Whole,
+    RealField as Real,
+    SetField as Set,
+    MapField as Map
+);
 /// A field that hosts send as text and that is read as text: a string, a time or the
 /// name of an enumeration's value. A reference is text as well, but it is not read as
 /// what it says, so it is not one of these.
@@ -263,6 +366,12 @@ impl WholeField<'_> {
             .as_i64()
             .or_else(|| self.0.as_str().and_then(|digits| digits.parse().ok()))
     }
+    /// The number when it is not negative, sent as a number or as a string of digits.
+    pub fn unsigned(self) -> Option<u64> {
+        self.0
+            .as_u64()
+            .or_else(|| self.0.as_str().and_then(|digits| digits.parse().ok()))
+    }
 }
 impl RealField<'_> {
     /// The number, sent as a number or as its text.
@@ -274,14 +383,41 @@ impl RealField<'_> {
 }
 impl<'a> SetField<'a> {
     /// The members, when the host sent a list.
-    pub fn members(self) -> Option<&'a [serde_json::Value]> {
-        self.0.as_array().map(Vec::as_slice)
+    pub fn members(self) -> Option<&'a Vec<serde_json::Value>> {
+        self.0.as_array()
+    }
+    /// The members as text, when the host sent a list of strings and nothing else. Every
+    /// set the API has is of references, strings or enumeration values but one.
+    pub fn strings(self) -> Option<Vec<&'a str>> {
+        self.0
+            .as_array()?
+            .iter()
+            .map(serde_json::Value::as_str)
+            .collect()
     }
 }
 impl<'a> MapField<'a> {
     /// The entries, when the host sent a map.
     pub fn entries(self) -> Option<&'a serde_json::Map<String, serde_json::Value>> {
         self.0.as_object()
+    }
+    /// The value under `key`, when the host sent a map that has the key.
+    pub fn get(self, key: &str) -> Option<&'a serde_json::Value> {
+        self.0.as_object()?.get(key)
+    }
+    /// The text under `key`, when the host sent a map whose value there is a string.
+    /// Nearly every map the API has is from strings to strings, references or
+    /// enumeration values.
+    pub fn text(self, key: &str) -> Option<&'a str> {
+        self.get(key)?.as_str()
+    }
+}
+/// The value under a key of a map-valued field, null when the map lacks it. A value
+/// inside a map has no kind of its own: what is read from it is not checked.
+impl std::ops::Index<&str> for MapField<'_> {
+    type Output = serde_json::Value;
+    fn index(&self, key: &str) -> &serde_json::Value {
+        &self.0[key]
     }
 }
 
@@ -596,11 +732,13 @@ mod tests {
         assert!(vm.snapshot_of().is_null());
         assert!(records::HostRecord::new(&Value::Null).enabled().is_null());
         assert_eq!(vm.record(), &record);
-        // A field reads like the value and keeps the record's lifetime when asked.
-        let name: &str = vm.uuid().value().as_str().unwrap();
+        // A reader gives a value with the record's lifetime, not the field's.
+        let name: &str = vm.uuid().text().unwrap();
         assert_eq!(name, "u");
         assert_eq!(FieldValue::of(&record["VCPUs_max"]), 2);
-        assert_eq!(vm.vcpus_max().as_u64(), Some(2));
+        assert_eq!(vm.vcpus_max().unsigned(), Some(2));
+        // The JSON value itself is there to ask for, by name.
+        assert_eq!(vm.vcpus_max().value(), &json!(2));
         // Two fields of one kind compare as their values do. Fields of different kinds,
         // such as a UUID and a power state, do not compare at all: that does not compile.
         assert!(vm.uuid() == records::VmRecord::new(&record).uuid());
@@ -650,8 +788,21 @@ mod tests {
             (Some("guest"), Some("Running"), Some("20261112T00:00:00Z"))
         );
         assert_eq!(reference.reference(), Some("OpaqueRef:host"));
-        assert_eq!(set.members().map(<[Value]>::len), Some(2));
+        assert_eq!(set.members().map(Vec::len), Some(2));
+        assert_eq!(set.strings(), Some(vec!["OpaqueRef:a", "OpaqueRef:b"]));
+        assert_eq!(SetField::of(&json!(["a", 1])).strings(), None);
         assert_eq!(map.entries().and_then(|m| m.get("k")), Some(&json!("v")));
+        // One key of a map: its value, its text, or null when the map lacks it.
+        assert_eq!(
+            (map.get("k"), map.text("k"), map.text("absent")),
+            (Some(&json!("v")), Some("v"), None)
+        );
+        assert_eq!((&map["k"], &map["absent"]), (&json!("v"), &Value::Null));
+        assert_eq!(vm.platform().get("k"), None);
+        assert_eq!(
+            (whole.unsigned(), WholeField::of(&json!(-1)).unsigned()),
+            (Some(4), None)
+        );
         assert_eq!(vm.is_control_domain().get(), None);
         assert_eq!(vm.tags().members(), None);
         assert_eq!(FlagField::of(&json!("true")).get(), None);
@@ -676,6 +827,42 @@ mod tests {
         );
         // A field of a kind there is no type for stays a plain field.
         let _: FieldValue = records::EventRecord::new(&record).snapshot();
+    }
+
+    #[test]
+    fn a_reader_takes_fields_of_its_kind_and_values_that_came_by_key() {
+        fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+            WholeField::of(value.raw()).unsigned()
+        }
+        fn text<'a>(value: impl Reads<'a, kind::Text>) -> Option<&'a str> {
+            value.raw().as_str()
+        }
+        fn count<'a>(value: impl Reads<'a, kind::Set>) -> Option<usize> {
+            value.raw().as_array().map(Vec::len)
+        }
+        let record = json!({
+            "name_label": "guest", "power_state": "Running", "VCPUs_max": "4",
+            "VBDs": ["OpaqueRef:a"], "snapshot_time": "20261112T00:00:00Z",
+        });
+        let vm = records::VmRecord::new(&record);
+        // A field of the reader's kind, a value read by key and a plain field all go in.
+        assert_eq!(number(vm.vcpus_max()), Some(4));
+        assert_eq!(number(&record["VCPUs_max"]), Some(4));
+        assert_eq!(number(FieldValue::of(&record["VCPUs_max"])), Some(4));
+        assert_eq!(count(vm.vbds()), Some(1));
+        // Text, a time and an enumeration's value are all text to a reader of text.
+        assert_eq!(
+            (
+                text(vm.name_label()),
+                text(vm.snapshot_time()),
+                text(vm.power_state())
+            ),
+            (Some("guest"), Some("20261112T00:00:00Z"), Some("Running"))
+        );
+        // `number(vm.vbds())` and `count(vm.vcpus_max())` do not compile; the examples on
+        // `Reads` and on the field types hold that. A field of another kind goes in only
+        // as its JSON value, asked for by name.
+        assert_eq!(number(vm.name_label().value()), None);
     }
 
     #[cfg(debug_assertions)]

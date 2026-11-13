@@ -45,7 +45,7 @@ impl ResourceRequest {
         }
         if VmRecord::new(&vm)
             .current_operations()
-            .as_object()
+            .entries()
             .is_none_or(|o| !o.is_empty())
         {
             return Err(Error::Busy);
@@ -62,8 +62,7 @@ impl ResourceRequest {
             }
             let attachments = VmRecord::new(&vm)
                 .vbds()
-                .value()
-                .as_array()
+                .members()
                 .filter(|v| v.len() <= 256)
                 .ok_or(Error::DeviceConflict)?;
             for attachment in attachments {
@@ -86,7 +85,7 @@ impl ResourceRequest {
                         .call(
                             "VDI.get_record",
                             vec![json!(crate::snapshots::reference(
-                                &VbdRecord::new(&vbd).vdi()
+                                VbdRecord::new(&vbd).vdi()
                             )?)],
                         )
                         .await?;
@@ -236,7 +235,7 @@ impl ResourceRequest {
         let config = self.cloud_config()?.clone();
         let baseline = crate::device_lifecycle::baseline(session, "VBD").await?;
         let arguments = vec![
-            json!({"VM":vm_ref,"VDI":disk_ref,"userdevice":config.device,"bootable":false,"mode":"RO","type":"Disk","unpluggable":true,"empty":false,"other_config":{"owner":self.record.id.to_string(),cloud_init::MARKER:config.configuration_id.to_string()},"qos_algorithm_type":"","qos_algorithm_params":{}}),
+            json!({"VM":vm_ref,"VDI":disk_ref,"userdevice":config.device,"bootable":false,"mode":vbd_mode::RO,"type":vbd_type::DISK,"unpluggable":true,"empty":false,"other_config":{"owner":self.record.id.to_string(),cloud_init::MARKER:config.configuration_id.to_string()},"qos_algorithm_type":"","qos_algorithm_params":{}}),
         ];
         self.reload(journal)?;
         if self.cloud_plan()?.interrupted || self.stop_before_dispatch() {
@@ -376,7 +375,7 @@ impl ResourceRequest {
         let (reference, candidate) = matches[0];
         let uuid = VbdRecord::new(candidate)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|s| s.parse::<Uuid>().ok())
             .filter(|u| !a.baseline.contains(u))
             .ok_or(Error::TransferConflict)?;
@@ -403,7 +402,7 @@ impl ResourceRequest {
             || VbdRecord::new(&fresh).other_config()["owner"] != self.record.id.to_string()
             || VbdRecord::new(&fresh)
                 .current_operations()
-                .as_object()
+                .entries()
                 .is_none_or(|o| !o.is_empty())
             || VdiRecord::new(&d).vbds() != json!([reference])
             || vm["VBDs"]

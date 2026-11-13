@@ -11,6 +11,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 use xenadmin_xapi::records::{HostRecord, NetworkRecord, PifRecord, PoolRecord, VifRecord};
 fn require(v: bool, message: &'static str) -> Result<(), Error> {
     if v {
@@ -123,7 +124,7 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
     Ok(plan)
 }
 fn clear_ipv6(p: &mut PhysicalInterface) -> Result<(), Error> {
-    p.ipv6_configuration_mode = "None".into();
+    p.ipv6_configuration_mode = ipv6_configuration_mode::NONE.into();
     p.ipv6.clear();
     p.ipv6_gateway.clear();
     p.dns = management::configured_dns(&p.dns, "", false)?;
@@ -215,11 +216,11 @@ fn expected(p: &Plan, t: &Records, prefix: usize) -> Result<ManagementTopology, 
                     "Created bond device name is not an ordinary bond interface",
                 )?;
                 master.device = device.clone();
-                master.ipv6_configuration_mode = "None".into();
+                master.ipv6_configuration_mode = ipv6_configuration_mode::NONE.into();
                 master.ipv6.clear();
                 master.ipv6_gateway.clear();
                 let primary = graph.pifs.get_mut(&old_parent).unwrap();
-                primary.ip_configuration_mode = "None".into();
+                primary.ip_configuration_mode = ip_configuration_mode::NONE.into();
                 primary.ip.clear();
                 primary.netmask.clear();
                 primary.gateway.clear();
@@ -275,7 +276,7 @@ fn expected(p: &Plan, t: &Records, prefix: usize) -> Result<ManagementTopology, 
             graph.vlans.remove(&id);
             child.id = r.new_interface;
             child.device = graph.pifs[&parent].device.clone();
-            child.ipv6_configuration_mode = "None".into();
+            child.ipv6_configuration_mode = ipv6_configuration_mode::NONE.into();
             child.ipv6.clear();
             child.ipv6_gateway.clear();
             graph.pifs.insert(child.id, child);
@@ -304,7 +305,7 @@ fn expected(p: &Plan, t: &Records, prefix: usize) -> Result<ManagementTopology, 
     }
     if prefix >= 4 {
         let v = graph.pifs.get_mut(&receiver(p)?).ok_or(Error::Journal)?;
-        v.ipv6_configuration_mode = "Static".into();
+        v.ipv6_configuration_mode = ipv6_configuration_mode::STATIC.into();
         v.ipv6 = op.source.ipv6.addresses.clone();
         v.ipv6_gateway = op.source.ipv6.gateway.clone();
         v.dns = management::configured_dns(&v.dns, &op.source.ipv6.dns, false)?;
@@ -334,11 +335,11 @@ async fn environment(
     require(
         HostRecord::new(&record)
             .current_operations()
-            .as_object()
+            .entries()
             .is_some_and(|v| v.is_empty())
             && HostRecord::new(&record)
                 .address()
-                .as_str()
+                .text()
                 .and_then(|v| v.parse().ok())
                 == Some(address),
         "Host management role, address or task state changed",
@@ -378,7 +379,7 @@ async fn environment(
         network::all(s, "VIF").await?.values().all(|v| {
             VifRecord::new(v)
                 .network()
-                .as_str()
+                .reference()
                 .is_some_and(|n| !temp_refs.contains(n))
         }),
         "Temporary management component has guest consumers",
@@ -417,8 +418,7 @@ async fn environment(
             if network::uuid(v)? != owner.uuid() {
                 let addresses = PifRecord::new(v)
                     .ipv6()
-                    .value()
-                    .as_array()
+                    .members()
                     .ok_or(Error::ResourceConflict)?;
                 require(
                     !addresses
@@ -511,7 +511,7 @@ pub(super) async fn verify(s: &Session, p: &Plan, prefix: usize) -> Result<Recor
         let (n, v) = bond::lookup(t.records("network"), network.uuid())?;
         require(
             NetworkRecord::new(v).managed() == true
-                && network::number(&NetworkRecord::new(v).mtu()) == Some(1500)
+                && network::number(NetworkRecord::new(v).mtu()) == Some(1500)
                 && t.pifs().values().all(|p| PifRecord::new(p).network() != n),
             "Destination network is no longer empty, managed at MTU 1500",
         )?;
@@ -540,7 +540,7 @@ pub(super) async fn arguments(
             "Async.PIF.reconfigure_ipv6",
             vec![
                 json!(t.pif(p.intent.source.pif)?.0),
-                json!("None"),
+                json!(ipv6_configuration_mode::NONE),
                 json!(""),
                 json!(""),
                 json!(""),
@@ -581,7 +581,7 @@ pub(super) async fn arguments(
             "Async.PIF.reconfigure_ipv6",
             vec![
                 json!(t.pif(receiver(p)?)?.0),
-                json!("Static"),
+                json!(ipv6_configuration_mode::STATIC),
                 json!(p.intent.source.ipv6.addresses[0]),
                 json!(p.intent.source.ipv6.gateway),
                 json!(p.intent.source.ipv6.dns),

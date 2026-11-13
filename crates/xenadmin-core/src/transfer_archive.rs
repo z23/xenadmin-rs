@@ -2,6 +2,7 @@ use super::*;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, io::Read};
+use xenadmin_xapi::enumerations::vdi_type;
 const METADATA_LIMIT: usize = 8 * 1024 * 1024;
 fn octal(bytes: &[u8]) -> Result<usize, Error> {
     let s = std::str::from_utf8(bytes)
@@ -206,7 +207,7 @@ pub(crate) fn inspect_with_stop(
             "VDI" => {
                 if matches!(
                     record.get("type").and_then(Value::as_str),
-                    Some("user" | "suspend")
+                    Some(vdi_type::USER | vdi_type::SUSPEND)
                 ) {
                     let bytes = record
                         .get("virtual_size")
@@ -217,7 +218,7 @@ pub(crate) fn inspect_with_stop(
                         .checked_add(bytes)
                         .filter(|n| *n <= MAX_TRANSFER_BYTES)
                         .ok_or(Error::TransferArchive)?;
-                    if record.get("type").and_then(Value::as_str) == Some("user") {
+                    if record.get("type").and_then(Value::as_str) == Some(vdi_type::USER) {
                         disks += 1;
                     }
                 }

@@ -4,6 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VlanUplink {
@@ -206,8 +207,8 @@ impl NetworkTopologyOperation {
                             || p.managed != Some(true)
                             || p.disallow_unplug != Some(false)
                             || p.management_purpose.is_some()
-                            || p.ip_configuration_mode != "None"
-                            || p.ipv6_configuration_mode != "None"
+                            || p.ip_configuration_mode != ip_configuration_mode::NONE
+                            || p.ipv6_configuration_mode != ipv6_configuration_mode::NONE
                             || !p.ip.is_empty()
                             || !p.ipv6.is_empty()
                     }) {

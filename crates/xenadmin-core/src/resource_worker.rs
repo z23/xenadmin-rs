@@ -52,7 +52,7 @@ use serde_json::json;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
 
 pub(crate) struct ResourceRequest {
@@ -765,7 +765,7 @@ impl ResourceRequest {
             let (_, task) = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=xapi::read(session,self.record.target)=>result? };
             // Only status establishes completion. The original task remains owned
             // by its creator and is never destroyed by this cancellation observer.
-            let (state, detail) = match TaskRecord::new(&task).status().as_str() {
+            let (state, detail) = match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::PENDING)
                     if self.record.steps[0].state != StepState::Verified =>
                 {
@@ -805,8 +805,7 @@ impl ResourceRequest {
             self.record.can_cancel = false;
             self.record.progress = TaskRecord::new(&task)
                 .progress()
-                .as_f64()
-                .or_else(|| TaskRecord::new(&task).progress().as_str()?.parse().ok())
+                .number()
                 .filter(|v| v.is_finite())
                 .map(|v| v.clamp(0.0, 1.0));
             if state.terminal() {
@@ -837,7 +836,7 @@ impl ResourceRequest {
             if self.stopped_after_recovery() {
                 return Ok(());
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.network_fabric_plan.as_ref().is_some_and(|p|p.completed) || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":"success","progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.network_fabric_plan.as_ref().is_some_and(|p|p.completed) || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
             let task = match task {
                 Ok(task) => {
                     backoff = 1;
@@ -868,14 +867,13 @@ impl ResourceRequest {
             }
             self.record.progress = TaskRecord::new(&task)
                 .progress()
-                .as_f64()
-                .or_else(|| TaskRecord::new(&task).progress().as_str()?.parse().ok())
+                .number()
                 .filter(|v| v.is_finite())
                 .map(|v| v.clamp(0.0, 1.0));
             self.record.can_cancel = TaskRecord::new(&task)
                 .allowed_operations()
-                .as_array()
-                .is_some_and(|ops| ops.iter().any(|op| op == "cancel"));
+                .members()
+                .is_some_and(|ops| ops.iter().any(|op| op == task_allowed_operations::CANCEL));
             if (matches!(&self.record.action, super::ResourceAction::Storage(operation) if operation.creates_reference())
                 || matches!(&self.record.action,super::ResourceAction::Network(operation) if operation.creates() || matches!(operation,crate::NetworkOperation::Fabric(_)))
                 || matches!(&self.record.action, super::ResourceAction::Pool(_))
@@ -885,14 +883,13 @@ impl ResourceRequest {
                     super::ResourceAction::SnapshotPolicy(_)
                 ))
                 && matches!(
-                    TaskRecord::new(&task).status().as_str(),
+                    TaskRecord::new(&task).status().name(),
                     Some(task_status_type::FAILURE | task_status_type::CANCELLED)
                 )
             {
                 let code = TaskRecord::new(&task)
                     .error_info()
-                    .value()
-                    .as_array()
+                    .members()
                     .and_then(|values| values.first())
                     .and_then(|value| value.as_str())
                     .map(crate::xapi::safe_error_code);
@@ -914,7 +911,7 @@ impl ResourceRequest {
                 // Keep the task and pool reservation: failure/cancellation does not prove cleanup.
                 return self.save(journal).await;
             }
-            match TaskRecord::new(&task).status().as_str() {
+            match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     if let super::ResourceAction::SnapshotPolicy(op) = &self.record.action {
                         if matches!(op, crate::SnapshotPolicyOperation::Create { .. })
@@ -1055,8 +1052,7 @@ impl ResourceRequest {
                     self.record.state = OperationState::Failed;
                     let code = TaskRecord::new(&task)
                         .error_info()
-                        .value()
-                        .as_array()
+                        .members()
                         .and_then(|values| values.first())
                         .and_then(|value| value.as_str())
                         .unwrap_or("UNKNOWN_API_ERROR");

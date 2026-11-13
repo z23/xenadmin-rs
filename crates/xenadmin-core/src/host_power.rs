@@ -112,11 +112,8 @@ pub struct HostPowerSecretEvidence {
 }
 
 pub(crate) fn configuration(record: &Value) -> Option<HostPowerConfiguration> {
-    let mode = HostRecord::new(record).power_on_mode().value().as_str()?;
-    let config = HostRecord::new(record)
-        .power_on_config()
-        .value()
-        .as_object()?;
+    let mode = HostRecord::new(record).power_on_mode().text()?;
+    let config = HostRecord::new(record).power_on_config().entries()?;
     let (settings, secret) = match mode {
         "" if config.is_empty() => (HostPowerSettings::Disabled, None),
         "wake-on-lan" if config.is_empty() => (HostPowerSettings::WakeOnLan, None),

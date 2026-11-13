@@ -5,7 +5,7 @@ use crate::{
     transfer::{Plan, files, http},
 };
 use uuid::Uuid;
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
 fn now() -> u64 {
     std::time::SystemTime::now()
@@ -368,7 +368,7 @@ impl ResourceRequest {
     fn ovf_task_id(&self, index: usize, v: &serde_json::Value, name: &str) -> Result<Uuid, Error> {
         let id = TaskRecord::new(v)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|v| v.parse().ok())
             .ok_or(Error::TransferConflict)?;
         if self
@@ -448,7 +448,7 @@ impl ResourceRequest {
             }
             if TaskRecord::new(&v)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|v| v.parse::<Uuid>().ok())
                 != Some(id)
             {
@@ -459,7 +459,7 @@ impl ResourceRequest {
                 .stream
                 .as_mut()
                 .ok_or(Error::TransferConflict)?;
-            match TaskRecord::new(&v).status().as_str() {
+            match TaskRecord::new(&v).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     stream.task_success = true;
                     stream.result = Some(vec![crate::xapi::snapshot_task_result(&v)?]);
@@ -479,8 +479,8 @@ impl ResourceRequest {
                 && !st.cancelled
                 && TaskRecord::new(&v)
                     .allowed_operations()
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v == "cancel"))
+                    .members()
+                    .is_some_and(|a| a.iter().any(|v| v == task_allowed_operations::CANCEL))
             {
                 self.ovf_step_mut(index)?.cancelled = true;
                 self.save(j).await?;
@@ -543,7 +543,7 @@ impl ResourceRequest {
             .await
             && TaskRecord::new(&v)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|v| v.parse::<Uuid>().ok())
                 == Some(id)
         {

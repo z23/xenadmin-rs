@@ -3,7 +3,7 @@ use crate::{
     network_topology::{Kind, Receipt},
     resources::topology,
 };
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
 
 impl ResourceRequest {
@@ -183,7 +183,7 @@ impl ResourceRequest {
             }
             let step = self.topology_step_mut(index)?;
             step.task_uuid = Some(uuid);
-            match TaskRecord::new(&value).status().as_str() {
+            match TaskRecord::new(&value).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     step.completed = true;
                     step.ended = true;
@@ -218,14 +218,13 @@ impl ResourceRequest {
             self.record.state = OperationState::Tracking;
             self.record.progress = TaskRecord::new(&value)
                 .progress()
-                .as_f64()
-                .or_else(|| TaskRecord::new(&value).progress().as_str()?.parse().ok())
+                .number()
                 .filter(|v| v.is_finite())
                 .map(|v| (index as f64 + v.clamp(0.0, 1.0)) / self.record.steps.len() as f64);
             self.record.can_cancel = TaskRecord::new(&value)
                 .allowed_operations()
-                .as_array()
-                .is_some_and(|v| v.iter().any(|s| s == "cancel"));
+                .members()
+                .is_some_and(|v| v.iter().any(|s| s == task_allowed_operations::CANCEL));
             self.record.detail = format!("Host task running: {}", self.record.steps[index].label);
             self.save(j).await?;
             if !self.reconcile

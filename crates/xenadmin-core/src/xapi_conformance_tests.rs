@@ -3,8 +3,10 @@
 //! and for a call written with its arguments beside it, how many it passes.
 //! Reads through the generated record views need no check of their names, because a view
 //! has no method for a field its class lacks, and a field's type refuses a comparison with
-//! a value of another kind. A field still reads as the JSON value it wraps, so the last
-//! test here checks that each is asked for the kind of value the API gives it.
+//! a value of another kind and has only the readers of its own. What a view cannot refuse
+//! is a field asked for its JSON value by name, so a test here lists where that is done.
+//! The values of the API's enumerations are written as the generated constants; the names
+//! that are a message's name first stay literals, and the last test holds them to the API.
 
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::CLASSES;
@@ -279,28 +281,16 @@ fn method_name(field: &str) -> String {
     }
 }
 
-/// The JSON accessors that fit a field of the API type `kind`; none for a kind that is
-/// not judged.
-fn accessors(kind: &str) -> &'static [&'static str] {
-    match kind {
-        "bool" => &["as_bool", "is_boolean"],
-        "string" | "string option" | "datetime" => &["as_str", "is_string"],
-        // Hosts send whole numbers as numbers or as strings of digits.
-        "int" => &[
-            "as_i64",
-            "as_u64",
-            "as_str",
-            "is_i64",
-            "is_u64",
-            "is_number",
-            "is_string",
-        ],
-        "float" => &["as_f64", "as_str", "is_f64", "is_number", "is_string"],
-        _ if kind.ends_with(" set") => &["as_array", "is_array"],
-        _ if kind.starts_with('(') && kind.ends_with(") map") => &["as_object", "is_object"],
-        _ if kind.starts_with("enum ") || kind.ends_with(" ref") => &["as_str", "is_string"],
-        _ => &[],
-    }
+/// Whether a field of the API type `kind` has a type of its own in the bindings, with
+/// that kind's readers and no others.
+fn typed(kind: &str) -> bool {
+    matches!(
+        kind,
+        "bool" | "string" | "string option" | "datetime" | "int" | "float"
+    ) || kind.ends_with(" set")
+        || (kind.starts_with('(') && kind.ends_with(") map"))
+        || kind.starts_with("enum ")
+        || kind.ends_with(" ref")
 }
 
 /// The identifier that ends at `end` in `text`.
@@ -324,8 +314,21 @@ fn method_after(text: &str, from: usize) -> Option<(&str, usize)> {
         .then(|| (&rest[..length], text.len() - after.len() + 1))
 }
 
+/// A typed field has the readers of its kind and no JSON accessor, so a read of the wrong
+/// kind does not compile; the bindings' own examples hold that. What the compiler no
+/// longer sees is a field asked for its JSON value by name. This lists every place that
+/// does so on a view, so that another one is a decision and not a habit.
 #[test]
-fn every_field_read_through_a_view_is_asked_for_the_kind_of_value_the_api_gives_it() {
+fn the_json_value_of_a_typed_field_is_asked_for_only_where_it_is_listed() {
+    // Text that holds a number: the position of a disk or an interface on its guest is a
+    // string of digits, handed to the reader of whole numbers.
+    const LISTED: &[&str] = &[
+        "ovf_export.rs: VbdRecord.userdevice",
+        "ovf_export.rs: VbdRecord.userdevice",
+        "ovf_export.rs: VifRecord.device",
+        "ovf_import.rs: VbdRecord.userdevice",
+        "ovf_import.rs: VifRecord.device",
+    ];
     let fields: BTreeMap<(String, String), &'static str> = CLASSES
         .iter()
         .flat_map(|class| {
@@ -336,11 +339,11 @@ fn every_field_read_through_a_view_is_asked_for_the_kind_of_value_the_api_gives_
         })
         .collect();
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let (mut judged, mut wrong) = (0, Vec::new());
+    let (mut reads, mut found) = (0, Vec::new());
     for entry in std::fs::read_dir(&directory).unwrap() {
         let path = entry.unwrap().path();
         let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        if !file.ends_with(".rs") || file == "xapi_conformance_tests.rs" {
+        if !file.ends_with(".rs") || file.ends_with("tests.rs") {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
@@ -366,31 +369,49 @@ fn every_field_read_through_a_view_is_asked_for_the_kind_of_value_the_api_gives_
             let Some(kind) = fields.get(&(view.to_owned(), field.to_owned())) else {
                 continue;
             };
-            // `.value()` only lends the value for longer; what follows it is the read.
-            let mut next = method_after(&text, arguments + 1);
-            if let Some(("value", after)) = next {
-                next = method_after(&text, after + 1);
-            }
-            let Some((accessor, _)) = next else {
-                continue;
-            };
-            let fits = accessors(kind);
-            if fits.is_empty() || !(accessor.starts_with("as_") || accessor.starts_with("is_")) {
+            if !typed(kind) {
                 continue;
             }
-            judged += 1;
-            if accessor != "is_null" && !fits.contains(&accessor) {
-                let line = text[..at].matches('\n').count() + 1;
-                wrong.push(format!(
-                    "{file}:{line}: {view}.{field} is `{kind}` and is read with {accessor}()"
-                ));
+            reads += 1;
+            if let Some(("value", _)) = method_after(&text, arguments + 1) {
+                found.push(format!("{file}: {view}.{field}"));
             }
         }
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    found.sort();
+    assert_eq!(found, LISTED);
     // The scan reaches the reads: a change in how they are written would pass empty.
-    println!("{judged} reads judged");
-    assert!(judged > 300, "{judged} reads judged");
+    println!("{reads} reads of typed fields on views");
+    assert!(reads > 1000, "{reads} reads of typed fields on views");
+}
+
+/// A power action is kept under one name, which is the call that performs it
+/// (`VM.clean_shutdown`) and also the operation a record offers or refuses. It is written
+/// as a literal because it is a message's name first; this holds each to being both.
+#[test]
+fn the_names_kept_for_both_a_call_and_an_operation_are_both_in_the_api() {
+    use xenadmin_xapi::enumerations::{vm_appliance_operation, vm_operations};
+    let catalogue = catalogue();
+    let both = |class: &str, operations: &[&str], name: &str| {
+        assert!(catalogue[class].messages.contains(name), "{class}.{name}");
+        assert!(operations.contains(&name), "{class} operation {name}");
+    };
+    for action in crate::PowerAction::ALL {
+        both("VM", vm_operations::ALL, action.wire());
+    }
+    for action in [
+        crate::ForceRecoveryAction::Shutdown,
+        crate::ForceRecoveryAction::Reboot,
+    ] {
+        both("VM", vm_operations::ALL, action.wire());
+    }
+    for action in [
+        crate::AppliancePower::Start,
+        crate::AppliancePower::CleanShutdown,
+        crate::AppliancePower::HardShutdown,
+    ] {
+        both("VM_appliance", vm_appliance_operation::ALL, action.wire());
+    }
 }
 
 #[test]
@@ -408,7 +429,6 @@ fn the_names_of_views_and_their_methods_are_the_generators() {
     );
     assert_eq!(method_after("x) == 1", 2), None);
     assert_eq!(identifier_before("a.VmRecord::new(", 10), "VmRecord");
-    assert_eq!(accessors("VM ref set"), ["as_array", "is_array"]);
-    assert_eq!(accessors("bool"), ["as_bool", "is_boolean"]);
-    assert!(accessors("VM record").is_empty());
+    assert!(typed("VM ref set") && typed("bool") && typed("(string -> string) map"));
+    assert!(typed("enum vm_power_state") && typed("host ref") && !typed("VM record"));
 }

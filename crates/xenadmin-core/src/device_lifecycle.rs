@@ -10,9 +10,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use xenadmin_xapi::SetField;
 use xenadmin_xapi::enumerations::{
-    storage_operations, vbd_type, vdi_operations, vdi_type, vm_power_state,
+    storage_operations, vbd_mode, vbd_type, vdi_operations, vdi_type, vif_locking_mode,
+    vm_power_state,
 };
 use xenadmin_xapi::records::{NetworkRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 const MARKER: &str = "xenadmin-rs-operation";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,7 +142,7 @@ pub(crate) fn availability(
     }
     let disk_valid = |id: &VdiId| {
         details.vdis.get(id).is_some_and(|disk| {
-            disk.kind == "user"
+            disk.kind == vdi_type::USER
                 && disk.sharable == Some(false)
                 && disk.managed == Some(true)
                 && disk.missing == Some(false)
@@ -148,62 +150,61 @@ pub(crate) fn availability(
         })
     };
     let network_valid = |id: &NetworkId| details.networks.contains_key(id);
-    let available = match operation {
-        CreateDisk { sr, .. } => details.storage.get(sr).is_some_and(|sr| {
-            sr.content_type != "iso"
-                && sr
-                    .allowed_operations
-                    .as_ref()
-                    .is_some_and(|ops| ops.iter().any(|op| op == "vdi_create"))
-        }),
-        AttachDisk { vdi, read_only, .. } => {
-            disk_valid(vdi)
-                && details.vdi_attachments.get(vdi).is_none_or(Vec::is_empty)
-                && details
-                    .vdis
-                    .get(vdi)
-                    .is_some_and(|disk| *read_only || disk.read_only == Some(false))
-        }
-        DetachDisk { vbd, vdi } | DeleteDisk { vbd, vdi } => {
-            details.vbds.get(vbd).is_some_and(|attachment| {
-                attachment.vm == Some(vm)
-                    && attachment.vdi == Some(*vdi)
-                    && attachment.kind == "Disk"
-                    && attachment.currently_attached == Some(false)
-                    && (!matches!(operation, DeleteDisk { .. })
-                        || (attachment.owned
-                            && disk_valid(vdi)
-                            && details
-                                .vdi_attachments
-                                .get(vdi)
-                                .is_some_and(|ids| ids == &vec![*vbd])
-                            && details.vdis[vdi]
-                                .allowed_operations
-                                .as_ref()
-                                .is_some_and(|ops| ops.iter().any(|op| op == "destroy"))))
-            })
-        }
-        AddCdDrive { .. } => true,
-        AddNic { network, .. } => network_valid(network),
-        DeleteNic { vif } | EditNic { vif, .. } => details.vifs.get(vif).is_some_and(|nic| {
-            nic.vm == Some(vm)
-                && nic.currently_attached == Some(false)
-                && match operation {
-                    EditNic {
-                        expected_network,
-                        expected_mac,
-                        network,
-                        ..
-                    } => {
-                        nic.network == Some(*expected_network)
-                            && nic.mac.eq_ignore_ascii_case(expected_mac)
-                            && network_valid(network)
+    let available =
+        match operation {
+            CreateDisk { sr, .. } => details.storage.get(sr).is_some_and(|sr| {
+                sr.content_type != "iso"
+                    && sr.allowed_operations.as_ref().is_some_and(|ops| {
+                        ops.iter().any(|op| op == storage_operations::VDI_CREATE)
+                    })
+            }),
+            AttachDisk { vdi, read_only, .. } => {
+                disk_valid(vdi)
+                    && details.vdi_attachments.get(vdi).is_none_or(Vec::is_empty)
+                    && details
+                        .vdis
+                        .get(vdi)
+                        .is_some_and(|disk| *read_only || disk.read_only == Some(false))
+            }
+            DetachDisk { vbd, vdi } | DeleteDisk { vbd, vdi } => {
+                details.vbds.get(vbd).is_some_and(|attachment| {
+                    attachment.vm == Some(vm)
+                        && attachment.vdi == Some(*vdi)
+                        && attachment.kind == vbd_type::DISK
+                        && attachment.currently_attached == Some(false)
+                        && (!matches!(operation, DeleteDisk { .. })
+                            || (attachment.owned
+                                && disk_valid(vdi)
+                                && details
+                                    .vdi_attachments
+                                    .get(vdi)
+                                    .is_some_and(|ids| ids == &vec![*vbd])
+                                && details.vdis[vdi].allowed_operations.as_ref().is_some_and(
+                                    |ops| ops.iter().any(|op| op == vdi_operations::DESTROY),
+                                )))
+                })
+            }
+            AddCdDrive { .. } => true,
+            AddNic { network, .. } => network_valid(network),
+            DeleteNic { vif } | EditNic { vif, .. } => details.vifs.get(vif).is_some_and(|nic| {
+                nic.vm == Some(vm)
+                    && nic.currently_attached == Some(false)
+                    && match operation {
+                        EditNic {
+                            expected_network,
+                            expected_mac,
+                            network,
+                            ..
+                        } => {
+                            nic.network == Some(*expected_network)
+                                && nic.mac.eq_ignore_ascii_case(expected_mac)
+                                && network_valid(network)
+                        }
+                        _ => true,
                     }
-                    _ => true,
-                }
-        }),
-        _ => false,
-    };
+            }),
+            _ => false,
+        };
     if available {
         ActionAvailability::Available
     } else {
@@ -226,7 +227,7 @@ impl NicSettings {
             mtu,
             qos_algorithm: String::new(),
             qos_parameters: BTreeMap::new(),
-            locking_mode: "network_default".into(),
+            locking_mode: vif_locking_mode::NETWORK_DEFAULT.into(),
             ipv4_allowed: Vec::new(),
             ipv6_allowed: Vec::new(),
         }
@@ -234,7 +235,7 @@ impl NicSettings {
     fn from_record(record: &Value) -> Result<Self, Error> {
         if VifRecord::new(record)
             .other_config()
-            .as_object()
+            .entries()
             .is_none_or(|map| map.keys().any(|k| k != MARKER))
             || ["ipv4_configuration_mode", "ipv6_configuration_mode"]
                 .iter()
@@ -242,12 +243,12 @@ impl NicSettings {
         {
             return Err(Error::UnsupportedNicConfiguration);
         }
-        let mtu = number(&VifRecord::new(record).mtu())
+        let mtu = number(VifRecord::new(record).mtu())
             .filter(|n| *n >= 576 && *n <= 65535)
             .ok_or(Error::UnsupportedNicConfiguration)?;
         let qos_algorithm = VifRecord::new(record)
             .qos_algorithm_type()
-            .as_str()
+            .text()
             .ok_or(Error::UnsupportedNicConfiguration)?
             .to_owned();
         if !matches!(qos_algorithm.as_str(), "" | "ratelimit") {
@@ -255,7 +256,7 @@ impl NicSettings {
         }
         let qos_parameters = VifRecord::new(record)
             .qos_algorithm_params()
-            .as_object()
+            .entries()
             .ok_or(Error::UnsupportedNicConfiguration)?
             .iter()
             .map(|(k, v)| {
@@ -270,12 +271,15 @@ impl NicSettings {
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let locking_mode = VifRecord::new(record)
             .locking_mode()
-            .as_str()
-            .unwrap_or("network_default")
+            .name()
+            .unwrap_or(vif_locking_mode::NETWORK_DEFAULT)
             .to_owned();
         if !matches!(
             locking_mode.as_str(),
-            "network_default" | "locked" | "unlocked" | "disabled"
+            vif_locking_mode::NETWORK_DEFAULT
+                | vif_locking_mode::LOCKED
+                | vif_locking_mode::UNLOCKED
+                | vif_locking_mode::DISABLED
         ) {
             return Err(Error::UnsupportedNicConfiguration);
         }
@@ -388,10 +392,12 @@ pub(crate) struct Plan {
     pub steps: Vec<Step>,
     pub evidence: Vec<Option<Evidence>>,
 }
-fn number(value: &Value) -> Option<u64> {
+fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
-fn reference(value: &Value) -> Result<String, Error> {
+fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let value = value.raw();
     crate::snapshots::reference(value)
 }
 async fn fresh(session: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
@@ -435,7 +441,7 @@ async fn guest(session: &Session, vm: VmId, halted: bool) -> Result<String, Erro
 }
 async fn network(session: &Session, id: NetworkId) -> Result<(String, u64), Error> {
     let (reference, record) = fresh(session, "network", id.uuid()).await?;
-    let mtu = number(&NetworkRecord::new(&record).mtu())
+    let mtu = number(NetworkRecord::new(&record).mtu())
         .filter(|n| *n >= 576 && *n <= 65535)
         .ok_or(Error::DeviceConflict)?;
     Ok((reference, mtu))
@@ -617,18 +623,18 @@ pub(crate) async fn plan(
         }
         DeleteNic { vif } | EditNic { vif, .. } => {
             let (_, record) = nic(session, &vm_ref, *vif).await?;
-            let network_ref = reference(&VifRecord::new(&record).network())?;
+            let network_ref = reference(VifRecord::new(&record).network())?;
             let network_record = session
                 .call("network.get_record", vec![json!(network_ref)])
                 .await?;
             let from = NetworkRecord::new(&network_record)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|id| NetworkId::parse(id).ok())
                 .ok_or(Error::DeviceConflict)?;
             let address = VifRecord::new(&record)
                 .mac()
-                .as_str()
+                .text()
                 .filter(|s| mac(s))
                 .ok_or(Error::DeviceConflict)?
                 .to_owned();
@@ -658,7 +664,7 @@ pub(crate) async fn plan(
                     let settings = NicSettings::from_record(&record)?;
                     let device = VifRecord::new(&record)
                         .device()
-                        .as_str()
+                        .text()
                         .filter(|s| slot(s))
                         .ok_or(Error::DeviceConflict)?
                         .to_owned();
@@ -776,7 +782,7 @@ pub(crate) async fn prepare_step(
             Prepared {
                 method: "VDI.create",
                 parameters: vec![
-                    json!({"name_label":name,"name_description":"","SR":sr_ref,"virtual_size":size.to_string(),"type":"user","sharable":false,"read_only":false,"other_config":other_config(id,false),"xenstore_data":{},"sm_config":{},"tags":[]}),
+                    json!({"name_label":name,"name_description":"","SR":sr_ref,"virtual_size":size.to_string(),"type":vdi_type::USER,"sharable":false,"read_only":false,"other_config":other_config(id,false),"xenstore_data":{},"sm_config":{},"tags":[]}),
                 ],
             }
         }
@@ -808,7 +814,7 @@ pub(crate) async fn prepare_step(
             Prepared {
                 method: "VBD.create",
                 parameters: vec![
-                    json!({"VM":vm_ref,"VDI":disk_ref,"userdevice":device,"bootable":false,"mode":if *read_only{"RO"}else{"RW"},"type":if *cd{"CD"}else{"Disk"},"unpluggable":true,"empty":cd,"other_config":other_config(id,*owned),"qos_algorithm_type":"","qos_algorithm_params":{}}),
+                    json!({"VM":vm_ref,"VDI":disk_ref,"userdevice":device,"bootable":false,"mode":if *read_only{vbd_mode::RO}else{vbd_mode::RW},"type":if *cd{vbd_type::CD}else{vbd_type::DISK},"unpluggable":true,"empty":cd,"other_config":other_config(id,*owned),"qos_algorithm_type":"","qos_algorithm_params":{}}),
                 ],
             }
         }
@@ -873,7 +879,7 @@ pub(crate) async fn prepare_step(
             if VifRecord::new(&record).network() != network_ref
                 || !VifRecord::new(&record)
                     .mac()
-                    .as_str()
+                    .text()
                     .is_some_and(|m| m.eq_ignore_ascii_case(mac))
                 || settings.as_ref().is_some_and(|s| {
                     !NicSettings::from_record(&record).is_ok_and(|actual| actual == *s)
@@ -893,7 +899,7 @@ pub(crate) async fn prepare_step(
             if VifRecord::new(&record).network() != source
                 || !VifRecord::new(&record)
                     .mac()
-                    .as_str()
+                    .text()
                     .is_some_and(|m| m.eq_ignore_ascii_case(mac))
             {
                 return Err(Error::DeviceConflict);
@@ -955,8 +961,13 @@ async fn creation_matches(
             record["VM"] == vm_ref
                 && record["VDI"] == disk_ref
                 && record["userdevice"] == *device
-                && record["type"] == if *cd { "CD" } else { "Disk" }
-                && record["mode"] == if *read_only { "RO" } else { "RW" }
+                && record["type"] == if *cd { vbd_type::CD } else { vbd_type::DISK }
+                && record["mode"]
+                    == if *read_only {
+                        vbd_mode::RO
+                    } else {
+                        vbd_mode::RW
+                    }
                 && record["empty"] == *cd
                 && (record["other_config"]
                     .get("owner")
@@ -1090,7 +1101,7 @@ pub(crate) async fn verify_step(
                 && VifRecord::new(&record).network() == network_ref
                 && VifRecord::new(&record)
                     .mac()
-                    .as_str()
+                    .text()
                     .is_some_and(|m| m.eq_ignore_ascii_case(mac)))
         }
         _ => Err(Error::InvalidDeviceOperation),

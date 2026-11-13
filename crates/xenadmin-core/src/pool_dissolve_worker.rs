@@ -195,7 +195,7 @@ impl ResourceRequest {
             }
             let (uuid, value) = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=pool_dissolve::task(s,&self.record,index)=>v?};
             self.pool_dissolve_step_mut(index)?.task_uuid = Some(uuid);
-            match TaskRecord::new(&value).status().as_str() {
+            match TaskRecord::new(&value).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     self.pool_dissolve_step_mut(index)?.completed = true;
                     self.pool_dissolve_step_mut(index)?.ended = true;
@@ -221,8 +221,7 @@ impl ResourceRequest {
                     .into();
             self.record.progress = TaskRecord::new(&value)
                 .progress()
-                .as_f64()
-                .or_else(|| TaskRecord::new(&value).progress().as_str()?.parse().ok())
+                .number()
                 .filter(|v| v.is_finite())
                 .map(|v| v.clamp(0., 1.));
             if self.reconcile || tokio::time::Instant::now() >= deadline {
@@ -291,7 +290,7 @@ impl ResourceRequest {
                     tokio::time::timeout_at(deadline, pool_dissolve::task(s, &self.record, index))
                         .await
                 && matches!(
-                    TaskRecord::new(&task).status().as_str(),
+                    TaskRecord::new(&task).status().name(),
                     Some(
                         task_status_type::SUCCESS
                             | task_status_type::FAILURE

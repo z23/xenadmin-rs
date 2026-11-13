@@ -37,7 +37,7 @@ async fn expected(
         .collect::<Result<_, Error>>()?;
     let coordinator = PoolRecord::new(&pool)
         .master()
-        .as_str()
+        .reference()
         .and_then(|r| hosts.get(r))
         .and_then(|h| h["uuid"].as_str());
     require(

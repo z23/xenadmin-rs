@@ -1,6 +1,7 @@
 use crate::{HostId, ManagementBondOperation, ManagementInterface, NetworkId, VifId, VmId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::{network_default_locking_mode, vm_power_state};
 
 /// The server's authoritative locality rule for a guest affected by a bond change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,11 +83,13 @@ impl ManagementBondConsumers {
             && self.networks.values().all(|v| {
                 v.name.len() <= 1024
                     && (576..=65535).contains(&v.mtu)
-                    && (v
-                        .default_locking_mode
-                        .as_deref()
-                        .is_some_and(|s| matches!(s, "unlocked" | "disabled"))
-                        || self.interfaces.is_empty() && v.default_locking_mode.is_none())
+                    && (v.default_locking_mode.as_deref().is_some_and(|s| {
+                        matches!(
+                            s,
+                            network_default_locking_mode::UNLOCKED
+                                | network_default_locking_mode::DISABLED
+                        )
+                    }) || self.interfaces.is_empty() && v.default_locking_mode.is_none())
             })
             && self.interfaces.len() <= 1024
             && self.interfaces.iter().all(|(id, v)| {
@@ -109,7 +112,10 @@ impl ManagementBondConsumers {
                     && (576..=65535).contains(&v.mtu)
                     && matches!(
                         v.power_state.as_str(),
-                        "Running" | "Halted" | "Paused" | "Suspended"
+                        vm_power_state::RUNNING
+                            | vm_power_state::HALTED
+                            | vm_power_state::PAUSED
+                            | vm_power_state::SUSPENDED
                     )
                     && v.locality.valid()
                     && networks.contains(&v.network)
@@ -181,7 +187,7 @@ pub(crate) fn disposition(
         if reattachments.contains(&network)
             && *locality == ManagementVmLocality::Resident(host)
             && attached
-            && state != "Suspended"
+            && state != vm_power_state::SUSPENDED
         {
             ManagementVifChange::Reattach
         } else {

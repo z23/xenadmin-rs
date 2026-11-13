@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{vbd_mode, vbd_type};
 use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DiskSource {
     pub id: VdiId,
@@ -56,23 +57,31 @@ impl ExportPlan {
             && (!self.published || n.published)
     }
 }
-fn num(v: &Value) -> Result<u64, Error> {
+fn num<'a>(v: impl Reads<'a, kind::Whole>) -> Result<u64, Error> {
+    let v = v.raw();
     v.as_u64()
         .or_else(|| v.as_str()?.parse().ok())
         .ok_or(Error::TransferConflict)
 }
-fn text(v: &Value, max: usize) -> Result<String, Error> {
+fn text<'a>(v: impl Reads<'a, kind::Text>, max: usize) -> Result<String, Error> {
+    let v = v.raw();
     v.as_str()
         .filter(|s| s.chars().count() <= max && !s.chars().any(|c| c == '\0'))
         .map(str::to_owned)
         .ok_or(Error::TransferConflict)
 }
-async fn record(s: &Session, class: &str, r: &Value) -> Result<Value, Error> {
+async fn record<'a>(
+    s: &Session,
+    class: &str,
+    r: impl Reads<'a, kind::Reference>,
+) -> Result<Value, Error> {
+    let r = r.raw();
     let reference = crate::snapshots::reference(r)?;
     s.call(&format!("{class}.get_record"), vec![json!(reference)])
         .await
 }
-fn refs(v: &Value) -> Result<&Vec<Value>, Error> {
+fn refs<'a>(v: impl Reads<'a, kind::Set>) -> Result<&'a Vec<Value>, Error> {
+    let v = v.raw();
     v.as_array()
         .filter(|a| a.len() <= 256)
         .ok_or(Error::TransferConflict)
@@ -98,11 +107,11 @@ pub(crate) async fn capture(
         ExportSource::Checkpoint { .. } => return Err(Error::TransferConflict),
     };
     let (reference, v) = super::import::fresh(s, "VM", id).await?;
-    let cpus = u32::try_from(num(&VmRecord::new(&v).vcpus_at_startup())?)
+    let cpus = u32::try_from(num(VmRecord::new(&v).vcpus_at_startup())?)
         .ok()
         .filter(|n| (1..=256).contains(n))
         .ok_or(Error::TransferConflict)?;
-    let memory_bytes = num(&VmRecord::new(&v).memory_static_max())?;
+    let memory_bytes = num(VmRecord::new(&v).memory_static_max())?;
     if !(16 * 1024 * 1024..=8 * 1024 * 1024 * 1024 * 1024).contains(&memory_bytes)
         || !memory_bytes.is_multiple_of(1024)
         || VmRecord::new(&v).hvm_boot_policy() != "BIOS order"
@@ -135,16 +144,16 @@ pub(crate) async fn capture(
     let mut device_ids = std::collections::BTreeSet::new();
     let mut source_ids = std::collections::BTreeSet::new();
     let mut vbds = vec![];
-    for r in refs(&VmRecord::new(&v).vbds())? {
+    for r in refs(VmRecord::new(&v).vbds())? {
         vbds.push(record(s, "VBD", r).await?)
     }
-    vbds.sort_by_key(|d| num(&VbdRecord::new(d).userdevice()).unwrap_or(u64::MAX));
+    vbds.sort_by_key(|d| num(VbdRecord::new(d).userdevice().value()).unwrap_or(u64::MAX));
     for d in vbds {
         if VbdRecord::new(&d).vm() != reference
             || VbdRecord::new(&d).currently_attached() != false
             || VbdRecord::new(&d)
                 .current_operations()
-                .as_object()
+                .entries()
                 .is_none_or(|m| !m.is_empty())
         {
             return Err(Error::TransferConflict);
@@ -160,15 +169,15 @@ pub(crate) async fn capture(
                 "eject installation media; read-only and non-disk devices are not supported in OVF export",
             ));
         }
-        let device = u32::try_from(num(&VbdRecord::new(&d).userdevice())?)
+        let device = u32::try_from(num(VbdRecord::new(&d).userdevice().value())?)
             .ok()
             .filter(|n| *n <= 63)
             .ok_or(Error::TransferConflict)?;
-        let vdi = record(s, "VDI", &VbdRecord::new(&d).vdi()).await?;
-        let sr = record(s, "SR", &VdiRecord::new(&vdi).sr()).await?;
+        let vdi = record(s, "VDI", VbdRecord::new(&d).vdi()).await?;
+        let sr = record(s, "SR", VdiRecord::new(&vdi).sr()).await?;
         let id: VdiId = VdiRecord::new(&vdi)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?
             .into();
@@ -180,7 +189,7 @@ pub(crate) async fn capture(
         if !device_ids.insert(device) || !source_ids.insert(id) {
             return Err(Error::TransferConflict);
         }
-        let size = num(&VdiRecord::new(&vdi).virtual_size())?;
+        let size = num(VdiRecord::new(&vdi).virtual_size())?;
         transfer::disk::disk_record(s, id, sr, DiskImageFormat::Vhd, false).await?;
         let index = disks.len();
         let key = format!("disk-{index}");
@@ -196,25 +205,25 @@ pub(crate) async fn capture(
     let mut networks = std::collections::BTreeSet::new();
     let mut nics = vec![];
     let mut devices = std::collections::BTreeSet::new();
-    for r in refs(&VmRecord::new(&v).vifs())? {
+    for r in refs(VmRecord::new(&v).vifs())? {
         let nic = record(s, "VIF", r).await?;
-        let n = record(s, "network", &VifRecord::new(&nic).network()).await?;
+        let n = record(s, "network", VifRecord::new(&nic).network()).await?;
         if VifRecord::new(&nic).vm() != reference
             || VifRecord::new(&nic).currently_attached() != false
             || VifRecord::new(&nic)
                 .current_operations()
-                .as_object()
+                .entries()
                 .is_none_or(|m| !m.is_empty())
         {
             return Err(Error::TransferConflict);
         }
         let id = NetworkRecord::new(&n)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?;
         let network = format!("network-{id}");
-        let device = u32::try_from(num(&VifRecord::new(&nic).device())?)
+        let device = u32::try_from(num(VifRecord::new(&nic).device().value())?)
             .ok()
             .filter(|n| *n <= 15)
             .ok_or(Error::TransferConflict)?;
@@ -228,8 +237,8 @@ pub(crate) async fn capture(
     let summary = OvfSummary {
         guests: vec![OvfGuest {
             key: "guest-1".into(),
-            name: text(&VmRecord::new(&v).name_label(), 255)?,
-            description: text(&VmRecord::new(&v).name_description(), 4096)?,
+            name: text(VmRecord::new(&v).name_label(), 255)?,
+            description: text(VmRecord::new(&v).name_description(), 4096)?,
             cpus,
             memory_bytes,
             firmware,

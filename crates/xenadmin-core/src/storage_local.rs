@@ -100,15 +100,15 @@ pub(crate) async fn probe(
         if matching.next().is_some()
             || !SmRecord::new(driver)
                 .configuration()
-                .as_object()
+                .entries()
                 .is_some_and(|m| m.contains_key("device"))
             || !(SmRecord::new(driver)
                 .capabilities()
-                .as_array()
+                .members()
                 .is_some_and(|a| a.iter().any(|v| v == "SR_PROBE"))
                 || SmRecord::new(driver)
                     .features()
-                    .as_object()
+                    .entries()
                     .is_some_and(|m| m.contains_key("SR_PROBE")))
         {
             return Err(Error::UnavailableAction);
@@ -141,7 +141,7 @@ pub(crate) async fn preflight(
     let (host_ref, host_record) = read_host(session, host).await?;
     if !HostRecord::new(&host_record)
         .current_operations()
-        .as_object()
+        .entries()
         .is_some_and(|m| m.is_empty())
     {
         return Err(Error::UnavailableAction);
@@ -150,16 +150,14 @@ pub(crate) async fn preflight(
     for pbd in records(&pbds)?.values() {
         let owner = PbdRecord::new(pbd)
             .host()
-            .value()
-            .as_str()
+            .reference()
             .ok_or(Error::Protocol("Storage attachment host unavailable"))?;
         if owner != host_ref {
             continue;
         }
         let config = PbdRecord::new(pbd)
             .device_config()
-            .value()
-            .as_object()
+            .entries()
             .ok_or(Error::Protocol("Storage attachment location unavailable"))?;
         if let Some(existing) = config.get("device") {
             let existing = existing
@@ -223,11 +221,11 @@ async fn read_host(session: &Session, host: HostId) -> Result<(String, Value), E
 }
 
 pub(crate) fn attachment_graph(sr: &Value, reference: &str) -> Result<(), Error> {
-    if matches!(SrRecord::new(sr).type_().as_str(), Some("ext" | "lvm"))
+    if matches!(SrRecord::new(sr).type_().text(), Some("ext" | "lvm"))
         && (SrRecord::new(sr).shared() != false
             || !SrRecord::new(sr)
                 .pbds()
-                .as_array()
+                .members()
                 .is_some_and(|a| a.len() == 1 && a[0] == reference))
     {
         return Err(Error::Protocol(

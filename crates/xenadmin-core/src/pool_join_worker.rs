@@ -78,7 +78,7 @@ async fn host_ids(
             HostId::parse(
                 HostRecord::new(host)
                     .uuid()
-                    .as_str()
+                    .text()
                     .ok_or(Error::Protocol("Host identity unavailable"))?,
             )
             .map_err(|_| Error::Protocol("Invalid host identity"))
@@ -91,7 +91,7 @@ async fn host_ids(
     Ok((ids, hosts))
 }
 async fn live(session: &Session, host: &Value) -> Result<(), Error> {
-    let reference = xapi::reply_reference(&HostRecord::new(host).metrics())?;
+    let reference = xapi::reply_reference(HostRecord::new(host).metrics())?;
     require(
         session
             .call("host_metrics.get_record", vec![json!(reference)])
@@ -108,7 +108,7 @@ async fn destination(session: &Session, spec: &JoinSpec) -> Result<Vec<HostId>, 
     )?;
     idle(&record)?;
     let (ids, hosts) = host_ids(session).await?;
-    let master = xapi::reply_reference(&PoolRecord::new(&record).master())?;
+    let master = xapi::reply_reference(PoolRecord::new(&record).master())?;
     let host = hosts.get(&master).ok_or(Error::Stale)?;
     require(
         HostRecord::new(host).uuid() == spec.coordinator.to_string()
@@ -147,7 +147,7 @@ async fn source(session: &Session, spec: &JoinSpec) -> Result<(), Error> {
         "This host does not advertise pool joining",
     )?;
     for vm in discovery::records(session, "VM", 10_000).await?.values() {
-        match VmRecord::new(vm).is_control_domain().as_bool() {
+        match VmRecord::new(vm).is_control_domain().get() {
             Some(true) => {}
             Some(false) => {
                 require(

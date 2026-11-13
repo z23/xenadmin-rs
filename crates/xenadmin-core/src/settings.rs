@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{domain_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{HostRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryLimits {
@@ -127,7 +128,7 @@ impl VmSettingsPatch {
         }
         if VmRecord::new(r)
             .current_operations()
-            .as_object()
+            .entries()
             .is_none_or(|v| !v.is_empty())
         {
             return Err(Error::SettingsConflict);
@@ -282,8 +283,7 @@ impl VmSettingsPatch {
         {
             let reference = VmRecord::new(&record)
                 .affinity()
-                .value()
-                .as_str()
+                .reference()
                 .ok_or(Error::SettingsConflict)?;
             record["affinity"] = if reference == "OpaqueRef:NULL" {
                 Value::Null
@@ -294,7 +294,7 @@ impl VmSettingsPatch {
                 let id = HostId::parse(
                     HostRecord::new(&host)
                         .uuid()
-                        .as_str()
+                        .text()
                         .ok_or(Error::SettingsConflict)?,
                 )
                 .map_err(|_| Error::SettingsConflict)?;
@@ -527,7 +527,8 @@ fn shadow(value: &str) -> Option<f64> {
         .ok()
         .filter(|v| v.is_finite() && (1.0..=1000.0).contains(v))
 }
-fn integer(value: &Value) -> Option<u64> {
+fn integer<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 #[derive(Clone, Debug)]
@@ -549,10 +550,10 @@ impl SettingsGuard {
             return Err(Error::UnavailableAction);
         }
         let advertised = match self {
-            Self::LiveCpus(_) => Some("changing_VCPUs_live"),
-            Self::DynamicMemory(..) => Some("changing_dynamic_range"),
-            Self::Shadow(true) => Some("changing_shadow_memory_live"),
-            Self::Shadow(false) => Some("changing_shadow_memory"),
+            Self::LiveCpus(_) => Some(vm_operations::CHANGING_VCPUS_LIVE),
+            Self::DynamicMemory(..) => Some(vm_operations::CHANGING_DYNAMIC_RANGE),
+            Self::Shadow(true) => Some(vm_operations::CHANGING_SHADOW_MEMORY_LIVE),
+            Self::Shadow(false) => Some(vm_operations::CHANGING_SHADOW_MEMORY),
             _ => None,
         };
         if advertised.is_some_and(|operation| !crate::xapi::advertises(record, operation)) {
@@ -567,23 +568,23 @@ impl SettingsGuard {
                     && crate::guest_boot::is_hvm(record)
                     && VmRecord::new(record)
                         .vbds()
-                        .as_array()
+                        .members()
                         .is_some_and(Vec::is_empty)
                     && crate::guest_boot::policy(record) == Some(false)
             }
             Self::LiveCpus(max) => {
                 running
-                    && integer(&VmRecord::new(record).vcpus_max()) == Some(*max)
+                    && integer(VmRecord::new(record).vcpus_max()) == Some(*max)
                     && crate::xapi::advertises(record, vm_operations::CHANGING_VCPUS_LIVE)
             }
             Self::DynamicMemory(min, max) => {
-                integer(&VmRecord::new(record).memory_static_min()) == Some(*min)
-                    && integer(&VmRecord::new(record).memory_static_max()) == Some(*max)
+                integer(VmRecord::new(record).memory_static_min()) == Some(*min)
+                    && integer(VmRecord::new(record).memory_static_max()) == Some(*max)
                     && crate::xapi::advertises(record, vm_operations::CHANGING_DYNAMIC_RANGE)
             }
             Self::Topology(cores) => {
                 halted
-                    && integer(&VmRecord::new(record).vcpus_max())
+                    && integer(VmRecord::new(record).vcpus_max())
                         .is_some_and(|v| v >= *cores && v % cores == 0)
             }
             Self::CpuCount(max, planned) => {
@@ -607,11 +608,11 @@ impl SettingsGuard {
                         )
                 } else {
                     halted && crate::xapi::advertises(record, vm_operations::CHANGING_SHADOW_MEMORY)
-                }) && match VmRecord::new(record).domain_type().as_str() {
+                }) && match VmRecord::new(record).domain_type().name() {
                     Some(domain_type::HVM) => true,
                     None | Some(domain_type::UNSPECIFIED) => VmRecord::new(record)
                         .hvm_boot_policy()
-                        .as_str()
+                        .text()
                         .is_some_and(|p| !p.is_empty()),
                     _ => false,
                 }

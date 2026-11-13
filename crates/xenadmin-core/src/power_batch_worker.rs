@@ -207,7 +207,7 @@ impl ResourceRequest {
                 "Power action has no saved task receipt; matching state cannot prove completion",
             ))?;
             let task = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=session.call("task.get_record",vec![json!(&reference)])=>result? };
-            match TaskRecord::new(&task).status().as_str() {
+            match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     self.record
                         .power_batch_plan
@@ -220,8 +220,7 @@ impl ResourceRequest {
                 Some(task_status_type::FAILURE | task_status_type::CANCELLED) => {
                     let code = TaskRecord::new(&task)
                         .error_info()
-                        .value()
-                        .as_array()
+                        .members()
                         .and_then(|v| v.first())
                         .and_then(|v| v.as_str())
                         .map(crate::xapi::safe_error_code);
@@ -234,7 +233,7 @@ impl ResourceRequest {
                     self.record.detail = format!(
                         "{} task {}; remaining VMs were not submitted. Inspect before acknowledging{}",
                         self.record.steps[index].label,
-                        TaskRecord::new(&task).status().as_str().unwrap_or("failed"),
+                        TaskRecord::new(&task).status().name().unwrap_or("failed"),
                         code.map(|c| format!(": {c}")).unwrap_or_default()
                     );
                     self.record.steps[index].state = StepState::OutcomeUnknown;

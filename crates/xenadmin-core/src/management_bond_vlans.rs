@@ -12,7 +12,7 @@ pub(in crate::resources) fn before(
         require(
             VlanRecord::new(v)
                 .other_config()
-                .as_object()
+                .entries()
                 .is_some_and(|v| v.is_empty())
                 && p["other_config"].as_object().is_some_and(|v| v.is_empty())
                 && properties(p)?.is_empty(),
@@ -65,7 +65,7 @@ pub(in crate::resources) fn identities(
                 .values()
                 .filter(|v| {
                     VlanRecord::new(v).tagged_pif() == parent_ref
-                        && network::number(&VlanRecord::new(v).tag())
+                        && network::number(VlanRecord::new(v).tag())
                             == captured.vlan.tag.and_then(|v| i64::try_from(v).ok())
                 })
                 .collect::<Vec<_>>();
@@ -79,7 +79,7 @@ pub(in crate::resources) fn identities(
                 .get(
                     VlanRecord::new(v)
                         .untagged_pif()
-                        .as_str()
+                        .reference()
                         .ok_or(Error::ResourceConflict)?,
                 )
                 .ok_or(Error::ResourceConflict)?;
@@ -155,15 +155,15 @@ pub(super) fn verify(
         require(
             basic(p)
                 && PifRecord::new(p).physical() == false
-                && network::number(&PifRecord::new(p).vlan())
+                && network::number(PifRecord::new(p).vlan())
                     == captured.vlan.tag.and_then(|v| i64::try_from(v).ok())
                 && PifRecord::new(p)
                     .mac()
-                    .as_str()
+                    .text()
                     .is_some_and(|v| v.eq_ignore_ascii_case("fe:ff:ff:ff:ff:ff"))
                 && PifRecord::new(p).device() == t.pif(parent)?.1["device"]
-                && PifRecord::new(p).management().as_bool() == before.management
-                && PifRecord::new(p).currently_attached().as_bool() == before.currently_attached
+                && PifRecord::new(p).management().get() == before.management
+                && PifRecord::new(p).currently_attached().get() == before.currently_attached
                 && PifRecord::new(p).primary_address_type() == primary_address_type::IPV4
                 && PifRecord::new(p).ip_configuration_mode() == before.ip_configuration_mode
                 && PifRecord::new(p).ip() == before.ip
@@ -171,15 +171,15 @@ pub(super) fn verify(
                 && PifRecord::new(p).gateway() == before.gateway
                 && dns(PifRecord::new(p)
                     .dns()
-                    .as_str()
+                    .text()
                     .ok_or(Error::ResourceConflict)?)?
                     == dns(&before.dns)?
                 && PifRecord::new(p).ipv6_configuration_mode() == ipv6_configuration_mode::NONE
-                && addresses(&PifRecord::new(p).ipv6())?.is_empty()
+                && addresses(PifRecord::new(p).ipv6())?.is_empty()
                 && PifRecord::new(p).ipv6_gateway() == ""
                 && PifRecord::new(p)
                     .other_config()
-                    .as_object()
+                    .entries()
                     .is_some_and(|v| v.is_empty())
                 && properties(p)?.is_empty()
                 && v["other_config"].as_object().is_some_and(|v| v.is_empty()),

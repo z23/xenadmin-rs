@@ -129,7 +129,7 @@ impl MutationRequest {
                             return self.lifecycle_error(journal, &plan, index, error).await;
                         }
                     };
-                    match TaskRecord::new(&record).status().as_str() {
+                    match TaskRecord::new(&record).status().name() {
                         Some(task_status_type::SUCCESS) => {
                             if matches!(plan.steps[index], lifecycle::Step::Copy { .. }) {
                                 plan.evidence[index].result =
@@ -141,8 +141,7 @@ impl MutationRequest {
                         Some(task_status_type::FAILURE) | Some(task_status_type::CANCELLED) => {
                             let code = TaskRecord::new(&record)
                                 .error_info()
-                                .value()
-                                .as_array()
+                                .members()
                                 .and_then(|v| v.first())
                                 .and_then(Value::as_str)
                                 .unwrap_or("TASK_FAILED");
@@ -292,7 +291,7 @@ impl MutationRequest {
                 && let Some(task) = plan.evidence[index].task.as_ref()
             {
                 match session.call("task.get_record", vec![json!(task)]).await {
-                    Ok(record) if record["status"] == "success" => {
+                    Ok(record) if record["status"] == task_status_type::SUCCESS => {
                         if matches!(plan.steps[index], lifecycle::Step::Copy { .. }) {
                             plan.evidence[index].result =
                                 Some(crate::xapi::snapshot_task_result(&record)?);
@@ -300,7 +299,8 @@ impl MutationRequest {
                         plan.evidence[index].completed = true;
                     }
                     Ok(record)
-                        if record["status"] == "failure" || record["status"] == "cancelled" =>
+                        if record["status"] == task_status_type::FAILURE
+                            || record["status"] == task_status_type::CANCELLED =>
                     {
                         self.record.steps[index].state = StepState::Failed;
                         self.record.steps[index].detail="Host task reported failure or cancellation during read-only reconciliation".into();

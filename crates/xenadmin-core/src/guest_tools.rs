@@ -26,7 +26,7 @@ pub(crate) fn source(record: &Value) -> Option<GuestToolsMediaSource> {
     if VdiRecord::new(record).is_tools_iso() == true {
         Some(GuestToolsMediaSource::HostFlag)
     } else if matches!(
-        VdiRecord::new(record).name_label().as_str(),
+        VdiRecord::new(record).name_label().text(),
         Some("xswindrivers.iso" | "xs-tools.iso" | "guest-tools.iso")
     ) {
         Some(GuestToolsMediaSource::LegacyName)
@@ -83,7 +83,7 @@ pub(crate) fn availability(
         return ActionAvailability::Unknown;
     };
     if cd.vm != Some(vm)
-        || cd.kind != "CD"
+        || cd.kind != vbd_type::CD
         || cd.empty != Some(previous.is_none())
         || cd.vdi != *previous
         || previous == &Some(*image)
@@ -116,9 +116,9 @@ pub(crate) fn availability(
         return known_error("Attach the tools ISO repository on the VM's host before mounting it");
     }
     let action = if previous.is_some() {
-        "eject"
+        vbd_operations::EJECT
     } else {
-        "insert"
+        vbd_operations::INSERT
     };
     if cd
         .allowed_operations
@@ -186,7 +186,7 @@ async fn guest(session: &Session, vm: VmId, writing: bool) -> Result<(String, Va
     }
     if writing {
         if !matches!(
-            VmRecord::new(&record).power_state().as_str(),
+            VmRecord::new(&record).power_state().name(),
             Some(vm_power_state::RUNNING | vm_power_state::HALTED)
         ) {
             return Err(Error::UnavailableAction);

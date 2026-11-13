@@ -64,7 +64,7 @@ async fn snapshot(
         crate::snapshots::snapshot_record(session, vm, expected.snapshot).await?;
     if VmRecord::new(&value)
         .current_operations()
-        .as_object()
+        .entries()
         .is_none_or(|m| !m.is_empty())
     {
         return Err(Error::Busy);
@@ -93,7 +93,7 @@ async fn blob(session: &Session, record: &ResourceOperationRecord) -> Result<uui
         .await?;
     let id = BlobRecord::new(&fresh)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|s| uuid::Uuid::parse_str(s).ok())
         .filter(|id| !id.is_nil())
         .ok_or(Error::Stale)?;
@@ -205,7 +205,7 @@ impl ResourceRequest {
             return Err(Error::InvalidResourceCommand);
         }
         let (_, fresh) = bounded(cancel, snapshot(session, &self.record)).await?;
-        if VmRecord::new(&fresh).blobs().as_object().is_none()
+        if VmRecord::new(&fresh).blobs().entries().is_none()
             || VmRecord::new(&fresh)
                 .blobs()
                 .get(snapshot_preview::KEY)
@@ -231,7 +231,7 @@ impl ResourceRequest {
             .map(|v| {
                 BlobRecord::new(v)
                     .uuid()
-                    .as_str()
+                    .text()
                     .and_then(|v| v.parse::<uuid::Uuid>().ok())
                     .filter(|v| !v.is_nil())
                     .ok_or(Error::Protocol(
@@ -252,7 +252,7 @@ impl ResourceRequest {
         ];
         self.save(journal).await?;
         let (reference, fresh) = bounded(cancel, snapshot(session, &self.record)).await?;
-        if VmRecord::new(&fresh).blobs().as_object().is_none()
+        if VmRecord::new(&fresh).blobs().entries().is_none()
             || VmRecord::new(&fresh)
                 .blobs()
                 .get(snapshot_preview::KEY)

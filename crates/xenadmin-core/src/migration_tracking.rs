@@ -1,5 +1,5 @@
 use super::*;
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
 
 impl MutationRequest {
@@ -46,17 +46,16 @@ impl MutationRequest {
             };
             self.record.progress = TaskRecord::new(&task)
                 .progress()
-                .as_f64()
-                .or_else(|| TaskRecord::new(&task).progress().as_str()?.parse().ok())
+                .number()
                 .filter(|p| p.is_finite())
                 .map(|p| p.clamp(0.0, 1.0));
             self.record.can_cancel = !rechecking
                 && self.record.batch_parent.is_none()
                 && TaskRecord::new(&task)
                     .allowed_operations()
-                    .as_array()
-                    .is_some_and(|v| v.iter().any(|v| v == "cancel"));
-            match TaskRecord::new(&task).status().as_str() {
+                    .members()
+                    .is_some_and(|v| v.iter().any(|v| v == task_allowed_operations::CANCEL));
+            match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     return self
                         .complete_migration(session, journal, &task, !rechecking)

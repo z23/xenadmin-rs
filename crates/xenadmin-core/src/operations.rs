@@ -14,7 +14,7 @@ use std::{
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::{TaskRecord, VmRecord};
 
 #[path = "device_lifecycle_operations.rs"]
@@ -1628,7 +1628,7 @@ impl MutationRequest {
                 .call("VM.get_record", vec![json!(reference)])
                 .await?;
             let before = patch.resolve_record(session, before).await?;
-            if VmRecord::new(&before).uuid().as_str() != Some(self.record.vm.to_string().as_str()) {
+            if VmRecord::new(&before).uuid().text() != Some(self.record.vm.to_string().as_str()) {
                 return Err(Error::Stale);
             }
             if let Err(error) = patch
@@ -1683,7 +1683,7 @@ impl MutationRequest {
                 .call("VM.get_record", vec![json!(reference)])
                 .await?;
             let after = patch.resolve_record(session, after).await?;
-            if VmRecord::new(&after).uuid().as_str() != Some(self.record.vm.to_string().as_str())
+            if VmRecord::new(&after).uuid().text() != Some(self.record.vm.to_string().as_str())
                 || patch.target_guard(&after).is_err()
                 || !step.verified(&after)
             {
@@ -1715,7 +1715,7 @@ impl MutationRequest {
             .await?;
         let current = session.call("VM.get_record", vec![reference]).await?;
         let current = patch.resolve_record(session, current).await?;
-        if VmRecord::new(&current).uuid().as_str() != Some(self.record.vm.to_string().as_str()) {
+        if VmRecord::new(&current).uuid().text() != Some(self.record.vm.to_string().as_str()) {
             return Err(Error::Stale);
         };
         patch.target_guard(&current)?;
@@ -1769,7 +1769,7 @@ impl MutationRequest {
             }
             let task = tokio::select! {
                 _=connection_cancel.cancelled()=>return Err(Error::Closed),
-                result=async { if self.record.result_reference.is_some() {Ok(json!({"status":"success","progress":1.0}))} else {session.call("task.get_record",vec![json!(&reference)]).await} }=>result,
+                result=async { if self.record.result_reference.is_some() {Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0}))} else {session.call("task.get_record",vec![json!(&reference)]).await} }=>result,
             };
             let task = match task {
                 Ok(task) => {
@@ -1792,25 +1792,23 @@ impl MutationRequest {
             };
             self.record.progress = TaskRecord::new(&task)
                 .progress()
-                .as_f64()
-                .or_else(|| {
-                    TaskRecord::new(&task)
-                        .progress()
-                        .as_str()
-                        .and_then(|value| value.parse().ok())
-                })
+                .number()
                 .filter(|value| value.is_finite())
                 .map(|value| value.clamp(0.0, 1.0));
             self.record.can_cancel = TaskRecord::new(&task)
                 .allowed_operations()
-                .as_array()
-                .is_some_and(|values| values.iter().any(|value| value == "cancel"));
+                .members()
+                .is_some_and(|values| {
+                    values
+                        .iter()
+                        .any(|value| value == task_allowed_operations::CANCEL)
+                });
             self.record.state = if self.record.cancel_requested {
                 OperationState::CancellationRequested
             } else {
                 OperationState::Tracking
             };
-            match TaskRecord::new(&task).status().as_str() {
+            match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     if matches!(
                         self.record.action,
@@ -1894,8 +1892,7 @@ impl MutationRequest {
                     self.record.state = OperationState::Failed;
                     let code = TaskRecord::new(&task)
                         .error_info()
-                        .value()
-                        .as_array()
+                        .members()
                         .and_then(|values| values.first())
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("UNKNOWN_API_ERROR");

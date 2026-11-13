@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{storage_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 pub(crate) const MARKER: &str = "xenadmin-rs-disk-transfer";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Creation {
@@ -43,7 +44,7 @@ pub(crate) fn availability(
     };
     if d.virtual_size != Some(expected_size)
         || d.sr != Some(sr)
-        || d.kind != "user"
+        || d.kind != vdi_type::USER
         || d.managed != Some(true)
         || d.missing != Some(false)
         || d.sharable != Some(false)
@@ -76,7 +77,8 @@ pub(crate) fn availability(
     }
     ActionAvailability::Available
 }
-fn number(v: &Value) -> Option<u64> {
+fn number<'a>(v: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let v = v.raw();
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
 }
 fn idle(v: &Value) -> Result<(), Error> {
@@ -107,7 +109,7 @@ pub(crate) async fn disk_record(
         || VdiRecord::new(&d).missing() != false
         || VdiRecord::new(&d).sharable() != false
         || VdiRecord::new(&d).cbt_enabled() != false
-        || number(&VdiRecord::new(&d).virtual_size())
+        || number(VdiRecord::new(&d).virtual_size())
             .is_none_or(|n| n == 0 || n > format.limit() || !n.is_multiple_of(512))
     {
         return Err(Error::TransferConflict);
@@ -118,8 +120,7 @@ pub(crate) async fn disk_record(
     }
     let attachments = VdiRecord::new(&d)
         .vbds()
-        .value()
-        .as_array()
+        .members()
         .filter(|a| a.len() <= 256)
         .ok_or(Error::TransferConflict)?;
     if unattached && !attachments.is_empty() {
@@ -140,9 +141,7 @@ pub(crate) async fn disk_record(
         let vm = s
             .call(
                 "VM.get_record",
-                vec![json!(crate::snapshots::reference(
-                    &VbdRecord::new(&a).vm()
-                )?)],
+                vec![json!(crate::snapshots::reference(VbdRecord::new(&a).vm())?)],
             )
             .await?;
         idle(&vm)?;
@@ -182,7 +181,7 @@ pub(crate) async fn prepare(
     if let Some(vdi) = vdi {
         let (reference, record) = disk_record(s, vdi, sr, format, !action.is_export()).await?;
         if let TransferAction::ExportDisk { expected_size, .. } = action
-            && number(&VdiRecord::new(&record).virtual_size()) != Some(*expected_size)
+            && number(VdiRecord::new(&record).virtual_size()) != Some(*expected_size)
         {
             return Err(Error::TransferConflict);
         }
@@ -217,7 +216,7 @@ pub(crate) async fn creation_arguments(
         return Err(Error::UnavailableAction);
     }
     Ok(vec![
-        json!({"name_label":name,"name_description":"Imported disk image","SR":reference,"virtual_size":size.to_string(),"type":"user","sharable":false,"read_only":false,"other_config":{MARKER:id.to_string()},"xenstore_data":{},"sm_config":{},"tags":[]}),
+        json!({"name_label":name,"name_description":"Imported disk image","SR":reference,"virtual_size":size.to_string(),"type":vdi_type::USER,"sharable":false,"read_only":false,"other_config":{MARKER:id.to_string()},"xenstore_data":{},"sm_config":{},"tags":[]}),
     ])
 }
 pub(crate) async fn identify(
@@ -270,7 +269,7 @@ pub(crate) async fn identify(
         || VdiRecord::new(&record).is_a_snapshot() != false
         || VdiRecord::new(&record).name_label() != *name
         || VdiRecord::new(&record).other_config()[MARKER] != id.to_string()
-        || number(&VdiRecord::new(&record).virtual_size()).is_none_or(|n| n < size)
+        || number(VdiRecord::new(&record).virtual_size()).is_none_or(|n| n < size)
     {
         return Err(Error::TransferConflict);
     }

@@ -169,13 +169,13 @@ impl SnapshotWorkflow {
 fn idle(record: &Value) -> bool {
     VmRecord::new(record)
         .current_operations()
-        .as_object()
+        .entries()
         .is_some_and(|ops| ops.is_empty())
 }
 fn can(record: &Value, op: &str) -> bool {
     VmRecord::new(record)
         .allowed_operations()
-        .as_array()
+        .members()
         .is_some_and(|ops| ops.iter().any(|v| v == op))
         && VmRecord::new(record).blocked_operations().get(op).is_none()
 }
@@ -274,7 +274,7 @@ async fn memory(session: &Session, record: &Value) -> Result<Option<VdiId>, Erro
     if VmRecord::new(record).power_state() != vm_power_state::SUSPENDED {
         return Ok(None);
     }
-    let reference = snapshots::reference(&VmRecord::new(record).suspend_vdi())?;
+    let reference = snapshots::reference(VmRecord::new(record).suspend_vdi())?;
     let disk = session
         .call("VDI.get_record", vec![json!(reference)])
         .await?;
@@ -284,7 +284,7 @@ async fn memory(session: &Session, record: &Value) -> Result<Option<VdiId>, Erro
     Ok(Some(
         VdiRecord::new(&disk)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|v| VdiId::parse(v).ok())
             .ok_or(Error::SnapshotConflict)?,
     ))
@@ -435,7 +435,7 @@ pub(crate) async fn prepare(
             session
                 .call(
                     "VM.assert_operation_valid",
-                    vec![json!(&parent_ref), json!("clean_shutdown")],
+                    vec![json!(&parent_ref), json!(vm_operations::CLEAN_SHUTDOWN)],
                 )
                 .await?;
             Ok(Prepared {
@@ -452,7 +452,7 @@ pub(crate) async fn prepare(
             session
                 .call(
                     "VM.assert_operation_valid",
-                    vec![json!(&snapshot_ref), json!("revert")],
+                    vec![json!(&snapshot_ref), json!(vm_operations::REVERT)],
                 )
                 .await?;
             Ok(Prepared {
@@ -462,7 +462,11 @@ pub(crate) async fn prepare(
         }
         Step::Start | Step::Resume => {
             let resume = *step == Step::Resume;
-            let op = if resume { "resume" } else { "start" };
+            let op = if resume {
+                vm_operations::RESUME
+            } else {
+                vm_operations::START
+            };
             if VmRecord::new(&guest).parent() != snapshot_ref
                 || VmRecord::new(&guest).power_state()
                     != if resume {
@@ -539,7 +543,7 @@ pub(crate) async fn verify(
             plan.created_description = Some(
                 VmRecord::new(&record)
                     .name_description()
-                    .as_str()
+                    .text()
                     .ok_or(Error::SnapshotConflict)?
                     .into(),
             )

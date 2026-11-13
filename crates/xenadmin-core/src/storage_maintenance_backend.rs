@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::storage_operations;
 use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, TaskRecord};
 fn conflict<T>() -> Result<T, Error> {
     Err(Error::ResourceConflict)
@@ -51,8 +52,7 @@ async fn storage(
 fn config(v: &Value) -> Result<String, Error> {
     let m = PbdRecord::new(v)
         .device_config()
-        .value()
-        .as_object()
+        .entries()
         .filter(|m| m.len() <= 256)
         .ok_or(Error::ResourceConflict)?;
     if m.iter()
@@ -81,14 +81,14 @@ async fn attachment(
         || PbdRecord::new(&v).host() != host_ref
         || PbdRecord::new(&v).currently_attached() != attached
         || crate::storage::safe_location_for_kind(
-            &PbdRecord::new(&v).device_config(),
-            SrRecord::new(sr).type_().as_str(),
+            PbdRecord::new(&v).device_config(),
+            SrRecord::new(sr).type_().text(),
         ) != p.location
-        || crate::storage::requires_credentials(&PbdRecord::new(&v).device_config())
+        || crate::storage::requires_credentials(PbdRecord::new(&v).device_config())
             != p.requires_credentials
         || !SrRecord::new(sr)
             .pbds()
-            .as_array()
+            .members()
             .is_some_and(|a| a.contains(&json!(reference)))
     {
         return conflict();
@@ -135,7 +135,7 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
             coordinator(s, r, *host).await?;
             if !v["allowed_operations"]
                 .as_array()
-                .is_some_and(|a| a.iter().any(|v| v == "plug"))
+                .is_some_and(|a| a.iter().any(|v| v == storage_operations::PLUG))
             {
                 return Err(Error::UnavailableAction);
             }
@@ -163,7 +163,7 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
         .map(|v| {
             TaskRecord::new(v)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|v| TaskId::parse(v).ok())
                 .ok_or(Error::ResourceConflict)
         })
@@ -201,7 +201,7 @@ pub(super) async fn arguments(
             coordinator(s, r, *host).await?;
             if !v["allowed_operations"]
                 .as_array()
-                .is_some_and(|a| a.iter().any(|v| v == "plug"))
+                .is_some_and(|a| a.iter().any(|v| v == storage_operations::PLUG))
             {
                 return Err(Error::UnavailableAction);
             }
@@ -335,7 +335,7 @@ pub(super) async fn task(
     let value = s.call("task.get_record", vec![json!(reference)]).await?;
     let id = TaskRecord::new(&value)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|v| TaskId::parse(v).ok())
         .ok_or(Error::ResourceConflict)?;
     if id.uuid().is_nil()

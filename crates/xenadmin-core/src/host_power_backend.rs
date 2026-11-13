@@ -144,7 +144,7 @@ async fn no_host_consumer(
     for host in hosts.values() {
         let host_id = HostRecord::new(host)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|v| uuid::Uuid::parse_str(v).ok())
             .ok_or(Error::Protocol("Host Secret consumer identity unavailable"))?;
         if let Some((id, expected)) = excluded
@@ -155,7 +155,7 @@ async fn no_host_consumer(
                 crate::host_power::configuration(host).as_ref() == Some(expected)
                     && HostRecord::new(host)
                         .current_operations()
-                        .as_object()
+                        .entries()
                         .is_some_and(|v| v.is_empty()),
                 "Reviewed host configuration or operations changed during Secret consumer inspection",
             )?;
@@ -163,8 +163,7 @@ async fn no_host_consumer(
         }
         let config = HostRecord::new(host)
             .power_on_config()
-            .value()
-            .as_object()
+            .entries()
             .filter(|v| v.len() <= 128)
             .ok_or(Error::Protocol(
                 "Host Secret consumer configuration unavailable",

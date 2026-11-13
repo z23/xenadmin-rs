@@ -221,13 +221,13 @@ impl ConsoleRequest {
                 let console = session
                     .call("console.get_record", vec![json!(console_ref)])
                     .await?;
-                if ConsoleRecord::new(&console).protocol().as_str() == Some(console_protocol::RFB) {
+                if ConsoleRecord::new(&console).protocol().name() == Some(console_protocol::RFB) {
                     if ConsoleRecord::new(&console).vm() != reference {
                         return Err(Error::Stale);
                     }
                     location = ConsoleRecord::new(&console)
                         .location()
-                        .as_str()
+                        .text()
                         .map(str::to_owned);
                     break;
                 }

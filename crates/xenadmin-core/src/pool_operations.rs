@@ -5,9 +5,11 @@ use super::{
 use crate::{Error, HaRestartPriority, HostId, PoolOperation, SrId, VmId, xapi::Session};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::pool_allowed_operations;
 use xenadmin_xapi::records::{
     HostRecord, PbdRecord, PifRecord, PoolRecord, SrRecord, VdiRecord, VmApplianceRecord, VmRecord,
 };
+use xenadmin_xapi::{Reads, kind};
 
 pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&PoolOperation, Error> {
     match &record.action {
@@ -15,7 +17,8 @@ pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&PoolOperati
         _ => Err(Error::InvalidResourceCommand),
     }
 }
-fn number(value: &Value) -> Option<u64> {
+fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 /// Whether the pool's hosts accept HTTPS only: XAPI keeps the setting on each host and has
@@ -26,13 +29,14 @@ async fn https_only(session: &Session) -> Result<Option<bool>, Error> {
         .as_object()
         .into_iter()
         .flatten()
-        .map(|(_, host)| HostRecord::new(host).https_only().as_bool());
+        .map(|(_, host)| HostRecord::new(host).https_only().get());
     Ok(match values.next() {
         Some(Some(first)) if values.all(|host| host == Some(first)) => Some(first),
         _ => None,
     })
 }
-fn reference(value: &Value) -> Result<String, Error> {
+fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let value = value.raw();
     xapi::reply_reference(value)
 }
 fn empty(fresh: &Value, field: &str) -> Result<(), Error> {
@@ -74,7 +78,12 @@ async fn all(
             "pool membership unavailable or exceeds inspection limit",
         ))
 }
-async fn related(session: &Session, class: &str, value: &Value) -> Result<Value, Error> {
+async fn related<'a>(
+    session: &Session,
+    class: &str,
+    value: impl Reads<'a, kind::Reference>,
+) -> Result<Value, Error> {
+    let value = value.raw();
     session
         .call(
             &format!("{class}.get_record"),
@@ -86,7 +95,7 @@ async fn coordinator(session: &Session, fresh: &Value) -> Result<HostId, Error> 
     let host = related(session, "host", &fresh["master"]).await?;
     HostRecord::new(&host)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|v| HostId::parse(v).ok())
         .ok_or(Error::Protocol("pool coordinator identity unavailable"))
 }
@@ -109,7 +118,7 @@ async fn vm_record(session: &Session, vm: VmId) -> Result<(String, Value), Error
     Ok((reference, fresh))
 }
 async fn host_live(session: &Session, host: &Value) -> Result<(), Error> {
-    if related(session, "host_metrics", &HostRecord::new(host).metrics()).await?["live"] != true {
+    if related(session, "host_metrics", HostRecord::new(host).metrics()).await?["live"] != true {
         return Err(Error::UnavailableAction);
     }
     Ok(())
@@ -137,11 +146,11 @@ async fn heartbeat_interface_persistent(
     for pif in pifs.values().filter(|p| p["host"] == host_ref) {
         let address = PifRecord::new(pif)
             .ip()
-            .as_str()
+            .text()
             .and_then(|v| v.parse::<std::net::Ipv4Addr>().ok());
         let mask = PifRecord::new(pif)
             .netmask()
-            .as_str()
+            .text()
             .and_then(|v| v.parse::<std::net::Ipv4Addr>().ok());
         let (Some(address), Some(mask)) = (address, mask) else {
             continue;
@@ -177,8 +186,7 @@ async fn heartbeat_arguments(session: &Session, srs: &[SrId]) -> Result<Vec<Valu
             .await?;
         let pbds = SrRecord::new(&sr)
             .pbds()
-            .value()
-            .as_array()
+            .members()
             .filter(|v| v.len() <= 256)
             .ok_or(Error::Protocol("heartbeat storage attachments unavailable"))?;
         let mut attached = BTreeSet::new();
@@ -189,10 +197,10 @@ async fn heartbeat_arguments(session: &Session, srs: &[SrId]) -> Result<Vec<Valu
             {
                 return Err(Error::UnavailableAction);
             }
-            let host_ref = reference(&PbdRecord::new(&pbd).host())?;
+            let host_ref = reference(PbdRecord::new(&pbd).host())?;
             let server = ["server", "target"]
                 .iter()
-                .find_map(|key| PbdRecord::new(&pbd).device_config().value()[key].as_str())
+                .find_map(|key| PbdRecord::new(&pbd).device_config().text(key))
                 .and_then(|v| v.parse::<std::net::Ipv4Addr>().ok());
             if let Some(server) = server {
                 heartbeat_interface_persistent(session, &host_ref, server).await?;
@@ -245,7 +253,7 @@ pub(super) async fn arguments(
         }
         PoolOperation::DesignateCoordinator { expected, host } => {
             expect(&fresh, "ha_enabled", json!(false))?;
-            permitted(&fresh, "designate_new_master")?;
+            permitted(&fresh, pool_allowed_operations::DESIGNATE_NEW_MASTER)?;
             if coordinator(session, &fresh).await? != *expected {
                 return Err(Error::ResourceConflict);
             }
@@ -256,7 +264,7 @@ pub(super) async fn arguments(
             Ok(vec![json!(host_ref)])
         }
         PoolOperation::SetHaFailuresToTolerate { expected, failures } => {
-            if number(&PoolRecord::new(&fresh).ha_host_failures_to_tolerate()) != Some(*expected) {
+            if number(PoolRecord::new(&fresh).ha_host_failures_to_tolerate()) != Some(*expected) {
                 return Err(Error::ResourceConflict);
             }
             if *failures >= all(session, "host", 256).await?.len() as u64 {
@@ -279,8 +287,8 @@ pub(super) async fn arguments(
             expected_failures,
         } => {
             expect(&fresh, "ha_enabled", json!(false))?;
-            permitted(&fresh, "ha_enable")?;
-            if number(&PoolRecord::new(&fresh).ha_host_failures_to_tolerate())
+            permitted(&fresh, pool_allowed_operations::HA_ENABLE)?;
+            if number(PoolRecord::new(&fresh).ha_host_failures_to_tolerate())
                 != Some(*expected_failures)
             {
                 return Err(Error::ResourceConflict);
@@ -306,15 +314,14 @@ pub(super) async fn arguments(
             expect(&fresh, "ha_enabled", json!(false))?;
             let config = PoolRecord::new(&fresh)
                 .ha_configuration()
-                .value()
-                .as_object()
+                .entries()
                 .ok_or(Error::ResourceConflict)?;
             if config.contains_key("timeout") {
                 return Err(Error::UnavailableAction);
             }
             let mut map = PoolRecord::new(&fresh)
                 .other_config()
-                .as_object()
+                .entries()
                 .cloned()
                 .ok_or(Error::ResourceConflict)?;
             if map.get("default_ha_timeout")
@@ -349,7 +356,7 @@ pub(super) async fn arguments(
         }
         PoolOperation::DisableHa => {
             expect(&fresh, "ha_enabled", json!(true))?;
-            permitted(&fresh, "ha_disable")?;
+            permitted(&fresh, pool_allowed_operations::HA_DISABLE)?;
             Ok(vec![])
         }
         PoolOperation::SetVmRestartPriority {
@@ -388,8 +395,8 @@ pub(super) async fn arguments(
                 .filter(|p| PbdRecord::new(p).host() == host_ref)
             {
                 let sr = related(session, "SR", &pbd["SR"]).await?;
-                if SrRecord::new(&sr).shared().as_bool().is_none()
-                    || SrRecord::new(&sr).content_type().as_str().is_none()
+                if SrRecord::new(&sr).shared().get().is_none()
+                    || SrRecord::new(&sr).content_type().text().is_none()
                 {
                     return Err(Error::Protocol("member storage classification unavailable"));
                 }
@@ -397,7 +404,7 @@ pub(super) async fn arguments(
                     && SrRecord::new(&sr).content_type() == "user"
                     && !SrRecord::new(&sr)
                         .vdis()
-                        .as_array()
+                        .members()
                         .is_some_and(Vec::is_empty)
                 {
                     return Err(Error::ResourceInUse);
@@ -407,7 +414,7 @@ pub(super) async fn arguments(
         }
         PoolOperation::EnableTlsVerification => {
             expect(&fresh, "tls_verification_enabled", json!(false))?;
-            permitted(&fresh, "tls_verification_enable")?;
+            permitted(&fresh, pool_allowed_operations::TLS_VERIFICATION_ENABLE)?;
             Ok(vec![])
         }
         PoolOperation::RotateSecret => {
@@ -462,7 +469,7 @@ pub(super) async fn verify(
             }
         }
         PoolOperation::SetHaFailuresToTolerate { failures, .. } => {
-            number(&PoolRecord::new(&fresh).ha_host_failures_to_tolerate()) == Some(*failures)
+            number(PoolRecord::new(&fresh).ha_host_failures_to_tolerate()) == Some(*failures)
         }
         PoolOperation::EnableHa { heartbeat_srs, .. } => {
             if PoolRecord::new(&fresh).ha_enabled() != true {
@@ -470,8 +477,7 @@ pub(super) async fn verify(
             }
             let files = PoolRecord::new(&fresh)
                 .ha_statefiles()
-                .value()
-                .as_array()
+                .members()
                 .filter(|v| !v.is_empty() && v.len() <= 64)
                 .ok_or(Error::Protocol("HA heartbeat evidence unavailable"))?;
             for file in files {
@@ -487,10 +493,10 @@ pub(super) async fn verify(
                         .await?
                 };
                 let vdi = related(session, "VDI", &file_ref).await?;
-                let sr = related(session, "SR", &VdiRecord::new(&vdi).sr()).await?;
+                let sr = related(session, "SR", VdiRecord::new(&vdi).sr()).await?;
                 let id = SrRecord::new(&sr)
                     .uuid()
-                    .as_str()
+                    .text()
                     .and_then(|v| SrId::parse(v).ok())
                     .ok_or(Error::Protocol("HA storage identity unavailable"))?;
                 if !heartbeat_srs.contains(&id) {
@@ -505,13 +511,11 @@ pub(super) async fn verify(
         PoolOperation::SetHaTimeout { seconds, .. } => {
             let config = PoolRecord::new(&fresh)
                 .ha_configuration()
-                .value()
-                .as_object()
+                .entries()
                 .ok_or(Error::ResourceConflict)?;
             let map = PoolRecord::new(&fresh)
                 .other_config()
-                .value()
-                .as_object()
+                .entries()
                 .ok_or(Error::ResourceConflict)?;
             PoolRecord::new(&fresh).ha_enabled() == false
                 && !config.contains_key("timeout")
@@ -560,7 +564,7 @@ async fn startup_appliance(
     match expected {
         None if VmRecord::new(vm).appliance() == "OpaqueRef:NULL" => Ok(()),
         Some(id) => {
-            let group = related(session, "VM_appliance", &VmRecord::new(vm).appliance()).await?;
+            let group = related(session, "VM_appliance", VmRecord::new(vm).appliance()).await?;
             if VmApplianceRecord::new(&group).uuid() != id.to_string() {
                 return Err(Error::ResourceConflict);
             }

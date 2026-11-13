@@ -1,6 +1,7 @@
 use crate::{Error, HostId, ResourceTarget, SnapshotPolicy, SnapshotPolicyId, VmId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::{vmss_frequency, vmss_type};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScheduledSnapshotKind {
@@ -10,8 +11,8 @@ pub enum ScheduledSnapshotKind {
 impl ScheduledSnapshotKind {
     pub(crate) fn wire(self) -> &'static str {
         match self {
-            Self::Disk => "snapshot",
-            Self::Checkpoint => "checkpoint",
+            Self::Disk => vmss_type::SNAPSHOT,
+            Self::Checkpoint => vmss_type::CHECKPOINT,
         }
     }
 }
@@ -53,9 +54,9 @@ impl SnapshotSchedule {
     }
     pub fn frequency(&self) -> &'static str {
         match self {
-            Self::Hourly { .. } => "hourly",
-            Self::Daily { .. } => "daily",
-            Self::Weekly { .. } => "weekly",
+            Self::Hourly { .. } => vmss_frequency::HOURLY,
+            Self::Daily { .. } => vmss_frequency::DAILY,
+            Self::Weekly { .. } => vmss_frequency::WEEKLY,
         }
     }
     pub fn fields(&self) -> BTreeMap<String, String> {
@@ -89,12 +90,12 @@ impl SnapshotSchedule {
                 .ok_or(Error::InvalidResourceCommand)
         };
         let mut v = match frequency {
-            "hourly" => Self::Hourly { minute: n("min")? },
-            "daily" => Self::Daily {
+            vmss_frequency::HOURLY => Self::Hourly { minute: n("min")? },
+            vmss_frequency::DAILY => Self::Daily {
                 hour: n("hour")?,
                 minute: n("min")?,
             },
-            "weekly" => Self::Weekly {
+            vmss_frequency::WEEKLY => Self::Weekly {
                 hour: n("hour")?,
                 minute: n("min")?,
                 days: m
@@ -149,8 +150,8 @@ impl SnapshotPolicyConfig {
             name: p.name.clone(),
             description: p.description.clone(),
             kind: match p.kind.as_str() {
-                "snapshot" => ScheduledSnapshotKind::Disk,
-                "checkpoint" => ScheduledSnapshotKind::Checkpoint,
+                vmss_type::SNAPSHOT => ScheduledSnapshotKind::Disk,
+                vmss_type::CHECKPOINT => ScheduledSnapshotKind::Checkpoint,
                 _ => return Err(Error::UnavailableAction),
             },
             retained: p

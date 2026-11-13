@@ -4,6 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{storage_operations, vbd_type, vdi_type, vm_operations};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskPlacement {
@@ -53,9 +54,9 @@ impl VmMigration {
     }
     pub(crate) fn capability(&self) -> &'static str {
         if self.uses_storage_transport() {
-            "migrate_send"
+            vm_operations::MIGRATE_SEND
         } else {
-            "pool_migrate"
+            vm_operations::POOL_MIGRATE
         }
     }
     pub fn label(&self) -> &'static str {
@@ -186,7 +187,7 @@ impl VmMigration {
             .collect::<Vec<_>>();
         let expected = bindings
             .iter()
-            .filter(|v| v.kind == "Disk" && v.empty == Some(false))
+            .filter(|v| v.kind == vbd_type::DISK && v.empty == Some(false))
             .filter_map(|v| v.vdi)
             .collect::<BTreeSet<_>>();
         if expected != self.disks.iter().map(|d| d.vdi).collect() {
@@ -215,7 +216,7 @@ impl VmMigration {
                     || disk.cbt_enabled != Some(false)
                     || disk.managed != Some(true)
                     || disk.missing != Some(false)
-                    || disk.kind != "user"
+                    || disk.kind != vdi_type::USER
                     || d.vdi_attachments.get(&p.vdi).is_none_or(|a| a.len() != 1))
             {
                 return no(
@@ -225,10 +226,9 @@ impl VmMigration {
             if p.destination_sr != p.expected_sr
                 && d.storage.get(&p.destination_sr).is_none_or(|sr| {
                     sr.content_type != "user"
-                        || sr
-                            .allowed_operations
-                            .as_ref()
-                            .is_none_or(|ops| !ops.iter().any(|op| op == "vdi_create"))
+                        || sr.allowed_operations.as_ref().is_none_or(|ops| {
+                            !ops.iter().any(|op| op == storage_operations::VDI_CREATE)
+                        })
                 })
             {
                 return no(
@@ -272,7 +272,7 @@ impl VmMigration {
         }
         for attachment in bindings
             .iter()
-            .filter(|a| a.kind == "CD" && a.empty == Some(false))
+            .filter(|a| a.kind == vbd_type::CD && a.empty == Some(false))
         {
             let Some(sr) = attachment
                 .vdi

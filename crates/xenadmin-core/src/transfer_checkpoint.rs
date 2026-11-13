@@ -45,7 +45,7 @@ pub(crate) fn availability(
         || i.details.vdis.get(&memory.vdi).is_none_or(|d| {
             d.sr != Some(memory.sr)
                 || d.virtual_size != Some(memory.virtual_size)
-                || d.kind != "suspend"
+                || d.kind != vdi_type::SUSPEND
                 || d.managed != Some(true)
                 || d.missing != Some(false)
         })
@@ -68,8 +68,7 @@ pub(crate) fn availability(
 pub(crate) fn size(record: &Value) -> Result<u64, Error> {
     VdiRecord::new(record)
         .virtual_size()
-        .as_u64()
-        .or_else(|| VdiRecord::new(record).virtual_size().as_str()?.parse().ok())
+        .unsigned()
         .filter(|v| *v > 0 && *v <= MAX_TRANSFER_BYTES)
         .ok_or(Error::TransferArchive)
 }
@@ -88,12 +87,12 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
     let mut guests = BTreeMap::new();
     for object in objects.iter().filter(|o| o["class"] == "VM") {
         let record = &object["snapshot"];
-        let suspended = match VmRecord::new(record).power_state().as_str() {
+        let suspended = match VmRecord::new(record).power_state().name() {
             Some(vm_power_state::HALTED) => false,
             Some(vm_power_state::SUSPENDED) => true,
             _ => return Err(Error::TransferArchive),
         };
-        let memory = VmRecord::new(record).suspend_vdi().value().as_str();
+        let memory = VmRecord::new(record).suspend_vdi().reference();
         if !suspended {
             if memory.is_some_and(|r| !matches!(r, "OpaqueRef:NULL" | "Ref:NULL")) {
                 return Err(Error::TransferArchive);
@@ -105,13 +104,13 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
         let d = &disk["snapshot"];
         let uuid: uuid::Uuid = VdiRecord::new(d)
             .uuid()
-            .as_str()
+            .text()
             .ok_or(Error::TransferArchive)?
             .parse()
             .map_err(|_| Error::TransferArchive)?;
         let sr = VdiRecord::new(d)
             .sr()
-            .as_str()
+            .reference()
             .and_then(|r| records.get(r))
             .ok_or(Error::TransferArchive)?;
         if disk["class"] != "VDI"
@@ -140,7 +139,7 @@ pub(crate) fn memory_graph(objects: &[Value]) -> Result<BTreeMap<String, Archive
     }
     if objects.iter().any(|o| {
         o["class"] == "VDI"
-            && o["snapshot"]["type"] == "suspend"
+            && o["snapshot"]["type"] == vdi_type::SUSPEND
             && o["id"].as_str().is_none_or(|r| !used.contains(r))
     }) {
         return Err(Error::TransferArchive);
@@ -169,11 +168,11 @@ pub(crate) async fn fresh(
         || SrRecord::new(&sr).content_type() != "user"
         || VdiRecord::new(&disk)
             .current_operations()
-            .as_object()
+            .entries()
             .is_none_or(|v| !v.is_empty())
         || VdiRecord::new(&disk)
             .vbds()
-            .as_array()
+            .members()
             .is_none_or(|v| !v.is_empty())
     {
         return Err(Error::TransferConflict);

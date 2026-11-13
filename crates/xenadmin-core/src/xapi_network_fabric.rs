@@ -4,25 +4,26 @@ use crate::{
     SdnControllerConfiguration, SriovConfigurationMode, TunnelProtocol,
 };
 use xenadmin_xapi::TextField;
+use xenadmin_xapi::enumerations::sdn_controller_protocol;
 use xenadmin_xapi::records::{
     NetworkSriovRecord, PciRecord, PifRecord, PoolRecord, SdnControllerRecord, TunnelRecord,
 };
 
 fn text(field: TextField<'_>, limit: usize) -> Option<String> {
     field
-        .as_str()
+        .text()
         .filter(|v| !v.is_empty() && v.len() <= limit && !v.chars().any(char::is_control))
         .map(str::to_owned)
 }
 fn controller(record: &Value) -> Option<SdnControllerConfiguration> {
     let view = SdnControllerRecord::new(record);
     let port = integer(view.port(), "controller port").ok()??;
-    match view.protocol().as_str()? {
-        "ssl" => Some(SdnControllerConfiguration::Ssl {
-            address: view.address().as_str()?.parse().ok()?,
+    match view.protocol().name()? {
+        sdn_controller_protocol::SSL => Some(SdnControllerConfiguration::Ssl {
+            address: view.address().text()?.parse().ok()?,
             port: u16::try_from(port).ok().filter(|port| *port != 0)?,
         }),
-        "pssl" if *view.address() == "" && port == 0 => {
+        sdn_controller_protocol::PSSL if view.address() == "" && port == 0 => {
             Some(SdnControllerConfiguration::PassiveSsl)
         }
         _ => None,
@@ -49,8 +50,7 @@ pub(super) fn decode(
         let id = id(view.uuid())?;
         let status = view
             .status()
-            .value()
-            .as_object()
+            .entries()
             .filter(|map| map.len() <= 32 && map.values().all(Value::is_string));
         let active = status
             .and_then(|map| map.get("active"))
@@ -66,7 +66,7 @@ pub(super) fn decode(
                 id,
                 transport: refs.link("pif", view.transport_pif()),
                 access: refs.link("pif", view.access_pif()),
-                protocol: view.protocol().as_str().and_then(TunnelProtocol::parse),
+                protocol: view.protocol().name().and_then(TunnelProtocol::parse),
                 controller_active: active,
                 controller_error: status.map(|map| {
                     map.get("error")
@@ -88,7 +88,7 @@ pub(super) fn decode(
                 requires_reboot: boolean(view.requires_reboot())?,
                 mode: view
                     .configuration_mode()
-                    .as_str()
+                    .name()
                     .and_then(SriovConfigurationMode::parse),
             },
         ))

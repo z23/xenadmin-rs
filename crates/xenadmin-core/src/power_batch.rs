@@ -190,10 +190,13 @@ pub(crate) async fn prepare_item(
     let (reference, value) = read(session, selected.vm).await?;
     if VmRecord::new(&value).power_state() != selected.expected_state.to_string()
         || !crate::xapi::advertises(&value, action.wire())
-        || !VmRecord::new(&value).blocked_operations().is_object()
+        || !VmRecord::new(&value)
+            .blocked_operations()
+            .entries()
+            .is_some()
         || !VmRecord::new(&value)
             .current_operations()
-            .as_object()
+            .entries()
             .is_some_and(|v| v.is_empty())
     {
         return Err(Error::UnavailableAction);
@@ -222,7 +225,7 @@ pub(crate) async fn verify_item(
     if VmRecord::new(&value).power_state() != expected_result(action).to_string()
         || !VmRecord::new(&value)
             .current_operations()
-            .as_object()
+            .entries()
             .is_some_and(|v| v.is_empty())
     {
         return Err(Error::Protocol(

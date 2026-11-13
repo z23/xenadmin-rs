@@ -120,24 +120,23 @@ fn image(bytes: Vec<u8>) -> Result<SnapshotPreview, Error> {
 fn blob_identity(record: &Value) -> Result<(uuid::Uuid, u64, String, String), Error> {
     let id = BlobRecord::new(record)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|s| s.parse().ok())
         .ok_or(Error::Protocol("invalid snapshot preview identity"))?;
     let size = BlobRecord::new(record)
         .size()
-        .as_u64()
-        .or_else(|| BlobRecord::new(record).size().as_str()?.parse().ok())
+        .unsigned()
         .filter(|size| *size > 0 && *size <= MAX_BYTES as u64)
         .ok_or(Error::Protocol("snapshot preview exceeds image bounds"))?;
     let mime = BlobRecord::new(record)
         .mime_type()
-        .as_str()
+        .text()
         .filter(|s| matches!(*s, "image/png" | "image/jpeg"))
         .ok_or(Error::Protocol("unsupported snapshot preview type"))?
         .to_owned();
     let updated = BlobRecord::new(record)
         .last_updated()
-        .as_str()
+        .text()
         .filter(|s| s.len() <= 64)
         .ok_or(Error::Protocol("snapshot preview metadata unavailable"))?
         .to_owned();
@@ -156,7 +155,7 @@ pub(crate) async fn read(
     }
     let (snapshot_ref, before) =
         crate::snapshots::snapshot_record(session, observed.vm, observed.id).await?;
-    let blob = VmRecord::new(&before).blobs().value().get(KEY);
+    let blob = VmRecord::new(&before).blobs().get(KEY);
     let result = if let Some(blob) = blob {
         let reference = crate::snapshots::reference(blob)?;
         let metadata = session

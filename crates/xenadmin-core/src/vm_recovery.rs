@@ -56,7 +56,7 @@ impl RecoveryBootConfiguration {
             || v.is_control_domain
             || v.power_state != PowerState::Halted
             || !d.current_operations.is_empty()
-            || d.domain_type.as_deref() != Some("hvm")
+            || d.domain_type.as_deref() != Some(domain_type::HVM)
             || d.boot_policy.as_deref() != Some("BIOS order")
         {
             return Err(Error::UnavailableAction);
@@ -88,7 +88,7 @@ impl RecoveryBootConfiguration {
             && crate::guest_boot::policy(record) == self.secure_boot
             && VmRecord::new(record)
                 .hvm_boot_params()
-                .as_object()
+                .entries()
                 .is_some_and(|map| map.get("order").map(Value::as_str) == order.map(Some))
     }
 }
@@ -203,7 +203,7 @@ impl VmRecoveryOperation {
                 if !d.current_operations.is_empty()
                     || d.boot_order.as_deref() != Some("dn")
                     || d.boot_policy.as_deref() != Some("BIOS order")
-                    || d.domain_type.as_deref() != Some("hvm")
+                    || d.domain_type.as_deref() != Some(domain_type::HVM)
                     || d.firmware.as_deref() != Some(configuration.firmware.as_str())
                     || d.secure_boot != configuration.secure_boot
                 {
@@ -226,11 +226,11 @@ impl VmRecoveryOperation {
                         && VmRecord::new(r).power_state() == vm_power_state::RUNNING
                         && VmRecord::new(r)
                             .blocked_operations()
-                            .as_object()
+                            .entries()
                             .is_some_and(|b| !b.contains_key(action.wire()))
                         && VmRecord::new(r)
                             .current_operations()
-                            .as_object()
+                            .entries()
                             .is_some_and(|o| o.len() == tasks.len())
                 }
                 Self::Boot { configuration } => {
@@ -294,17 +294,17 @@ fn normal(r: &Value) -> bool {
 fn idle(r: &Value) -> bool {
     VmRecord::new(r)
         .current_operations()
-        .as_object()
+        .entries()
         .is_some_and(|o| o.is_empty())
 }
 fn advertised(r: &Value, op: &str) -> bool {
     VmRecord::new(r)
         .allowed_operations()
-        .as_array()
+        .members()
         .is_some_and(|v| v.iter().any(|v| v == op))
         && VmRecord::new(r)
             .blocked_operations()
-            .as_object()
+            .entries()
             .is_some_and(|b| !b.contains_key(op))
 }
 async fn guest(s: &Session, vm: VmId) -> Result<(String, Value), Error> {
@@ -447,7 +447,7 @@ pub(crate) async fn plan(
             .map(|r| {
                 TaskRecord::new(r)
                     .uuid()
-                    .as_str()
+                    .text()
                     .ok_or(Error::Stale)
                     .and_then(|v| TaskId::parse(v).map_err(|_| Error::Stale))
             })
@@ -492,14 +492,13 @@ pub(crate) async fn prepare(
         };
         let raw = VmRecord::new(&r)
             .current_operations()
-            .value()
-            .as_object()
+            .entries()
             .ok_or(Error::Stale)?;
         let mut actual = Vec::new();
         for (reference, op) in raw {
             let task = s.call("task.get_record", vec![json!(reference)]).await?;
             actual.push(RecoveryTask {
-                task: TaskId::parse(TaskRecord::new(&task).uuid().as_str().ok_or(Error::Stale)?)
+                task: TaskId::parse(TaskRecord::new(&task).uuid().text().ok_or(Error::Stale)?)
                     .map_err(|_| Error::Stale)?,
                 operation: op.as_str().ok_or(Error::Stale)?.into(),
             });
@@ -545,7 +544,7 @@ pub(crate) async fn prepare(
             }
             s.call(
                 "VM.assert_operation_valid",
-                vec![json!(&reference), json!("start")],
+                vec![json!(&reference), json!(vm_operations::START)],
             )
             .await?;
             Ok(Prepared {
@@ -556,7 +555,7 @@ pub(crate) async fn prepare(
         Step::Override | Step::Restore => {
             let mut params = VmRecord::new(&r)
                 .hvm_boot_params()
-                .as_object()
+                .entries()
                 .cloned()
                 .ok_or(Error::Stale)?;
             let order = if *step == Step::Override {
@@ -585,7 +584,7 @@ pub(crate) async fn task(s: &Session, plan: &mut Plan, index: usize) -> Result<V
             vec![json!(e.task.as_ref().ok_or(Error::Journal)?)],
         )
         .await?;
-    let id = TaskId::parse(TaskRecord::new(&r).uuid().as_str().ok_or(Error::Stale)?)
+    let id = TaskId::parse(TaskRecord::new(&r).uuid().text().ok_or(Error::Stale)?)
         .map_err(|_| Error::Stale)?;
     if plan.baseline.contains(&id) || e.task_id.is_some_and(|old| old != id) {
         return Err(Error::Stale);

@@ -2,13 +2,14 @@ use super::*;
 use crate::model::*;
 use std::collections::BTreeSet;
 use uuid::Uuid;
-use xenadmin_xapi::enumerations::vm_operations;
+use xenadmin_xapi::enumerations::{primary_address_type, vm_operations};
 use xenadmin_xapi::records::{
     BondRecord, HostMetricsRecord, HostRecord, MessageRecord, NetworkRecord, PbdRecord,
     PifMetricsRecord, PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord,
     VlanRecord, VmApplianceRecord, VmGuestMetricsRecord, VmMetricsRecord, VmssRecord,
 };
 use xenadmin_xapi::{FlagField, MapField, RefField, SetField, TextField, Textual, WholeField};
+use xenadmin_xapi::{Reads, kind};
 #[path = "xapi_network_fabric.rs"]
 mod network_fabric;
 
@@ -35,10 +36,15 @@ impl References {
         Self { classes, snapshots }
     }
     fn link<T: From<Uuid>>(&self, class: &str, reference: RefField<'_>) -> Option<T> {
-        self.linked(class, reference.value())
+        self.linked(class, reference)
     }
     /// The object a reference names, for a reference that is an element of a field.
-    fn linked<T: From<Uuid>>(&self, class: &str, reference: &Value) -> Option<T> {
+    fn linked<'a, T: From<Uuid>>(
+        &self,
+        class: &str,
+        reference: impl Reads<'a, kind::Reference>,
+    ) -> Option<T> {
+        let reference = reference.raw();
         self.classes
             .get(class)?
             .get(reference.as_str()?)
@@ -46,13 +52,13 @@ impl References {
             .map(T::from)
     }
     fn vm(&self, reference: RefField<'_>) -> Option<VmId> {
-        if self.snapshots.contains(reference.as_str()?) {
+        if self.snapshots.contains(reference.reference()?) {
             return None;
         }
         self.link("vm", reference)
     }
     fn snapshot(&self, reference: RefField<'_>) -> Option<crate::SnapshotId> {
-        if !self.snapshots.contains(reference.as_str()?) {
+        if !self.snapshots.contains(reference.reference()?) {
             return None;
         }
         self.link("vm", reference)
@@ -70,7 +76,7 @@ impl References {
     }
     fn links<T: From<Uuid>>(&self, class: &str, references: SetField<'_>) -> Vec<T> {
         references
-            .as_array()
+            .members()
             .into_iter()
             .flatten()
             .filter_map(|r| self.linked(class, r))
@@ -91,7 +97,7 @@ fn text_option<'a>(value: impl Textual<'a>) -> Option<String> {
         .map(str::to_owned)
 }
 fn map_bool(other_config: MapField<'_>, key: &str) -> Option<bool> {
-    match other_config.as_object()?.get(key) {
+    match other_config.entries()?.get(key) {
         None => Some(false),
         Some(value) => match value.as_str()? {
             "true" => Some(true),
@@ -107,21 +113,21 @@ pub(crate) fn decode_server_message(record: &Value) -> Result<ServerMessage, Err
         name: string(view.name()),
         priority: integer(view.priority(), "message.priority")?,
         object_class: string(view.cls()),
-        object_uuid: view.obj_uuid().as_str().and_then(|s| s.parse().ok()),
+        object_uuid: view.obj_uuid().text().and_then(|s| s.parse().ok()),
         timestamp: text_option(view.timestamp()),
         body: string(view.body()),
     })
 }
 fn strings(value: SetField<'_>) -> Option<Vec<String>> {
     value
-        .as_array()?
+        .members()?
         .iter()
         .map(|v| v.as_str().map(str::to_owned))
         .collect()
 }
 fn string_map(value: MapField<'_>) -> BTreeMap<String, String> {
     value
-        .as_object()
+        .entries()
         .into_iter()
         .flatten()
         .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_owned())))
@@ -130,7 +136,7 @@ fn string_map(value: MapField<'_>) -> BTreeMap<String, String> {
 
 fn blocked_operations(value: MapField<'_>) -> BTreeMap<String, String> {
     value
-        .as_object()
+        .entries()
         .into_iter()
         .flatten()
         .filter_map(|(operation, reason)| {
@@ -164,7 +170,7 @@ pub(super) fn power_availability(record: &Value, action: crate::PowerAction) -> 
         allowed_operations: strings(view.allowed_operations()),
         current_operations: view
             .current_operations()
-            .as_object()
+            .entries()
             .into_iter()
             .flatten()
             .filter_map(|(_, operation)| {
@@ -231,13 +237,13 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Some(PoolDetails {
             administration: pool_administration(record, &refs, store),
             auto_poweron: map_bool(view.other_config(), "auto_poweron"),
-            ha_enabled: view.ha_enabled().as_bool(),
-            igmp_snooping_enabled: view.igmp_snooping_enabled().as_bool(),
+            ha_enabled: view.ha_enabled().get(),
+            igmp_snooping_enabled: view.igmp_snooping_enabled().get(),
             id: id(view.uuid()).ok()?,
             name: string(view.name_label()),
             description: string(view.name_description()),
             default_sr,
-            default_sr_known: *view.default_sr() == "OpaqueRef:NULL" || default_sr.is_some(),
+            default_sr_known: view.default_sr() == "OpaqueRef:NULL" || default_sr.is_some(),
         })
     });
     decode_organization(store, &mut result);
@@ -259,7 +265,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .as_str()
                     .filter(|v| matches!(*v, "true" | "false"))
                     .map(str::to_owned),
-                read_cache_policy_known: view.other_config().as_object().is_some_and(|m| {
+                read_cache_policy_known: view.other_config().entries().is_some_and(|m| {
                     !m.contains_key("o_direct")
                         || matches!(m["o_direct"].as_str(), Some("true" | "false"))
                 }),
@@ -279,11 +285,11 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             NetworkDetails {
-                purposes: crate::network_service::purposes(view.purpose().value()),
+                purposes: crate::network_service::purposes(view.purpose()),
                 automatic: view.other_config()["automatic"].as_str().map(str::to_owned),
                 automatic_known: view
                     .other_config()
-                    .as_object()
+                    .entries()
                     .is_some_and(|m| m.get("automatic").is_none_or(Value::is_string)),
                 id,
                 description: string(view.name_description()),
@@ -300,8 +306,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         let id = id(view.uuid())?;
         let progress = view
             .progress()
-            .as_f64()
-            .or_else(|| view.progress().as_str()?.parse().ok())
+            .number()
             .filter(|n| n.is_finite() && (0.0..=1.0).contains(n));
         Ok((
             id,
@@ -315,7 +320,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 finished: text_option(view.finished()),
                 error_code: view
                     .error_info()
-                    .as_array()
+                    .members()
                     .and_then(|values| values.first())
                     .and_then(Value::as_str)
                     .map(|code| safe_error_code(code).to_owned()),
@@ -432,8 +437,10 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .map(str::to_owned),
                 primary_address_type: view
                     .primary_address_type()
-                    .as_str()
-                    .filter(|v| ["IPv4", "IPv6"].contains(v))
+                    .name()
+                    .filter(|v| {
+                        [primary_address_type::IPV4, primary_address_type::IPV6].contains(v)
+                    })
                     .map(str::to_owned),
                 id,
                 host: refs.link("host", view.host()),
@@ -468,21 +475,18 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             StorageAttachment {
                 id,
                 location: crate::storage::safe_location_for_kind(
-                    view.device_config().value(),
-                    view.sr().value().as_str().and_then(|reference| {
+                    view.device_config(),
+                    view.sr().reference().and_then(|reference| {
                         SrRecord::new(store.records.get("sr")?.get(reference)?)
                             .type_()
-                            .value()
-                            .as_str()
+                            .text()
                     }),
                 ),
-                requires_credentials: crate::storage::requires_credentials(
-                    view.device_config().value(),
-                ),
+                requires_credentials: crate::storage::requires_credentials(view.device_config()),
                 multipathed: view.other_config()["multipathed"]
                     .as_str()
                     .and_then(|s| s.parse().ok()),
-                paths: crate::storage::path_counts(view.other_config().value()),
+                paths: crate::storage::path_counts(view.other_config()),
                 host: refs.link("host", view.host()),
                 sr: refs.link("sr", view.sr()),
                 currently_attached: boolean(view.currently_attached())?,
@@ -520,7 +524,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .map(str::to_owned),
                 hashing_algorithm_known: view
                     .properties()
-                    .as_object()
+                    .entries()
                     .is_some_and(|m| m.get("hashing_algorithm").is_none_or(Value::is_string)),
                 id,
                 master: refs.link("pif", view.master()),
@@ -601,14 +605,14 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             VmAppliance {
                 vms_known: view
                     .vms()
-                    .as_array()
+                    .members()
                     .is_some_and(|v| v.iter().all(|r| refs.vm(RefField::of(r)).is_some())),
                 id,
                 name: label(view.name_label()),
                 description: string(view.name_description()),
                 vms: view
                     .vms()
-                    .as_array()
+                    .members()
                     .into_iter()
                     .flatten()
                     .filter_map(|r| refs.vm(RefField::of(r)))
@@ -625,9 +629,9 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             SnapshotPolicy {
                 vms_known: view
                     .vms()
-                    .as_array()
+                    .members()
                     .is_some_and(|v| v.iter().all(|r| refs.vm(RefField::of(r)).is_some())),
-                last_run_time: view.last_run_time().as_str().map(str::to_owned),
+                last_run_time: view.last_run_time().text().map(str::to_owned),
                 id,
                 name: label(view.name_label()),
                 description: string(view.name_description()),
@@ -638,7 +642,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 schedule: string_map(view.schedule()),
                 vms: view
                     .vms()
-                    .as_array()
+                    .members()
                     .into_iter()
                     .flatten()
                     .filter_map(|r| refs.vm(RefField::of(r)))
@@ -661,21 +665,21 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     });
     for (_, record) in store
         .class("vm")
-        .filter(|(_, r)| *VmRecord::new(r).is_a_snapshot() == true)
+        .filter(|(_, r)| VmRecord::new(r).is_a_snapshot() == true)
     {
         let view = VmRecord::new(record);
         if let Ok(id) = id(view.uuid()) {
             result.snapshots.insert(
                 id,
                 crate::SnapshotDetails {
-                    can_export: view.allowed_operations().as_array().and_then(|_| {
+                    can_export: view.allowed_operations().members().and_then(|_| {
                         view.current_operations()
-                            .as_object()
+                            .entries()
                             .map(|ops| ops.is_empty() && advertises(record, vm_operations::EXPORT))
                     }),
                     parent: refs.snapshot_parent(view.parent()),
                     memory_vdi: refs.link("vdi", view.suspend_vdi()),
-                    memory_vdi_known: *view.suspend_vdi() == "OpaqueRef:NULL"
+                    memory_vdi_known: view.suspend_vdi() == "OpaqueRef:NULL"
                         || refs.link::<VdiId>("vdi", view.suspend_vdi()).is_some(),
                     preview_available: view.blobs()[crate::snapshot_preview::KEY]
                         .as_str()
@@ -689,7 +693,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     }
     for (_, record) in store
         .class("vm")
-        .filter(|(_, r)| *VmRecord::new(r).is_a_snapshot() != true)
+        .filter(|(_, r)| VmRecord::new(r).is_a_snapshot() != true)
     {
         let view = VmRecord::new(record);
         if let Ok(id) = id(view.uuid()) {
@@ -703,24 +707,23 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     )),
                     topology_known: view
                         .platform()
-                        .as_object()
+                        .entries()
                         .is_some_and(|m| m.get("cores-per-socket").is_none_or(Value::is_string)),
                     cpu_weight: text_option(TextField::of(&view.vcpus_params()["weight"])),
                     cpu_weight_known: view
                         .vcpus_params()
-                        .as_object()
+                        .entries()
                         .is_some_and(|m| m.get("weight").is_none_or(Value::is_string)),
                     shadow_multiplier: view
                         .hvm_shadow_multiplier()
-                        .as_f64()
-                        .or_else(|| view.hvm_shadow_multiplier().as_str()?.parse().ok())
+                        .number()
                         .filter(|v| v.is_finite())
                         .map(|v| v.to_string()),
                     is_default_template: crate::guest_boot::default_template(record),
                     allowed_operations: strings(view.allowed_operations()),
                     current_operations: view
                         .current_operations()
-                        .as_object()
+                        .entries()
                         .into_iter()
                         .flatten()
                         .filter_map(|(task, operation)| {
@@ -755,24 +758,21 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     firmware: text_option(TextField::of(&view.hvm_boot_params()["firmware"]))
                         .or_else(|| crate::guest_boot::firmware(record).map(str::to_owned)),
                     secure_boot: crate::guest_boot::policy(record),
-                    bios_identity_empty: view.bios_strings().as_object().map(|v| v.is_empty()),
+                    bios_identity_empty: view.bios_strings().entries().map(|v| v.is_empty()),
                     affinity: refs.link("host", view.affinity()),
-                    affinity_known: *view.affinity() == "OpaqueRef:NULL"
+                    affinity_known: view.affinity() == "OpaqueRef:NULL"
                         || refs.link::<HostId>("host", view.affinity()).is_some(),
                     guest_metrics: refs.link("vm_guest_metrics", view.guest_metrics()),
                     metrics: refs.link("vm_metrics", view.metrics()),
                     suspend_vdi: refs.link("vdi", view.suspend_vdi()),
                     appliance: refs.link("vm_appliance", view.appliance()),
-                    appliance_known: *view.appliance() == "OpaqueRef:NULL"
+                    appliance_known: view.appliance() == "OpaqueRef:NULL"
                         || refs
                             .link::<ApplianceId>("vm_appliance", view.appliance())
                             .is_some(),
                     appliance_order: (|| {
                         Some(crate::ApplianceOrder {
-                            order: view
-                                .order()
-                                .as_i64()
-                                .or_else(|| view.order().as_str()?.parse().ok())?,
+                            order: view.order().number()?,
                             start_delay: size(view.start_delay(), "VM.start_delay").ok()??,
                             shutdown_delay: size(view.shutdown_delay(), "VM.shutdown_delay")
                                 .ok()??,
@@ -780,7 +780,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     })(),
                     snapshot_policy: refs.link("vmss", view.snapshot_schedule()),
                     tags: strings(view.tags()).unwrap_or_default(),
-                    ha_restart_priority: view.ha_restart_priority().as_str().map(str::to_owned),
+                    ha_restart_priority: view.ha_restart_priority().text().map(str::to_owned),
                     auto_power_on: view.other_config()["auto_poweron"]
                         .as_str()
                         .and_then(|v| v.parse().ok()),
@@ -799,7 +799,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     external_auth_type: text_option(view.external_auth_type()),
                     external_auth_service_name: text_option(view.external_auth_service_name()),
                     allowed_operations: strings(view.allowed_operations()),
-                    current_operations: view.current_operations().as_object().map(|ops| {
+                    current_operations: view.current_operations().entries().map(|ops| {
                         ops.iter()
                             .map(|(task, operation)| RunningOperation {
                                 task: refs.linked("task", &Value::String(task.clone())),
@@ -818,28 +818,28 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                         .map(str::to_owned),
                     control_domain: refs.vm(view.control_domain()),
                     power_configuration: crate::host_power::configuration(record),
-                    power_on_mode: view.power_on_mode().as_str().map(str::to_owned),
+                    power_on_mode: view.power_on_mode().text().map(str::to_owned),
                     power_on_config_empty: view
                         .power_on_config()
-                        .as_object()
+                        .entries()
                         .map(|config| config.is_empty()),
                     syslog_destination: view.logging()["syslog_destination"]
                         .as_str()
                         .filter(|s| !s.is_empty())
                         .map(str::to_owned),
-                    syslog_known: view.logging().as_object().is_some_and(|map| {
+                    syslog_known: view.logging().entries().is_some_and(|map| {
                         map.get("syslog_destination")
                             .is_none_or(|value| value.is_string())
                     }),
-                    multipathing: view.multipathing().as_bool(),
+                    multipathing: view.multipathing().get(),
                     local_cache_sr: refs.link("sr", view.local_cache_sr()),
-                    standard_multipath_handler: view.other_config().as_object().and_then(
-                        |m| match m.get("multipathhandle") {
-                            None => Some(false),
-                            Some(v) if v == "dmp" => Some(true),
-                            _ => None,
-                        },
-                    ),
+                    standard_multipath_handler: view.other_config().entries().and_then(|m| match m
+                        .get("multipathhandle")
+                    {
+                        None => Some(false),
+                        Some(v) if v == "dmp" => Some(true),
+                        _ => None,
+                    }),
                     description: string(view.name_description()),
                     hostname: string(view.hostname()),
                     metrics: refs.link("host_metrics", view.metrics()),
@@ -847,7 +847,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     cpu_info: string_map(view.cpu_info()),
                     capabilities: strings(view.capabilities()).unwrap_or_default(),
                     tags: strings(view.tags()).unwrap_or_default(),
-                    enabled: view.enabled().as_bool(),
+                    enabled: view.enabled().get(),
                 },
             );
         }
@@ -902,12 +902,7 @@ fn pool_administration(
     store: &Store,
 ) -> crate::PoolAdministration {
     let view = PoolRecord::new(record);
-    let number = |value: &Value| value.as_u64().or_else(|| value.as_str()?.parse().ok());
-    let statefiles = view
-        .ha_statefiles()
-        .value()
-        .as_array()
-        .filter(|v| v.len() <= 64);
+    let statefiles = view.ha_statefiles().members().filter(|v| v.len() <= 64);
     let heartbeat_srs: Option<Vec<SrId>> = statefiles.and_then(|values| {
         values
             .iter()
@@ -915,7 +910,7 @@ fn pool_administration(
                 let vdi = store
                     .class("vdi")
                     .find(|(reference, r)| {
-                        value.as_str() == Some(*reference) || *VdiRecord::new(r).uuid() == *value
+                        value.as_str() == Some(*reference) || VdiRecord::new(r).uuid() == *value
                     })?
                     .1;
                 refs.link("sr", VdiRecord::new(vdi).sr())
@@ -924,18 +919,18 @@ fn pool_administration(
     });
     crate::PoolAdministration {
         coordinator: refs.link("host", view.master()),
-        ha_enabled: view.ha_enabled().as_bool(),
-        ha_failures_to_tolerate: number(view.ha_host_failures_to_tolerate().value()),
-        ha_plan_exists_for: number(view.ha_plan_exists_for().value()),
-        ha_overcommitted: view.ha_overcommitted().as_bool(),
-        ha_allow_overcommit: view.ha_allow_overcommit().as_bool(),
+        ha_enabled: view.ha_enabled().get(),
+        ha_failures_to_tolerate: view.ha_host_failures_to_tolerate().unsigned(),
+        ha_plan_exists_for: view.ha_plan_exists_for().unsigned(),
+        ha_overcommitted: view.ha_overcommitted().get(),
+        ha_allow_overcommit: view.ha_allow_overcommit().get(),
         ha_timeout_known: view
             .other_config()
-            .as_object()
+            .entries()
             .is_some_and(|m| m.get("default_ha_timeout").is_none_or(Value::is_string))
             && view
                 .ha_configuration()
-                .as_object()
+                .entries()
                 .is_some_and(|m| m.get("timeout").is_none_or(Value::is_string)),
         ha_timeout_override: view.other_config()["default_ha_timeout"]
             .as_str()
@@ -950,20 +945,20 @@ fn pool_administration(
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),
-        migration_compression: view.migration_compression().as_bool(),
+        migration_compression: view.migration_compression().get(),
         // XAPI keeps this on each host and has no pool field for it; the pool has a value
         // only where every host agrees.
         https_only: {
             let mut hosts = store
                 .class("host")
-                .map(|(_, host)| HostRecord::new(host).https_only().as_bool());
+                .map(|(_, host)| HostRecord::new(host).https_only().get());
             match hosts.next() {
                 Some(Some(first)) if hosts.all(|host| host == Some(first)) => Some(first),
                 _ => None,
             }
         },
-        tls_verification_enabled: view.tls_verification_enabled().as_bool(),
-        secret_rotation_pending: view.is_psr_pending().as_bool(),
+        tls_verification_enabled: view.tls_verification_enabled().get(),
+        secret_rotation_pending: view.is_psr_pending().get(),
     }
 }
 
@@ -1062,7 +1057,7 @@ fn decode_alarms(store: &Store, refs: &References, result: &mut InventoryDetails
                             if dom0.is_none()
                                 || !store.class("host").any(|(r, h)| {
                                     Some(r.as_str()) == record["resident_on"].as_str()
-                                        && HostRecord::new(h).control_domain().as_str()
+                                        && HostRecord::new(h).control_domain().reference()
                                             == Some(reference.as_str())
                                 })
                             {

@@ -2,8 +2,11 @@ use super::*;
 use crate::{NetworkId, OperationId, SrId, transfer::Plan as TransferPlan, xapi::Session};
 use serde_json::{Value, json};
 use uuid::Uuid;
-use xenadmin_xapi::enumerations::vm_power_state;
+use xenadmin_xapi::enumerations::{
+    on_crash_behaviour, on_normal_exit, vbd_mode, vbd_type, vif_locking_mode, vm_power_state,
+};
 use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 pub(crate) const MARKER: &str = "xenadmin-rs-ovf-import";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -121,13 +124,14 @@ impl ImportPlan {
             .ok_or(Error::TransferConflict)
     }
 }
-fn number(v: &Value) -> Option<u64> {
+fn number<'a>(v: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let v = v.raw();
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
 }
 fn idle(v: &Value) -> Result<(), Error> {
     if VmRecord::new(v)
         .current_operations()
-        .as_object()
+        .entries()
         .is_none_or(|m| !m.is_empty())
     {
         Err(Error::Busy)
@@ -142,7 +146,7 @@ pub(crate) async fn fresh(s: &Session, class: &str, id: Uuid) -> Result<(String,
 }
 async fn network(s: &Session, id: NetworkId) -> Result<(String, u64), Error> {
     let (r, v) = fresh(s, "network", id.uuid()).await?;
-    let mtu = number(&NetworkRecord::new(&v).mtu())
+    let mtu = number(NetworkRecord::new(&v).mtu())
         .filter(|n| (576..=65535).contains(n))
         .ok_or(Error::TransferConflict)?;
     Ok((r, mtu))
@@ -250,8 +254,7 @@ async fn disk(
     .await?;
     if Some(r.as_str()) != st.reference.as_deref()
         || VdiRecord::new(&v).other_config()[crate::transfer::disk::MARKER] != st.token.to_string()
-        || number(&VdiRecord::new(&v).virtual_size())
-            .is_none_or(|size| size < expected.virtual_size)
+        || number(VdiRecord::new(&v).virtual_size()).is_none_or(|size| size < expected.virtual_size)
         || VdiRecord::new(&v).read_only() != false
         || VdiRecord::new(&v).is_a_snapshot() != false
     {
@@ -273,7 +276,7 @@ pub(crate) async fn arguments(
             Ok((
                 "VM.create",
                 vec![
-                    json!({"name_label":g.name,"name_description":g.description,"user_version":"1","is_a_template":false,"affinity":"OpaqueRef:NULL","memory_static_min":n,"memory_static_max":n,"memory_dynamic_min":n,"memory_dynamic_max":n,"VCPUs_params":{},"VCPUs_max":cpu,"VCPUs_at_startup":cpu,"actions_after_shutdown":"destroy","actions_after_reboot":"restart","actions_after_crash":"restart","PV_bootloader":"","PV_kernel":"","PV_ramdisk":"","PV_args":"","PV_bootloader_args":"","PV_legacy_args":"","HVM_boot_policy":"BIOS order","HVM_boot_params":{"order":"dc","firmware":if g.firmware==GuestFirmware::Uefi{"uefi"}else{"bios"}},"HVM_shadow_multiplier":1.0,"platform":{"acpi":"true","apic":"true","nx":"true","pae":"true","secureboot":"false"},"PCI_bus":"","other_config":{MARKER:step.token.to_string()},"recommendations":"","xenstore_data":{},"ha_always_run":false,"ha_restart_priority":"","tags":[],"blocked_operations":{}}),
+                    json!({"name_label":g.name,"name_description":g.description,"user_version":"1","is_a_template":false,"affinity":"OpaqueRef:NULL","memory_static_min":n,"memory_static_max":n,"memory_dynamic_min":n,"memory_dynamic_max":n,"VCPUs_params":{},"VCPUs_max":cpu,"VCPUs_at_startup":cpu,"actions_after_shutdown":on_normal_exit::DESTROY,"actions_after_reboot":on_normal_exit::RESTART,"actions_after_crash":on_crash_behaviour::RESTART,"PV_bootloader":"","PV_kernel":"","PV_ramdisk":"","PV_args":"","PV_bootloader_args":"","PV_legacy_args":"","HVM_boot_policy":"BIOS order","HVM_boot_params":{"order":"dc","firmware":if g.firmware==GuestFirmware::Uefi{"uefi"}else{"bios"}},"HVM_shadow_multiplier":1.0,"platform":{"acpi":"true","apic":"true","nx":"true","pae":"true","secureboot":"false"},"PCI_bus":"","other_config":{MARKER:step.token.to_string()},"recommendations":"","xenstore_data":{},"ha_always_run":false,"ha_restart_priority":"","tags":[],"blocked_operations":{}}),
                 ],
             ))
         }
@@ -302,7 +305,7 @@ pub(crate) async fn arguments(
             Ok((
                 "VBD.create",
                 vec![
-                    json!({"VM":vr,"VDI":dr,"userdevice":slot,"bootable":d==0,"mode":"RW","type":"Disk","unpluggable":true,"empty":false,"other_config":{MARKER:step.token.to_string(),"owner":"true"},"qos_algorithm_type":"","qos_algorithm_params":{}}),
+                    json!({"VM":vr,"VDI":dr,"userdevice":slot,"bootable":d==0,"mode":vbd_mode::RW,"type":vbd_type::DISK,"unpluggable":true,"empty":false,"other_config":{MARKER:step.token.to_string(),"owner":"true"},"qos_algorithm_type":"","qos_algorithm_params":{}}),
                 ],
             ))
         }
@@ -315,7 +318,7 @@ pub(crate) async fn arguments(
             Ok((
                 "VIF.create",
                 vec![
-                    json!({"VM":vr,"network":nr,"device":slot,"MAC":"","MTU":mtu.to_string(),"other_config":{MARKER:step.token.to_string()},"qos_algorithm_type":"","qos_algorithm_params":{},"locking_mode":"network_default","ipv4_allowed":[],"ipv6_allowed":[]}),
+                    json!({"VM":vr,"network":nr,"device":slot,"MAC":"","MTU":mtu.to_string(),"other_config":{MARKER:step.token.to_string()},"qos_algorithm_type":"","qos_algorithm_params":{},"locking_mode":vif_locking_mode::NETWORK_DEFAULT,"ipv4_allowed":[],"ipv6_allowed":[]}),
                 ],
             ))
         }
@@ -397,8 +400,8 @@ pub(crate) async fn identify(
             let expected = &p.summary.guests[g];
             if VmRecord::new(&v).name_label() != expected.name
                 || VmRecord::new(&v).name_description() != expected.description
-                || number(&VmRecord::new(&v).vcpus_max()) != Some(u64::from(expected.cpus))
-                || number(&VmRecord::new(&v).vcpus_at_startup()) != Some(u64::from(expected.cpus))
+                || number(VmRecord::new(&v).vcpus_max()) != Some(u64::from(expected.cpus))
+                || number(VmRecord::new(&v).vcpus_at_startup()) != Some(u64::from(expected.cpus))
                 || [
                     "memory_static_min",
                     "memory_static_max",
@@ -428,11 +431,11 @@ pub(crate) async fn identify(
             let (dr, _) = disk(s, p, g, d, false).await?;
             if VbdRecord::new(&v).vm() != vr
                 || VbdRecord::new(&v).vdi() != dr
-                || number(&VbdRecord::new(&v).userdevice())
+                || number(VbdRecord::new(&v).userdevice().value())
                     != Some(u64::from(p.summary.guests[g].disks[d].device))
                 || VbdRecord::new(&v).other_config()["owner"] != "true"
-                || VbdRecord::new(&v).mode() != "RW"
-                || VbdRecord::new(&v).type_() != "Disk"
+                || VbdRecord::new(&v).mode() != vbd_mode::RW
+                || VbdRecord::new(&v).type_() != vbd_type::DISK
                 || VbdRecord::new(&v).empty() != false
                 || VbdRecord::new(&v).currently_attached() != false
                 || VbdRecord::new(&v).bootable() != (d == 0)
@@ -445,27 +448,27 @@ pub(crate) async fn identify(
             let (nr, mtu) = network(s, p.networks[&p.summary.guests[g].nics[n].network]).await?;
             if VifRecord::new(&v).vm() != vr
                 || VifRecord::new(&v).network() != nr
-                || number(&VifRecord::new(&v).device())
+                || number(VifRecord::new(&v).device().value())
                     != Some(u64::from(p.summary.guests[g].nics[n].device))
-                || number(&VifRecord::new(&v).mtu()) != Some(mtu)
+                || number(VifRecord::new(&v).mtu()) != Some(mtu)
                 || VifRecord::new(&v).currently_attached() != false
                 || VifRecord::new(&v)
                     .mac()
-                    .as_str()
+                    .text()
                     .is_none_or(|m| !valid_mac(m))
-                || VifRecord::new(&v).locking_mode() != "network_default"
+                || VifRecord::new(&v).locking_mode() != vif_locking_mode::NETWORK_DEFAULT
                 || VifRecord::new(&v)
                     .ipv4_allowed()
-                    .as_array()
+                    .members()
                     .is_none_or(|a| !a.is_empty())
                 || VifRecord::new(&v)
                     .ipv6_allowed()
-                    .as_array()
+                    .members()
                     .is_none_or(|a| !a.is_empty())
                 || VifRecord::new(&v).qos_algorithm_type() != ""
                 || VifRecord::new(&v)
                     .qos_algorithm_params()
-                    .as_object()
+                    .entries()
                     .is_none_or(|m| !m.is_empty())
             {
                 return Err(Error::TransferConflict);

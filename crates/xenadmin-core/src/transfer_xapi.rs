@@ -114,7 +114,7 @@ pub(crate) async fn prepare(
         .map(|r| {
             HostRecord::new(r)
                 .address()
-                .as_str()
+                .text()
                 .filter(|s| s.len() <= 253 && !s.contains('/'))
                 .map(str::to_owned)
                 .ok_or(Error::TransferEndpoint)
@@ -173,14 +173,14 @@ pub(crate) async fn prepare(
             if VmRecord::new(&r).is_control_domain() != false
                 || VmRecord::new(&r).power_state()
                     != if matches!(source, ExportSource::Checkpoint { .. }) {
-                        "Suspended"
+                        vm_power_state::SUSPENDED
                     } else {
-                        "Halted"
+                        vm_power_state::HALTED
                     }
                 || VmRecord::new(&r)
                     .blocked_operations()
-                    .as_object()
-                    .is_some_and(|v| v.contains_key("export"))
+                    .entries()
+                    .is_some_and(|v| v.contains_key(vm_operations::EXPORT))
                 || !crate::xapi::advertises(&r, vm_operations::EXPORT)
             {
                 return Err(Error::UnavailableAction);
@@ -222,8 +222,7 @@ pub(crate) async fn prepare(
 pub(crate) fn result(task: &Value) -> Result<Vec<String>, Error> {
     let xml = TaskRecord::new(task)
         .result()
-        .value()
-        .as_str()
+        .text()
         .filter(|s| s.len() <= 64 * 1024)
         .ok_or(Error::TransferConflict)?;
     let value = super::archive::xml_value(xml)?;
@@ -267,7 +266,7 @@ pub(crate) async fn created(
         if complete {
             idle(r)?;
             if !matches!(
-                VmRecord::new(r).power_state().as_str(),
+                VmRecord::new(r).power_state().name(),
                 Some(vm_power_state::HALTED | vm_power_state::SUSPENDED)
             ) || VmRecord::new(r).is_a_snapshot() != false
             {
@@ -276,9 +275,9 @@ pub(crate) async fn created(
         }
         let template = VmRecord::new(r)
             .is_a_template()
-            .as_bool()
+            .get()
             .ok_or(Error::TransferConflict)?;
-        let memory = match VmRecord::new(r).suspend_vdi().as_str() {
+        let memory = match VmRecord::new(r).suspend_vdi().reference() {
             Some(reference) if !matches!(reference, "OpaqueRef:NULL" | "Ref:NULL") => {
                 if !graph_memory.insert(reference.to_owned()) {
                     return Err(Error::TransferConflict);
@@ -296,7 +295,7 @@ pub(crate) async fn created(
         names.push((
             VmRecord::new(r)
                 .name_label()
-                .as_str()
+                .text()
                 .ok_or(Error::TransferConflict)?
                 .to_owned(),
             template,
@@ -310,7 +309,7 @@ pub(crate) async fn created(
                 return Err(Error::TransferConflict);
             }
             if VbdRecord::new(&a).type_() == vbd_type::DISK && VbdRecord::new(&a).empty() == false {
-                graph_disks.insert(crate::snapshots::reference(&VbdRecord::new(&a).vdi())?);
+                graph_disks.insert(crate::snapshots::reference(VbdRecord::new(&a).vdi())?);
             }
         }
     }
@@ -335,7 +334,7 @@ pub(crate) async fn created(
         {
             return Err(Error::TransferConflict);
         }
-        let sr = crate::snapshots::reference(&VdiRecord::new(r).sr())?;
+        let sr = crate::snapshots::reference(VdiRecord::new(r).sr())?;
         let sr = s.call("SR.get_record", vec![json!(sr)]).await?;
         if id(&sr)? != destination.uuid() {
             return Err(Error::TransferConflict);
@@ -351,7 +350,7 @@ pub(crate) async fn created(
             if !found.contains(
                 VbdRecord::new(&a)
                     .vm()
-                    .as_str()
+                    .reference()
                     .ok_or(Error::TransferConflict)?,
             ) {
                 return Err(Error::TransferConflict);
@@ -431,7 +430,7 @@ pub(crate) async fn storage_route(
         .map(|h| {
             HostRecord::new(h)
                 .address()
-                .as_str()
+                .text()
                 .filter(|v| v.len() <= 253 && !v.contains('/'))
                 .map(str::to_owned)
                 .ok_or(Error::TransferEndpoint)
@@ -455,20 +454,23 @@ pub(crate) async fn storage_route(
             return Err(Error::TransferConflict);
         }
         if PbdRecord::new(&p).currently_attached() == true {
-            let h = crate::snapshots::reference(&PbdRecord::new(&p).host())?;
+            let h = crate::snapshots::reference(PbdRecord::new(&p).host())?;
             let host = hosts.get(&h).ok_or(Error::TransferConflict)?;
             if HostRecord::new(host).enabled() == true {
                 candidates.push((h, host));
             }
         }
     }
-    candidates
-        .sort_by_key(|(r, _)| r != PoolRecord::new(&pool).master().as_str().unwrap_or_default());
+    candidates.sort_by_key(|(r, _)| {
+        r != PoolRecord::new(&pool)
+            .master()
+            .reference()
+            .unwrap_or_default()
+    });
     let (_, host) = candidates.first().ok_or(Error::UnavailableAction)?;
     let address = HostRecord::new(host)
         .address()
-        .value()
-        .as_str()
+        .text()
         .ok_or(Error::TransferEndpoint)?;
     let mut endpoint = s.options().endpoint.clone();
     let original = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;

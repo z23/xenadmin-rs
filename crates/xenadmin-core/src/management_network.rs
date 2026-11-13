@@ -4,6 +4,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, net::IpAddr};
+use xenadmin_xapi::enumerations::{
+    ip_configuration_mode, ipv6_configuration_mode, primary_address_type,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManagementAddressFamily {
@@ -13,8 +16,8 @@ pub enum ManagementAddressFamily {
 impl ManagementAddressFamily {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Ipv4 => "IPv4",
-            Self::Ipv6 => "IPv6",
+            Self::Ipv4 => primary_address_type::IPV4,
+            Self::Ipv6 => primary_address_type::IPV6,
         }
     }
 }
@@ -37,15 +40,15 @@ impl ManagementInterface {
             pif: p.id,
             identity: PifIdentity::from_inventory(p)?,
             primary: match p.primary_address_type.as_deref()? {
-                "IPv4" => ManagementAddressFamily::Ipv4,
-                "IPv6" => ManagementAddressFamily::Ipv6,
+                primary_address_type::IPV4 => ManagementAddressFamily::Ipv4,
+                primary_address_type::IPV6 => ManagementAddressFamily::Ipv6,
                 _ => return None,
             },
             ipv4: Ipv4Configuration {
                 mode: match p.ip_configuration_mode.as_str() {
-                    "None" => Ipv4Mode::None,
-                    "DHCP" => Ipv4Mode::Dhcp,
-                    "Static" => Ipv4Mode::Static,
+                    ip_configuration_mode::NONE => Ipv4Mode::None,
+                    ip_configuration_mode::DHCP => Ipv4Mode::Dhcp,
+                    ip_configuration_mode::STATIC => Ipv4Mode::Static,
                     _ => return None,
                 },
                 address: p.ip.clone(),
@@ -55,10 +58,10 @@ impl ManagementInterface {
             },
             ipv6: Ipv6Configuration {
                 mode: match p.ipv6_configuration_mode.as_str() {
-                    "None" => Ipv6Mode::None,
-                    "DHCP" => Ipv6Mode::Dhcp,
-                    "Autoconf" => Ipv6Mode::Autoconf,
-                    "Static" => Ipv6Mode::Static,
+                    ipv6_configuration_mode::NONE => Ipv6Mode::None,
+                    ipv6_configuration_mode::DHCP => Ipv6Mode::Dhcp,
+                    ipv6_configuration_mode::AUTOCONF => Ipv6Mode::Autoconf,
+                    ipv6_configuration_mode::STATIC => Ipv6Mode::Static,
                     _ => return None,
                 },
                 addresses: canonical_ipv6(&p.ipv6)?,

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::enumerations::{vbd_type, vdi_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 fn conflict<T>() -> Result<T, Error> {
     Err(Error::ResourceConflict)
@@ -18,7 +19,8 @@ fn id(record: &Value) -> Result<uuid::Uuid, Error> {
         .and_then(|s| s.parse().ok())
         .ok_or(Error::ResourceConflict)
 }
-fn number(value: &Value) -> Option<u64> {
+fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 fn reference(value: &Value) -> Result<String, Error> {
@@ -127,7 +129,7 @@ async fn checked_disk(
 ) -> Result<(String, Value), Error> {
     let (reference, r) = xapi::read(s, ResourceTarget::Disk(disk)).await?;
     ordinary(&r)?;
-    if number(&VdiRecord::new(&r).virtual_size()) != Some(size.unwrap_or(expected.size)) {
+    if number(VdiRecord::new(&r).virtual_size()) != Some(size.unwrap_or(expected.size)) {
         return conflict();
     }
     let sr = storage(s, expected.sr).await?;
@@ -150,14 +152,14 @@ async fn checked_disk(
         {
             return Err(Error::StorageInUse);
         }
-        let vm_ref = reference_value(&VbdRecord::new(vbd).vm())?;
+        let vm_ref = reference_value(VbdRecord::new(vbd).vm())?;
         let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
         idle(vm)?;
         if VmRecord::new(vm).is_a_snapshot() != false
             || VmRecord::new(vm).is_a_template() != false
             || VmRecord::new(vm).is_control_domain() != false
             || !matches!(
-                VmRecord::new(vm).power_state().as_str(),
+                VmRecord::new(vm).power_state().name(),
                 Some(vm_power_state::HALTED | vm_power_state::RUNNING)
             )
             || !refs(vm, "VBDs")?.contains(vbd_ref)
@@ -177,8 +179,7 @@ async fn checked_disk(
     }
     let statefiles = PoolRecord::new(pool_record)
         .ha_statefiles()
-        .value()
-        .as_array()
+        .members()
         .filter(|a| a.len() <= 1024)
         .ok_or(Error::Protocol("Pool HA disk dependencies unavailable"))?;
     if statefiles.iter().any(|v| v.as_str().is_none()) {
@@ -202,14 +203,15 @@ async fn checked_disk(
     ordinary(&latest)?;
     if latest_ref != reference
         || VdiRecord::new(&latest).sr() != sr
-        || number(&VdiRecord::new(&latest).virtual_size()) != Some(size.unwrap_or(expected.size))
+        || number(VdiRecord::new(&latest).virtual_size()) != Some(size.unwrap_or(expected.size))
         || refs(&latest, "VBDs")? != consumer_refs
     {
         return conflict();
     }
     Ok((reference, latest))
 }
-fn reference_value(v: &Value) -> Result<String, Error> {
+fn reference_value<'a>(v: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let v = v.raw();
     reference(v)
 }
 fn op(r: &ResourceOperationRecord) -> Result<&DiskOperation, Error> {
@@ -233,9 +235,9 @@ pub(super) async fn prepare(
     permits(
         &vdi,
         match operation {
-            DiskOperation::Grow { .. } => "resize",
-            DiskOperation::Copy { .. } => "copy",
-            DiskOperation::Cleanup { .. } => "destroy",
+            DiskOperation::Grow { .. } => vdi_operations::RESIZE,
+            DiskOperation::Copy { .. } => vdi_operations::COPY,
+            DiskOperation::Cleanup { .. } => vdi_operations::DESTROY,
         },
     )?;
     if let DiskOperation::Copy { destination, .. } = operation {
@@ -361,7 +363,7 @@ pub(super) async fn verify(
         Kind::Grow => {
             let (_, vdi) = xapi::read(s, ResourceTarget::Disk(plan.disk)).await?;
             let actual =
-                number(&VdiRecord::new(&vdi).virtual_size()).ok_or(Error::ResourceConflict)?;
+                number(VdiRecord::new(&vdi).virtual_size()).ok_or(Error::ResourceConflict)?;
             let DiskOperation::Grow { size, .. } = &plan.operation else {
                 return conflict();
             };

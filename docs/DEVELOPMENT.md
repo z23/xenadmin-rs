@@ -88,9 +88,14 @@ A view's method returns its field in the type of the field's kind: `FlagField`,
 `RealField`, `SetField` or `MapField`, and `FieldValue` for a kind without a type. Compare a
 field with the Rust type of its kind, and give a reader the kind it reads; a value taken
 out of a map by key has no kind, so wrap it where it is read (`TextField::of(&map["key"])`).
-Prefer the types' own readers (`get`, `text`, `reference`, `name`, `number`, `members`,
-`entries`) to the JSON accessors: a field still reads as the JSON value it wraps, and a
-test fails where a view's field is asked for a kind of value the API does not give it.
+Read a field with the readers of its type: `get` for a flag, `text`, `reference`, `name`,
+`number` or `unsigned`, `members` or `strings` for a set, `entries` for a map and `get` or
+`text` for one of its keys. A typed field has no JSON accessors, so asking a whole number
+for text does not compile. A helper that reads one kind says so in its signature
+(`fn reference<'a>(value: impl Reads<'a, kind::Reference>)`) and then takes a field of
+that kind, or a JSON value that did not come through a view. `value()` gives a field's
+JSON value for the rare read no reader covers, such as text that holds a number; a test
+lists those written on a view, so add to its list on purpose or not at all.
 
 A view reads a field of its class from whatever record it is given, so a record of
 another class reads without complaint where the field has the same name. To look for
@@ -114,7 +119,9 @@ checks covered can be counted. `scripts/view_audit.py` fails on any `call` line;
 a string like any other and is not seen. Write
 enumeration values as the generated constants (`vm_power_state::HALTED`,
 `vdi_operations::DESTROY`), not as literals: a value the API does not have then does
-not compile.
+not compile. That holds for the client's own types too (`Ipv4Mode::as_str` returns
+`ip_configuration_mode::DHCP`). The exception is a name that is a message's name first,
+such as a power action's, which a test holds to the API instead.
 
 The development and inspection launchers use Cargo to select the current build executable.
 They honor `CARGO_TARGET_DIR` and target-specific output paths; inspection builds the local

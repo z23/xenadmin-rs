@@ -56,7 +56,7 @@ fn op(record: &ResourceOperationRecord) -> Result<&Op, Error> {
 fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, Error> {
     let map = VmssRecord::new(r)
         .schedule()
-        .as_object()
+        .entries()
         .ok_or(Error::ResourceConflict)?
         .iter()
         .map(|(k, v)| {
@@ -68,35 +68,28 @@ fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, 
     let config = SnapshotPolicyConfig {
         name: VmssRecord::new(r)
             .name_label()
-            .as_str()
+            .text()
             .ok_or(Error::ResourceConflict)?
             .into(),
         description: VmssRecord::new(r)
             .name_description()
-            .as_str()
+            .text()
             .ok_or(Error::ResourceConflict)?
             .into(),
-        kind: match VmssRecord::new(r).type_().as_str() {
+        kind: match VmssRecord::new(r).type_().name() {
             Some(vmss_type::SNAPSHOT) => ScheduledSnapshotKind::Disk,
             Some(vmss_type::CHECKPOINT) => ScheduledSnapshotKind::Checkpoint,
             _ => return Err(Error::UnavailableAction),
         },
         retained: VmssRecord::new(r)
             .retained_snapshots()
-            .as_u64()
-            .or_else(|| {
-                VmssRecord::new(r)
-                    .retained_snapshots()
-                    .as_str()?
-                    .parse()
-                    .ok()
-            })
+            .unsigned()
             .and_then(|n| n.try_into().ok())
             .ok_or(Error::ResourceConflict)?,
         schedule: SnapshotSchedule::decode(
             VmssRecord::new(r)
                 .frequency()
-                .as_str()
+                .name()
                 .ok_or(Error::ResourceConflict)?,
             &map,
         )?,
@@ -107,7 +100,7 @@ fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, 
         config,
         enabled: VmssRecord::new(r)
             .enabled()
-            .as_bool()
+            .get()
             .ok_or(Error::ResourceConflict)?,
         members,
     })
@@ -115,8 +108,7 @@ fn decode(id: SnapshotPolicyId, r: &Value, members: Vec<VmId>) -> Result<State, 
 async fn members(session: &Session, r: &Value) -> Result<Vec<VmId>, Error> {
     let refs = VmssRecord::new(r)
         .vms()
-        .value()
-        .as_array()
+        .members()
         .filter(|v| v.len() <= 256)
         .ok_or(Error::ResourceConflict)?;
     let mut result = BTreeSet::new();
@@ -125,7 +117,7 @@ async fn members(session: &Session, r: &Value) -> Result<Vec<VmId>, Error> {
         let v = session.call("VM.get_record", vec![json!(vr)]).await?;
         let id = VmRecord::new(&v)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|s| VmId::parse(s).ok())
             .ok_or(Error::ResourceConflict)?;
         if !result.insert(id) {
@@ -160,7 +152,7 @@ async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
         || VmRecord::new(&v).is_control_domain() != false
         || !VmRecord::new(&v)
             .current_operations()
-            .as_object()
+            .entries()
             .is_some_and(|m| m.is_empty())
     {
         return Err(Error::ResourceInUse);
@@ -328,7 +320,7 @@ pub(super) async fn prepare(
         evidence.last_run = Some(
             VmssRecord::new(&record)
                 .last_run_time()
-                .as_str()
+                .text()
                 .ok_or(Error::ResourceConflict)?
                 .to_owned(),
         );
@@ -463,8 +455,7 @@ async fn snapshot_ids(
         }
         let refs = VmRecord::new(&v)
             .snapshots()
-            .value()
-            .as_array()
+            .members()
             .filter(|v| v.len() <= 10_000)
             .ok_or(Error::ResourceConflict)?;
         let mut ids = Vec::new();
@@ -481,7 +472,7 @@ async fn snapshot_ids(
                 ids.push(
                     VmRecord::new(&snap)
                         .uuid()
-                        .as_str()
+                        .text()
                         .and_then(|s| SnapshotId::parse(s).ok())
                         .ok_or(Error::ResourceConflict)?,
                 );
@@ -500,8 +491,7 @@ pub(super) fn plugin_success_reply(value: &Value) -> bool {
 pub(super) fn plugin_success(task: &Value) -> bool {
     let Some(s) = TaskRecord::new(task)
         .result()
-        .value()
-        .as_str()
+        .text()
         .filter(|s| s.len() <= 4096)
     else {
         return false;
@@ -547,7 +537,7 @@ pub(super) async fn verify(
                 let v = session.call("VMSS.get_record", vec![json!(rr)]).await?;
                 let id = VmssRecord::new(&v)
                     .uuid()
-                    .as_str()
+                    .text()
                     .and_then(|s| SnapshotPolicyId::parse(s).ok())
                     .ok_or(Error::ResourceConflict)?;
                 let state = decode(id, &v, members(session, &v).await?)?;
@@ -581,7 +571,7 @@ pub(super) async fn verify(
                     || crate::snapshot_policy_support::clock_seconds(
                         VmssRecord::new(&v)
                             .last_run_time()
-                            .as_str()
+                            .text()
                             .ok_or(Error::ResourceConflict)?,
                     )? <= crate::snapshot_policy_support::clock_seconds(
                         e.last_run.as_deref().ok_or(Error::ResourceConflict)?,

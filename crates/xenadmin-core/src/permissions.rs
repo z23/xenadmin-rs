@@ -248,8 +248,7 @@ impl SessionPermissions {
         }
         let Some(values) = SessionRecord::new(record)
             .rbac_permissions()
-            .value()
-            .as_array()
+            .members()
             .filter(|v| v.len() <= 16384)
         else {
             return Self::unknown(PermissionUnknown::InvalidResponse);

@@ -4,6 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{vbd_type, vdi_operations, vdi_type};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiskConsumer {
@@ -147,7 +148,7 @@ impl DiskOperation {
             || vdi.is_snapshot != Some(false)
             || vdi.snapshot_of.is_some()
             || vdi.cbt_enabled != Some(false)
-            || vdi.kind != "user"
+            || vdi.kind != vdi_type::USER
         {
             return ActionAvailability::Prerequisite { reason: "Requires an ordinary managed, writable, nonshared data disk without snapshot or CBT state".into() };
         }
@@ -158,7 +159,7 @@ impl DiskOperation {
                 .get(&consumer.attachment)
                 .is_none_or(|v| {
                     v.currently_attached != Some(false)
-                        || v.kind != "Disk"
+                        || v.kind != vbd_type::DISK
                         || v.empty != Some(false)
                 })
                 || inventory.vms.get(&consumer.vm).is_none_or(|v| {
@@ -173,9 +174,9 @@ impl DiskOperation {
             }
         }
         let capability = match self {
-            Self::Grow { .. } => "resize",
-            Self::Copy { .. } => "copy",
-            Self::Cleanup { .. } => "destroy",
+            Self::Grow { .. } => vdi_operations::RESIZE,
+            Self::Copy { .. } => vdi_operations::COPY,
+            Self::Cleanup { .. } => vdi_operations::DESTROY,
         };
         if vdi
             .allowed_operations

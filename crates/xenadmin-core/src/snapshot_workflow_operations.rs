@@ -208,7 +208,7 @@ impl MutationRequest {
                                 .await;
                         }
                     };
-                    match TaskRecord::new(&record).status().as_str() {
+                    match TaskRecord::new(&record).status().name() {
                         Some(task_status_type::SUCCESS)=>{
                             if plan.steps[index]==workflow::Step::Create {plan.evidence[index].result=Some(crate::xapi::snapshot_task_result(&record)?)}
                             plan.evidence[index].completed=true;break;

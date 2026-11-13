@@ -63,7 +63,7 @@ async fn subject(
     expected.sort();
     require(
         SubjectRecord::new(&value).subject_identifier() == identifier
-            && discovery::subject_roles(&SubjectRecord::new(&value).roles(), &ids)? == expected,
+            && discovery::subject_roles(SubjectRecord::new(&value).roles(), &ids)? == expected,
         "The subject or its assigned roles changed since review",
     )?;
     Ok((reference, value))
@@ -189,7 +189,7 @@ pub(super) async fn arguments(
             require(
                 HostRecord::new(&host)
                     .current_operations()
-                    .as_object()
+                    .entries()
                     .is_some_and(|v| v.is_empty()),
                 "Finish host operations before replacing its certificate",
             )?;
@@ -276,7 +276,7 @@ pub(super) async fn verify(
             let value = session
                 .call("subject.get_record", vec![json!(reference)])
                 .await?;
-            let id = SubjectId::parse(&discovery::text(&SubjectRecord::new(&value).uuid(), 36)?)
+            let id = SubjectId::parse(&discovery::text(SubjectRecord::new(&value).uuid(), 36)?)
                 .map_err(|_| Error::Protocol("invalid subject UUID"))?;
             require(
                 record
@@ -289,7 +289,7 @@ pub(super) async fn verify(
             require(
                 SubjectRecord::new(&value)
                     .roles()
-                    .as_array()
+                    .members()
                     .is_some_and(Vec::is_empty),
                 "The server assigned unexpected roles; inspect subject access before acknowledging",
             )?;

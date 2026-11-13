@@ -5,6 +5,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{
+    storage_operations, vbd_mode, vbd_type, vdi_type, vm_operations,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CrossPoolMode {
@@ -146,7 +149,7 @@ impl CrossPoolVmOperation {
                 "Snapshot chains, schedules, HA protection and vApp membership require a separate transfer workflow",
             );
         }
-        if let Some(reason) = details.blocked_operations.get("migrate_send") {
+        if let Some(reason) = details.blocked_operations.get(vm_operations::MIGRATE_SEND) {
             return ActionAvailability::Blocked {
                 reason: reason.clone(),
             };
@@ -159,7 +162,7 @@ impl CrossPoolVmOperation {
         if details
             .allowed_operations
             .as_ref()
-            .is_none_or(|ops| !ops.iter().any(|op| op == "migrate_send"))
+            .is_none_or(|ops| !ops.iter().any(|op| op == vm_operations::MIGRATE_SEND))
         {
             return ActionAvailability::Unavailable;
         }
@@ -189,9 +192,10 @@ impl CrossPoolVmOperation {
             .collect();
         let disk_ids: BTreeSet<_> = blocks.iter().filter_map(|b| b.vdi).collect();
         if blocks.iter().any(|b| {
-            (b.kind == "CD" && b.empty != Some(true))
-                || (b.kind == "Disk" && (!b.owned || b.mode != "RW" || b.vdi.is_none()))
-                || (b.kind != "Disk" && b.kind != "CD")
+            (b.kind == vbd_type::CD && b.empty != Some(true))
+                || (b.kind == vbd_type::DISK
+                    && (!b.owned || b.mode != vbd_mode::RW || b.vdi.is_none()))
+                || (b.kind != vbd_type::DISK && b.kind != vbd_type::CD)
         }) {
             return no("Only owned writable data disks and empty CD drives are supported");
         }
@@ -203,7 +207,7 @@ impl CrossPoolVmOperation {
                 return ActionAvailability::Stale;
             };
             if disk.sr != Some(mapping.expected_sr)
-                || disk.kind != "user"
+                || disk.kind != vdi_type::USER
                 || disk.read_only != Some(false)
                 || disk.sharable != Some(false)
                 || disk.is_snapshot != Some(false)
@@ -226,10 +230,9 @@ impl CrossPoolVmOperation {
                 .get(&mapping.destination_sr)
                 .is_none_or(|sr| {
                     sr.content_type != "user"
-                        || sr
-                            .allowed_operations
-                            .as_ref()
-                            .is_none_or(|ops| !ops.iter().any(|op| op == "vdi_create"))
+                        || sr.allowed_operations.as_ref().is_none_or(|ops| {
+                            !ops.iter().any(|op| op == storage_operations::VDI_CREATE)
+                        })
                 })
                 || !destination.details.pbds.values().any(|p| {
                     p.host == Some(self.destination_host)

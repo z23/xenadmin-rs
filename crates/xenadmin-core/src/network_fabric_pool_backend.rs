@@ -54,7 +54,7 @@ fn live(f: &Fresh, p: &TopologyPlan) -> Result<(), Error> {
         let (_, h) = f.by_id("host", host.uuid())?;
         let metrics = HostRecord::new(h)
             .metrics()
-            .as_str()
+            .reference()
             .and_then(|r| f.raw["host_metrics"].get(r))
             .ok_or(Error::ResourceConflict)?;
         if HostMetricsRecord::new(metrics).live() != true {

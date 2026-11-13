@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use xenadmin_xapi::enumerations::vm_power_state;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -61,10 +62,10 @@ pub enum PowerState {
 impl fmt::Display for PowerState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Running => f.write_str("Running"),
-            Self::Halted => f.write_str("Halted"),
-            Self::Paused => f.write_str("Paused"),
-            Self::Suspended => f.write_str("Suspended"),
+            Self::Running => f.write_str(vm_power_state::RUNNING),
+            Self::Halted => f.write_str(vm_power_state::HALTED),
+            Self::Paused => f.write_str(vm_power_state::PAUSED),
+            Self::Suspended => f.write_str(vm_power_state::SUSPENDED),
             Self::Unknown(value) => write!(f, "Unknown ({value})"),
         }
     }

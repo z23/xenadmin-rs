@@ -1,6 +1,7 @@
 use crate::{ActionAvailability, Error, Inventory, SnapshotId, SrId, VmId};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use xenadmin_xapi::enumerations::{storage_operations, vm_operations};
 #[path = "transfer_archive.rs"]
 mod archive;
 #[path = "transfer_archive_stream.rs"]
@@ -177,9 +178,9 @@ impl TransferAction {
             | Self::ImportOvf { sr, .. } => {
                 if i.details.storage.get(sr).is_none_or(|r| {
                     r.content_type != "user"
-                        || r.allowed_operations
-                            .as_ref()
-                            .is_none_or(|ops| !ops.iter().any(|o| o == "vdi_create"))
+                        || r.allowed_operations.as_ref().is_none_or(|ops| {
+                            !ops.iter().any(|o| o == storage_operations::VDI_CREATE)
+                        })
                 }) {
                     return no("Choose a storage repository that permits creating data disks");
                 }
@@ -218,14 +219,14 @@ impl TransferAction {
                         operations: d.current_operations.clone(),
                     };
                 }
-                if let Some(reason) = d.blocked_operations.get("export") {
+                if let Some(reason) = d.blocked_operations.get(vm_operations::EXPORT) {
                     return ActionAvailability::Blocked {
                         reason: reason.clone(),
                     };
                 }
                 if d.allowed_operations
                     .as_ref()
-                    .is_none_or(|a| !a.iter().any(|s| s == "export"))
+                    .is_none_or(|a| !a.iter().any(|s| s == vm_operations::EXPORT))
                 {
                     return ActionAvailability::Unavailable;
                 }

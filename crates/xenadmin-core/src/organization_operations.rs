@@ -33,7 +33,7 @@ async fn read(session: &Session, id: OrganizationObjectId) -> Result<(String, Va
         id,
         OrganizationObjectId::Vm(_) | OrganizationObjectId::Snapshot(_)
     ) && (VmRecord::new(&fresh).is_control_domain() != false
-        || VmRecord::new(&fresh).is_a_snapshot().as_bool()
+        || VmRecord::new(&fresh).is_a_snapshot().get()
             != Some(matches!(id, OrganizationObjectId::Snapshot(_))))
     {
         return Err(Error::UnavailableAction);

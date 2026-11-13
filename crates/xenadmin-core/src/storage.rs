@@ -1,6 +1,7 @@
 //! Typed storage intent. Authentication material is intentionally absent from journalled inputs.
 use crate::{Error, HostId, PbdId, ResourceTarget, SrId, VdiId};
 use serde::{Deserialize, Serialize};
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NfsVersion {
@@ -407,7 +408,8 @@ pub(crate) struct StorageBaseline {
     pub pbds: Vec<PbdId>,
 }
 
-pub(crate) fn requires_credentials(config: &serde_json::Value) -> bool {
+pub(crate) fn requires_credentials<'a>(config: impl Reads<'a, kind::Map>) -> bool {
+    let config = config.raw();
     config.as_object().is_some_and(|config| {
         config.keys().any(|k| {
             let k = k.to_ascii_lowercase();
@@ -419,10 +421,11 @@ pub(crate) fn requires_credentials(config: &serde_json::Value) -> bool {
         })
     })
 }
-pub(crate) fn safe_location_for_kind(
-    config: &serde_json::Value,
+pub(crate) fn safe_location_for_kind<'a>(
+    config: impl Reads<'a, kind::Map>,
     kind: Option<&str>,
 ) -> Option<StorageLocation> {
+    let config = config.raw();
     let kind = match kind {
         Some("ext") => Some(crate::LocalStorageKind::Ext),
         Some("lvm") => Some(crate::LocalStorageKind::Lvm),
@@ -435,7 +438,10 @@ pub(crate) fn safe_location_for_kind(
     }
     safe_location_from_config(config)
 }
-pub(crate) fn safe_location_from_config(config: &serde_json::Value) -> Option<StorageLocation> {
+pub(crate) fn safe_location_from_config<'a>(
+    config: impl Reads<'a, kind::Map>,
+) -> Option<StorageLocation> {
+    let config = config.raw();
     let mut public = config.clone();
     let map = public.as_object_mut()?;
     map.retain(|k, _| {
@@ -512,7 +518,8 @@ pub(crate) fn location_from_config(config: &serde_json::Value) -> Option<Storage
     };
     location.validate().then_some(location)
 }
-pub(crate) fn path_counts(value: &serde_json::Value) -> Vec<crate::StoragePathCount> {
+pub(crate) fn path_counts<'a>(value: impl Reads<'a, kind::Map>) -> Vec<crate::StoragePathCount> {
+    let value = value.raw();
     value
         .as_object()
         .into_iter()

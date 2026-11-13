@@ -175,7 +175,7 @@ impl ResourceRequest {
             let create = p.stage() == Stage::ChangeBond && p.intent.operation.creates();
             let receipt = p.current_mut();
             receipt.task_uuid = Some(id);
-            match TaskRecord::new(&v).status().as_str() {
+            match TaskRecord::new(&v).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     receipt.completed = true;
                     receipt.ended = true;

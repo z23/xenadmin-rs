@@ -10,13 +10,13 @@ async fn interfaces(
     fresh: &Value,
     review: &NetworkServiceReview,
 ) -> Result<(), Error> {
-    if NetworkRecord::new(fresh).managed().as_bool() != Some(true) {
+    if NetworkRecord::new(fresh).managed().get() != Some(true) {
         return Err(Error::UnavailableAction);
     }
     let pifs = network::all(s, "PIF").await?;
     let actual = pifs
         .iter()
-        .filter(|(_, p)| PifRecord::new(p).network().as_str() == Some(network_ref))
+        .filter(|(_, p)| PifRecord::new(p).network().reference() == Some(network_ref))
         .collect::<Vec<_>>();
     let refs = actual
         .iter()
@@ -26,7 +26,7 @@ async fn interfaces(
         .iter()
         .map(|(_, p)| network::uuid(p).map(crate::PifId::from))
         .collect::<Result<BTreeSet<_>, _>>()?;
-    if refs != network::refs(&NetworkRecord::new(fresh).pifs())?
+    if refs != network::refs(NetworkRecord::new(fresh).pifs())?
         || actual.len() != review.interfaces.len()
         || ids != review.interfaces.iter().map(|p| p.pif).collect()
     {
@@ -42,8 +42,7 @@ async fn interfaces(
         network::pif_identity(s, pif, &expected.identity).await?;
         let ipv4 = PifRecord::new(pif)
             .ip()
-            .value()
-            .as_str()
+            .text()
             .ok_or(Error::ResourceConflict)?;
         let ipv4 = if ipv4.is_empty() {
             None
@@ -52,8 +51,7 @@ async fn interfaces(
         };
         let ipv6 = PifRecord::new(pif)
             .ipv6()
-            .value()
-            .as_array()
+            .members()
             .filter(|v| v.len() <= 64)
             .ok_or(Error::ResourceConflict)?;
         let ipv6 = ipv6
@@ -61,8 +59,8 @@ async fn interfaces(
             .map(Value::as_str)
             .collect::<Option<Vec<_>>>()
             .ok_or(Error::ResourceConflict)?;
-        if PifRecord::new(pif).managed().as_bool() != Some(true)
-            || PifRecord::new(pif).currently_attached().as_bool() != Some(expected.attached)
+        if PifRecord::new(pif).managed().get() != Some(true)
+            || PifRecord::new(pif).currently_attached().get() != Some(expected.attached)
             || ipv4 != expected.ipv4
             || crate::network_service::canonical_ipv6(ipv6.into_iter()).as_ref()
                 != Some(&expected.ipv6)
@@ -102,7 +100,7 @@ pub(super) async fn check(
     } else {
         review.purposes.clone()
     };
-    if crate::network_service::purposes(&NetworkRecord::new(fresh).purpose()).as_ref()
+    if crate::network_service::purposes(NetworkRecord::new(fresh).purpose()).as_ref()
         != Some(&expected)
     {
         return Err(Error::ResourceConflict);
@@ -110,7 +108,7 @@ pub(super) async fn check(
     interfaces(s, network_ref, fresh, review).await?;
     if *enabled {
         for n in networks.values() {
-            let purposes = crate::network_service::purposes(&NetworkRecord::new(n).purpose())
+            let purposes = crate::network_service::purposes(NetworkRecord::new(n).purpose())
                 .ok_or(Error::Protocol(
                     "Pool network service purposes are unavailable",
                 ))?;

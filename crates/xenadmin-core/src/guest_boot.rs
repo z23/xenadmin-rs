@@ -3,7 +3,9 @@ use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use xenadmin_xapi::enumerations::domain_type;
+use xenadmin_xapi::enumerations::{
+    domain_type, pool_guest_secureboot_readiness, vm_secureboot_readiness,
+};
 use xenadmin_xapi::records::{PoolRecord, VmRecord};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootReadiness {
@@ -115,7 +117,7 @@ impl Request {
 }
 
 pub(crate) fn is_hvm(r: &Value) -> bool {
-    match VmRecord::new(r).domain_type().as_str() {
+    match VmRecord::new(r).domain_type().name() {
         Some(domain_type::HVM) => true,
         None | Some(domain_type::UNSPECIFIED) => VmRecord::new(r).hvm_boot_policy() == "BIOS order",
         _ => false,
@@ -127,8 +129,7 @@ pub(crate) fn firmware(r: &Value) -> Option<&str> {
     }
     match VmRecord::new(r)
         .hvm_boot_params()
-        .value()
-        .as_object()?
+        .entries()?
         .get("firmware")
     {
         None => Some("bios"),
@@ -136,7 +137,7 @@ pub(crate) fn firmware(r: &Value) -> Option<&str> {
     }
 }
 pub(crate) fn policy(r: &Value) -> Option<bool> {
-    match VmRecord::new(r).platform().as_object()?.get("secureboot") {
+    match VmRecord::new(r).platform().entries()?.get("secureboot") {
         None => Some(false),
         Some(v) if v == "false" => Some(false),
         Some(v) if v == "true" => Some(true),
@@ -152,7 +153,7 @@ pub(crate) fn default_template(r: &Value) -> Option<bool> {
     if VmRecord::new(r).is_default_template() == false
         || VmRecord::new(r)
             .other_config()
-            .as_object()
+            .entries()
             .is_some_and(|m| m.get("default_template").is_none_or(|v| v == "false"))
     {
         Some(false)
@@ -173,13 +174,13 @@ pub(crate) async fn require_policy_support(
     if !matches!(
         value.as_str(),
         Some(
-            "ready"
-                | "ready_no_dbx"
-                | "first_boot"
-                | "disabled"
-                | "not_supported"
-                | "setup_mode"
-                | "certs_incomplete"
+            vm_secureboot_readiness::READY
+                | vm_secureboot_readiness::READY_NO_DBX
+                | vm_secureboot_readiness::FIRST_BOOT
+                | vm_secureboot_readiness::DISABLED
+                | vm_secureboot_readiness::NOT_SUPPORTED
+                | vm_secureboot_readiness::SETUP_MODE
+                | vm_secureboot_readiness::CERTS_INCOMPLETE
         )
     ) {
         return Err(Error::UnsupportedVmLifecycle);
@@ -189,14 +190,16 @@ pub(crate) async fn require_policy_support(
 fn readiness(result: Result<Value, Error>) -> BootReadiness {
     match result {
         Ok(v) => match v.as_str() {
-            Some("ready") => BootReadiness::Ready,
-            Some("ready_no_dbx") => BootReadiness::ReadyWithoutRevocations,
-            Some("first_boot") => BootReadiness::FirstBoot,
-            Some("disabled") => BootReadiness::Disabled,
-            Some("not_supported") => BootReadiness::NotSupported,
-            Some("setup_mode") => BootReadiness::SetupMode,
-            Some("certs_incomplete") => BootReadiness::IncompleteCertificates,
-            Some("not_ready") => BootReadiness::NotReady,
+            Some(vm_secureboot_readiness::READY) => BootReadiness::Ready,
+            Some(vm_secureboot_readiness::READY_NO_DBX) => BootReadiness::ReadyWithoutRevocations,
+            Some(vm_secureboot_readiness::FIRST_BOOT) => BootReadiness::FirstBoot,
+            Some(vm_secureboot_readiness::DISABLED) => BootReadiness::Disabled,
+            Some(vm_secureboot_readiness::NOT_SUPPORTED) => BootReadiness::NotSupported,
+            Some(vm_secureboot_readiness::SETUP_MODE) => BootReadiness::SetupMode,
+            Some(vm_secureboot_readiness::CERTS_INCOMPLETE) => {
+                BootReadiness::IncompleteCertificates
+            }
+            Some(pool_guest_secureboot_readiness::NOT_READY) => BootReadiness::NotReady,
             _ => BootReadiness::Unavailable("Host returned an unknown readiness value".into()),
         },
         Err(e) => BootReadiness::Unavailable(format!("Readiness unavailable: {e}")),

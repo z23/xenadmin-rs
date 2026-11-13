@@ -6,6 +6,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use xenadmin_xapi::records::{NetworkRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 fn text(v: &Value, key: &str, limit: usize) -> Result<String, Error> {
     v[key]
@@ -16,7 +17,8 @@ fn text(v: &Value, key: &str, limit: usize) -> Result<String, Error> {
             "Guest interface configuration is unavailable or exceeds bounds",
         ))
 }
-fn refs(value: &Value) -> Result<BTreeSet<String>, Error> {
+fn refs<'a>(value: impl Reads<'a, kind::Set>) -> Result<BTreeSet<String>, Error> {
+    let value = value.raw();
     let a = value
         .as_array()
         .filter(|a| a.len() <= 10_000)
@@ -112,12 +114,11 @@ impl Graph {
             )?;
             let n = VifRecord::new(v)
                 .network()
-                .value()
-                .as_str()
+                .reference()
                 .ok_or(Error::Protocol("Guest interface network is unavailable"))?;
             graph.network(n)?;
             require(
-                VifRecord::new(v).vm().as_str().is_some_and(|v| {
+                VifRecord::new(v).vm().reference().is_some_and(|v| {
                     v.starts_with("OpaqueRef:") && v != "OpaqueRef:NULL" && v.len() <= 512
                 }),
                 "Guest interface VM identity unavailable",
@@ -157,12 +158,12 @@ impl Graph {
                 id,
                 crate::ManagementBondNetwork {
                     name: text(v, "name_label", 1024)?,
-                    mtu: network::number(&NetworkRecord::new(v).mtu())
+                    mtu: network::number(NetworkRecord::new(v).mtu())
                         .and_then(|v| u64::try_from(v).ok())
                         .ok_or(Error::ResourceConflict)?,
                     default_locking_mode: NetworkRecord::new(v)
                         .default_locking_mode()
-                        .as_str()
+                        .name()
                         .map(str::to_owned),
                     settings_fingerprint: Sha256::digest(bytes).into(),
                 },
@@ -226,7 +227,7 @@ impl Graph {
         require(
             VmRecord::new(&v)
                 .scheduled_to_be_resident_on()
-                .as_str()
+                .reference()
                 .is_some_and(|r| r == "OpaqueRef:NULL")
                 && idle(&v),
             "A guest is busy or scheduled for migration",
@@ -238,7 +239,7 @@ impl Graph {
             .map(|(r, _)| r.clone())
             .collect::<BTreeSet<_>>();
         require(
-            refs(&VmRecord::new(&v).vifs())? == interfaces,
+            refs(VmRecord::new(&v).vifs())? == interfaces,
             "Guest VM interface membership is inconsistent",
         )?;
         Ok(v)
@@ -308,11 +309,11 @@ impl Graph {
             power_state,
             template: VmRecord::new(vm)
                 .is_a_template()
-                .as_bool()
+                .get()
                 .ok_or(Error::ResourceConflict)?,
             snapshot: VmRecord::new(vm)
                 .is_a_snapshot()
-                .as_bool()
+                .get()
                 .ok_or(Error::ResourceConflict)?,
             locality,
             network,

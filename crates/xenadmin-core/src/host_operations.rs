@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{host_allowed_operations, task_status_type, vm_power_state};
 use xenadmin_xapi::records::{HostRecord, PbdRecord, PoolRecord, TaskRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -155,10 +156,12 @@ fn require(yes: bool, reason: &'static str) -> Result<(), Error> {
         Err(Error::HostPrerequisite(reason))
     }
 }
-fn reference(value: &Value) -> Result<String, Error> {
+fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let value = value.raw();
     super::xapi::reply_reference(value)
 }
-fn integer(value: &Value) -> Option<u64> {
+fn integer<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 fn map_bool(record: &Value, key: &str) -> Option<bool> {
@@ -174,8 +177,7 @@ fn map_bool(record: &Value, key: &str) -> Option<bool> {
 fn destination(record: &Value) -> Result<Option<String>, Error> {
     let map = HostRecord::new(record)
         .logging()
-        .value()
-        .as_object()
+        .entries()
         .ok_or(Error::HostPrerequisite(
             "Host logging configuration is unavailable",
         ))?;
@@ -205,13 +207,13 @@ fn allowed(record: &Value, operation: &str) -> Result<(), Error> {
 }
 fn memory(record: &Value) -> Result<MemoryLimits, Error> {
     Ok(MemoryLimits {
-        static_min: integer(&VmRecord::new(record).memory_static_min())
+        static_min: integer(VmRecord::new(record).memory_static_min())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
-        dynamic_min: integer(&VmRecord::new(record).memory_dynamic_min())
+        dynamic_min: integer(VmRecord::new(record).memory_dynamic_min())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
-        dynamic_max: integer(&VmRecord::new(record).memory_dynamic_max())
+        dynamic_max: integer(VmRecord::new(record).memory_dynamic_max())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
-        static_max: integer(&VmRecord::new(record).memory_static_max())
+        static_max: integer(VmRecord::new(record).memory_static_max())
             .ok_or(Error::Protocol("control-domain memory limits unavailable"))?,
     })
 }
@@ -245,7 +247,7 @@ async fn host(
     Ok((reference, host, pool))
 }
 async fn metrics(session: &Session, host: &Value) -> Result<Value, Error> {
-    let metrics = reference(&HostRecord::new(host).metrics())?;
+    let metrics = reference(HostRecord::new(host).metrics())?;
     session
         .call("host_metrics.get_record", vec![json!(metrics)])
         .await
@@ -259,8 +261,7 @@ async fn live(session: &Session, host: &Value, expected: bool) -> Result<(), Err
 async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Vec<VmId>, Error> {
     let values = HostRecord::new(host)
         .resident_vms()
-        .value()
-        .as_array()
+        .members()
         .filter(|v| v.len() <= 10_000)
         .ok_or(Error::HostPrerequisite(
             "Resident VM membership is unavailable",
@@ -275,11 +276,11 @@ async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Ve
         )?;
         let control = VmRecord::new(&vm)
             .is_control_domain()
-            .as_bool()
+            .get()
             .ok_or(Error::Protocol("resident VM type unavailable"))?;
         require(
             matches!(
-                VmRecord::new(&vm).power_state().as_str(),
+                VmRecord::new(&vm).power_state().name(),
                 Some(
                     vm_power_state::RUNNING
                         | vm_power_state::PAUSED
@@ -291,14 +292,14 @@ async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Ve
         )?;
         if !control
             && matches!(
-                VmRecord::new(&vm).power_state().as_str(),
+                VmRecord::new(&vm).power_state().name(),
                 Some(vm_power_state::RUNNING | vm_power_state::PAUSED)
             )
         {
             idle(&vm)?;
             let id = VmRecord::new(&vm)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|v| VmId::parse(v).ok())
                 .ok_or(Error::Protocol("resident VM UUID unavailable"))?;
             require(
@@ -364,7 +365,7 @@ async fn evacuation(
             if HostRecord::new(&record).enabled() == true
                 && HostRecord::new(&record)
                     .uuid()
-                    .as_str()
+                    .text()
                     .is_some_and(|uuid| uuid::Uuid::parse_str(uuid).is_ok())
                 && metrics(session, &record).await?["live"] == true
             {
@@ -680,7 +681,7 @@ pub(crate) async fn arguments(
                     tasks.len() <= 10_000
                         && tasks.values().all(|task| {
                             matches!(
-                                TaskRecord::new(task).status().as_str(),
+                                TaskRecord::new(task).status().name(),
                                 Some(
                                     task_status_type::SUCCESS
                                         | task_status_type::FAILURE
@@ -699,7 +700,7 @@ pub(crate) async fn arguments(
             require(
                 HostRecord::new(&host)
                     .power_on_mode()
-                    .as_str()
+                    .text()
                     .is_some_and(|v| !v.is_empty()),
                 "Configure host power-on first",
             )?;
@@ -718,7 +719,7 @@ pub(crate) async fn arguments(
                 HostRecord::new(&host).power_on_mode() == *expected_mode
                     && HostRecord::new(&host)
                         .power_on_config()
-                        .as_object()
+                        .entries()
                         .is_some_and(|m| m.is_empty()),
                 "Power-on mode changed or contains BMC configuration that this editor does not replace",
             )?;
@@ -817,8 +818,7 @@ pub(crate) async fn arguments(
             )?;
             let handler = HostRecord::new(&host)
                 .other_config()
-                .value()
-                .as_object()
+                .entries()
                 .and_then(|m| m.get("multipathhandle"));
             require(
                 handler.is_none_or(|v| v == "dmp"),
@@ -1017,7 +1017,7 @@ pub(crate) async fn verify(
                 HostRecord::new(&host).power_on_mode() == mode.as_str()
                     && HostRecord::new(&host)
                         .power_on_config()
-                        .as_object()
+                        .entries()
                         .is_some_and(|m| m.is_empty()),
                 "Host power-on configuration is not verified",
             )
@@ -1080,8 +1080,7 @@ pub(crate) async fn verify(
             if step.kind == Kind::MultipathHandle {
                 let actual = HostRecord::new(&host)
                     .other_config()
-                    .value()
-                    .as_object()
+                    .entries()
                     .and_then(|m| m.get("multipathhandle"));
                 require(
                     if *enabled {

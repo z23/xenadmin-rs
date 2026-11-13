@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use xenadmin_xapi::enumerations::{on_boot, primary_address_type, vm_operations, vm_power_state};
+use xenadmin_xapi::enumerations::{
+    on_boot, primary_address_type, vbd_mode, vbd_type, vdi_type, vm_operations, vm_power_state,
+};
 use xenadmin_xapi::records::{PifRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,11 +84,11 @@ impl Plan {
             && self.graph.disks.iter().all(|b| {
                 b.device.len() <= 256
                     && match (&b.kind[..], &b.disk) {
-                        ("CD", None) => true,
-                        ("Disk", Some(d)) => {
+                        (vbd_type::CD, None) => true,
+                        (vbd_type::DISK, Some(d)) => {
                             b.owner
-                                && b.mode == "RW"
-                                && d.kind == "user"
+                                && b.mode == vbd_mode::RW
+                                && d.kind == vdi_type::USER
                                 && !d.id.uuid().is_nil()
                                 && !d.sr.uuid().is_nil()
                         }
@@ -377,9 +379,9 @@ async fn source(
         crate::xapi::advertises(&record, vm_operations::MIGRATE_SEND),
         "The host does not currently allow cross-pool migration",
     )?;
-    if m::nullable_host(session, &VmRecord::new(&record).resident_on()).await?
+    if m::nullable_host(session, VmRecord::new(&record).resident_on()).await?
         != operation.expected_host
-        || m::nullable_host(session, &VmRecord::new(&record).affinity()).await?
+        || m::nullable_host(session, VmRecord::new(&record).affinity()).await?
             != operation.expected_affinity
     {
         return Err(Error::MigrationConflict);
@@ -459,7 +461,7 @@ async fn source(
         "Guest device slots are ambiguous",
     )?;
     for attachment in &graph.disks {
-        if attachment.kind == "CD" {
+        if attachment.kind == vbd_type::CD {
             unmet(
                 attachment.disk.is_none(),
                 "Eject installation media separately before transfer",
@@ -467,13 +469,13 @@ async fn source(
             continue;
         }
         unmet(
-            attachment.owner && attachment.mode == "RW",
+            attachment.owner && attachment.mode == vbd_mode::RW,
             "Only owned writable data disks can be transferred",
         )?;
         let disk = attachment.disk.as_ref().ok_or(Error::MigrationConflict)?;
         let (_, record) = m::fresh(session, "VDI", disk.id.uuid()).await?;
         unmet(
-            disk.kind == "user"
+            disk.kind == vdi_type::USER
                 && VdiRecord::new(&record).read_only() == false
                 && VdiRecord::new(&record).sharable() == false
                 && VdiRecord::new(&record).is_a_snapshot() == false
@@ -580,7 +582,7 @@ async fn destinations(
     let coordinator = m::read(
         destination,
         "host",
-        &snapshots::reference(&PoolRecord::new(&pool).master())?,
+        &snapshots::reference(PoolRecord::new(&pool).master())?,
     )
     .await?;
     let coordinator_address = m::text(&coordinator, "address")?;
@@ -596,7 +598,7 @@ async fn destinations(
         let pif = m::read(destination, "PIF", &pif).await?;
         let address_matches =
             if PifRecord::new(&pif).primary_address_type() == primary_address_type::IPV6 {
-                PifRecord::new(&pif).ipv6().as_array().is_some_and(|ips| {
+                PifRecord::new(&pif).ipv6().members().is_some_and(|ips| {
                     ips.iter()
                         .filter_map(Value::as_str)
                         .any(|ip| ip.split('/').next() == Some(operation.transfer_address.as_str()))
@@ -838,7 +840,7 @@ pub(crate) async fn verify_destination(
         "The destination guest configuration or state is not yet verified",
     )?;
     require(
-        m::nullable_host(destination, &VmRecord::new(&record).resident_on()).await?
+        m::nullable_host(destination, VmRecord::new(&record).resident_on()).await?
             == if plan.operation.mode.live() {
                 Some(plan.operation.destination_host)
             } else {

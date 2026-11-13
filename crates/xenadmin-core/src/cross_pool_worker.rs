@@ -1,6 +1,6 @@
 use super::*;
 use crate::{ResourceAction, cross_pool_backend as backend};
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
 
 struct ReceiverSession {
@@ -258,7 +258,7 @@ impl ResourceRequest {
                 ));
             }
             self.cross_plan_mut()?.task_uuid = Some(uuid);
-            match TaskRecord::new(&value).status().as_str() {
+            match TaskRecord::new(&value).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     self.cross_plan_mut()?.completed = true;
                     self.cross_plan_mut()?.ended = true;
@@ -286,14 +286,13 @@ impl ResourceRequest {
             self.record.state = OperationState::Tracking;
             self.record.progress = TaskRecord::new(&value)
                 .progress()
-                .as_f64()
-                .or_else(|| TaskRecord::new(&value).progress().as_str()?.parse().ok())
+                .number()
                 .filter(|n| n.is_finite())
                 .map(|n| n.clamp(0.0, 1.0));
             self.record.can_cancel = TaskRecord::new(&value)
                 .allowed_operations()
-                .as_array()
-                .is_some_and(|a| a.iter().any(|s| s == "cancel"));
+                .members()
+                .is_some_and(|a| a.iter().any(|s| s == task_allowed_operations::CANCEL));
             self.record.detail =
                 "Hosts are transferring the VM; source and destination pools are reserved".into();
             self.save(journal).await?;

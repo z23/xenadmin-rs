@@ -179,8 +179,7 @@ impl MutationRequest {
         let mut plan = self.record.migration_plan.clone().ok_or(Error::Journal)?;
         let code = TaskRecord::new(task)
             .error_info()
-            .value()
-            .as_array()
+            .members()
             .and_then(|a| a.first())
             .and_then(Value::as_str)
             .unwrap_or("TASK_FAILED");

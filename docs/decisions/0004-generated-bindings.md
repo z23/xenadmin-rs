@@ -127,7 +127,9 @@ depends on the description alone and is sorted.
   comparisons and match arms on enumeration fields (power states, task states, disk and
   attachment types, address modes and the like), and 72 operation names passed to the
   helpers that ask whether a record offers an operation, each from the enumeration of
-  that record's class. A value its enumeration does not have has no constant.
+  that record's class. A value its enumeration does not have has no constant. A further
+  276 followed on 2026-11-13, in the client's own types and in what it compares them
+  with (item 2 below).
 - `xapi_conformance_tests.rs` checks every string of the form `Class.name` or
   `Async.Class.name` in the core against the catalogue: a call must be a message of that
   class, and a field named by a decoder must be a field of it. It has a list for calls
@@ -244,29 +246,61 @@ classes.
    could not be traced by a script and have not been read by hand, and some 30 are in
    code given several classes.
 2. Typed values: generated readers that turn a field into its Rust type, with the core's
-   bounds applied to the result. The enumeration values still written as literals are
-   here: those compared with a value of the client's own, such as a reviewed power
-   state or an address mode, and the operation names the client carries in its own
-   types.
+   bounds applied to the result. As far as a view reaches, this is done.
 
-   Part of this is done since 0.19.0. A view's method returns the type of its field's
-   kind, and a field compares only with what its kind allows: a flag with a boolean,
-   text, a reference and an enumeration's value with a string, a number with a number
-   or its digits, and two fields with each other only when they are of one kind. The
-   core's readers take the kind they read (a UUID reader takes text, a link reader a
-   reference, a size reader a whole number, an operation list a set), so a field of
-   another kind handed to one does not compile; 255 calls were retyped that way and
-   none of them turned out to pass the wrong kind. Each type has a reader that gives
-   the Rust value or nothing (`get`, `text`, `reference`, `name`, `number`, `members`,
-   `entries`).
+   A view's method returns the type of its field's kind, and a field compares only with
+   what its kind allows: a flag with a boolean, text, a reference and an enumeration's
+   value with a string, a number with a number or its digits, and two fields with each
+   other only when they are of one kind. The core's readers take the kind they read (a
+   UUID reader takes text, a link reader a reference, a size reader a whole number, an
+   operation list a set), so a field of another kind handed to one does not compile; 255
+   calls were retyped that way and none of them turned out to pass the wrong kind.
 
-   What is not done: a field still reads as the JSON value it wraps, so `as_bool` on a
-   text field compiles and gives nothing. A test scans the core's sources for a view's
-   field followed by such an accessor and fails where the accessor does not fit the
-   kind; it judged 375 reads and found none wrong, but it sees only reads written
-   directly on a view. A value taken out of a map-valued field has no kind of its own
-   and is given one by hand where it is read. The core's bounds are still applied by
-   its own readers, not by generated ones, and the literals named above remain.
+   Since 2026-11-13 a typed field has the readers of its kind and nothing else (`get`
+   for a flag; `text`; `reference`; `name`; `number` and `unsigned`; `members` and
+   `strings` for a set; `entries`, and `get` and `text` by key, for a map). It no longer
+   reads as the JSON value it wraps, so `as_bool` on a text field, which used to compile
+   and give nothing, does not compile. The compiler made the move: with the JSON
+   accessors gone it named every read, on a view held in a variable and in the tests as
+   much as those written on a view, which were all the earlier scan could see. The core
+   has 461 fewer JSON accessor calls for it, and no read turned out to have asked for a
+   kind its field is not. Examples in the bindings that must not compile hold this, each
+   beside one that differs only in the reader and does.
+
+   The helpers that the workflows share were retyped the same way: 50 parameters in 27
+   files say which kind they read (`impl Reads<'a, kind::Reference>`, and likewise a
+   whole number, a set, a map or text), and 196 calls hand them a field. Such a helper
+   takes a field of its kind, or a JSON value that did not come through a view (a read
+   by key, a value taken out of a map), whose kind the caller vouches for by passing it.
+   A field of another kind goes in only as its JSON value, asked for by name with
+   `value()`. Seven places do that. Five are text that holds a number: the position of
+   a disk or of an interface on its guest is a string of digits, handed to the reader of
+   whole numbers in the OVF export and import. Two are inside the core's own strict
+   readers, which take a typed field and tell a missing value from a malformed one. A
+   test lists the five and fails on a sixth written on a view.
+
+   Enumeration values are the generated constants wherever one enumeration is meant.
+   276 more literals moved, which were values compared with the client's own (the kind
+   of an attachment or a disk held in the inventory, a reviewed address mode or power
+   state), the names the client's types carry for what they send (`Ipv4Mode::as_str`,
+   the bond modes, the schedule of a snapshot policy), operation names asked of a
+   record's `allowed_operations`, and values written into the records the client
+   creates. Each was given its enumeration by reading where the value comes from, since
+   `"None"`, `"destroy"` or `"plug"` belong to several. The core now writes 648
+   constants of 33 enumerations. Sixty-six literals that only look like values were
+   left: keys, labels, an SR's content type and the HA restart priority (both strings
+   in the API), storage types, and words of the OVF, update and metrics formats.
+
+   What is not done, and why. Fourteen names of power actions stay literals: each is the
+   name of the call first (`VM.clean_shutdown`) and of the operation second, and a test
+   holds each to being both. Three literals stand for a value of two enumerations at
+   once (`"None"` for a VIF's IPv4 and IPv6 modes read in one loop, and the dynamic
+   address modes of either family). A value taken out of a map-valued field has no kind
+   of its own; `MapField::text` reads the common case and anything else is given a kind
+   by hand. The core's bounds are applied by its own readers, not by generated ones: what
+   a malformed value means differs from one workflow to the next. A read by key is
+   untyped until it moves to a view (item 1). And a constant is a string like the
+   literal it replaced, so nothing but review keeps a new literal from being written.
 3. Calls: generated descriptions of each message's parameters, so that a call's
    arguments are checked where it is made. A test checks their number for the calls
    written with their arguments. Since 0.19.0 a debug build can also compare every call

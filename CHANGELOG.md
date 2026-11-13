@@ -112,8 +112,12 @@ again for that, because no published version reads format 5.
   client's behaviour changes with them.
 - Inside, a field read through the bindings has the type of its kind, so a flag, text, a
   reference, a number, a set and a map cannot be compared or handed to a reader as one
-  another, and a test checks that each is read as the kind the API gives it. Nothing in
-  the client's behaviour changes with this.
+  another. A typed field now has only the readers of its kind: reading one as another
+  kind of value, which used to compile and give nothing, no longer compiles, and the
+  helpers the workflows share say which kind they read. The values of the API's
+  enumerations are the generated constants in the client's own types as well, 276 more
+  of them. Nothing in the client's behaviour changes with this
+  ([decision record](docs/decisions/0004-generated-bindings.md)).
 - Inside, debug builds can compare every call they send with the API: how many arguments
   it takes, which of them may be left out, and the type of each. The repository's tests
   run with that check and it reported nothing. Release builds contain none of it.

@@ -12,6 +12,7 @@ use xenadmin_xapi::enumerations::{
     vm_power_state,
 };
 use xenadmin_xapi::records::{HostRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Change {
@@ -178,7 +179,8 @@ impl Plan {
         self.evidence.push(Evidence::default());
     }
 }
-fn number(v: &Value) -> Option<u64> {
+fn number<'a>(v: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let v = v.raw();
     v.as_u64().or_else(|| v.as_str()?.parse().ok())
 }
 fn id<T: From<Uuid>>(r: &Value) -> Result<T, Error> {
@@ -188,7 +190,8 @@ fn id<T: From<Uuid>>(r: &Value) -> Result<T, Error> {
         .map(T::from)
         .ok_or(Error::VmLifecycleConflict)
 }
-fn reference(v: &Value) -> Result<String, Error> {
+fn reference<'a>(v: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let v = v.raw();
     snapshots::reference(v)
 }
 fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
@@ -260,7 +263,7 @@ async fn fresh(session: &Session, class: &str, id: Uuid) -> Result<(String, Valu
 fn ordinary(r: &Value) -> bool {
     VmRecord::new(r).is_a_snapshot() == false
         && VmRecord::new(r).is_control_domain() == false
-        && VmRecord::new(r).is_a_template().is_boolean()
+        && VmRecord::new(r).is_a_template().get().is_some()
 }
 async fn source(session: &Session, plan: &Plan) -> Result<(String, Value), Error> {
     let (reference, r) = fresh(session, "VM", plan.source.uuid()).await?;
@@ -325,7 +328,7 @@ async fn require_iso_image(session: &Session, image: &Value) -> Result<(), Error
     let sr = session
         .call(
             "SR.get_record",
-            vec![json!(reference(&VdiRecord::new(image).sr())?)],
+            vec![json!(reference(VdiRecord::new(image).sr())?)],
         )
         .await?;
     if SrRecord::new(&sr).content_type() == "iso" {
@@ -392,12 +395,12 @@ pub(crate) async fn plan(
         plan.metadata = Some((
             VmRecord::new(&record)
                 .name_label()
-                .as_str()
+                .text()
                 .ok_or(Error::VmLifecycleConflict)?
                 .into(),
             VmRecord::new(&record)
                 .name_description()
-                .as_str()
+                .text()
                 .ok_or(Error::VmLifecycleConflict)?
                 .into(),
         ));
@@ -422,14 +425,14 @@ pub(crate) async fn plan(
             if let Some(host) = bios_host {
                 bios_eligible(&record, *firmware)?;
                 let (_, h) = fresh(session, "host", host.uuid()).await?;
-                let map = string_map(&HostRecord::new(&h).bios_strings())?;
+                let map = string_map(HostRecord::new(&h).bios_strings())?;
                 if map.is_empty() {
                     return Err(Error::UnsupportedVmLifecycle);
                 }
                 plan.bios_identity = Some(map);
             }
             if let VmLifecycleOperation::Create { memory, .. } = operation
-                && number(&VmRecord::new(&record).memory_static_min())
+                && number(VmRecord::new(&record).memory_static_min())
                     .is_none_or(|minimum| minimum > *memory)
             {
                 return Err(Error::InvalidVmLifecycle);
@@ -573,7 +576,7 @@ async fn guard_creation_permissions(
             let net = session
                 .call(
                     "network.get_record",
-                    vec![json!(reference(&VifRecord::new(&vif).network())?)],
+                    vec![json!(reference(VifRecord::new(&vif).network())?)],
                 )
                 .await?;
             if id::<crate::NetworkId>(&net)? != *network {
@@ -606,7 +609,7 @@ async fn validate_source_devices(session: &Session, record: &Value) -> Result<()
             let disk = session
                 .call(
                     "VDI.get_record",
-                    vec![json!(reference(&VbdRecord::new(&r).vdi())?)],
+                    vec![json!(reference(VbdRecord::new(&r).vdi())?)],
                 )
                 .await?;
             if !ordinary_disk(&disk) {
@@ -694,9 +697,9 @@ pub(crate) async fn prepare(
             let (source_ref, r) = source(session, plan).await?;
             validate_source_devices(session, &r).await?;
             let cap = if matches!(mode, VmCopyMode::Fast) {
-                "clone"
+                vm_operations::CLONE
             } else {
-                "copy"
+                vm_operations::COPY
             };
             permits(&r, cap)?;
             validate_create_choices(session, &plan.operation).await?;
@@ -723,7 +726,7 @@ pub(crate) async fn prepare(
                     bios_eligible(&current, *firmware)?;
                     let (_, h) = fresh(session, "host", host.uuid()).await?;
                     if plan.bios_identity.as_ref()
-                        != Some(&string_map(&HostRecord::new(&h).bios_strings())?)
+                        != Some(&string_map(HostRecord::new(&h).bios_strings())?)
                     {
                         return Err(Error::VmLifecycleConflict);
                     }
@@ -739,8 +742,7 @@ pub(crate) async fn prepare(
             let (vr, r) = target(session, plan, vm).await?;
             bios_eligible(&r, GuestFirmware::Inherited)?;
             let (hr, h) = fresh(session, "host", host.uuid()).await?;
-            if plan.bios_identity.as_ref()
-                != Some(&string_map(&HostRecord::new(&h).bios_strings())?)
+            if plan.bios_identity.as_ref() != Some(&string_map(HostRecord::new(&h).bios_strings())?)
             {
                 return Err(Error::VmLifecycleConflict);
             }
@@ -767,7 +769,7 @@ pub(crate) async fn prepare(
                 }
                 Change::Memory(value) => {
                     permits_memory_limits(&r)?;
-                    let min = number(&VmRecord::new(&r).memory_static_min())
+                    let min = number(VmRecord::new(&r).memory_static_min())
                         .ok_or(Error::VmLifecycleConflict)?;
                     if min > value {
                         return Err(Error::InvalidVmLifecycle);
@@ -804,7 +806,7 @@ pub(crate) async fn prepare(
                     if crate::guest_boot::firmware(&r) != Some("uefi") {
                         return Err(Error::UnsupportedVmLifecycle);
                     }
-                    let mut params = string_map(&VmRecord::new(&r).platform())?;
+                    let mut params = string_map(VmRecord::new(&r).platform())?;
                     params.insert("secureboot".into(), json!(value.to_string()));
                     Ok(call(
                         "VM.set_platform",
@@ -817,7 +819,7 @@ pub(crate) async fn prepare(
                         return Err(Error::UnsupportedVmLifecycle);
                     }
                     firmware_safe(&r, value)?;
-                    let mut params = string_map(&VmRecord::new(&r).hvm_boot_params())?;
+                    let mut params = string_map(VmRecord::new(&r).hvm_boot_params())?;
                     params.insert(
                         "firmware".into(),
                         json!(match value {
@@ -984,7 +986,8 @@ pub(crate) async fn prepare(
         }
     }
 }
-fn string_map(v: &Value) -> Result<serde_json::Map<String, Value>, Error> {
+fn string_map<'a>(v: impl Reads<'a, kind::Map>) -> Result<serde_json::Map<String, Value>, Error> {
+    let v = v.raw();
     let map = v
         .as_object()
         .filter(|v| v.len() <= 256)
@@ -1102,7 +1105,7 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
     } else {
         for nic in nics {
             let r = session.call("VIF.get_record", vec![json!(nic)]).await?;
-            let old_ref = reference(&VifRecord::new(&r).network())?;
+            let old_ref = reference(VifRecord::new(&r).network())?;
             let old = session
                 .call("network.get_record", vec![json!(old_ref)])
                 .await?;
@@ -1110,7 +1113,7 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
             if from != network {
                 let mac = VifRecord::new(&r)
                     .mac()
-                    .as_str()
+                    .text()
                     .ok_or(Error::VmLifecycleConflict)?
                     .to_owned();
                 let group = devices::plan(
@@ -1135,7 +1138,7 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
                 let old = session
                     .call(
                         "VDI.get_record",
-                        vec![json!(reference(&VbdRecord::new(&cd).vdi())?)],
+                        vec![json!(reference(VbdRecord::new(&cd).vdi())?)],
                     )
                     .await?;
                 plan.push(Step::EjectIso {
@@ -1186,7 +1189,7 @@ async fn capture_graph(
             plan.created_devices.push(CreatedDevice::Attachment(vbd_id));
         }
         if VbdRecord::new(&vbd).type_() == vbd_type::DISK {
-            let disk_ref = reference(&VbdRecord::new(&vbd).vdi())?;
+            let disk_ref = reference(VbdRecord::new(&vbd).vdi())?;
             let disk = session
                 .call("VDI.get_record", vec![json!(disk_ref)])
                 .await?;
@@ -1266,7 +1269,7 @@ fn after_copy(plan: &mut Plan, vm: VmId, record: &Value) -> Result<(), Error> {
                 vm,
                 change: Change::Memory(memory),
             });
-            let old = number(&VmRecord::new(record).vcpus_at_startup())
+            let old = number(VmRecord::new(record).vcpus_at_startup())
                 .ok_or(Error::VmLifecycleConflict)?;
             if vcpus < old {
                 plan.push(Step::Set {
@@ -1389,7 +1392,7 @@ pub(crate) async fn verify(
                             .call(
                                 "VDI.get_record",
                                 vec![json!(crate::snapshots::reference(
-                                    &VbdRecord::new(&vbd).vdi()
+                                    VbdRecord::new(&vbd).vdi()
                                 )?)],
                             )
                             .await?;
@@ -1411,7 +1414,7 @@ pub(crate) async fn verify(
                 && VmRecord::new(&r).power_state() == vm_power_state::HALTED
                 && VmRecord::new(&r).affinity() == hr
                 && plan.bios_identity.as_ref()
-                    == Some(&string_map(&VmRecord::new(&r).bios_strings())?))
+                    == Some(&string_map(VmRecord::new(&r).bios_strings())?))
         }
         Step::Set { vm, change } => {
             let Some((_, r)) = snapshots::optional_record(session, "VM", &vm.to_string()).await?
@@ -1444,9 +1447,9 @@ pub(crate) async fn verify(
                 ]
                 .iter()
                 .all(|k| number(&r[*k]) == Some(value)),
-                Change::VcpuMax(value) => number(&VmRecord::new(&r).vcpus_max()) == Some(value),
+                Change::VcpuMax(value) => number(VmRecord::new(&r).vcpus_max()) == Some(value),
                 Change::VcpuStartup(value) => {
-                    number(&VmRecord::new(&r).vcpus_at_startup()) == Some(value)
+                    number(VmRecord::new(&r).vcpus_at_startup()) == Some(value)
                 }
                 Change::SecureBoot(value) => {
                     crate::guest_boot::firmware(&r) == Some("uefi")
@@ -1515,7 +1518,7 @@ pub(crate) async fn verify(
             let disk = session
                 .call(
                     "VDI.get_record",
-                    vec![json!(reference(&VbdRecord::new(&cd).vdi())?)],
+                    vec![json!(reference(VbdRecord::new(&cd).vdi())?)],
                 )
                 .await?;
             Ok(id::<VdiId>(&disk)? == image)
@@ -1564,7 +1567,7 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
         let v = session.call("VBD.get_record", vec![json!(vbd)]).await?;
         let slot = VbdRecord::new(&v)
             .userdevice()
-            .as_str()
+            .text()
             .ok_or(Error::VmLifecycleConflict)?
             .to_owned();
         if graph.disks.contains_key(&slot) || graph.cds.contains_key(&slot) {
@@ -1574,24 +1577,24 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
             let d = session
                 .call(
                     "VDI.get_record",
-                    vec![json!(reference(&VbdRecord::new(&v).vdi())?)],
+                    vec![json!(reference(VbdRecord::new(&v).vdi())?)],
                 )
                 .await?;
             let sr = session
                 .call(
                     "SR.get_record",
-                    vec![json!(reference(&VdiRecord::new(&d).sr())?)],
+                    vec![json!(reference(VdiRecord::new(&d).sr())?)],
                 )
                 .await?;
             graph.disks.insert(
                 slot,
                 ExpectedDisk {
-                    size: number(&VdiRecord::new(&d).virtual_size())
+                    size: number(VdiRecord::new(&d).virtual_size())
                         .ok_or(Error::VmLifecycleConflict)?,
                     sr: id(&sr)?,
                     mode: VbdRecord::new(&v)
                         .mode()
-                        .as_str()
+                        .name()
                         .ok_or(Error::VmLifecycleConflict)?
                         .into(),
                 },
@@ -1603,7 +1606,7 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
                 let disk = session
                     .call(
                         "VDI.get_record",
-                        vec![json!(reference(&VbdRecord::new(&v).vdi())?)],
+                        vec![json!(reference(VbdRecord::new(&v).vdi())?)],
                     )
                     .await?;
                 Some(id(&disk)?)
@@ -1618,12 +1621,12 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
         let network = session
             .call(
                 "network.get_record",
-                vec![json!(reference(&VifRecord::new(&v).network())?)],
+                vec![json!(reference(VifRecord::new(&v).network())?)],
             )
             .await?;
         let slot = VifRecord::new(&v)
             .device()
-            .as_str()
+            .text()
             .ok_or(Error::VmLifecycleConflict)?
             .to_owned();
         if graph.nics.insert(slot, id(&network)?).is_some() {
@@ -1639,7 +1642,7 @@ fn bios_eligible(r: &Value, firmware: GuestFirmware) -> Result<(), Error> {
         || !crate::guest_boot::is_hvm(r)
         || !VmRecord::new(r)
             .bios_strings()
-            .as_object()
+            .entries()
             .is_some_and(|v| v.is_empty())
     {
         return Err(Error::UnsupportedVmLifecycle);

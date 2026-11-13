@@ -6,6 +6,7 @@ use xenadmin_xapi::enumerations::{
     vbd_type, vdi_operations, vdi_type, vm_operations, vm_power_state,
 };
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DeletionPlan {
@@ -31,7 +32,7 @@ impl Inventory {
                     && disk.sharable == Some(false)
                     && disk.managed == Some(true)
                     && disk.missing == Some(false)
-                    && disk.kind == "user"
+                    && disk.kind == vdi_type::USER
                     && self
                         .details
                         .vdi_attachments
@@ -42,7 +43,7 @@ impl Inventory {
                                     self.details.vbds.get(id).is_some_and(|vbd| {
                                         vbd.snapshot == Some(snapshot)
                                             && vbd.owned
-                                            && vbd.kind == "Disk"
+                                            && vbd.kind == vbd_type::DISK
                                     })
                                 })
                         })
@@ -52,7 +53,8 @@ impl Inventory {
     }
 }
 
-pub(crate) fn reference(value: &Value) -> Result<String, Error> {
+pub(crate) fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let value = value.raw();
     value
         .as_str()
         .filter(|s| {
@@ -103,7 +105,10 @@ pub(crate) async fn snapshot_record(
         .await?
         .ok_or(Error::Stale)?;
     if VmRecord::new(&parent_record).is_a_snapshot() != false
-        || !VmRecord::new(&parent_record).is_a_template().is_boolean()
+        || !VmRecord::new(&parent_record)
+            .is_a_template()
+            .get()
+            .is_some()
         || VmRecord::new(&parent_record).is_control_domain() != false
     {
         return Err(Error::Stale);
@@ -113,7 +118,7 @@ pub(crate) async fn snapshot_record(
         .ok_or(Error::Stale)?;
     if VmRecord::new(&record).is_a_snapshot() != true
         || VmRecord::new(&record).is_control_domain() != false
-        || VmRecord::new(&record).snapshot_of().as_str() != Some(&parent_ref)
+        || VmRecord::new(&record).snapshot_of().reference() != Some(&parent_ref)
     {
         return Err(Error::SnapshotConflict);
     }
@@ -131,7 +136,7 @@ fn refs(record: &Value, key: &str) -> Result<Vec<String>, Error> {
 fn can(record: &Value, operation: &str) -> bool {
     VmRecord::new(record)
         .allowed_operations()
-        .as_array()
+        .members()
         .is_some_and(|ops| ops.iter().any(|op| op == operation))
         && VmRecord::new(record)
             .blocked_operations()
@@ -196,7 +201,7 @@ pub(crate) async fn deletion_plan(
         }
     }
     let memory = if checkpoint {
-        let reference = reference(&VmRecord::new(&record).suspend_vdi())?;
+        let reference = reference(VmRecord::new(&record).suspend_vdi())?;
         let disk = session
             .call("VDI.get_record", vec![json!(&reference)])
             .await?;
@@ -208,7 +213,7 @@ pub(crate) async fn deletion_plan(
         }
         let id = VdiRecord::new(&disk)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|id| VdiId::parse(id).ok())
             .ok_or(Error::SnapshotConflict)?;
         let vms = session.call("VM.get_all_records", vec![]).await?;
@@ -246,11 +251,11 @@ pub(crate) async fn stop_checkpoint(
     {
         return Err(Error::SnapshotConflict);
     }
-    let memory_ref = self::reference(&VmRecord::new(&record).suspend_vdi())?;
+    let memory_ref = self::reference(VmRecord::new(&record).suspend_vdi())?;
     let saved = session
         .call("VDI.get_record", vec![json!(memory_ref)])
         .await?;
-    if VdiRecord::new(&saved).uuid().as_str() != memory.map(|id| id.to_string()).as_deref() {
+    if VdiRecord::new(&saved).uuid().text() != memory.map(|id| id.to_string()).as_deref() {
         return Err(Error::SnapshotConflict);
     }
     session
@@ -312,14 +317,14 @@ pub(crate) async fn verify_clone(
         .await?;
     let id = VmRecord::new(&record)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|id| VmId::parse(id).ok())
         .ok_or(Error::Protocol("invalid cloned VM identity"))?;
     if id == parent
         || id.to_string() == snapshot.to_string()
         || VmRecord::new(&record).is_a_snapshot() != false
         || VmRecord::new(&record).is_control_domain() != false
-        || !VmRecord::new(&record).is_a_template().is_boolean()
+        || !VmRecord::new(&record).is_a_template().get().is_some()
         || VmRecord::new(&record).power_state() != vm_power_state::HALTED
         || VmRecord::new(&record).snapshot_of() != "OpaqueRef:NULL"
     {
@@ -341,7 +346,7 @@ pub(crate) async fn clone_baseline(session: &Session) -> Result<Vec<VmId>, Error
         .map(|record| {
             VmRecord::new(record)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|id| VmId::parse(id).ok())
                 .ok_or(Error::Protocol(
                     "invalid VM UUID in clone identity baseline",

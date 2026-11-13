@@ -11,6 +11,7 @@ use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
 use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord,
 };
+use xenadmin_xapi::{Reads, kind};
 fn require(ok: bool, msg: &'static str) -> Result<(), Error> {
     if ok {
         Ok(())
@@ -26,7 +27,8 @@ fn idle(v: &Value) -> Result<(), Error> {
         "Storage or host has an active operation",
     )
 }
-fn reference(v: &Value) -> Result<String, Error> {
+fn reference<'a>(v: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let v = v.raw();
     crate::snapshots::reference(v)
 }
 fn uuid(v: &Value) -> Result<uuid::Uuid, Error> {
@@ -52,8 +54,7 @@ async fn records(s: &Session, class: &str, limit: usize) -> Result<BTreeMap<Stri
 fn config(v: &Value) -> Result<&serde_json::Map<String, Value>, Error> {
     let m = PbdRecord::new(v)
         .device_config()
-        .value()
-        .as_object()
+        .entries()
         .filter(|m| m.len() <= 128)
         .ok_or(Error::ResourceConflict)?;
     require(
@@ -108,7 +109,7 @@ fn source_config(v: &Value, location: &crate::StorageLocation) -> Result<(), Err
         "Custom or host-dependent attachment configuration needs separate review; automatic reconstruction is unavailable",
     )?;
     require(
-        crate::storage::safe_location_from_config(&PbdRecord::new(v).device_config()).as_ref()
+        crate::storage::safe_location_from_config(PbdRecord::new(v).device_config()).as_ref()
             == Some(location),
         "Source attachment location changed",
     )?;
@@ -137,7 +138,7 @@ async fn host(s: &Session, id: crate::HostId, live: bool) -> Result<(String, Val
         let m = s
             .call(
                 "host_metrics.get_record",
-                vec![json!(reference(&HostRecord::new(&v).metrics())?)],
+                vec![json!(reference(HostRecord::new(&v).metrics())?)],
             )
             .await?;
         require(
@@ -167,10 +168,10 @@ fn attachment(
             && PbdRecord::new(v).sr() == sr_ref
             && PbdRecord::new(v).currently_attached() == attached
             && crate::storage::safe_location_for_kind(
-                &PbdRecord::new(v).device_config(),
-                SrRecord::new(sr).type_().as_str(),
+                PbdRecord::new(v).device_config(),
+                SrRecord::new(sr).type_().text(),
             ) == p.location
-            && crate::storage::requires_credentials(&PbdRecord::new(v).device_config())
+            && crate::storage::requires_credentials(PbdRecord::new(v).device_config())
                 == p.requires_credentials,
         "Reviewed attachment identity, state or location changed",
     )?;
@@ -273,7 +274,7 @@ async fn repair_graph(
         }
     }
     require(
-        SrRecord::new(&sr).pbds().as_array().is_some_and(|a| {
+        SrRecord::new(&sr).pbds().members().is_some_and(|a| {
             a.iter().all(|v| {
                 v.as_str().is_some_and(|k| {
                     pbds.get(k)
@@ -373,7 +374,8 @@ async fn verify_clone(
     }
     Ok(secrets)
 }
-fn ref_set(value: &Value) -> Result<BTreeSet<String>, Error> {
+fn ref_set<'a>(value: impl Reads<'a, kind::Set>) -> Result<BTreeSet<String>, Error> {
+    let value = value.raw();
     let a = value
         .as_array()
         .filter(|a| a.len() <= 20000)
@@ -411,7 +413,7 @@ async fn multipath_graph(
     require(
         PoolRecord::new(&pool)
             .current_operations()
-            .as_object()
+            .entries()
             .is_some_and(|m| m.is_empty()),
         "Wait for the pool's active operation before multipath maintenance",
     )?;
@@ -432,8 +434,7 @@ async fn multipath_graph(
     )?;
     let handler = HostRecord::new(&v)
         .other_config()
-        .value()
-        .as_object()
+        .entries()
         .ok_or(Error::ResourceConflict)?
         .get("multipathhandle");
     let handler_expected = if done(p, &Kind::AddHandler, after) {
@@ -462,7 +463,7 @@ async fn multipath_graph(
         "Complete host storage attachment graph changed",
     )?;
     require(
-        HostRecord::new(&v).pbds().as_array().is_some_and(|a| {
+        HostRecord::new(&v).pbds().members().is_some_and(|a| {
             a.len() == attachments.len()
                 && a.iter().all(|v| {
                     v.as_str()
@@ -511,7 +512,7 @@ async fn multipath_graph(
             )?;
         }
         let block = matches!(
-            SrRecord::new(&sr).type_().as_str(),
+            SrRecord::new(&sr).type_().text(),
             Some("lvmoiscsi" | "lvmohba")
         );
         let expected_disks = disks
@@ -520,7 +521,7 @@ async fn multipath_graph(
             .map(|(k, _)| k.clone())
             .collect::<BTreeSet<_>>();
         require(
-            ref_set(&SrRecord::new(&sr).vdis())? == expected_disks,
+            ref_set(SrRecord::new(&sr).vdis())? == expected_disks,
             "Repository disk graph is incomplete or changed",
         )?;
         for (dref, d) in disks
@@ -533,14 +534,14 @@ async fn multipath_graph(
                 .map(|(k, _)| k.clone())
                 .collect::<BTreeSet<_>>();
             require(
-                ref_set(&VdiRecord::new(d).vbds())? == expected_vbds,
+                ref_set(VdiRecord::new(d).vbds())? == expected_vbds,
                 "Disk attachment graph is incomplete or changed",
             )?;
             for bref in &expected_vbds {
                 let b = &vbds[bref];
-                let vm_ref = reference(&VbdRecord::new(b).vm())?;
+                let vm_ref = reference(VbdRecord::new(b).vm())?;
                 let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
-                let declared = ref_set(&VmRecord::new(vm).vbds())?;
+                let declared = ref_set(VmRecord::new(vm).vbds())?;
                 require(
                     declared.contains(bref),
                     "Guest disk attachment graph is inconsistent",
@@ -560,7 +561,7 @@ async fn multipath_graph(
             )?;
             for b in vbds.values().filter(|b| VbdRecord::new(b).vdi() == *dref) {
                 if VbdRecord::new(b).currently_attached() != false {
-                    let vm = reference(&VbdRecord::new(b).vm())?;
+                    let vm = reference(VbdRecord::new(b).vm())?;
                     let resident = vms.get(&vm).ok_or(Error::ResourceConflict)?;
                     require(
                         !block && VmRecord::new(resident).resident_on() != h,
@@ -740,14 +741,14 @@ pub(super) async fn arguments(
             match p.kinds[index] {
                 Kind::Unplug(id) => {
                     let (_, current_pbd) = find(&graph, id.uuid())?;
-                    storage_allowed(s, &current_pbd, "unplug").await?;
+                    storage_allowed(s, &current_pbd, storage_operations::UNPLUG).await?;
                     let reference = latest_attachment(s, &graph, id).await?;
                     Ok(("Async.PBD.unplug", vec![json!(reference)]))
                 }
                 Kind::Plug(host, sr) => {
                     let id = p.attachment(host, sr).ok_or(Error::Journal)?;
                     let (_, current_pbd) = find(&graph, id.uuid())?;
-                    storage_allowed(s, &current_pbd, "plug").await?;
+                    storage_allowed(s, &current_pbd, storage_operations::PLUG).await?;
                     let reference = latest_attachment(s, &graph, id).await?;
                     Ok(("Async.PBD.plug", vec![json!(reference)]))
                 }

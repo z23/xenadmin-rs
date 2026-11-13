@@ -240,16 +240,15 @@ pub(crate) fn decode_crashdump(r: &Value) -> Result<HostCrashdump, Error> {
     Ok(HostCrashdump {
         uuid: HostCrashdumpRecord::new(r)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|s| crate::HostCrashdumpId::parse(s).ok())
             .filter(|id| !id.uuid().is_nil())
             .ok_or(Error::Protocol("invalid host crashdump UUID"))?,
         size: HostCrashdumpRecord::new(r)
             .size()
-            .as_u64()
-            .or_else(|| HostCrashdumpRecord::new(r).size().as_str()?.parse().ok())
+            .unsigned()
             .ok_or(Error::Protocol("invalid host crashdump size"))?,
-        timestamp: crate::security_discovery::text(&HostCrashdumpRecord::new(r).timestamp(), 64)?,
+        timestamp: crate::security_discovery::text(HostCrashdumpRecord::new(r).timestamp(), 64)?,
     })
 }
 pub(crate) async fn discover(
@@ -295,8 +294,7 @@ pub(crate) async fn prepare(
     }
     let address = HostRecord::new(&record)
         .address()
-        .value()
-        .as_str()
+        .text()
         .filter(|s| !s.is_empty() && s.len() <= 253 && !s.contains(['/', '@', '?', '#']))
         .ok_or(Error::TransferEndpoint)?;
     let mut endpoint = s.options().endpoint.clone();
@@ -323,7 +321,7 @@ pub(crate) async fn prepare(
                 || archive.version != expected_version
                 || HostRecord::new(&record)
                     .current_operations()
-                    .as_object()
+                    .entries()
                     .is_none_or(|m| !m.is_empty())
             {
                 return Err(Error::TransferConflict);
@@ -356,7 +354,7 @@ pub(crate) async fn prepare(
         || (matches!(operation, HostArchiveOperation::StageRestore { .. })
             && HostRecord::new(&current)
                 .current_operations()
-                .as_object()
+                .entries()
                 .is_none_or(|m| !m.is_empty()))
     {
         return Err(Error::TransferConflict);
@@ -381,7 +379,7 @@ async fn unique_certificate(
         .map(|r| {
             HostRecord::new(r)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|v| HostId::parse(v).ok())
                 .ok_or(Error::TransferConflict)
         })

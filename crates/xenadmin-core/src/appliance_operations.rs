@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::{VmApplianceRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone)]
 pub(super) enum Verify {
@@ -74,8 +75,7 @@ async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
 async fn members(session: &Session, record: &Value) -> Result<BTreeSet<VmId>, Error> {
     let refs = VmApplianceRecord::new(record)
         .vms()
-        .value()
-        .as_array()
+        .members()
         .filter(|v| v.len() <= 256)
         .ok_or(Error::Protocol(
             "vApp membership unavailable or exceeds 256 VMs",
@@ -87,7 +87,7 @@ async fn members(session: &Session, record: &Value) -> Result<BTreeSet<VmId>, Er
             .await?;
         let id = VmRecord::new(&r)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|s| VmId::parse(s).ok())
             .ok_or(Error::Protocol("vApp member UUID unavailable"))?;
         if !ids.insert(id) {
@@ -96,22 +96,23 @@ async fn members(session: &Session, record: &Value) -> Result<BTreeSet<VmId>, Er
     }
     Ok(ids)
 }
-fn number(value: &Value) -> Option<i64> {
+fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<i64> {
+    let value = value.raw();
     value.as_i64().or_else(|| value.as_str()?.parse().ok())
 }
 fn order(record: &Value) -> Result<ApplianceOrder, Error> {
     Ok(ApplianceOrder {
-        order: number(&VmRecord::new(record).order()).ok_or(Error::ResourceConflict)?,
-        start_delay: number(&VmRecord::new(record).start_delay())
+        order: number(VmRecord::new(record).order()).ok_or(Error::ResourceConflict)?,
+        start_delay: number(VmRecord::new(record).start_delay())
             .and_then(|v| v.try_into().ok())
             .ok_or(Error::ResourceConflict)?,
-        shutdown_delay: number(&VmRecord::new(record).shutdown_delay())
+        shutdown_delay: number(VmRecord::new(record).shutdown_delay())
             .and_then(|v| v.try_into().ok())
             .ok_or(Error::ResourceConflict)?,
     })
 }
 fn power(record: &Value) -> Result<PowerState, Error> {
-    match VmRecord::new(record).power_state().as_str() {
+    match VmRecord::new(record).power_state().name() {
         Some(vm_power_state::RUNNING) => Ok(PowerState::Running),
         Some(vm_power_state::HALTED) => Ok(PowerState::Halted),
         Some(vm_power_state::PAUSED) => Ok(PowerState::Paused),
@@ -409,7 +410,7 @@ pub(super) async fn verify(
                 .await?;
             let id = VmApplianceRecord::new(&r)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|s| ApplianceId::parse(s).ok())
                 .ok_or(Error::ResourceConflict)?;
             if record

@@ -6,6 +6,7 @@ use crate::{Error, PbdId, SrId, StorageOperation, VdiId, storage::StorageBaselin
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
 use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord};
+use xenadmin_xapi::{Reads, kind};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&StorageOperation, Error> {
     match &record.action {
@@ -59,11 +60,11 @@ pub(super) async fn capability(session: &Session, kind: &str, feature: &str) -> 
             feature.is_empty()
                 || SmRecord::new(r)
                     .features()
-                    .as_object()
+                    .entries()
                     .is_some_and(|f| f.contains_key(feature))
                 || SmRecord::new(r)
                     .capabilities()
-                    .as_array()
+                    .members()
                     .is_some_and(|v| v.iter().any(|v| v == feature))
         });
     if supported {
@@ -89,7 +90,7 @@ async fn baseline(session: &Session) -> Result<StorageBaseline, Error> {
             .map(|r| {
                 SrRecord::new(r)
                     .uuid()
-                    .as_str()
+                    .text()
                     .and_then(|s| SrId::parse(s).ok())
                     .ok_or(Error::Protocol("invalid storage baseline UUID"))
             })
@@ -140,7 +141,7 @@ async fn no_consumers(
         ids.push(
             VdiRecord::new(&vdi)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|id| VdiId::parse(id).ok())
                 .ok_or(Error::Protocol("storage disk identity unavailable"))?,
         );
@@ -375,7 +376,7 @@ pub(super) async fn arguments(
                 }
                 if !matches!(record.action, ResourceAction::AuthenticatedStorage { .. })
                     && crate::storage::requires_credentials(
-                        &PbdRecord::new(&attachment).device_config(),
+                        PbdRecord::new(&attachment).device_config(),
                     )
                 {
                     return Err(Error::Protocol(
@@ -383,7 +384,7 @@ pub(super) async fn arguments(
                     ));
                 }
                 if crate::storage::safe_location_for_kind(
-                    &PbdRecord::new(&attachment).device_config(),
+                    PbdRecord::new(&attachment).device_config(),
                     fresh["type"].as_str(),
                 )
                 .as_ref()
@@ -441,9 +442,9 @@ pub(super) async fn arguments(
             expected_disks,
         } => {
             let action = if matches!(operation(record)?, StorageOperation::Destroy { .. }) {
-                "destroy"
+                storage_operations::DESTROY
             } else {
-                "forget"
+                storage_operations::FORGET
             };
             allowed(&fresh, action)?;
 
@@ -500,7 +501,7 @@ pub(super) async fn verify(
             let fresh = by_ref(session, "SR", &json!(reference)).await?;
             let id = SrRecord::new(&fresh)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|id| SrId::parse(id).ok())
                 .ok_or(Error::Protocol("created storage UUID unavailable"))?;
             if baseline.srs.contains(&id)
@@ -528,7 +529,7 @@ pub(super) async fn verify(
                     let pbd = by_ref(session, "PBD", pbd).await?;
                     let id = PbdRecord::new(&pbd)
                         .uuid()
-                        .as_str()
+                        .text()
                         .and_then(|v| PbdId::parse(v).ok())
                         .ok_or(Error::Protocol(
                             "Created storage attachment UUID unavailable",
@@ -539,7 +540,7 @@ pub(super) async fn verify(
                     if PbdRecord::new(&pbd).host() == host_ref
                         && PbdRecord::new(&pbd).sr() == *reference
                         && config_matches(
-                            &PbdRecord::new(&pbd).device_config(),
+                            PbdRecord::new(&pbd).device_config(),
                             &location.device_config(),
                         )
                     {
@@ -565,7 +566,7 @@ pub(super) async fn verify(
             let fresh = by_ref(session, "PBD", &json!(reference)).await?;
             let id = PbdRecord::new(&fresh)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|id| PbdId::parse(id).ok())
                 .ok_or(Error::Protocol("created attachment UUID unavailable"))?;
             let ResourceTarget::Storage(sr) = record.target else {
@@ -581,7 +582,7 @@ pub(super) async fn verify(
             if PbdRecord::new(&fresh).currently_attached() != false
                 || baseline.pbds.contains(&id)
                 || !config_matches(
-                    &PbdRecord::new(&fresh).device_config(),
+                    PbdRecord::new(&fresh).device_config(),
                     &location.device_config(),
                 )
             {
@@ -608,7 +609,8 @@ pub(super) async fn verify(
         },
     }
 }
-pub(super) fn config_matches(actual: &Value, expected: &Value) -> bool {
+pub(super) fn config_matches<'a>(actual: impl Reads<'a, kind::Map>, expected: &Value) -> bool {
+    let actual = actual.raw();
     expected.as_object().is_some_and(|expected| {
         expected.iter().all(|(key, value)| {
             actual[key] == *value || (key == "port" && value == "3260" && actual.get(key).is_none())
@@ -621,8 +623,7 @@ pub(super) fn config_matches(actual: &Value, expected: &Value) -> bool {
 pub(super) fn trim_succeeded(task: &Value) -> Result<bool, Error> {
     let xml = TaskRecord::new(task)
         .result()
-        .value()
-        .as_str()
+        .text()
         .filter(|s| s.len() <= 65536)
         .ok_or(Error::Protocol("trim task result unavailable"))?;
     let doc = roxmltree::Document::parse_with_options(

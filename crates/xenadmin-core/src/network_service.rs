@@ -1,6 +1,8 @@
 use crate::{Error, Inventory, NetworkId, PhysicalInterface, PifId, PifIdentity};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, net::Ipv4Addr};
+use xenadmin_xapi::enumerations::network_purpose;
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NetworkServicePurpose {
@@ -10,8 +12,8 @@ pub enum NetworkServicePurpose {
 impl NetworkServicePurpose {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::NbdTls => "nbd",
-            Self::NbdPlaintext => "insecure_nbd",
+            Self::NbdTls => network_purpose::NBD,
+            Self::NbdPlaintext => network_purpose::INSECURE_NBD,
         }
     }
     pub fn label(self) -> &'static str {
@@ -22,8 +24,8 @@ impl NetworkServicePurpose {
     }
     pub(crate) fn opposite(self) -> &'static str {
         match self {
-            Self::NbdTls => "insecure_nbd",
-            Self::NbdPlaintext => "nbd",
+            Self::NbdTls => network_purpose::INSECURE_NBD,
+            Self::NbdPlaintext => network_purpose::NBD,
         }
     }
 }
@@ -101,10 +103,12 @@ impl NetworkServiceReview {
         Ok(review)
     }
     pub(crate) fn valid(&self, network: NetworkId) -> bool {
-        self.purposes
-            .iter()
-            .all(|p| matches!(p.as_str(), "nbd" | "insecure_nbd"))
-            && self.purposes.len() <= 1
+        self.purposes.iter().all(|p| {
+            matches!(
+                p.as_str(),
+                network_purpose::NBD | network_purpose::INSECURE_NBD
+            )
+        }) && self.purposes.len() <= 1
             && self.interfaces.len() <= 1024
             && self
                 .interfaces
@@ -173,7 +177,8 @@ pub(crate) fn canonical_ipv6<'a>(
     (values.len() <= 64).then(|| values.into_iter().collect())
 }
 
-pub(crate) fn purposes(value: &serde_json::Value) -> Option<BTreeSet<String>> {
+pub(crate) fn purposes<'a>(value: impl Reads<'a, kind::Set>) -> Option<BTreeSet<String>> {
+    let value = value.raw();
     let values = value.as_array().filter(|v| v.len() <= 32)?;
     let result = values
         .iter()

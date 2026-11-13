@@ -10,6 +10,7 @@ use xenadmin_xapi::enumerations::{
     vbd_operations, vbd_type, vdi_operations, vdi_type, vif_operations, vm_power_state,
 };
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Reads, kind};
 
 pub struct DeviceCommand {
     pub vm: ObservedVm,
@@ -237,14 +238,14 @@ impl DeviceOperation {
                 if cd.empty.is_none() || disk.missing.is_none() || sr.content_type.is_empty() {
                     return ActionAvailability::Unknown;
                 }
-                if cd.kind != "CD"
+                if cd.kind != vbd_type::CD
                     || cd.empty != Some(true)
                     || sr.content_type != "iso"
                     || disk.missing != Some(false)
                 {
                     return ActionAvailability::Unavailable;
                 }
-                advertised(cd.allowed_operations.as_deref(), "insert")
+                advertised(cd.allowed_operations.as_deref(), vbd_operations::INSERT)
             }
             Self::EjectCd { vbd } | Self::PlugDisk { vbd } | Self::UnplugDisk { vbd } => {
                 let Some(disk) = details.vbds.get(vbd) else {
@@ -259,22 +260,24 @@ impl DeviceOperation {
                     return ActionAvailability::Unknown;
                 }
                 let operation = match self {
-                    Self::EjectCd { .. } if disk.kind == "CD" && disk.empty == Some(false) => {
-                        "eject"
+                    Self::EjectCd { .. }
+                        if disk.kind == vbd_type::CD && disk.empty == Some(false) =>
+                    {
+                        vbd_operations::EJECT
                     }
                     Self::PlugDisk { .. }
-                        if disk.kind == "Disk"
+                        if disk.kind == vbd_type::DISK
                             && disk.currently_attached == Some(false)
                             && guest.power_state == PowerState::Running =>
                     {
-                        "plug"
+                        vbd_operations::PLUG
                     }
                     Self::UnplugDisk { .. }
-                        if disk.kind == "Disk"
+                        if disk.kind == vbd_type::DISK
                             && disk.currently_attached == Some(true)
                             && guest.power_state == PowerState::Running =>
                     {
-                        "unplug"
+                        vbd_operations::UNPLUG
                     }
                     _ => return ActionAvailability::Unavailable,
                 };
@@ -298,7 +301,11 @@ impl DeviceOperation {
                 }
                 advertised(
                     nic.allowed_operations.as_deref(),
-                    if plugging { "plug" } else { "unplug" },
+                    if plugging {
+                        vif_operations::PLUG
+                    } else {
+                        vif_operations::UNPLUG
+                    },
                 )
             }
             Self::GrowDisk {
@@ -328,7 +335,7 @@ impl DeviceOperation {
                     || disk.managed != Some(true)
                     || disk.missing != Some(false)
                     || disk.is_snapshot != Some(false)
-                    || disk.kind != "user"
+                    || disk.kind != vdi_type::USER
                 {
                     return ActionAvailability::Unavailable;
                 }
@@ -343,12 +350,12 @@ impl DeviceOperation {
                     details.vbds.get(id).is_none_or(|vbd| {
                         vbd.vm != Some(vm)
                             || vbd.currently_attached != Some(false)
-                            || vbd.kind != "Disk"
+                            || vbd.kind != vbd_type::DISK
                     })
                 }) {
                     return ActionAvailability::Unavailable;
                 }
-                advertised(disk.allowed_operations.as_deref(), "resize")
+                advertised(disk.allowed_operations.as_deref(), vdi_operations::RESIZE)
             }
             _ => ActionAvailability::Unavailable,
         }
@@ -399,7 +406,8 @@ impl PreparedDevice {
     }
 }
 
-fn reference(value: &Value) -> Result<String, Error> {
+fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let value = value.raw();
     value
         .as_str()
         .filter(|value| {
@@ -471,7 +479,8 @@ fn owns(record: &Value, vm_reference: &str) -> Result<(), Error> {
     }
     Ok(())
 }
-fn unsigned(value: &Value) -> Option<u64> {
+fn unsigned<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 
@@ -499,7 +508,7 @@ async fn prepare_operation(
         return Err(Error::Stale);
     }
     if !matches!(
-        VmRecord::new(&guest).power_state().as_str(),
+        VmRecord::new(&guest).power_state().name(),
         Some(
             vm_power_state::HALTED
                 | vm_power_state::RUNNING
@@ -521,7 +530,7 @@ async fn prepare_operation(
             if VdiRecord::new(&disk).missing() != false {
                 return Err(Error::DeviceInUse);
             }
-            let sr_reference = reference(&VdiRecord::new(&disk).sr())?;
+            let sr_reference = reference(VdiRecord::new(&disk).sr())?;
             let sr = session
                 .call("SR.get_record", vec![json!(sr_reference)])
                 .await?;
@@ -549,7 +558,7 @@ async fn prepare_operation(
             let (device_reference, device) = fresh(session, "VBD", vbd.uuid()).await?;
             owns(&device, &vm_reference)?;
             let plugging = matches!(operation, DeviceOperation::PlugDisk { .. });
-            if VbdRecord::new(&device).type_() != "Disk"
+            if VbdRecord::new(&device).type_() != vbd_type::DISK
                 || VbdRecord::new(&device).currently_attached() != !plugging
                 || VmRecord::new(&guest).power_state() != vm_power_state::RUNNING
             {
@@ -607,7 +616,7 @@ async fn prepare_operation(
                 return Err(Error::DeviceRequiresHaltedVm);
             }
             let (disk_reference, disk) = fresh(session, "VDI", vdi.uuid()).await?;
-            if unsigned(&VdiRecord::new(&disk).virtual_size()) != Some(*expected_size) {
+            if unsigned(VdiRecord::new(&disk).virtual_size()) != Some(*expected_size) {
                 return Err(Error::DeviceConflict);
             }
             if VdiRecord::new(&disk).read_only() != false
@@ -622,8 +631,7 @@ async fn prepare_operation(
             permits(&disk, vdi_operations::RESIZE)?;
             let consumers = VdiRecord::new(&disk)
                 .vbds()
-                .value()
-                .as_array()
+                .members()
                 .filter(|consumers| !consumers.is_empty() && consumers.len() <= 256)
                 .ok_or(Error::DeviceInUse)?;
             for consumer in consumers {

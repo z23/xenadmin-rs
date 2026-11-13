@@ -1,6 +1,7 @@
 use crate::{Error, VbdId, VdiId, VifId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use xenadmin_xapi::enumerations::vbd_mode;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiskAccess {
@@ -10,8 +11,8 @@ pub enum DiskAccess {
 impl DiskAccess {
     pub(crate) fn wire(self) -> &'static str {
         match self {
-            Self::ReadOnly => "RO",
-            Self::ReadWrite => "RW",
+            Self::ReadOnly => vbd_mode::RO,
+            Self::ReadWrite => vbd_mode::RW,
         }
     }
 }

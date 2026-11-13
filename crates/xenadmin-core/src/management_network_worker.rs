@@ -141,7 +141,7 @@ impl ResourceRequest {
             }
             let plan = self.management_plan_mut()?;
             plan.task_uuid = Some(id);
-            match TaskRecord::new(&v).status().as_str() {
+            match TaskRecord::new(&v).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     plan.completed = true;
                     plan.ended = true;

@@ -3,6 +3,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{storage_operations, vbd_type, vdi_type, vm_operations};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuestFirmware {
@@ -83,14 +84,14 @@ impl VmLifecycleOperation {
     }
     pub(crate) fn capability(&self) -> Option<&'static str> {
         match self {
-            Self::Create { .. } => Some("clone"),
+            Self::Create { .. } => Some(vm_operations::CLONE),
             Self::Clone {
                 mode: VmCopyMode::Fast,
                 ..
-            } => Some("clone"),
-            Self::Clone { .. } => Some("copy"),
-            Self::ConvertToTemplate => Some("make_into_template"),
-            Self::Delete { .. } => Some("destroy"),
+            } => Some(vm_operations::CLONE),
+            Self::Clone { .. } => Some(vm_operations::COPY),
+            Self::ConvertToTemplate => Some(vm_operations::MAKE_INTO_TEMPLATE),
+            Self::Delete { .. } => Some(vm_operations::DESTROY),
             Self::EditTemplate { .. } => None,
         }
     }
@@ -195,11 +196,11 @@ impl VmLifecycleOperation {
                             .details
                             .vbds
                             .get(id)
-                            .is_some_and(|v| v.kind == "Disk")
+                            .is_some_and(|v| v.kind == vbd_type::DISK)
                     })
                 }) =>
             {
-                Some("copy")
+                Some(vm_operations::COPY)
             }
             _ => self.capability(),
         };
@@ -255,9 +256,9 @@ impl VmLifecycleOperation {
         if sr.is_some_and(|id| {
             inventory.details.storage.get(id).is_none_or(|s| {
                 s.content_type != "user"
-                    || s.allowed_operations
-                        .as_ref()
-                        .is_none_or(|ops| !ops.iter().any(|op| op == "vdi_create"))
+                    || s.allowed_operations.as_ref().is_none_or(|ops| {
+                        !ops.iter().any(|op| op == storage_operations::VDI_CREATE)
+                    })
             })
         }) {
             return ActionAvailability::Unavailable;
@@ -320,7 +321,7 @@ impl Inventory {
             .vdis
             .values()
             .filter(|d| {
-                d.kind == "user"
+                d.kind == vdi_type::USER
                     && d.is_snapshot == Some(false)
                     && d.managed == Some(true)
                     && d.missing == Some(false)
@@ -329,7 +330,7 @@ impl Inventory {
                         !ids.is_empty()
                             && ids.iter().all(|id| {
                                 self.details.vbds.get(id).is_some_and(|v| {
-                                    v.vm == Some(vm) && v.kind == "Disk" && v.owned
+                                    v.vm == Some(vm) && v.kind == vbd_type::DISK && v.owned
                                 })
                             })
                     })

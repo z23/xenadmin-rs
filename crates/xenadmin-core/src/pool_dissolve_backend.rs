@@ -144,7 +144,7 @@ pub(super) async fn arguments(
             let (_, fresh) = xapi::read(s, ResourceTarget::Pool(r.pool)).await?;
             if !PoolRecord::new(&fresh)
                 .current_operations()
-                .as_object()
+                .entries()
                 .is_some_and(|m| m.is_empty())
             {
                 return Err(Error::ResourceInUse);
@@ -168,7 +168,7 @@ pub(super) async fn task(
     let value = s.call("task.get_record", vec![json!(reference)]).await?;
     let id = TaskRecord::new(&value)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|v| TaskId::parse(v).ok())
         .ok_or(Error::ResourceConflict)?;
     if p.tasks_before.contains(&id)

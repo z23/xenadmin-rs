@@ -1,6 +1,9 @@
 use crate::{HostId, NetworkSriovId, PciId, PifId, SdnControllerId, TunnelId};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, net::Ipv4Addr};
+use xenadmin_xapi::enumerations::{
+    ip_configuration_mode, ipv6_configuration_mode, sriov_configuration_mode, tunnel_protocol,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TunnelProtocol {
@@ -10,14 +13,14 @@ pub enum TunnelProtocol {
 impl TunnelProtocol {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Gre => "gre",
-            Self::Vxlan => "vxlan",
+            Self::Gre => tunnel_protocol::GRE,
+            Self::Vxlan => tunnel_protocol::VXLAN,
         }
     }
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
-            "gre" => Some(Self::Gre),
-            "vxlan" => Some(Self::Vxlan),
+            tunnel_protocol::GRE => Some(Self::Gre),
+            tunnel_protocol::VXLAN => Some(Self::Vxlan),
             _ => None,
         }
     }
@@ -51,10 +54,10 @@ pub enum SriovConfigurationMode {
 impl SriovConfigurationMode {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         match value {
-            "sysfs" => Some(Self::Sysfs),
-            "modprobe" => Some(Self::Modprobe),
-            "manual" => Some(Self::Manual),
-            "unknown" => Some(Self::Unknown),
+            sriov_configuration_mode::SYSFS => Some(Self::Sysfs),
+            sriov_configuration_mode::MODPROBE => Some(Self::Modprobe),
+            sriov_configuration_mode::MANUAL => Some(Self::Manual),
+            sriov_configuration_mode::UNKNOWN => Some(Self::Unknown),
             _ => None,
         }
     }
@@ -391,7 +394,10 @@ impl NetworkFabricReview {
                         ));
                     }
                     if p.currently_attached != Some(true)
-                        || !matches!(p.ip_configuration_mode.as_str(), "DHCP" | "Static")
+                        || !matches!(
+                            p.ip_configuration_mode.as_str(),
+                            ip_configuration_mode::DHCP | ip_configuration_mode::STATIC
+                        )
                         || p.ip.parse::<Ipv4Addr>().ok().is_none_or(|ip| {
                             ip.is_unspecified() || ip.is_multicast() || ip.is_loopback()
                         })
@@ -484,8 +490,8 @@ impl NetworkFabricReview {
                         || p.management != Some(false)
                         || p.disallow_unplug != Some(false)
                         || !p.management_purpose.as_ref().is_none_or(String::is_empty)
-                        || p.ip_configuration_mode != "None"
-                        || p.ipv6_configuration_mode != "None"
+                        || p.ip_configuration_mode != ip_configuration_mode::NONE
+                        || p.ipv6_configuration_mode != ipv6_configuration_mode::NONE
                         || d.vifs.values().any(|v| v.network == p.network)
                         || d.bonds
                             .values()

@@ -3,6 +3,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use xenadmin_xapi::enumerations::{host_allowed_operations, task_status_type};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HostPowerOnMode {
@@ -221,23 +222,23 @@ impl HostOperation {
             Self::Evacuate { resident_vms } => {
                 live == Some(true)
                     && !host.enabled
-                    && allowed("evacuate")
+                    && allowed(host_allowed_operations::EVACUATE)
                     && same_vms(resident_vms, &residents)
             }
             Self::ExitMaintenance => {
                 live == Some(true)
                     && !host.enabled
                     && details.maintenance_mode == Some(true)
-                    && allowed("enable")
+                    && allowed(host_allowed_operations::ENABLE)
             }
             Self::Reboot { expected_boot_time } | Self::Shutdown { expected_boot_time } => {
                 live == Some(true)
                     && empty()
                     && details.boot_time.as_ref() == Some(expected_boot_time)
                     && allowed(if matches!(self, Self::Reboot { .. }) {
-                        "reboot"
+                        host_allowed_operations::REBOOT
                     } else {
-                        "shutdown"
+                        host_allowed_operations::SHUTDOWN
                     })
                     && (inventory.coordinator != Some(id) || inventory.hosts.len() == 1)
             }
@@ -251,11 +252,12 @@ impl HostOperation {
                         .pool
                         .as_ref()
                         .is_some_and(|pool| pool.ha_enabled == Some(false))
-                    && inventory
-                        .details
-                        .tasks
-                        .values()
-                        .all(|task| !matches!(task.status.as_str(), "pending" | "cancelling"))
+                    && inventory.details.tasks.values().all(|task| {
+                        !matches!(
+                            task.status.as_str(),
+                            task_status_type::PENDING | task_status_type::CANCELLING
+                        )
+                    })
                     && matches!(
                         inventory.details.classes.get("task"),
                         Some(crate::ClassAvailability::Available)
@@ -263,7 +265,7 @@ impl HostOperation {
             }
             Self::PowerOn => {
                 live == Some(false)
-                    && allowed("power_on")
+                    && allowed(host_allowed_operations::POWER_ON)
                     && details
                         .power_on_mode
                         .as_ref()

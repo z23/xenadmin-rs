@@ -303,8 +303,7 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
         .map(|r| {
             let kind = SmRecord::new(r)
                 .type_()
-                .value()
-                .as_str()
+                .text()
                 .filter(|s| {
                     s.len() <= 128
                         && s.bytes()
@@ -313,7 +312,7 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
                 .ok_or(Error::Protocol("invalid storage backend type"))?;
             let mut features = SmRecord::new(r)
                 .capabilities()
-                .as_array()
+                .members()
                 .into_iter()
                 .flatten()
                 .take(256)
@@ -323,7 +322,7 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
             features.extend(
                 SmRecord::new(r)
                     .features()
-                    .as_object()
+                    .entries()
                     .into_iter()
                     .flat_map(|r| r.keys())
                     .take(256)
@@ -333,7 +332,7 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
             features.dedup();
             let configuration = SmRecord::new(r)
                 .configuration()
-                .as_object()
+                .entries()
                 .into_iter()
                 .flat_map(|r| r.iter())
                 .take(128)
@@ -341,7 +340,7 @@ fn decode_backends(value: &Value) -> Result<Vec<StorageBackend>, Error> {
                 .collect();
             Ok(StorageBackend {
                 kind: kind.into(),
-                name: clean(SmRecord::new(r).name_label().as_str().unwrap_or(kind), 256),
+                name: clean(SmRecord::new(r).name_label().text().unwrap_or(kind), 256),
                 features,
                 configuration,
             })

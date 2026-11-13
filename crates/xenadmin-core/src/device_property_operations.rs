@@ -75,7 +75,7 @@ pub(super) fn availability(change: &Change, inventory: &Inventory, vm: VmId) -> 
         | Change::DisableCbt { vbd, vdi } => inventory.details.vbds.get(vbd).is_some_and(|v| {
             v.vm == Some(vm)
                 && v.vdi == Some(*vdi)
-                && v.kind == "Disk"
+                && v.kind == vbd_type::DISK
                 && (!change.requires_halted() || v.currently_attached == Some(false))
         }),
     };
@@ -101,7 +101,7 @@ async fn current(
         let (_, v) = fresh(session, "VM", vm.uuid()).await?;
         idle(&v)?;
         if !matches!(
-            VmRecord::new(&v).power_state().as_str(),
+            VmRecord::new(&v).power_state().name(),
             Some(vm_power_state::HALTED | vm_power_state::RUNNING)
         ) {
             return Err(Error::UnavailableAction);

@@ -107,11 +107,11 @@ pub(crate) async fn read(
             "The pool does not explicitly advertise snapshot scheduling support",
         ));
     }
-    let hr = crate::xapi::opaque_reference(&PoolRecord::new(&pool).master())?;
+    let hr = crate::xapi::opaque_reference(PoolRecord::new(&pool).master())?;
     let host = session.call("host.get_record", vec![json!(&hr)]).await?;
     let id = HostRecord::new(&host)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|s| HostId::parse(s).ok())
         .ok_or(Error::Stale)?;
     let sw = &HostRecord::new(&host).software_version();
@@ -179,7 +179,7 @@ pub(crate) async fn read(
         },
         coordinator_name: HostRecord::new(&host)
             .name_label()
-            .as_str()
+            .text()
             .unwrap_or("Coordinator")
             .to_owned(),
         local_time: local_time.to_owned(),

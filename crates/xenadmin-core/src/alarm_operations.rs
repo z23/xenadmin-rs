@@ -47,7 +47,7 @@ async fn read(
 }
 async fn refresh_host(session: &Session, host: HostId) -> Result<String, Error> {
     let (reference, fresh) = super::xapi::read(session, ResourceTarget::Host(host)).await?;
-    let metrics = super::xapi::reply_reference(&HostRecord::new(&fresh).metrics())?;
+    let metrics = super::xapi::reply_reference(HostRecord::new(&fresh).metrics())?;
     let metrics = session
         .call("host_metrics.get_record", vec![json!(metrics)])
         .await?;

@@ -292,7 +292,7 @@ impl ResourceRequest {
             if !self.auth_merge(journal).await? {
                 return Ok(false);
             }
-            match TaskRecord::new(&task).status().as_str() {
+            match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     self.record.result_reference = Some(crate::xapi::snapshot_task_result(&task)?);
                     self.record
@@ -483,7 +483,7 @@ impl ResourceRequest {
             )?;
             require(
                 matches!(
-                    TaskRecord::new(&status).status().as_str(),
+                    TaskRecord::new(&status).status().name(),
                     Some(
                         task_status_type::SUCCESS
                             | task_status_type::FAILURE

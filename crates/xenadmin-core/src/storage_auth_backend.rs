@@ -204,8 +204,7 @@ async fn clone_config(
     let plan = record.storage_auth_plan.as_ref().ok_or(Error::Journal)?;
     let map = PbdRecord::new(pbd)
         .device_config()
-        .value()
-        .as_object()
+        .entries()
         .filter(|m| m.len() <= 128)
         .ok_or(Error::Protocol("Attachment credentials unavailable"))?;
     let mut ids = BTreeSet::new();
@@ -276,7 +275,7 @@ pub(super) async fn verify(
             require(
                 PbdRecord::new(&pbd).currently_attached() == false
                     && storage::config_matches(
-                        &PbdRecord::new(&pbd).device_config(),
+                        PbdRecord::new(&pbd).device_config(),
                         &location.device_config(),
                     ),
                 "Created attachment identity or location changed during verification",
@@ -307,8 +306,7 @@ pub(super) async fn verify(
             let (host_ref, _) = xapi::read(session, ResourceTarget::Host(host)).await?;
             let refs = SrRecord::new(&fresh)
                 .pbds()
-                .value()
-                .as_array()
+                .members()
                 .filter(|v| !v.is_empty() && v.len() <= 1024)
                 .ok_or(Error::Protocol("Created storage attachments unavailable"))?;
             let baseline = record.storage_baseline.as_ref().ok_or(Error::Journal)?;
@@ -323,7 +321,7 @@ pub(super) async fn verify(
                 }
                 let id = PbdRecord::new(&pbd)
                     .uuid()
-                    .as_str()
+                    .text()
                     .and_then(|v| crate::PbdId::parse(v).ok())
                     .ok_or(Error::Protocol("Created attachment identity unavailable"))?;
                 require(
@@ -334,7 +332,7 @@ pub(super) async fn verify(
                     PbdRecord::new(&pbd).sr() == sr_ref
                         && PbdRecord::new(&pbd).currently_attached() == true
                         && storage::config_matches(
-                            &PbdRecord::new(&pbd).device_config(),
+                            PbdRecord::new(&pbd).device_config(),
                             &location.device_config(),
                         ),
                     "Created attachment identity or location changed during verification",
@@ -394,7 +392,7 @@ pub(super) async fn absent(session: &Session, id: SecretId) -> Result<bool, Erro
 pub(super) fn task_uuid(value: &Value) -> Result<crate::TaskId, Error> {
     TaskRecord::new(value)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|v| crate::TaskId::parse(v).ok())
         .filter(|id| !id.uuid().is_nil())
         .ok_or(Error::Protocol("Storage task UUID unavailable"))

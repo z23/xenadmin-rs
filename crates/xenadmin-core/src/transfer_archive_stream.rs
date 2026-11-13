@@ -116,7 +116,7 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
         let record = &object["snapshot"];
         if VdiRecord::new(record)
             .sr()
-            .as_str()
+            .reference()
             .is_some_and(|sr| iso_srs.contains(sr))
         {
             continue;
@@ -137,8 +137,7 @@ fn payload_disks(xml: &[u8]) -> Result<BTreeMap<String, u64>, Error> {
             .ok_or(Error::TransferArchive)?;
         let size = VdiRecord::new(record)
             .virtual_size()
-            .as_u64()
-            .or_else(|| VdiRecord::new(record).virtual_size().as_str()?.parse().ok())
+            .unsigned()
             .filter(|n| *n > 0 && *n <= MAX_TRANSFER_BYTES)
             .ok_or(Error::TransferArchive)?;
         total = total

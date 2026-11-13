@@ -1,8 +1,9 @@
 use super::*;
 use crate::xapi::Session;
 use serde_json::{Value, json};
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{storage_operations, task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::{NetworkRecord, PoolRecord, SrRecord, TaskRecord};
+use xenadmin_xapi::{Reads, kind};
 
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
@@ -32,7 +33,8 @@ pub(super) struct Step {
     pub check: Check,
 }
 
-fn reference(value: &Value) -> Result<String, Error> {
+fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let value = value.raw();
     value
         .as_str()
         .filter(|value| {
@@ -74,7 +76,8 @@ fn empty_network(record: &Value) -> Result<(), Error> {
     }
     Ok(())
 }
-fn number(value: &Value) -> Option<u64> {
+fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
+    let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 fn same_field(actual: &Value, expected: &Value, field: &str) -> bool {
@@ -88,14 +91,13 @@ async fn default_sr(session: &Session, record: &Value) -> Result<Option<SrId>, E
     if PoolRecord::new(record).default_sr() == "OpaqueRef:NULL" {
         return Ok(None);
     }
-    let reference = reference(&PoolRecord::new(record).default_sr())?;
+    let reference = reference(PoolRecord::new(record).default_sr())?;
     let sr = session
         .call("SR.get_record", vec![json!(reference)])
         .await?;
     let id = SrRecord::new(&sr)
         .uuid()
-        .value()
-        .as_str()
+        .text()
         .ok_or(Error::Protocol("default storage UUID unavailable"))?;
     SrId::parse(id)
         .map(Some)
@@ -278,7 +280,7 @@ pub(super) async fn prepare(
         ResourceAction::ScanStorage => {
             if !fresh["allowed_operations"]
                 .as_array()
-                .is_some_and(|ops| ops.iter().any(|op| op == "scan"))
+                .is_some_and(|ops| ops.iter().any(|op| op == storage_operations::SCAN))
             {
                 return Err(Error::UnavailableAction);
             }
@@ -437,7 +439,7 @@ pub(super) async fn arguments(
         Check::Scan => {
             if !fresh["allowed_operations"]
                 .as_array()
-                .is_some_and(|ops| ops.iter().any(|op| op == "scan"))
+                .is_some_and(|ops| ops.iter().any(|op| op == storage_operations::SCAN))
             {
                 return Err(Error::UnavailableAction);
             }
@@ -445,15 +447,16 @@ pub(super) async fn arguments(
         }
     }
 }
-pub(super) fn reply_reference(value: &Value) -> Result<String, Error> {
+pub(super) fn reply_reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+    let value = value.raw();
     reference(value)
 }
 fn cancellable_task(record: &Value) -> Result<(), Error> {
     if TaskRecord::new(record).status() != task_status_type::PENDING
         || !TaskRecord::new(record)
             .allowed_operations()
-            .as_array()
-            .is_some_and(|ops| ops.iter().any(|op| op == "cancel"))
+            .members()
+            .is_some_and(|ops| ops.iter().any(|op| op == task_allowed_operations::CANCEL))
     {
         return Err(Error::UnavailableAction);
     }
@@ -608,14 +611,14 @@ async fn verify_created(
     };
     let id = NetworkRecord::new(&fresh)
         .uuid()
-        .as_str()
+        .text()
         .and_then(|value| NetworkId::parse(value).ok())
         .ok_or(Error::Protocol("created network UUID unavailable"))?;
     if baseline.contains(&id)
         || NetworkRecord::new(&fresh).other_config()[OPERATION_TAG] != record.id.to_string()
         || NetworkRecord::new(&fresh).name_label() != *name
         || NetworkRecord::new(&fresh).name_description() != *description
-        || number(&NetworkRecord::new(&fresh).mtu()) != Some(*mtu)
+        || number(NetworkRecord::new(&fresh).mtu()) != Some(*mtu)
     {
         return Err(Error::ResourceConflict);
     }

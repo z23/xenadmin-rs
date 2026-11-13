@@ -11,11 +11,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
-use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
+use xenadmin_xapi::enumerations::{
+    ip_configuration_mode, ipv6_configuration_mode, sriov_configuration_mode, task_status_type,
+};
 use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, NetworkRecord, NetworkSriovRecord, PifRecord, PoolRecord,
     VmRecord,
 };
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
@@ -229,7 +232,12 @@ impl Fresh {
             .map(|(k, v)| (k.as_str(), v))
             .ok_or(Error::ResourceConflict)
     }
-    fn ref_ids(&self, class: &str, v: &Value) -> Result<BTreeSet<Uuid>, Error> {
+    fn ref_ids<'a>(
+        &self,
+        class: &str,
+        v: impl Reads<'a, kind::Set>,
+    ) -> Result<BTreeSet<Uuid>, Error> {
+        let v = v.raw();
         network::refs(v)?
             .iter()
             .map(|r| {
@@ -254,9 +262,9 @@ impl Fresh {
                 .any(|f| p[f] != "")
             || PifRecord::new(p)
                 .ipv6()
-                .as_array()
+                .members()
                 .is_none_or(|ips| ips.iter().any(|ip| ip != ""))
-            || network::number(&PifRecord::new(p).vlan()) != Some(-1)
+            || network::number(PifRecord::new(p).vlan()) != Some(-1)
             || network::refs(
                 &p[match kind {
                     Kind::Tunnel(_) => "sriov_logical_PIF_of",
@@ -276,11 +284,11 @@ impl Fresh {
             .any(|f| network::refs(&p[f]).map_or(true, |v| !v.is_empty()))
             || PifRecord::new(p)
                 .other_config()
-                .as_object()
+                .entries()
                 .is_none_or(|m| !m.is_empty())
             || PifRecord::new(p)
                 .properties()
-                .as_object()
+                .entries()
                 .is_none_or(|m| !m.is_empty())
         {
             return Err(Error::ResourceInUse);
@@ -298,8 +306,8 @@ impl Fresh {
             .filter(|p| PifRecord::new(p).network() == network_ref)
             .map(network::uuid)
             .collect::<Result<BTreeSet<_>, _>>()?;
-        if actual != self.ref_ids("PIF", &NetworkRecord::new(n).pifs())?
-            || !network::refs(&NetworkRecord::new(n).vifs())?.is_empty()
+        if actual != self.ref_ids("PIF", NetworkRecord::new(n).pifs())?
+            || !network::refs(NetworkRecord::new(n).vifs())?.is_empty()
             || self.raw["vif"]
                 .values()
                 .any(|v| v["network"] == network_ref)
@@ -364,11 +372,11 @@ impl Fresh {
                 let (pr, raw) = self.by_id("PIF", p.id.uuid())?;
                 if PifRecord::new(raw)
                     .other_config()
-                    .as_object()
+                    .entries()
                     .is_none_or(|m| !m.is_empty())
                     || PifRecord::new(raw)
                         .properties()
-                        .as_object()
+                        .entries()
                         .is_none_or(|m| !m.is_empty())
                 {
                     return Err(Error::ResourceInUse);
@@ -386,7 +394,7 @@ impl Fresh {
             if HostRecord::new(host).enabled() != false
                 || HostRecord::new(host)
                     .current_operations()
-                    .as_object()
+                    .entries()
                     .is_none_or(|v| !v.is_empty())
                 || self.raw["vm"].values().any(|v| {
                     VmRecord::new(v).resident_on() == host_ref
@@ -402,7 +410,7 @@ impl Fresh {
             }
             let metrics = HostRecord::new(host)
                 .metrics()
-                .as_str()
+                .reference()
                 .and_then(|r| self.raw["host_metrics"].get(r))
                 .ok_or(Error::ResourceConflict)?;
             if HostMetricsRecord::new(metrics).live() != true {
@@ -478,7 +486,7 @@ pub(super) fn task_receipt(r: &mut Record, task: &Value) -> Result<(), Error> {
         return Err(Error::ResourceConflict);
     }
     p.task_uuid = Some(id);
-    if task["status"] == "success" {
+    if task["status"] == task_status_type::SUCCESS {
         if p.operation.creates() && r.result_reference.is_none() {
             r.result_reference = Some(crate::xapi::snapshot_task_result(task)?);
         }
@@ -534,11 +542,10 @@ async fn identity_for(
         || baseline["pif"].contains(&child_id.uuid())
         || network::uuid(&network::related(s, "PIF", &value[parent]).await?)?
             != op.review.input.id.uuid()
+        || network::uuid(&network::related(s, "host", PifRecord::new(&child_record).host()).await?)?
+            != op.review.host.uuid()
         || network::uuid(
-            &network::related(s, "host", &PifRecord::new(&child_record).host()).await?,
-        )? != op.review.host.uuid()
-        || network::uuid(
-            &network::related(s, "network", &PifRecord::new(&child_record).network()).await?,
+            &network::related(s, "network", PifRecord::new(&child_record).network()).await?,
         )? != op.review.network.uuid()
     {
         return Err(Error::ResourceConflict);
@@ -621,7 +628,11 @@ fn verify_fresh(
                         .ok_or(Error::ResourceConflict)?;
                     if !matches!(
                         o["configuration_mode"].as_str(),
-                        Some("sysfs" | "modprobe" | "manual")
+                        Some(
+                            sriov_configuration_mode::SYSFS
+                                | sriov_configuration_mode::MODPROBE
+                                | sriov_configuration_mode::MANUAL
+                        )
                     ) || p.currently_attached != Some(!reboot)
                         || p.device != op.review.input.device
                         || p.mac != "fe:ff:ff:ff:ff:ff"

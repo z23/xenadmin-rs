@@ -9,7 +9,7 @@ use crate::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
-use xenadmin_xapi::enumerations::task_status_type;
+use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
 struct StopOnDrop(Arc<AtomicBool>);
 impl Drop for StopOnDrop {
@@ -163,7 +163,7 @@ impl ResourceRequest {
         let v = s.call("task.get_record", vec![json!(task)]).await?;
         let id = TaskRecord::new(&v)
             .uuid()
-            .as_str()
+            .text()
             .and_then(|v| v.parse::<Uuid>().ok())
             .ok_or(Error::TransferConflict)?;
         if TaskRecord::new(&v).name_label() != name
@@ -320,10 +320,10 @@ impl ResourceRequest {
                 return Err(Error::TransferConflict);
             }
             match status {
-                "success" => stream.task_success = true,
-                "failure" => stream.task_failed = true,
-                "cancelled" => stream.task_cancelled = true,
-                "pending" | "cancelling" => {}
+                task_status_type::SUCCESS => stream.task_success = true,
+                task_status_type::FAILURE => stream.task_failed = true,
+                task_status_type::CANCELLED => stream.task_cancelled = true,
+                task_status_type::PENDING | task_status_type::CANCELLING => {}
                 _ => return Err(Error::TransferConflict),
             }
             match self.save(j).await {
@@ -364,7 +364,7 @@ impl ResourceRequest {
             self.reload(j)?;
             if TaskRecord::new(&value)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|v| v.parse::<Uuid>().ok())
                 != Some(id)
             {
@@ -372,8 +372,7 @@ impl ResourceRequest {
             }
             let status = TaskRecord::new(&value)
                 .status()
-                .value()
-                .as_str()
+                .name()
                 .ok_or(Error::TransferConflict)?;
             if !self.export_outcome_evidence(j, index, id, status).await? {
                 return Ok(());
@@ -387,8 +386,8 @@ impl ResourceRequest {
                 && !st.cancel_dispatched
                 && TaskRecord::new(&value)
                     .allowed_operations()
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v == "cancel"))
+                    .members()
+                    .is_some_and(|a| a.iter().any(|v| v == task_allowed_operations::CANCEL))
             {
                 self.ovf_export_mut()?.steps[index].cancel_dispatched = true;
                 self.save(j).await?;
@@ -486,7 +485,7 @@ impl ResourceRequest {
             .await
             && TaskRecord::new(&v)
                 .uuid()
-                .as_str()
+                .text()
                 .and_then(|v| v.parse::<Uuid>().ok())
                 == Some(id)
         {

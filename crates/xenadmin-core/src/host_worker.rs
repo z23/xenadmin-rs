@@ -177,7 +177,7 @@ impl ResourceRequest {
                 .task
                 .ok_or(Error::Protocol("host task receipt unavailable"))?;
             let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&task_ref)])=>result?};
-            match TaskRecord::new(&task).status().as_str() {
+            match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     self.record.host_plan.as_mut().ok_or(Error::Journal)?.steps[index]
                         .task_succeeded = true;
@@ -188,14 +188,14 @@ impl ResourceRequest {
                 Some(status @ (task_status_type::FAILURE | task_status_type::CANCELLED)) => {
                     let code = TaskRecord::new(&task)
                         .error_info()
-                        .as_array()
+                        .members()
                         .and_then(|v| v.first())
                         .and_then(|v| v.as_str())
                         .unwrap_or("UNKNOWN_API_ERROR")
                         .to_string();
                     // A host that has just rebooted refuses to be enabled until its toolstack
                     // has finished starting; repeat the enable within the restart bound.
-                    if status == "failure"
+                    if status == task_status_type::FAILURE
                         && code == "HOST_STILL_BOOTING"
                         && matches!(step.kind, host::Kind::Enable)
                         && started.elapsed() < session.options().host_restart_wait
@@ -231,13 +231,13 @@ impl ResourceRequest {
                         .any(|s| s.state == StepState::Verified)
                     {
                         OperationState::PartiallyCompleted
-                    } else if status == "cancelled" {
+                    } else if status == task_status_type::CANCELLED {
                         OperationState::Cancelled
                     } else {
                         OperationState::Failed
                     };
                     self.record.can_cancel = false;
-                    self.record.detail = if status == "cancelled" {
+                    self.record.detail = if status == task_status_type::CANCELLED {
                         "Host confirmed task cancellation; completed changes were not undone".into()
                     } else {
                         format!(

@@ -7,6 +7,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::records::{HostRecord, RoleRecord, SubjectRecord};
+use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectorySubject {
@@ -147,7 +148,8 @@ pub(crate) async fn records(
             "security inventory exceeds inspection bounds",
         ))
 }
-pub(crate) fn text(value: &Value, max: usize) -> Result<String, Error> {
+pub(crate) fn text<'a>(value: impl Reads<'a, kind::Text>, max: usize) -> Result<String, Error> {
+    let value = value.raw();
     value
         .as_str()
         .filter(|s| s.len() <= max && !s.chars().any(char::is_control))
@@ -160,10 +162,10 @@ pub(crate) async fn directory_hosts(session: &Session) -> Result<Vec<DirectoryHo
         .values()
         .map(|r| {
             Ok(DirectoryHostState {
-                host: HostId::parse(&text(&HostRecord::new(r).uuid(), 36)?)
+                host: HostId::parse(&text(HostRecord::new(r).uuid(), 36)?)
                     .map_err(|_| Error::Protocol("invalid host UUID"))?,
-                auth_type: text(&HostRecord::new(r).external_auth_type(), 64)?,
-                service_name: text(&HostRecord::new(r).external_auth_service_name(), 1024)?,
+                auth_type: text(HostRecord::new(r).external_auth_type(), 64)?,
+                service_name: text(HostRecord::new(r).external_auth_service_name(), 1024)?,
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -248,22 +250,21 @@ pub(crate) fn roles(
     let mut ids = BTreeMap::new();
     let mut result = Vec::new();
     for (reference, r) in value {
-        let id = RoleId::parse(&text(&RoleRecord::new(r).uuid(), 36)?)
+        let id = RoleId::parse(&text(RoleRecord::new(r).uuid(), 36)?)
             .map_err(|_| Error::Protocol("invalid role UUID"))?;
         ids.insert(reference.clone(), id);
-        let name = text(&RoleRecord::new(r).name_label(), 256)?;
+        let name = text(RoleRecord::new(r).name_label(), 256)?;
         // Leaf permission roles are not assignable user roles.
         let subroles = RoleRecord::new(r)
             .subroles()
-            .value()
-            .as_array()
+            .members()
             .filter(|v| v.len() <= 16_384)
             .ok_or(Error::Protocol("role permissions are unavailable"))?;
         if !subroles.is_empty() {
             result.push(SecurityRole {
                 id,
                 name,
-                description: text(&RoleRecord::new(r).name_description(), 2048)?,
+                description: text(RoleRecord::new(r).name_description(), 2048)?,
             });
         }
     }
@@ -274,10 +275,11 @@ pub(crate) fn roles(
     }
     Ok((ids, result))
 }
-pub(crate) fn subject_roles(
-    value: &Value,
+pub(crate) fn subject_roles<'a>(
+    value: impl Reads<'a, kind::Set>,
     roles: &BTreeMap<String, RoleId>,
 ) -> Result<Vec<RoleId>, Error> {
+    let value = value.raw();
     let mut ids = value
         .as_array()
         .filter(|v| v.len() <= 64)
@@ -346,15 +348,15 @@ async fn overview(session: &Session) -> Result<SecurityOverview, Error> {
                     .values()
                     .map(|r| {
                         Ok(DirectorySubject {
-                            id: SubjectId::parse(&text(&SubjectRecord::new(r).uuid(), 36)?)
+                            id: SubjectId::parse(&text(SubjectRecord::new(r).uuid(), 36)?)
                                 .map_err(|_| Error::Protocol("invalid subject UUID"))?,
-                            identifier: text(&SubjectRecord::new(r).subject_identifier(), 1024)?,
+                            identifier: text(SubjectRecord::new(r).subject_identifier(), 1024)?,
                             name: SubjectRecord::new(r).other_config()["subject-name"]
                                 .as_str()
                                 .filter(|s| s.len() <= 1024 && !s.chars().any(char::is_control))
                                 .unwrap_or("")
                                 .into(),
-                            roles: subject_roles(&SubjectRecord::new(r).roles(), &ids)?,
+                            roles: subject_roles(SubjectRecord::new(r).roles(), &ids)?,
                         })
                     })
                     .collect::<Result<Vec<_>, Error>>()

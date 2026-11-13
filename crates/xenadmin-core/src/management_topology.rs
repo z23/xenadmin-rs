@@ -4,6 +4,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::enumerations::bond_mode;
 
 /// The connected VLAN/bond component observed when management settings were reviewed.
 /// Runtime counters are omitted; interface configuration and relationships are retained.
@@ -132,7 +133,12 @@ impl ManagementTopology {
                     .any(|p| Some(*p) == b.master || !self.pifs.contains_key(p))
                 || b.master.is_none_or(|p| !self.pifs.contains_key(&p))
                 || b.primary_slave.is_none_or(|p| !b.slaves.contains(&p))
-                || !["active-backup", "balance-slb", "lacp"].contains(&b.mode.as_str())
+                || ![
+                    bond_mode::ACTIVE_BACKUP,
+                    bond_mode::BALANCE_SLB,
+                    bond_mode::LACP,
+                ]
+                .contains(&b.mode.as_str())
                 || !b.hashing_algorithm_known
                 || b.hashing_algorithm
                     .as_ref()
