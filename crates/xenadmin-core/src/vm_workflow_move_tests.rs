@@ -90,7 +90,7 @@ async fn fixture_move(
         if let Some(class)=method.strip_suffix(".get_by_uuid") {
             return records.iter().find(|(k,v)|k.starts_with(&format!("OpaqueRef:{class}:"))&&v["uuid"]==params[1]).map_or(json!({"error":{"message":"UUID_INVALID"}}),|(key,_)|json!({"result":key}));
         }
-        if method=="host.migrate_receive" {return json!({"result":{"host":"OpaqueRef:host:destination","session_id":"PRIVATE-RECEIVER-TOKEN"}});}
+        if method=="host.migrate_receive" {return json!({"result":{"host":"OpaqueRef:host:destination","session_id":"OpaqueRef:PRIVATE-RECEIVER-TOKEN"}});}
         if matches!(method,"VM.assert_can_boot_here"|"VM.assert_can_migrate") {return json!({"result":null});}
         if method.starts_with("Async.VM.") {
             let vm=params[1].as_str().unwrap();
