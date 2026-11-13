@@ -104,6 +104,65 @@ impl AsyncRead for Reader {
         result
     }
 }
+pub(crate) fn rewrite_host(endpoint: &Endpoint, address: &str) -> Result<Endpoint, Error> {
+    let mut target = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
+    if same_host(&target, address) {
+        return Ok(endpoint.clone());
+    }
+    if let Some(ip) = ip_address(address) {
+        target
+            .set_ip_host(ip)
+            .map_err(|_| Error::TransferEndpoint)?;
+    } else if is_hostname(address) {
+        target
+            .set_host(Some(address))
+            .map_err(|_| Error::TransferEndpoint)?;
+    } else {
+        return Err(Error::TransferEndpoint);
+    }
+    target
+        .set_scheme("https")
+        .map_err(|_| Error::TransferEndpoint)?;
+    target
+        .set_port(Some(443))
+        .map_err(|_| Error::TransferEndpoint)?;
+    let rewritten = Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint)?;
+    let checked = url::Url::parse(rewritten.as_str()).map_err(|_| Error::TransferEndpoint)?;
+    if !same_host(&checked, address) {
+        return Err(Error::TransferEndpoint);
+    }
+    Ok(rewritten)
+}
+fn ip_address(address: &str) -> Option<std::net::IpAddr> {
+    if let Ok(ip) = address.parse() {
+        return Some(ip);
+    }
+    address
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .and_then(|inner| inner.parse().ok())
+}
+fn is_hostname(address: &str) -> bool {
+    !address.is_empty()
+        && address.len() <= 253
+        && !address.contains('/')
+        && address
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+fn same_host(url: &url::Url, address: &str) -> bool {
+    let Some(host) = url.host() else {
+        return false;
+    };
+    if let Some(ip) = ip_address(address) {
+        return match (host, ip) {
+            (url::Host::Ipv4(found), std::net::IpAddr::V4(want)) => found == want,
+            (url::Host::Ipv6(found), std::net::IpAddr::V6(want)) => found == want,
+            _ => false,
+        };
+    }
+    matches!(host, url::Host::Domain(name) if name == address)
+}
 fn url(
     endpoint: &Endpoint,
     upload: bool,
@@ -244,7 +303,8 @@ pub(crate) async fn run(
             file: tokio::fs::File::from_std(input).take(bytes),
             meter: meter.clone(),
         };
-        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone(),prepared.peer_identity.as_ref())?.put(url(&prepared.endpoint,true,prepared.kind,&prepared.query)?).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
+        let target = url(&prepared.endpoint, true, prepared.kind, &prepared.query)?;
+        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone(),prepared.peer_identity.as_ref())?.put(target).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             return Err(Error::TransferEndpoint);
         }
@@ -386,5 +446,59 @@ mod tests {
                 "{location}"
             );
         }
+    }
+
+    #[test]
+    fn rewrite_host_keeps_the_requested_address() {
+        let session = Endpoint::parse("https://coordinator.example").unwrap();
+        let mut mismatches = Vec::new();
+        for (address, expected_host) in [
+            ("fd00::10", Some("[fd00::10]")),
+            ("2001:db8::1", Some("[2001:db8::1]")),
+            ("::1", Some("[::1]")),
+            ("[fd00::10]", Some("[fd00::10]")),
+            ("127.1", None),
+            ("2130706433", None),
+            ("storage.example", Some("storage.example")),
+            ("127.0.0.1", Some("127.0.0.1")),
+        ] {
+            match (rewrite_host(&session, address), expected_host) {
+                (Ok(endpoint), Some(host)) => {
+                    let url = url::Url::parse(endpoint.as_str()).unwrap();
+                    if url.host_str() != Some(host)
+                        || url.scheme() != "https"
+                        || endpoint.as_str() == "https://fd00/"
+                        || endpoint.as_str() == "https://0.0.7.209/"
+                        || (host != "127.0.0.1" && endpoint.as_str() == "https://127.0.0.1/")
+                    {
+                        mismatches.push(format!(
+                            "{address} -> {} host {:?}",
+                            endpoint.as_str(),
+                            url.host_str()
+                        ));
+                    }
+                }
+                (Ok(endpoint), None) => {
+                    mismatches.push(format!("{address} produced {}", endpoint.as_str()));
+                }
+                (Err(error), Some(_)) => mismatches.push(format!("{address} rejected: {error}")),
+                (Err(error), None) => {
+                    if !matches!(error, Error::TransferEndpoint) {
+                        mismatches.push(format!("{address} rejected as {error}"));
+                    }
+                }
+            }
+        }
+        let kept = Endpoint::parse("https://[fd00::10]:8443").unwrap();
+        match rewrite_host(&kept, "fd00::10") {
+            Ok(endpoint) if endpoint.as_str() == kept.as_str() => {}
+            Ok(endpoint) => mismatches.push(format!(
+                "same address {} became {}",
+                kept.as_str(),
+                endpoint.as_str()
+            )),
+            Err(error) => mismatches.push(format!("same address rejected: {error}")),
+        }
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 }

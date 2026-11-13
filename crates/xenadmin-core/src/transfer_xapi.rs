@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Endpoint, NetworkId, VdiId, xapi::Session};
+use crate::{NetworkId, VdiId, xapi::Session};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -475,21 +475,7 @@ pub(crate) async fn storage_route(
         .address()
         .text()
         .ok_or(Error::TransferEndpoint)?;
-    let mut endpoint = s.options().endpoint.clone();
-    let original = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
-    if original.host_str() != Some(address) {
-        let mut target = original;
-        target
-            .set_host(Some(address))
-            .map_err(|_| Error::TransferEndpoint)?;
-        target
-            .set_scheme("https")
-            .map_err(|_| Error::TransferEndpoint)?;
-        target
-            .set_port(Some(443))
-            .map_err(|_| Error::TransferEndpoint)?;
-        endpoint = Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint)?;
-    }
+    let endpoint = http::rewrite_host(&s.options().endpoint, address)?;
     Ok(http::Prepared {
         peer_identity: None,
         kind: http::Kind::Disk,
