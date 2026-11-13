@@ -106,19 +106,62 @@ impl AsyncRead for Reader {
 }
 pub(crate) fn rewrite_host(endpoint: &Endpoint, address: &str) -> Result<Endpoint, Error> {
     let mut target = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
-    if target.host_str() != Some(address) {
+    if same_host(&target, address) {
+        return Ok(endpoint.clone());
+    }
+    if let Some(ip) = ip_address(address) {
+        target
+            .set_ip_host(ip)
+            .map_err(|_| Error::TransferEndpoint)?;
+    } else if is_hostname(address) {
         target
             .set_host(Some(address))
             .map_err(|_| Error::TransferEndpoint)?;
-        target
-            .set_scheme("https")
-            .map_err(|_| Error::TransferEndpoint)?;
-        target
-            .set_port(Some(443))
-            .map_err(|_| Error::TransferEndpoint)?;
-        return Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint);
+    } else {
+        return Err(Error::TransferEndpoint);
     }
-    Ok(endpoint.clone())
+    target
+        .set_scheme("https")
+        .map_err(|_| Error::TransferEndpoint)?;
+    target
+        .set_port(Some(443))
+        .map_err(|_| Error::TransferEndpoint)?;
+    let rewritten = Endpoint::parse(target.as_str()).map_err(|_| Error::TransferEndpoint)?;
+    let checked = url::Url::parse(rewritten.as_str()).map_err(|_| Error::TransferEndpoint)?;
+    if !same_host(&checked, address) {
+        return Err(Error::TransferEndpoint);
+    }
+    Ok(rewritten)
+}
+fn ip_address(address: &str) -> Option<std::net::IpAddr> {
+    if let Ok(ip) = address.parse() {
+        return Some(ip);
+    }
+    address
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .and_then(|inner| inner.parse().ok())
+}
+fn is_hostname(address: &str) -> bool {
+    !address.is_empty()
+        && address.len() <= 253
+        && !address.contains('/')
+        && address
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+fn same_host(url: &url::Url, address: &str) -> bool {
+    let Some(host) = url.host() else {
+        return false;
+    };
+    if let Some(ip) = ip_address(address) {
+        return match (host, ip) {
+            (url::Host::Ipv4(found), std::net::IpAddr::V4(want)) => found == want,
+            (url::Host::Ipv6(found), std::net::IpAddr::V6(want)) => found == want,
+            _ => false,
+        };
+    }
+    matches!(host, url::Host::Domain(name) if name == address)
 }
 fn url(
     endpoint: &Endpoint,
@@ -224,6 +267,10 @@ async fn export_response(
             return Err(Error::TransferEndpoint);
         }
         let target = url(&endpoint, false, prepared.kind, &prepared.query)?;
+        let authorized = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
+        if target.host_str() != authorized.host_str() {
+            return Err(Error::TransferEndpoint);
+        }
         let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,endpoint.clone(),prepared.peer_identity.as_ref())?.get(target.clone()).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::ACCEPT,"application/octet-stream").send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             let location = response
@@ -260,7 +307,13 @@ pub(crate) async fn run(
             file: tokio::fs::File::from_std(input).take(bytes),
             meter: meter.clone(),
         };
-        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone(),prepared.peer_identity.as_ref())?.put(url(&prepared.endpoint,true,prepared.kind,&prepared.query)?).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
+        let target = url(&prepared.endpoint, true, prepared.kind, &prepared.query)?;
+        let authorized =
+            url::Url::parse(prepared.endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
+        if target.host_str() != authorized.host_str() {
+            return Err(Error::TransferEndpoint);
+        }
+        let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone(),prepared.peer_identity.as_ref())?.put(target).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             return Err(Error::TransferEndpoint);
         }
