@@ -267,10 +267,6 @@ async fn export_response(
             return Err(Error::TransferEndpoint);
         }
         let target = url(&endpoint, false, prepared.kind, &prepared.query)?;
-        let authorized = url::Url::parse(endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
-        if target.host_str() != authorized.host_str() {
-            return Err(Error::TransferEndpoint);
-        }
         let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,endpoint.clone(),prepared.peer_identity.as_ref())?.get(target.clone()).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::ACCEPT,"application/octet-stream").send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             let location = response
@@ -308,11 +304,6 @@ pub(crate) async fn run(
             meter: meter.clone(),
         };
         let target = url(&prepared.endpoint, true, prepared.kind, &prepared.query)?;
-        let authorized =
-            url::Url::parse(prepared.endpoint.as_str()).map_err(|_| Error::TransferEndpoint)?;
-        if target.host_str() != authorized.host_str() {
-            return Err(Error::TransferEndpoint);
-        }
         let response = tokio::select! {_=meter.cancel.cancelled()=>return Err(Error::Closed),result=client(session,prepared.endpoint.clone(),prepared.peer_identity.as_ref())?.put(target).header(reqwest::header::COOKIE,format!("session_id={}",session.session_cookie())).header(reqwest::header::CONTENT_TYPE,"application/octet-stream").header(reqwest::header::CONTENT_LENGTH,bytes).body(reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::with_capacity(reader,65536))).send()=>result.map_err(error)?};
         if response.status().is_redirection() {
             return Err(Error::TransferEndpoint);
