@@ -107,9 +107,18 @@ again for that, because no published version reads format 5.
   allow the migration is refused in those words. It used to be reported as "Invalid
   XAPI response" followed by them, as if the host had answered wrongly. The cross-pool
   workflows remain experimental.
-- Inside, 177 more reads of host records go through the generated bindings, leaving 472
-  by key ([decision record](docs/decisions/0004-generated-bindings.md)). Nothing in the
-  client's behaviour changes with them.
+- Inside, 177 more reads of host records go through the generated bindings, and then
+  202 more, each after reading where its record comes from, leaving 289 by key
+  ([decision record](docs/decisions/0004-generated-bindings.md)). None of those left is
+  there because its record's class was not looked for: they are keys inside maps, the
+  client's own JSON, or code that is given records of several classes. Nothing in the
+  client's behaviour changes with them, but for the archive check under Fixed.
+- Inside, a call to a host is written as a typed message: its arguments by the API's
+  names, each in the type of its kind, and a reference with the class it is of. The
+  bindings generate one for each of the API's 1,941 messages, and the core writes 363
+  calls with them. A missing argument, one of another kind, two in each other's places
+  or a reference of another class no longer compiles, in a call that no test reaches as
+  much as in one that is tested. What a host is sent is unchanged.
 - Inside, a field read through the bindings has the type of its kind, so a flag, text, a
   reference, a number, a set and a map cannot be compared or handed to a reader as one
   another. A typed field now has only the readers of its kind: reading one as another
@@ -137,6 +146,10 @@ again for that, because no published version reads format 5.
   export is blocked on it, is no longer shown as ready to export and then refused when
   the transfer is prepared. It is shown as unavailable, as a VM and a memory checkpoint
   already were.
+- An XVA archive of a host's default template is refused when the template is marked
+  in the record's own field. The inspection looked for that mark under a key where
+  hosts do not write it and so relied on the older `other_config` key alone. Importing
+  archives remains experimental.
 
 ### Known issues
 

@@ -134,8 +134,10 @@ depends on the description alone and is sorted.
   `Async.Class.name` in the core against the catalogue: a call must be a message of that
   class, and a field named by a decoder must be a field of it. It has a list for calls
   the description lacks, which is empty, and an entry that no longer applies fails the
-  test. Where a call is written with its arguments beside it, which 362 are, it also
-  checks that the call passes as many as the API gives the message; all do.
+  test. Where a call was written with its arguments beside it, which 362 were, it also
+  checked that the call passed as many as the API gives the message; all did. Those
+  calls are now typed messages, which the compiler checks (item 3 below), and the test
+  holds instead that only the session layer still writes a call as a name and a list.
 
 What the move found:
 
@@ -236,15 +238,47 @@ was read. That leaves 472 over 176. The helpers that ask any record whether it i
 or read a flag from any record's `other_config` stay by key, as they are given several
 classes.
 
-1. The reads by key that are left. Most are where the class of a record depends on a
-   value at run time (network and storage operations read "the target's record", whose
-   class follows the kind of target), where the fields read are too few to tell the
-   class (a `uuid` alone), or in helpers that take a record of any class; each needs
-   its class from the call that produced the record, or a helper per class. The loops
-   that handle several classes at once stay by key. Of the 472, the four inventory
-   decoders hold 99 and some 116 are not fields at all; about 240 are reads whose class
-   could not be traced by a script and have not been read by hand, and some 30 are in
-   code given several classes.
+On 2026-11-13 every read by key that was left was read where it stands, and 202 more
+moved: 77 in the network operations, 53 in host and pool operations and the inventory
+decoder, 36 in storage and transfers, 35 in device and VM operations and one of the
+session's own record. The rule was the one above, applied by reading: a record bound by
+a call that names its class, a branch that handles one class, a parameter whose every
+caller passes one class, and an object of an archive only behind the check of its
+class. For "the target's record" in the network, storage and resource operations the
+class is the one the operation's own validation fixes for that kind of operation, which
+is in another file than the read; those are the moves that rest on more than the lines
+around them. The count went from 477 (the 472 above and five written since) to 289 over
+132 keys. The check over the workspace's tests, now of views made at 1,592 places,
+reported one thing: a fixture's own switch on a pool record that was not named as
+fixtures' switches are.
+
+What the reading found, besides the moves:
+
+- The inspection of an XVA archive refused a host's default template by a key of
+  `other_config` and by a second key there, `is_default_template`, which is not a key
+  hosts write: it is a field of the record. The field is now what is read, with the
+  older key beside it.
+- The pass that wrote enumeration values as constants had turned one record key into a
+  constant, because a PIF's `IPv6` field has the name of an address type's value. The
+  string was the same and nothing changed; it is a field read through the view now.
+- An archive's object was viewed as a disk a few lines before its class was checked.
+  The outcome was the same refusal; the check now comes first.
+- The helper that asks whether a record offers an operation is given a repository by
+  one caller and reads `blocked_operations`, which a repository does not have (already
+  noted where it is written). It stays by key.
+
+1. The reads by key that are left: 289, of which some 77 are in test modules inside the
+   source files. None is left because its class was not looked for. About 140 are not
+   fields: keys inside map-valued fields (`other_config`, a PBD's `device_config`,
+   `restrictions`), the archive's own keys beside a record, RRD documents, `qemu-img`
+   output, the JSON-RPC envelope and the client's own JSON. Some 60 are in code that is
+   given records of several classes: the helpers that ask any record whether it is idle
+   or what its `uuid` is, the loops over several classes in the inventory decoder, and
+   operations whose target may be one of several classes (renaming a pool, a host, a
+   repository or a network). A dozen are writes. Reads whose key is a variable
+   (`record[field]`) are not in this count and stay as they are. Moving the 60 needs a
+   helper per class or a class carried with the record, which is a change of design and
+   not of spelling.
 2. Typed values: generated readers that turn a field into its Rust type, with the core's
    bounds applied to the result. As far as a view reaches, this is done.
 
@@ -307,22 +341,57 @@ classes.
    coordinator's power cut left out
    ([live report](reports/2026-11-09-lab-qualification.md)).
 3. Calls: generated descriptions of each message's parameters, so that a call's
-   arguments are checked where it is made. A test checks their number for the calls
-   written with their arguments. Since 0.19.0 a debug build can also compare every call
-   it sends with the API, where the call leaves the client: the number of arguments,
-   and each one against the type the API gives its place (a boolean, a whole number, a
-   string, a value of the named enumeration, a list or a map of those). It reports to
-   the file the view check writes, names only, and the repository's check fails on any
-   report. The catalogue gained, for this, how many of each call's parameters are
-   required: the description marks 77 as optional, all of them last, and the client
-   leaves some out (`host.disable`, `host.evacuate`, `VM.snapshot`, `VM.migrate_send`).
-   Over the workspace's tests the check saw 280 distinct calls and reported none. Of the
-   223 calls the core's sources name, the tests send 217; five of the rest are network
-   and power operations that only the lab exercises, and one is named for a permission
-   table alone. What it cannot see: a reference of the wrong class, which is a string
-   like any other, two arguments of one type in each other's places, and any call that
-   no test or scenario makes. Checking those needs the arguments typed where they are
-   written, which is not done.
+   arguments are checked where it is made. For the calls written with their arguments
+   this is done.
+
+   First came checks at run time. A test checked the number of arguments of the calls
+   written with them. Since 0.19.0 a debug build compares every call it sends with the
+   API, where the call leaves the client: the number of arguments, and each one against
+   the type the API gives its place (a boolean, a whole number, a string, a value of the
+   named enumeration, a list or a map of those). It reports to the file the view check
+   writes, names only, and the repository's check fails on any report. The catalogue
+   gained, for this, how many of each call's parameters are required: the description
+   marks 77 as optional, all of them last, and the client leaves some out
+   (`host.disable`, `host.evacuate`, `VM.snapshot`, `VM.migrate_send`). Over the
+   workspace's tests the check sees 280 distinct calls and reports none. It cannot see a
+   reference of the wrong class, which is a string like any other, two arguments of one
+   type in each other's places, or any call that no test or scenario makes.
+
+   Since 2026-11-13 the bindings have a type for every message that takes the session,
+   1,941 of them. Its fields are the call's parameters under the API's names, each in
+   the type of its kind: a flag is a `bool`, text and an enumeration's value a string, a
+   whole number an `Int` (sent as digits, as the client always sent it), a reference a
+   `Ref` of the class the API names. A set, a map and a record are JSON values handed
+   over whole. A message with one parameter is a tuple, and where the last parameters
+   may be left out there is a type for each length (`host::Evacuate`,
+   `host::EvacuateWithNetwork`), 2,016 types in all. `Session::send` takes one; a call
+   that is prepared first and sent later is made from one as its name and arguments.
+
+   The core writes 363 calls this way, of 121 different messages: 298 sent where they
+   are written and 65 prepared. A script rewrote them from the catalogue and the
+   compiler then went over each. What it checks there, in every build and whether or not
+   a test reaches the call: how many arguments; which is which, since a field is given
+   by name and two arguments of one type cannot change places unseen (23 of the
+   messages the core calls take two or more of one type, such as the four limits of
+   `VM.set_memory_limits`); the kind of each; and for a reference, its class.
+
+   The rewrite found nothing sent wrongly. Five places gave `task.destroy` or
+   `task.get_record` a reference that might be absent, which would have gone as null;
+   each now says what it does when there is none. The tests are answered the same 280
+   distinct calls as before, and the debug check reports none.
+
+   What is not done. A reference is text, and its class is the caller's word, written
+   where the reference is used (`refs::vm(&reference)`). The compiler holds that word
+   against the parameter it is given to, not against where the reference came from: a
+   reference would have to carry its class from its origin, a view's field of type
+   `host ref` or the answer to `VM.get_by_uuid`, and neither views nor replies give one
+   yet. An enumeration's value is text, and a set, a map and a record are JSON; the
+   debug check still judges those when a test or a scenario sends them. And 43 calls are
+   still a name and a list: 38 whose name is put together at run time for one of several
+   classes (`{class}.get_record`) and five whose arguments are built elsewhere. The four
+   that the session layer sends itself are listed by a test, which fails on another.
+   Names written alone, for permissions and for the journal, are checked against the
+   catalogue as before.
 4. The experimental areas, class by class, each with the fixture tests that cover it.
 
 A workflow whose decoding moves onto the generated crate is run again on the lab before

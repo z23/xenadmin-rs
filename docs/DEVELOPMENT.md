@@ -116,7 +116,19 @@ may be left out from the end. A line `sent` and a name records each call made, a
 line `viewed`, a class and a place each place that made a view, so that what the two
 checks covered can be counted. `scripts/view_audit.py` fails on any `call` line;
 `scripts/check.sh` runs it over the workspace's tests. A reference of the wrong class is
-a string like any other and is not seen. Write
+a string like any other and is not seen.
+
+Write a call as its message from `xenadmin_xapi::calls` and send it with `Session::send`:
+`session.send(calls::vm::Start { vm: refs::vm(&reference), start_paused: false, force: false })`.
+The fields are the API's parameters by name and kind, so a missing argument, one of the
+wrong kind and a reference of another class do not compile. Give a reference with the
+function for its class in `refs`, from text or from a value a host sent, and a whole
+number with `Int::from` or `.into()`; a message with one parameter is a tuple
+(`calls::vm::GetRecord(refs::vm(&reference))`) and one with none a unit. For a call that
+is prepared now and sent later, `.request()` gives its name and arguments and `.task()`
+the same under `Async.`. Only a call whose class is not known until run time is still
+written as a name and a list (`session.call(&format!("{class}.get_record"), ..)`); a test
+lists the calls the session layer writes that way and fails on another. Write
 enumeration values as the generated constants (`vm_power_state::HALTED`,
 `vdi_operations::DESTROY`), not as literals: a value the API does not have then does
 not compile. That holds for the client's own types too (`Ipv4Mode::as_str` returns

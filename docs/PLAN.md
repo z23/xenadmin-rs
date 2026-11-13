@@ -314,8 +314,10 @@ bindings ([decision](decisions/0004-generated-bindings.md)). As of 2026-11-12 th
 description is the one upstream's generator writes for the lab's toolstack release, the
 decoders and most operation reads go through the generated views, a field read through
 a view can only be read as the kind the API gives it (since 2026-11-13), enumeration
-values are written as generated constants, and debug builds can check that each record
-is read as the class it is of, which the repository's check now does over the tests. The move
+values are written as generated constants, a call with its arguments is written as a
+generated message that the compiler checks (also since 2026-11-13), and debug builds can
+check that each record is read as the class it is of, which the repository's check now
+does over the tests. The move
 has found four defects and, since, a comparison that could not hold and seven reads
 through the wrong class that changed nothing (findings 55 to 58, 60 and 61 of the lab
 report). The operation areas that had rested on fixture tests since their move
