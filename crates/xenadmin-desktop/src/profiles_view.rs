@@ -255,6 +255,14 @@ fn form_profile(s: &State) -> Result<ConnectionProfile, String> {
     if s.workspace.live(profile.id) {
         return Err("Disconnect this connection before editing its settings.".into());
     }
+    let previous_pin = if profile.endpoint != endpoint {
+        profile
+            .host_certificates
+            .get(profile.endpoint.as_str())
+            .cloned()
+    } else {
+        None
+    };
     profile.set_endpoint(endpoint);
     profile.name = if s.workspace.name.text.trim().is_empty() {
         profile.endpoint.to_string()
@@ -284,12 +292,14 @@ fn form_profile(s: &State) -> Result<ConnectionProfile, String> {
     if !profile.accept_invalid_certificates {
         let mut options = ConnectionOptions::new(profile.endpoint.clone());
         if !s.fingerprint.text.trim().is_empty() {
-            options.certificate_fingerprint = Some(
-                s.fingerprint
-                    .text
-                    .parse()
-                    .map_err(|error: xenadmin_core::Error| error.to_string())?,
-            );
+            let fingerprint = s
+                .fingerprint
+                .text
+                .parse()
+                .map_err(|error: xenadmin_core::Error| error.to_string())?;
+            if previous_pin.as_ref() != Some(&fingerprint) {
+                options.certificate_fingerprint = Some(fingerprint);
+            }
         }
         options
             .add_host_certificates(&s.host_certificates.text)
