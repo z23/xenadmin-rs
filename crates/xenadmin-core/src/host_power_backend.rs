@@ -178,7 +178,7 @@ async fn no_host_consumer(
                     "Host Secret consumer configuration invalid",
                 ))?;
             require(
-                !secrets::names(value, id),
+                !secrets::identifies(value, id),
                 "Secret is still referenced by a host; it was not deleted",
             )?;
         }
