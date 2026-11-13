@@ -399,3 +399,67 @@ async fn retained_secret_cleanup_refuses_a_new_storage_consumer() {
     assert!(data.lock().unwrap().contains_key("secret-new"));
     c.close().await;
 }
+fn spelled(id: &str, spelling: &str) -> String {
+    match spelling {
+        "simple" => id.to_string(),
+        "urn" => format!("urn:uuid:{id}"),
+        "braced" => format!("{{{id}}}"),
+        "upper" => id.to_ascii_uppercase(),
+        "other" => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into(),
+        _ => unreachable!("{spelling}"),
+    }
+}
+async fn host_cleanup_spelling(spelling: &str) -> String {
+    let (m, data) = fixture("secret.create", None).await;
+    let d = tempfile::tempdir().unwrap();
+    let b = Backend::with_state_directory(d.path().into()).unwrap();
+    let c = connect(&m, &b, false).await;
+    let r = done(&submit(&c)).await;
+    assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+    data.lock().unwrap().get_mut("secret-new").unwrap()["uuid"] =
+        json!("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    let r = recheck(&c, r.id).await;
+    assert_eq!(r.state, OperationState::PartiallyCompleted, "{}", r.detail);
+    let secret = r.host_power_secret.as_ref().unwrap().secret;
+    assert_eq!(secret.to_string(), "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    data.lock().unwrap().get_mut("host").unwrap()["power_on_config"] =
+        json!({"power_on_password_secret": spelled(&secret.to_string(), spelling)});
+    let cleanup = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::HostPower {
+                host: c.latest().observe_resource(target()).unwrap(),
+                operation: HostPowerOperation::CleanupSecret {
+                    operation: r.id,
+                    secret,
+                },
+            },
+        )
+        .unwrap();
+    let outcome = done(&cleanup).await;
+    let present = data.lock().unwrap().contains_key("secret-new");
+    let destroy = count(&m, "secret.destroy");
+    let row = format!(
+        "spelling={spelling} state={:?} destroy={destroy} secret_present={present} detail={}",
+        outcome.state, outcome.detail
+    );
+    c.close().await;
+    row
+}
+#[tokio::test]
+async fn cleanup_keeps_a_host_secret_for_every_id_spelling() {
+    let mut rows = Vec::new();
+    for spelling in ["simple", "urn", "braced", "upper", "other"] {
+        rows.push(host_cleanup_spelling(spelling).await);
+    }
+    assert_eq!(
+        rows,
+        [
+            "spelling=simple state=Rejected destroy=0 secret_present=true detail=Invalid XAPI response: Secret is still referenced by a host; it was not deleted",
+            "spelling=urn state=Rejected destroy=0 secret_present=true detail=Invalid XAPI response: Secret is still referenced by a host; it was not deleted",
+            "spelling=braced state=Rejected destroy=0 secret_present=true detail=Invalid XAPI response: Secret is still referenced by a host; it was not deleted",
+            "spelling=upper state=Rejected destroy=0 secret_present=true detail=Invalid XAPI response: Secret is still referenced by a host; it was not deleted",
+            "spelling=other state=Succeeded destroy=1 secret_present=false detail=Owned unused host power Secret removed",
+        ]
+    );
+}

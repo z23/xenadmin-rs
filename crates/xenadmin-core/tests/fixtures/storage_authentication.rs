@@ -773,3 +773,75 @@ async fn storage_cleanup_permission_denial_prevents_temporary_secret_creation() 
         c.close().await;
     }
 }
+fn spelled(id: &str, spelling: &str) -> String {
+    match spelling {
+        "simple" => id.to_string(),
+        "urn" => format!("urn:uuid:{id}"),
+        "braced" => format!("{{{id}}}"),
+        "other" => "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".into(),
+        _ => unreachable!("{spelling}"),
+    }
+}
+async fn storage_cleanup_spelling(spelling: &str) -> String {
+    let (mock, data) = fixture(StorageAuthentication::Chap, Fault::FailedProvision).await;
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(dir.path().into()).unwrap();
+    let c = connect(&mock, &backend, false).await;
+    let op = c
+        .submit_authenticated_storage(
+            OperationId::new(),
+            c.latest().observe_resource(pool()).unwrap(),
+            command(StorageAuthentication::Chap, false),
+            credentials(StorageAuthentication::Chap),
+        )
+        .unwrap();
+    let r = finished(&op).await;
+    assert_eq!(r.state, OperationState::OutcomeUnknown, "{}", r.detail);
+    c.control_resource(r.id, xenadmin_core::OperationControl::AcknowledgeUnknown)
+        .unwrap();
+    history_state(&c, r.id, |r| r.state.terminal()).await;
+    let id = r.storage_secrets[0].secret;
+    data.lock().unwrap().get_mut("SR").unwrap()["sm_config"] =
+        json!({"held-secret": spelled(&id.to_string(), spelling)});
+    let cleanup = c
+        .submit_resource(
+            OperationId::new(),
+            ResourceCommand::CleanupStorageCredentials {
+                pool: c.latest().observe_resource(pool()).unwrap(),
+                operation: r.id,
+                secrets: vec![id],
+            },
+        )
+        .unwrap();
+    let outcome = finished(&cleanup).await;
+    let present = data.lock().unwrap().contains_key("secret-100");
+    let destroy = mock
+        .methods
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|m| m.as_str() == "secret.destroy")
+        .count();
+    let row = format!(
+        "spelling={spelling} state={:?} destroy={destroy} secret_present={present} detail={}",
+        outcome.state, outcome.detail
+    );
+    c.disconnect();
+    row
+}
+#[tokio::test]
+async fn cleanup_keeps_a_storage_secret_for_every_id_spelling() {
+    let mut rows = Vec::new();
+    for spelling in ["simple", "urn", "braced", "other"] {
+        rows.push(storage_cleanup_spelling(spelling).await);
+    }
+    assert_eq!(
+        rows,
+        [
+            "spelling=simple state=Rejected destroy=0 secret_present=true detail=Invalid XAPI response: Secret is still referenced by storage; it was not deleted",
+            "spelling=urn state=Rejected destroy=0 secret_present=true detail=Invalid XAPI response: Secret is still referenced by storage; it was not deleted",
+            "spelling=braced state=Rejected destroy=0 secret_present=true detail=Invalid XAPI response: Secret is still referenced by storage; it was not deleted",
+            "spelling=other state=Succeeded destroy=1 secret_present=false detail=Reviewed unused temporary Secrets were deleted",
+        ]
+    );
+}
