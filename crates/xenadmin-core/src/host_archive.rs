@@ -500,4 +500,183 @@ mod tests {
         let bytes = builder.into_inner().unwrap();
         assert!(scan(&bytes[..], host, "8.3.0", true).is_ok());
     }
+    #[test]
+    fn host_archive_gnu_long_name_cannot_hide_a_pax_path() {
+        use std::io::Write;
+        let host = HostId::from(uuid::Uuid::from_u128(2));
+        let inventory = format!("INSTALLATION_UUID='{host}'\nPRODUCT_VERSION='8.3.0'\n");
+        let inspect = |bytes: &[u8]| {
+            let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+            gzip.write_all(bytes).unwrap();
+            let mut file = tempfile::tempfile().unwrap();
+            file.write_all(&gzip.finish().unwrap()).unwrap();
+            inspect_restore(&mut file, host, "8.3.0", None, None)
+        };
+        fn gnu(builder: &mut tar::Builder<Vec<u8>>, kind: tar::EntryType, value: &str) {
+            let mut body = value.as_bytes().to_vec();
+            body.push(0);
+            let mut header = tar::Header::new_gnu();
+            let long = b"././@LongLink";
+            header.as_gnu_mut().unwrap().name[..long.len()].copy_from_slice(long);
+            header.set_entry_type(kind);
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append(&header, &body[..]).unwrap();
+        }
+        let archive = |pax: &[(&str, &[u8])],
+                       long_name: Option<&str>,
+                       long_link: Option<&str>,
+                       name: &str,
+                       kind: tar::EntryType,
+                       link: Option<&str>,
+                       body: &[u8]| {
+            let mut builder = tar::Builder::new(Vec::new());
+            let mut header = tar::Header::new_gnu();
+            header.set_size(inventory.len() as u64);
+            header.set_mode(0o600);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "etc/xensource-inventory", inventory.as_bytes())
+                .unwrap();
+            if !pax.is_empty() {
+                builder.append_pax_extensions(pax.iter().copied()).unwrap();
+            }
+            if let Some(value) = long_name {
+                gnu(&mut builder, tar::EntryType::GNULongName, value);
+            }
+            if let Some(value) = long_link {
+                gnu(&mut builder, tar::EntryType::GNULongLink, value);
+            }
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(kind);
+            header.set_size(body.len() as u64);
+            header.set_mode(0o600);
+            if let Some(link) = link {
+                header.set_link_name(link).unwrap();
+            }
+            header.set_cksum();
+            builder.append_data(&mut header, name, body).unwrap();
+            builder.into_inner().unwrap()
+        };
+        let cases = [
+            (
+                "gnu-long-name-and-pax-path",
+                archive(
+                    &[("path", b"../outside" as &[u8])],
+                    Some("var/payload"),
+                    None,
+                    "var/payload",
+                    tar::EntryType::Regular,
+                    None,
+                    b"x",
+                ),
+                false,
+            ),
+            (
+                "pax-path-without-gnu-long-name",
+                archive(
+                    &[("path", b"../outside" as &[u8])],
+                    None,
+                    None,
+                    "var/payload",
+                    tar::EntryType::Regular,
+                    None,
+                    b"x",
+                ),
+                false,
+            ),
+            (
+                "gnu-long-link-and-pax-linkpath",
+                archive(
+                    &[("linkpath", b"../../outside" as &[u8])],
+                    None,
+                    Some("etc/xensource-inventory"),
+                    "var/link",
+                    tar::EntryType::Symlink,
+                    Some("etc/xensource-inventory"),
+                    b"",
+                ),
+                false,
+            ),
+            (
+                "pax-linkpath-without-gnu-long-link",
+                archive(
+                    &[("linkpath", b"../../outside" as &[u8])],
+                    None,
+                    None,
+                    "var/link",
+                    tar::EntryType::Symlink,
+                    Some("var/link"),
+                    b"",
+                ),
+                false,
+            ),
+            (
+                "gnu-long-name-and-different-pax-path",
+                archive(
+                    &[("path", b"var/other" as &[u8])],
+                    Some("var/payload"),
+                    None,
+                    "var/payload",
+                    tar::EntryType::Regular,
+                    None,
+                    b"x",
+                ),
+                false,
+            ),
+            (
+                "gnu-long-link-and-different-pax-linkpath",
+                archive(
+                    &[("linkpath", b"var/other" as &[u8])],
+                    None,
+                    Some("etc/xensource-inventory"),
+                    "var/link",
+                    tar::EntryType::Symlink,
+                    Some("etc/xensource-inventory"),
+                    b"",
+                ),
+                false,
+            ),
+            (
+                "pax-path-agrees",
+                archive(
+                    &[("path", b"./var/payload" as &[u8])],
+                    Some("var/payload"),
+                    None,
+                    "var/payload",
+                    tar::EntryType::Regular,
+                    None,
+                    b"x",
+                ),
+                true,
+            ),
+            (
+                "pax-linkpath-agrees",
+                archive(
+                    &[("linkpath", b"./etc/xensource-inventory" as &[u8])],
+                    None,
+                    Some("etc/xensource-inventory"),
+                    "var/link",
+                    tar::EntryType::Symlink,
+                    Some("etc/xensource-inventory"),
+                    b"",
+                ),
+                true,
+            ),
+        ];
+        let mut missed = Vec::new();
+        for (label, bytes, accept) in cases {
+            let result = inspect(&bytes);
+            let matches_contract = if accept {
+                result.is_ok()
+            } else {
+                matches!(result, Err(Error::TransferArchive))
+            };
+            if !matches_contract {
+                missed.push(format!("{label}: {result:?}"));
+            }
+        }
+        assert!(missed.is_empty(), "{missed:?}");
+    }
 }
