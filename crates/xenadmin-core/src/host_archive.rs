@@ -230,30 +230,51 @@ fn scan_inner(
         if count > 500_000 {
             return Err(Error::TransferLimit);
         }
-        if mode == Mode::Restore
-            && let Some(attributes) = entry.pax_extensions().map_err(|_| Error::TransferArchive)?
-        {
-            let mut seen = BTreeSet::new();
-            for attribute in attributes {
-                let attribute = attribute.map_err(|_| Error::TransferArchive)?;
-                let key = attribute.key().map_err(|_| Error::TransferArchive)?;
-                if !matches!(
-                    key,
-                    "path"
-                        | "linkpath"
-                        | "size"
-                        | "uid"
-                        | "gid"
-                        | "uname"
-                        | "gname"
-                        | "mtime"
-                        | "atime"
-                        | "ctime"
-                ) || !seen.insert(key.to_owned())
-                {
-                    return Err(Error::Protocol(
-                        "Recovery archive has unsupported or ambiguous PAX metadata",
-                    ));
+        if mode == Mode::Restore {
+            let mut pax_path = None;
+            let mut pax_link = None;
+            let extensions = entry.pax_extensions().map_err(|_| Error::TransferArchive)?;
+            if let Some(attributes) = extensions {
+                let mut seen = BTreeSet::new();
+                for attribute in attributes {
+                    let attribute = attribute.map_err(|_| Error::TransferArchive)?;
+                    let key = attribute.key().map_err(|_| Error::TransferArchive)?;
+                    if !matches!(
+                        key,
+                        "path"
+                            | "linkpath"
+                            | "size"
+                            | "uid"
+                            | "gid"
+                            | "uname"
+                            | "gname"
+                            | "mtime"
+                            | "atime"
+                            | "ctime"
+                    ) || !seen.insert(key.to_owned())
+                    {
+                        return Err(Error::Protocol(
+                            "Recovery archive has unsupported or ambiguous PAX metadata",
+                        ));
+                    }
+                    match key {
+                        "path" => pax_path = Some(attribute.value_bytes().to_vec()),
+                        "linkpath" => pax_link = Some(attribute.value_bytes().to_vec()),
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(raw) = pax_path {
+                if path(&raw)? != path(&entry.path_bytes())? {
+                    return Err(Error::TransferArchive);
+                }
+            }
+            if let Some(raw) = pax_link {
+                let Some(link) = entry.link_name_bytes() else {
+                    return Err(Error::TransferArchive);
+                };
+                if path(&raw)? != path(&link)? {
+                    return Err(Error::TransferArchive);
                 }
             }
         }
