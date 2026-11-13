@@ -8,6 +8,7 @@ use std::{
 
 const MAX_DECODED: u64 = 256 * 1024 * 1024 * 1024;
 const MAX_METADATA: u64 = 1024 * 1024;
+const COMPRESSED_READ: usize = 4096;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Backup,
@@ -30,6 +31,23 @@ impl Stop<'_> {
             return Err(Error::Timeout);
         }
         Ok(())
+    }
+}
+struct Checked<'a, R> {
+    inner: R,
+    stop: &'a Stop<'a>,
+}
+impl<R: Read> Read for Checked<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // flate2 treats Interrupted as a zero-length gzip header read and retries.
+        self.stop
+            .check()
+            .map_err(|_| std::io::Error::other("stopped"))?;
+        let n = buf.len().min(COMPRESSED_READ);
+        if n == 0 {
+            return Ok(0);
+        }
+        self.inner.read(&mut buf[..n])
     }
 }
 struct Limited<'a, R> {
@@ -122,13 +140,21 @@ pub(crate) fn inspect(
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
     file.rewind().map_err(|_| Error::TransferFile)?;
-    let backup = matches!(operation, HostArchiveOperation::Backup);
-    let reader: Box<dyn Read + '_> = if backup {
-        Box::new(flate2::read::MultiGzDecoder::new(file))
-    } else {
-        Box::new(file)
+    if !matches!(operation, HostArchiveOperation::Backup) {
+        return scan_cancel(file, host, expected_version, false, cancel);
+    }
+    let stop = Stop {
+        connection: Some(cancel),
+        selection: None,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
     };
-    scan_cancel(reader, host, expected_version, backup, cancel)
+    let reader = flate2::read::MultiGzDecoder::new(Checked {
+        inner: file,
+        stop: &stop,
+    });
+    let result = scan_inner(reader, host, expected_version, Mode::Backup, &stop);
+    stop.check()?;
+    result.map(|_| ())
 }
 struct Hashed<R> {
     inner: R,
@@ -152,15 +178,18 @@ pub(crate) fn inspect_restore(
     use sha2::Digest;
     file.rewind().map_err(|_| Error::TransferFile)?;
     let hash = Rc::new(RefCell::new(sha2::Sha256::new()));
-    let reader = flate2::read::MultiGzDecoder::new(Hashed {
-        inner: file,
-        hash: hash.clone(),
-    });
     let stop = Stop {
         connection,
         selection,
         deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
     };
+    let reader = flate2::read::MultiGzDecoder::new(Hashed {
+        inner: Checked {
+            inner: file,
+            stop: &stop,
+        },
+        hash: hash.clone(),
+    });
     let result = scan_inner(reader, host, version, Mode::Restore, &stop);
     stop.check()?;
     let (entries, logical_bytes) = result?;
