@@ -140,6 +140,9 @@ impl Session {
                 .await;
             let result = match result {
                 Err(Error::Coordinator(endpoint)) if follow_coordinator => {
+                    if !endpoint.as_str().starts_with("https://") {
+                        return Err(Error::InvalidEndpoint);
+                    }
                     target = options.for_endpoint(endpoint);
                     continue;
                 }
