@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: LGPL-2.1-only WITH OCaml-LGPL-linking-exception
 
 //! Turns the upstream API description into Rust source: the catalogue, a record view for
-//! every class and constants for every enumeration. The output depends on the description
-//! alone and is sorted, so the same description always gives the same source.
+//! every class, constants for every enumeration and a type for every message that says
+//! what the call takes. The output depends on the description alone and is sorted, so the
+//! same description always gives the same source.
 
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,6 +33,9 @@ struct Message {
 }
 #[derive(Deserialize)]
 struct Parameter {
+    /// Absent in a description that does not name its parameters.
+    #[serde(default)]
+    name: String,
     #[serde(rename = "type")]
     kind: String,
     /// Absent in a description that does not say: every parameter is then required.
@@ -103,6 +107,25 @@ fn view(class: &str) -> String {
     }
     name + "Record"
 }
+/// The name of a class's marker and of a message's type: `VM_guest_metrics` is
+/// `VmGuestMetrics` and `set_VCPUs_max` is `SetVcpusMax`.
+fn camel(name: &str) -> String {
+    let mut identifier = String::new();
+    for part in name
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+    {
+        let mut characters = part.chars();
+        if let Some(first) = characters.next() {
+            identifier.push(first.to_ascii_uppercase());
+            identifier.extend(characters.map(|c| c.to_ascii_lowercase()));
+        }
+    }
+    if identifier.is_empty() || identifier.starts_with(|c: char| c.is_ascii_digit()) {
+        identifier.insert(0, '_');
+    }
+    identifier
+}
 /// An upper-case constant for an enumeration value: `hard_shutdown` is `HARD_SHUTDOWN`.
 fn constant(value: &str) -> String {
     let mut identifier: String = value
@@ -149,6 +172,34 @@ fn typed(kind: &str) -> &'static str {
         _ if kind.starts_with("enum ") => "ChoiceField",
         _ if kind.ends_with(" ref") => "RefField",
         _ => "FieldValue",
+    }
+}
+
+/// The type of a message's field for a parameter of the API type `kind`, whether that
+/// type borrows, and the expression that turns `value` into the JSON the call sends.
+/// A flag, a number, text and a reference are typed; a set, a map and a record are JSON
+/// values handed over whole. An enumeration's value is text: its constants are strings.
+fn argument(kind: &str, value: &str) -> (String, bool, String) {
+    match kind {
+        "bool" => ("bool".into(), false, format!("Value::Bool({value})")),
+        "int" => ("Int".into(), false, format!("{value}.json()")),
+        "float" => ("f64".into(), false, format!("Value::from({value})")),
+        "string" | "datetime" => (
+            "&'a str".into(),
+            true,
+            format!("Value::String({value}.to_owned())"),
+        ),
+        _ if kind.starts_with("enum ") => (
+            "&'a str".into(),
+            true,
+            format!("Value::String({value}.to_owned())"),
+        ),
+        _ if kind.ends_with(" ref") && kind.split(' ').count() == 2 => (
+            format!("Ref<'a, class::{}>", camel(kind.trim_end_matches(" ref"))),
+            true,
+            format!("{value}.json()"),
+        ),
+        _ => ("Value".into(), false, value.to_owned()),
     }
 }
 
@@ -314,6 +365,177 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
             out,
             "        /// Every value, in the API's order.\n        pub const ALL: &[&str] = &[{}];\n    }}",
             constants.join(", ")
+        );
+    }
+    out.push_str("}\n\n");
+
+    distinct(
+        "class markers",
+        classes.iter().map(|c| (c.name.as_str(), camel(&c.name))),
+    )?;
+    distinct(
+        "class modules",
+        classes.iter().map(|c| (c.name.as_str(), snake(&c.name))),
+    )?;
+    let known: BTreeSet<&str> = classes.iter().map(|c| c.name.as_str()).collect();
+    out.push_str(
+        "/// A marker for every class, which says of which class a reference is.\npub mod class {\n",
+    );
+    for class in &classes {
+        let _ = writeln!(
+            out,
+            "    /// `{}`.\n    pub struct {};",
+            class.name,
+            camel(&class.name)
+        );
+    }
+    out.push_str(
+        "}\n\n/// For every class, a reference held as text that the caller says is of that class.\n\
+         /// The class is checked against the parameter the reference is given to; that the\n\
+         /// text is a reference of that class is the caller's word, written where it is used.\n\
+         pub mod refs {\n    use super::{Ref, class};\n",
+    );
+    for class in &classes {
+        let _ = writeln!(
+            out,
+            "    /// A reference to a `{name}`.\n    pub fn {function}<T: AsRef<str> + ?Sized>(reference: &T) -> Ref<'_, class::{marker}> {{\n        Ref::of(reference.as_ref())\n    }}",
+            name = class.name,
+            function = snake(&class.name),
+            marker = camel(&class.name)
+        );
+    }
+    out.push_str(
+        "}\n\n/// A type for every message that takes the session first: its fields are the call's\n\
+         /// other parameters, by the API's names and in the types of their kinds. A message\n\
+         /// with one parameter is a tuple, one with none a unit. Where the last parameters\n\
+         /// may be left out, the type named for the message takes the required ones and a\n\
+         /// type `…With…`, named for the last parameter it adds, takes more.\n\
+         pub mod calls {\n",
+    );
+    for class in &classes {
+        let mut body = String::new();
+        let mut names = Vec::new();
+        for message in &class.messages {
+            let Some((session, parameters)) = message.params.split_first() else {
+                continue;
+            };
+            if session.kind != "session ref" {
+                continue;
+            }
+            let required = parameters.iter().take_while(|p| p.required).count();
+            let fields: Vec<String> = parameters
+                .iter()
+                .enumerate()
+                .map(|(at, p)| {
+                    if p.name.is_empty() {
+                        format!("argument_{at}")
+                    } else {
+                        snake(&p.name)
+                    }
+                })
+                .collect();
+            distinct(
+                &format!("parameters of {}.{}", class.name, message.name),
+                parameters
+                    .iter()
+                    .zip(&fields)
+                    .map(|(p, field)| (p.name.as_str(), field.clone())),
+            )?;
+            for count in required..=parameters.len() {
+                let mut name = camel(&message.name);
+                if count > required {
+                    name.push_str("With");
+                    name.push_str(&camel(&fields[count - 1]));
+                }
+                names.push((format!("{}:{count}", message.name), name.clone()));
+                let typed: Vec<(String, bool, String)> = parameters[..count]
+                    .iter()
+                    .zip(&fields)
+                    .enumerate()
+                    .map(|(at, (p, field))| {
+                        let kind = match p.kind.strip_suffix(" ref") {
+                            // A reference to something the description has no class for.
+                            Some(class) if !known.contains(class) => "",
+                            _ => p.kind.as_str(),
+                        };
+                        let value = if count == 1 {
+                            format!("self.{at}")
+                        } else {
+                            format!("self.{field}")
+                        };
+                        argument(kind, &value)
+                    })
+                    .collect();
+                let lifetime = if typed.iter().any(|(_, borrows, _)| *borrows) {
+                    "<'a>"
+                } else {
+                    ""
+                };
+                let _ = writeln!(
+                    body,
+                    "\n        /// `{class}.{message}`, which gives `{result}`.",
+                    class = class.name,
+                    message = message.name,
+                    result = message.result.first().map_or("void", String::as_str),
+                );
+                match count {
+                    0 => {
+                        let _ = writeln!(body, "        pub struct {name};");
+                    }
+                    1 => {
+                        let _ = writeln!(
+                            body,
+                            "        pub struct {name}{lifetime}(\n            /// `{field}`: `{kind}`.\n            pub {typed},\n        );",
+                            field = parameters[0].name,
+                            kind = parameters[0].kind,
+                            typed = typed[0].0,
+                        );
+                    }
+                    _ => {
+                        let _ = writeln!(body, "        pub struct {name}{lifetime} {{");
+                        for ((p, field), (typed, _, _)) in
+                            parameters[..count].iter().zip(&fields).zip(&typed)
+                        {
+                            let _ = writeln!(
+                                body,
+                                "            /// `{kind}`.\n            pub {field}: {typed},",
+                                kind = p.kind,
+                            );
+                        }
+                        body.push_str("        }\n");
+                    }
+                }
+                let _ = writeln!(
+                    body,
+                    "        impl Call for {name}{anonymous} {{\n            \
+                     const NAME: &'static str = {plain};\n            \
+                     const ASYNC: &'static str = {asynchronous};\n            \
+                     const RESULT: &'static str = {result};\n            \
+                     fn arguments(self) -> Vec<Value> {{\n                vec![{arguments}]\n            }}\n        }}",
+                    anonymous = if lifetime.is_empty() { "" } else { "<'_>" },
+                    plain = literal(&format!("{}.{}", class.name, message.name)),
+                    asynchronous = literal(&format!("Async.{}.{}", class.name, message.name)),
+                    result = literal(message.result.first().map_or("void", String::as_str)),
+                    arguments = list(typed.iter().map(|(_, _, json)| json.clone())),
+                );
+            }
+        }
+        if body.is_empty() {
+            continue;
+        }
+        distinct(
+            &format!("messages of {}", class.name),
+            names
+                .iter()
+                .map(|(message, name)| (message.as_str(), name.clone())),
+        )?;
+        let _ = write!(
+            out,
+            "\n    /// The messages of `{class}`.\n    pub mod {module} {{\n        \
+             #[allow(unused_imports)]\n        use crate::{{Call, Int, Ref, class}};\n        \
+             #[allow(unused_imports)]\n        use serde_json::Value;\n{body}    }}\n",
+            class = class.name,
+            module = snake(&class.name),
         );
     }
     out.push_str("}\n");

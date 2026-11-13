@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-only WITH OCaml-LGPL-linking-exception
 
 //! The XAPI of the qualified toolstack, as Rust: a catalogue of its classes, fields,
-//! messages and enumerations, a view of a record for every class, and constants for every
-//! enumeration value.
+//! messages and enumerations, a view of a record for every class, constants for every
+//! enumeration value, and a type for every message that says what the call takes.
 //!
 //! All of it is generated when the crate is built, from the API description in
 //! `data/xenapi.json`: what upstream's own generator writes for the data model of the
@@ -43,6 +43,145 @@ pub struct Message {
 pub struct Enumeration {
     pub name: &'static str,
     pub values: &'static [&'static str],
+}
+
+/// A call: one message of the API with its arguments, each in the type of its kind and
+/// under the name the API gives it. The types in [`calls`] are these; what a call is
+/// given is checked where it is written, by the compiler: how many arguments, which is
+/// which, and a flag, a number, text or a reference of the class the API names.
+///
+/// ```
+/// use xenadmin_xapi::{Call, calls, refs};
+/// let call = calls::vm::Start {
+///     vm: refs::vm("OpaqueRef:vm"),
+///     start_paused: false,
+///     force: true,
+/// };
+/// assert_eq!(
+///     call.task(),
+///     ("Async.VM.start", vec!["OpaqueRef:vm".into(), false.into(), true.into()])
+/// );
+/// ```
+///
+/// A reference of another class, an argument of another kind or a missing argument does
+/// not compile:
+///
+/// ```compile_fail,E0308
+/// use xenadmin_xapi::{calls, refs};
+/// let _ = calls::vm::Start {
+///     vm: refs::host("OpaqueRef:host"),
+///     start_paused: false,
+///     force: true,
+/// };
+/// ```
+///
+/// ```compile_fail,E0308
+/// use xenadmin_xapi::{calls, refs};
+/// let _ = calls::vm::Start { vm: refs::vm("OpaqueRef:vm"), start_paused: "no", force: true };
+/// ```
+///
+/// ```compile_fail,E0063
+/// use xenadmin_xapi::{calls, refs};
+/// let _ = calls::vm::Start { vm: refs::vm("OpaqueRef:vm"), force: true };
+/// ```
+pub trait Call: Sized {
+    /// The call's name: `Class.message`.
+    const NAME: &'static str;
+    /// Its name when the host is to run it as a task: `Async.Class.message`.
+    const ASYNC: &'static str;
+    /// The type of what the call gives, as the description writes it.
+    const RESULT: &'static str;
+    /// The arguments after the session, in the API's order, as the JSON that is sent.
+    fn arguments(self) -> Vec<serde_json::Value>;
+    /// The call by its name, with its arguments.
+    fn request(self) -> (&'static str, Vec<serde_json::Value>) {
+        (Self::NAME, self.arguments())
+    }
+    /// The call as a task: the host answers with the task's reference.
+    fn task(self) -> (&'static str, Vec<serde_json::Value>) {
+        (Self::ASYNC, self.arguments())
+    }
+}
+
+/// A reference to an object of class `C`, as an argument of a call. One is made with the
+/// function for its class in [`refs`], or from a value a host sent with [`Ref::sent`]. The
+/// class is the caller's word; the compiler holds it against the parameter it is given to.
+pub struct Ref<'a, C> {
+    value: RefValue<'a>,
+    class: std::marker::PhantomData<fn() -> C>,
+}
+enum RefValue<'a> {
+    Text(&'a str),
+    Sent(&'a serde_json::Value),
+}
+impl<'a, C> Ref<'a, C> {
+    /// A reference held as text.
+    pub fn of(reference: &'a str) -> Self {
+        Self {
+            value: RefValue::Text(reference),
+            class: std::marker::PhantomData,
+        }
+    }
+    /// A reference as a host sent it, passed back unread: a field of a record or the
+    /// answer to a call.
+    pub fn sent(value: impl Reads<'a, kind::Reference>) -> Self {
+        Self {
+            value: RefValue::Sent(value.raw()),
+            class: std::marker::PhantomData,
+        }
+    }
+    /// The JSON that is sent for it.
+    pub fn json(&self) -> serde_json::Value {
+        match self.value {
+            RefValue::Text(reference) => serde_json::Value::String(reference.to_owned()),
+            RefValue::Sent(value) => value.clone(),
+        }
+    }
+}
+impl<C> Clone for Ref<'_, C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<C> Copy for Ref<'_, C> {}
+impl Clone for RefValue<'_> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl Copy for RefValue<'_> {}
+
+/// A whole number as an argument of a call. Calls send it as a string of digits, which is
+/// how the API's own bindings write a 64-bit integer.
+#[derive(Clone, Copy)]
+pub struct Int(i128);
+impl Int {
+    /// The JSON that is sent for it.
+    pub fn json(self) -> serde_json::Value {
+        serde_json::Value::String(self.0.to_string())
+    }
+}
+macro_rules! int_from {
+    ($($number:ty),+) => {
+        $(impl From<$number> for Int {
+            fn from(number: $number) -> Self {
+                Self(number.into())
+            }
+        })+
+    };
+}
+int_from!(i8, i16, i32, i64, u8, u16, u32, u64);
+/// A number behind a reference converts as the number does.
+impl<T: Copy + Into<Int>> From<&T> for Int {
+    fn from(number: &T) -> Self {
+        (*number).into()
+    }
+}
+impl From<usize> for Int {
+    fn from(number: usize) -> Self {
+        // A usize is at most 64 bits on every platform Rust has.
+        Self(number as i128)
+    }
 }
 
 /// One field of a record, as the host sent it: null when the record does not carry it.
@@ -1001,6 +1140,112 @@ mod tests {
     }
 
     #[test]
+    fn a_call_names_its_arguments_and_sends_them_as_the_api_takes_them() {
+        use calls::{host, pif, vdi, vm};
+        // One parameter is a tuple, none a unit, several are named.
+        assert_eq!(
+            vm::GetRecord(refs::vm("OpaqueRef:a")).request(),
+            ("VM.get_record", vec![json!("OpaqueRef:a")])
+        );
+        assert_eq!(
+            vm::GetAllRecords.request(),
+            ("VM.get_all_records", Vec::new())
+        );
+        let owned = String::from("OpaqueRef:d");
+        // A whole number goes as digits, from any integer type, and the task's name is
+        // the call's with `Async.` before it.
+        assert_eq!(
+            vdi::Resize {
+                vdi: refs::vdi(&owned),
+                size: 1_073_741_824_u64.into(),
+            }
+            .task(),
+            (
+                "Async.VDI.resize",
+                vec![json!("OpaqueRef:d"), json!("1073741824")]
+            )
+        );
+        assert_eq!(Int::from(-1_i32).json(), json!("-1"));
+        // Text and an enumeration's value go as strings, in the API's order whatever the
+        // order they are written in.
+        assert_eq!(
+            pif::ReconfigureIp {
+                dns: "192.0.2.53",
+                gateway: "192.0.2.1",
+                netmask: "255.255.255.0",
+                ip: "192.0.2.7",
+                mode: enumerations::ip_configuration_mode::STATIC,
+                self_: refs::pif("OpaqueRef:p"),
+            }
+            .arguments(),
+            [
+                json!("OpaqueRef:p"),
+                json!("Static"),
+                json!("192.0.2.7"),
+                json!("255.255.255.0"),
+                json!("192.0.2.1"),
+                json!("192.0.2.53")
+            ]
+        );
+        // Parameters that may be left out: the plain type takes the required ones.
+        assert_eq!(host::Evacuate(refs::host("h")).arguments(), [json!("h")]);
+        assert_eq!(
+            host::EvacuateWithNetwork {
+                host: refs::host("h"),
+                network: refs::network("n"),
+            }
+            .arguments(),
+            [json!("h"), json!("n")]
+        );
+        assert_eq!(
+            host::EvacuateWithEvacuateBatchSize {
+                host: refs::host("h"),
+                network: refs::network("n"),
+                evacuate_batch_size: 4_u8.into(),
+            }
+            .arguments(),
+            [json!("h"), json!("n"), json!("4")]
+        );
+        // A reference a host sent goes back as it came, whatever it holds.
+        let record = json!({"resident_on": "OpaqueRef:h", "affinity": null});
+        let view = records::VmRecord::new(&record);
+        assert_eq!(
+            host::GetRecord(Ref::sent(view.resident_on())).arguments(),
+            [json!("OpaqueRef:h")]
+        );
+        assert_eq!(
+            host::GetRecord(Ref::sent(view.affinity())).arguments(),
+            [Value::Null]
+        );
+        // A set, a map and a record are JSON values, handed over whole.
+        assert_eq!(
+            vm::SetOtherConfig {
+                self_: refs::vm("v"),
+                value: json!({"k": "v"}),
+            }
+            .request(),
+            ("VM.set_other_config", vec![json!("v"), json!({"k": "v"})])
+        );
+        assert_eq!(<vm::Start as Call>::RESULT, "void");
+        assert_eq!(<vm::GetByUuid as Call>::RESULT, "VM ref");
+        // Every message that takes the session has a type, and one more for each
+        // parameter it lets a caller leave out: the catalogue's count against the
+        // generated source's.
+        let source = include_str!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+        let with_session = || {
+            CLASSES
+                .iter()
+                .flat_map(|class| class.messages)
+                .filter(|message| message.parameters.first() == Some(&"session ref"))
+        };
+        let types: usize = with_session()
+            .map(|message| 1 + message.parameters.len() - message.required)
+            .sum();
+        assert_eq!((with_session().count(), types), (1941, 2016));
+        assert_eq!(source.matches("const NAME: &'static str = ").count(), types);
+    }
+
+    #[test]
     fn the_generator_sorts_names_keeps_types_in_order_and_refuses_clashes() {
         let description = br#"[
           {"name":"b_thing","fields":[],"messages":[],"enums":[]},
@@ -1026,7 +1271,33 @@ mod tests {
         assert!(out.contains("pub const ON_: &str = \"On\";"));
         assert!(out.contains("pub const _9P: &str = \"9p\";"));
         assert!(out.contains("pub const ALL: &[&str] = &[ON, ON_, _9P];"));
+        // A message that takes the session has a type: a tuple with one parameter, named
+        // fields with more, and one more type for each parameter that may be left out.
+        // A parameter the description does not name is named for its place.
+        assert!(out.contains("pub struct A;") && out.contains("pub struct BThing;"));
+        assert!(out.contains(
+            "pub fn b_thing<T: AsRef<str> + ?Sized>(reference: &T) -> Ref<'_, class::BThing> {"
+        ));
+        assert!(out.contains("pub struct Start<'a>(\n"));
+        assert!(out.contains("            pub Ref<'a, class::A>,\n"));
+        assert!(out.contains("pub struct StartWithArgument1<'a> {\n"));
+        assert!(out.contains("            pub argument_1: bool,\n"));
+        assert!(out.contains("const NAME: &'static str = \"A.start\";"));
+        assert!(out.contains("const ASYNC: &'static str = \"Async.A.start\";"));
+        assert!(out.contains("vec![self.argument_0.json(), Value::Bool(self.argument_1)]"));
+        // One that does not take the session has none.
+        assert!(!out.contains("pub struct Get"));
         assert_eq!(out, generator::generate(description).unwrap());
+
+        let same = br#"[{"name":"A","enums":[],"fields":[],
+          "messages":[{"name":"go","params":[{"type":"session ref","name":"session_id"},
+                       {"type":"A ref","name":"VM"},{"type":"A ref","name":"vm"}],
+                       "result":["void"],"lifecycle":{"state":"Published_s"}}]}]"#;
+        let error = generator::generate(same).unwrap_err();
+        assert!(
+            error.contains("parameters of A.go: VM and vm both become vm"),
+            "{error}"
+        );
 
         let clash = br#"[{"name":"A","enums":[],"messages":[],
           "fields":[{"name":"MTU","type":"int","qualifier":"RW","lifecycle":{"state":"Published_s"}},
