@@ -1,10 +1,13 @@
 use crate::{Error, ObservedSnapshot, xapi::Session};
 use base64::Engine;
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::records::{BlobRecord, PoolRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 pub(crate) const KEY: &str = "XenCenter.VNCSnapshot";
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -147,9 +150,11 @@ pub(crate) async fn read(
     observed: ObservedSnapshot,
 ) -> Result<Option<SnapshotPreview>, Error> {
     let pool = session
-        .call("pool.get_by_uuid", vec![json!(observed.pool.to_string())])
+        .send(calls::pool::GetByUuid(&observed.pool.to_string()))
         .await?;
-    let pool_record = session.call("pool.get_record", vec![pool]).await?;
+    let pool_record = session
+        .send(calls::pool::GetRecord(refs::pool(&pool)))
+        .await?;
     if PoolRecord::new(&pool_record).uuid() != observed.pool.to_string() {
         return Err(Error::Stale);
     }
@@ -159,7 +164,7 @@ pub(crate) async fn read(
     let result = if let Some(blob) = blob {
         let reference = crate::snapshots::reference(blob)?;
         let metadata = session
-            .call("blob.get_record", vec![json!(&reference)])
+            .send(calls::blob::GetRecord(refs::blob(&reference)))
             .await?;
         let identity = blob_identity(&metadata)?;
         let mut url = session.options().endpoint.rpc_url();
@@ -203,7 +208,7 @@ pub(crate) async fn read(
             return Err(Error::Protocol("snapshot preview type changed"));
         }
         let after = session
-            .call("blob.get_record", vec![json!(reference)])
+            .send(calls::blob::GetRecord(refs::blob(&reference)))
             .await?;
         if blob_identity(&after)? != identity {
             return Err(Error::Stale);

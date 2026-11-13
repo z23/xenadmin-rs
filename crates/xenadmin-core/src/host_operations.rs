@@ -11,6 +11,7 @@ use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PoolRecord, TaskRecord, VmRecord,
 };
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Kind {
@@ -252,7 +253,7 @@ async fn host(
 async fn metrics(session: &Session, host: &Value) -> Result<Value, Error> {
     let metrics = reference(HostRecord::new(host).metrics())?;
     session
-        .call("host_metrics.get_record", vec![json!(metrics)])
+        .send(calls::host_metrics::GetRecord(refs::host_metrics(&metrics)))
         .await
 }
 async fn live(session: &Session, host: &Value, expected: bool) -> Result<(), Error> {
@@ -272,7 +273,9 @@ async fn residents(session: &Session, host_ref: &str, host: &Value) -> Result<Ve
     let mut result = Vec::new();
     for value in values {
         let vm_ref = reference(value)?;
-        let vm = session.call("VM.get_record", vec![json!(&vm_ref)]).await?;
+        let vm = session
+            .send(calls::vm::GetRecord(refs::vm(&vm_ref)))
+            .await?;
         require(
             VmRecord::new(&vm).resident_on() == host_ref,
             "Resident VM location changed",
@@ -325,10 +328,9 @@ async fn evacuation(
         "Resident VMs changed since review; inspect the host before retrying",
     )?;
     let blockers = session
-        .call(
-            "host.get_vms_which_prevent_evacuation",
-            vec![json!(host_ref)],
-        )
+        .send(calls::host::GetVmsWhichPreventEvacuation(refs::host(
+            host_ref,
+        )))
         .await?;
     let blockers = blockers
         .as_object()
@@ -338,7 +340,7 @@ async fn evacuation(
         let mut names = Vec::new();
         for vm_ref in blockers.keys().take(5) {
             let name = session
-                .call("VM.get_name_label", vec![json!(vm_ref)])
+                .send(calls::vm::GetNameLabel(refs::vm(vm_ref)))
                 .await
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
@@ -350,7 +352,7 @@ async fn evacuation(
     for id in expected {
         let (vm_ref, _) = read(session, "VM", id.uuid()).await?;
         let possible = session
-            .call("VM.get_possible_hosts", vec![json!(vm_ref)])
+            .send(calls::vm::GetPossibleHosts(refs::vm(&vm_ref)))
             .await?;
         let possible = possible
             .as_array()
@@ -363,7 +365,7 @@ async fn evacuation(
                 continue;
             }
             let record = session
-                .call("host.get_record", vec![json!(candidate)])
+                .send(calls::host::GetRecord(refs::host(&candidate)))
                 .await?;
             if HostRecord::new(&record).enabled() == true
                 && HostRecord::new(&record)
@@ -382,7 +384,7 @@ async fn evacuation(
         )?;
     }
     session
-        .call("host.assert_can_evacuate", vec![json!(host_ref)])
+        .send(calls::host::AssertCanEvacuate(refs::host(host_ref)))
         .await?;
     Ok(())
 }
@@ -398,7 +400,7 @@ async fn empty_disabled(session: &Session, host_ref: &str, host: &Value) -> Resu
 }
 async fn safe_coordinator(session: &Session, reference: &str, pool: &Value) -> Result<(), Error> {
     if PoolRecord::new(pool).master() == reference {
-        let hosts = session.call("host.get_all", vec![]).await?;
+        let hosts = session.send(calls::host::GetAll).await?;
         require(
             hosts.as_array().is_some_and(|hosts| hosts.len() == 1),
             "Hand over the pool coordinator separately before shutting down or rebooting it",
@@ -426,7 +428,7 @@ async fn detached_storage(
         ))?;
     for pbd in pbds {
         let record = session
-            .call("PBD.get_record", vec![json!(reference(pbd)?)])
+            .send(calls::pbd::GetRecord(refs::pbd(&reference(pbd)?)))
             .await?;
         require(
             PbdRecord::new(&record).host() == reference_host
@@ -679,7 +681,7 @@ pub(crate) async fn arguments(
             };
             epoch(&host, "agent_start_time", expected_agent_start_time)?;
             live(session, &host, true).await?;
-            let tasks = session.call("task.get_all_records", vec![]).await?;
+            let tasks = session.send(calls::task::GetAllRecords).await?;
             require(
                 tasks.as_object().is_some_and(|tasks| {
                     tasks.len() <= 10_000

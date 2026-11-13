@@ -6,6 +6,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 use xenadmin_xapi::records::{HostRecord, PoolRecord, SessionRecord};
+use xenadmin_xapi::{calls, refs};
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -19,7 +20,7 @@ async fn expected(
     change: &PoolRootPasswordChange,
 ) -> Result<(), Error> {
     let (_, pool) = xapi::read(session, ResourceTarget::Pool(record.pool)).await?;
-    let hosts = session.call("host.get_all_records", vec![]).await?;
+    let hosts = session.send(calls::host::GetAllRecords).await?;
     let hosts = hosts
         .as_object()
         .filter(|v| !v.is_empty() && v.len() <= 1024)
@@ -48,7 +49,9 @@ async fn expected(
         "Pool membership or coordinator changed since review",
     )?;
     let own = session
-        .call("session.get_record", vec![json!(session.session_cookie())])
+        .send(calls::session::GetRecord(refs::session(
+            session.session_cookie(),
+        )))
         .await?;
     require(
         SessionRecord::new(&own).is_local_superuser() == true,
@@ -128,10 +131,10 @@ impl ResourceRequest {
         self.save(journal).await?;
         bounded(
             cancel,
-            session.call(
-                "session.change_password",
-                vec![json!(""), json!(&*password.0)],
-            ),
+            session.send(calls::session::ChangePassword {
+                old_pwd: "",
+                new_pwd: &password.0,
+            }),
         )
         .await?;
         self.record.root_password_plan.as_mut().unwrap().completed = true;

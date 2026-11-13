@@ -1,5 +1,4 @@
 use crate::{Error, Inventory, xapi::Session};
-use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -9,6 +8,7 @@ use tokio_util::sync::CancellationToken;
 use vnc::{VncConnector, VncEncoding, VncEvent, X11Event};
 use xenadmin_xapi::enumerations::{console_protocol, vm_power_state};
 use xenadmin_xapi::records::{ConsoleRecord, HostRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 #[path = "console_clipboard.rs"]
 mod clipboard;
@@ -209,7 +209,7 @@ impl ConsoleRequest {
                 reference.to_owned()
             };
             let references = session
-                .call("VM.get_consoles", vec![json!(reference)])
+                .send(calls::vm::GetConsoles(refs::vm(&reference)))
                 .await?;
             let mut location = None;
             for console_ref in references
@@ -219,7 +219,7 @@ impl ConsoleRequest {
             {
                 let console_ref = crate::xapi::opaque_reference(console_ref)?;
                 let console = session
-                    .call("console.get_record", vec![json!(console_ref)])
+                    .send(calls::console::GetRecord(refs::console(&console_ref)))
                     .await?;
                 if ConsoleRecord::new(&console).protocol().name() == Some(console_protocol::RFB) {
                     if ConsoleRecord::new(&console).vm() != reference {
@@ -402,21 +402,23 @@ async fn host_reference(
 ) -> Result<String, Error> {
     let host_ref = crate::xapi::opaque_reference(
         &session
-            .call("host.get_by_uuid", vec![json!(host.to_string())])
+            .send(calls::host::GetByUuid(&host.to_string()))
             .await?,
     )?;
     let host_record = session
-        .call("host.get_record", vec![json!(host_ref)])
+        .send(calls::host::GetRecord(refs::host(&host_ref)))
         .await?;
     if HostRecord::new(&host_record).uuid() != host.to_string() {
         return Err(Error::Stale);
     }
     let vm_ref = crate::xapi::opaque_reference(
         &session
-            .call("host.get_control_domain", vec![json!(host_ref)])
+            .send(calls::host::GetControlDomain(refs::host(&host_ref)))
             .await?,
     )?;
-    let vm_record = session.call("VM.get_record", vec![json!(vm_ref)]).await?;
+    let vm_record = session
+        .send(calls::vm::GetRecord(refs::vm(&vm_ref)))
+        .await?;
     if VmRecord::new(&vm_record).uuid() != vm.to_string()
         || VmRecord::new(&vm_record).is_control_domain() != true
         || VmRecord::new(&vm_record).is_a_template() != false

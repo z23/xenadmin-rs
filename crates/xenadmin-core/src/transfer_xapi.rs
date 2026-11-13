@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Endpoint, NetworkId, VdiId, xapi::Session};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{
@@ -10,6 +10,7 @@ use xenadmin_xapi::records::{
     HostRecord, NetworkRecord, PbdRecord, PoolRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord,
     VmRecord,
 };
+use xenadmin_xapi::{calls, refs};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Baseline {
     pub vms: Vec<Uuid>,
@@ -304,7 +305,7 @@ pub(crate) async fn created(
         found.insert(reference.clone());
         result.vms.push(VmId::from(uuid));
         for vbd in refs(r, "VBDs")? {
-            let a = s.call("VBD.get_record", vec![json!(vbd)]).await?;
+            let a = s.send(calls::vbd::GetRecord(refs::vbd(&vbd))).await?;
             if VbdRecord::new(&a).vm() != *reference {
                 return Err(Error::TransferConflict);
             }
@@ -335,7 +336,7 @@ pub(crate) async fn created(
             return Err(Error::TransferConflict);
         }
         let sr = crate::snapshots::reference(VdiRecord::new(r).sr())?;
-        let sr = s.call("SR.get_record", vec![json!(sr)]).await?;
+        let sr = s.send(calls::sr::GetRecord(refs::sr(&sr))).await?;
         if id(&sr)? != destination.uuid() {
             return Err(Error::TransferConflict);
         }
@@ -346,7 +347,9 @@ pub(crate) async fn created(
             }
         }
         for attachment in refs(r, "VBDs")? {
-            let a = s.call("VBD.get_record", vec![json!(attachment)]).await?;
+            let a = s
+                .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
+                .await?;
             if !found.contains(
                 VbdRecord::new(&a)
                     .vm()
@@ -449,7 +452,7 @@ pub(crate) async fn storage_route(
     }
     let mut candidates = vec![];
     for p in refs(&r, "PBDs")? {
-        let p = s.call("PBD.get_record", vec![json!(p)]).await?;
+        let p = s.send(calls::pbd::GetRecord(refs::pbd(&p))).await?;
         if PbdRecord::new(&p).sr() != reference {
             return Err(Error::TransferConflict);
         }

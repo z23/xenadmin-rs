@@ -8,6 +8,7 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use xenadmin_xapi::{calls, refs};
 use zeroize::Zeroizing;
 
 use xenadmin_xapi::{
@@ -291,6 +292,13 @@ impl Session {
         self.rpc(false, method, params).await
     }
 
+    /// Sends a call written as its message, whose arguments are named and typed where
+    /// the call is made.
+    pub(crate) async fn send(&self, call: impl xenadmin_xapi::Call) -> Result<Value, Error> {
+        let (method, parameters) = call.request();
+        self.call(method, parameters).await
+    }
+
     pub(crate) async fn storage_probe_xml(
         &self,
         parameters: Vec<Value>,
@@ -439,7 +447,7 @@ impl Session {
     }
 
     pub(crate) async fn logout(&self) {
-        let _ = self.call("session.logout", vec![]).await;
+        let _ = self.send(calls::session::Logout).await;
     }
     pub(crate) async fn logout_migration_receiver(&self, token: &str) {
         if token != self.session_cookie() && token.starts_with("OpaqueRef:") {
@@ -453,11 +461,11 @@ impl Session {
         action: crate::PowerAction,
     ) -> Result<crate::ActionAvailability, Error> {
         use crate::ActionAvailability;
-        let reference = self
-            .call("VM.get_by_uuid", vec![json!(vm.to_string())])
-            .await?;
+        let reference = self.send(calls::vm::GetByUuid(&vm.to_string())).await?;
         let reference = opaque_reference(&reference)?;
-        let record = self.call("VM.get_record", vec![json!(&reference)]).await?;
+        let record = self
+            .send(calls::vm::GetRecord(refs::vm(&reference)))
+            .await?;
         let view = VmRecord::new(&record);
         if view.uuid().text() != Some(vm.to_string().as_str())
             || view.is_a_snapshot() != false
@@ -471,10 +479,10 @@ impl Session {
             return Ok(advertised);
         }
         match self
-            .call(
-                "VM.assert_operation_valid",
-                vec![json!(reference), json!(action.wire())],
-            )
+            .send(calls::vm::AssertOperationValid {
+                self_: refs::vm(&reference),
+                op: action.wire(),
+            })
             .await
         {
             Ok(_) => Ok(ActionAvailability::Available),
@@ -508,11 +516,11 @@ impl Session {
             crate::PowerAction::Resume => (vm_operations::RESUME_ON, vm_power_state::SUSPENDED),
             _ => return Err(Error::UnavailableAction),
         };
-        let reference = self
-            .call("VM.get_by_uuid", vec![json!(vm.to_string())])
-            .await?;
+        let reference = self.send(calls::vm::GetByUuid(&vm.to_string())).await?;
         let reference = opaque_reference(&reference)?;
-        let record = self.call("VM.get_record", vec![json!(&reference)]).await?;
+        let record = self
+            .send(calls::vm::GetRecord(refs::vm(&reference)))
+            .await?;
         let view = VmRecord::new(&record);
         if view.uuid().text() != Some(vm.to_string().as_str())
             || view.is_a_snapshot() != false
@@ -524,12 +532,10 @@ impl Session {
         if view.power_state() != required_state || !advertises(&record, operation) {
             return Err(Error::UnavailableAction);
         }
-        let destination = self
-            .call("host.get_by_uuid", vec![json!(host.to_string())])
-            .await?;
+        let destination = self.send(calls::host::GetByUuid(&host.to_string())).await?;
         let destination = opaque_reference(&destination)?;
         let destination_record = self
-            .call("host.get_record", vec![json!(&destination)])
+            .send(calls::host::GetRecord(refs::host(&destination)))
             .await?;
         let destination_view = HostRecord::new(&destination_record);
         if destination_view.uuid().text() != Some(host.to_string().as_str()) {
@@ -538,15 +544,15 @@ impl Session {
         if destination_view.enabled() != true {
             return Err(Error::UnavailableAction);
         }
-        self.call(
-            "VM.assert_operation_valid",
-            vec![json!(&reference), json!(operation)],
-        )
+        self.send(calls::vm::AssertOperationValid {
+            self_: refs::vm(&reference),
+            op: operation,
+        })
         .await?;
-        self.call(
-            "VM.assert_can_boot_here",
-            vec![json!(&reference), json!(&destination)],
-        )
+        self.send(calls::vm::AssertCanBootHere {
+            self_: refs::vm(&reference),
+            host: refs::host(&destination),
+        })
         .await?;
         Ok((reference, destination))
     }
@@ -1096,7 +1102,9 @@ pub(crate) async fn prepare_mutation(
     if matches!(operation.action, OperationAction::Power(_)) {
         return Ok(parent);
     }
-    let record = session.call("VM.get_record", vec![json!(&parent)]).await?;
+    let record = session
+        .send(calls::vm::GetRecord(refs::vm(&parent)))
+        .await?;
     let view = VmRecord::new(&record);
     if view.uuid().text() != Some(operation.vm.to_string().as_str())
         || view.is_a_snapshot() != false
@@ -1134,11 +1142,11 @@ pub(crate) async fn prepare_mutation(
                 return Err(Error::SnapshotRequiresHaltedVm);
             }
             let reference = session
-                .call("VM.get_by_uuid", vec![json!(snapshot.to_string())])
+                .send(calls::vm::GetByUuid(&snapshot.to_string()))
                 .await?;
             let reference = opaque_reference(&reference)?;
             let candidate = session
-                .call("VM.get_record", vec![json!(&reference)])
+                .send(calls::vm::GetRecord(refs::vm(&reference)))
                 .await?;
             let candidate_view = VmRecord::new(&candidate);
             if candidate_view.uuid().text() != Some(snapshot.to_string().as_str())
@@ -1234,12 +1242,10 @@ pub(crate) async fn verify_created_snapshot(
     vm: VmId,
     reference: &str,
 ) -> Result<crate::SnapshotId, Error> {
-    let parent = session
-        .call("VM.get_by_uuid", vec![json!(vm.to_string())])
-        .await?;
+    let parent = session.send(calls::vm::GetByUuid(&vm.to_string())).await?;
     let parent = opaque_reference(&parent)?;
     let result = session
-        .call("VM.get_record", vec![json!(reference)])
+        .send(calls::vm::GetRecord(refs::vm(reference)))
         .await?;
     let created = VmRecord::new(&result);
     let id = created

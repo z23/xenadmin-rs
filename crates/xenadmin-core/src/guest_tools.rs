@@ -5,9 +5,10 @@ use crate::{
     xapi::Session,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use xenadmin_xapi::enumerations::{vbd_operations, vbd_type, vm_power_state};
 use xenadmin_xapi::records::{HostRecord, PbdRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Call, calls, refs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuestToolsMediaSource {
@@ -207,7 +208,7 @@ async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Resu
         return Err(Error::DeviceConflict);
     }
     idle(&disk)?;
-    let pbds = session.call("PBD.get_all_records", vec![]).await?;
+    let pbds = session.send(calls::pbd::GetAllRecords).await?;
     let pbds = pbds
         .as_object()
         .filter(|r| r.len() <= 10_000)
@@ -223,7 +224,9 @@ async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Resu
                 break;
             }
         } else {
-            let record = session.call("host.get_record", vec![json!(host)]).await?;
+            let record = session
+                .send(calls::host::GetRecord(refs::host(&host)))
+                .await?;
             if HostRecord::new(&record).enabled() == true {
                 reachable = true;
                 break;
@@ -314,18 +317,20 @@ pub(crate) async fn prepare(session: &Session, vm: VmId, step: &Step) -> Result<
         } => {
             media(session, &record, *image, *sr).await?;
             let reference = cd(session, &vm_ref, *id, Some(*previous)).await?;
-            Ok(Prepared {
-                method: "VBD.eject",
-                parameters: vec![json!(reference)],
-            })
+            Ok(Prepared::of(
+                calls::vbd::Eject(refs::vbd(&reference)).request(),
+            ))
         }
         Step::Insert { cd: id, image, sr } => {
             let image = media(session, &record, *image, *sr).await?;
             let reference = cd(session, &vm_ref, *id, None).await?;
-            Ok(Prepared {
-                method: "VBD.insert",
-                parameters: vec![json!(reference), json!(image)],
-            })
+            Ok(Prepared::of(
+                calls::vbd::Insert {
+                    vbd: refs::vbd(&reference),
+                    vdi: refs::vdi(&image),
+                }
+                .request(),
+            ))
         }
     }
 }

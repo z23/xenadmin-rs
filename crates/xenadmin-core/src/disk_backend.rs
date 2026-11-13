@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::enumerations::{vbd_type, vdi_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Call, Int, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
 fn conflict<T>() -> Result<T, Error> {
@@ -108,7 +109,7 @@ async fn storage(s: &Session, sr: SrId) -> Result<String, Error> {
     }
     let mut attached = false;
     for pbd in refs(&r, "PBDs")? {
-        let p = s.call("PBD.get_record", vec![json!(pbd)]).await?;
+        let p = s.send(calls::pbd::GetRecord(refs::pbd(&pbd))).await?;
         if PbdRecord::new(&p).sr() != reference {
             return conflict();
         }
@@ -287,34 +288,37 @@ pub(super) async fn arguments(
         let DiskOperation::Copy { name, .. } = &plan.operation else {
             return conflict();
         };
-        return Ok(("VDI.set_name_label", vec![json!(reference), json!(name)]));
+        return Ok(calls::vdi::SetNameLabel {
+            self_: refs::vdi(&reference),
+            value: name,
+        }
+        .request());
     }
     let (reference, vdi) = checked_disk(s, plan.disk, plan.operation.expected(), None, &p).await?;
     match &plan.operation {
         DiskOperation::Grow { size, .. } => {
             permits(&vdi, vdi_operations::RESIZE)?;
-            Ok((
-                "Async.VDI.resize",
-                vec![json!(reference), json!(size.to_string())],
-            ))
+            Ok(calls::vdi::Resize {
+                vdi: refs::vdi(&reference),
+                size: Int::from(size),
+            }
+            .task())
         }
         DiskOperation::Copy { destination, .. } => {
             permits(&vdi, vdi_operations::COPY)?;
             let sr = storage(s, *destination).await?;
-            Ok((
-                "Async.VDI.copy",
-                vec![
-                    json!(reference),
-                    json!(sr),
-                    json!("OpaqueRef:NULL"),
-                    json!("OpaqueRef:NULL"),
-                ],
-            ))
+            Ok(calls::vdi::CopyWithIntoVdi {
+                vdi: refs::vdi(&reference),
+                sr: refs::sr(&sr),
+                base_vdi: refs::vdi("OpaqueRef:NULL"),
+                into_vdi: refs::vdi("OpaqueRef:NULL"),
+            }
+            .task())
         }
         DiskOperation::Cleanup { source, .. } => {
             permits(&vdi, vdi_operations::DESTROY)?;
             j.disk_ownership(r.pool, plan.disk, *source, &vdi)?;
-            Ok(("Async.VDI.destroy", vec![json!(reference)]))
+            Ok(calls::vdi::Destroy(refs::vdi(&reference)).task())
         }
     }
 }
@@ -331,7 +335,7 @@ async fn created(s: &Session, r: &ResourceOperationRecord) -> Result<(String, Va
     let result = plan.evidence[0].result.as_ref().ok_or(Error::Protocol(
         "Disk operation completion receipt unavailable; no write will be replayed",
     ))?;
-    let vdi = s.call("VDI.get_record", vec![json!(result)]).await?;
+    let vdi = s.send(calls::vdi::GetRecord(refs::vdi(result))).await?;
     let disk = VdiId::from(id(&vdi)?);
     if plan.disks_before.contains(&disk) || plan.created.is_some_and(|id| id != disk) {
         return conflict();
@@ -411,7 +415,9 @@ pub(super) async fn task(
     let reference = evidence.task.as_ref().ok_or(Error::Protocol(
         "Disk operation completion receipt unavailable; no write will be replayed",
     ))?;
-    let task = s.call("task.get_record", vec![json!(reference)]).await?;
+    let task = s
+        .send(calls::task::GetRecord(refs::task(reference)))
+        .await?;
     let uuid = TaskId::from(id(&task)?);
     if plan.tasks_before.contains(&uuid) || evidence.task_uuid.is_some_and(|id| id != uuid) {
         return conflict();

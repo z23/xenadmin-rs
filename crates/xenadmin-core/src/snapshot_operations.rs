@@ -2,6 +2,7 @@ use super::*;
 use crate::{OperationStep, StepState, snapshots};
 use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::VmRecord;
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Copy)]
 enum DeleteStep {
@@ -275,7 +276,7 @@ impl MutationRequest {
         if VmRecord::new(&current).is_a_template() == false {
             // The conversion reached the host even if its reply was lost; the host still
             // needs to recompute the new VM's allowed operations (see below).
-            let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("VM.update_allowed_operations",vec![json!(&reference)])=>result};
+            let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.send(calls::vm::UpdateAllowedOperations(refs::vm(&reference)))=>result};
             self.record.steps[0].state = StepState::Verified;
             self.record.steps[0].detail = verified_detail(refreshed);
             return self.persist_steps(journal).await;
@@ -301,7 +302,7 @@ impl MutationRequest {
         self.record.state = OperationState::Dispatching;
         self.record.steps[0].state = StepState::Dispatching;
         self.persist_steps(journal).await?;
-        let result = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("VM.set_is_a_template",vec![json!(&reference),json!(false)])=>result};
+        let result = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.send(calls::vm::SetIsATemplate { self_: refs::vm(&reference), value: false })=>result};
         if let Err(error) = result {
             let refused = matches!(error, Error::Api(_) | Error::Coordinator(_));
             self.record.state = if refused {
@@ -321,7 +322,7 @@ impl MutationRequest {
         }
         // XCP-ng 8.3 keeps the template's allowed operations on the new VM until asked to
         // recompute them, so Start would stay withheld; the recompute changes nothing else.
-        let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("VM.update_allowed_operations",vec![json!(&reference)])=>result};
+        let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.send(calls::vm::UpdateAllowedOperations(refs::vm(&reference)))=>result};
         self.record.state = OperationState::Verifying;
         self.persist_steps(journal).await?;
         let (verified, after) =

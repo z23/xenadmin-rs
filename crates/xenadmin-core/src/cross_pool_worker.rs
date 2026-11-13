@@ -2,6 +2,7 @@ use super::*;
 use crate::{ResourceAction, cross_pool_backend as backend};
 use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 struct ReceiverSession {
     session: Arc<Session>,
@@ -104,7 +105,7 @@ impl ResourceRequest {
         self.record.detail = "Preparing the reviewed host-to-host migration transport".into();
         self.save_cross_dispatch(journal).await?;
         peer_current(&inputs, &peer)?;
-        let value = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=peer.session.call("host.migrate_receive",vec![json!(&prepared.host),json!(&prepared.network),json!({})])=>value? };
+        let value = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=peer.session.send(calls::host::MigrateReceive { host: refs::host(&prepared.host), network: refs::network(&prepared.network), options: json!({}) })=>value? };
         let receiver = backend::receiver(value, &prepared, &operation.transfer_address)?;
         if receiver["session_id"] == peer.session.session_cookie() {
             return Err(Error::Protocol(
@@ -243,7 +244,7 @@ impl ResourceRequest {
             let task = self.record.task.clone().ok_or(Error::Protocol(
                 "Cross-pool submission receipt is unavailable; nothing will be replayed",
             ))?;
-            let value = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=source.call("task.get_record",vec![json!(&task)])=>value? };
+            let value = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=source.send(calls::task::GetRecord(refs::task(&task)))=>value? };
             let uuid = crate::migration_backend::id::<uuid::Uuid>(&value)?;
             let plan = self.cross_plan()?;
             if uuid.is_nil()
@@ -310,7 +311,7 @@ impl ResourceRequest {
                     "Requesting cancellation; source or destination changes may already exist"
                         .into();
                 self.save(journal).await?;
-                tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=source.call("task.cancel",vec![json!(&task)])=>{value?;} }
+                tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=source.send(calls::task::Cancel(refs::task(&task)))=>{value?;} }
             }
             if self.reconcile || backend::now() >= self.cross_plan()?.expires_at_ms {
                 self.record.state = OperationState::OutcomeUnknown;
@@ -409,7 +410,7 @@ impl ResourceRequest {
         if let Some(task) = &self.record.task {
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),
-                source.call("task.destroy", vec![json!(task)]),
+                source.send(calls::task::Destroy(refs::task(task))),
             )
             .await;
         }

@@ -2,6 +2,7 @@ use super::*;
 use crate::{resources::storage_maintenance, storage_maintenance::Evidence};
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 impl ResourceRequest {
     fn storage_step(&self, index: usize) -> Result<&Evidence, Error> {
         self.record
@@ -260,6 +261,7 @@ impl ResourceRequest {
             let evidence = self.storage_step(index)?.clone();
             if evidence.ended
                 && evidence.task_uuid.is_some()
+                && let Some(reference) = evidence.task.as_deref()
                 && let Ok(Ok((_, task))) = tokio::time::timeout_at(
                     deadline,
                     storage_maintenance::task(s, &self.record, index),
@@ -276,7 +278,7 @@ impl ResourceRequest {
             {
                 let _ = tokio::time::timeout_at(
                     deadline,
-                    s.call("task.destroy", vec![json!(evidence.task)]),
+                    s.send(calls::task::Destroy(refs::task(reference))),
                 )
                 .await;
             }

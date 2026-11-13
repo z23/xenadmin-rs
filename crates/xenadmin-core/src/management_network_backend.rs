@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::ip_configuration_mode;
 use xenadmin_xapi::records::{HostRecord, PifRecord, PoolRecord};
+use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 fn require(condition: bool, message: &'static str) -> Result<(), Error> {
     if condition {
@@ -553,57 +554,49 @@ pub(super) async fn arguments(
     Ok(match operation(r)? {
         ManagementNetworkOperation::Bond { .. } => unreachable!(),
         ManagementNetworkOperation::Move { .. } => {
-            ("Async.host.management_reconfigure", vec![json!(refs[1])])
+            calls::host::ManagementReconfigure(refs::pif(&refs[1])).task()
         }
         ManagementNetworkOperation::ConfigureIpv4 {
             configuration: c, ..
-        } => (
-            "Async.PIF.reconfigure_ip",
-            vec![
-                json!(refs[0]),
-                json!(c.mode.as_str()),
-                json!(c.address),
-                json!(c.netmask),
-                json!(c.gateway),
-                json!(c.dns),
-            ],
-        ),
+        } => calls::pif::ReconfigureIp {
+            self_: refs::pif(&refs[0]),
+            mode: c.mode.as_str(),
+            ip: &c.address,
+            netmask: &c.netmask,
+            gateway: &c.gateway,
+            dns: &c.dns,
+        }
+        .task(),
         ManagementNetworkOperation::ConfigureIpv6 {
             configuration: c, ..
-        } => (
-            "Async.PIF.reconfigure_ipv6",
-            vec![
-                json!(refs[0]),
-                json!(c.mode.as_str()),
-                json!(c.addresses[0]),
-                json!(c.gateway),
-                json!(c.dns),
-            ],
-        ),
+        } => calls::pif::ReconfigureIpv6 {
+            self_: refs::pif(&refs[0]),
+            mode: c.mode.as_str(),
+            ipv6: &c.addresses[0],
+            gateway: &c.gateway,
+            dns: &c.dns,
+        }
+        .task(),
         ManagementNetworkOperation::ConfigureDynamic { mode, .. } => {
             if *mode == ManagementDynamicMode::Ipv4Dhcp {
-                (
-                    "Async.PIF.reconfigure_ip",
-                    vec![
-                        json!(refs[0]),
-                        json!(ip_configuration_mode::DHCP),
-                        json!(""),
-                        json!(""),
-                        json!(""),
-                        json!(""),
-                    ],
-                )
+                calls::pif::ReconfigureIp {
+                    self_: refs::pif(&refs[0]),
+                    mode: ip_configuration_mode::DHCP,
+                    ip: "",
+                    netmask: "",
+                    gateway: "",
+                    dns: "",
+                }
+                .task()
             } else {
-                (
-                    "Async.PIF.reconfigure_ipv6",
-                    vec![
-                        json!(refs[0]),
-                        json!(mode.as_str()),
-                        json!(""),
-                        json!(""),
-                        json!(""),
-                    ],
-                )
+                calls::pif::ReconfigureIpv6 {
+                    self_: refs::pif(&refs[0]),
+                    mode: mode.as_str(),
+                    ipv6: "",
+                    gateway: "",
+                    dns: "",
+                }
+                .task()
             }
         }
     })

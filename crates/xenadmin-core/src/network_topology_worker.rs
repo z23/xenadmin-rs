@@ -5,6 +5,7 @@ use crate::{
 };
 use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 impl ResourceRequest {
     fn topology_step(&self, index: usize) -> Result<&Receipt, Error> {
@@ -161,7 +162,7 @@ impl ResourceRequest {
             let task = receipt.task.ok_or(Error::Protocol(
                 "Topology task receipt unavailable; no operation will be replayed",
             ))?;
-            let value = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=s.call("task.get_record",vec![json!(&task)])=>value?};
+            let value = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),value=s.send(calls::task::GetRecord(refs::task(&task)))=>value?};
             let uuid: crate::TaskId = crate::resources::network::uuid(&value)?.into();
             let plan = self
                 .record
@@ -239,7 +240,7 @@ impl ResourceRequest {
                 self.topology_step_mut(index)?.cancel_sent = true;
                 self.record.state = OperationState::CancellationRequested;
                 self.save_dispatch(j)?;
-                tokio::select! {biased; _=c.cancelled()=>return Err(Error::Closed),value=s.call("task.cancel",vec![json!(&task)])=>{value?;}}
+                tokio::select! {biased; _=c.cancelled()=>return Err(Error::Closed),value=s.send(calls::task::Cancel(refs::task(&task)))=>{value?;}}
             }
             if self.reconcile
                 || topology::now()
@@ -381,7 +382,7 @@ impl ResourceRequest {
             {
                 let current = tokio::time::timeout_at(
                     cleanup_deadline,
-                    s.call("task.get_record", vec![json!(&reference)]),
+                    s.send(calls::task::GetRecord(refs::task(&reference))),
                 )
                 .await;
                 if current.is_ok_and(|v| {
@@ -389,7 +390,7 @@ impl ResourceRequest {
                 }) {
                     let _ = tokio::time::timeout_at(
                         cleanup_deadline,
-                        s.call("task.destroy", vec![json!(reference)]),
+                        s.send(calls::task::Destroy(refs::task(&reference))),
                     )
                     .await;
                 }

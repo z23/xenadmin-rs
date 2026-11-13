@@ -2,6 +2,7 @@ use super::*;
 use crate::power_batch::{self, Item, Plan};
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 impl ResourceRequest {
     pub(super) async fn execute_power_batch(
@@ -108,7 +109,7 @@ impl ResourceRequest {
                 .filter(|item| item.verified)
                 .filter_map(|item| item.task.as_ref())
             {
-                let _ = session.call("task.destroy", vec![json!(task)]).await;
+                let _ = session.send(calls::task::Destroy(refs::task(task))).await;
             }
         };
         tokio::select! { _=cancel.cancelled()=>{}, _=tokio::time::timeout(Duration::from_secs(3),cleanup)=>{} }
@@ -206,7 +207,7 @@ impl ResourceRequest {
             let reference = item.task.ok_or(Error::Protocol(
                 "Power action has no saved task receipt; matching state cannot prove completion",
             ))?;
-            let task = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=session.call("task.get_record",vec![json!(&reference)])=>result? };
+            let task = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), result=session.send(calls::task::GetRecord(refs::task(&reference)))=>result? };
             match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     self.record

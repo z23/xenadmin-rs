@@ -54,6 +54,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 pub(crate) struct ResourceRequest {
     pub(crate) batch_permit: Option<crate::vm_workflow_batch::ChildPermit>,
@@ -836,7 +837,7 @@ impl ResourceRequest {
             if self.stopped_after_recovery() {
                 return Ok(());
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.network_fabric_plan.as_ref().is_some_and(|p|p.completed) || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0})) } else { session.call("task.get_record",vec![json!(&reference)]).await } }=>result};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.network_fabric_plan.as_ref().is_some_and(|p|p.completed) || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0})) } else { session.send(calls::task::GetRecord(refs::task(&reference))).await } }=>result};
             let task = match task {
                 Ok(task) => {
                     backoff = 1;
@@ -1009,7 +1010,7 @@ impl ResourceRequest {
                                 self.save(journal).await?;
                                 let _ = tokio::time::timeout(
                                     Duration::from_secs(5),
-                                    session.call("task.destroy", vec![json!(&reference)]),
+                                    session.send(calls::task::Destroy(refs::task(&reference))),
                                 )
                                 .await;
                                 return Ok(());
@@ -1081,7 +1082,7 @@ impl ResourceRequest {
                 };
                 let _ = tokio::time::timeout(
                     Duration::from_secs(5),
-                    session.call("task.destroy", vec![json!(&reference)]),
+                    session.send(calls::task::Destroy(refs::task(&reference))),
                 )
                 .await;
                 return Ok(());
@@ -1096,7 +1097,7 @@ impl ResourceRequest {
                     Err(Error::JournalChanged) => continue,
                     result => result?,
                 };
-                tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.cancel",vec![json!(&reference)])=>{result?;}}
+                tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.send(calls::task::Cancel(refs::task(&reference)))=>{result?;}}
             } else {
                 match self.save(journal).await {
                     Ok(()) | Err(Error::JournalChanged) => {}

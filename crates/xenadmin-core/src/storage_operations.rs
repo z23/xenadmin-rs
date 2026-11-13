@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{Error, PbdId, SrId, StorageOperation, VdiId, storage::StorageBaseline, xapi::Session};
 use serde_json::{Value, json};
+use xenadmin_xapi::calls;
 use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
 use xenadmin_xapi::records::{PbdRecord, SmRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord};
 use xenadmin_xapi::{Reads, kind};
@@ -48,7 +49,7 @@ async fn by_ref(session: &Session, class: &str, reference: &Value) -> Result<Val
         .await
 }
 pub(super) async fn capability(session: &Session, kind: &str, feature: &str) -> Result<(), Error> {
-    let records = session.call("SM.get_all_records", vec![]).await?;
+    let records = session.send(calls::sm::GetAllRecords).await?;
     let records = records
         .as_object()
         .filter(|r| r.len() <= 256)
@@ -74,8 +75,8 @@ pub(super) async fn capability(session: &Session, kind: &str, feature: &str) -> 
     }
 }
 async fn baseline(session: &Session) -> Result<StorageBaseline, Error> {
-    let srs = session.call("SR.get_all_records", vec![]).await?;
-    let pbds = session.call("PBD.get_all_records", vec![]).await?;
+    let srs = session.send(calls::sr::GetAllRecords).await?;
+    let pbds = session.send(calls::pbd::GetAllRecords).await?;
     fn parse(records: &Value) -> Result<Vec<&Value>, Error> {
         Ok(records
             .as_object()
@@ -205,7 +206,7 @@ async fn removable(
             return Err(Error::StorageInUse);
         }
     }
-    let hosts = session.call("host.get_all_records", vec![]).await?;
+    let hosts = session.send(calls::host::GetAllRecords).await?;
     for host in hosts
         .as_object()
         .filter(|h| h.len() <= 1024)

@@ -6,6 +6,7 @@ use xenadmin_xapi::enumerations::{
     on_crash_behaviour, on_normal_exit, vbd_mode, vbd_type, vif_locking_mode, vm_power_state,
 };
 use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 pub(crate) const MARKER: &str = "xenadmin-rs-ovf-import";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,12 +274,7 @@ pub(crate) async fn arguments(
             let g = &p.summary.guests[g];
             let n = g.memory_bytes.to_string();
             let cpu = g.cpus.to_string();
-            Ok((
-                "VM.create",
-                vec![
-                    json!({"name_label":g.name,"name_description":g.description,"user_version":"1","is_a_template":false,"affinity":"OpaqueRef:NULL","memory_static_min":n,"memory_static_max":n,"memory_dynamic_min":n,"memory_dynamic_max":n,"VCPUs_params":{},"VCPUs_max":cpu,"VCPUs_at_startup":cpu,"actions_after_shutdown":on_normal_exit::DESTROY,"actions_after_reboot":on_normal_exit::RESTART,"actions_after_crash":on_crash_behaviour::RESTART,"PV_bootloader":"","PV_kernel":"","PV_ramdisk":"","PV_args":"","PV_bootloader_args":"","PV_legacy_args":"","HVM_boot_policy":"BIOS order","HVM_boot_params":{"order":"dc","firmware":if g.firmware==GuestFirmware::Uefi{"uefi"}else{"bios"}},"HVM_shadow_multiplier":1.0,"platform":{"acpi":"true","apic":"true","nx":"true","pae":"true","secureboot":"false"},"PCI_bus":"","other_config":{MARKER:step.token.to_string()},"recommendations":"","xenstore_data":{},"ha_always_run":false,"ha_restart_priority":"","tags":[],"blocked_operations":{}}),
-                ],
-            ))
+            Ok(calls::vm::Create(json!({"name_label":g.name,"name_description":g.description,"user_version":"1","is_a_template":false,"affinity":"OpaqueRef:NULL","memory_static_min":n,"memory_static_max":n,"memory_dynamic_min":n,"memory_dynamic_max":n,"VCPUs_params":{},"VCPUs_max":cpu,"VCPUs_at_startup":cpu,"actions_after_shutdown":on_normal_exit::DESTROY,"actions_after_reboot":on_normal_exit::RESTART,"actions_after_crash":on_crash_behaviour::RESTART,"PV_bootloader":"","PV_kernel":"","PV_ramdisk":"","PV_args":"","PV_bootloader_args":"","PV_legacy_args":"","HVM_boot_policy":"BIOS order","HVM_boot_params":{"order":"dc","firmware":if g.firmware==GuestFirmware::Uefi{"uefi"}else{"bios"}},"HVM_shadow_multiplier":1.0,"platform":{"acpi":"true","apic":"true","nx":"true","pae":"true","secureboot":"false"},"PCI_bus":"","other_config":{MARKER:step.token.to_string()},"recommendations":"","xenstore_data":{},"ha_always_run":false,"ha_restart_priority":"","tags":[],"blocked_operations":{}})).request())
         }
         Kind::Disk { guest: g, disk: d } => {
             guest(s, p, g).await?;
@@ -302,12 +298,7 @@ pub(crate) async fn arguments(
             let (dr, _) = disk(s, p, g, d, true).await?;
             let slot = p.summary.guests[g].disks[d].device.to_string();
             allowed_slot(s, &vr, "VBD", &slot).await?;
-            Ok((
-                "VBD.create",
-                vec![
-                    json!({"VM":vr,"VDI":dr,"userdevice":slot,"bootable":d==0,"mode":vbd_mode::RW,"type":vbd_type::DISK,"unpluggable":true,"empty":false,"other_config":{MARKER:step.token.to_string(),"owner":"true"},"qos_algorithm_type":"","qos_algorithm_params":{}}),
-                ],
-            ))
+            Ok(calls::vbd::Create(json!({"VM":vr,"VDI":dr,"userdevice":slot,"bootable":d==0,"mode":vbd_mode::RW,"type":vbd_type::DISK,"unpluggable":true,"empty":false,"other_config":{MARKER:step.token.to_string(),"owner":"true"},"qos_algorithm_type":"","qos_algorithm_params":{}})).request())
         }
         Kind::Nic { guest: g, nic: n } => {
             let (vr, _) = guest(s, p, g).await?;
@@ -315,12 +306,7 @@ pub(crate) async fn arguments(
             let (nr, mtu) = network(s, p.networks[&nic.network]).await?;
             let slot = p.summary.guests[g].nics[n].device.to_string();
             allowed_slot(s, &vr, "VIF", &slot).await?;
-            Ok((
-                "VIF.create",
-                vec![
-                    json!({"VM":vr,"network":nr,"device":slot,"MAC":"","MTU":mtu.to_string(),"other_config":{MARKER:step.token.to_string()},"qos_algorithm_type":"","qos_algorithm_params":{},"locking_mode":vif_locking_mode::NETWORK_DEFAULT,"ipv4_allowed":[],"ipv6_allowed":[]}),
-                ],
-            ))
+            Ok(calls::vif::Create(json!({"VM":vr,"network":nr,"device":slot,"MAC":"","MTU":mtu.to_string(),"other_config":{MARKER:step.token.to_string()},"qos_algorithm_type":"","qos_algorithm_params":{},"locking_mode":vif_locking_mode::NETWORK_DEFAULT,"ipv4_allowed":[],"ipv6_allowed":[]})).request())
         }
         _ => Err(Error::TransferConflict),
     }
@@ -510,7 +496,7 @@ pub(crate) async fn verify_guest(s: &Session, p: &ImportPlan, g: usize) -> Resul
             return Err(Error::TransferConflict);
         }
     }
-    let hosts = s.call("VM.get_possible_hosts", vec![json!(vr)]).await?;
+    let hosts = s.send(calls::vm::GetPossibleHosts(refs::vm(&vr))).await?;
     let hosts = hosts
         .as_array()
         .filter(|h| !h.is_empty() && h.len() <= 1024)

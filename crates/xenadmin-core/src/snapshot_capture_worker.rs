@@ -7,6 +7,7 @@ use crate::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use xenadmin_xapi::records::{BlobRecord, PoolRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -50,9 +51,11 @@ async fn snapshot(
     record: &ResourceOperationRecord,
 ) -> Result<(String, Value), Error> {
     let pool_ref = session
-        .call("pool.get_by_uuid", vec![json!(record.pool.to_string())])
+        .send(calls::pool::GetByUuid(&record.pool.to_string()))
         .await?;
-    let pool = session.call("pool.get_record", vec![pool_ref]).await?;
+    let pool = session
+        .send(calls::pool::GetRecord(refs::pool(&pool_ref)))
+        .await?;
     if PoolRecord::new(&pool).uuid() != record.pool.to_string() {
         return Err(Error::Stale);
     }
@@ -89,7 +92,7 @@ async fn blob(session: &Session, record: &ResourceOperationRecord) -> Result<uui
         return Err(Error::Stale);
     }
     let fresh = session
-        .call("blob.get_record", vec![json!(reference)])
+        .send(calls::blob::GetRecord(refs::blob(reference)))
         .await?;
     let id = BlobRecord::new(&fresh)
         .uuid()
@@ -219,7 +222,7 @@ impl ResourceRequest {
                 "snapshot already has a preview or its metadata is unavailable",
             ));
         }
-        let raw = bounded(cancel, session.call("blob.get_all_records", vec![])).await?;
+        let raw = bounded(cancel, session.send(calls::blob::GetAllRecords)).await?;
         let records = raw
             .as_object()
             .filter(|r| r.len() <= crate::snapshot_capture::MAX_BLOBS)
@@ -283,15 +286,12 @@ impl ResourceRequest {
         self.save(journal).await?;
         let reply = bounded(
             cancel,
-            session.call(
-                "VM.create_new_blob",
-                vec![
-                    json!(reference),
-                    json!(snapshot_preview::KEY),
-                    json!("image/png"),
-                    json!(false),
-                ],
-            ),
+            session.send(calls::vm::CreateNewBlobWithPublic {
+                vm: refs::vm(&reference),
+                name: snapshot_preview::KEY,
+                mime_type: "image/png",
+                public: false,
+            }),
         )
         .await?;
         self.record

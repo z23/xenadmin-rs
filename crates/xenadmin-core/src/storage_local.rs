@@ -3,6 +3,7 @@ use crate::{Error, HostId, StorageLocation, storage_discovery, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use xenadmin_xapi::records::{HostRecord, PbdRecord, SmRecord, SrRecord};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LocalStorageKind {
@@ -86,7 +87,7 @@ pub(crate) async fn probe(
         return Err(Error::InvalidResourceCommand);
     }
     let (host_ref, _) = read_host(session, host).await?;
-    let drivers = session.call("SM.get_all_records", vec![]).await?;
+    let drivers = session.send(calls::sm::GetAllRecords).await?;
     let drivers = drivers
         .as_object()
         .filter(|r| r.len() <= 256)
@@ -148,7 +149,7 @@ pub(crate) async fn preflight(
     {
         return Err(Error::UnavailableAction);
     }
-    let pbds = session.call("PBD.get_all_records", vec![]).await?;
+    let pbds = session.send(calls::pbd::GetAllRecords).await?;
     for pbd in records(&pbds)?.values() {
         let owner = PbdRecord::new(pbd)
             .host()
@@ -179,7 +180,7 @@ pub(crate) async fn preflight(
             }
         }
     }
-    let srs = session.call("SR.get_all_records", vec![]).await?;
+    let srs = session.send(calls::sr::GetAllRecords).await?;
     for sr in records(&srs)?.values() {
         let config = SrRecord::new(sr)
             .sm_config()
@@ -211,11 +212,11 @@ pub(crate) async fn preflight(
 
 async fn read_host(session: &Session, host: HostId) -> Result<(String, Value), Error> {
     let reference = session
-        .call("host.get_by_uuid", vec![json!(host.to_string())])
+        .send(calls::host::GetByUuid(&host.to_string()))
         .await?;
     let reference = crate::xapi::opaque_reference(&reference)?;
     let record = session
-        .call("host.get_record", vec![json!(&reference)])
+        .send(calls::host::GetRecord(refs::host(&reference)))
         .await?;
     if HostRecord::new(&record).uuid() != host.to_string() {
         return Err(Error::Stale);
@@ -238,7 +239,7 @@ pub(crate) fn attachment_graph(sr: &Value, reference: &str) -> Result<(), Error>
     Ok(())
 }
 pub(crate) async fn no_attachments(session: &Session, sr_ref: &str) -> Result<(), Error> {
-    let pbds = session.call("PBD.get_all_records", vec![]).await?;
+    let pbds = session.send(calls::pbd::GetAllRecords).await?;
     if records(&pbds)?
         .values()
         .any(|p| PbdRecord::new(p).sr() == sr_ref)

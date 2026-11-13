@@ -1,6 +1,8 @@
 //! Checks the XAPI names this crate writes as strings against the generated catalogue of
-//! the API the qualified hosts run: the calls it makes and the fields its decoders name,
-//! and for a call written with its arguments beside it, how many it passes.
+//! the API the qualified hosts run: the calls it names and the fields its decoders name.
+//! A call with its arguments is written as its message from the bindings, which the
+//! compiler checks; a test here holds that only the session layer still writes a call as
+//! a name and a list.
 //! Reads through the generated record views need no check of their names, because a view
 //! has no method for a field its class lacks, and a field's type refuses a comparison with
 //! a value of another kind and has only the readers of its own. What a view cannot refuse
@@ -181,7 +183,7 @@ fn every_call_written_with_its_arguments_passes_as_many_as_the_api_takes() {
         })
         .collect();
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let (mut checked, mut wrong) = (0, Vec::new());
+    let (mut written, mut wrong) = (Vec::new(), Vec::new());
     let mut seen_session_written = BTreeSet::new();
     for entry in std::fs::read_dir(&directory).unwrap() {
         let path = entry.unwrap().path();
@@ -206,7 +208,7 @@ fn every_call_written_with_its_arguments_passes_as_many_as_the_api_takes() {
             };
             let passes = argument_count(&text, start)
                 .unwrap_or_else(|| panic!("unbalanced arguments after {literal} in {file}"));
-            checked += 1;
+            written.push(format!("{name} ({file})"));
             let below_session = SESSION_WRITTEN
                 .iter()
                 .find(|call| file == "xapi.rs" && **call == name);
@@ -225,8 +227,20 @@ fn every_call_written_with_its_arguments_passes_as_many_as_the_api_takes() {
         wrong.join("\n"),
         xenadmin_xapi::SOURCE
     );
-    // The scan reaches the calls: a change in how they are written would pass empty.
-    assert!(checked > 300, "{checked} calls with their arguments");
+    // A call is written as its message from the bindings and sent with `Session::send`,
+    // so the compiler checks what it is given. What is still written as a name and a
+    // list of JSON values is what the session layer sends itself, and nothing else may
+    // be: a new call written that way fails here.
+    written.sort();
+    assert_eq!(
+        written,
+        [
+            "event.from (xapi.rs)",
+            "session.get_record (xapi.rs)",
+            "session.login_with_password (xapi.rs)",
+            "session.logout (xapi.rs)",
+        ]
+    );
     for call in SESSION_WRITTEN {
         assert!(
             seen_session_written.contains(call),

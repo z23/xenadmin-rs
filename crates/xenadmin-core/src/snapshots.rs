@@ -7,6 +7,7 @@ use xenadmin_xapi::enumerations::{
 };
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DeletionPlan {
@@ -187,7 +188,7 @@ pub(crate) async fn deletion_plan(
             return Err(Error::SnapshotConflict);
         }
         for vbd in consumers {
-            let attachment = session.call("VBD.get_record", vec![json!(vbd)]).await?;
+            let attachment = session.send(calls::vbd::GetRecord(refs::vbd(&vbd))).await?;
             if VbdRecord::new(&attachment).vm() != snapshot_ref
                 || VbdRecord::new(&attachment).vdi() != disk_ref
                 || VbdRecord::new(&attachment).type_() != vbd_type::DISK
@@ -203,7 +204,7 @@ pub(crate) async fn deletion_plan(
     let memory = if checkpoint {
         let reference = reference(VmRecord::new(&record).suspend_vdi())?;
         let disk = session
-            .call("VDI.get_record", vec![json!(&reference)])
+            .send(calls::vdi::GetRecord(refs::vdi(&reference)))
             .await?;
         if VdiRecord::new(&disk).type_() != vdi_type::SUSPEND
             || VdiRecord::new(&disk).sharable() != false
@@ -216,7 +217,7 @@ pub(crate) async fn deletion_plan(
             .text()
             .and_then(|id| VdiId::parse(id).ok())
             .ok_or(Error::SnapshotConflict)?;
-        let vms = session.call("VM.get_all_records", vec![]).await?;
+        let vms = session.send(calls::vm::GetAllRecords).await?;
         if vms
             .as_object()
             .ok_or(Error::SnapshotConflict)?
@@ -253,13 +254,13 @@ pub(crate) async fn stop_checkpoint(
     }
     let memory_ref = self::reference(VmRecord::new(&record).suspend_vdi())?;
     let saved = session
-        .call("VDI.get_record", vec![json!(memory_ref)])
+        .send(calls::vdi::GetRecord(refs::vdi(&memory_ref)))
         .await?;
     if VdiRecord::new(&saved).uuid().text() != memory.map(|id| id.to_string()).as_deref() {
         return Err(Error::SnapshotConflict);
     }
     session
-        .call("VM.hard_shutdown", vec![json!(reference)])
+        .send(calls::vm::HardShutdown(refs::vm(&reference)))
         .await?;
     Ok(())
 }
@@ -275,7 +276,9 @@ pub(crate) async fn destroy_snapshot(
     {
         return Err(Error::SnapshotConflict);
     }
-    session.call("VM.destroy", vec![json!(reference)]).await?;
+    session
+        .send(calls::vm::Destroy(refs::vm(&reference)))
+        .await?;
     Ok(())
 }
 
@@ -293,7 +296,7 @@ pub(crate) async fn destroy_disk(session: &Session, disk: VdiId) -> Result<(), E
     {
         return Err(Error::SnapshotConflict);
     }
-    let vms = session.call("VM.get_all_records", vec![]).await?;
+    let vms = session.send(calls::vm::GetAllRecords).await?;
     if vms
         .as_object()
         .ok_or(Error::SnapshotConflict)?
@@ -302,7 +305,9 @@ pub(crate) async fn destroy_disk(session: &Session, disk: VdiId) -> Result<(), E
     {
         return Err(Error::SnapshotConflict);
     }
-    session.call("VDI.destroy", vec![json!(reference)]).await?;
+    session
+        .send(calls::vdi::Destroy(refs::vdi(&reference)))
+        .await?;
     Ok(())
 }
 
@@ -313,7 +318,7 @@ pub(crate) async fn verify_clone(
     reference: &str,
 ) -> Result<(VmId, Value), Error> {
     let record = session
-        .call("VM.get_record", vec![json!(reference)])
+        .send(calls::vm::GetRecord(refs::vm(reference)))
         .await?;
     let id = VmRecord::new(&record)
         .uuid()
@@ -334,7 +339,7 @@ pub(crate) async fn verify_clone(
 }
 
 pub(crate) async fn clone_baseline(session: &Session) -> Result<Vec<VmId>, Error> {
-    let records = session.call("VM.get_all_records", vec![]).await?;
+    let records = session.send(calls::vm::GetAllRecords).await?;
     let records = records
         .as_object()
         .filter(|records| records.len() <= 10_000)

@@ -11,6 +11,7 @@ use std::{
 };
 use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode};
 use xenadmin_xapi::records::{HostMetricsRecord, HostRecord, NetworkRecord, PifRecord, VlanRecord};
+use xenadmin_xapi::{Call, Int, calls, refs};
 
 pub(super) fn now() -> u64 {
     SystemTime::now()
@@ -366,7 +367,7 @@ async fn checked_network(
     empty_set(&network, "VIFs")?;
     let mut actual = BTreeSet::new();
     for pif in network::refs(NetworkRecord::new(&network).pifs())? {
-        let value = session.call("PIF.get_record", vec![json!(pif)]).await?;
+        let value = session.send(calls::pif::GetRecord(refs::pif(&pif))).await?;
         actual.insert(PifId::from(network::uuid(&value)?));
     }
     require(
@@ -477,15 +478,17 @@ pub(super) async fn arguments(
                 "The VLAN network MTU must not exceed its uplink MTU",
             )?;
             unused_tag(session, parent.pif, *tag).await?;
-            Ok((
-                "Async.VLAN.create",
-                vec![json!(reference), json!(tag.to_string()), json!(network)],
-            ))
+            Ok(calls::vlan::Create {
+                tagged_pif: refs::pif(&reference),
+                tag: Int::from(tag),
+                network: refs::network(&network),
+            }
+            .task())
         }
-        Kind::Destroy(vlan) => Ok((
-            "Async.VLAN.destroy",
-            vec![json!(retaggable(session, plan.network, vlan).await?.0)],
-        )),
+        Kind::Destroy(vlan) => Ok(calls::vlan::Destroy(refs::vlan(
+            &retaggable(session, plan.network, vlan).await?.0,
+        ))
+        .task()),
         Kind::DetachCreated {
             create_step,
             uplink,
@@ -506,7 +509,7 @@ pub(super) async fn arguments(
                 },
             )
             .await?;
-            Ok(("Async.PIF.unplug", vec![json!(reference)]))
+            Ok(calls::pif::Unplug(refs::pif(&reference)).task())
         }
     }
 }
@@ -528,7 +531,7 @@ pub(super) async fn creation_identity(
         "Created VLAN result is unavailable; no request will be replayed",
     ))?;
     let vlan = session
-        .call("VLAN.get_record", vec![json!(reference)])
+        .send(calls::vlan::GetRecord(refs::vlan(reference)))
         .await?;
     let id = VlanId::from(network::uuid(&vlan)?);
     let child = network::related(session, "PIF", VlanRecord::new(&vlan).untagged_pif()).await?;

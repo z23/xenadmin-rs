@@ -15,6 +15,7 @@ use xenadmin_xapi::enumerations::{ip_configuration_mode, ipv6_configuration_mode
 use xenadmin_xapi::records::{
     HostRecord, NetworkRecord, PifRecord, PoolRecord, VifRecord, VlanRecord,
 };
+use xenadmin_xapi::{Call, calls, refs};
 fn require(v: bool, message: &'static str) -> Result<(), Error> {
     if v {
         Ok(())
@@ -536,20 +537,17 @@ pub(super) async fn arguments(
 ) -> Result<(&'static str, Vec<Value>), Error> {
     let t = verify(s, p, p.depth as usize).await?;
     let args = match p.stage() {
-        Stage::MoveToTemporary => (
-            "Async.host.management_reconfigure",
-            vec![json!(t.pif(p.intent.temporary.pif)?.0)],
-        ),
-        Stage::ClearSourceIpv6 => (
-            "Async.PIF.reconfigure_ipv6",
-            vec![
-                json!(t.pif(p.intent.source.pif)?.0),
-                json!(ipv6_configuration_mode::NONE),
-                json!(""),
-                json!(""),
-                json!(""),
-            ],
-        ),
+        Stage::MoveToTemporary => {
+            calls::host::ManagementReconfigure(refs::pif(t.pif(p.intent.temporary.pif)?.0)).task()
+        }
+        Stage::ClearSourceIpv6 => calls::pif::ReconfigureIpv6 {
+            self_: refs::pif(t.pif(p.intent.source.pif)?.0),
+            mode: ipv6_configuration_mode::NONE,
+            ipv6: "",
+            gateway: "",
+            dns: "",
+        }
+        .task(),
         Stage::ChangeBond => {
             p.change_baseline = Some(bond::baseline(&t, p.baseline.properties.clone())?);
             match &p.intent.operation {
@@ -563,38 +561,36 @@ pub(super) async fn arguments(
                         .iter()
                         .map(|p| t.pif(p.pif).map(|v| v.0.to_owned()))
                         .collect::<Result<Vec<_>, _>>()?;
-                    (
-                        "Async.Bond.create",
-                        vec![
-                            json!(bond::lookup(t.records("network"), network.uuid())?.0),
-                            json!(refs),
-                            json!(""),
-                            json!(mode.as_str()),
-                            hash.map(|h| json!({"hashing_algorithm":h.as_str()}))
-                                .unwrap_or(json!({})),
-                        ],
-                    )
+                    calls::bond::CreateWithProperties {
+                        network: refs::network(
+                            bond::lookup(t.records("network"), network.uuid())?.0,
+                        ),
+                        members: json!(refs),
+                        mac: "",
+                        mode: mode.as_str(),
+                        properties: hash
+                            .map(|h| json!({"hashing_algorithm":h.as_str()}))
+                            .unwrap_or(json!({})),
+                    }
+                    .task()
                 }
-                Op::Destroy { bond, .. } => (
-                    "Async.Bond.destroy",
-                    vec![json!(bond::lookup(t.records("bond"), bond.uuid())?.0)],
-                ),
+                Op::Destroy { bond, .. } => calls::bond::Destroy(refs::bond(
+                    bond::lookup(t.records("bond"), bond.uuid())?.0,
+                ))
+                .task(),
             }
         }
-        Stage::RestoreTargetIpv6 => (
-            "Async.PIF.reconfigure_ipv6",
-            vec![
-                json!(t.pif(receiver(p)?)?.0),
-                json!(ipv6_configuration_mode::STATIC),
-                json!(p.intent.source.ipv6.addresses[0]),
-                json!(p.intent.source.ipv6.gateway),
-                json!(p.intent.source.ipv6.dns),
-            ],
-        ),
-        Stage::MoveToTarget => (
-            "Async.host.management_reconfigure",
-            vec![json!(t.pif(receiver(p)?)?.0)],
-        ),
+        Stage::RestoreTargetIpv6 => calls::pif::ReconfigureIpv6 {
+            self_: refs::pif(t.pif(receiver(p)?)?.0),
+            mode: ipv6_configuration_mode::STATIC,
+            ipv6: &p.intent.source.ipv6.addresses[0],
+            gateway: &p.intent.source.ipv6.gateway,
+            dns: &p.intent.source.ipv6.dns,
+        }
+        .task(),
+        Stage::MoveToTarget => {
+            calls::host::ManagementReconfigure(refs::pif(t.pif(receiver(p)?)?.0)).task()
+        }
     };
     p.current_mut().task_baseline = network::all(s, "task")
         .await?

@@ -13,6 +13,7 @@ use tokio::{
     sync::{mpsc, watch},
 };
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::calls;
 
 use crate::{
     ConnectionOptions, Credentials, Error, Inventory,
@@ -1498,7 +1499,7 @@ async fn run(
                         _=cancel.cancelled()=>break None,
                         _=inventory_check.tick(), if !check_every.is_zero() && !token.is_empty() && host_reads.is_empty()=>{
                             let session = session.clone();
-                            host_reads.spawn(async move { session.call("host.get_all_records", vec![]).await });
+                            host_reads.spawn(async move { session.send(calls::host::GetAllRecords).await });
                             continue;
                         }
                         read=host_reads.join_next(), if !host_reads.is_empty()=>{

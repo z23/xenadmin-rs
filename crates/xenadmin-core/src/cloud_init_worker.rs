@@ -6,6 +6,7 @@ use crate::{
 use serde_json::Value;
 use xenadmin_xapi::enumerations::{vbd_mode, vbd_type, vm_power_state};
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 impl ResourceRequest {
     fn cloud_config(&self) -> Result<&crate::CloudInitConfiguration, Error> {
@@ -52,7 +53,7 @@ impl ResourceRequest {
         }
         if vacant_slot {
             let slots = session
-                .call("VM.get_allowed_VBD_devices", vec![json!(&reference)])
+                .send(calls::vm::GetAllowedVbdDevices(refs::vm(&reference)))
                 .await?;
             if slots
                 .as_array()
@@ -67,7 +68,7 @@ impl ResourceRequest {
                 .ok_or(Error::DeviceConflict)?;
             for attachment in attachments {
                 let r = crate::snapshots::reference(attachment)?;
-                let vbd = session.call("VBD.get_record", vec![json!(r)]).await?;
+                let vbd = session.send(calls::vbd::GetRecord(refs::vbd(&r))).await?;
                 if VbdRecord::new(&vbd).vm() != reference {
                     return Err(Error::DeviceConflict);
                 }
@@ -82,12 +83,9 @@ impl ResourceRequest {
                 }
                 if VbdRecord::new(&vbd).type_() == vbd_type::DISK {
                     let vdi = session
-                        .call(
-                            "VDI.get_record",
-                            vec![json!(crate::snapshots::reference(
-                                VbdRecord::new(&vbd).vdi()
-                            )?)],
-                        )
+                        .send(calls::vdi::GetRecord(refs::vdi(
+                            &crate::snapshots::reference(VbdRecord::new(&vbd).vdi())?,
+                        )))
                         .await?;
                     if VdiRecord::new(&vdi)
                         .other_config()
@@ -358,7 +356,7 @@ impl ResourceRequest {
         {
             return Err(Error::TransferConflict);
         }
-        let all = session.call("VBD.get_all_records", vec![]).await?;
+        let all = session.send(calls::vbd::GetAllRecords).await?;
         let matches = all
             .as_object()
             .filter(|m| m.len() <= 10000)
@@ -386,7 +384,7 @@ impl ResourceRequest {
             return Err(Error::TransferConflict);
         }
         let fresh = session
-            .call("VBD.get_record", vec![json!(reference)])
+            .send(calls::vbd::GetRecord(refs::vbd(reference)))
             .await?;
         if VbdRecord::new(&fresh).uuid() != uuid.to_string()
             || VbdRecord::new(&fresh).vm() != vm_ref

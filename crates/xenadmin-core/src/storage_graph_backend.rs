@@ -11,6 +11,7 @@ use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
 use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord,
 };
+use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 fn require(ok: bool, msg: &'static str) -> Result<(), Error> {
     if ok {
@@ -138,10 +139,9 @@ async fn host(s: &Session, id: crate::HostId, live: bool) -> Result<(String, Val
     idle(&v)?;
     if live {
         let m = s
-            .call(
-                "host_metrics.get_record",
-                vec![json!(reference(HostRecord::new(&v).metrics())?)],
-            )
+            .send(calls::host_metrics::GetRecord(refs::host_metrics(
+                &reference(HostRecord::new(&v).metrics())?,
+            )))
             .await?;
         require(
             HostMetricsRecord::new(&m).live() == true,
@@ -643,10 +643,9 @@ fn now() -> u64 {
 }
 async fn storage_allowed(s: &Session, pbd: &Value, operation: &str) -> Result<(), Error> {
     let sr = s
-        .call(
-            "SR.get_record",
-            vec![json!(reference(PbdRecord::new(pbd).sr())?)],
-        )
+        .send(calls::sr::GetRecord(refs::sr(&reference(
+            PbdRecord::new(pbd).sr(),
+        )?)))
         .await?;
     idle(&sr)?;
     require(
@@ -705,12 +704,7 @@ pub(super) async fn arguments(
                                 == PbdRecord::new(&src).currently_attached(),
                         "Source configuration changed before copy",
                     )?;
-                    Ok((
-                        "Async.PBD.create",
-                        vec![
-                            json!({"host":h,"SR":sr_ref,"device_config":PbdRecord::new(&latest).device_config(),"other_config":{}}),
-                        ],
-                    ))
+                    Ok(calls::pbd::Create(json!({"host":h,"SR":sr_ref,"device_config":PbdRecord::new(&latest).device_config(),"other_config":{}})).task())
                 }
                 Kind::Plug(h, storage_id) => {
                     let id = p.attachment(h, storage_id).ok_or(Error::Journal)?;
@@ -722,14 +716,14 @@ pub(super) async fn arguments(
                         ),
                         "Storage currently refuses connection",
                     )?;
-                    Ok(("Async.PBD.plug", vec![json!(reference)]))
+                    Ok(calls::pbd::Plug(refs::pbd(&reference)).task())
                 }
                 _ => Err(Error::Journal),
             }
         }
         StorageGraph::Multipath { enabled, .. } => {
             let (h, previous_host, graph) = multipath_graph(s, r, p, None).await?;
-            let latest_host = s.call("host.get_record", vec![json!(h)]).await?;
+            let latest_host = s.send(calls::host::GetRecord(refs::host(&h))).await?;
             for field in [
                 "uuid",
                 "enabled",
@@ -748,24 +742,31 @@ pub(super) async fn arguments(
                     let (_, current_pbd) = find(&graph, id.uuid())?;
                     storage_allowed(s, &current_pbd, storage_operations::UNPLUG).await?;
                     let reference = latest_attachment(s, &graph, id).await?;
-                    Ok(("Async.PBD.unplug", vec![json!(reference)]))
+                    Ok(calls::pbd::Unplug(refs::pbd(&reference)).task())
                 }
                 Kind::Plug(host, sr) => {
                     let id = p.attachment(host, sr).ok_or(Error::Journal)?;
                     let (_, current_pbd) = find(&graph, id.uuid())?;
                     storage_allowed(s, &current_pbd, storage_operations::PLUG).await?;
                     let reference = latest_attachment(s, &graph, id).await?;
-                    Ok(("Async.PBD.plug", vec![json!(reference)]))
+                    Ok(calls::pbd::Plug(refs::pbd(&reference)).task())
                 }
-                Kind::Mode => Ok(("host.set_multipathing", vec![json!(h), json!(enabled)])),
-                Kind::RemoveHandler => Ok((
-                    "host.remove_from_other_config",
-                    vec![json!(h), json!("multipathhandle")],
-                )),
-                Kind::AddHandler => Ok((
-                    "host.add_to_other_config",
-                    vec![json!(h), json!("multipathhandle"), json!("dmp")],
-                )),
+                Kind::Mode => Ok(calls::host::SetMultipathing {
+                    host: refs::host(&h),
+                    value: *enabled,
+                }
+                .request()),
+                Kind::RemoveHandler => Ok(calls::host::RemoveFromOtherConfig {
+                    self_: refs::host(&h),
+                    key: "multipathhandle",
+                }
+                .request()),
+                Kind::AddHandler => Ok(calls::host::AddToOtherConfig {
+                    self_: refs::host(&h),
+                    key: "multipathhandle",
+                    value: "dmp",
+                }
+                .request()),
                 _ => Err(Error::Journal),
             }
         }
@@ -790,7 +791,7 @@ pub(super) async fn discover_created(
     };
     super::disk::pool(s, r.pool).await?;
     let result = e.result.as_ref().ok_or(Error::Journal)?;
-    let v = s.call("PBD.get_record", vec![json!(result)]).await?;
+    let v = s.send(calls::pbd::GetRecord(refs::pbd(result))).await?;
     let id = crate::PbdId::from(uuid(&v)?);
     let (host_ref, _) = xapi::read(s, ResourceTarget::Host(h)).await?;
     let (sr_ref, _) = xapi::read(s, ResourceTarget::Storage(source.sr)).await?;
@@ -825,7 +826,7 @@ pub(super) async fn verify(
             return Err(Error::Journal);
         };
         let result = p.evidence[index].result.as_ref().ok_or(Error::Journal)?;
-        let v = s.call("PBD.get_record", vec![json!(result)]).await?;
+        let v = s.send(calls::pbd::GetRecord(refs::pbd(result))).await?;
         let id = crate::PbdId::from(uuid(&v)?);
         let (host_ref, _) = host(s, h, true).await?;
         let (sr_ref, _) = storage(s, source.sr).await?;
@@ -869,7 +870,9 @@ pub(super) async fn task(
     let reference = e.task.as_ref().ok_or(Error::Protocol(
         "Storage task receipt unavailable; no write will be replayed",
     ))?;
-    let v = s.call("task.get_record", vec![json!(reference)]).await?;
+    let v = s
+        .send(calls::task::GetRecord(refs::task(reference)))
+        .await?;
     let id = crate::TaskId::from(uuid(&v)?);
     require(
         !p.tasks_before.contains(&id)

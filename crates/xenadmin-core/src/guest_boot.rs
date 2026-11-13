@@ -1,5 +1,7 @@
 use crate::{Error, ObservedVm, PoolId, VmId, xapi::Session};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -7,6 +9,7 @@ use xenadmin_xapi::enumerations::{
     domain_type, pool_guest_secureboot_readiness, vm_secureboot_readiness,
 };
 use xenadmin_xapi::records::{PoolRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BootReadiness {
     Ready,
@@ -169,7 +172,7 @@ pub(crate) async fn require_policy_support(
     reference: &str,
 ) -> Result<(), Error> {
     let value = session
-        .call("VM.get_secureboot_readiness", vec![json!(reference)])
+        .send(calls::vm::GetSecurebootReadiness(refs::vm(reference)))
         .await?;
     if !matches!(
         value.as_str(),
@@ -210,10 +213,8 @@ pub(crate) async fn read(
     pool: PoolId,
     vm: VmId,
 ) -> Result<GuestBootStatus, Error> {
-    let r = session
-        .call("VM.get_by_uuid", vec![json!(vm.to_string())])
-        .await?;
-    let before = session.call("VM.get_record", vec![r.clone()]).await?;
+    let r = session.send(calls::vm::GetByUuid(&vm.to_string())).await?;
+    let before = session.send(calls::vm::GetRecord(refs::vm(&r))).await?;
     if VmRecord::new(&before).uuid() != vm.to_string()
         || VmRecord::new(&before).is_control_domain() != false
         || VmRecord::new(&before).is_a_snapshot() != false
@@ -221,23 +222,25 @@ pub(crate) async fn read(
         return Err(Error::Stale);
     }
     let pr = session
-        .call("pool.get_by_uuid", vec![json!(pool.to_string())])
+        .send(calls::pool::GetByUuid(&pool.to_string()))
         .await?;
-    let p = session.call("pool.get_record", vec![pr.clone()]).await?;
+    let p = session
+        .send(calls::pool::GetRecord(refs::pool(&pr)))
+        .await?;
     if PoolRecord::new(&p).uuid() != pool.to_string() {
         return Err(Error::Stale);
     }
     let guest = readiness(
         session
-            .call("VM.get_secureboot_readiness", vec![r.clone()])
+            .send(calls::vm::GetSecurebootReadiness(refs::vm(&r)))
             .await,
     );
     let pool = readiness(
         session
-            .call("pool.get_guest_secureboot_readiness", vec![pr])
+            .send(calls::pool::GetGuestSecurebootReadiness(refs::pool(&pr)))
             .await,
     );
-    let after = session.call("VM.get_record", vec![r]).await?;
+    let after = session.send(calls::vm::GetRecord(refs::vm(&r))).await?;
     if VmRecord::new(&before).uuid() != VmRecord::new(&after).uuid()
         || VmRecord::new(&before).is_a_template() != VmRecord::new(&after).is_a_template()
         || VmRecord::new(&after).is_control_domain() != false

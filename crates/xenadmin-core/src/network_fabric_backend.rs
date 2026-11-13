@@ -19,6 +19,7 @@ use xenadmin_xapi::records::{
     TaskRecord, TunnelRecord, VifRecord, VmRecord,
 };
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Plan {
@@ -533,7 +534,7 @@ async fn identity_for(
     let id = network::uuid(&value)?;
     let (parent, child, _, _) = fields(op.review.kind);
     let child_ref = xapi::reply_reference(&value[child])?;
-    let child_record = s.call("PIF.get_record", vec![json!(&child_ref)]).await?;
+    let child_record = s.send(calls::pif::GetRecord(refs::pif(&child_ref))).await?;
     let child_id = crate::PifId::from(network::uuid(&child_record)?);
     let (resolved_ref, resolved) = xapi::read(s, ResourceTarget::Pif(child_id)).await?;
     if resolved_ref != child_ref

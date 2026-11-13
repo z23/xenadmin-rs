@@ -2,6 +2,7 @@
 use crate::{DiscoveredHbaDevice, Error, StorageLocation, storage_discovery, xapi::Session};
 use serde_json::{Value, json};
 use xenadmin_xapi::records::{HostRecord, SmRecord, SrRecord};
+use xenadmin_xapi::{calls, refs};
 
 pub(crate) async fn allocation_capability(
     session: &Session,
@@ -10,7 +11,7 @@ pub(crate) async fn allocation_capability(
     if location.allocation().value().is_none() {
         return Ok(());
     }
-    let records = session.call("SM.get_all_records", vec![]).await?;
+    let records = session.send(calls::sm::GetAllRecords).await?;
     let records = records
         .as_object()
         .filter(|v| v.len() <= 256)
@@ -56,7 +57,9 @@ pub(crate) async fn hba_creation(
     if !device.valid() || &device.scsi_id != scsi_id {
         return Err(Error::InvalidResourceCommand);
     }
-    let host_record = session.call("host.get_record", vec![json!(host)]).await?;
+    let host_record = session
+        .send(calls::host::GetRecord(refs::host(host)))
+        .await?;
     if HostRecord::new(&host_record).uuid() != host_id.to_string() {
         return Err(Error::Stale);
     }

@@ -2,6 +2,7 @@ use super::*;
 use crate::{OperationStep, StepState, snapshot_workflow as workflow};
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 impl Journal {
     fn snapshot_workflow_evidence(
@@ -132,7 +133,7 @@ impl MutationRequest {
             .ok_or(Error::Journal)?;
         if !plan.evidence[index].completed
             && let Some(task) = &plan.evidence[index].task
-            && let Ok(record) = session.call("task.get_record", vec![json!(task)]).await
+            && let Ok(record) = session.send(calls::task::GetRecord(refs::task(task))).await
             && TaskRecord::new(&record).status() == task_status_type::SUCCESS
         {
             if plan.steps[index] == workflow::Step::Create {
@@ -199,7 +200,7 @@ impl MutationRequest {
                 }
                 loop {
                     let task = plan.evidence[index].task.as_ref().ok_or(Error::Journal)?;
-                    let record = match tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("task.get_record",vec![json!(task)])=>result}
+                    let record = match tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.send(calls::task::GetRecord(refs::task(task)))=>result}
                     {
                         Ok(record) => record,
                         Err(error) => {
@@ -323,7 +324,7 @@ impl MutationRequest {
                     unresolved = true;
                     continue;
                 };
-                let record = session.call("task.get_record", vec![json!(task)]).await;
+                let record = session.send(calls::task::GetRecord(refs::task(task))).await;
                 match record {
                     Ok(record)
                         if TaskRecord::new(&record).status() == task_status_type::SUCCESS =>

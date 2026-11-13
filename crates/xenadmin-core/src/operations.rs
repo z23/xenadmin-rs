@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::{TaskRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 #[path = "device_lifecycle_operations.rs"]
 mod device_lifecycle_operations;
@@ -1625,7 +1626,7 @@ impl MutationRequest {
                 return Err(Error::Closed);
             }
             let before = session
-                .call("VM.get_record", vec![json!(reference)])
+                .send(calls::vm::GetRecord(refs::vm(reference)))
                 .await?;
             let before = patch.resolve_record(session, before).await?;
             if VmRecord::new(&before).uuid().text() != Some(self.record.vm.to_string().as_str()) {
@@ -1680,7 +1681,7 @@ impl MutationRequest {
             self.record.state = OperationState::Verifying;
             self.persist_steps(journal).await?;
             let after = session
-                .call("VM.get_record", vec![json!(reference)])
+                .send(calls::vm::GetRecord(refs::vm(reference)))
                 .await?;
             let after = patch.resolve_record(session, after).await?;
             if VmRecord::new(&after).uuid().text() != Some(self.record.vm.to_string().as_str())
@@ -1711,9 +1712,11 @@ impl MutationRequest {
         };
         let steps = patch.steps();
         let reference = session
-            .call("VM.get_by_uuid", vec![json!(self.record.vm.to_string())])
+            .send(calls::vm::GetByUuid(&self.record.vm.to_string()))
             .await?;
-        let current = session.call("VM.get_record", vec![reference]).await?;
+        let current = session
+            .send(calls::vm::GetRecord(refs::vm(&reference)))
+            .await?;
         let current = patch.resolve_record(session, current).await?;
         if VmRecord::new(&current).uuid().text() != Some(self.record.vm.to_string().as_str()) {
             return Err(Error::Stale);
@@ -1769,7 +1772,7 @@ impl MutationRequest {
             }
             let task = tokio::select! {
                 _=connection_cancel.cancelled()=>return Err(Error::Closed),
-                result=async { if self.record.result_reference.is_some() {Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0}))} else {session.call("task.get_record",vec![json!(&reference)]).await} }=>result,
+                result=async { if self.record.result_reference.is_some() {Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0}))} else {session.send(calls::task::GetRecord(refs::task(&reference))).await} }=>result,
             };
             let task = match task {
                 Ok(task) => {
@@ -1915,7 +1918,7 @@ impl MutationRequest {
                 }
                 let _ = tokio::time::timeout(
                     Duration::from_secs(5),
-                    session.call("task.destroy", vec![json!(&reference)]),
+                    session.send(calls::task::Destroy(refs::task(&reference))),
                 )
                 .await;
                 return Ok(());
@@ -1931,7 +1934,10 @@ impl MutationRequest {
                     Err(Error::JournalChanged) => continue,
                     Err(error) => return Err(error),
                 }
-                if let Err(error) = session.call("task.cancel", vec![json!(&reference)]).await {
+                if let Err(error) = session
+                    .send(calls::task::Cancel(refs::task(&reference)))
+                    .await
+                {
                     if matches!(error, Error::Coordinator(_)) {
                         return Err(error);
                     }

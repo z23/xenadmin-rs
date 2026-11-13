@@ -5,6 +5,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use xenadmin_xapi::records::{HostRecord, PoolRecord, SubjectRecord};
+use xenadmin_xapi::{calls, refs};
 
 fn operation(record: &ResourceOperationRecord) -> Result<&PoolSecurityOperation, Error> {
     match &record.action {
@@ -142,10 +143,7 @@ pub(super) async fn arguments(
                 "This directory subject already has access",
             )?;
             session
-                .call(
-                    "auth.get_subject_information_from_identifier",
-                    vec![json!(identifier)],
-                )
+                .send(calls::auth::GetSubjectInformationFromIdentifier(identifier))
                 .await?;
             Ok(vec![
                 json!({"subject_identifier":identifier,"other_config":{}}),
@@ -275,7 +273,7 @@ pub(super) async fn verify(
                     "New subject identity receipt is missing",
                 ))?;
             let value = session
-                .call("subject.get_record", vec![json!(reference)])
+                .send(calls::subject::GetRecord(refs::subject(reference)))
                 .await?;
             let id = SubjectId::parse(&discovery::text(SubjectRecord::new(&value).uuid(), 36)?)
                 .map_err(|_| Error::Protocol("invalid subject UUID"))?;
@@ -310,10 +308,7 @@ pub(super) async fn verify(
             // signs in again at once survives; closing them after it leaves nothing to sign
             // in with. The call closes sessions only, so a recheck may repeat it.
             match session
-                .call(
-                    "session.logout_subject_identifier",
-                    vec![json!(expected_identifier)],
-                )
+                .send(calls::session::LogoutSubjectIdentifier(expected_identifier))
                 .await
             {
                 Ok(_) => {}

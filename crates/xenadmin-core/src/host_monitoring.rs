@@ -7,6 +7,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::records::DataSourceRecord;
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostDataSource {
@@ -218,7 +219,7 @@ pub(crate) async fn catalog(
 ) -> Result<Vec<HostDataSource>, Error> {
     decode(
         &session
-            .call("host.get_data_sources", vec![json!(reference)])
+            .send(calls::host::GetDataSources(refs::host(reference)))
             .await?,
     )
 }

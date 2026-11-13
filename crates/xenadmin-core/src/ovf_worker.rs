@@ -7,6 +7,7 @@ use crate::{
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -287,10 +288,10 @@ impl ResourceRequest {
         self.record.steps[index].state = StepState::Dispatching;
         self.record.detail = "Creating an owned disk upload task".into();
         self.save(j).await?;
-        let value = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.create",vec![json!(name),json!("Client-owned OVF disk upload")])=>v?};
+        let value = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.send(calls::task::Create { label: &name, description: "Client-owned OVF disk upload" })=>v?};
         let task = crate::resources::xapi::reply_reference(&value)?;
         self.ovf_task_evidence(j, index, &task, None).await?;
-        let task_record = s.call("task.get_record", vec![json!(task)]).await?;
+        let task_record = s.send(calls::task::GetRecord(refs::task(&task))).await?;
         let id = self.ovf_task_id(index, &task_record, &name)?;
         self.ovf_task_evidence(j, index, &task, Some(id)).await?;
         if !self.ovf_active() {
@@ -441,7 +442,7 @@ impl ResourceRequest {
             }
             let task = st.task.clone().ok_or(Error::TransferConflict)?;
             let id = stream.task_uuid.ok_or(Error::TransferConflict)?;
-            let v = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.get_record",vec![json!(task)])=>v?};
+            let v = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.send(calls::task::GetRecord(refs::task(&task)))=>v?};
             self.reload(j)?;
             if self.record.state.terminal() {
                 return Ok(());
@@ -484,7 +485,7 @@ impl ResourceRequest {
             {
                 self.ovf_step_mut(index)?.cancelled = true;
                 self.save(j).await?;
-                tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.cancel",vec![json!(task)])=>{v?;}}
+                tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.send(calls::task::Cancel(refs::task(&task)))=>{v?;}}
             }
             if self.reconcile
                 || self
@@ -538,7 +539,7 @@ impl ResourceRequest {
             && let Some(id) = st.stream.as_ref().and_then(|p| p.task_uuid)
             && let Ok(Ok(v)) = tokio::time::timeout(
                 Duration::from_secs(5),
-                s.call("task.get_record", vec![json!(task)]),
+                s.send(calls::task::GetRecord(refs::task(task))),
             )
             .await
             && TaskRecord::new(&v)
@@ -549,7 +550,7 @@ impl ResourceRequest {
         {
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),
-                s.call("task.destroy", vec![json!(task)]),
+                s.send(calls::task::Destroy(refs::task(task))),
             )
             .await;
         }

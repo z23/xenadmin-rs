@@ -3,6 +3,7 @@ use crate::{
     HostPowerOperation, ResourceAction, host_power::Plan, resources::host_power_backend as backend,
 };
 use backend::require;
+use xenadmin_xapi::{calls, refs};
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -149,7 +150,7 @@ impl ResourceRequest {
                 }
                 bounded(
                     cancel,
-                    session.call("secret.destroy", vec![json!(reference)]),
+                    session.send(calls::secret::Destroy(refs::secret(&reference))),
                 )
                 .await?;
                 self.record.host_power_plan.as_mut().unwrap().cleaned = true;
@@ -199,10 +200,10 @@ impl ResourceRequest {
                     }
                     let result = bounded(
                         cancel,
-                        session.call(
-                            "secret.create",
-                            vec![backend::secret_record(self.record.id, &password.0)],
-                        ),
+                        session.send(calls::secret::Create(backend::secret_record(
+                            self.record.id,
+                            &password.0,
+                        ))),
                     )
                     .await?;
                     let reference = xapi::reply_reference(&result)?;
@@ -255,10 +256,11 @@ impl ResourceRequest {
                 }
                 bounded(
                     cancel,
-                    session.call(
-                        "host.set_power_on_mode",
-                        vec![json!(reference), json!(settings.mode()), argument],
-                    ),
+                    session.send(calls::host::SetPowerOnMode {
+                        self_: refs::host(&reference),
+                        power_on_mode: settings.mode(),
+                        power_on_config: argument,
+                    }),
                 )
                 .await?;
                 self.record

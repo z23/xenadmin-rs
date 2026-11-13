@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{vdi_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{VdiRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SnapshotWorkflow {
@@ -276,7 +277,7 @@ async fn memory(session: &Session, record: &Value) -> Result<Option<VdiId>, Erro
     }
     let reference = snapshots::reference(VmRecord::new(record).suspend_vdi())?;
     let disk = session
-        .call("VDI.get_record", vec![json!(reference)])
+        .send(calls::vdi::GetRecord(refs::vdi(&reference)))
         .await?;
     if VdiRecord::new(&disk).type_() != vdi_type::SUSPEND {
         return Err(Error::SnapshotConflict);
@@ -433,10 +434,10 @@ pub(crate) async fn prepare(
                 return Err(Error::UnavailableAction);
             }
             session
-                .call(
-                    "VM.assert_operation_valid",
-                    vec![json!(&parent_ref), json!(vm_operations::CLEAN_SHUTDOWN)],
-                )
+                .send(calls::vm::AssertOperationValid {
+                    self_: refs::vm(&parent_ref),
+                    op: vm_operations::CLEAN_SHUTDOWN,
+                })
                 .await?;
             Ok(Prepared {
                 method: step.method(&plan.operation),
@@ -450,10 +451,10 @@ pub(crate) async fn prepare(
                 return Err(Error::UnavailableAction);
             }
             session
-                .call(
-                    "VM.assert_operation_valid",
-                    vec![json!(&snapshot_ref), json!(vm_operations::REVERT)],
-                )
+                .send(calls::vm::AssertOperationValid {
+                    self_: refs::vm(&snapshot_ref),
+                    op: vm_operations::REVERT,
+                })
                 .await?;
             Ok(Prepared {
                 method: step.method(&plan.operation),
@@ -482,10 +483,10 @@ pub(crate) async fn prepare(
                 return Err(Error::SnapshotConflict);
             }
             session
-                .call(
-                    "VM.assert_operation_valid",
-                    vec![json!(&parent_ref), json!(op)],
-                )
+                .send(calls::vm::AssertOperationValid {
+                    self_: refs::vm(&parent_ref),
+                    op,
+                })
                 .await?;
             Ok(Prepared {
                 method: step.method(&plan.operation),

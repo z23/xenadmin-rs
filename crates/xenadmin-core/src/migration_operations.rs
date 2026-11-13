@@ -2,6 +2,7 @@ use super::*;
 use crate::{CreatedDevice, OperationStep, StepState, migration_backend as migration};
 use serde_json::Value;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 impl MutationRequest {
     pub(super) async fn execute_migration(
         &mut self,
@@ -250,7 +251,7 @@ impl MutationRequest {
         {
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),
-                session.call("task.destroy", vec![json!(task)]),
+                session.send(calls::task::Destroy(refs::task(task))),
             )
             .await;
         }

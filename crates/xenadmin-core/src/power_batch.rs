@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::records::{PoolRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 /// One reviewed ordinary guest. UUIDs are scoped by the command's observed pool.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,11 +155,11 @@ pub(crate) async fn pool(
     record: &ResourceOperationRecord,
 ) -> Result<(), Error> {
     let reference = session
-        .call("pool.get_by_uuid", vec![json!(record.pool.to_string())])
+        .send(calls::pool::GetByUuid(&record.pool.to_string()))
         .await?;
     let reference = crate::xapi::opaque_reference(&reference)?;
     let value = session
-        .call("pool.get_record", vec![json!(reference)])
+        .send(calls::pool::GetRecord(refs::pool(&reference)))
         .await?;
     if PoolRecord::new(&value).uuid() != record.pool.to_string() {
         return Err(Error::Stale);
@@ -166,12 +167,10 @@ pub(crate) async fn pool(
     Ok(())
 }
 async fn read(session: &crate::xapi::Session, vm: VmId) -> Result<(String, Value), Error> {
-    let reference = session
-        .call("VM.get_by_uuid", vec![json!(vm.to_string())])
-        .await?;
+    let reference = session.send(calls::vm::GetByUuid(&vm.to_string())).await?;
     let reference = crate::xapi::opaque_reference(&reference)?;
     let value = session
-        .call("VM.get_record", vec![json!(&reference)])
+        .send(calls::vm::GetRecord(refs::vm(&reference)))
         .await?;
     if VmRecord::new(&value).uuid() != vm.to_string()
         || VmRecord::new(&value).is_a_template() != false
@@ -202,10 +201,10 @@ pub(crate) async fn prepare_item(
         return Err(Error::UnavailableAction);
     }
     session
-        .call(
-            "VM.assert_operation_valid",
-            vec![json!(&reference), json!(action.wire())],
-        )
+        .send(calls::vm::AssertOperationValid {
+            self_: refs::vm(&reference),
+            op: action.wire(),
+        })
         .await?;
     let mut args = vec![json!(reference)];
     if matches!(action, PowerAction::Start | PowerAction::Resume) {

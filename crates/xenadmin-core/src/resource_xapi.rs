@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{storage_operations, task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 pub(super) const OPERATION_TAG: &str = "xenadmin-rs:operation";
 #[derive(Clone)]
@@ -93,7 +94,7 @@ async fn default_sr(session: &Session, record: &Value) -> Result<Option<SrId>, E
     }
     let reference = reference(PoolRecord::new(record).default_sr())?;
     let sr = session
-        .call("SR.get_record", vec![json!(reference)])
+        .send(calls::sr::GetRecord(refs::sr(&reference)))
         .await?;
     let id = SrRecord::new(&sr)
         .uuid()
@@ -227,7 +228,7 @@ pub(super) async fn prepare(
             }
         }
         ResourceAction::CreateInternalNetwork { .. } => {
-            let networks = session.call("network.get_all_records", vec![]).await?;
+            let networks = session.send(calls::network::GetAllRecords).await?;
             let networks = networks
                 .as_object()
                 .filter(|records| records.len() <= 10_000)
@@ -593,10 +594,10 @@ async fn verify_created(
         .ok_or(Error::Protocol("network creation baseline missing"))?;
     let fresh = if let Some(reference) = &record.result_reference {
         session
-            .call("network.get_record", vec![json!(reference)])
+            .send(calls::network::GetRecord(refs::network(reference)))
             .await?
     } else {
-        let records = session.call("network.get_all_records", vec![]).await?;
+        let records = session.send(calls::network::GetAllRecords).await?;
         let records = records
             .as_object()
             .filter(|records| records.len() <= 10_000)

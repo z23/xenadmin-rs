@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OperationAction, operations::workflow_children::WorkflowChild};
+use xenadmin_xapi::calls;
 
 impl ResourceRequest {
     pub(super) async fn execute_workflow_batch(
@@ -113,9 +114,7 @@ impl ResourceRequest {
                 child.batch_permit = Some(permit);
                 Box::pin(child.run_session(s, directory, c.clone(), updates)).await;
             } else {
-                let reference = s
-                    .call("VM.get_by_uuid", vec![json!(item.vm.to_string())])
-                    .await?;
+                let reference = s.send(calls::vm::GetByUuid(&item.vm.to_string())).await?;
                 let reference = crate::xapi::opaque_reference(&reference)?;
                 let (_, mut child) = crate::operations::channel(
                     plan.children[index],

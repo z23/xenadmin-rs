@@ -6,6 +6,7 @@ use crate::{
 use std::time::{SystemTime, UNIX_EPOCH};
 use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::{TaskRecord, VdiRecord};
+use xenadmin_xapi::{calls, refs};
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -329,14 +330,15 @@ impl ResourceRequest {
         self.record.detail = "Creating an owned transfer task".into();
         self.record.state = OperationState::Dispatching;
         self.save_dispatch(journal)?;
-        let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.call("task.create",vec![json!(&task_name),json!("Client-owned image transfer")])=>v?};
+        let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.send(calls::task::Create { label: &task_name, description: "Client-owned image transfer" })=>v?};
         self.record.task = Some(crate::resources::xapi::reply_reference(&task)?);
         self.record = journal.resource_evidence(&self.record)?;
         if self.stopped_after_recovery() {
             return Ok(());
         }
+        let reference = self.record.task.as_deref().ok_or(Error::Journal)?;
         let fresh_task = session
-            .call("task.get_record", vec![json!(&self.record.task)])
+            .send(calls::task::GetRecord(refs::task(reference)))
             .await?;
         let task_uuid = TaskRecord::new(&fresh_task)
             .uuid()
@@ -495,7 +497,7 @@ impl ResourceRequest {
             && let Some(uuid) = self.record.transfer_plan.as_ref().and_then(|p| p.task_uuid)
             && let Ok(Ok(record)) = tokio::time::timeout(
                 Duration::from_secs(5),
-                session.call("task.get_record", vec![json!(task)]),
+                session.send(calls::task::GetRecord(refs::task(task))),
             )
             .await
             && TaskRecord::new(&record)
@@ -506,7 +508,7 @@ impl ResourceRequest {
         {
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),
-                session.call("task.destroy", vec![json!(task)]),
+                session.send(calls::task::Destroy(refs::task(task))),
             )
             .await;
         }
@@ -608,7 +610,7 @@ impl ResourceRequest {
             if known.task_success || known.task_failed || known.task_cancelled {
                 break;
             }
-            let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&task)])=>result?};
+            let value = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.send(calls::task::GetRecord(refs::task(&task)))=>result?};
             self.reload(journal)?;
             if self.record.state.terminal() && !self.fenced_transfer() {
                 return Ok(());
@@ -692,7 +694,7 @@ impl ResourceRequest {
                 self.record.cancel_dispatched = true;
                 self.record.state = OperationState::CancellationRequested;
                 self.save(journal).await?;
-                tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.call("task.cancel",vec![json!(&task)])=>{v?;}}
+                tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.send(calls::task::Cancel(refs::task(&task)))=>{v?;}}
             }
             if now() >= self.transfer_plan()?.expires_at_ms {
                 return Err(Error::TransferExpired);

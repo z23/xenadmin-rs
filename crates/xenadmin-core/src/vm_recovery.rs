@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::{domain_type, task_status_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{TaskRecord, VmRecord};
+use xenadmin_xapi::{Call, calls, refs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ForceRecoveryAction {
@@ -435,7 +436,7 @@ pub(crate) async fn plan(
     let baseline = if matches!(operation, VmRecoveryOperation::RestoreBoot { .. }) {
         vec![]
     } else {
-        let all = s.call("task.get_all_records", vec![]).await?;
+        let all = s.send(calls::task::GetAllRecords).await?;
         let map = all
             .as_object()
             .filter(|m| m.len() <= 10000)
@@ -471,6 +472,13 @@ pub(crate) struct Prepared {
     params: Vec<Value>,
 }
 impl Prepared {
+    /// A call as its message gives it: the name and the arguments.
+    fn of((method, params): (&'static str, Vec<Value>)) -> Self {
+        Self {
+            method: method.into(),
+            params,
+        }
+    }
     pub async fn send(self, s: &Session) -> Result<Value, Error> {
         s.call(&self.method, self.params).await
     }
@@ -496,7 +504,9 @@ pub(crate) async fn prepare(
             .ok_or(Error::Stale)?;
         let mut actual = Vec::new();
         for (reference, op) in raw {
-            let task = s.call("task.get_record", vec![json!(reference)]).await?;
+            let task = s
+                .send(calls::task::GetRecord(refs::task(reference)))
+                .await?;
             actual.push(RecoveryTask {
                 task: TaskId::parse(TaskRecord::new(&task).uuid().text().ok_or(Error::Stale)?)
                     .map_err(|_| Error::Stale)?,
@@ -513,10 +523,10 @@ pub(crate) async fn prepare(
         {
             return Err(Error::Stale);
         }
-        s.call(
-            "VM.assert_operation_valid",
-            vec![json!(&reference), json!(action.wire())],
-        )
+        s.send(calls::vm::AssertOperationValid {
+            self_: refs::vm(&reference),
+            op: action.wire(),
+        })
         .await?;
         return Ok(Prepared {
             method: format!("Async.VM.{}", action.wire()),
@@ -542,15 +552,19 @@ pub(crate) async fn prepare(
             if !advertised(&r, vm_operations::START) {
                 return Err(Error::UnavailableAction);
             }
-            s.call(
-                "VM.assert_operation_valid",
-                vec![json!(&reference), json!(vm_operations::START)],
-            )
-            .await?;
-            Ok(Prepared {
-                method: "Async.VM.start".into(),
-                params: vec![json!(reference), json!(false), json!(false)],
+            s.send(calls::vm::AssertOperationValid {
+                self_: refs::vm(&reference),
+                op: vm_operations::START,
             })
+            .await?;
+            Ok(Prepared::of(
+                calls::vm::Start {
+                    vm: refs::vm(&reference),
+                    start_paused: false,
+                    force: false,
+                }
+                .task(),
+            ))
         }
         Step::Override | Step::Restore => {
             let mut params = VmRecord::new(&r)
@@ -568,10 +582,13 @@ pub(crate) async fn prepare(
             } else {
                 params.remove("order");
             }
-            Ok(Prepared {
-                method: "VM.set_HVM_boot_params".into(),
-                params: vec![json!(reference), json!(params)],
-            })
+            Ok(Prepared::of(
+                calls::vm::SetHvmBootParams {
+                    self_: refs::vm(&reference),
+                    value: json!(params),
+                }
+                .request(),
+            ))
         }
         _ => Err(Error::Journal),
     }
@@ -579,10 +596,9 @@ pub(crate) async fn prepare(
 pub(crate) async fn task(s: &Session, plan: &mut Plan, index: usize) -> Result<Value, Error> {
     let e = &mut plan.evidence[index];
     let r = s
-        .call(
-            "task.get_record",
-            vec![json!(e.task.as_ref().ok_or(Error::Journal)?)],
-        )
+        .send(calls::task::GetRecord(refs::task(
+            e.task.as_ref().ok_or(Error::Journal)?,
+        )))
         .await?;
     let id = TaskId::parse(TaskRecord::new(&r).uuid().text().ok_or(Error::Stale)?)
         .map_err(|_| Error::Stale)?;

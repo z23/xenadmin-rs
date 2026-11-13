@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use xenadmin_xapi::enumerations::{domain_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{HostRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryLimits {
@@ -289,7 +290,7 @@ impl VmSettingsPatch {
                 Value::Null
             } else {
                 let host = session
-                    .call("host.get_record", vec![json!(reference)])
+                    .send(calls::host::GetRecord(refs::host(reference)))
                     .await?;
                 let id = HostId::parse(
                     HostRecord::new(&host)
@@ -753,10 +754,10 @@ impl SettingsStep {
                 let id: HostId = serde_json::from_value(self.value[0].clone())
                     .map_err(|_| Error::InvalidSettings)?;
                 let reference = session
-                    .call("host.get_by_uuid", vec![json!(id.to_string())])
+                    .send(calls::host::GetByUuid(&id.to_string()))
                     .await?;
                 let record = session
-                    .call("host.get_record", vec![reference.clone()])
+                    .send(calls::host::GetRecord(refs::host(&reference)))
                     .await?;
                 if HostRecord::new(&record).uuid() != id.to_string() {
                     return Err(Error::SettingsConflict);

@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::records::{HostRecord, PoolRecord, TaskRecord};
+use xenadmin_xapi::{calls, refs};
 fn operation(r: &ResourceOperationRecord) -> Result<&PoolDissolve, Error> {
     match &r.action {
         ResourceAction::DissolvePool(op) => Ok(op),
@@ -22,7 +23,7 @@ pub(super) async fn state(s: &Session, r: &ResourceOperationRecord) -> Result<St
     if PoolRecord::new(&record).ha_enabled() != false {
         return Err(Error::ResourceInUse);
     }
-    let hosts = s.call("host.get_all_records", vec![]).await?;
+    let hosts = s.send(calls::host::GetAllRecords).await?;
     let hosts = hosts
         .as_object()
         .filter(|m| !m.is_empty() && m.len() <= 128)
@@ -101,7 +102,7 @@ pub(super) async fn prepare(s: &Session, r: &ResourceOperationRecord) -> Result<
         eject_arguments(s, r, h.host).await?;
     }
     state(s, r).await?;
-    let tasks = s.call("task.get_all_records", vec![]).await?;
+    let tasks = s.send(calls::task::GetAllRecords).await?;
     let tasks = tasks
         .as_object()
         .filter(|m| m.len() <= 100_000)
@@ -167,7 +168,9 @@ pub(super) async fn task(
     let reference = e.task.as_ref().ok_or(Error::Protocol(
         "Ejection reply was lost; host disappearance cannot prove task completion",
     ))?;
-    let value = s.call("task.get_record", vec![json!(reference)]).await?;
+    let value = s
+        .send(calls::task::GetRecord(refs::task(reference)))
+        .await?;
     let id = TaskRecord::new(&value)
         .uuid()
         .text()

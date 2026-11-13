@@ -7,6 +7,7 @@ use crate::{
 use backend::require;
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 async fn bounded<T>(
     cancel: &CancellationToken,
@@ -120,14 +121,11 @@ impl ResourceRequest {
             }
             let reply = bounded(
                 cancel,
-                session.call(
-                    "secret.create",
-                    vec![backend::secret_record(
-                        self.record.id,
-                        kind,
-                        &credential.password,
-                    )],
-                ),
+                session.send(calls::secret::Create(backend::secret_record(
+                    self.record.id,
+                    kind,
+                    &credential.password,
+                ))),
             )
             .await?;
             let reference = xapi::reply_reference(&reply)?;
@@ -208,7 +206,7 @@ impl ResourceRequest {
             }
             bounded(
                 cancel,
-                session.call("secret.destroy", vec![json!(reference)]),
+                session.send(calls::secret::Destroy(refs::secret(&reference))),
             )
             .await?;
             self.record.storage_auth_plan.as_mut().unwrap().secrets[index].cleaned = true;
@@ -239,14 +237,16 @@ impl ResourceRequest {
         };
         let _ = tokio::time::timeout(Duration::from_secs(3), async {
             let task = session
-                .call("task.get_record", vec![json!(reference)])
+                .send(calls::task::GetRecord(refs::task(reference)))
                 .await?;
             require(
                 backend::task_uuid(&task)? == id
                     && TaskRecord::new(&task).status() == task_status_type::SUCCESS,
                 "Storage task identity changed before cleanup",
             )?;
-            session.call("task.destroy", vec![json!(reference)]).await?;
+            session
+                .send(calls::task::Destroy(refs::task(reference)))
+                .await?;
             Ok::<_, Error>(())
         })
         .await;
@@ -275,7 +275,7 @@ impl ResourceRequest {
             let reference=self.record.task.clone().ok_or(Error::Protocol("Storage dispatch has no task receipt; no provisioning or Secret cleanup will be replayed"))?;
             let task = bounded(
                 cancel,
-                session.call("task.get_record", vec![json!(reference)]),
+                session.send(calls::task::GetRecord(refs::task(&reference))),
             )
             .await?;
             let id = backend::task_uuid(&task)?;
@@ -475,7 +475,9 @@ impl ResourceRequest {
             let task = source.task.as_ref().ok_or(Error::Protocol(
                 "Provisioning may still be running: missing task receipt prevents Secret cleanup",
             ))?;
-            let status = session.call("task.get_record", vec![json!(task)]).await?;
+            let status = session
+                .send(calls::task::GetRecord(refs::task(task)))
+                .await?;
             require(
                 plan.task_uuid
                     .is_some_and(|id| backend::task_uuid(&status).ok() == Some(id)),
@@ -554,7 +556,7 @@ impl ResourceRequest {
             }
             bounded(
                 cancel,
-                session.call("secret.destroy", vec![json!(reference)]),
+                session.send(calls::secret::Destroy(refs::secret(&reference))),
             )
             .await?;
             self.record.storage_secret_cleanup.as_mut().unwrap().secrets[index].completed = true;

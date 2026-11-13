@@ -2,6 +2,7 @@ use super::*;
 use crate::resources::host;
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 impl ResourceRequest {
     pub(super) async fn execute_host(
@@ -150,7 +151,7 @@ impl ResourceRequest {
         if let Some(task) = step.task {
             let _ = tokio::time::timeout(
                 Duration::from_secs(5),
-                session.call("task.destroy", vec![json!(task)]),
+                session.send(calls::task::Destroy(refs::task(&task))),
             )
             .await;
         }
@@ -176,7 +177,7 @@ impl ResourceRequest {
             let task_ref = step
                 .task
                 .ok_or(Error::Protocol("host task receipt unavailable"))?;
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.call("task.get_record",vec![json!(&task_ref)])=>result?};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=session.send(calls::task::GetRecord(refs::task(&task_ref)))=>result?};
             match TaskRecord::new(&task).status().name() {
                 Some(task_status_type::SUCCESS) => {
                     self.record.host_plan.as_mut().ok_or(Error::Journal)?.steps[index]

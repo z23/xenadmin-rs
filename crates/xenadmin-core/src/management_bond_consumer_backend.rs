@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use xenadmin_xapi::records::{NetworkRecord, VifRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 fn text(v: &Value, key: &str, limit: usize) -> Result<String, Error> {
     v[key]
@@ -219,7 +220,7 @@ impl Graph {
                 && reference.len() <= 512,
             "Guest interface VM reference is invalid",
         )?;
-        let v = s.call("VM.get_record", vec![json!(reference)]).await?;
+        let v = s.send(calls::vm::GetRecord(refs::vm(reference))).await?;
         require(
             VmRecord::new(&v).is_control_domain() == false,
             "Control-domain network changes require a separate workflow",
@@ -258,7 +259,7 @@ impl Graph {
             return Ok(ManagementVmLocality::Resident(self.host(resident)?));
         }
         let value = s
-            .call("VM.get_possible_hosts", vec![json!(reference)])
+            .send(calls::vm::GetPossibleHosts(refs::vm(reference)))
             .await?;
         let references = refs(&value)?;
         require(

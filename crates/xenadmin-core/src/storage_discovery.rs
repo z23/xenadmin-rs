@@ -1,6 +1,7 @@
 use crate::{Error, HostId, ObservedResource, SrId, StorageLocation, xapi::Session};
 use serde::{Deserialize, Serialize};
 use xenadmin_xapi::records::{HostRecord, SmRecord};
+use xenadmin_xapi::{calls, refs};
 #[path = "storage_discovery_xml.rs"]
 mod xml;
 use serde_json::{Value, json};
@@ -184,7 +185,7 @@ impl DiscoveryRequest {
                     .map(StorageDiscoveryResult::LocalRepositories)
             }
             StorageQuery::Backends => {
-                decode_backends(&session.call("SM.get_all_records", vec![]).await?)
+                decode_backends(&session.send(calls::sm::GetAllRecords).await?)
                     .map(StorageDiscoveryResult::Backends)
             }
             query => {
@@ -244,7 +245,7 @@ impl DiscoveryRequest {
                         config[password] = json!(&*entry.password);
                     }
                 }
-                let backends = decode_backends(&session.call("SM.get_all_records", vec![]).await?)?;
+                let backends = decode_backends(&session.send(calls::sm::GetAllRecords).await?)?;
                 if !backends
                     .iter()
                     .any(|b| b.kind == kind && b.features.iter().any(|f| f == "SR_PROBE"))
@@ -252,11 +253,11 @@ impl DiscoveryRequest {
                     return Err(Error::UnavailableAction);
                 }
                 let host_ref = session
-                    .call("host.get_by_uuid", vec![json!(host.to_string())])
+                    .send(calls::host::GetByUuid(&host.to_string()))
                     .await?;
                 let host_ref = crate::xapi::opaque_reference(&host_ref)?;
                 let fresh = session
-                    .call("host.get_record", vec![json!(&host_ref)])
+                    .send(calls::host::GetRecord(refs::host(&host_ref)))
                     .await?;
                 if HostRecord::new(&fresh).uuid() != host.to_string() {
                     return Err(Error::Stale);

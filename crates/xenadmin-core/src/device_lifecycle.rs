@@ -14,6 +14,7 @@ use xenadmin_xapi::enumerations::{
     vm_power_state,
 };
 use xenadmin_xapi::records::{NetworkRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
 const MARKER: &str = "xenadmin-rs-operation";
@@ -625,7 +626,7 @@ pub(crate) async fn plan(
             let (_, record) = nic(session, &vm_ref, *vif).await?;
             let network_ref = reference(VifRecord::new(&record).network())?;
             let network_record = session
-                .call("network.get_record", vec![json!(network_ref)])
+                .send(calls::network::GetRecord(refs::network(&network_ref)))
                 .await?;
             let from = NetworkRecord::new(&network_record)
                 .uuid()
@@ -748,6 +749,10 @@ pub(crate) struct Prepared {
     pub(crate) parameters: Vec<Value>,
 }
 impl Prepared {
+    /// A call as its message gives it: the name and the arguments.
+    pub(crate) fn of((method, parameters): (&'static str, Vec<Value>)) -> Self {
+        Self { method, parameters }
+    }
     pub async fn send(self, session: &Session) -> Result<Value, Error> {
         session.call(self.method, self.parameters).await
     }
@@ -779,12 +784,7 @@ pub(crate) async fn prepare_step(
                 SrRecord::new(&record).allowed_operations(),
                 storage_operations::VDI_CREATE,
             )?;
-            Prepared {
-                method: "VDI.create",
-                parameters: vec![
-                    json!({"name_label":name,"name_description":"","SR":sr_ref,"virtual_size":size.to_string(),"type":vdi_type::USER,"sharable":false,"read_only":false,"other_config":other_config(id,false),"xenstore_data":{},"sm_config":{},"tags":[]}),
-                ],
-            }
+            Prepared::of(calls::vdi::Create(json!({"name_label":name,"name_description":"","SR":sr_ref,"virtual_size":size.to_string(),"type":vdi_type::USER,"sharable":false,"read_only":false,"other_config":other_config(id,false),"xenstore_data":{},"sm_config":{},"tags":[]})).request())
         }
         Step::Attach {
             disk,
@@ -811,12 +811,7 @@ pub(crate) async fn prepare_step(
                 idle(&record)?;
                 reference
             };
-            Prepared {
-                method: "VBD.create",
-                parameters: vec![
-                    json!({"VM":vm_ref,"VDI":disk_ref,"userdevice":device,"bootable":false,"mode":if *read_only{vbd_mode::RO}else{vbd_mode::RW},"type":if *cd{vbd_type::CD}else{vbd_type::DISK},"unpluggable":true,"empty":cd,"other_config":other_config(id,*owned),"qos_algorithm_type":"","qos_algorithm_params":{}}),
-                ],
-            }
+            Prepared::of(calls::vbd::Create(json!({"VM":vm_ref,"VDI":disk_ref,"userdevice":device,"bootable":false,"mode":if *read_only{vbd_mode::RO}else{vbd_mode::RW},"type":if *cd{vbd_type::CD}else{vbd_type::DISK},"unpluggable":true,"empty":cd,"other_config":other_config(id,*owned),"qos_algorithm_type":"","qos_algorithm_params":{}})).request())
         }
         Step::DestroyAttachment {
             vbd,
@@ -824,10 +819,7 @@ pub(crate) async fn prepare_step(
             delete_disk,
         } => {
             let (reference, _) = attachment(session, &vm_ref, *vbd, *disk, *delete_disk).await?;
-            Prepared {
-                method: "VBD.destroy",
-                parameters: vec![json!(reference)],
-            }
+            Prepared::of(calls::vbd::Destroy(refs::vbd(&reference)).request())
         }
         Step::DestroyDisk { disk } => {
             let (reference, record) = fresh(session, "VDI", disk.uuid()).await?;
@@ -839,7 +831,7 @@ pub(crate) async fn prepare_step(
                 VdiRecord::new(&record).allowed_operations(),
                 vdi_operations::DESTROY,
             )?;
-            let vms = session.call("VM.get_all_records", vec![]).await?;
+            let vms = session.send(calls::vm::GetAllRecords).await?;
             if vms
                 .as_object()
                 .ok_or(Error::DeviceConflict)?
@@ -848,10 +840,7 @@ pub(crate) async fn prepare_step(
             {
                 return Err(Error::DeviceInUse);
             }
-            Prepared {
-                method: "VDI.destroy",
-                parameters: vec![json!(reference)],
-            }
+            Prepared::of(calls::vdi::Destroy(refs::vdi(&reference)).request())
         }
         Step::CreateNic {
             network: id_network,
@@ -861,12 +850,7 @@ pub(crate) async fn prepare_step(
         } => {
             let (network_ref, _) = network(session, *id_network).await?;
             allowed_slot(session, &vm_ref, "VIF", device).await?;
-            Prepared {
-                method: "VIF.create",
-                parameters: vec![
-                    json!({"VM":vm_ref,"network":network_ref,"device":device,"MAC":mac.as_deref().unwrap_or(""),"MTU":settings.mtu.to_string(),"other_config":other_config(id,false),"qos_algorithm_type":settings.qos_algorithm,"qos_algorithm_params":settings.qos_parameters,"locking_mode":settings.locking_mode,"ipv4_allowed":settings.ipv4_allowed,"ipv6_allowed":settings.ipv6_allowed}),
-                ],
-            }
+            Prepared::of(calls::vif::Create(json!({"VM":vm_ref,"network":network_ref,"device":device,"MAC":mac.as_deref().unwrap_or(""),"MTU":settings.mtu.to_string(),"other_config":other_config(id,false),"qos_algorithm_type":settings.qos_algorithm,"qos_algorithm_params":settings.qos_parameters,"locking_mode":settings.locking_mode,"ipv4_allowed":settings.ipv4_allowed,"ipv6_allowed":settings.ipv6_allowed})).request())
         }
         Step::DestroyNic {
             vif,
@@ -887,10 +871,7 @@ pub(crate) async fn prepare_step(
             {
                 return Err(Error::DeviceConflict);
             }
-            Prepared {
-                method: "VIF.destroy",
-                parameters: vec![json!(reference)],
-            }
+            Prepared::of(calls::vif::Destroy(refs::vif(&reference)).request())
         }
         Step::MoveNic { vif, from, to, mac } => {
             let (reference, record) = nic(session, &vm_ref, *vif).await?;
@@ -904,10 +885,13 @@ pub(crate) async fn prepare_step(
             {
                 return Err(Error::DeviceConflict);
             }
-            Prepared {
-                method: "VIF.move",
-                parameters: vec![json!(reference), json!(target)],
-            }
+            Prepared::of(
+                calls::vif::Move {
+                    self_: refs::vif(&reference),
+                    network: refs::network(&target),
+                }
+                .request(),
+            )
         }
     };
     Ok(prepared)

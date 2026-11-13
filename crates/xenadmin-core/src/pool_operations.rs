@@ -10,6 +10,7 @@ use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PifRecord, PoolRecord, SrRecord, VdiRecord,
     VmApplianceRecord, VmRecord,
 };
+use xenadmin_xapi::{Int, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
 pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&PoolOperation, Error> {
@@ -25,7 +26,7 @@ fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
 /// Whether the pool's hosts accept HTTPS only: XAPI keeps the setting on each host and has
 /// no pool field for it, so the pool has a value only where every host agrees.
 async fn https_only(session: &Session) -> Result<Option<bool>, Error> {
-    let hosts = session.call("host.get_all_records", vec![]).await?;
+    let hosts = session.send(calls::host::GetAllRecords).await?;
     let mut values = hosts
         .as_object()
         .into_iter()
@@ -102,13 +103,9 @@ async fn coordinator(session: &Session, fresh: &Value) -> Result<HostId, Error> 
         .ok_or(Error::Protocol("pool coordinator identity unavailable"))
 }
 async fn vm_record(session: &Session, vm: VmId) -> Result<(String, Value), Error> {
-    let reference = reference(
-        &session
-            .call("VM.get_by_uuid", vec![json!(vm.to_string())])
-            .await?,
-    )?;
+    let reference = reference(&session.send(calls::vm::GetByUuid(&vm.to_string())).await?)?;
     let fresh = session
-        .call("VM.get_record", vec![json!(&reference)])
+        .send(calls::vm::GetRecord(refs::vm(&reference)))
         .await?;
     if VmRecord::new(&fresh).uuid() != vm.to_string()
         || VmRecord::new(&fresh).is_control_domain() != false
@@ -188,7 +185,7 @@ async fn heartbeat_arguments(session: &Session, srs: &[SrId]) -> Result<Vec<Valu
         }
         empty(&sr, "current_operations")?;
         session
-            .call("SR.assert_can_host_ha_statefile", vec![json!(&sr_ref)])
+            .send(calls::sr::AssertCanHostHaStatefile(refs::sr(&sr_ref)))
             .await?;
         let pbds = SrRecord::new(&sr)
             .pbds()
@@ -277,10 +274,7 @@ pub(super) async fn arguments(
                 return Err(Error::InvalidResourceCommand);
             }
             if session
-                .call(
-                    "pool.ha_failover_plan_exists",
-                    vec![json!(failures.to_string())],
-                )
+                .send(calls::pool::HaFailoverPlanExists(Int::from(failures)))
                 .await?
                 != true
             {
@@ -301,10 +295,9 @@ pub(super) async fn arguments(
             }
             let srs = heartbeat_arguments(session, heartbeat_srs).await?;
             if session
-                .call(
-                    "pool.ha_failover_plan_exists",
-                    vec![json!(expected_failures.to_string())],
-                )
+                .send(calls::pool::HaFailoverPlanExists(Int::from(
+                    expected_failures,
+                )))
                 .await?
                 != true
             {
@@ -375,7 +368,7 @@ pub(super) async fn arguments(
             expect(&vm, "ha_restart_priority", json!(expected.as_str()))?;
             if *priority == HaRestartPriority::Restart {
                 session
-                    .call("VM.assert_agile", vec![json!(&vm_ref)])
+                    .send(calls::vm::AssertAgile(refs::vm(&vm_ref)))
                     .await?;
             }
             Ok(vec![json!(vm_ref), json!(priority.as_str())])
@@ -494,9 +487,7 @@ pub(super) async fn verify(
                         .as_str()
                         .and_then(|v| uuid::Uuid::parse_str(v).ok())
                         .ok_or(Error::Protocol("invalid HA heartbeat identity"))?;
-                    session
-                        .call("VDI.get_by_uuid", vec![json!(id.to_string())])
-                        .await?
+                    session.send(calls::vdi::GetByUuid(&id.to_string())).await?
                 };
                 let vdi = related(session, "VDI", &file_ref).await?;
                 let sr = related(session, "SR", VdiRecord::new(&vdi).sr()).await?;

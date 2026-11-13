@@ -1,6 +1,7 @@
 use super::*;
 use xenadmin_xapi::enumerations::{task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 impl MutationRequest {
     pub(super) async fn track_migration(
@@ -21,7 +22,7 @@ impl MutationRequest {
             if self.record.task.as_ref() != Some(&reference) {
                 return Err(Error::OperationConflict);
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),value=session.call("task.get_record",vec![json!(&reference)])=>value};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),value=session.send(calls::task::GetRecord(refs::task(&reference)))=>value};
             let task = match task {
                 Ok(task) => {
                     delay = 1;
@@ -96,7 +97,10 @@ impl MutationRequest {
                     return Ok(());
                 }
                 self.emit_dispatch();
-                if let Err(error) = session.call("task.cancel", vec![json!(&reference)]).await {
+                if let Err(error) = session
+                    .send(calls::task::Cancel(refs::task(&reference)))
+                    .await
+                {
                     if matches!(error, Error::Coordinator(_)) {
                         return Err(error);
                     }

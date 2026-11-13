@@ -12,6 +12,7 @@ use xenadmin_xapi::enumerations::{
     vm_power_state,
 };
 use xenadmin_xapi::records::{HostRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Call, Int, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,10 +327,9 @@ async fn require_iso_image(session: &Session, image: &Value) -> Result<(), Error
         return Err(Error::UnavailableAction);
     }
     let sr = session
-        .call(
-            "SR.get_record",
-            vec![json!(reference(VdiRecord::new(image).sr())?)],
-        )
+        .send(calls::sr::GetRecord(refs::sr(&reference(
+            VdiRecord::new(image).sr(),
+        )?)))
         .await?;
     if SrRecord::new(&sr).content_type() == "iso" {
         Ok(())
@@ -440,7 +440,7 @@ pub(crate) async fn plan(
             let mut has_disks = false;
             for attachment in refs(&record, "VBDs")? {
                 let r = session
-                    .call("VBD.get_record", vec![json!(attachment)])
+                    .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
                     .await?;
                 has_disks |= VbdRecord::new(&r).type_() == vbd_type::DISK;
             }
@@ -572,12 +572,11 @@ async fn guard_creation_permissions(
             methods.push("VIF.create".into());
         }
         for nic in nics {
-            let vif = session.call("VIF.get_record", vec![json!(nic)]).await?;
+            let vif = session.send(calls::vif::GetRecord(refs::vif(&nic))).await?;
             let net = session
-                .call(
-                    "network.get_record",
-                    vec![json!(reference(VifRecord::new(&vif).network())?)],
-                )
+                .send(calls::network::GetRecord(refs::network(&reference(
+                    VifRecord::new(&vif).network(),
+                )?)))
                 .await?;
             if id::<crate::NetworkId>(&net)? != *network {
                 methods.push("VIF.move".into());
@@ -603,14 +602,13 @@ async fn validate_source_devices(session: &Session, record: &Value) -> Result<()
     }
     for attachment in refs(record, "VBDs")? {
         let r = session
-            .call("VBD.get_record", vec![json!(attachment)])
+            .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
             .await?;
         if VbdRecord::new(&r).type_() == vbd_type::DISK {
             let disk = session
-                .call(
-                    "VDI.get_record",
-                    vec![json!(reference(VbdRecord::new(&r).vdi())?)],
-                )
+                .send(calls::vdi::GetRecord(refs::vdi(&reference(
+                    VbdRecord::new(&r).vdi(),
+                )?)))
                 .await?;
             if !ordinary_disk(&disk) {
                 return Err(Error::UnsupportedVmLifecycle);
@@ -643,7 +641,7 @@ async fn validate_owned_disks(session: &Session, vm: VmId, disks: &[VdiId]) -> R
         }
         for consumer in consumers {
             let v = session
-                .call("VBD.get_record", vec![json!(consumer)])
+                .send(calls::vbd::GetRecord(refs::vbd(&consumer)))
                 .await?;
             if VbdRecord::new(&v).vm() != vm_ref
                 || VbdRecord::new(&v).vdi() != disk_ref
@@ -678,7 +676,7 @@ impl Prepared {
         }
     }
 }
-fn call(method: &str, parameters: Vec<Value>) -> Prepared {
+fn call((method, parameters): (&str, Vec<Value>)) -> Prepared {
     Prepared::Call {
         method: method.into(),
         parameters,
@@ -736,7 +734,7 @@ pub(crate) async fn prepare(
             if let VmCopyMode::Full { sr: id } = mode {
                 parameters.push(json!(sr(session, id).await?));
             }
-            Ok(call(&format!("Async.VM.{cap}"), parameters))
+            Ok(call((&format!("Async.VM.{cap}"), parameters)))
         }
         Step::CopyBios { vm, host } => {
             let (vr, r) = target(session, plan, vm).await?;
@@ -746,25 +744,41 @@ pub(crate) async fn prepare(
             {
                 return Err(Error::VmLifecycleConflict);
             }
-            Ok(call("VM.copy_bios_strings", vec![json!(vr), json!(hr)]))
+            Ok(call(
+                calls::vm::CopyBiosStrings {
+                    vm: refs::vm(&vr),
+                    host: refs::host(&hr),
+                }
+                .request(),
+            ))
         }
         Step::Set { vm, change } => {
             let (vm_ref, r) = target(session, plan, vm).await?;
             match change {
-                Change::Name(value) => {
-                    Ok(call("VM.set_name_label", vec![json!(vm_ref), json!(value)]))
-                }
+                Change::Name(value) => Ok(call(
+                    calls::vm::SetNameLabel {
+                        self_: refs::vm(&vm_ref),
+                        value: &value,
+                    }
+                    .request(),
+                )),
                 Change::Description(value) => Ok(call(
-                    "VM.set_name_description",
-                    vec![json!(vm_ref), json!(value)],
+                    calls::vm::SetNameDescription {
+                        self_: refs::vm(&vm_ref),
+                        value: &value,
+                    }
+                    .request(),
                 )),
                 Change::Template(value) => {
                     if value {
                         permits(&r, vm_operations::MAKE_INTO_TEMPLATE)?;
                     }
                     Ok(call(
-                        "VM.set_is_a_template",
-                        vec![json!(vm_ref), json!(value)],
+                        calls::vm::SetIsATemplate {
+                            self_: refs::vm(&vm_ref),
+                            value,
+                        }
+                        .request(),
                     ))
                 }
                 Change::Memory(value) => {
@@ -775,28 +789,34 @@ pub(crate) async fn prepare(
                         return Err(Error::InvalidVmLifecycle);
                     }
                     Ok(call(
-                        "VM.set_memory_limits",
-                        vec![
-                            json!(vm_ref),
-                            json!(min.to_string()),
-                            json!(value.to_string()),
-                            json!(value.to_string()),
-                            json!(value.to_string()),
-                        ],
+                        calls::vm::SetMemoryLimits {
+                            self_: refs::vm(&vm_ref),
+                            static_min: Int::from(min),
+                            static_max: Int::from(value),
+                            dynamic_min: Int::from(value),
+                            dynamic_max: Int::from(value),
+                        }
+                        .request(),
                     ))
                 }
                 Change::VcpuMax(value) => {
                     permits_vcpu_change(&r)?;
                     Ok(call(
-                        "VM.set_VCPUs_max",
-                        vec![json!(vm_ref), json!(value.to_string())],
+                        calls::vm::SetVcpusMax {
+                            self_: refs::vm(&vm_ref),
+                            value: Int::from(value),
+                        }
+                        .request(),
                     ))
                 }
                 Change::VcpuStartup(value) => {
                     permits_vcpu_change(&r)?;
                     Ok(call(
-                        "VM.set_VCPUs_at_startup",
-                        vec![json!(vm_ref), json!(value.to_string())],
+                        calls::vm::SetVcpusAtStartup {
+                            self_: refs::vm(&vm_ref),
+                            value: Int::from(value),
+                        }
+                        .request(),
                     ))
                 }
                 Change::SecureBoot(value) => {
@@ -809,8 +829,11 @@ pub(crate) async fn prepare(
                     let mut params = string_map(VmRecord::new(&r).platform())?;
                     params.insert("secureboot".into(), json!(value.to_string()));
                     Ok(call(
-                        "VM.set_platform",
-                        vec![json!(vm_ref), Value::Object(params)],
+                        calls::vm::SetPlatform {
+                            self_: refs::vm(&vm_ref),
+                            value: Value::Object(params),
+                        }
+                        .request(),
                     ))
                 }
                 Change::Firmware(value) => {
@@ -829,13 +852,19 @@ pub(crate) async fn prepare(
                         }),
                     );
                     Ok(call(
-                        "VM.set_HVM_boot_params",
-                        vec![json!(vm_ref), Value::Object(params)],
+                        calls::vm::SetHvmBootParams {
+                            self_: refs::vm(&vm_ref),
+                            value: Value::Object(params),
+                        }
+                        .request(),
                     ))
                 }
                 Change::RemoveProvisionDisks => Ok(call(
-                    "VM.remove_from_other_config",
-                    vec![json!(vm_ref), json!("disks")],
+                    calls::vm::RemoveFromOtherConfig {
+                        self_: refs::vm(&vm_ref),
+                        key: "disks",
+                    }
+                    .request(),
                 )),
             }
         }
@@ -845,11 +874,13 @@ pub(crate) async fn prepare(
             if VmRecord::new(&r).other_config().get("disks").is_some() {
                 return Err(Error::VmLifecycleConflict);
             }
-            Ok(call("Async.VM.provision", vec![json!(vm_ref)]))
+            Ok(call(calls::vm::Provision(refs::vm(&vm_ref)).task()))
         }
         Step::RefreshAllowedOperations { vm } => {
             let (vm_ref, _) = target(session, plan, vm).await?;
-            Ok(call("VM.update_allowed_operations", vec![json!(vm_ref)]))
+            Ok(call(
+                calls::vm::UpdateAllowedOperations(refs::vm(&vm_ref)).request(),
+            ))
         }
         Step::CheckHosts { vm } => {
             let (reference, _) = target(session, plan, vm).await?;
@@ -890,7 +921,7 @@ pub(crate) async fn prepare(
                 return Err(Error::VmLifecycleConflict);
             }
             permits(&r, vbd_operations::EJECT)?;
-            Ok(call("VBD.eject", vec![json!(vbd_ref)]))
+            Ok(call(calls::vbd::Eject(refs::vbd(&vbd_ref)).request()))
         }
         Step::InstallIso { vm, image } => {
             let (vm_ref, r) = target(session, plan, vm).await?;
@@ -907,7 +938,13 @@ pub(crate) async fn prepare(
             }
             let cd_ref = reference(&cd["ref"])?;
             permits(&cd, vbd_operations::INSERT)?;
-            Ok(call("VBD.insert", vec![json!(cd_ref), json!(image_ref)]))
+            Ok(call(
+                calls::vbd::Insert {
+                    vbd: refs::vbd(&cd_ref),
+                    vdi: refs::vdi(&image_ref),
+                }
+                .request(),
+            ))
         }
         Step::ClaimDisk { vm, vbd, disk } => {
             let (vm_ref, _) = target(session, plan, vm).await?;
@@ -939,8 +976,12 @@ pub(crate) async fn prepare(
                 return Ok(Prepared::ReadOnly);
             }
             Ok(call(
-                "VBD.add_to_other_config",
-                vec![json!(vbd_ref), json!("owner"), json!("true")],
+                calls::vbd::AddToOtherConfig {
+                    self_: refs::vbd(&vbd_ref),
+                    key: "owner",
+                    value: "true",
+                }
+                .request(),
             ))
         }
         Step::DestroySnapshot { snapshot, disks } => {
@@ -950,13 +991,13 @@ pub(crate) async fn prepare(
                 return Err(Error::VmLifecycleConflict);
             }
             let (reference, _) = snapshots::snapshot_record(session, plan.source, snapshot).await?;
-            Ok(call("VM.destroy", vec![json!(reference)]))
+            Ok(call(calls::vm::Destroy(refs::vm(&reference)).request()))
         }
         Step::DestroyVm => {
             let (reference, r) = source(session, plan).await?;
             permits(&r, vm_operations::DESTROY)?;
             validate_owned_disks(session, plan.source, &plan.owned_disks).await?;
-            Ok(call("VM.destroy", vec![json!(reference)]))
+            Ok(call(calls::vm::Destroy(refs::vm(&reference)).request()))
         }
         Step::DestroyDisk { disk, snapshot } => {
             let (reference, r) = fresh(session, "VDI", disk.uuid()).await?;
@@ -972,7 +1013,7 @@ pub(crate) async fn prepare(
                 return Err(Error::DeviceInUse);
             }
             permits(&r, vdi_operations::DESTROY)?;
-            let vms = session.call("VM.get_all_records", vec![]).await?;
+            let vms = session.send(calls::vm::GetAllRecords).await?;
             if vms
                 .as_object()
                 .filter(|v| v.len() <= 10_000)
@@ -982,7 +1023,7 @@ pub(crate) async fn prepare(
             {
                 return Err(Error::DeviceInUse);
             }
-            Ok(call("VDI.destroy", vec![json!(reference)]))
+            Ok(call(calls::vdi::Destroy(refs::vdi(&reference)).request()))
         }
     }
 }
@@ -1004,7 +1045,7 @@ fn string_map<'a>(v: impl Reads<'a, kind::Map>) -> Result<serde_json::Map<String
 async fn first_cd(session: &Session, vm: &Value) -> Result<Option<(VbdId, Value)>, Error> {
     for attachment in refs(vm, "VBDs")? {
         let mut r = session
-            .call("VBD.get_record", vec![json!(&attachment)])
+            .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
             .await?;
         if VbdRecord::new(&r).type_() == vbd_type::CD {
             let id = id(&r)?;
@@ -1104,10 +1145,10 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
         push_group(plan, vm, group);
     } else {
         for nic in nics {
-            let r = session.call("VIF.get_record", vec![json!(nic)]).await?;
+            let r = session.send(calls::vif::GetRecord(refs::vif(&nic))).await?;
             let old_ref = reference(VifRecord::new(&r).network())?;
             let old = session
-                .call("network.get_record", vec![json!(old_ref)])
+                .send(calls::network::GetRecord(refs::network(&old_ref)))
                 .await?;
             let from = id(&old)?;
             if from != network {
@@ -1136,10 +1177,9 @@ async fn configure_devices(session: &Session, plan: &mut Plan, vm: VmId) -> Resu
         match first_cd(session, &vm_record).await? {
             Some((vbd, cd)) if VbdRecord::new(&cd).empty() != true => {
                 let old = session
-                    .call(
-                        "VDI.get_record",
-                        vec![json!(reference(VbdRecord::new(&cd).vdi())?)],
-                    )
+                    .send(calls::vdi::GetRecord(refs::vdi(&reference(
+                        VbdRecord::new(&cd).vdi(),
+                    )?)))
                     .await?;
                 plan.push(Step::EjectIso {
                     vm,
@@ -1171,7 +1211,7 @@ async fn capture_graph(
 ) -> Result<(), Error> {
     for attachment in refs(r, "VBDs")? {
         let vbd = session
-            .call("VBD.get_record", vec![json!(&attachment)])
+            .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
             .await?;
         let vbd_id: VbdId = id(&vbd)?;
         if VbdRecord::new(&vbd).vm() != vm_ref
@@ -1191,7 +1231,7 @@ async fn capture_graph(
         if VbdRecord::new(&vbd).type_() == vbd_type::DISK {
             let disk_ref = reference(VbdRecord::new(&vbd).vdi())?;
             let disk = session
-                .call("VDI.get_record", vec![json!(disk_ref)])
+                .send(calls::vdi::GetRecord(refs::vdi(&disk_ref)))
                 .await?;
             let disk_id: VdiId = id(&disk)?;
             if !ordinary_disk(&disk)
@@ -1213,7 +1253,7 @@ async fn capture_graph(
         }
     }
     for nic in refs(r, "VIFs")? {
-        let vif = session.call("VIF.get_record", vec![json!(nic)]).await?;
+        let vif = session.send(calls::vif::GetRecord(refs::vif(&nic))).await?;
         let vif_id: VifId = id(&vif)?;
         if VifRecord::new(&vif).vm() != vm_ref
             || plan
@@ -1333,7 +1373,7 @@ pub(crate) async fn verify(
                 return Ok(false);
             };
             let record = session
-                .call("VM.get_record", vec![json!(reference)])
+                .send(calls::vm::GetRecord(refs::vm(&reference)))
                 .await?;
             let vm: VmId = id(&record)?;
             if !ordinary(&record)
@@ -1380,7 +1420,7 @@ pub(crate) async fn verify(
             if continue_work && plan.steps.len() == 1 {
                 for attachment in refs(&record, "VBDs")? {
                     let vbd = session
-                        .call("VBD.get_record", vec![json!(attachment)])
+                        .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
                         .await?;
                     if VbdRecord::new(&vbd).type_() == vbd_type::DISK
                         && !VbdRecord::new(&vbd)
@@ -1389,12 +1429,9 @@ pub(crate) async fn verify(
                             .is_some_and(Value::is_string)
                     {
                         let disk = session
-                            .call(
-                                "VDI.get_record",
-                                vec![json!(crate::snapshots::reference(
-                                    VbdRecord::new(&vbd).vdi()
-                                )?)],
-                            )
+                            .send(calls::vdi::GetRecord(refs::vdi(
+                                &crate::snapshots::reference(VbdRecord::new(&vbd).vdi())?,
+                            )))
                             .await?;
                         plan.push(Step::ClaimDisk {
                             vm,
@@ -1516,10 +1553,9 @@ pub(crate) async fn verify(
                 return Ok(false);
             }
             let disk = session
-                .call(
-                    "VDI.get_record",
-                    vec![json!(reference(VbdRecord::new(&cd).vdi())?)],
-                )
+                .send(calls::vdi::GetRecord(refs::vdi(&reference(
+                    VbdRecord::new(&cd).vdi(),
+                )?)))
                 .await?;
             Ok(id::<VdiId>(&disk)? == image)
         }
@@ -1564,7 +1600,7 @@ pub(crate) async fn verify(
 async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
     let mut graph = Graph::default();
     for vbd in refs(vm, "VBDs")? {
-        let v = session.call("VBD.get_record", vec![json!(vbd)]).await?;
+        let v = session.send(calls::vbd::GetRecord(refs::vbd(&vbd))).await?;
         let slot = VbdRecord::new(&v)
             .userdevice()
             .text()
@@ -1575,16 +1611,14 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
         }
         if VbdRecord::new(&v).type_() == vbd_type::DISK {
             let d = session
-                .call(
-                    "VDI.get_record",
-                    vec![json!(reference(VbdRecord::new(&v).vdi())?)],
-                )
+                .send(calls::vdi::GetRecord(refs::vdi(&reference(
+                    VbdRecord::new(&v).vdi(),
+                )?)))
                 .await?;
             let sr = session
-                .call(
-                    "SR.get_record",
-                    vec![json!(reference(VdiRecord::new(&d).sr())?)],
-                )
+                .send(calls::sr::GetRecord(refs::sr(&reference(
+                    VdiRecord::new(&d).sr(),
+                )?)))
                 .await?;
             graph.disks.insert(
                 slot,
@@ -1604,10 +1638,9 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
                 None
             } else {
                 let disk = session
-                    .call(
-                        "VDI.get_record",
-                        vec![json!(reference(VbdRecord::new(&v).vdi())?)],
-                    )
+                    .send(calls::vdi::GetRecord(refs::vdi(&reference(
+                        VbdRecord::new(&v).vdi(),
+                    )?)))
                     .await?;
                 Some(id(&disk)?)
             };
@@ -1617,12 +1650,11 @@ async fn graph(session: &Session, vm: &Value) -> Result<Graph, Error> {
         }
     }
     for vif in refs(vm, "VIFs")? {
-        let v = session.call("VIF.get_record", vec![json!(vif)]).await?;
+        let v = session.send(calls::vif::GetRecord(refs::vif(&vif))).await?;
         let network = session
-            .call(
-                "network.get_record",
-                vec![json!(reference(VifRecord::new(&v).network())?)],
-            )
+            .send(calls::network::GetRecord(refs::network(&reference(
+                VifRecord::new(&v).network(),
+            )?)))
             .await?;
         let slot = VifRecord::new(&v)
             .device()
@@ -1664,7 +1696,7 @@ async fn validate_firmware_change(
         return Ok(());
     }
     for vr in refs(r, "VBDs")? {
-        let v = session.call("VBD.get_record", vec![json!(vr)]).await?;
+        let v = session.send(calls::vbd::GetRecord(refs::vbd(&vr))).await?;
         if VbdRecord::new(&v).type_() != vbd_type::CD {
             return Err(Error::UnsupportedVmLifecycle);
         }
@@ -1682,7 +1714,7 @@ fn firmware_safe(record: &Value, firmware: GuestFirmware) -> Result<(), Error> {
 }
 async fn compatible_hosts(session: &Session, vm_ref: &str) -> Result<(), Error> {
     let hosts = session
-        .call("VM.get_possible_hosts", vec![json!(vm_ref)])
+        .send(calls::vm::GetPossibleHosts(refs::vm(vm_ref)))
         .await?;
     let hosts = hosts
         .as_array()

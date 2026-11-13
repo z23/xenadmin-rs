@@ -3,9 +3,12 @@ use crate::{
     VmSettingsPatch,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use std::collections::BTreeSet;
 use xenadmin_xapi::records::VmRecord;
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BatchVmProperties {
@@ -165,11 +168,11 @@ async fn read(
     item: &BatchVmProperties,
 ) -> Result<(String, Value), Error> {
     let reference = session
-        .call("VM.get_by_uuid", vec![json!(item.vm.to_string())])
+        .send(calls::vm::GetByUuid(&item.vm.to_string()))
         .await?;
     let reference = crate::xapi::opaque_reference(&reference)?;
     let value = session
-        .call("VM.get_record", vec![json!(&reference)])
+        .send(calls::vm::GetRecord(refs::vm(&reference)))
         .await?;
     if VmRecord::new(&value).uuid() != item.vm.to_string()
         || VmRecord::new(&value).power_state() != item.expected_state.to_string()

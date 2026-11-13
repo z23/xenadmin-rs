@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::enumerations::vmss_type;
 use xenadmin_xapi::records::{TaskRecord, VmRecord, VmssRecord};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Evidence {
@@ -114,7 +115,7 @@ async fn members(session: &Session, r: &Value) -> Result<Vec<VmId>, Error> {
     let mut result = BTreeSet::new();
     for vr in refs {
         let vr = xapi::reply_reference(vr)?;
-        let v = session.call("VM.get_record", vec![json!(vr)]).await?;
+        let v = session.send(calls::vm::GetRecord(refs::vm(&vr))).await?;
         let id = VmRecord::new(&v)
             .uuid()
             .text()
@@ -138,12 +139,8 @@ fn same(a: &State, b: &State) -> bool {
         && a.members.iter().collect::<BTreeSet<_>>() == b.members.iter().collect()
 }
 async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
-    let r = xapi::reply_reference(
-        &session
-            .call("VM.get_by_uuid", vec![json!(id.to_string())])
-            .await?,
-    )?;
-    let v = session.call("VM.get_record", vec![json!(&r)]).await?;
+    let r = xapi::reply_reference(&session.send(calls::vm::GetByUuid(&id.to_string())).await?)?;
+    let v = session.send(calls::vm::GetRecord(refs::vm(&r))).await?;
     if VmRecord::new(&v).uuid() != id.to_string() {
         return Err(Error::Stale);
     }
@@ -296,7 +293,7 @@ pub(super) async fn prepare(
     let operation = op(r)?.clone();
     let mut evidence = Evidence::default();
     if matches!(operation, Op::Create { .. }) {
-        let all = session.call("VMSS.get_all_records", vec![]).await?;
+        let all = session.send(calls::vmss::GetAllRecords).await?;
         let map = all
             .as_object()
             .filter(|m| m.len() <= 10_000)
@@ -448,10 +445,10 @@ async fn snapshot_ids(
         }
         if validate {
             session
-                .call(
-                    "VM.assert_operation_valid",
-                    vec![json!(&vr), json!(state.config.kind.wire())],
-                )
+                .send(calls::vm::AssertOperationValid {
+                    self_: refs::vm(&vr),
+                    op: state.config.kind.wire(),
+                })
                 .await?;
         }
         let refs = VmRecord::new(&v)
@@ -462,7 +459,7 @@ async fn snapshot_ids(
         let mut ids = Vec::new();
         for sr in refs {
             let snap = session
-                .call("VM.get_record", vec![json!(xapi::reply_reference(sr)?)])
+                .send(calls::vm::GetRecord(refs::vm(&xapi::reply_reference(sr)?)))
                 .await?;
             if VmRecord::new(&snap).is_a_snapshot() != true
                 || VmRecord::new(&snap).snapshot_of() != vr
@@ -535,7 +532,7 @@ pub(super) async fn verify(
         match operation {
             Op::Create { config, .. } => {
                 let rr = r.result_reference.as_ref().ok_or(Error::ResourceConflict)?;
-                let v = session.call("VMSS.get_record", vec![json!(rr)]).await?;
+                let v = session.send(calls::vmss::GetRecord(refs::vmss(rr))).await?;
                 let id = VmssRecord::new(&v)
                     .uuid()
                     .text()

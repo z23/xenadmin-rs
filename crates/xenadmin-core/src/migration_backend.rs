@@ -11,6 +11,7 @@ use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PifRecord, SrRecord, VbdRecord, VdiRecord, VifRecord,
     VmRecord,
 };
+use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -499,6 +500,10 @@ pub(crate) struct Prepared {
     args: Vec<Value>,
 }
 impl Prepared {
+    /// A call as its message gives it: the name and the arguments.
+    fn of((method, args): (&'static str, Vec<Value>)) -> Self {
+        Self { method, args }
+    }
     pub async fn send(self, session: &Session) -> Result<Value, Error> {
         session.call(self.method, self.args).await
     }
@@ -553,10 +558,10 @@ pub(crate) async fn preflight(
         )
     } else {
         session
-            .call(
-                "VM.assert_can_boot_here",
-                vec![json!(&vmref), json!(&hostref)],
-            )
+            .send(calls::vm::AssertCanBootHere {
+                self_: refs::vm(&vmref),
+                host: refs::host(&hostref),
+            })
             .await?;
         None
     };
@@ -613,10 +618,11 @@ impl Preflight {
         let operation = &self.plan.operation;
         let prepared = if let Some(transfer) = &self.transfer {
             let token = session
-                .call(
-                    "host.migrate_receive",
-                    vec![json!(&self.hostref), json!(transfer), json!({})],
-                )
+                .send(calls::host::MigrateReceive {
+                    host: refs::host(&self.hostref),
+                    network: refs::network(transfer),
+                    options: json!({}),
+                })
                 .await?;
             let map = token
                 .as_object()
@@ -643,14 +649,14 @@ impl Preflight {
                 args,
             }
         } else {
-            Prepared {
-                method: "Async.VM.pool_migrate",
-                args: vec![
-                    json!(&self.vmref),
-                    json!(&self.hostref),
-                    json!({"live":"true"}),
-                ],
-            }
+            Prepared::of(
+                calls::vm::PoolMigrate {
+                    vm: refs::vm(&self.vmref),
+                    host: refs::host(&self.hostref),
+                    options: json!({"live":"true"}),
+                }
+                .task(),
+            )
         };
         self.revalidate(session).await?;
         Ok((self.plan, prepared))
@@ -755,10 +761,13 @@ pub(crate) async fn prepare_affinity(session: &Session, plan: &Plan) -> Result<P
         return Err(Error::MigrationConflict);
     }
     let hostref = host(session, plan.operation.destination).await?;
-    Ok(Prepared {
-        method: "VM.set_affinity",
-        args: vec![json!(vmref), json!(hostref)],
-    })
+    Ok(Prepared::of(
+        calls::vm::SetAffinity {
+            self_: refs::vm(&vmref),
+            value: refs::host(&hostref),
+        }
+        .request(),
+    ))
 }
 /// Record individually verified replacement disks even when another part of migration failed.
 pub(crate) async fn observed_disks(session: &Session, plan: &Plan) -> Result<Vec<VdiId>, Error> {

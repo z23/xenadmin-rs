@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::enumerations::storage_operations;
 use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, TaskRecord};
+use xenadmin_xapi::{Call, calls, refs};
 fn conflict<T>() -> Result<T, Error> {
     Err(Error::ResourceConflict)
 }
@@ -254,7 +255,7 @@ pub(super) async fn arguments(
             if selected.as_ref() != Some(&final_ref) {
                 return conflict();
             }
-            Ok(("Async.PBD.plug", vec![json!(final_ref)]))
+            Ok(calls::pbd::Plug(refs::pbd(&final_ref)).task())
         }
         StorageMaintenance::ReadCaching { expected, .. } => {
             super::storage::capability(s, &p.backend, "VDI_READ_CACHING").await?;
@@ -264,14 +265,17 @@ pub(super) async fn arguments(
                 return conflict();
             }
             match p.kinds[index] {
-                Kind::RemoveOverride => Ok((
-                    "SR.remove_from_other_config",
-                    vec![json!(sr_ref), json!("o_direct")],
-                )),
-                Kind::DisableCaching => Ok((
-                    "SR.add_to_other_config",
-                    vec![json!(sr_ref), json!("o_direct"), json!("true")],
-                )),
+                Kind::RemoveOverride => Ok(calls::sr::RemoveFromOtherConfig {
+                    self_: refs::sr(&sr_ref),
+                    key: "o_direct",
+                }
+                .request()),
+                Kind::DisableCaching => Ok(calls::sr::AddToOtherConfig {
+                    self_: refs::sr(&sr_ref),
+                    key: "o_direct",
+                    value: "true",
+                }
+                .request()),
                 _ => conflict(),
             }
         }
@@ -337,7 +341,9 @@ pub(super) async fn task(
     let reference = e.task.as_ref().ok_or(Error::Protocol(
         "Storage task receipt unavailable; no write will be replayed",
     ))?;
-    let value = s.call("task.get_record", vec![json!(reference)]).await?;
+    let value = s
+        .send(calls::task::GetRecord(refs::task(reference)))
+        .await?;
     let id = TaskRecord::new(&value)
         .uuid()
         .text()

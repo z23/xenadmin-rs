@@ -6,6 +6,7 @@ use crate::{
 pub(super) use secrets::{absent, require, secret_ids, secret_uuid};
 use serde_json::{Value, json};
 use xenadmin_xapi::records::HostRecord;
+use xenadmin_xapi::{calls, refs};
 
 pub(super) async fn current(
     session: &Session,
@@ -62,7 +63,7 @@ pub(super) async fn owned(
         "Host power Secret identity changed",
     )?;
     let config = session
-        .call("secret.get_other_config", vec![json!(&reference)])
+        .send(calls::secret::GetOtherConfig(refs::secret(&reference)))
         .await?;
     require(
         config[xapi::OPERATION_TAG] == marker(operation),
@@ -82,7 +83,7 @@ pub(super) async fn recover_secret(
         }
         let reference = secrets::secret_reference(session, id).await?;
         let config = session
-            .call("secret.get_other_config", vec![json!(reference)])
+            .send(calls::secret::GetOtherConfig(refs::secret(&reference)))
             .await?;
         if config[xapi::OPERATION_TAG] == marker(record.id) {
             require(
@@ -136,7 +137,7 @@ async fn no_host_consumer(
     id: SecretId,
     excluded: Option<(uuid::Uuid, &HostPowerConfiguration)>,
 ) -> Result<(), Error> {
-    let hosts = session.call("host.get_all_records", vec![]).await?;
+    let hosts = session.send(calls::host::GetAllRecords).await?;
     let hosts = hosts
         .as_object()
         .filter(|v| v.len() <= 1024)

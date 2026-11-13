@@ -3,6 +3,7 @@ use crate::{OperationStep, StepState, vm_lifecycle_backend as lifecycle};
 use serde_json::Value;
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 
 impl MutationRequest {
     async fn save_lifecycle_evidence(
@@ -122,7 +123,7 @@ impl MutationRequest {
                 }
                 loop {
                     let task = plan.evidence[index].task.as_ref().ok_or(Error::Journal)?;
-                    let result = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.call("task.get_record",vec![json!(task)])=>result};
+                    let result = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.send(calls::task::GetRecord(refs::task(task)))=>result};
                     let record = match result {
                         Ok(record) => record,
                         Err(error) => {
@@ -290,7 +291,7 @@ impl MutationRequest {
             if !plan.evidence[index].completed
                 && let Some(task) = plan.evidence[index].task.as_ref()
             {
-                match session.call("task.get_record", vec![json!(task)]).await {
+                match session.send(calls::task::GetRecord(refs::task(task))).await {
                     Ok(record)
                         if TaskRecord::new(&record).status() == task_status_type::SUCCESS =>
                     {

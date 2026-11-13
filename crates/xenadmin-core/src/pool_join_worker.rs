@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::{HostMetricsRecord, HostRecord, PoolRecord, SrRecord, VmRecord};
+use xenadmin_xapi::{calls, refs};
 
 struct JoinSpec {
     source: PoolId,
@@ -95,7 +96,9 @@ async fn live(session: &Session, host: &Value) -> Result<(), Error> {
     require(
         HostMetricsRecord::new(
             &session
-                .call("host_metrics.get_record", vec![json!(reference)])
+                .send(calls::host_metrics::GetRecord(refs::host_metrics(
+                    &reference,
+                )))
                 .await?,
         )
         .live()
@@ -310,7 +313,7 @@ impl ResourceRequest {
             _=cancel.cancelled()=>return Err(Error::Closed),
             _=inputs.destination.cancel.cancelled()=>return Err(Error::Closed),
             _=peer.cancel.cancelled()=>return Err(Error::Stale),
-            r=session.call("pool.join",vec![json!(spec.address),json!(inputs.credentials.username),json!(&*inputs.credentials.password)])=>{r?;},
+            r=session.send(calls::pool::Join { master_address: &spec.address, master_username: &inputs.credentials.username, master_password: &inputs.credentials.password })=>{r?;},
         }
         self.record.pool_completed = true;
         self.record = journal.resource_evidence(&self.record)?;

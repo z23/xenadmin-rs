@@ -2,12 +2,13 @@ use crate::{
     DirectoryHostState, Error, HostId, ObservedResource, RoleId, SubjectId, xapi::Session,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::records::{HostRecord, RoleRecord, SessionRecord, SubjectRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectorySubject {
@@ -189,7 +190,7 @@ pub(crate) async fn advertised(session: &Session, method: &str) -> Result<Option
     }
 }
 pub(crate) async fn methods(session: &Session) -> Result<Vec<String>, Error> {
-    let value = session.call("host.list_methods", vec![]).await?;
+    let value = session.send(calls::host::ListMethods).await?;
     let values = value
         .as_array()
         .filter(|v| v.len() <= 16_384)
@@ -209,7 +210,9 @@ pub(crate) async fn methods(session: &Session) -> Result<Vec<String>, Error> {
 }
 pub(crate) async fn local_superuser(session: &Session) -> Result<bool, Error> {
     let record = session
-        .call("session.get_record", vec![json!(session.session_cookie())])
+        .send(calls::session::GetRecord(refs::session(
+            session.session_cookie(),
+        )))
         .await?;
     SessionRecord::new(&record)
         .is_local_superuser()
@@ -222,17 +225,17 @@ pub(crate) async fn certificate(
 ) -> Result<crate::CertificateFingerprint, Error> {
     use sha2::{Digest, Sha256};
     let reference = session
-        .call("host.get_by_uuid", vec![json!(host.to_string())])
+        .send(calls::host::GetByUuid(&host.to_string()))
         .await?;
     let reference = crate::xapi::opaque_reference(&reference)?;
     let record = session
-        .call("host.get_record", vec![json!(&reference)])
+        .send(calls::host::GetRecord(refs::host(&reference)))
         .await?;
     if HostRecord::new(&record).uuid() != host.to_string() {
         return Err(Error::Stale);
     }
     let pem = session
-        .call("host.get_server_certificate", vec![json!(reference)])
+        .send(calls::host::GetServerCertificate(refs::host(&reference)))
         .await?;
     let pem = pem
         .as_str()
@@ -385,15 +388,14 @@ async fn query(session: &Session, query: &PoolSecurityQuery) -> Result<PoolSecur
         PoolSecurityQuery::ResolveSubject { name } => {
             let identifier = text(
                 &session
-                    .call("auth.get_subject_identifier", vec![json!(name)])
+                    .send(calls::auth::GetSubjectIdentifier(name))
                     .await?,
                 1024,
             )?;
             let info = session
-                .call(
-                    "auth.get_subject_information_from_identifier",
-                    vec![json!(&identifier)],
-                )
+                .send(calls::auth::GetSubjectInformationFromIdentifier(
+                    &identifier,
+                ))
                 .await?;
             Ok(PoolSecurityResult::Subject {
                 query: name.clone(),

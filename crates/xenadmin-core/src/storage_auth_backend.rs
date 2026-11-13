@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use xenadmin_xapi::records::{PbdRecord, SrRecord, TaskRecord};
+use xenadmin_xapi::{calls, refs};
 
 pub(super) fn require(ok: bool, message: &'static str) -> Result<(), Error> {
     if ok {
@@ -18,13 +19,13 @@ pub(super) fn require(ok: bool, message: &'static str) -> Result<(), Error> {
 pub(super) async fn secret_reference(session: &Session, id: SecretId) -> Result<String, Error> {
     xapi::reply_reference(
         &session
-            .call("secret.get_by_uuid", vec![json!(id.to_string())])
+            .send(calls::secret::GetByUuid(&id.to_string()))
             .await?,
     )
 }
 pub(super) async fn secret_uuid(session: &Session, reference: &str) -> Result<SecretId, Error> {
     let value = session
-        .call("secret.get_uuid", vec![json!(reference)])
+        .send(calls::secret::GetUuid(refs::secret(reference)))
         .await?;
     value
         .as_str()
@@ -33,7 +34,7 @@ pub(super) async fn secret_uuid(session: &Session, reference: &str) -> Result<Se
         .ok_or(Error::Protocol("Invalid Secret identity"))
 }
 pub(super) async fn secret_ids(session: &Session) -> Result<Vec<SecretId>, Error> {
-    let values = session.call("secret.get_all", vec![]).await?;
+    let values = session.send(calls::secret::GetAll).await?;
     let values = values
         .as_array()
         .filter(|v| v.len() <= 4096)
@@ -72,7 +73,7 @@ pub(super) async fn owned(
         "Secret identity changed",
     )?;
     let metadata = session
-        .call("secret.get_other_config", vec![json!(reference)])
+        .send(calls::secret::GetOtherConfig(refs::secret(&reference)))
         .await?;
     require(
         metadata[xapi::OPERATION_TAG] == marker(operation, kind),
@@ -94,7 +95,7 @@ pub(super) async fn recover_secret(
         }
         let reference = secret_reference(session, id).await?;
         let metadata = session
-            .call("secret.get_other_config", vec![json!(reference)])
+            .send(calls::secret::GetOtherConfig(refs::secret(&reference)))
             .await?;
         if metadata[xapi::OPERATION_TAG] == marker(record.id, step.kind) {
             require(
@@ -126,7 +127,7 @@ pub(super) async fn prepare(
     let operation = operation.clone();
     storage::prepare(session, record).await?;
     let baseline = secret_ids(session).await?;
-    let tasks = session.call("task.get_all_records", vec![]).await?;
+    let tasks = session.send(calls::task::GetAllRecords).await?;
     let task_baseline = tasks
         .as_object()
         .filter(|v| v.len() <= 10000)
@@ -314,7 +315,7 @@ pub(super) async fn verify(
             for value in refs {
                 let reference = xapi::reply_reference(value)?;
                 let pbd = session
-                    .call("PBD.get_record", vec![json!(reference)])
+                    .send(calls::pbd::GetRecord(refs::pbd(&reference)))
                     .await?;
                 if PbdRecord::new(&pbd).host() != host_ref {
                     continue;

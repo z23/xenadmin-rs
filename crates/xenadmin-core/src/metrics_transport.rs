@@ -4,6 +4,7 @@ use serde_json::json;
 use url::Url;
 use xenadmin_xapi::records::{HostRecord, PoolRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Route {
@@ -69,10 +70,10 @@ pub(super) async fn resolve(
         MetricTarget::Vm(_) => {
             let host_ref = if VmRecord::new(&object).resident_on() == "OpaqueRef:NULL" {
                 let pool = session
-                    .call("pool.get_by_uuid", vec![json!(target.pool.to_string())])
+                    .send(calls::pool::GetByUuid(&target.pool.to_string()))
                     .await?;
                 let pool = session
-                    .call("pool.get_record", vec![json!(reference(&pool)?)])
+                    .send(calls::pool::GetRecord(refs::pool(reference(&pool)?)))
                     .await?;
                 if PoolRecord::new(&pool).uuid() != target.pool.to_string() {
                     return Err(Error::Stale);
@@ -82,7 +83,7 @@ pub(super) async fn resolve(
                 reference(VmRecord::new(&object).resident_on())?.to_owned()
             };
             session
-                .call("host.get_record", vec![json!(host_ref)])
+                .send(calls::host::GetRecord(refs::host(&host_ref)))
                 .await?
         }
     };

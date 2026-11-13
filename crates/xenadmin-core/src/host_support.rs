@@ -1,10 +1,11 @@
 use crate::{Error, HostId, ObservedResource, PoolId, ResourceTarget, xapi::Session};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::records::{HostCrashdumpRecord, HostRecord};
+use xenadmin_xapi::{calls, refs};
 
 #[path = "host_archive.rs"]
 pub(crate) mod archive;
@@ -211,10 +212,9 @@ pub(crate) fn version(r: &Value) -> Result<String, Error> {
 }
 async fn advertised(s: &Session, reference: &str) -> Result<Vec<HostSupportCapability>, Error> {
     let value = s
-        .call(
-            "host.get_system_status_capabilities",
-            vec![json!(reference)],
-        )
+        .send(calls::host::GetSystemStatusCapabilities(refs::host(
+            reference,
+        )))
         .await?;
     capabilities(
         value

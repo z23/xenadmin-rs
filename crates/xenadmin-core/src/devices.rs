@@ -10,6 +10,7 @@ use xenadmin_xapi::enumerations::{
     vbd_operations, vbd_type, vdi_operations, vdi_type, vif_operations, vm_power_state,
 };
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Call, Int, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
 pub struct DeviceCommand {
@@ -393,6 +394,10 @@ pub(crate) struct PreparedDevice {
     parameters: Vec<Value>,
 }
 impl PreparedDevice {
+    /// A call as its message gives it: the name and the arguments.
+    fn of((method, parameters): (&'static str, Vec<Value>)) -> Self {
+        Self { method, parameters }
+    }
     pub(crate) async fn send(
         self,
         session: &Session,
@@ -532,15 +537,18 @@ async fn prepare_operation(
             }
             let sr_reference = reference(VdiRecord::new(&disk).sr())?;
             let sr = session
-                .call("SR.get_record", vec![json!(sr_reference)])
+                .send(calls::sr::GetRecord(refs::sr(&sr_reference)))
                 .await?;
             if SrRecord::new(&sr).content_type() != "iso" {
                 return Err(Error::DeviceInUse);
             }
-            PreparedDevice {
-                method: "Async.VBD.insert",
-                parameters: vec![json!(cd_reference), json!(image_reference)],
-            }
+            PreparedDevice::of(
+                calls::vbd::Insert {
+                    vbd: refs::vbd(&cd_reference),
+                    vdi: refs::vdi(&image_reference),
+                }
+                .task(),
+            )
         }
         DeviceOperation::EjectCd { vbd } => {
             let (cd_reference, cd) = fresh(session, "VBD", vbd.uuid()).await?;
@@ -549,10 +557,7 @@ async fn prepare_operation(
                 return Err(Error::DeviceConflict);
             }
             permits(&cd, vbd_operations::EJECT)?;
-            PreparedDevice {
-                method: "Async.VBD.eject",
-                parameters: vec![json!(cd_reference)],
-            }
+            PreparedDevice::of(calls::vbd::Eject(refs::vbd(&cd_reference)).task())
         }
         DeviceOperation::PlugDisk { vbd } | DeviceOperation::UnplugDisk { vbd } => {
             let (device_reference, device) = fresh(session, "VBD", vbd.uuid()).await?;
@@ -637,7 +642,7 @@ async fn prepare_operation(
             for consumer in consumers {
                 let consumer_reference = reference(consumer)?;
                 let attachment = session
-                    .call("VBD.get_record", vec![json!(consumer_reference)])
+                    .send(calls::vbd::GetRecord(refs::vbd(&consumer_reference)))
                     .await?;
                 if VbdRecord::new(&attachment).vdi() != disk_reference
                     || VbdRecord::new(&attachment).vm() != vm_reference
@@ -647,10 +652,13 @@ async fn prepare_operation(
                     return Err(Error::DeviceInUse);
                 }
             }
-            PreparedDevice {
-                method: "Async.VDI.resize",
-                parameters: vec![json!(disk_reference), json!(new_size.to_string())],
-            }
+            PreparedDevice::of(
+                calls::vdi::Resize {
+                    vdi: refs::vdi(&disk_reference),
+                    size: Int::from(new_size),
+                }
+                .task(),
+            )
         }
         _ => return Err(Error::InvalidDeviceOperation),
     };

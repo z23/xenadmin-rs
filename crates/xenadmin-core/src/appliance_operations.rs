@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::{VmApplianceRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone)]
 pub(super) enum Verify {
@@ -53,13 +54,9 @@ async fn group(session: &Session, id: ApplianceId) -> Result<(String, Value), Er
     xapi::read(session, ResourceTarget::Appliance(id)).await
 }
 async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
-    let reference = ref_value(
-        &session
-            .call("VM.get_by_uuid", vec![json!(id.to_string())])
-            .await?,
-    )?;
+    let reference = ref_value(&session.send(calls::vm::GetByUuid(&id.to_string())).await?)?;
     let record = session
-        .call("VM.get_record", vec![json!(&reference)])
+        .send(calls::vm::GetRecord(refs::vm(&reference)))
         .await?;
     if VmRecord::new(&record).uuid() != id.to_string() {
         return Err(Error::Stale);
@@ -83,7 +80,7 @@ async fn members(session: &Session, record: &Value) -> Result<BTreeSet<VmId>, Er
     let mut ids = BTreeSet::new();
     for reference in refs {
         let r = session
-            .call("VM.get_record", vec![json!(ref_value(reference)?)])
+            .send(calls::vm::GetRecord(refs::vm(&ref_value(reference)?)))
             .await?;
         let id = VmRecord::new(&r)
             .uuid()
@@ -237,7 +234,7 @@ pub(super) async fn prepare(
 ) -> Result<Vec<Step>, Error> {
     let op = operation(record)?.clone();
     if matches!(op, Op::Create { .. }) {
-        let all = session.call("VM_appliance.get_all_records", vec![]).await?;
+        let all = session.send(calls::vm_appliance::GetAllRecords).await?;
         let all = all
             .as_object()
             .filter(|r| r.len() <= 10_000)
@@ -370,10 +367,10 @@ pub(super) async fn arguments(
                         return Err(Error::UnavailableAction);
                     }
                     session
-                        .call(
-                            "VM.assert_operation_valid",
-                            vec![json!(vr), json!(action.wire())],
-                        )
+                        .send(calls::vm::AssertOperationValid {
+                            self_: refs::vm(&vr),
+                            op: action.wire(),
+                        })
                         .await?;
                     change = true;
                 }
@@ -408,7 +405,9 @@ pub(super) async fn verify(
                 .as_ref()
                 .ok_or(Error::ResourceConflict)?;
             let r = session
-                .call("VM_appliance.get_record", vec![json!(reference)])
+                .send(calls::vm_appliance::GetRecord(refs::vm_appliance(
+                    reference,
+                )))
                 .await?;
             let id = VmApplianceRecord::new(&r)
                 .uuid()

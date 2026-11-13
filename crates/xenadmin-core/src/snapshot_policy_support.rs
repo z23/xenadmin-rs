@@ -1,9 +1,9 @@
 use crate::{Error, HostId, ObservedResource, ResourceTarget, SnapshotPolicyClock, xapi::Session};
-use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use xenadmin_xapi::records::{HostRecord, PoolRecord};
+use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotPolicySupport {
@@ -95,10 +95,12 @@ pub(crate) async fn read(
     };
     let pr = crate::xapi::opaque_reference(
         &session
-            .call("pool.get_by_uuid", vec![json!(id.to_string())])
+            .send(calls::pool::GetByUuid(&id.to_string()))
             .await?,
     )?;
-    let pool = session.call("pool.get_record", vec![json!(&pr)]).await?;
+    let pool = session
+        .send(calls::pool::GetRecord(refs::pool(&pr)))
+        .await?;
     if PoolRecord::new(&pool).uuid() != id.to_string() {
         return Err(Error::Stale);
     }
@@ -108,7 +110,9 @@ pub(crate) async fn read(
         ));
     }
     let hr = crate::xapi::opaque_reference(PoolRecord::new(&pool).master())?;
-    let host = session.call("host.get_record", vec![json!(&hr)]).await?;
+    let host = session
+        .send(calls::host::GetRecord(refs::host(&hr)))
+        .await?;
     let id = HostRecord::new(&host)
         .uuid()
         .text()
@@ -125,7 +129,7 @@ pub(crate) async fn read(
         ));
     }
     if !session
-        .call("VMSS.get_all_records", vec![])
+        .send(calls::vmss::GetAllRecords)
         .await?
         .as_object()
         .is_some_and(|m| m.len() <= 10_000)
@@ -135,13 +139,13 @@ pub(crate) async fn read(
         ));
     }
     let utc1 = session
-        .call("host.get_servertime", vec![json!(&hr)])
+        .send(calls::host::GetServertime(refs::host(&hr)))
         .await?;
     let local = session
-        .call("host.get_server_localtime", vec![json!(&hr)])
+        .send(calls::host::GetServerLocaltime(refs::host(&hr)))
         .await?;
     let utc2 = session
-        .call("host.get_servertime", vec![json!(&hr)])
+        .send(calls::host::GetServertime(refs::host(&hr)))
         .await?;
     let u1 = clock_seconds(
         utc1.as_str()
@@ -166,7 +170,9 @@ pub(crate) async fn read(
             "Host local timezone offset could not be determined",
         ));
     }
-    let pool2 = session.call("pool.get_record", vec![json!(&pr)]).await?;
+    let pool2 = session
+        .send(calls::pool::GetRecord(refs::pool(&pr)))
+        .await?;
     if PoolRecord::new(&pool2).uuid() != PoolRecord::new(&pool).uuid()
         || PoolRecord::new(&pool2).master() != PoolRecord::new(&pool).master()
     {

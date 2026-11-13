@@ -5,6 +5,7 @@ use crate::{
 };
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 impl ResourceRequest {
     fn ipv6_plan(&self) -> Result<&Plan, Error> {
         self.record
@@ -162,7 +163,7 @@ impl ResourceRequest {
                 ));
             }
             let task=p.current().task.clone().ok_or(Error::Protocol("The IPv6 stage receipt is unavailable; no submitted configuration will be replayed"))?;
-            let v = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.get_record",vec![json!(&task)])=>v?};
+            let v = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.send(calls::task::GetRecord(refs::task(&task)))=>v?};
             let id = crate::TaskId::from(crate::resources::network::uuid(&v)?);
             if id.uuid().is_nil()
                 || p.current().task_baseline.contains(&id)
@@ -264,9 +265,9 @@ impl ResourceRequest {
             )
         {
             let _ = tokio::time::timeout(Duration::from_secs(2), async {
-                let v = s.call("task.get_record", vec![json!(&task)]).await?;
+                let v = s.send(calls::task::GetRecord(refs::task(&task))).await?;
                 if crate::resources::network::uuid(&v)? == expected.uuid() {
-                    s.call("task.destroy", vec![json!(task)]).await?;
+                    s.send(calls::task::Destroy(refs::task(&task))).await?;
                 }
                 Ok::<_, Error>(())
             })

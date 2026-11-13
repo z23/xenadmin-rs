@@ -5,6 +5,7 @@ use uuid::Uuid;
 use xenadmin_xapi::enumerations::{storage_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
+use xenadmin_xapi::{calls, refs};
 pub(crate) const MARKER: &str = "xenadmin-rs-disk-transfer";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Creation {
@@ -128,10 +129,9 @@ pub(crate) async fn disk_record(
     }
     for a in attachments {
         let a = s
-            .call(
-                "VBD.get_record",
-                vec![json!(crate::snapshots::reference(a)?)],
-            )
+            .send(calls::vbd::GetRecord(refs::vbd(
+                &crate::snapshots::reference(a)?,
+            )))
             .await?;
         idle(&a)?;
         if VbdRecord::new(&a).vdi() != reference || VbdRecord::new(&a).currently_attached() != false
@@ -139,10 +139,9 @@ pub(crate) async fn disk_record(
             return Err(Error::TransferConflict);
         }
         let vm = s
-            .call(
-                "VM.get_record",
-                vec![json!(crate::snapshots::reference(VbdRecord::new(&a).vm())?)],
-            )
+            .send(calls::vm::GetRecord(refs::vm(
+                &crate::snapshots::reference(VbdRecord::new(&a).vm())?,
+            )))
             .await?;
         idle(&vm)?;
         if VmRecord::new(&vm).power_state() != vm_power_state::HALTED
@@ -233,7 +232,7 @@ pub(crate) async fn identify(
         .as_ref()
         .filter(|p| p.dispatched)
         .ok_or(Error::TransferConflict)?;
-    let records = s.call("VDI.get_all_records", vec![]).await?;
+    let records = s.send(calls::vdi::GetAllRecords).await?;
     let records = records
         .as_object()
         .filter(|m| m.len() <= 10000)

@@ -2,6 +2,7 @@ use super::*;
 use crate::{management_network::Plan, resources::management};
 use xenadmin_xapi::enumerations::task_status_type;
 use xenadmin_xapi::records::TaskRecord;
+use xenadmin_xapi::{calls, refs};
 impl ResourceRequest {
     fn management_plan(&self) -> Result<&Plan, Error> {
         self.record
@@ -121,7 +122,7 @@ impl ResourceRequest {
                 ));
             }
             let task=self.record.task.clone().ok_or(Error::Protocol("Management task receipt unavailable; inspect the recovery address before acknowledging, no change will be replayed"))?;
-            let v = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call("task.get_record",vec![json!(&task)])=>v?};
+            let v = tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.send(calls::task::GetRecord(refs::task(&task)))=>v?};
             let id = crate::TaskId::from(crate::resources::network::uuid(&v)?);
             if id.uuid().is_nil()
                 || self.management_plan()?.tasks_before.contains(&id)
@@ -275,9 +276,9 @@ impl ResourceRequest {
             (self.record.task.clone(), self.management_plan()?.task_uuid)
         {
             let _ = tokio::time::timeout(Duration::from_secs(2), async {
-                let fresh = s.call("task.get_record", vec![json!(&task)]).await?;
+                let fresh = s.send(calls::task::GetRecord(refs::task(&task))).await?;
                 if crate::resources::network::uuid(&fresh)? == expected.uuid() {
-                    s.call("task.destroy", vec![json!(task)]).await?;
+                    s.send(calls::task::Destroy(refs::task(&task))).await?;
                 }
                 Ok::<_, Error>(())
             })
