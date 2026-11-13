@@ -293,10 +293,10 @@ fn scan_inner(
                     }
                 }
             }
-            if let Some(raw) = pax_path {
-                if path(&raw)? != path(&entry.path_bytes())? {
-                    return Err(Error::TransferArchive);
-                }
+            if let Some(raw) = pax_path
+                && path(&raw)? != path(&entry.path_bytes())?
+            {
+                return Err(Error::TransferArchive);
             }
             if let Some(raw) = pax_link {
                 let Some(link) = entry.link_name_bytes() else {
