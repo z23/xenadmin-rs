@@ -8,6 +8,7 @@ use std::{
 
 const MAX_DECODED: u64 = 256 * 1024 * 1024 * 1024;
 const MAX_METADATA: u64 = 1024 * 1024;
+const COMPRESSED_READ: usize = 4096;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Backup,
@@ -30,6 +31,23 @@ impl Stop<'_> {
             return Err(Error::Timeout);
         }
         Ok(())
+    }
+}
+struct Checked<'a, R> {
+    inner: R,
+    stop: &'a Stop<'a>,
+}
+impl<R: Read> Read for Checked<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        // flate2 treats Interrupted as a zero-length gzip header read and retries.
+        self.stop
+            .check()
+            .map_err(|_| std::io::Error::other("stopped"))?;
+        let n = buf.len().min(COMPRESSED_READ);
+        if n == 0 {
+            return Ok(0);
+        }
+        self.inner.read(&mut buf[..n])
     }
 }
 struct Limited<'a, R> {
@@ -122,13 +140,21 @@ pub(crate) fn inspect(
     cancel: &CancellationToken,
 ) -> Result<(), Error> {
     file.rewind().map_err(|_| Error::TransferFile)?;
-    let backup = matches!(operation, HostArchiveOperation::Backup);
-    let reader: Box<dyn Read + '_> = if backup {
-        Box::new(flate2::read::MultiGzDecoder::new(file))
-    } else {
-        Box::new(file)
+    if !matches!(operation, HostArchiveOperation::Backup) {
+        return scan_cancel(file, host, expected_version, false, cancel);
+    }
+    let stop = Stop {
+        connection: Some(cancel),
+        selection: None,
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
     };
-    scan_cancel(reader, host, expected_version, backup, cancel)
+    let reader = flate2::read::MultiGzDecoder::new(Checked {
+        inner: file,
+        stop: &stop,
+    });
+    let result = scan_inner(reader, host, expected_version, Mode::Backup, &stop);
+    stop.check()?;
+    result.map(|_| ())
 }
 struct Hashed<R> {
     inner: R,
@@ -143,7 +169,7 @@ impl<R: Read> Read for Hashed<R> {
     }
 }
 pub(crate) fn inspect_restore(
-    file: &mut std::fs::File,
+    file: &mut (impl Read + Seek),
     host: HostId,
     version: &str,
     connection: Option<&CancellationToken>,
@@ -152,15 +178,18 @@ pub(crate) fn inspect_restore(
     use sha2::Digest;
     file.rewind().map_err(|_| Error::TransferFile)?;
     let hash = Rc::new(RefCell::new(sha2::Sha256::new()));
-    let reader = flate2::read::MultiGzDecoder::new(Hashed {
-        inner: file,
-        hash: hash.clone(),
-    });
     let stop = Stop {
         connection,
         selection,
         deadline: std::time::Instant::now() + std::time::Duration::from_secs(600),
     };
+    let reader = flate2::read::MultiGzDecoder::new(Hashed {
+        inner: Checked {
+            inner: file,
+            stop: &stop,
+        },
+        hash: hash.clone(),
+    });
     let result = scan_inner(reader, host, version, Mode::Restore, &stop);
     stop.check()?;
     let (entries, logical_bytes) = result?;
@@ -456,6 +485,49 @@ mod tests {
             stop: &stop,
         };
         assert!(r.read(&mut [0; 1]).is_err());
+    }
+    #[test]
+    fn host_archive_empty_gzip_members_return_closed_before_the_prefix_is_read() {
+        struct CancelsDuringRead<'a> {
+            inner: std::io::Cursor<&'a [u8]>,
+            calls: usize,
+            taken: usize,
+            selection: &'a AtomicBool,
+        }
+        impl Read for CancelsDuringRead<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                if self.calls == 2 {
+                    self.selection.store(true, Ordering::Relaxed);
+                }
+                let n = self.inner.read(buf)?;
+                self.taken += n;
+                Ok(n)
+            }
+        }
+        impl Seek for CancelsDuringRead<'_> {
+            fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.inner.seek(pos)
+            }
+        }
+        let member = [
+            0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let bound = 64 * 1024;
+        let prefix = member.repeat((bound / member.len()) * 4);
+        assert!(prefix.len() > bound);
+        let selection = AtomicBool::new(false);
+        let mut reader = CancelsDuringRead {
+            inner: std::io::Cursor::new(&prefix),
+            calls: 0,
+            taken: 0,
+            selection: &selection,
+        };
+        let host = HostId::from(uuid::Uuid::from_u128(2));
+        let result = inspect_restore(&mut reader, host, "8.3.0", None, Some(&selection));
+        assert!(matches!(result, Err(Error::Closed)), "{result:?}");
+        assert!(reader.taken < bound, "{}", reader.taken);
     }
     #[test]
     fn gnu_sparse_long_paths_and_repeated_directories_are_supported() {
