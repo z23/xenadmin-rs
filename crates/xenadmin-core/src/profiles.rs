@@ -110,6 +110,8 @@ impl ConnectionProfile {
             self.accept_invalid_certificates = false;
             self.pool = None;
             self.verified_members.clear();
+            self.host_certificates.clear();
+            self.certificate_details.clear();
         }
     }
     pub fn accept_certificate(
@@ -366,9 +368,11 @@ mod tests {
         let profile = store.profiles().next().unwrap().clone();
         assert!(profile.accept_invalid_certificates);
         assert_eq!(profile.username, "operator");
-        assert!(!fs::read_to_string(directory.path().join("profiles.json"))
-            .unwrap()
-            .contains("never-import-this"));
+        assert!(
+            !fs::read_to_string(directory.path().join("profiles.json"))
+                .unwrap()
+                .contains("never-import-this")
+        );
         assert!(store.remove(profile.id).unwrap());
         assert_eq!(
             ProfileStore::open(directory.path().into())
