@@ -301,6 +301,11 @@ classes.
    a malformed value means differs from one workflow to the next. A read by key is
    untyped until it moves to a view (item 1). And a constant is a string like the
    literal it replaced, so nothing but review keeps a new literal from being written.
+
+   The supported part was run again on the lab on this code the same day: 21 of the
+   core's 22 scenarios, host maintenance and moves within a pool, all passing, with the
+   coordinator's power cut left out
+   ([live report](reports/2026-11-09-lab-qualification.md)).
 3. Calls: generated descriptions of each message's parameters, so that a call's
    arguments are checked where it is made. A test checks their number for the calls
    written with their arguments. Since 0.19.0 a debug build can also compare every call

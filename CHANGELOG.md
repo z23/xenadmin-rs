@@ -117,7 +117,9 @@ again for that, because no published version reads format 5.
   helpers the workflows share say which kind they read. The values of the API's
   enumerations are the generated constants in the client's own types as well, 276 more
   of them. Nothing in the client's behaviour changes with this
-  ([decision record](docs/decisions/0004-generated-bindings.md)).
+  ([decision record](docs/decisions/0004-generated-bindings.md)); the supported part
+  was run again on the lab with it, all but the coordinator's power cut
+  ([live report](docs/reports/2026-11-09-lab-qualification.md)).
 - Inside, debug builds can compare every call they send with the API: how many arguments
   it takes, which of them may be left out, and the type of each. The repository's tests
   run with that check and it reported nothing. Release builds contain none of it.
