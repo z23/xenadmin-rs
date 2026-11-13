@@ -357,7 +357,6 @@ fn restore_queues_connect(arguments: &[&str]) -> bool {
 
 #[test]
 fn headless_flags_do_not_restore_a_saved_session() {
-    // restore_sessions reads std::env::args, so only a fresh process can show a chosen argv.
     if let Ok(path) = std::env::var("XENADMIN_RESTORE_REPORT") {
         let mut fixture = Fixture::new();
         let s = &mut fixture.state;
