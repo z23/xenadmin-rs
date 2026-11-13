@@ -5,7 +5,9 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
-use xenadmin_core::{Backend, ConnectionOptions, Credentials, Endpoint};
+use xenadmin_core::{
+    Backend, CertificateFingerprint, ConnectionOptions, Credentials, Endpoint, ProxyConfiguration,
+};
 #[path = "fixtures/deadlines.rs"]
 mod deadlines;
 use deadlines::deadline;
@@ -115,6 +117,33 @@ async fn explicit_opt_out_permits_untrusted_certificates_and_overrides_pins() {
         assert!(reached_api);
         assert!(error.contains("SESSION_AUTHENTICATION_FAILED"));
     }
+}
+
+async fn pinned_server() -> (
+    TcpListener,
+    tokio_rustls::TlsAcceptor,
+    Endpoint,
+    CertificateFingerprint,
+) {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let rcgen::CertifiedKey { cert, key_pair } =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()]).unwrap();
+    let fingerprint = format!("{:x}", Sha256::digest(cert.der())).parse().unwrap();
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(key_pair.serialize_der()).into(),
+        )
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = Endpoint::parse(&format!("https://{}", listener.local_addr().unwrap())).unwrap();
+    (
+        listener,
+        tokio_rustls::TlsAcceptor::from(Arc::new(config)),
+        endpoint,
+        fingerprint,
+    )
 }
 
 async fn untrusted_server() -> (TcpListener, tokio_rustls::TlsAcceptor, String) {
@@ -266,6 +295,141 @@ async fn opt_out_survives_member_redirect_and_a_separate_console_tls_endpoint() 
         .await
         .unwrap()
         .unwrap();
+    member_task.await.unwrap();
+    connection.close().await;
+    coordinator_task.abort();
+}
+
+#[tokio::test]
+async fn cleartext_coordinator_redirect_does_not_receive_the_password() {
+    let password = "pool-password-not-for-cleartext";
+    let (member, member_tls, member_endpoint, member_pin) = pinned_server().await;
+    let plain = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redirect = format!("http://{}", plain.local_addr().unwrap());
+    assert!(Endpoint::parse(&redirect).is_ok());
+    let (capture_tx, capture_rx) = tokio::sync::oneshot::channel();
+    let plain_task = tokio::spawn(async move {
+        let Ok(Ok((mut stream, _))) = tokio::time::timeout(deadline(6), plain.accept()).await
+        else {
+            let _ = capture_tx.send(String::new());
+            return;
+        };
+        let Ok((header, body)) = tokio::time::timeout(deadline(2), request(&mut stream)).await
+        else {
+            let _ = capture_tx.send(String::new());
+            return;
+        };
+        let _ = capture_tx.send(format!("{header}{body}"));
+    });
+    let member_task = tokio::spawn(async move {
+        let (stream, _) = member.accept().await.unwrap();
+        let mut stream = member_tls.accept(stream).await.unwrap();
+        let (_, call) = request(&mut stream).await;
+        assert_eq!(call["method"], "session.login_with_password");
+        reply(
+            &mut stream,
+            &call["id"],
+            json!({"error":{"code":1,"message":"HOST_IS_SLAVE","data":[redirect]}}),
+        )
+        .await;
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let mut options = ConnectionOptions::new(member_endpoint);
+    options.proxy = ProxyConfiguration::Direct;
+    options.certificate_fingerprint = Some(member_pin);
+    let connection = backend.connect(options, Credentials::new("fixture".into(), password.into()));
+    let ready = connection.wait_ready(deadline(5)).await;
+    member_task.await.unwrap();
+    let captured = match tokio::time::timeout(deadline(1), capture_rx).await {
+        Ok(Ok(body)) => body,
+        _ => String::new(),
+    };
+    if captured.is_empty() && plain_task.is_finished() {
+        plain_task.await.unwrap();
+    }
+    let message = ready
+        .expect_err("cleartext coordinator redirect")
+        .to_string();
+    let saw_login = captured.contains("session.login_with_password");
+    let saw_password = captured.contains(password);
+    assert!(
+        !saw_login
+            && !saw_password
+            && message == "Enter an HTTPS host URL without credentials, a query, or a fragment",
+        "error={message} saw_login={saw_login} saw_password={saw_password} body={captured}"
+    );
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn https_coordinator_redirect_is_still_followed() {
+    let password = "pool-password-not-for-cleartext";
+    let (member, member_tls, member_endpoint, member_pin) = pinned_server().await;
+    let (coordinator, coordinator_tls, coordinator_endpoint, coordinator_pin) =
+        pinned_server().await;
+    let coordinator_url = coordinator_endpoint.as_str().to_owned();
+    let observed = Arc::new(std::sync::Mutex::new(String::new()));
+    let member_task = tokio::spawn(async move {
+        let (stream, _) = member.accept().await.unwrap();
+        let mut stream = member_tls.accept(stream).await.unwrap();
+        let (_, call) = request(&mut stream).await;
+        assert_eq!(call["method"], "session.login_with_password");
+        reply(
+            &mut stream,
+            &call["id"],
+            json!({"error":{"code":1,"message":"HOST_IS_SLAVE","data":[coordinator_url]}}),
+        )
+        .await;
+    });
+    let observed_task = Arc::clone(&observed);
+    let coordinator_task = tokio::spawn(async move {
+        loop {
+            let (stream, _) = coordinator.accept().await.unwrap();
+            let tls = coordinator_tls.clone();
+            let observed_task = Arc::clone(&observed_task);
+            tokio::spawn(async move {
+                let mut stream = tls.accept(stream).await.unwrap();
+                let (_, call) = request(&mut stream).await;
+                let response = match call["method"].as_str().unwrap() {
+                    "session.login_with_password" => {
+                        *observed_task.lock().unwrap() = call.to_string();
+                        json!({"result":"OpaqueRef:tls-fixture"})
+                    }
+                    "session.get_record" => {
+                        json!({"error":{"code":1,"message":"MESSAGE_METHOD_UNKNOWN","data":[]}})
+                    }
+                    "event.from" if call["params"][2] == "" => {
+                        json!({"result":{"token":"initial", "events":[
+                            {"class":"pool","operation":"add","ref":"OpaqueRef:pool","snapshot":{"uuid":"11111111-1111-1111-1111-111111111111","name_label":"TLS fixture"}},
+                            {"class":"host","operation":"add","ref":"OpaqueRef:host","snapshot":{"uuid":"22222222-2222-2222-2222-222222222222","address":"127.0.0.1"}},
+                            {"class":"VM","operation":"add","ref":"OpaqueRef:vm","snapshot":{"uuid":"33333333-3333-3333-3333-333333333333","power_state":"Running"}},
+                            {"class":"SR","operation":"add","ref":"OpaqueRef:sr","snapshot":{"uuid":"44444444-4444-4444-4444-444444444444","physical_size":-1,"physical_utilisation":"-1"}}
+                        ]}})
+                    }
+                    "event.from" => {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        return;
+                    }
+                    "session.logout" => json!({"result":null}),
+                    other => panic!("unexpected fixture call: {other}"),
+                };
+                reply(&mut stream, &call["id"], response).await;
+            });
+        }
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let backend = Backend::with_state_directory(directory.path().into()).unwrap();
+    let mut options = ConnectionOptions::new(member_endpoint);
+    options.proxy = ProxyConfiguration::Direct;
+    options.certificate_fingerprint = Some(member_pin);
+    options.add_host_certificate(coordinator_endpoint, coordinator_pin);
+    let connection = backend.connect(options, Credentials::new("fixture".into(), password.into()));
+    let inventory = connection.wait_ready(deadline(5)).await.unwrap();
+    assert_eq!(inventory.storage[0].capacity_bytes, None);
+    let body = observed.lock().unwrap().clone();
+    assert!(body.contains("session.login_with_password"), "{body}");
+    assert!(body.contains(password), "{body}");
     member_task.await.unwrap();
     connection.close().await;
     coordinator_task.abort();
