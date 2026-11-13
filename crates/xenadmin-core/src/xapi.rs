@@ -140,8 +140,6 @@ impl Session {
                 .await;
             let result = match result {
                 Err(Error::Coordinator(endpoint)) if follow_coordinator => {
-                    // Endpoint::parse allows http on loopback for a first hop.
-                    // Following that URL posts the password in cleartext.
                     if !endpoint.as_str().starts_with("https://") {
                         return Err(Error::InvalidEndpoint);
                     }
