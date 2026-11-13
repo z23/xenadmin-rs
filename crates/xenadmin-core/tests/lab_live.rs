@@ -3950,12 +3950,26 @@ async fn lab_disk_lifecycle_on_halted_guest() {
     .await;
     step(&mut steps, "rename disk", &outcome, check);
 
-    // Reposition.
-    let new_position = if position == "3" {
-        "4".to_string()
-    } else {
-        "3".to_string()
-    };
+    // Reposition, to a position that no other device of the guest holds: the guest may
+    // have a CD drive at 3, and the host then does not allow a disk there.
+    let taken: Vec<String> = c
+        .latest()
+        .inventory()
+        .map(|inventory| {
+            inventory
+                .details
+                .vbds
+                .values()
+                .filter(|b| b.vm == Some(guest.id))
+                .map(|b| b.userdevice.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    let new_position = ["3", "4", "5", "6"]
+        .into_iter()
+        .find(|candidate| !taken.iter().any(|held| held == candidate))
+        .expect("a free device position")
+        .to_string();
     let outcome = device(
         &c,
         guest.id,
