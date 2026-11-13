@@ -16,6 +16,9 @@ pub(super) fn require(ok: bool, message: &'static str) -> Result<(), Error> {
         Err(Error::Protocol(message))
     }
 }
+pub(super) fn identifies(value: &str, id: SecretId) -> bool {
+    SecretId::parse(value).ok() == Some(id)
+}
 pub(super) async fn secret_reference(session: &Session, id: SecretId) -> Result<String, Error> {
     xapi::reply_reference(
         &session
@@ -374,7 +377,7 @@ pub(super) async fn unused(session: &Session, id: SecretId) -> Result<(), Error>
                         "Storage Secret consumer configuration is invalid",
                     ))?;
                 require(
-                    value != id.to_string(),
+                    !identifies(value, id),
                     "Secret is still referenced by storage; it was not deleted",
                 )?;
             }
