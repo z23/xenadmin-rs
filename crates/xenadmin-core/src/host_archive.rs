@@ -497,8 +497,6 @@ mod tests {
         impl Read for CancelsDuringRead<'_> {
             fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
                 self.calls += 1;
-                // The first fill only parses the gzip header. Arm on the next
-                // read, which is inside the empty-member scan.
                 if self.calls == 2 {
                     self.selection.store(true, Ordering::Relaxed);
                 }
