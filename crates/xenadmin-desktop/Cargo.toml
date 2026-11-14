@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 xenadmin-core = { path = "../xenadmin-core" }
+xenadmin-ui = { path = "../xenadmin-ui" }
 rune.workspace = true
 rune-kit.workspace = true
 serde.workspace = true

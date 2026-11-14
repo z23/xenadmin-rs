@@ -6,6 +6,11 @@ trap 'rm -rf -- "$check_state_dir"' EXIT
 export XENADMIN_STATE_DIR="$check_state_dir"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+# The shared model must stay free of both front ends.
+if cargo tree -p xenadmin-ui -e normal --locked | grep -E '(^|[^A-Za-z0-9_-])(rune|rune-kit|gpui)([^A-Za-z0-9_-]|$)'; then
+    echo "xenadmin-ui depends on a UI toolkit" >&2
+    exit 1
+fi
 # Debug builds report, when asked to, every record a view was given that carries a key the
 # view's class lacks: a record read as another class, or a fixture with a field the API
 # does not have. Only what the tests mean may be reported.

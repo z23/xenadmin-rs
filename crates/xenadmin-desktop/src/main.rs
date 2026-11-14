@@ -12,7 +12,6 @@ mod cloud_init_view;
 mod console_view;
 mod console_windows;
 mod cross_pool_vm;
-mod demo_details;
 mod dev_inspection;
 mod disk_workspace;
 mod external_tools;
@@ -64,8 +63,9 @@ use rune_kit::{
 use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 use xenadmin_core::{
     Backend, Connection, ConnectionOptions, ConnectionSnapshot, ConnectionState, Credentials,
-    Endpoint, Host, HostId, Inventory, PoolId, PowerState, Vm, VmId,
+    Endpoint, HostId, Inventory, PoolId, PowerState, Vm, VmId,
 };
+use xenadmin_ui::{DisplayRow, InventoryPage, Node};
 
 fn accent() -> rune::Color {
     rune::oklch(0.73, 0.15, 55.0)
@@ -100,21 +100,14 @@ impl Page {
         }
     }
 }
-struct Node {
-    label: String,
-    host: Option<HostId>,
-    vm: Option<VmId>,
-}
-#[derive(Clone)]
-struct DisplayRow {
-    id: String,
-    name: String,
-    state: String,
-    location: String,
-    cpu: String,
-    memory: String,
-    description: String,
-    vm: Option<VmId>,
+fn inventory_page(page: Page) -> InventoryPage {
+    match page {
+        Page::Guests => InventoryPage::Guests,
+        Page::Templates => InventoryPage::Templates,
+        Page::Hosts => InventoryPage::Hosts,
+        Page::Storage => InventoryPage::Storage,
+        Page::Networks => InventoryPage::Networks,
+    }
 }
 struct ActionDiagnostics {
     context: ActionDiagnosticContext,
@@ -679,54 +672,15 @@ impl State {
         let previous = &self.tree;
         let mut tree = TreeModel::new().key("inventory-tree");
         if let Some(inventory) = &self.inventory {
-            let pool_key = inventory.pool_id.to_string();
-            tree.insert(
-                None,
-                &pool_key,
-                Node {
-                    label: inventory.pool_name.clone(),
-                    host: None,
-                    vm: None,
-                },
-            );
-            for host in inventory.hosts.values() {
-                let host_key = host.id.to_string();
-                tree.insert(
-                    Some(&pool_key),
-                    &host_key,
-                    Node {
-                        label: host.name.clone(),
-                        host: Some(host.id),
-                        vm: None,
-                    },
-                );
-                for vm in inventory.guests().filter(|v| v.host == Some(host.id)) {
-                    tree.insert(
-                        Some(&host_key),
-                        vm.id.to_string(),
-                        Node {
-                            label: vm.name.clone(),
-                            host: Some(host.id),
-                            vm: Some(vm.id),
-                        },
-                    );
-                }
-                if previous.is_empty() || previous.is_expanded(&host_key) {
-                    tree.set_expanded(&host_key, true);
-                }
+            let (inserts, expand) = xenadmin_ui::infrastructure_nodes(inventory, |key| {
+                previous.is_empty() || previous.is_expanded(key)
+            });
+            for insert in inserts {
+                tree.insert(insert.parent.as_deref(), &insert.key, insert.node);
             }
-            for vm in inventory.guests().filter(|v| v.host.is_none()) {
-                tree.insert(
-                    Some(&pool_key),
-                    vm.id.to_string(),
-                    Node {
-                        label: vm.name.clone(),
-                        host: None,
-                        vm: Some(vm.id),
-                    },
-                );
+            for key in expand {
+                tree.set_expanded(&key, true);
             }
-            tree.set_expanded(&pool_key, true);
         }
         self.tree = tree;
         self.filter_rows();
@@ -741,83 +695,12 @@ impl State {
         let Some(inventory) = &self.inventory else {
             return;
         };
-        let query = self.search.text.trim().to_lowercase();
-        let host_name = |id: Option<HostId>| {
-            id.and_then(|id| inventory.hosts.get(&id))
-                .map(|h| h.name.clone())
-                .unwrap_or_else(|| "—".into())
-        };
-        match self.page {
-            Page::Guests | Page::Templates => {
-                for vm in inventory.vms.values().filter(|v| {
-                    !v.is_control_domain
-                        && v.is_template == (self.page == Page::Templates)
-                        && self.host_filter.is_none_or(|id| v.host == Some(id))
-                }) {
-                    self.rows.push(DisplayRow {
-                        id: vm.id.to_string(),
-                        name: vm.name.clone(),
-                        state: vm.power_state.to_string(),
-                        location: host_name(vm.host),
-                        cpu: vm.vcpus.to_string(),
-                        memory: bytes(vm.memory_bytes),
-                        description: vm.description.clone(),
-                        vm: Some(vm.id),
-                    });
-                }
-            }
-            Page::Hosts => {
-                for host in inventory.hosts.values() {
-                    self.rows.push(DisplayRow {
-                        id: host.id.to_string(),
-                        name: host.name.clone(),
-                        state: if host.enabled { "Enabled" } else { "Disabled" }.into(),
-                        location: host.address.clone(),
-                        cpu: "—".into(),
-                        memory: "—".into(),
-                        description: format!("XCP-ng {}", host.version),
-                        vm: None,
-                    });
-                }
-            }
-            Page::Storage => {
-                for sr in &inventory.storage {
-                    self.rows.push(DisplayRow {
-                        id: sr.uuid.to_string(),
-                        name: sr.name.clone(),
-                        state: sr.kind.clone(),
-                        location: sr
-                            .used_bytes
-                            .map(|value| format!("{} used", storage_bytes(Some(value))))
-                            .unwrap_or_else(|| "Usage unknown".into()),
-                        cpu: "—".into(),
-                        memory: storage_bytes(sr.capacity_bytes),
-                        description: "Storage repository".into(),
-                        vm: None,
-                    });
-                }
-            }
-            Page::Networks => {
-                for network in &inventory.networks {
-                    self.rows.push(DisplayRow {
-                        id: network.uuid.to_string(),
-                        name: network.name.clone(),
-                        state: "Network".into(),
-                        location: network.bridge.clone(),
-                        cpu: "—".into(),
-                        memory: "—".into(),
-                        description: "Virtual network".into(),
-                        vm: None,
-                    });
-                }
-            }
-        }
-        self.rows.retain(|row| {
-            query.is_empty()
-                || row.name.to_lowercase().contains(&query)
-                || row.id.contains(&query)
-                || row.location.to_lowercase().contains(&query)
-        });
+        self.rows = xenadmin_ui::project_rows(
+            inventory,
+            inventory_page(self.page),
+            self.host_filter,
+            &self.search.text,
+        );
         let sort = self
             .table
             .sort()
@@ -830,16 +713,7 @@ impl State {
     }
     fn sort(&mut self, name: &str, direction: SortDir) {
         self.rows.sort_by(|a, b| {
-            direction.apply(match name {
-                "state" => a.state.cmp(&b.state),
-                "location" => a.location.cmp(&b.location),
-                "cpu" => a
-                    .cpu
-                    .parse::<u64>()
-                    .unwrap_or(0)
-                    .cmp(&b.cpu.parse().unwrap_or(0)),
-                _ => rune_kit::natural_cmp(&a.name, &b.name),
-            })
+            direction.apply(xenadmin_ui::compare_rows(name, a, b, rune_kit::natural_cmp))
         });
     }
     fn selected(&self) -> Option<Cow<'_, DisplayRow>> {
@@ -864,7 +738,7 @@ impl State {
                     .map(|h| h.name.clone())
                     .unwrap_or_else(|| "—".into()),
                 cpu: vm.vcpus.to_string(),
-                memory: bytes(vm.memory_bytes),
+                memory: xenadmin_ui::memory_label(vm.memory_bytes),
                 description: vm.description.clone(),
                 vm: Some(vm.id),
             }));
@@ -1023,21 +897,11 @@ fn poll(s: &mut State, clock: f64, tx: &mut Tx) -> bool {
     console_view::poll_recovery(s, clock, tx);
     true
 }
-fn bytes(value: u64) -> String {
-    if value == 0 {
-        "—".into()
-    } else if value >= 1 << 30 {
-        format!("{:.1} GiB", value as f64 / (1u64 << 30) as f64)
-    } else {
-        format!("{:.0} MiB", value as f64 / (1u64 << 20) as f64)
-    }
+pub(crate) fn bytes(value: u64) -> String {
+    xenadmin_ui::memory_label(value)
 }
-fn storage_bytes(value: Option<u64>) -> String {
-    match value {
-        None => "Unknown".into(),
-        Some(0) => "0 B".into(),
-        Some(value) => bytes(value),
-    }
+pub(crate) fn storage_bytes(value: Option<u64>) -> String {
+    xenadmin_ui::storage_bytes(value)
 }
 fn caption(value: impl Into<String>, k: &Kit) -> El {
     text(value).font(k.ty.text_small).color(k.c.text_muted)
@@ -2513,101 +2377,9 @@ fn demo_sized(s: &mut State, host_count: usize, vm_count: usize) {
     s.error = None;
     s.show_connect = false;
     s.host_filter = None;
-    let pool_id = PoolId::parse("10000000-0000-0000-0000-000000000001").unwrap();
-    let mut hosts = BTreeMap::new();
-    for i in 1..=host_count {
-        let id = HostId::parse(&format!("20000000-0000-0000-0000-{i:012}")).unwrap();
-        hosts.insert(
-            id,
-            Host {
-                id,
-                name: format!("xcp-lab-{i:02}"),
-                address: format!("192.0.2.{}", (i + 10) % 256),
-                enabled: true,
-                version: "8.3".into(),
-            },
-        );
-    }
-    let host_ids: Vec<_> = hosts.keys().copied().collect();
-    let names = [
-        "Xen Orchestra",
-        "Database",
-        "Application",
-        "Build runner",
-        "Monitoring",
-        "Gateway",
-        "Development",
-        "File services",
-    ];
-    let mut vms = BTreeMap::new();
-    for i in 0..vm_count {
-        let id = VmId::parse(&format!("30000000-0000-0000-0000-{i:012}")).unwrap();
-        let running = i % 5 != 0;
-        vms.insert(
-            id,
-            Vm {
-                allowed_actions: vec![],
-                can_snapshot: true,
-                id,
-                name: if i < 8 {
-                    names[i].into()
-                } else {
-                    format!("{} {:02}", names[i % 8], i / 8 + 1)
-                },
-                description: "Synthetic inventory for exploring the desktop interface.".into(),
-                power_state: if running {
-                    PowerState::Running
-                } else {
-                    PowerState::Halted
-                },
-                host: running.then_some(host_ids[i % host_count]),
-                vcpus: if i % 3 == 0 { 4 } else { 2 },
-                memory_bytes: (2 + i % 4) as u64 * (1 << 30),
-                is_template: false,
-                is_control_domain: false,
-            },
-        );
-    }
-    s.inventory = Some(Arc::new(Inventory {
-        pool_id,
-        pool_name: "Demonstration pool".into(),
-        coordinator: Some(host_ids[0]),
-        hosts,
-        vms,
-        snapshots: xenadmin_core::SnapshotInventory::from(BTreeMap::from_iter((0..3).map(|i| {
-            let id = xenadmin_core::SnapshotId::parse(&format!("60000000-0000-0000-0000-{i:012}"))
-                .unwrap();
-            (
-                id,
-                xenadmin_core::Snapshot {
-                    id,
-                    vm: Some(VmId::parse("30000000-0000-0000-0000-000000000000").unwrap()),
-                    name: ["Before upgrade", "Known good", "Initial installation"][i].into(),
-                    description: "Synthetic disk snapshot".into(),
-                    created_at: Some(format!("2026110{}T10:00:00Z", 7 - i)),
-                    power_state: PowerState::Halted,
-                    allowed_actions: vec![xenadmin_core::SnapshotAction::Revert],
-                },
-            )
-        }))),
-        storage: vec![xenadmin_core::Storage {
-            uuid: uuid::Uuid::from_u128(0x40000000000000000000000000000001),
-            name: "Demo storage".into(),
-            kind: "nfs".into(),
-            capacity_bytes: Some(2 << 40),
-            used_bytes: Some(512 << 30),
-        }],
-        networks: vec![xenadmin_core::Network {
-            uuid: uuid::Uuid::from_u128(0x50000000000000000000000000000001),
-            name: "Demo network".into(),
-            bridge: "xenbr0".into(),
-        }],
-        revision: 1,
-        details: Default::default(),
-    }));
-    if let Some(inventory) = &mut s.inventory {
-        demo_details::populate(Arc::make_mut(inventory));
-    }
+    let mut inventory = xenadmin_ui::demonstration(host_count, vm_count);
+    xenadmin_ui::populate_demo_details(&mut inventory);
+    s.inventory = Some(Arc::new(inventory));
     s.page = Page::Guests;
     s.rebuild();
 }
@@ -2865,6 +2637,30 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_shared_registry_lists_every_app_scene() {
+        let source = include_str!("main.rs");
+        let start = source.find("scenes: &[").expect("scene list");
+        let end = source[start..].find("min_size:").expect("scene list end") + start;
+        let mut names = Vec::new();
+        for raw in source[start..end].lines() {
+            let line = raw.trim();
+            let rest = line.strip_prefix("(\"").or_else(|| line.strip_prefix('"'));
+            let Some(rest) = rest else { continue };
+            let name = rest.split('"').next().unwrap_or("");
+            if name.starts_with(|c: char| c.is_ascii_alphabetic())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            {
+                names.push(name);
+            }
+        }
+        assert_eq!(names.len(), xenadmin_ui::SCENES.len());
+        for name in names {
+            assert!(xenadmin_ui::scene(name).is_some(), "{name}");
+        }
+    }
+    #[test]
     fn sidebar_links_to_the_repository_without_a_demo_entry() {
         for size in [(513.0, 652.0), (1440.0, 900.0)] {
             let mut runtime = rune::Runtime::new(
@@ -3098,8 +2894,8 @@ mod tests {
                 .to_string()
                 .contains("Certificate SHA-256")
         );
-        assert_eq!(storage_bytes(None), "Unknown");
-        assert_eq!(storage_bytes(Some(0)), "0 B");
+        assert_eq!(xenadmin_ui::storage_bytes(None), "Unknown");
+        assert_eq!(xenadmin_ui::storage_bytes(Some(0)), "0 B");
     }
     #[test]
     fn search_and_host_filter_select_matching_objects() {

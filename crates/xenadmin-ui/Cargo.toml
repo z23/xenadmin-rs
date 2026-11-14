@@ -1,0 +1,16 @@
+[package]
+name = "xenadmin-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Toolkit-free UI model shared by the desktop front ends."
+publish = false
+
+[dependencies]
+serde.workspace = true
+uuid.workspace = true
+xenadmin-core = { path = "../xenadmin-core" }
+
+[lints]
+workspace = true

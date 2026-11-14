@@ -7,7 +7,7 @@ use xenadmin_core::{
     VirtualInterface, VmDetails,
 };
 
-pub(super) fn populate(inventory: &mut Inventory) {
+pub fn populate(inventory: &mut Inventory) {
     inventory.details.pool = Some(xenadmin_core::PoolDetails {
         administration: xenadmin_core::PoolAdministration {
             coordinator: inventory.hosts.keys().next().copied(),
