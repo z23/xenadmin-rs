@@ -15,7 +15,7 @@ jobs:
       - name: Install Linux build and render dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-0 libfontconfig1-dev libvulkan1 mesa-vulkan-drivers desktop-file-utils
+          sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxkbcommon-x11-0 libfontconfig1-dev libxcb1-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-xkb-dev libvulkan1 mesa-vulkan-drivers desktop-file-utils
       - name: Install the repository toolchain
         run: rustup show
       - name: Check, test, and render

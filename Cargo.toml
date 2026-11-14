@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/xenadmin-core", "crates/xenadmin-desktop", "crates/xenadmin-process", "crates/xenadmin-xapi", "tools/host-probe"]
+members = ["crates/xenadmin-core", "crates/xenadmin-desktop", "crates/xenadmin-gpui", "crates/xenadmin-process", "crates/xenadmin-xapi", "tools/host-probe"]
 resolver = "3"
 
 [workspace.package]
@@ -23,6 +23,8 @@ sha2 = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
 rune = { git = "https://github.com/anomalyco/rune", rev = "f3d04f3f2069d177d04c963b0ba9f6b2065e46eb", default-features = false, features = ["accessibility", "dbus", "svg", "native-file-dialog"] }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "f3d04f3f2069d177d04c963b0ba9f6b2065e46eb" }
+# Exact pin. Do not enable gpui-fast, tree-sitter, syntect, speech, or decimal.
+gpui-kit = { version = "=0.9.1" }
 
 [profile.dev]
 debug = 1
