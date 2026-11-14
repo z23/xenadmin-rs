@@ -40,15 +40,27 @@ applied. Route A met requirements 3 to 5 without it.
 Route C would send keysyms from `Keystroke` and would drop extended key
 events and left/right modifiers. It is not adopted.
 
-## What is still open
+## Accepted limits
 
-The full S1 matrix was not run. No guest recorded a code. A second host
-layout was not applied. On the same seat, screencopy never completed, so
-fit and actual-size pixels were not read back. The compositor cursor could
-be moved onto the probe, and GPUI received no pointer event; focus never
-moved off the previously active terminal, so the clipboard write did not
-become the seat selection. Eight windows mapped. Fullscreen was reported
-by hyprctl once and did not repeat, and exit was not observed. S2 through
-S5 are unchanged, so G0 does not pass and the Rune console remains the one
-the application ships. The surface evidence is in
-`docs/reports/2026-11-14-gpui-spike-s1.md`.
+The remaining seat failures are accepted limits. They do not stop the
+migration, and they do not change route A. Route B stays unvendored. Route
+C stays unused.
+
+Still not shown on a real seat, and not a reason to wait:
+
+- GPUI did not deliver pointer motion or buttons on the Hyprland probe.
+- `CursorStyle` has no hidden value, so the local cursor stays visible.
+- The guest cursor is not drawn. The Rune console still draws it, because
+  that front end can hide the local cursor. The GPUI console will not draw
+  a second cursor.
+- Screencopy never completed, so fit and actual-size pixels were not read
+  back.
+- Clipboard text was not offered, because the probe window never became the
+  active window. Clipboard without focus stays unsupported.
+- Fullscreen was reported once and did not repeat. Exit was not observed.
+- No guest recorded a key, and a second host layout was not applied.
+  Ctrl+Alt+F2 was not sent.
+
+Eight windows did map. The evidence is in
+`docs/reports/2026-11-14-gpui-spike-s1.md`. The Rune binary remains the
+released artifact until cutover.

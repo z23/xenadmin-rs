@@ -52,10 +52,11 @@ session were not run.
 
 ## Consequence
 
-Phase 1 does not start from this branch. The spike crate, the pin, and these
-reports stay so the next attempt does not repeat the source reading. Views
-are not ported. `xenadmin-core`, `xenadmin-xapi`, and `xenadmin-process` are
-unchanged.
+The remaining seat failures are accepted limits, recorded in
+`docs/decisions/0006-console-key-codes.md`. They do not stop the migration.
+Phase 1 extracts the toolkit-free model. Views are not ported in that phase.
+The Rune binary stays the released artifact. `xenadmin-core`,
+`xenadmin-xapi`, and `xenadmin-process` stay unchanged.
 
 This note is an engineering record, not legal advice. The Kit and `gpui-pre`
 are Apache-2.0. That does not change the licence of the existing crates.

@@ -10219,6 +10219,7 @@ dependencies = [
  "tempfile",
  "uuid",
  "xenadmin-core",
+ "xenadmin-ui",
  "zeroize",
 ]
 
@@ -10241,6 +10242,15 @@ name = "xenadmin-process"
 version = "0.20.0"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "xenadmin-ui"
+version = "0.20.0"
+dependencies = [
+ "serde",
+ "uuid",
+ "xenadmin-core",
 ]
 
 [[package]]
