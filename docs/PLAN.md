@@ -9,6 +9,9 @@ is unreachable. All application connections use XAPI and the advertised host end
 This is an authorized reimplementation. The reference client supplies behavioral evidence.
 The new UI uses Rune and the backend uses Rust. [Feature scope](FEATURES.md) owns the
 workflow list. [Architecture](ARCHITECTURE.md) owns the implementation boundaries.
+A GPUI Kit front end is under evaluation in [GPUI-MIGRATION.md](GPUI-MIGRATION.md).
+The Rune binary stays the released artifact until that migration's cutover gate.
+Phase 0 did not pass its gate; the evidence is in the spike reports.
 
 ## Retained parity delivery
 

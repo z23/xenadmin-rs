@@ -42,3 +42,19 @@
 
 Keep scope in docs/FEATURES.md, milestone sequencing in docs/PLAN.md, and ownership rules
 in docs/ARCHITECTURE.md. Link to the owning document instead of duplicating its tables.
+
+## Front-end migration
+
+[docs/GPUI-MIGRATION.md](docs/GPUI-MIGRATION.md) is the GPUI Kit evaluation. The Rune
+binary remains the released artifact until that plan's cutover gate. Phase 0 has
+not passed; do not port views past a failed gate.
+
+- Spikes come before ported views.
+- Selection, tabs, commands, drafts and scenes belong in a toolkit-free model.
+  GPUI types stay in the GPUI crate.
+- `xenadmin-core`, `xenadmin-xapi` and `xenadmin-process` do not change for this
+  migration. Record a core gap under `docs/reports/` and continue elsewhere.
+- No new product scope and no new top-level buttons outside the command table.
+- A surface that only shows state is a tab. Only an action is a dialog.
+- `gpui-kit` stays pinned at exactly `0.9.1` until a later phase upgrades it.
+- Headless output does not establish Wayland, clipboard, keyboard or Orca behavior.

@@ -1,0 +1,39 @@
+[package]
+name = "xenadmin-gpui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "GPUI Kit spike for the desktop front end. The released binary stays xenadmin-rs."
+publish = false
+
+[dependencies]
+gpui-kit.workspace = true
+uuid.workspace = true
+wayland-client = "0.31"
+xenadmin-core = { path = "../xenadmin-core" }
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[features]
+# Scene dumps and the scale example need the Kit test harness. A build
+# without this feature leaves it off.
+scenes = ["gpui-kit/test-support"]
+
+[[example]]
+name = "s2_scene"
+required-features = ["scenes"]
+
+[[example]]
+name = "s3_scale"
+required-features = ["scenes"]
+
+# Not `workspace = true`: the workspace forbids unsafe, and this spike's
+# foreign-display wrapper is the one place that uses it. The allow is on
+# `ForeignKeyboard::from_foreign_display`. xenadmin-core keeps `forbid`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"

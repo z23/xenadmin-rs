@@ -49,6 +49,25 @@ accessibility and scrolling sections. The manifest and current modules support t
 description. Verify behavior in M0 and M3 rather than relying on either paragraph alone.
 The documented incoming Wayland file-drag gap requires a working file picker for imports.
 
+## GPUI Kit
+
+Reviewed for the front-end spike, not as a replacement for the Rune pin above.
+`gpui-kit` is pinned at exactly `0.9.1` (published 2026-11-09). Its default
+features are `component` and `assets`. `gpui-fast`, `tree-sitter`, `syntect`,
+`speech` and `decimal` stay off. The Kit depends on `gpui-pre`, `gpui-pre-linux`
+and `gpui-pre-wgpu` at exactly `0.3.12`.
+
+- [GPUI Kit 0.9.1](https://github.com/longbridge/gpui-kit) is the facade.
+  Application code reaches GPUI as `gpui_kit::*`.
+- [gpui-pre 0.3.12](https://crates.io/crates/gpui-pre/0.3.12) is the GPUI snapshot.
+  `Keystroke` carries modifiers, key and key_char, and no physical key code.
+- [gpui-pre-linux 0.3.12](https://crates.io/crates/gpui-pre-linux/0.3.12) is the
+  Wayland and X11 backend. Its public crate root exports `current_platform` and
+  `linux_platform`. It does not export `current_headless_renderer`.
+
+The spike reports record what that pin did and did not establish. Rune remains
+the reviewed front end of the released binary.
+
 Live-lab finding: the pinned revision keeps a scroll viewport's children in the viewport's
 content space, and AccessKit's AT-SPI adapter (`accesskit_unix` 0.24.1,
 `accesskit_atspi_common` 0.21.1) re-evaluates clipping only for nodes whose own data
