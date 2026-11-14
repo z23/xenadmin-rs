@@ -48,6 +48,7 @@ enum Fault {
     AffinityRefuse,
     ChangedDuringAssert,
     WrongToken,
+    ForeignUrl,
     Incompatible,
 }
 type Hook = Arc<dyn Fn(&Value) + Send + Sync>;
@@ -152,6 +153,9 @@ async fn fixture_hook(
                     .unwrap_or_else(|| json!({"error":{"message":"UUID_INVALID"}}));
             }
             if method == "host.migrate_receive" {
+                if fault == Fault::ForeignUrl {
+                    return json!({"result":{"host":"OpaqueRef:host:destination","session_id":"OpaqueRef:SECRET-MIGRATION-TOKEN","master":"https://203.0.113.50/","SM":"https://203.0.113.50/services/SM","xenops":"https://203.0.113.50/services/xenops"}});
+                }
                 return json!({"result":{"host":if fault==Fault::WrongToken{"OpaqueRef:host:source"}else{"OpaqueRef:host:destination"},"session_id":"SECRET-MIGRATION-TOKEN","master":"https://fixture.invalid"}});
             }
             if matches!(method, "VM.assert_can_migrate" | "VM.assert_can_boot_here") {
@@ -329,6 +333,28 @@ async fn live_storage_migration_reports_new_disk_and_keeps_credentials_out_of_jo
     let serialized = serde_json::to_string(&result).unwrap();
     assert!(!serialized.contains("SECRET-MIGRATION-TOKEN"));
     assert!(!serialized.contains("fixture.invalid"));
+}
+#[tokio::test]
+async fn unbound_receiver_url_is_not_forwarded() {
+    let (f, _, c) = fixture(true, true, Fault::ForeignUrl).await;
+    let dir = tempfile::tempdir().unwrap();
+    let result = execute(&f, dir.path(), operation(true, true)).await;
+    assert_eq!(count(&c, "host.migrate_receive"), 1);
+    assert_eq!(count(&c, "VM.assert_can_migrate"), 0);
+    assert_eq!(count(&c, "Async.VM.migrate_send"), 0);
+    assert_eq!(result.state, OperationState::Rejected, "{}", result.detail);
+    let serialized = serde_json::to_string(&result).unwrap();
+    assert!(!serialized.contains("203.0.113.50"));
+    let payload: String = Journal::open(dir.path())
+        .unwrap()
+        .0
+        .query_row(
+            "SELECT payload FROM operations WHERE id=?1",
+            [result.id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!payload.contains("203.0.113.50"));
 }
 #[tokio::test]
 async fn halted_storage_move_sets_home_host_without_starting_vm() {
