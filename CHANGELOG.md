@@ -180,6 +180,12 @@ again for that, because no published version reads format 5.
   credentials took it for unused when a host or a repository still named it in another
   spelling of the same identifier: as a URN, in braces or in capitals. The identifiers
   are now compared as identifiers, and such a secret is kept (issue 8).
+- An intra-pool move that copies disks refuses a receiver address outside the pool
+  before the move is sent. The destination's address on the chosen transfer network
+  is still accepted when it is not that host's management address. A pool host's
+  management address is still accepted. The refused address is not stored. Fixtures
+  cover both cases. Nobody has run this on the lab over a transfer network separate
+  from management (issue 5).
 
 ### Known issues
 

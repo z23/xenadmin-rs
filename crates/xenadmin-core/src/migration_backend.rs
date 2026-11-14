@@ -579,6 +579,144 @@ pub(crate) async fn preflight(
     preflight.revalidate(session).await?;
     Ok(preflight)
 }
+
+fn receiver_session(token: &str) -> bool {
+    token.starts_with("OpaqueRef:")
+        && token != "OpaqueRef:NULL"
+        && token.len() <= 512
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() && !b";&?#".contains(&byte))
+}
+
+fn host_ip(host: &str) -> Option<std::net::IpAddr> {
+    host.trim_matches(['[', ']']).parse().ok()
+}
+
+fn same_host(url_host: &str, address: &str) -> bool {
+    match (host_ip(url_host), host_ip(address)) {
+        (Some(left), Some(right)) => left == right,
+        _ => url_host == address,
+    }
+}
+
+fn pool_endpoint(url: &url::Url, addresses: &BTreeSet<String>) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+        && url.port().is_none()
+        && url
+            .host_str()
+            .is_some_and(|host| addresses.iter().any(|address| same_host(host, address)))
+}
+
+fn endpoint_text<'a>(key: &str, value: &'a Value) -> Option<&'a str> {
+    if key == "host" || key == "session_id" {
+        return None;
+    }
+    let text = value.as_str()?;
+    if matches!(key, "master" | "SM" | "xenops")
+        || url::Url::parse(text).is_ok_and(|url| url.host().is_some())
+    {
+        Some(text)
+    } else {
+        None
+    }
+}
+
+fn remember_address(addresses: &mut BTreeSet<String>, text: &str) {
+    let text = text.split('/').next().unwrap_or(text).trim();
+    if text.is_empty() {
+        return;
+    }
+    if let Ok(ip) = text.parse::<std::net::IpAddr>() {
+        if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
+            return;
+        }
+        addresses.insert(ip.to_string());
+        return;
+    }
+    addresses.insert(text.to_owned());
+}
+
+async fn management_addresses(session: &Session) -> Result<BTreeSet<String>, Error> {
+    let records = session.send(calls::host::GetAllRecords).await?;
+    let records = records
+        .as_object()
+        .filter(|records| records.len() <= 1024)
+        .ok_or(Error::MigrationConflict)?;
+    let mut addresses = BTreeSet::new();
+    for record in records.values() {
+        if let Some(address) = HostRecord::new(record).address().text() {
+            remember_address(&mut addresses, address);
+        }
+    }
+    Ok(addresses)
+}
+
+async fn transfer_addresses(
+    session: &Session,
+    network: &str,
+    hostref: &str,
+) -> Result<BTreeSet<String>, Error> {
+    let record = read(session, "network", network).await?;
+    let mut addresses = BTreeSet::new();
+    for reference in refs(&record, "PIFs")? {
+        let pif = read(session, "PIF", &reference).await?;
+        let view = PifRecord::new(&pif);
+        if view.host() != hostref || view.currently_attached() != true {
+            continue;
+        }
+        if let Some(ip) = view.ip().text() {
+            remember_address(&mut addresses, ip);
+        }
+        if let Some(values) = view.ipv6().members() {
+            for value in values {
+                if let Some(text) = value.as_str() {
+                    remember_address(&mut addresses, text);
+                }
+            }
+        }
+    }
+    Ok(addresses)
+}
+
+async fn checked_receiver(
+    session: &Session,
+    map: &serde_json::Map<String, Value>,
+    hostref: &str,
+    network: &str,
+) -> Result<(), Error> {
+    if map
+        .get("session_id")
+        .is_some_and(|value| value.as_str().is_none_or(|token| !receiver_session(token)))
+    {
+        return Err(Error::Protocol("invalid migration receiver token"));
+    }
+    if !map
+        .iter()
+        .any(|(key, value)| endpoint_text(key, value).is_some())
+    {
+        return Ok(());
+    }
+    let mut addresses = management_addresses(session).await?;
+    addresses.extend(transfer_addresses(session, network, hostref).await?);
+    for (key, value) in map {
+        let Some(text) = endpoint_text(key, value) else {
+            continue;
+        };
+        let url = url::Url::parse(text)
+            .map_err(|_| Error::Protocol("migration receiver endpoint is outside the pool"))?;
+        if !pool_endpoint(&url, &addresses) {
+            return Err(Error::Protocol(
+                "migration receiver endpoint is outside the pool",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Preflight {
     async fn revalidate(&self, session: &Session) -> Result<(), Error> {
         self.plan
@@ -635,6 +773,7 @@ impl Preflight {
             if map.get("host") != Some(&json!(&self.hostref)) {
                 return Err(Error::Protocol("migration receiver host mismatch"));
             }
+            checked_receiver(session, map, &self.hostref, transfer).await?;
             let args = vec![
                 json!(&self.vmref),
                 token,
