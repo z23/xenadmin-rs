@@ -13,6 +13,11 @@ raw-window-handle = "0.6"
 uuid.workspace = true
 wayland-client = "0.31"
 xenadmin-core = { path = "../xenadmin-core" }
+xenadmin-ui = { path = "../xenadmin-ui" }
+
+[[bin]]
+name = "xenadmin-gpui"
+path = "src/bin/xenadmin-gpui.rs"
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

@@ -10235,6 +10235,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols-wlr",
  "xenadmin-core",
+ "xenadmin-ui",
 ]
 
 [[package]]
