@@ -299,7 +299,7 @@ impl ResourceRequest {
         }
         let mut route =
             import::upload_target(s, self.record.pool, self.ovf_plan()?, guest, disk).await?;
-        route.query.push(("task_id".into(), task));
+        route.query.push(("task_id".into(), task.into_string()));
         self.ovf_inputs().await?;
         self.reload(j)?;
         if self.stop_before_dispatch() {

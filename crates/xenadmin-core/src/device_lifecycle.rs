@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::SetField;
 use xenadmin_xapi::enumerations::{
     storage_operations, vbd_mode, vbd_type, vdi_operations, vdi_type, vif_locking_mode,
@@ -397,8 +398,7 @@ fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
     let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
-fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let value = value.raw();
+fn reference<'a, R: Reads<'a, kind::Reference>>(value: R) -> Result<OpaqueRef<R::Class>, Error> {
     crate::snapshots::reference(value)
 }
 async fn fresh(session: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
@@ -472,7 +472,7 @@ fn refs(record: &Value, key: &str) -> Result<Vec<String>, Error> {
         .filter(|items| items.len() <= 256)
         .ok_or(Error::DeviceConflict)?
         .iter()
-        .map(reference)
+        .map(|value| reference(value).map(String::from))
         .collect()
 }
 async fn attachment(
@@ -1022,7 +1022,10 @@ pub(crate) async fn verify_step(
             if candidates.next().is_some() {
                 return Err(Error::DeviceConflict);
             }
-            (self::reference(&json!(reference))?, record.clone())
+            (
+                self::reference(&json!(reference))?.into_string(),
+                record.clone(),
+            )
         };
         let uuid = record["uuid"]
             .as_str()

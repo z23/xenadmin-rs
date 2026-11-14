@@ -19,7 +19,7 @@ pub(super) fn operation(record: &ResourceOperationRecord) -> Result<&NetworkOper
     }
 }
 fn reference(value: &Value) -> Result<String, Error> {
-    xapi::reply_reference(value)
+    xapi::reply_reference(value).map(xenadmin_xapi::OpaqueRef::into_string)
 }
 pub(super) fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<i64> {
     let value = value.raw();

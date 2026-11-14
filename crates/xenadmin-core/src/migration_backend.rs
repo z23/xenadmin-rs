@@ -162,7 +162,7 @@ pub(crate) fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
         .ok_or(Error::MigrationConflict)?;
     let values = a
         .iter()
-        .map(snapshots::reference)
+        .map(|value| snapshots::reference(value).map(String::from))
         .collect::<Result<Vec<_>, _>>()?;
     if values.iter().collect::<BTreeSet<_>>().len() != values.len() {
         return Err(Error::MigrationConflict);
@@ -637,7 +637,7 @@ impl Preflight {
             }
             let args = vec![
                 json!(&self.vmref),
-                token,
+                token.into_value(),
                 json!(operation.live),
                 self.disks.clone(),
                 self.nics.clone(),

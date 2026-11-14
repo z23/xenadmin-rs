@@ -85,6 +85,7 @@ pub(super) async fn resolve(
             session
                 .send(calls::host::GetRecord(refs::host(&host_ref)))
                 .await?
+                .into_value()
         }
     };
     let id = HostRecord::new(&host)

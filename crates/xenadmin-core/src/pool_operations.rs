@@ -5,6 +5,7 @@ use super::{
 use crate::{Error, HaRestartPriority, HostId, PoolOperation, SrId, VmId, xapi::Session};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::pool_allowed_operations;
 use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PifRecord, PoolRecord, SrRecord, VdiRecord,
@@ -37,8 +38,7 @@ async fn https_only(session: &Session) -> Result<Option<bool>, Error> {
         _ => None,
     })
 }
-fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let value = value.raw();
+fn reference<'a, R: Reads<'a, kind::Reference>>(value: R) -> Result<OpaqueRef<R::Class>, Error> {
     xapi::reply_reference(value)
 }
 fn empty(fresh: &Value, field: &str) -> Result<(), Error> {
@@ -114,7 +114,7 @@ async fn vm_record(session: &Session, vm: VmId) -> Result<(String, Value), Error
     {
         return Err(Error::ResourceConflict);
     }
-    Ok((reference, fresh))
+    Ok((reference.into_string(), fresh.into_value()))
 }
 async fn host_live(session: &Session, host: &Value) -> Result<(), Error> {
     let metrics = related(session, "host_metrics", HostRecord::new(host).metrics()).await?;
@@ -210,7 +210,7 @@ async fn heartbeat_arguments(session: &Session, srs: &[SrId]) -> Result<Vec<Valu
             }
             attached.insert(host_ref);
         }
-        if hosts.keys().any(|host| !attached.contains(host)) {
+        if hosts.keys().any(|host| !attached.contains(host.as_str())) {
             return Err(Error::UnavailableAction);
         }
         result.push(json!(sr_ref));
@@ -276,6 +276,7 @@ pub(super) async fn arguments(
             if session
                 .send(calls::pool::HaFailoverPlanExists(Int::from(failures)))
                 .await?
+                .into_value()
                 != true
             {
                 return Err(Error::UnavailableAction);
@@ -299,6 +300,7 @@ pub(super) async fn arguments(
                     expected_failures,
                 )))
                 .await?
+                .into_value()
                 != true
             {
                 return Err(Error::UnavailableAction);
@@ -487,7 +489,10 @@ pub(super) async fn verify(
                         .as_str()
                         .and_then(|v| uuid::Uuid::parse_str(v).ok())
                         .ok_or(Error::Protocol("invalid HA heartbeat identity"))?;
-                    session.send(calls::vdi::GetByUuid(&id.to_string())).await?
+                    session
+                        .send(calls::vdi::GetByUuid(&id.to_string()))
+                        .await?
+                        .into_value()
                 };
                 let vdi = related(session, "VDI", &file_ref).await?;
                 let sr = related(session, "SR", VdiRecord::new(&vdi).sr()).await?;

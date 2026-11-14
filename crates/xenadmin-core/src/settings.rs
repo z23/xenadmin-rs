@@ -762,7 +762,7 @@ impl SettingsStep {
                 if HostRecord::new(&record).uuid() != id.to_string() {
                     return Err(Error::SettingsConflict);
                 }
-                reference
+                reference.into_value()
             };
             params.push(value);
         } else if let Some(key) = &self.map_key {

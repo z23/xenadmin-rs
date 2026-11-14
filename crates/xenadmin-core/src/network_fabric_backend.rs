@@ -538,7 +538,7 @@ async fn identity_for(
     let child_id = crate::PifId::from(network::uuid(&child_record)?);
     let (resolved_ref, resolved) = xapi::read(s, ResourceTarget::Pif(child_id)).await?;
     if resolved_ref != child_ref
-        || resolved != child_record
+        || resolved != *child_record
         || baseline[&class(op.review.kind).to_ascii_lowercase()].contains(&id)
         || baseline["pif"].contains(&child_id.uuid())
         || network::uuid(&network::related(s, "PIF", &value[parent]).await?)?

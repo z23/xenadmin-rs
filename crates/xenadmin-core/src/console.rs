@@ -428,7 +428,7 @@ async fn host_reference(
     {
         return Err(Error::Stale);
     }
-    Ok(vm_ref)
+    Ok(vm_ref.into_string())
 }
 
 fn key_event(keysym: u32, keycode: Option<u32>, down: bool) -> X11Event {

@@ -609,7 +609,7 @@ pub(crate) async fn task(s: &Session, plan: &mut Plan, index: usize) -> Result<V
     if TaskRecord::new(&r).status() == task_status_type::SUCCESS {
         e.completed = true
     }
-    Ok(r)
+    Ok(r.into_value())
 }
 pub(crate) async fn verify(
     s: &Session,

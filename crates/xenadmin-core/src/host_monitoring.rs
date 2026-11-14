@@ -220,7 +220,8 @@ pub(crate) async fn catalog(
     decode(
         &session
             .send(calls::host::GetDataSources(refs::host(reference)))
-            .await?,
+            .await?
+            .into_value(),
     )
 }
 pub(crate) async fn check(

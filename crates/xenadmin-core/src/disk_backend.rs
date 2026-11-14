@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{vbd_type, vdi_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 use xenadmin_xapi::{Call, Int, calls, refs};
@@ -25,7 +26,7 @@ fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 fn reference(value: &Value) -> Result<String, Error> {
-    crate::snapshots::reference(value)
+    crate::snapshots::reference(value).map(xenadmin_xapi::OpaqueRef::into_string)
 }
 fn refs(record: &Value, key: &str) -> Result<BTreeSet<String>, Error> {
     let values = record[key]
@@ -155,7 +156,7 @@ async fn checked_disk(
             return Err(Error::StorageInUse);
         }
         let vm_ref = reference_value(VbdRecord::new(vbd).vm())?;
-        let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
+        let vm = vms.get(vm_ref.as_str()).ok_or(Error::ResourceConflict)?;
         idle(vm)?;
         if VmRecord::new(vm).is_a_snapshot() != false
             || VmRecord::new(vm).is_a_template() != false
@@ -212,9 +213,8 @@ async fn checked_disk(
     }
     Ok((reference, latest))
 }
-fn reference_value<'a>(v: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let v = v.raw();
-    reference(v)
+fn reference_value<'a, R: Reads<'a, kind::Reference>>(v: R) -> Result<OpaqueRef<R::Class>, Error> {
+    crate::snapshots::reference(v)
 }
 fn op(r: &ResourceOperationRecord) -> Result<&DiskOperation, Error> {
     match &r.action {
@@ -422,5 +422,5 @@ pub(super) async fn task(
     if plan.tasks_before.contains(&uuid) || evidence.task_uuid.is_some_and(|id| id != uuid) {
         return conflict();
     }
-    Ok((uuid, task))
+    Ok((uuid, task.into_value()))
 }

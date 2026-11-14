@@ -2,6 +2,7 @@ use crate::{Error, Inventory, SnapshotId, VdiId, VmId, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{
     vbd_type, vdi_operations, vdi_type, vm_operations, vm_power_state,
 };
@@ -54,7 +55,9 @@ impl Inventory {
     }
 }
 
-pub(crate) fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+pub(crate) fn reference<'a, R: Reads<'a, kind::Reference>>(
+    value: R,
+) -> Result<OpaqueRef<R::Class>, Error> {
     let value = value.raw();
     value
         .as_str()
@@ -65,7 +68,7 @@ pub(crate) fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<St
                 && s.len() <= 1024
                 && s.bytes().all(|b| b.is_ascii_graphic())
         })
-        .map(str::to_owned)
+        .map(OpaqueRef::new)
         .ok_or(Error::Protocol("invalid snapshot object reference"))
 }
 
@@ -86,7 +89,7 @@ pub(crate) async fn optional_record(
         if record["uuid"].as_str() != Some(id) {
             return Err(Error::SnapshotConflict);
         }
-        Ok((object, record))
+        Ok((object.into_string(), record))
     }
     .await;
     match result {
@@ -131,7 +134,10 @@ fn refs(record: &Value, key: &str) -> Result<Vec<String>, Error> {
         .as_array()
         .filter(|v| v.len() <= 256)
         .ok_or(Error::SnapshotConflict)?;
-    values.iter().map(reference).collect()
+    values
+        .iter()
+        .map(|value| reference(value).map(String::from))
+        .collect()
 }
 /// Whether a VM (a snapshot is one) offers `operation` and no administrator blocked it.
 fn can(record: &Value, operation: &str) -> bool {
@@ -335,7 +341,7 @@ pub(crate) async fn verify_clone(
     {
         return Err(Error::Protocol("invalid cloned VM result"));
     }
-    Ok((id, record))
+    Ok((id, record.into_value()))
 }
 
 pub(crate) async fn clone_baseline(session: &Session) -> Result<Vec<VmId>, Error> {

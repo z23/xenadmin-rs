@@ -38,7 +38,10 @@ fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
         .as_array()
         .filter(|a| a.len() <= 256)
         .ok_or(Error::TransferConflict)?;
-    values.iter().map(crate::snapshots::reference).collect()
+    values
+        .iter()
+        .map(|value| crate::snapshots::reference(value).map(String::from))
+        .collect()
 }
 async fn fresh(s: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
     crate::snapshots::optional_record(s, class, &id.to_string())
@@ -233,7 +236,7 @@ pub(crate) fn result(task: &Value) -> Result<Vec<String>, Error> {
         .ok_or(Error::TransferConflict)?;
     let refs = values
         .iter()
-        .map(crate::snapshots::reference)
+        .map(|value| crate::snapshots::reference(value).map(String::from))
         .collect::<Result<Vec<_>, _>>()?;
     if refs.iter().collect::<BTreeSet<_>>().len() != refs.len() {
         return Err(Error::TransferConflict);
@@ -316,7 +319,10 @@ pub(crate) async fn created(
     }
     for (reference, r) in &disks {
         let tagged = VdiRecord::new(r).sm_config()["import_task"] == task;
-        if !tagged && !graph_disks.contains(reference) && !graph_memory.contains(reference) {
+        if !tagged
+            && !graph_disks.contains(reference.as_str())
+            && !graph_memory.contains(reference.as_str())
+        {
             continue;
         }
         let uuid = id(r)?;
@@ -326,7 +332,7 @@ pub(crate) async fn created(
             || VdiRecord::new(r).managed() != true
             || (memory
                 && (!graph_memory.contains(reference)
-                    || graph_disks.contains(reference)
+                    || graph_disks.contains(reference.as_str())
                     || !refs(r, "VBDs")?.is_empty()))
             || (memory
                 && vms.iter().any(|(vm, v)| {
@@ -458,7 +464,7 @@ pub(crate) async fn storage_route(
         }
         if PbdRecord::new(&p).currently_attached() == true {
             let h = crate::snapshots::reference(PbdRecord::new(&p).host())?;
-            let host = hosts.get(&h).ok_or(Error::TransferConflict)?;
+            let host = hosts.get(h.as_str()).ok_or(Error::TransferConflict)?;
             if HostRecord::new(host).enabled() == true {
                 candidates.push((h, host));
             }

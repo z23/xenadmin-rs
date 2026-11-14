@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{
     storage_operations, vbd_operations, vbd_type, vdi_operations, vdi_type, vm_operations,
     vm_power_state,
@@ -191,8 +192,7 @@ fn id<T: From<Uuid>>(r: &Value) -> Result<T, Error> {
         .map(T::from)
         .ok_or(Error::VmLifecycleConflict)
 }
-fn reference<'a>(v: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let v = v.raw();
+fn reference<'a, R: Reads<'a, kind::Reference>>(v: R) -> Result<OpaqueRef<R::Class>, Error> {
     snapshots::reference(v)
 }
 fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
@@ -201,7 +201,7 @@ fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
         .filter(|v| v.len() <= 256)
         .ok_or(Error::VmLifecycleConflict)?
         .iter()
-        .map(reference)
+        .map(|value| reference(value).map(String::from))
         .collect()
 }
 fn idle(r: &Value) -> Result<(), Error> {
@@ -1044,11 +1044,14 @@ fn string_map<'a>(v: impl Reads<'a, kind::Map>) -> Result<serde_json::Map<String
 
 async fn first_cd(session: &Session, vm: &Value) -> Result<Option<(VbdId, Value)>, Error> {
     for attachment in refs(vm, "VBDs")? {
-        let mut r = session
+        let r = session
             .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
             .await?;
         if VbdRecord::new(&r).type_() == vbd_type::CD {
             let id = id(&r)?;
+            // The record is handed on with the reference it was read by, under a key of
+            // the client's own.
+            let mut r = r.into_value();
             r["ref"] = json!(attachment);
             return Ok(Some((id, r)));
         }
@@ -1356,7 +1359,7 @@ pub(crate) fn record_result(plan: &mut Plan, index: usize, result: &Value) -> Re
     } = plan.steps[index]
         && let Some(evidence) = &mut plan.groups[group].evidence[device_index]
     {
-        evidence.result_reference = Some(reference(result)?);
+        evidence.result_reference = Some(reference(result)?.into_string());
     }
     Ok(())
 }

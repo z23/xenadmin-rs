@@ -33,7 +33,7 @@ async fn read(session: &Session, class: &str, id: uuid::Uuid) -> Result<(String,
         record["uuid"] == id.to_string(),
         "Security object identity changed",
     )?;
-    Ok((reference, record))
+    Ok((reference.into_string(), record))
 }
 async fn reviewed_hosts(
     session: &Session,

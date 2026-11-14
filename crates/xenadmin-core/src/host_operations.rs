@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{host_allowed_operations, task_status_type, vm_power_state};
 use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PoolRecord, TaskRecord, VmRecord,
@@ -159,8 +160,7 @@ fn require(yes: bool, reason: &'static str) -> Result<(), Error> {
         Err(Error::HostPrerequisite(reason))
     }
 }
-fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let value = value.raw();
+fn reference<'a, R: Reads<'a, kind::Reference>>(value: R) -> Result<OpaqueRef<R::Class>, Error> {
     super::xapi::reply_reference(value)
 }
 fn integer<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
@@ -237,7 +237,7 @@ async fn read(session: &Session, class: &str, uuid: uuid::Uuid) -> Result<(Strin
         record["uuid"].as_str() == Some(uuid.to_string().as_str()),
         "Object identity changed since review",
     )?;
-    Ok((object, record))
+    Ok((object.into_string(), record))
 }
 async fn host(
     session: &Session,
@@ -255,6 +255,7 @@ async fn metrics(session: &Session, host: &Value) -> Result<Value, Error> {
     session
         .send(calls::host_metrics::GetRecord(refs::host_metrics(&metrics)))
         .await
+        .map(xenadmin_xapi::Answer::into_value)
 }
 async fn live(session: &Session, host: &Value, expected: bool) -> Result<(), Error> {
     require(

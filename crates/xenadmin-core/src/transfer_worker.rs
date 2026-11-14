@@ -331,7 +331,7 @@ impl ResourceRequest {
         self.record.state = OperationState::Dispatching;
         self.save_dispatch(journal)?;
         let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),v=session.send(calls::task::Create { label: &task_name, description: "Client-owned image transfer" })=>v?};
-        self.record.task = Some(crate::resources::xapi::reply_reference(&task)?);
+        self.record.task = Some(crate::resources::xapi::reply_reference(&task)?.into_string());
         self.record = journal.resource_evidence(&self.record)?;
         if self.stopped_after_recovery() {
             return Ok(());

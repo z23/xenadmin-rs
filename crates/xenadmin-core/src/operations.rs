@@ -1628,7 +1628,7 @@ impl MutationRequest {
             let before = session
                 .send(calls::vm::GetRecord(refs::vm(reference)))
                 .await?;
-            let before = patch.resolve_record(session, before).await?;
+            let before = patch.resolve_record(session, before.into_value()).await?;
             if VmRecord::new(&before).uuid().text() != Some(self.record.vm.to_string().as_str()) {
                 return Err(Error::Stale);
             }
@@ -1683,7 +1683,7 @@ impl MutationRequest {
             let after = session
                 .send(calls::vm::GetRecord(refs::vm(reference)))
                 .await?;
-            let after = patch.resolve_record(session, after).await?;
+            let after = patch.resolve_record(session, after.into_value()).await?;
             if VmRecord::new(&after).uuid().text() != Some(self.record.vm.to_string().as_str())
                 || patch.target_guard(&after).is_err()
                 || !step.verified(&after)
@@ -1717,7 +1717,7 @@ impl MutationRequest {
         let current = session
             .send(calls::vm::GetRecord(refs::vm(&reference)))
             .await?;
-        let current = patch.resolve_record(session, current).await?;
+        let current = patch.resolve_record(session, current.into_value()).await?;
         if VmRecord::new(&current).uuid().text() != Some(self.record.vm.to_string().as_str()) {
             return Err(Error::Stale);
         };
@@ -1772,7 +1772,7 @@ impl MutationRequest {
             }
             let task = tokio::select! {
                 _=connection_cancel.cancelled()=>return Err(Error::Closed),
-                result=async { if self.record.result_reference.is_some() {Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0}))} else {session.send(calls::task::GetRecord(refs::task(&reference))).await} }=>result,
+                result=async { if self.record.result_reference.is_some() {Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0}))} else {session.send(calls::task::GetRecord(refs::task(&reference))).await.map(xenadmin_xapi::Answer::into_value)} }=>result,
             };
             let task = match task {
                 Ok(task) => {

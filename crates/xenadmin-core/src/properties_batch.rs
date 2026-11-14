@@ -180,7 +180,12 @@ async fn read(
         return Err(Error::Stale);
     }
     item.patch.target_guard(&value)?;
-    Ok((reference, item.patch.resolve_record(session, value).await?))
+    Ok((
+        reference.into_string(),
+        item.patch
+            .resolve_record(session, value.into_value())
+            .await?,
+    ))
 }
 pub(crate) async fn preflight(
     session: &crate::xapi::Session,

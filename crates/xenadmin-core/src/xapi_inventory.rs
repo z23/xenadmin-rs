@@ -8,7 +8,9 @@ use xenadmin_xapi::records::{
     PifMetricsRecord, PifRecord, PoolRecord, SmRecord, SrRecord, VbdRecord, VdiRecord, VifRecord,
     VlanRecord, VmApplianceRecord, VmGuestMetricsRecord, VmMetricsRecord, VmssRecord,
 };
-use xenadmin_xapi::{FlagField, MapField, RefField, SetField, TextField, Textual, WholeField};
+use xenadmin_xapi::{
+    Fits, FlagField, IsClass, MapField, RefField, SetField, TextField, Textual, WholeField, class,
+};
 use xenadmin_xapi::{Reads, kind};
 #[path = "xapi_network_fabric.rs"]
 mod network_fabric;
@@ -35,8 +37,10 @@ impl References {
         }
         Self { classes, snapshots }
     }
-    fn link<T: From<Uuid>>(&self, class: &str, reference: RefField<'_>) -> Option<T> {
-        self.linked(class, reference)
+    /// The object a reference field names. The class the API gives the field says where
+    /// to look, so a reference is not looked up among the objects of another class.
+    fn link<T: From<Uuid>, C: IsClass>(&self, reference: RefField<'_, C>) -> Option<T> {
+        self.linked(&C::NAME.to_ascii_lowercase(), reference)
     }
     /// The object a reference names, for a reference that is an element of a field.
     fn linked<'a, T: From<Uuid>>(
@@ -51,19 +55,22 @@ impl References {
             .copied()
             .map(T::from)
     }
-    fn vm(&self, reference: RefField<'_>) -> Option<VmId> {
+    fn vm<C: Fits<class::Vm>>(&self, reference: RefField<'_, C>) -> Option<VmId> {
         if self.snapshots.contains(reference.reference()?) {
             return None;
         }
-        self.link("vm", reference)
+        self.linked("vm", reference)
     }
-    fn snapshot(&self, reference: RefField<'_>) -> Option<crate::SnapshotId> {
+    fn snapshot<C: Fits<class::Vm>>(
+        &self,
+        reference: RefField<'_, C>,
+    ) -> Option<crate::SnapshotId> {
         if !self.snapshots.contains(reference.reference()?) {
             return None;
         }
-        self.link("vm", reference)
+        self.linked("vm", reference)
     }
-    fn snapshot_parent(&self, value: RefField<'_>) -> crate::SnapshotParent {
+    fn snapshot_parent<C: Fits<class::Vm>>(&self, value: RefField<'_, C>) -> crate::SnapshotParent {
         if value == "OpaqueRef:NULL" {
             crate::SnapshotParent::Root
         } else if let Some(id) = self.snapshot(value) {
@@ -233,7 +240,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
     };
     result.pool = store.class("pool").next().and_then(|(_, record)| {
         let view = PoolRecord::new(record);
-        let default_sr = refs.link("sr", view.default_sr());
+        let default_sr = refs.link(view.default_sr());
         Some(PoolDetails {
             administration: pool_administration(record, &refs, store),
             auto_poweron: map_bool(view.other_config(), "auto_poweron"),
@@ -325,8 +332,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .and_then(Value::as_str)
                     .map(|code| safe_error_code(code).to_owned()),
                 allowed_operations: strings(view.allowed_operations()),
-                resident_host: refs.link("host", view.resident_on()),
-                parent: refs.link("task", view.subtask_of()),
+                resident_host: refs.link(view.resident_on()),
+                parent: refs.link(view.subtask_of()),
                 subtasks: refs.links("task", view.subtasks()),
                 result_type: text_option(view.type_()),
             },
@@ -341,7 +348,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 id,
                 name: label(view.name_label()),
                 description: string(view.name_description()),
-                sr: refs.link("sr", view.sr()),
+                sr: refs.link(view.sr()),
                 virtual_size: size(view.virtual_size(), "VDI.virtual_size")?,
                 physical_utilisation: size(
                     view.physical_utilisation(),
@@ -353,7 +360,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 managed: boolean(view.managed())?,
                 missing: boolean(view.missing())?,
                 is_snapshot: boolean(view.is_a_snapshot())?,
-                snapshot_of: refs.link("vdi", view.snapshot_of()),
+                snapshot_of: refs.link(view.snapshot_of()),
                 cbt_enabled: boolean(view.cbt_enabled())?,
                 allowed_operations: strings(view.allowed_operations()),
             },
@@ -379,7 +386,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 id,
                 vm: refs.vm(view.vm()),
                 snapshot: refs.snapshot(view.vm()),
-                vdi: refs.link("vdi", view.vdi()),
+                vdi: refs.link(view.vdi()),
                 device: string(view.device()),
                 userdevice: string(view.userdevice()),
                 kind: string(view.type_()),
@@ -405,7 +412,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                 qos_supported_algorithms: strings(view.qos_supported_algorithms()),
                 id,
                 vm: refs.vm(view.vm()),
-                network: refs.link("network", view.network()),
+                network: refs.link(view.network()),
                 device: string(view.device()),
                 mac: string(view.mac()),
                 mtu: size(view.mtu(), "VIF.MTU")?,
@@ -422,7 +429,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             PhysicalInterface {
-                metrics: refs.link("pif_metrics", view.metrics()),
+                metrics: refs.link(view.metrics()),
                 capabilities: strings(view.capabilities()).filter(|values| {
                     values.len() <= 64
                         && values
@@ -443,8 +450,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     })
                     .map(str::to_owned),
                 id,
-                host: refs.link("host", view.host()),
-                network: refs.link("network", view.network()),
+                host: refs.link(view.host()),
+                network: refs.link(view.network()),
                 device: string(view.device()),
                 mac: string(view.mac()),
                 mtu: size(view.mtu(), "PIF.MTU")?,
@@ -487,8 +494,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .as_str()
                     .and_then(|s| s.parse().ok()),
                 paths: crate::storage::path_counts(view.other_config()),
-                host: refs.link("host", view.host()),
-                sr: refs.link("sr", view.sr()),
+                host: refs.link(view.host()),
+                sr: refs.link(view.sr()),
                 currently_attached: boolean(view.currently_attached())?,
             },
         ))
@@ -518,7 +525,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
         Ok((
             id,
             NetworkBond {
-                primary_slave: refs.link("pif", view.primary_slave()),
+                primary_slave: refs.link(view.primary_slave()),
                 hashing_algorithm: view.properties()["hashing_algorithm"]
                     .as_str()
                     .map(str::to_owned),
@@ -527,7 +534,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     .entries()
                     .is_some_and(|m| m.get("hashing_algorithm").is_none_or(Value::is_string)),
                 id,
-                master: refs.link("pif", view.master()),
+                master: refs.link(view.master()),
                 slaves: refs.links("pif", view.slaves()),
                 mode: string(view.mode()),
                 links_up: size(view.links_up(), "Bond.links_up")?,
@@ -541,8 +548,8 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
             id,
             Vlan {
                 id,
-                tagged_pif: refs.link("pif", view.tagged_pif()),
-                untagged_pif: refs.link("pif", view.untagged_pif()),
+                tagged_pif: refs.link(view.tagged_pif()),
+                untagged_pif: refs.link(view.untagged_pif()),
                 tag: size(view.tag(), "VLAN.tag")?,
             },
         ))
@@ -678,9 +685,9 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                             .map(|ops| ops.is_empty() && advertises(record, vm_operations::EXPORT))
                     }),
                     parent: refs.snapshot_parent(view.parent()),
-                    memory_vdi: refs.link("vdi", view.suspend_vdi()),
+                    memory_vdi: refs.link(view.suspend_vdi()),
                     memory_vdi_known: view.suspend_vdi() == "OpaqueRef:NULL"
-                        || refs.link::<VdiId>("vdi", view.suspend_vdi()).is_some(),
+                        || refs.link::<VdiId, _>(view.suspend_vdi()).is_some(),
                     preview_available: view.blobs()[crate::snapshot_preview::KEY]
                         .as_str()
                         .is_some_and(|s| s != "OpaqueRef:NULL")
@@ -759,17 +766,15 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                         .or_else(|| crate::guest_boot::firmware(record).map(str::to_owned)),
                     secure_boot: crate::guest_boot::policy(record),
                     bios_identity_empty: view.bios_strings().entries().map(|v| v.is_empty()),
-                    affinity: refs.link("host", view.affinity()),
+                    affinity: refs.link(view.affinity()),
                     affinity_known: view.affinity() == "OpaqueRef:NULL"
-                        || refs.link::<HostId>("host", view.affinity()).is_some(),
-                    guest_metrics: refs.link("vm_guest_metrics", view.guest_metrics()),
-                    metrics: refs.link("vm_metrics", view.metrics()),
-                    suspend_vdi: refs.link("vdi", view.suspend_vdi()),
-                    appliance: refs.link("vm_appliance", view.appliance()),
+                        || refs.link::<HostId, _>(view.affinity()).is_some(),
+                    guest_metrics: refs.link(view.guest_metrics()),
+                    metrics: refs.link(view.metrics()),
+                    suspend_vdi: refs.link(view.suspend_vdi()),
+                    appliance: refs.link(view.appliance()),
                     appliance_known: view.appliance() == "OpaqueRef:NULL"
-                        || refs
-                            .link::<ApplianceId>("vm_appliance", view.appliance())
-                            .is_some(),
+                        || refs.link::<ApplianceId, _>(view.appliance()).is_some(),
                     appliance_order: (|| {
                         Some(crate::ApplianceOrder {
                             order: view.order().number()?,
@@ -778,7 +783,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                                 .ok()??,
                         })
                     })(),
-                    snapshot_policy: refs.link("vmss", view.snapshot_schedule()),
+                    snapshot_policy: refs.link(view.snapshot_schedule()),
                     tags: strings(view.tags()).unwrap_or_default(),
                     ha_restart_priority: view.ha_restart_priority().text().map(str::to_owned),
                     auto_power_on: view.other_config()["auto_poweron"]
@@ -832,7 +837,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                             .is_none_or(|value| value.is_string())
                     }),
                     multipathing: view.multipathing().get(),
-                    local_cache_sr: refs.link("sr", view.local_cache_sr()),
+                    local_cache_sr: refs.link(view.local_cache_sr()),
                     standard_multipath_handler: view.other_config().entries().and_then(|m| match m
                         .get("multipathhandle")
                     {
@@ -842,7 +847,7 @@ pub(super) fn decode(store: &Store) -> InventoryDetails {
                     }),
                     description: string(view.name_description()),
                     hostname: string(view.hostname()),
-                    metrics: refs.link("host_metrics", view.metrics()),
+                    metrics: refs.link(view.metrics()),
                     software_version: string_map(view.software_version()),
                     cpu_info: string_map(view.cpu_info()),
                     capabilities: strings(view.capabilities()).unwrap_or_default(),
@@ -913,12 +918,12 @@ fn pool_administration(
                         value.as_str() == Some(*reference) || VdiRecord::new(r).uuid() == *value
                     })?
                     .1;
-                refs.link("sr", VdiRecord::new(vdi).sr())
+                refs.link(VdiRecord::new(vdi).sr())
             })
             .collect()
     });
     crate::PoolAdministration {
-        coordinator: refs.link("host", view.master()),
+        coordinator: refs.link(view.master()),
         ha_enabled: view.ha_enabled().get(),
         ha_failures_to_tolerate: view.ha_host_failures_to_tolerate().unsigned(),
         ha_plan_exists_for: view.ha_plan_exists_for().unsigned(),
@@ -1059,7 +1064,7 @@ fn decode_alarms(store: &Store, refs: &References, result: &mut InventoryDetails
                     match VmRecord::new(record).is_control_domain().get() {
                         Some(false) => {}
                         Some(true) => {
-                            dom0 = refs.link("host", VmRecord::new(record).resident_on());
+                            dom0 = refs.link(VmRecord::new(record).resident_on());
                             if dom0.is_none()
                                 || !store.class("host").any(|(r, h)| {
                                     Some(r.as_str())

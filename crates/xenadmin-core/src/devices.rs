@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{
     vbd_operations, vbd_type, vdi_operations, vdi_type, vif_operations, vm_power_state,
 };
@@ -411,7 +412,7 @@ impl PreparedDevice {
     }
 }
 
-fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+fn reference<'a, R: Reads<'a, kind::Reference>>(value: R) -> Result<OpaqueRef<R::Class>, Error> {
     let value = value.raw();
     value
         .as_str()
@@ -422,7 +423,7 @@ fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error
                 && value.len() <= 1024
                 && value.bytes().all(|byte| byte.is_ascii_graphic())
         })
-        .map(str::to_owned)
+        .map(OpaqueRef::new)
         .ok_or(Error::Protocol("invalid device reference"))
 }
 async fn fresh(session: &Session, class: &'static str, id: Uuid) -> Result<(String, Value), Error> {
@@ -436,7 +437,7 @@ async fn fresh(session: &Session, class: &'static str, id: Uuid) -> Result<(Stri
     if record["uuid"].as_str() != Some(id.to_string().as_str()) {
         return Err(Error::Stale);
     }
-    Ok((object, record))
+    Ok((object.into_string(), record))
 }
 fn permits(record: &Value, operation: &str) -> Result<(), Error> {
     let Some(operations) = record["allowed_operations"].as_array() else {

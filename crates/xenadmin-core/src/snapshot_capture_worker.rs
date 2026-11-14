@@ -298,7 +298,7 @@ impl ResourceRequest {
             .snapshot_preview_plan
             .as_mut()
             .unwrap()
-            .create_reference = Some(crate::snapshots::reference(&reply)?);
+            .create_reference = Some(crate::snapshots::reference(&reply)?.into_string());
         if !self.preview_merge(journal).await? {
             return Ok(());
         }

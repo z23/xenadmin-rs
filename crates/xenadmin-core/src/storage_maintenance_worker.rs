@@ -75,7 +75,8 @@ impl ResourceRequest {
                 .kinds[index]
                 .asynchronous();
             if asynchronous {
-                self.storage_step_mut(index)?.task = Some(crate::snapshots::reference(&result)?);
+                self.storage_step_mut(index)?.task =
+                    Some(crate::snapshots::reference(&result)?.into_string());
             } else {
                 self.storage_step_mut(index)?.completed = true;
                 self.storage_step_mut(index)?.ended = true;

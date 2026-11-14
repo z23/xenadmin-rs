@@ -104,7 +104,7 @@ impl ResourceRequest {
         let reply =
             tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call(method,args)=>v?};
         let mut p = self.ipv6_plan()?.clone();
-        p.current_mut().task = Some(xapi::reply_reference(&reply)?);
+        p.current_mut().task = Some(xapi::reply_reference(&reply)?.into_string());
         self.record.task = p.current().task.clone();
         self.set_ipv6_plan(p);
         self.record = j.ipv6_evidence(&self.record)?;

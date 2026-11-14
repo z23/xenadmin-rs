@@ -221,7 +221,7 @@ async fn read_host(session: &Session, host: HostId) -> Result<(String, Value), E
     if HostRecord::new(&record).uuid() != host.to_string() {
         return Err(Error::Stale);
     }
-    Ok((reference, record))
+    Ok((reference.into_string(), record.into_value()))
 }
 
 pub(crate) fn attachment_graph(sr: &Value, reference: &str) -> Result<(), Error> {

@@ -55,7 +55,7 @@ impl ResourceRequest {
                 .ok_or(Error::Journal)?;
             step.accepted = true;
             if kind.asynchronous() {
-                step.task = Some(xapi::reply_reference(&result)?);
+                step.task = Some(xapi::reply_reference(&result)?.into_string());
             }
             self.record = journal.host_evidence(&self.record, index)?;
             self.announce().await;
@@ -220,7 +220,7 @@ impl ResourceRequest {
                             .ok_or(Error::Journal)?;
                         // The refused task stays in the record; the repeat takes its place.
                         repeated.refused.push(task_ref.clone());
-                        repeated.task = Some(xapi::reply_reference(&result)?);
+                        repeated.task = Some(xapi::reply_reference(&result)?.into_string());
                         repeated.task_succeeded = false;
                         self.record = journal.host_evidence(&self.record, index)?;
                         continue;

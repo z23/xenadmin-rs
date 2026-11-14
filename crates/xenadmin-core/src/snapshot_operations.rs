@@ -278,7 +278,8 @@ impl MutationRequest {
             // needs to recompute the new VM's allowed operations (see below).
             let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.send(calls::vm::UpdateAllowedOperations(refs::vm(&reference)))=>result};
             self.record.steps[0].state = StepState::Verified;
-            self.record.steps[0].detail = verified_detail(refreshed);
+            self.record.steps[0].detail =
+                verified_detail(refreshed.map(xenadmin_xapi::Answer::into_value));
             return self.persist_steps(journal).await;
         }
         if self.record.steps[0].state != StepState::Pending {
@@ -331,7 +332,8 @@ impl MutationRequest {
             return Err(Error::SnapshotConflict);
         }
         self.record.steps[0].state = StepState::Verified;
-        self.record.steps[0].detail = verified_detail(refreshed);
+        self.record.steps[0].detail =
+            verified_detail(refreshed.map(xenadmin_xapi::Answer::into_value));
         self.persist_steps(journal).await
     }
 }
