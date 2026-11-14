@@ -1,6 +1,6 @@
 # GPUI migration ledger
 
-Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xenadmin-gpui` draws the gate scenes headlessly. It does not connect to a pool. Catalogued Rune buttons below stay on the Rune front end until a later phase ports that surface. `xenadmin-desktop` is frozen except for release-blocking fixes; each such fix adds a mirror row.
+Phase 3. The Rune binary is still the released artifact. Supported areas in the GPUI shell are headless previews and do not call a host. The GPUI shell in `xenadmin-gpui` draws the gate scenes headlessly. It does not connect to a pool. Catalogued Rune buttons below stay on the Rune front end until a later phase ports that surface. `xenadmin-desktop` is frozen except for release-blocking fixes; each such fix adds a mirror row.
 
 ## Commands
 
@@ -13,11 +13,11 @@ Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xena
 | `pool.disconnect` | Disconnect | Pool | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `pool.properties` | Properties | Pool | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `server.reboot` | Reboot | Server | see `commands.rs` | menu seed | specified | not started | phase 1 |
-| `server.maintenance` | Enter or Exit Maintenance Mode | Server | see `commands.rs` | menu seed | specified | not started | phase 1 |
+| `server.maintenance` | Enter or Exit Maintenance Mode | Server | see `commands.rs` | menu seed | specified | review dialog, no host | phase 3 |
 | `vm.new` | New VM | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `vm.start` | Start | VM | see `commands.rs` | menu seed | specified | review dialog, no host | phase 2 |
-| `vm.shutdown` | Shut Down | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
-| `vm.migrate` | Migrate to Server | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
+| `vm.shutdown` | Shut Down | VM | see `commands.rs` | menu seed | specified | review dialog, no host | phase 3 |
+| `vm.migrate` | Migrate to Server | VM | see `commands.rs` | menu seed | specified | wizard preview, no host | phase 3 |
 | `vm.snapshot` | Take a Snapshot | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `vm.delete` | Delete VM | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `storage.new` | New Storage | Storage | see `commands.rs` | menu seed | specified | not started | phase 1 |
@@ -452,15 +452,15 @@ Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xena
 | batch-export | `main.rs` | Rune scene | not ported | phase 1 |
 | snapshot-batch-export | `main.rs` | Rune scene | not ported | phase 1 |
 | console-recovery | `main.rs` | Rune scene | not ported | phase 1 |
-| console-frame | `main.rs` | Rune scene | not ported | phase 1 |
+| console-frame | `main.rs` | Rune scene | shell preview, no guest cursor | phase 3 |
 | console-actual-size | `main.rs` | Rune scene | not ported | phase 1 |
 | console-typing-review | `main.rs` | Rune scene | not ported | phase 1 |
 | multiple-consoles | `main.rs` | Rune scene | not ported | phase 1 |
 | guest-connections | `main.rs` | Rune scene | not ported | phase 1 |
 | external-tools | `main.rs` | Rune scene | not ported | phase 1 |
-| host-console | `main.rs` | Rune scene | not ported | phase 1 |
+| host-console | `main.rs` | Rune scene | shell preview, no guest cursor | phase 3 |
 | search-pools | `main.rs` | Rune scene | shell preview | phase 2 |
-| performance | `main.rs` | Rune scene | not ported | phase 1 |
+| performance | `main.rs` | Rune scene | shell preview, charts not sampled | phase 3 |
 | metric-presets | `main.rs` | Rune scene | not ported | phase 1 |
 | unavailable-actions | `main.rs` | Rune scene | shell preview | phase 2 |
 | vm-devices | `main.rs` | Rune scene | not ported | phase 1 |
@@ -473,7 +473,7 @@ Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xena
 | creation-cloud | `main.rs` | Rune scene | not ported | phase 1 |
 | creation-cloud-pending | `main.rs` | Rune scene | not ported | phase 1 |
 | secure-boot | `main.rs` | Rune scene | not ported | phase 1 |
-| vm-migration | `main.rs` | Rune scene | not ported | phase 1 |
+| vm-migration | `main.rs` | Rune scene | wizard preview, no host | phase 3 |
 | vm-recovery | `main.rs` | Rune scene | not ported | phase 1 |
 | vm-recovery-force | `main.rs` | Rune scene | not ported | phase 1 |
 | cross-pool | `main.rs` | Rune scene | not ported | phase 1 |
@@ -487,7 +487,7 @@ Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xena
 | ovf-import | `main.rs` | Rune scene | not ported | phase 1 |
 | ovf-export | `main.rs` | Rune scene | not ported | phase 1 |
 | disk-export | `main.rs` | Rune scene | not ported | phase 1 |
-| snapshots | `main.rs` | Rune scene | not ported | phase 1 |
+| snapshots | `main.rs` | Rune scene | list preview, no host | phase 3 |
 | snapshot-create | `main.rs` | Rune scene | not ported | phase 1 |
 | snapshot-ancestry | `main.rs` | Rune scene | not ported | phase 1 |
 | snapshot-information | `main.rs` | Rune scene | not ported | phase 1 |
@@ -512,7 +512,7 @@ Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xena
 | management-ipv6-bond | `main.rs` | Rune scene | not ported | phase 1 |
 | management-bond-guests | `main.rs` | Rune scene | not ported | phase 1 |
 | management-vlan-bond | `main.rs` | Rune scene | not ported | phase 1 |
-| host-administration | `main.rs` | Rune scene | not ported | phase 1 |
+| host-administration | `main.rs` | Rune scene | review preview, no host | phase 3 |
 | host-memory | `main.rs` | Rune scene | not ported | phase 1 |
 | host-monitoring | `main.rs` | Rune scene | not ported | phase 1 |
 | local-conversion | `main.rs` | Rune scene | not ported | phase 1 |
@@ -528,7 +528,7 @@ Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xena
 | alarms-review | `main.rs` | Rune scene | not ported | phase 1 |
 | alarms-email | `main.rs` | Rune scene | not ported | phase 1 |
 | network-create | `main.rs` | Rune scene | not ported | phase 1 |
-| activity | `main.rs` | Rune scene | not ported | phase 1 |
+| activity | `main.rs` | Rune scene | empty preview, recheck does not run | phase 3 |
 | organization | `main.rs` | Rune scene | not ported | phase 1 |
 | organization-review | `main.rs` | Rune scene | not ported | phase 1 |
 | appliances | `main.rs` | Rune scene | not ported | phase 1 |

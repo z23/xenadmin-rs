@@ -16,9 +16,11 @@ pub struct ShellState {
     pub tab: TabId,
     pub query: String,
     pub dialog: Option<DialogId>,
+    pub dialog_title: String,
     pub dialog_text: Option<String>,
     pub notice: Option<String>,
     pub scene: String,
+    pub wizard_step: u8,
     history: Vec<Bookmark>,
     future: Vec<Bookmark>,
 }
@@ -45,9 +47,11 @@ impl ShellState {
             tab: TabId::General,
             query: String::new(),
             dialog: None,
+            dialog_title: "Add Server".into(),
             dialog_text: None,
             notice: None,
             scene: "demo".into(),
+            wizard_step: 0,
             history: Vec::new(),
             future: Vec::new(),
         };
@@ -147,6 +151,18 @@ impl ShellState {
         }
     }
 
+    pub fn snapshot_names(&self) -> Vec<String> {
+        let Some(vm) = self.vm else {
+            return Vec::new();
+        };
+        self.inventory
+            .snapshots
+            .iter()
+            .filter(|snapshot| snapshot.vm == Some(vm))
+            .map(|snapshot| snapshot.name.clone())
+            .collect()
+    }
+
     pub fn rows_page(&self) -> InventoryPage {
         InventoryPage::Guests
     }
@@ -211,6 +227,40 @@ pub fn load_scene(name: &str) -> ShellState {
             state.notice = Some("Certificate checks are not pinned in this preview.".into());
         }
         "search-pools" => state.set_tab(TabId::Search),
+        "snapshots" | "snapshot-information" | "snapshot-restore" => {
+            state.select_first_vm();
+            state.set_tab(TabId::Snapshots);
+        }
+        "performance" | "metric-presets" => {
+            state.select_first_vm();
+            state.set_tab(TabId::Performance);
+        }
+        "console-frame" | "console-details" | "console-typing-review" => {
+            state.select_first_vm();
+            state.set_tab(TabId::Console);
+        }
+        "host-console" => {
+            if let Some(id) = state.inventory.hosts.keys().next().copied() {
+                state.select_host(id);
+            }
+            state.set_tab(TabId::Console);
+        }
+        "vm-migration" => {
+            state.select_first_vm();
+            state.wizard_step = 1;
+        }
+        "activity" | "failure-help" => {
+            state.notice = Some("No operations in this preview. Recheck does not run.".into());
+        }
+        "host-administration" => {
+            if let Some(id) = state.inventory.hosts.keys().next().copied() {
+                state.select_host(id);
+            }
+            state.dialog = Some(DialogId::Maintenance);
+            state.dialog_title = "Maintenance".into();
+            state.dialog_text =
+                Some("This preview does not evacuate guests or call a host.".into());
+        }
         "general-information"
         | "demo"
         | "unavailable-actions"
@@ -251,6 +301,15 @@ mod tests {
         assert_eq!(state.tab, pool_tab);
         assert!(state.forward());
         assert_eq!(state.kind, ObjectKind::Vm);
+    }
+
+    #[test]
+    fn the_first_guest_lists_its_three_snapshots() {
+        let mut state = ShellState::demo(3, 48);
+        state.select_first_vm();
+        let names = state.snapshot_names();
+        assert!(names.iter().any(|name| name == "Known good"));
+        assert_eq!(names.len(), 3);
     }
 
     #[test]

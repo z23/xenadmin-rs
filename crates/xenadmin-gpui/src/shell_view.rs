@@ -192,8 +192,10 @@ impl Render for ShellView {
                 .dialog_text
                 .clone()
                 .unwrap_or_else(|| "Address, username, and password stay in this preview.".into());
+            let title = state.dialog_title.clone();
+            let add_server = state.dialog == Some(DialogId::AddServer);
             cx.defer_in(_window, move |_, window, cx| {
-                open_text_dialog(window, cx, text);
+                open_text_dialog(window, cx, title, text, add_server);
             });
         }
         v_flex()
@@ -223,6 +225,7 @@ impl Render for ShellView {
                             .gap_2()
                             .child(header(&state))
                             .child(tab_strip(tabs, state.tab, cx))
+                            .child(wizard(&state, cx))
                             .child(body(&state, &self.table)),
                     ),
             )
@@ -268,6 +271,47 @@ fn toolbar(selection: xenadmin_ui::Selection, cx: &mut Context<ShellView>) -> im
             });
         }
     }));
+    let shutdown_ok = matches!(
+        eligibility(CommandId("vm.shutdown"), selection),
+        Eligibility::Enabled
+    );
+    let migrate_ok = matches!(
+        eligibility(CommandId("vm.migrate"), selection),
+        Eligibility::Enabled
+    );
+    let maintenance_ok = matches!(
+        eligibility(CommandId("server.maintenance"), selection),
+        Eligibility::Enabled
+    );
+    if shutdown_ok {
+        bar = bar.child(review_button(
+            this.clone(),
+            "cmd-shutdown",
+            "Shut Down",
+            "Shut Down",
+            "Shut down this guest? This preview does not call a host.",
+        ));
+    }
+    if migrate_ok {
+        bar = bar.child(Button::new("cmd-migrate").label("Migrate").on_click({
+            let this = this.clone();
+            move |_, _, cx| {
+                this.update(cx, |shell, cx| {
+                    shell.state.wizard_step = 1;
+                    cx.notify();
+                });
+            }
+        }));
+    }
+    if maintenance_ok {
+        bar = bar.child(review_button(
+            this.clone(),
+            "cmd-maintenance",
+            "Maintenance",
+            "Maintenance",
+            "This preview does not evacuate guests or call a host.",
+        ));
+    }
     if start_ok {
         bar = bar.child(
             Button::new("cmd-start")
@@ -341,8 +385,11 @@ fn body(state: &ShellState, table: &Entity<TableState<Rows>>) -> impl IntoElemen
             .child(DataTable::new(table)),
         TabId::General => probe!("tab-general").child(general_text(state)),
         TabId::Console => probe!("console-canvas").child(
-            "Console preview. The guest cursor is not drawn. Pointer, frames, and clipboard need a focused seat.",
+            "Console preview. Physical keys stay on route A. The guest cursor is not drawn. Pointer, frames, clipboard, and fullscreen need a focused seat.",
         ),
+        TabId::Snapshots => probe!("tab-snapshots").child(snapshot_text(state)),
+        TabId::Performance => probe!("tab-performance")
+            .child("Performance charts are not sampled in this preview."),
         _ => probe!("tab-body").child(format!("{} is not ported yet.", tab_label(state.tab))),
     }
 }
@@ -384,13 +431,78 @@ fn status(state: &ShellState) -> impl IntoElement {
         .children(state.notice.as_ref().map(|_| probe!("connection-notice")))
         .children(version.clone())
         .children(version.map(|_| probe!("host-version-notice")))
+        .child(probe!("activity-counters").child("No operations in this preview."))
 }
 
-fn open_text_dialog(window: &mut Window, cx: &mut App, text: String) {
+fn snapshot_text(state: &ShellState) -> String {
+    let names = state.snapshot_names();
+    if names.is_empty() {
+        "This guest has no snapshots.".into()
+    } else {
+        format!(
+            "Snapshots: {}. Create, restore, and delete do not call a host.",
+            names.join(", ")
+        )
+    }
+}
+
+fn wizard(state: &ShellState, cx: &mut Context<ShellView>) -> impl IntoElement {
+    let step = state.wizard_step;
+    let this = cx.entity();
+    probe!("migrate-wizard")
+        .children((step > 0).then(|| {
+            div().child(if step == 1 {
+                "Choose a server in this pool. Nothing is moved."
+            } else {
+                "Review the move. This preview does not migrate the guest."
+            })
+        }))
+        .children((step == 1).then(|| {
+            Button::new("migrate-next")
+                .label("Next")
+                .on_click(move |_, _, cx| {
+                    this.update(cx, |shell, cx| {
+                        shell.state.wizard_step = 2;
+                        cx.notify();
+                    });
+                })
+        }))
+        .children((step >= 2).then(|| probe!("migrate-review")))
+}
+
+fn review_button(
+    this: Entity<ShellView>,
+    id: &'static str,
+    label: &'static str,
+    title: &'static str,
+    text: &'static str,
+) -> impl IntoElement {
+    Button::new(id).label(label).on_click(move |_, _, cx| {
+        this.update(cx, |shell, cx| {
+            shell.state.dialog = Some(DialogId::Power);
+            shell.state.dialog_title = title.into();
+            shell.state.dialog_text = Some(text.into());
+            shell.presented = false;
+            cx.notify();
+        });
+    })
+}
+
+fn open_text_dialog(
+    window: &mut Window,
+    cx: &mut App,
+    title: String,
+    text: String,
+    add_server: bool,
+) {
+    let title: SharedString = title.into();
     let text: SharedString = text.into();
     window.open_dialog(cx, move |dialog, _, _| {
-        dialog
-            .title("Add Server")
-            .child(probe!("add-server").child(text.clone()))
+        let body = if add_server {
+            probe!("add-server").child(text.clone())
+        } else {
+            probe!("review-dialog").child(text.clone())
+        };
+        dialog.title(title.clone()).child(body)
     });
 }
