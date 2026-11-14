@@ -16,7 +16,9 @@ xenadmin-core = { path = "../xenadmin-core" }
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json.workspace = true
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 
 [features]
 # Scene dumps and the scale example need the Kit test harness. A build

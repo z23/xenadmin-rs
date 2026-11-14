@@ -1,8 +1,8 @@
 # GPUI spike S1: console input
 
-Result: **requirements 3 to 5 passed on a real Hyprland seat. The full S1 matrix did not, and gate G0 did not.**
+Result: **requirements 3 to 5 passed on a real Hyprland seat. Eight windows mapped. Gate G0 did not pass.**
 
-Route A, a second `wl_keyboard` on the GPUI window's display, delivered evdev codes and distinct left and right modifiers into `ConsoleInput::PhysicalKey`. Those values are the XT make codes and X keysyms the core sends as a QEMU extended key event. Route B was not vendored. Route C was not adopted. No guest was used. Requirements 1, 8, 9, 10, and 11 were not run.
+Route A, a second `wl_keyboard` on the GPUI window's display, delivered evdev codes and distinct left and right modifiers into `ConsoleInput::PhysicalKey`. Those values are the XT make codes and X keysyms the core sends as a QEMU extended key event. Route B was not vendored. Route C was not adopted. No guest was used. Requirements 1, 8, 9, and 11 were attempted on this seat and are not shown. Requirement 10 mapped eight windows; fullscreen did not hold.
 
 ## What the pinned source does
 
@@ -64,22 +64,40 @@ A repeat injection of A produced more than one down. Shift+A stayed evdev 30 / X
 
 `xenadmin-keys` was not created. The listener stays in the spike crate. `xenadmin-core`, `xenadmin-xapi`, and `xenadmin-process` were not changed.
 
+## Seat surface run
+
+`examples/s1_surface` is the probe for requirements 1, 8, 9, 10, and 11. It ran on the same Hyprland 0.56.2 seat. No guest was opened. Route B was not vendored. Route C was not adopted.
+
+The window mapped on the focused workspace, workspace 37 on DP-2, floating, at 480 by 320. `hl.dsp.focus` by address and by pid returned ok, and the active window stayed the previously focused terminal. `bring_to_top` returned ok and did not change that.
+
+Frames. Fit, a replaced solid frame, and actual size are painted in the probe. Pixels were not captured. `grim` binds `ext_image_copy_capture`, receives buffer size and damage, and never receives ready; a full-output capture and a toplevel capture both hung. `grim -o` and `grim -g` are mutually exclusive in this build. A direct `zwlr_screencopy` client got an 80 by 80 shm buffer for a 64 by 64 region and then no ready event within 3 seconds. That check stops there.
+
+Pointer. A `zwlr_virtual_pointer_v1` moved the compositor cursor. `hyprctl cursorpos` matched an outside point and then the window center, 3142,2332, including the logical layout box of 8192 by 3168 that Hyprland uses for absolute motion. GPUI `mouse_position` stayed 0,0. No move, button, or wheel event was delivered. Shift+wheel was not observed. The same limit covers the hidden cursor: `CursorStyle` has no hidden variant, capture never completed, and the window never took pointer focus, so hide-on-typing was not observed. Requirement 9 stays the visible-cursor allowance in the plan, and it was not shown either way.
+
+Fullscreen. One run started at hyprctl fullscreen 0. After `Window::toggle_fullscreen`, hyprctl reported 2. GPUI `is_fullscreen` stayed false, so a second call does not send unset, and the exit was not observed. A repeat of the same sequence stayed at 0 for the whole 2 second poll. Enter was seen once and did not repeat. Exit was not seen.
+
+Clipboard. The probe built `TypedText::review` for a 19-character marker, zero line breaks, and `ConsoleInput::TypeText` of that marker. `read_from_clipboard` came back empty. `wl-paste -t text/plain` exited 1. GPUI's Wayland clipboard sets the selection only while one of its windows has keyboard or pointer focus and a press serial; this window never became the active window. The previous clipboard, an `image/png` offer, was restored.
+
+Windows. Hyprland listed eight clients for this process, `xenadmin-s1-surface` and `xenadmin-s1-w2` through `xenadmin-s1-w8`, each mapped. That part of requirement 10 held on two runs.
+
+Memory. A 1920 by 1080 frame every 33 milliseconds for 60 seconds produced VmRSS samples 183032, 207012, and 207012 KB. RSS rose about 24 MB and then stayed flat. That is not zero growth. GPU memory is not in RSS.
+
 ## Requirements
 
 | Requirement | Result |
 | --- | --- |
-| 1. Fit and actual-size frames, no stale frame | Not run. No console view was ported. |
+| 1. Fit and actual-size frames, no stale frame | Not shown. The probe paints both sizes and drops the replaced image. This seat's screencopy never completes, so the pixels were not read back. |
 | 2. Key down and key up, including repeat | Shown for the injected set on the Hyprland seat. Not the whole US layout. |
 | 3. Physical key identity as XT codes | Shown. The table above is what the seat delivered, as `ConsoleInput::PhysicalKey`. No guest received a code. |
 | 4. Separate left and right modifier press and release | Shown for Shift, Ctrl, Alt, and Super. GPUI's keystrokes did not carry those keys. |
 | 5. CapsLock, NumLock, ScrollLock, PrintScreen, Pause, ContextMenu | Shown. Menu arrived as evdev 139. |
 | 6. Release held keys on focus loss, deactivation, and close | Leave released a held B. Deactivation and close were not separate cases. |
 | 7. No application binding consumes a key while the console is focused | The probe calls `stop_propagation` from `intercept_keystrokes`. It has no menu bar, so a menu accelerator was not present to steal a key. |
-| 8. Pointer, buttons, wheel | Not run. |
-| 9. Hidden local cursor and drawn guest cursor | Not run. `CursorStyle` has no hidden variant. |
-| 10. Fullscreen and up to eight windows | Not run. Two windows were opened for key routing only. |
-| 11. Clipboard and typing the clipboard | Not run. |
+| 8. Pointer, buttons, wheel | Not shown. The compositor cursor moved onto the window. GPUI received no motion, button, or wheel event, and the window never became active. |
+| 9. Hidden local cursor and drawn guest cursor | Not shown. `CursorStyle` has no hidden variant. Capture and pointer focus were both unavailable, so a visible local cursor is the recorded allowance and was not itself observed. |
+| 10. Fullscreen and up to eight windows | Eight mapped windows, twice. Fullscreen entered once, hyprctl 0 to 2, and a repeat stayed at 0. Exit was not observed because `is_fullscreen` stayed false. |
+| 11. Clipboard and typing the clipboard | The `TypeText` value was built. The seat clipboard did not take the text. GPUI writes the selection only for a focused window with a press serial. |
 
 ## What this does not establish
 
-The seat run is one compositor, Hyprland 0.56.2, on one US layout. A German or French layout was not applied to the operator's session. Evdev codes are what `wl_keyboard` delivers either way; that was not shown by changing the layout. No guest captured the codes, and no production host was contacted. Frames, the pointer, the hidden cursor, fullscreen, the clipboard, and Orca were not run. Headless output still does not establish those. S2 through S5 are unchanged, so gate G0 does not pass. Route A is the route for requirements 3 to 5 on this seat. It is not yet a ported console.
+The seat run is one compositor, Hyprland 0.56.2, on one US layout. A German or French layout was not applied to the operator's session. Evdev codes are what `wl_keyboard` delivers either way; that was not shown by changing the layout. No guest captured the codes, and no production host was contacted. Orca was not run. S2 still cannot write a PNG: `gpui-pre-linux` 0.3.12 does not export `current_headless_renderer`. S3's Wayland scroll, S4's native shell, and S5's clean install on both distributions were not run on this seat. Gate G0 does not pass. Route A is the route for requirements 3 to 5. It is not yet a ported console.

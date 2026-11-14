@@ -42,7 +42,13 @@ events and left/right modifiers. It is not adopted.
 
 ## What is still open
 
-The full S1 matrix was not run. No guest recorded a code. Frames, the
-pointer, a hidden cursor, fullscreen, and the clipboard were not run. A
-second host layout was not applied. S2 through S5 are unchanged, so G0 does
-not pass and the Rune console remains the one the application ships.
+The full S1 matrix was not run. No guest recorded a code. A second host
+layout was not applied. On the same seat, screencopy never completed, so
+fit and actual-size pixels were not read back. The compositor cursor could
+be moved onto the probe, and GPUI received no pointer event; focus never
+moved off the previously active terminal, so the clipboard write did not
+become the seat selection. Eight windows mapped. Fullscreen was reported
+by hyprctl once and did not repeat, and exit was not observed. S2 through
+S5 are unchanged, so G0 does not pass and the Rune console remains the one
+the application ships. The surface evidence is in
+`docs/reports/2026-11-14-gpui-spike-s1.md`.

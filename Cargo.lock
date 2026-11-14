@@ -10227,10 +10227,12 @@ name = "xenadmin-gpui"
 version = "0.20.0"
 dependencies = [
  "gpui-kit",
+ "image",
  "raw-window-handle",
  "serde_json",
  "uuid",
  "wayland-client",
+ "wayland-protocols-wlr",
  "xenadmin-core",
 ]
 
