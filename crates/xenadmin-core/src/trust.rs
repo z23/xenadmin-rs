@@ -312,6 +312,38 @@ impl ConnectionOptions {
     }
 }
 
+fn presented_name_matches(der: &[u8], server_name: &ServerName<'_>) -> Result<bool, rustls::Error> {
+    let names = crate::certificate_inspection::details(der)?.names;
+    Ok(match server_name {
+        ServerName::DnsName(expected) => names
+            .iter()
+            .any(|name| dns_name_matches(name, expected.as_ref())),
+        ServerName::IpAddress(expected) => {
+            let expected = std::net::IpAddr::from(*expected);
+            names
+                .iter()
+                .any(|name| name.parse::<std::net::IpAddr>().ok() == Some(expected))
+        }
+        _ => false,
+    })
+}
+
+fn dns_name_matches(presented: &str, expected: &str) -> bool {
+    if presented.eq_ignore_ascii_case(expected) {
+        return true;
+    }
+    let Some(suffix) = presented.strip_prefix("*.") else {
+        return false;
+    };
+    if suffix.is_empty() || suffix.starts_with('.') || suffix.contains('*') {
+        return false;
+    }
+    let Some((label, rest)) = expected.split_once('.') else {
+        return false;
+    };
+    !label.is_empty() && rest.eq_ignore_ascii_case(suffix)
+}
+
 #[derive(Debug)]
 enum CertificateVerifier {
     Pinned(CertificateFingerprint),
@@ -322,19 +354,25 @@ impl ServerCertVerifier for CertificateVerifier {
         &self,
         cert: &CertificateDer<'_>,
         _: &[CertificateDer<'_>],
-        _: &ServerName<'_>,
+        server_name: &ServerName<'_>,
         _: &[u8],
         _: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        if match self {
-            Self::Unverified => true,
-            Self::Pinned(fingerprint) => Sha256::digest(cert.as_ref()).as_slice() == fingerprint.0,
-        } {
-            Ok(ServerCertVerified::assertion())
-        } else {
-            Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::ApplicationVerificationFailure,
-            ))
+        match self {
+            Self::Unverified => Ok(ServerCertVerified::assertion()),
+            Self::Pinned(fingerprint) => {
+                if Sha256::digest(cert.as_ref()).as_slice() != fingerprint.0 {
+                    return Err(rustls::Error::InvalidCertificate(
+                        rustls::CertificateError::ApplicationVerificationFailure,
+                    ));
+                }
+                if !presented_name_matches(cert.as_ref(), server_name)? {
+                    return Err(rustls::Error::InvalidCertificate(
+                        rustls::CertificateError::NotValidForName,
+                    ));
+                }
+                Ok(ServerCertVerified::assertion())
+            }
         }
     }
     fn verify_tls12_signature(
@@ -466,6 +504,57 @@ mod tests {
             "aa".repeat(32).parse().unwrap()
         );
         assert!(!returned.accept_invalid_certificates);
+    }
+    #[test]
+    fn pinned_leaf_must_match_the_dialed_server_name() {
+        let rcgen::CertifiedKey { cert, .. } =
+            rcgen::generate_simple_self_signed(vec!["different-host.example".into()]).unwrap();
+        let fingerprint = format!("{:x}", Sha256::digest(cert.der()));
+        let verify = |pin: &str, name: &str| {
+            CertificateVerifier::Pinned(pin.parse().unwrap()).verify_server_cert(
+                cert.der(),
+                &[],
+                &ServerName::try_from(name).unwrap(),
+                &[],
+                UnixTime::now(),
+            )
+        };
+        assert!(matches!(
+            verify(&fingerprint, "127.0.0.1"),
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+            ))
+        ));
+        assert!(verify(&fingerprint, "different-host.example").is_ok());
+        assert!(verify(&"00".repeat(32), "different-host.example").is_err());
+        assert!(verify(&"00".repeat(32), "127.0.0.1").is_err());
+        assert!(
+            CertificateVerifier::Unverified
+                .verify_server_cert(
+                    cert.der(),
+                    &[],
+                    &ServerName::try_from("127.0.0.1").unwrap(),
+                    &[],
+                    UnixTime::now(),
+                )
+                .is_ok()
+        );
+        let wrapped = HostIdentityVerifier {
+            base: Arc::new(CertificateVerifier::Pinned(fingerprint.parse().unwrap())),
+            expected: fingerprint.parse().unwrap(),
+        };
+        assert!(matches!(
+            wrapped.verify_server_cert(
+                cert.der(),
+                &[],
+                &ServerName::try_from("127.0.0.1").unwrap(),
+                &[],
+                UnixTime::now(),
+            ),
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+            ))
+        ));
     }
     #[test]
     fn endpoints_reject_embedded_secrets_and_remote_plaintext() {

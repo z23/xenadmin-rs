@@ -148,7 +148,7 @@ struct Capture {
 fn bounded(s: String) -> String {
     s.chars().filter(|c| !c.is_control()).take(256).collect()
 }
-fn details(der: &[u8]) -> Result<CertificateDetails, rustls::Error> {
+pub(crate) fn details(der: &[u8]) -> Result<CertificateDetails, rustls::Error> {
     let bad = || rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding);
     if der.len() > 128 * 1024 {
         return Err(bad());
