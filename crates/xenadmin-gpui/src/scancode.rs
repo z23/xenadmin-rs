@@ -3,7 +3,14 @@
 //! The Rune console table in `console_view.rs` is keyed by `PhysicalKeyCode`
 //! and returns the same XT values. Route A of spike S1 re-keys that table by
 //! the evdev code `wl_keyboard` delivers. The table stays in this spike until
-//! `xenadmin-ui` exists. It is not wired to a console view.
+//! `xenadmin-ui` exists.
+//!
+//! [`console_physical_key`] is the value `xenadmin-core` sends as a QEMU
+//! extended key event once the server has negotiated that encoding: the XT
+//! make code in `keycode`, the X keysym beside it, and `down` separate from
+//! the make code.
+
+use xenadmin_core::ConsoleInput;
 
 /// QEMU extended-key XT make code for an evdev key code, when this client
 /// already sends that key.
@@ -118,6 +125,56 @@ pub fn xt_make_code(evdev: u32) -> Option<u32> {
     })
 }
 
+/// X keysym for an evdev code, using the same values as the Rune console.
+///
+/// Letters are the unshifted character. Shift is its own key, so a shifted
+/// letter stays the base key's make code. `None` means this spike has no
+/// keysym for that code; the XT code can still be sent with keysym 0.
+pub fn x_keysym(evdev: u32) -> Option<u32> {
+    Some(match evdev {
+        1 => 0xff1b,
+        15 => 0xff09,
+        16 => 0x71,
+        28 => 0xff0d,
+        29 => 0xffe3,
+        30 => 0x61,
+        42 => 0xffe1,
+        46 => 0x63,
+        48 => 0x62,
+        54 => 0xffe2,
+        56 => 0xffe9,
+        57 => 0x20,
+        58 => 0xffe5,
+        59 => 0xffbe,
+        69 => 0xff7f,
+        70 => 0xff14,
+        97 => 0xffe4,
+        99 => 0xff61,
+        100 => 0xffea,
+        102 => 0xff50,
+        106 => 0xff53,
+        111 => 0xffff,
+        119 => 0xff13,
+        125 => 0xffeb,
+        126 => 0xffec,
+        127 | 139 => 0xff67,
+        _ => return None,
+    })
+}
+
+/// `ConsoleInput::PhysicalKey` for one evdev transition.
+///
+/// `keycode` is the XT make code QEMU's extended key event carries. `down` is
+/// not folded into that code. The keysym is the X keysym the Rune console
+/// sends for the same key, or 0 when this table has no keysym.
+pub fn console_physical_key(evdev: u32, down: bool) -> Option<ConsoleInput> {
+    Some(ConsoleInput::PhysicalKey {
+        keysym: x_keysym(evdev).unwrap_or(0),
+        keycode: xt_make_code(evdev)?,
+        down,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +203,70 @@ mod tests {
     fn an_unknown_evdev_code_is_not_invented() {
         assert_eq!(xt_make_code(0), None);
         assert_eq!(xt_make_code(240), None);
+        assert!(console_physical_key(0, true).is_none());
+    }
+
+    #[test]
+    fn physical_keys_match_the_qemu_extended_event() {
+        match console_physical_key(30, true) {
+            Some(ConsoleInput::PhysicalKey {
+                keysym,
+                keycode,
+                down,
+            }) => {
+                assert_eq!(keysym, 0x61);
+                assert_eq!(keycode, 0x1e);
+                assert!(down);
+            }
+            other => panic!("KEY_A was not a physical key: {other:?}"),
+        }
+        match console_physical_key(106, false) {
+            Some(ConsoleInput::PhysicalKey {
+                keysym,
+                keycode,
+                down,
+            }) => {
+                assert_eq!(keysym, 0xff53);
+                assert_eq!(keycode, 0xcd);
+                assert!(!down);
+            }
+            other => panic!("Right was not a physical key: {other:?}"),
+        }
+        match console_physical_key(97, true) {
+            Some(ConsoleInput::PhysicalKey {
+                keysym, keycode, ..
+            }) => {
+                assert_eq!(keysym, 0xffe4);
+                assert_eq!(keycode, 0x9d);
+            }
+            other => panic!("Right Ctrl was not a physical key: {other:?}"),
+        }
+        match console_physical_key(99, true) {
+            Some(ConsoleInput::PhysicalKey {
+                keysym, keycode, ..
+            }) => {
+                assert_eq!(keysym, 0xff61);
+                assert_eq!(keycode, 0x54);
+            }
+            other => panic!("Print was not a physical key: {other:?}"),
+        }
+        match console_physical_key(119, true) {
+            Some(ConsoleInput::PhysicalKey {
+                keysym, keycode, ..
+            }) => {
+                assert_eq!(keysym, 0xff13);
+                assert_eq!(keycode, 0xc6);
+            }
+            other => panic!("Pause was not a physical key: {other:?}"),
+        }
+        let left = match console_physical_key(29, true) {
+            Some(ConsoleInput::PhysicalKey { keycode, .. }) => keycode,
+            other => panic!("Left Ctrl was not a physical key: {other:?}"),
+        };
+        let right = match console_physical_key(97, true) {
+            Some(ConsoleInput::PhysicalKey { keycode, .. }) => keycode,
+            other => panic!("Right Ctrl was not a physical key: {other:?}"),
+        };
+        assert_ne!(left, right);
     }
 }

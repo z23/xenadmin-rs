@@ -9,12 +9,14 @@ publish = false
 
 [dependencies]
 gpui-kit.workspace = true
+raw-window-handle = "0.6"
 uuid.workspace = true
 wayland-client = "0.31"
 xenadmin-core = { path = "../xenadmin-core" }
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
 
 [features]
 # Scene dumps and the scale example need the Kit test harness. A build

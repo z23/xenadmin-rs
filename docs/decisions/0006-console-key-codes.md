@@ -1,7 +1,7 @@
 # Console key codes on GPUI
 
-No route is selected. Gate G0 did not pass, and decision D2 says keysym-only
-input is not adopted unless an operator accepts that regression.
+Route A is the route for physical key codes. Gate G0 did not pass. Decision
+D2 still stands: keysym-only input is not adopted.
 
 ## What GPUI 0.3.12 gives
 
@@ -9,29 +9,40 @@ input is not adopted unless an operator accepts that regression.
 On Wayland, `wl_keyboard::Event::Key` includes the evdev code. `gpui-pre-linux`
 0.3.12 uses that code only to ask XKB for a keysym. Modifier keysyms are not
 turned into key events. Left and right are not distinguished after that
-translation. `CursorStyle` has no hidden value. The details and the file
-locations are in `docs/reports/2026-11-14-gpui-spike-s1.md`.
+translation. `CursorStyle` has no hidden value. The details are in
+`docs/reports/2026-11-14-gpui-spike-s1.md`.
+
+## What was shown
+
+On the operator's Hyprland 0.56.2 seat, a second `wl_keyboard` bound to the
+GPUI window's `wl_display` received the evdev code for every injected key,
+including Shift, Ctrl, Alt, and Super on both sides, and the lock, print,
+pause, and menu keys. GPUI's own keystrokes did not include those modifiers.
+
+The spike maps each code to `ConsoleInput::PhysicalKey`. `keycode` is the XT
+make code the Rune console already sends. `down` stays a separate flag. That
+is the value `xenadmin-core` turns into a QEMU extended key event once the
+server has negotiated the extension. The mapping was checked against the
+seat's events, not only against the unit vectors.
 
 ## Routes
 
-Route A, a second `wl_keyboard` on the console window's display, is compiled
-in `xenadmin-gpui`. Its XT table matches the Rune console vectors. It was not
-run against a compositor, and no guest recorded the codes. The plan allows a
-separate `xenadmin-keys` crate only after this route is selected. That crate
-was not added.
+Route A is the one that produced those events. The listener remains in
+`xenadmin-gpui` for this spike. `xenadmin-keys` is still not a crate: the
+plan adds it when a console view takes the route, and no view was ported.
+There is no vendored patch to re-apply on a Kit upgrade. The cost is the
+Wayland seat listener and the evdev-to-XT table, retested when the
+compositor or GPUI's display handle changes. Only Hyprland 0.56.2 was run.
 
-Route B, a vendored patch of `gpui-pre` and `gpui-pre-linux`, was not applied.
-This machine has no Wayland session in which the new callback could be shown
-to fire for modifiers and for Print Screen, Pause, and the lock keys. A patch
-that cannot be run does not meet requirements 3 to 5.
+Route B, a vendored patch of `gpui-pre` and `gpui-pre-linux`, was not
+applied. Route A met requirements 3 to 5 without it.
 
-Route C would send keysyms from `Keystroke` and would drop extended key events
-and left/right modifiers. That is a regression of a supported console path.
-It is not adopted.
+Route C would send keysyms from `Keystroke` and would drop extended key
+events and left/right modifiers. It is not adopted.
 
-## Maintenance
+## What is still open
 
-There is no patch to re-apply. If a later session shows that route A or route
-B meets the S1 matrix on a real compositor and a guest, this record has to be
-replaced with that route and its maintenance cost. Until then the Rune console
-path remains the one the application ships.
+The full S1 matrix was not run. No guest recorded a code. Frames, the
+pointer, a hidden cursor, fullscreen, and the clipboard were not run. A
+second host layout was not applied. S2 through S5 are unchanged, so G0 does
+not pass and the Rune console remains the one the application ships.

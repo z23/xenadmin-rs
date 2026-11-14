@@ -23,10 +23,13 @@ migration receiver URL. The plan's accent colour does not match `theme.rs`.
 builds beside the Rune crate. Reports `docs/reports/2026-11-14-gpui-spike-s0.md`
 through `s5.md` say what ran on Ubuntu 24.04.5 and what did not.
 
-The console spike is the blocking one. GPUI's Wayland backend does not forward
-evdev codes or left and right modifiers. A second `wl_keyboard` was written
-and was not attached to a live compositor. No guest captured input. Route B
-was not vendored. Route C, keysyms only, was not taken.
+The console spike is the one that blocked the cloud run. GPUI's Wayland
+backend does not forward evdev codes or left and right modifiers. A second
+`wl_keyboard` was written there and was not attached, because that machine
+had no compositor. On the later Hyprland seat run the same listener did
+deliver those codes as `ConsoleInput::PhysicalKey`. That does not finish S1
+or G0: frames, pointer, clipboard, a guest, and S2 through S5 are still
+open. Route B was not vendored. Route C, keysyms only, was not taken.
 
 Headless element trees of a two-element scene matched. PNG capture is
 unavailable: `gpui-pre-linux` 0.3.12 does not export `current_headless_renderer`.
@@ -43,8 +46,9 @@ session were not run.
   fails. That choice is not made here.
 - GTK 4 or Qt. Not spiked. Either would be a new toolkit and a new set of
   platform checks, and neither was needed to see that G0 failed.
-- GPUI Kit 0.9.1. Spiked. The pin builds. The console and the named headless
-  renderer do not meet the gate on the evidence collected here.
+- GPUI Kit 0.9.1. Spiked. The pin builds. Route A delivered console key
+  codes on a later Hyprland seat. The named headless renderer and the rest
+  of the gate were not met.
 
 ## Consequence
 

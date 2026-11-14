@@ -16,5 +16,5 @@ pub use bridge::{Changed, WakeBridge};
 pub use inventory::ScaleModel;
 pub use kit::gpui_kit;
 pub use menus::{StubItem, stub_menus};
-pub use scancode::xt_make_code;
-pub use wayland_keys::{ForeignKeyboard, RecordedKey};
+pub use scancode::{console_physical_key, x_keysym, xt_make_code};
+pub use wayland_keys::{ForeignKeyboard, RecordedKey, SeatEvent};
