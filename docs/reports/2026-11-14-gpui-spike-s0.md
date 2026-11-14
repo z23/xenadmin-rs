@@ -1,6 +1,6 @@
 # GPUI spike S0: build and policy
 
-Result: **not passed**. The spike crate builds on this Ubuntu 24.04 machine. Arch was not available, and the pull request's CI run is the remaining check of the same Ubuntu job. `gpui-fast` is not enabled.
+Result: **not passed**. The spike crate builds on Ubuntu 24.04, locally and in the GitHub `check` job. Arch was not available. `gpui-fast` is not enabled.
 
 ## What was reviewed
 
@@ -26,8 +26,16 @@ The build succeeded with the CI set plus the development packages this machine n
 
 `.github/workflows/ci.yml` installs that set. Arch package names were not installed or tested.
 
+## CI
+
+Commit `1dae7096ad52bcf891c1402ca62b70e323344e67` on `cursor/gpui-phase-0-spikes-1a78`. The workflow job `check` succeeded twice, once for the push and once for the pull request:
+
+- https://github.com/z23/xenadmin-rs/actions/runs/43566846192/job/132362448859 finished at 06:57 UTC after about 25 minutes.
+- https://github.com/z23/xenadmin-rs/actions/runs/43566835980/job/132362416317 finished at 07:05 UTC after about 33 minutes.
+
+That job runs `./scripts/check.sh` and then `./scripts/package.sh --appimage` on `ubuntu-24.04`. Both completed. The packaged binaries are still `xenadmin-rs` and `host-probe`.
+
 ## What this does not establish
 
 - A clean install or build on Arch.
-- That the existing 60-minute GitHub job still finishes once it compiles this graph. Local compile of the new graph was a few minutes; the shared runner is slower, and the Rune scene renders are unchanged.
 - Wayland, clipboard, keyboard, or Orca behavior. The hello example was not opened. Headless checks are in the other spike reports.
