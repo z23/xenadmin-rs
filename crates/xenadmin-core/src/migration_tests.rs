@@ -68,11 +68,11 @@ async fn fixture_hook(
         ),
         (
             "OpaqueRef:host:source".into(),
-            json!({"uuid":uuid(3),"enabled":true,"metrics":"OpaqueRef:host_metrics:source","current_operations":{}}),
+            json!({"uuid":uuid(3),"enabled":true,"metrics":"OpaqueRef:host_metrics:source","current_operations":{},"address":"192.0.2.10"}),
         ),
         (
             "OpaqueRef:host:destination".into(),
-            json!({"uuid":uuid(4),"enabled":true,"metrics":"OpaqueRef:host_metrics:destination","current_operations":{}}),
+            json!({"uuid":uuid(4),"enabled":true,"metrics":"OpaqueRef:host_metrics:destination","current_operations":{},"address":"192.0.2.20"}),
         ),
         (
             "OpaqueRef:host_metrics:source".into(),
@@ -156,7 +156,7 @@ async fn fixture_hook(
                 if fault == Fault::ForeignUrl {
                     return json!({"result":{"host":"OpaqueRef:host:destination","session_id":"OpaqueRef:SECRET-MIGRATION-TOKEN","master":"https://203.0.113.50/","SM":"https://203.0.113.50/services/SM","xenops":"https://203.0.113.50/services/xenops"}});
                 }
-                return json!({"result":{"host":if fault==Fault::WrongToken{"OpaqueRef:host:source"}else{"OpaqueRef:host:destination"},"session_id":"SECRET-MIGRATION-TOKEN","master":"https://fixture.invalid"}});
+                return json!({"result":{"host":if fault==Fault::WrongToken{"OpaqueRef:host:source"}else{"OpaqueRef:host:destination"},"session_id":"OpaqueRef:SECRET-MIGRATION-TOKEN","master":"https://192.0.2.10/","SM":"https://192.0.2.4/services/SM?session_id=OpaqueRef:SECRET-MIGRATION-TOKEN","xenops":"https://192.0.2.4/services/xenops?session_id=OpaqueRef:SECRET-MIGRATION-TOKEN"}});
             }
             if matches!(method, "VM.assert_can_migrate" | "VM.assert_can_boot_here") {
                 if fault == Fault::Incompatible {
@@ -332,7 +332,19 @@ async fn live_storage_migration_reports_new_disk_and_keeps_credentials_out_of_jo
     assert_eq!(count(&c, "Async.VM.migrate_send"), 1);
     let serialized = serde_json::to_string(&result).unwrap();
     assert!(!serialized.contains("SECRET-MIGRATION-TOKEN"));
-    assert!(!serialized.contains("fixture.invalid"));
+    assert!(!serialized.contains("192.0.2.4"));
+    assert!(!serialized.contains("192.0.2.10"));
+    let sent = c
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|call| call["method"] == "Async.VM.migrate_send")
+        .cloned()
+        .expect("migration dispatched");
+    let receiver = sent["params"][2].to_string();
+    assert!(receiver.contains("192.0.2.10"), "{receiver}");
+    assert!(receiver.contains("192.0.2.4"), "{receiver}");
+    assert!(!receiver.contains("192.0.2.20"), "{receiver}");
 }
 #[tokio::test]
 async fn unbound_receiver_url_is_not_forwarded() {
