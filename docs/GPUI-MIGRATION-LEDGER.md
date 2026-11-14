@@ -1,6 +1,6 @@
 # GPUI migration ledger
 
-Phase 1. The Rune binary is still the released artifact. `xenadmin-desktop` is frozen except for release-blocking fixes; each such fix adds a mirror row.
+Phase 2. The Rune binary is still the released artifact. The GPUI shell in `xenadmin-gpui` draws the gate scenes headlessly. It does not connect to a pool. Catalogued Rune buttons below stay on the Rune front end until a later phase ports that surface. `xenadmin-desktop` is frozen except for release-blocking fixes; each such fix adds a mirror row.
 
 ## Commands
 
@@ -9,13 +9,13 @@ Phase 1. The Rune binary is still the released artifact. `xenadmin-desktop` is f
 | `file.import` | Import | File | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `file.exit` | Exit | File | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `pool.new` | New Pool | Pool | see `commands.rs` | menu seed | specified | not started | phase 1 |
-| `pool.add-server` | Add Server | Pool | see `commands.rs` | menu seed | specified | not started | phase 1 |
+| `pool.add-server` | Add Server | Pool | see `commands.rs` | menu seed | specified | shell preview, no host | phase 2 |
 | `pool.disconnect` | Disconnect | Pool | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `pool.properties` | Properties | Pool | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `server.reboot` | Reboot | Server | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `server.maintenance` | Enter or Exit Maintenance Mode | Server | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `vm.new` | New VM | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
-| `vm.start` | Start | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
+| `vm.start` | Start | VM | see `commands.rs` | menu seed | specified | review dialog, no host | phase 2 |
 | `vm.shutdown` | Shut Down | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `vm.migrate` | Migrate to Server | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
 | `vm.snapshot` | Take a Snapshot | VM | see `commands.rs` | menu seed | specified | not started | phase 1 |
@@ -434,12 +434,12 @@ Phase 1. The Rune binary is still the released artifact. `xenadmin-desktop` is f
 
 | scene name | Rune source | surface | status | package |
 | --- | --- | --- | --- | --- |
-| demo | `main.rs` | Rune scene | ported | phase 1 |
-| large-inventory | `main.rs` | Rune scene | ported | phase 1 |
-| host-version-notice | `main.rs` | Rune scene | ported | phase 1 |
-| interface-large | `main.rs` | Rune scene | not ported | phase 1 |
-| inventory-context | `main.rs` | Rune scene | not ported | phase 1 |
-| general-information | `main.rs` | Rune scene | not ported | phase 1 |
+| demo | `main.rs` | Rune scene | shell preview | phase 2 |
+| large-inventory | `main.rs` | Rune scene | shell preview | phase 2 |
+| host-version-notice | `main.rs` | Rune scene | shell preview | phase 2 |
+| interface-large | `main.rs` | Rune scene | shell preview | phase 2 |
+| inventory-context | `main.rs` | Rune scene | shell preview | phase 2 |
+| general-information | `main.rs` | Rune scene | shell preview | phase 2 |
 | options | `main.rs` | Rune scene | not ported | phase 1 |
 | help | `main.rs` | Rune scene | not ported | phase 1 |
 | console-details | `main.rs` | Rune scene | not ported | phase 1 |
@@ -459,10 +459,10 @@ Phase 1. The Rune binary is still the released artifact. `xenadmin-desktop` is f
 | guest-connections | `main.rs` | Rune scene | not ported | phase 1 |
 | external-tools | `main.rs` | Rune scene | not ported | phase 1 |
 | host-console | `main.rs` | Rune scene | not ported | phase 1 |
-| search-pools | `main.rs` | Rune scene | not ported | phase 1 |
+| search-pools | `main.rs` | Rune scene | shell preview | phase 2 |
 | performance | `main.rs` | Rune scene | not ported | phase 1 |
 | metric-presets | `main.rs` | Rune scene | not ported | phase 1 |
-| unavailable-actions | `main.rs` | Rune scene | ported | phase 1 |
+| unavailable-actions | `main.rs` | Rune scene | shell preview | phase 2 |
 | vm-devices | `main.rs` | Rune scene | not ported | phase 1 |
 | properties | `main.rs` | Rune scene | not ported | phase 1 |
 | properties-running | `main.rs` | Rune scene | not ported | phase 1 |
@@ -494,9 +494,9 @@ Phase 1. The Rune binary is still the released artifact. `xenadmin-desktop` is f
 | snapshot-restore | `main.rs` | Rune scene | not ported | phase 1 |
 | snapshot-edit | `main.rs` | Rune scene | not ported | phase 1 |
 | snapshot-capture | `main.rs` | Rune scene | not ported | phase 1 |
-| connections | `main.rs` | Rune scene | not ported | phase 1 |
-| connection-trust | `main.rs` | Rune scene | not ported | phase 1 |
-| certificate-review | `main.rs` | Rune scene | not ported | phase 1 |
+| connections | `main.rs` | Rune scene | shell preview | phase 2 |
+| connection-trust | `main.rs` | Rune scene | shell preview | phase 2 |
+| certificate-review | `main.rs` | Rune scene | shell preview | phase 2 |
 | network-interfaces | `main.rs` | Rune scene | not ported | phase 1 |
 | network-services | `main.rs` | Rune scene | not ported | phase 1 |
 | network-fabric | `main.rs` | Rune scene | not ported | phase 1 |
@@ -559,9 +559,9 @@ Phase 1. The Rune binary is still the released artifact. `xenadmin-desktop` is f
 | pool-policies | `main.rs` | Rune scene | not ported | phase 1 |
 | pool-policy-review | `main.rs` | Rune scene | not ported | phase 1 |
 | pool-administration | `main.rs` | Rune scene | not ported | phase 1 |
-| connection-settings | `main.rs` | Rune scene | not ported | phase 1 |
-| connect | `main.rs` | Rune scene | not ported | phase 1 |
-| connect-insecure | `main.rs` | Rune scene | not ported | phase 1 |
+| connection-settings | `main.rs` | Rune scene | shell preview | phase 2 |
+| connect | `main.rs` | Rune scene | shell preview | phase 2 |
+| connect-insecure | `main.rs` | Rune scene | shell preview | phase 2 |
 
 ## Tests
 

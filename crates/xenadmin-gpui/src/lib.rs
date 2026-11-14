@@ -10,11 +10,17 @@ mod inventory;
 mod kit;
 mod menus;
 mod scancode;
+mod shell_state;
+mod shell_view;
 mod wayland_keys;
+
+gpui_kit::actions!(shell_cmd, [ShowGeneral]);
 
 pub use bridge::{Changed, WakeBridge};
 pub use inventory::ScaleModel;
 pub use kit::gpui_kit;
 pub use menus::{StubItem, stub_menus};
 pub use scancode::{console_physical_key, x_keysym, xt_make_code};
+pub use shell_state::{ShellState, load_scene};
+pub use shell_view::ShellView;
 pub use wayland_keys::{ForeignKeyboard, RecordedKey, SeatEvent};
