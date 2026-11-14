@@ -5,6 +5,8 @@ use super::{
 use crate::{Error, HostCrashdump, HostId, OperationState, PoolId, StepState, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::OpaqueRef;
+use xenadmin_xapi::class;
 use xenadmin_xapi::records::{HostCrashdumpRecord, HostMetricsRecord, HostRecord};
 use xenadmin_xapi::{calls, refs};
 
@@ -99,7 +101,7 @@ async fn host(
     session: &Session,
     record: &ResourceOperationRecord,
     require_live: bool,
-) -> Result<String, Error> {
+) -> Result<OpaqueRef<class::Host>, Error> {
     let ResourceTarget::Host(host) = record.target else {
         return Err(Error::InvalidResourceCommand);
     };
@@ -122,16 +124,21 @@ async fn host(
     }
     Ok(reference)
 }
-async fn selected(session: &Session, record: &ResourceOperationRecord) -> Result<String, Error> {
+async fn selected(
+    session: &Session,
+    record: &ResourceOperationRecord,
+) -> Result<OpaqueRef<class::HostCrashdump>, Error> {
     let ResourceAction::DeleteHostCrashdump(expected) = &record.action else {
         return Err(Error::InvalidResourceCommand);
     };
     validate_command(record.target, expected)?;
     let owner = host(session, record, true).await?;
-    let (reference, fresh) =
-        crate::snapshots::optional_record(session, "host_crashdump", &expected.uuid.to_string())
-            .await?
-            .ok_or(Error::Stale)?;
+    let (reference, fresh) = crate::snapshots::optional_record::<class::HostCrashdump>(
+        session,
+        &expected.uuid.to_string(),
+    )
+    .await?
+    .ok_or(Error::Stale)?;
     if HostCrashdumpRecord::new(&fresh).host() != owner
         || crate::host_support::decode_crashdump(&fresh)? != *expected
     {
@@ -186,7 +193,7 @@ pub(super) async fn verify(
     validate_record(record)?;
     let p=record.crashdump_deletion.as_ref().filter(|p|p.dispatched&&p.completed).ok_or(Error::Protocol("Crashdump deletion completion receipt is unavailable; absence alone cannot establish filesystem deletion and no request will be replayed"))?;
     host(session, record, false).await?;
-    if crate::snapshots::optional_record(session, "host_crashdump", &p.dump.uuid.to_string())
+    if crate::snapshots::optional_record::<class::HostCrashdump>(session, &p.dump.uuid.to_string())
         .await?
         .is_some()
     {

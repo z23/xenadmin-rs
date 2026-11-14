@@ -113,7 +113,7 @@ pub struct Unclassed;
 /// A class of the API as a type. The markers in [`class`] are these, and a reference, a
 /// record and a call's answer carry one, so that a `VM` is not taken for a `host` where
 /// the compiler can follow it.
-pub trait IsClass: 'static {
+pub trait IsClass: Sized + 'static {
     /// The class's name in the API.
     const NAME: &'static str;
     /// The view of its records.
@@ -520,7 +520,27 @@ impl<'a, C: IsClass> Describes<'a, C> for &'a Answer<result::Record<C>> {
 /// The messages nearly every class has, for whichever class: its record by reference,
 /// its reference by UUID, and all its records. A function that does the same for
 /// several classes takes the class as a type and makes these; the class has to have the
-/// message, or it does not compile.
+/// message, or it does not compile. The fields many classes share are here the same
+/// way: a function that reads the `uuid` or the operations of whichever class takes the
+/// class as a type, and a class without the field does not compile.
+///
+/// ```
+/// use xenadmin_xapi::{any, class};
+/// fn idle<C: any::Operated>(record: &serde_json::Value) -> bool {
+///     C::current_operations(record).entries().is_some_and(|running| running.is_empty())
+/// }
+/// let record = serde_json::json!({"uuid": "u", "current_operations": {}});
+/// assert!(idle::<class::Vm>(&record));
+/// assert_eq!(<class::Vm as any::Identified>::uuid(&record), "u");
+/// ```
+///
+/// A host's metrics have no operations to ask for:
+///
+/// ```compile_fail,E0277
+/// use xenadmin_xapi::{any, class};
+/// fn idle<C: any::Operated>(_: &serde_json::Value) {}
+/// idle::<class::HostMetrics>(&serde_json::Value::Null);
+/// ```
 ///
 /// ```
 /// use xenadmin_xapi::{Call, any, class, refs};
@@ -532,9 +552,43 @@ impl<'a, C: IsClass> Describes<'a, C> for &'a Answer<result::Record<C>> {
 /// assert_eq!(any::GetAllRecords::<class::Vm>::new().request().0, "VM.get_all_records");
 /// ```
 pub mod any {
-    use super::{Call, IsClass, Ref, result};
+    use super::{Call, Describes, IsClass, MapField, Ref, SetField, TextField, result};
     use serde_json::Value;
     use std::marker::PhantomData;
+    /// A class whose records have a `uuid`.
+    pub trait Identified: IsClass {
+        /// The record's `uuid`.
+        fn uuid<'a>(record: impl Describes<'a, Self>) -> TextField<'a>;
+    }
+    /// A class whose records have a name and a description.
+    pub trait Named: IsClass {
+        /// The record's `name_label`.
+        fn name_label<'a>(record: impl Describes<'a, Self>) -> TextField<'a>;
+        /// The record's `name_description`.
+        fn name_description<'a>(record: impl Describes<'a, Self>) -> TextField<'a>;
+    }
+    /// A class whose records say which operations they allow and which are running.
+    pub trait Operated: IsClass {
+        /// The record's `allowed_operations`.
+        fn allowed_operations<'a>(record: impl Describes<'a, Self>) -> SetField<'a>;
+        /// The record's `current_operations`.
+        fn current_operations<'a>(record: impl Describes<'a, Self>) -> MapField<'a>;
+    }
+    /// A class whose records say which operations are blocked.
+    pub trait Blocked: IsClass {
+        /// The record's `blocked_operations`.
+        fn blocked_operations<'a>(record: impl Describes<'a, Self>) -> MapField<'a>;
+    }
+    /// A class whose records have an `other_config`.
+    pub trait Configured: IsClass {
+        /// The record's `other_config`.
+        fn other_config<'a>(record: impl Describes<'a, Self>) -> MapField<'a>;
+    }
+    /// A class whose records have tags.
+    pub trait Tagged: IsClass {
+        /// The record's `tags`.
+        fn tags<'a>(record: impl Describes<'a, Self>) -> SetField<'a>;
+    }
     /// A class with `get_record`.
     pub trait HasRecord: IsClass {
         /// `Class.get_record` and its name as a task.
@@ -1237,7 +1291,7 @@ pub mod audit {
 
     /// What is wrong with the arguments of one call, the session's token included where
     /// the call takes a session: for each, the position and what [`misfit`] says, as the
-    /// lines' last two fields. Nothing for a call the catalogue does not have.
+    /// lines' last two fields. A call the catalogue does not have is reported as that.
     pub fn call_misfits(method: &str, arguments: &[serde_json::Value]) -> Vec<String> {
         let name = method.strip_prefix("Async.").unwrap_or(method);
         let Some(message) = name.split_once('.').and_then(|(class, message)| {
@@ -1250,7 +1304,10 @@ pub mod audit {
                 .ok()?;
             Some(&class.messages[at])
         }) else {
-            return Vec::new();
+            // A name the API does not have is the first thing that can be wrong with a
+            // call: a host answers that it knows no such message. A class written with
+            // another capital is such a name.
+            return vec!["name\tthe API has no such message".into()];
         };
         if !(message.required..=message.parameters.len()).contains(&arguments.len()) {
             let takes = if message.required == message.parameters.len() {
@@ -1621,8 +1678,16 @@ mod tests {
             ["count\ttakes 3 to 4, given 5"]
         );
         // A call the API does not have is for the conformance test, not for this one.
-        assert!(call_misfits("VM.no_such_call", &good).is_empty());
-        assert!(call_misfits("nothing", &[]).is_empty());
+        // A call the API does not have is reported as such, whatever it is given: a
+        // message its class lacks, a class written with another capital, no class.
+        for unknown in ["VM.no_such_call", "Tunnel.get_all_records", "nothing"] {
+            assert_eq!(
+                call_misfits(unknown, &good),
+                ["name\tthe API has no such message"],
+                "{unknown}"
+            );
+        }
+        assert!(call_misfits("tunnel.get_all_records", &good[..1]).is_empty());
         // Whole numbers go as numbers or as digits; anything else is named.
         assert_eq!(misfit("int", &json!(4)), None);
         assert_eq!(misfit("int", &json!("2147483648")), None);

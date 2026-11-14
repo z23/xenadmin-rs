@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 use xenadmin_xapi::enumerations::{storage_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Answer, OpaqueRef, any, class, result};
 use xenadmin_xapi::{Reads, kind};
 use xenadmin_xapi::{calls, refs};
 pub(crate) const MARKER: &str = "xenadmin-rs-disk-transfer";
@@ -91,8 +92,11 @@ fn idle(v: &Value) -> Result<(), Error> {
     }
     Ok(())
 }
-async fn fresh(s: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
-    crate::snapshots::optional_record(s, class, &id.to_string())
+async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
+    s: &Session,
+    id: Uuid,
+) -> Result<(OpaqueRef<C>, Answer<result::Record<C>>), Error> {
+    crate::snapshots::optional_record::<C>(s, &id.to_string())
         .await?
         .ok_or(Error::TransferConflict)
 }
@@ -102,8 +106,8 @@ pub(crate) async fn disk_record(
     sr: SrId,
     format: DiskImageFormat,
     unattached: bool,
-) -> Result<(String, Value), Error> {
-    let (reference, d) = fresh(s, "VDI", vdi.uuid()).await?;
+) -> Result<(OpaqueRef<class::Vdi>, Answer<result::Record<class::Vdi>>), Error> {
+    let (reference, d) = fresh::<class::Vdi>(s, vdi.uuid()).await?;
     idle(&d)?;
     if VdiRecord::new(&d).type_() != vdi_type::USER
         || VdiRecord::new(&d).managed() != true
@@ -115,7 +119,7 @@ pub(crate) async fn disk_record(
     {
         return Err(Error::TransferConflict);
     }
-    let (sr_ref, _) = fresh(s, "SR", sr.uuid()).await?;
+    let (sr_ref, _) = fresh::<class::Sr>(s, sr.uuid()).await?;
     if VdiRecord::new(&d).sr() != sr_ref {
         return Err(Error::TransferConflict);
     }
@@ -184,7 +188,7 @@ pub(crate) async fn prepare(
         {
             return Err(Error::TransferConflict);
         }
-        prepared.query.push(("vdi".into(), reference));
+        prepared.query.push(("vdi".into(), reference.into_string()));
     }
     Ok(prepared)
 }
@@ -204,7 +208,7 @@ pub(crate) async fn creation_arguments(
     {
         return Err(Error::DiskImage);
     }
-    let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
+    let (reference, r) = fresh::<class::Sr>(s, sr.uuid()).await?;
     idle(&r)?;
     if SrRecord::new(&r).content_type() != "user"
         || !crate::xapi::offers(
@@ -273,5 +277,5 @@ pub(crate) async fn identify(
     {
         return Err(Error::TransferConflict);
     }
-    Ok((reference, vdi))
+    Ok((reference.into_string(), vdi))
 }

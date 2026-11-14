@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::{
     on_boot, primary_address_type, vbd_mode, vbd_type, vdi_type, vm_operations, vm_power_state,
 };
@@ -356,7 +357,7 @@ async fn source(
     session: &Session,
     operation: &CrossPoolVmOperation,
 ) -> Result<(String, Value, m::Graph, Shape), Error> {
-    let (reference, record) = m::fresh(session, "VM", operation.vm.uuid()).await?;
+    let (reference, record) = m::fresh::<class::Vm>(session, operation.vm.uuid()).await?;
     unmet(
         VmRecord::new(&record).is_a_template() == false
             && VmRecord::new(&record).is_a_snapshot() == false
@@ -473,7 +474,7 @@ async fn source(
             "Only owned writable data disks can be transferred",
         )?;
         let disk = attachment.disk.as_ref().ok_or(Error::MigrationConflict)?;
-        let (_, record) = m::fresh(session, "VDI", disk.id.uuid()).await?;
+        let (_, record) = m::fresh::<class::Vdi>(session, disk.id.uuid()).await?;
         unmet(
             disk.kind == vdi_type::USER
                 && VdiRecord::new(&record).read_only() == false
@@ -492,7 +493,7 @@ async fn source(
         )?;
     }
     let shape = shape(&record)?;
-    Ok((reference, record, graph, shape))
+    Ok((reference.into_string(), record.into_value(), graph, shape))
 }
 async fn baseline(session: &Session) -> Result<BTreeMap<String, BTreeSet<Uuid>>, Error> {
     let mut result = BTreeMap::new();
@@ -528,7 +529,7 @@ async fn capacity(
             .ok_or(Error::MigrationConflict)
     };
     for (sr, size) in required {
-        let (_, record) = m::fresh(destination, "SR", sr.uuid()).await?;
+        let (_, record) = m::fresh::<class::Sr>(destination, sr.uuid()).await?;
         let view = SrRecord::new(&record);
         unmet(
             whole(view.physical_size())?.saturating_sub(whole(view.physical_utilisation())?)
@@ -625,9 +626,9 @@ async fn destinations(
         *size = size
             .checked_add(disk.size)
             .ok_or(Error::MigrationConflict)?;
-        let (reference, _) = m::fresh(source_session, "VDI", mapping.vdi.uuid()).await?;
+        let (reference, _) = m::fresh::<class::Vdi>(source_session, mapping.vdi.uuid()).await?;
         let sr = m::sr_visible(destination, mapping.destination_sr, &host, true).await?;
-        disks.insert(reference, json!(sr));
+        disks.insert(reference.into_string(), json!(sr));
     }
     capacity(
         destination,
@@ -637,17 +638,17 @@ async fn destinations(
     .await?;
     let mut nics = serde_json::Map::new();
     for mapping in &operation.networks {
-        let (reference, _) = m::fresh(source_session, "VIF", mapping.vif.uuid()).await?;
+        let (reference, _) = m::fresh::<class::Vif>(source_session, mapping.vif.uuid()).await?;
         let network =
             m::network_visible(destination, mapping.destination_network, &host, false).await?;
-        nics.insert(reference, json!(network));
+        nics.insert(reference.into_string(), json!(network));
     }
     let (vm, _, graph, shape) = source(source_session, operation).await?;
     unchanged(graph == plan.graph && shape == plan.shape)?;
     Ok(Prepared {
         vm,
-        host,
-        network,
+        host: host.into_string(),
+        network: network.into_string(),
         coordinator_address,
         disks: Value::Object(disks),
         nics: Value::Object(nics),
@@ -895,7 +896,7 @@ pub(crate) async fn verify_destination(
                         && new.sr == mapping.destination_sr,
                     "Destination disk contents or placement cannot be identified",
                 )?;
-                let (_, disk) = m::fresh(destination, "VDI", new.id.uuid()).await?;
+                let (_, disk) = m::fresh::<class::Vdi>(destination, new.id.uuid()).await?;
                 let consumers = m::refs(&disk, "VBDs")?;
                 require(
                     consumers.len() == 1
@@ -963,20 +964,22 @@ pub(crate) async fn verify_source(
         return Ok(SourceDisposition::Clean);
     }
     require(
-        snapshots::optional_record(source_session, "VM", &plan.operation.vm.to_string())
+        snapshots::optional_record::<class::Vm>(source_session, &plan.operation.vm.to_string())
             .await?
             .is_none(),
         "Destination exists but source VM removal is not yet verified",
     )?;
-    for (class, id) in plan
-        .graph
-        .disks
-        .iter()
-        .map(|b| ("VBD", b.id.uuid()))
-        .chain(plan.graph.nics.iter().map(|n| ("VIF", n.id.uuid())))
-    {
+    for block in &plan.graph.disks {
         require(
-            snapshots::optional_record(source_session, class, &id.to_string())
+            snapshots::optional_record::<class::Vbd>(source_session, &block.id.uuid().to_string())
+                .await?
+                .is_none(),
+            "Destination exists but source device cleanup is not yet verified",
+        )?;
+    }
+    for nic in &plan.graph.nics {
+        require(
+            snapshots::optional_record::<class::Vif>(source_session, &nic.id.uuid().to_string())
                 .await?
                 .is_none(),
             "Destination exists but source device cleanup is not yet verified",
@@ -986,7 +989,7 @@ pub(crate) async fn verify_source(
     // can lag the migration task by a while; they are reported rather than treated as doubt.
     let mut pending = 0;
     for disk in plan.graph.disks.iter().filter_map(|b| b.disk.as_ref()) {
-        if snapshots::optional_record(source_session, "VDI", &disk.id.to_string())
+        if snapshots::optional_record::<class::Vdi>(source_session, &disk.id.to_string())
             .await?
             .is_some()
         {

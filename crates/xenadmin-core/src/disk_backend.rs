@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use xenadmin_xapi::OpaqueRef;
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::{vbd_type, vdi_operations, vdi_type, vm_power_state};
 use xenadmin_xapi::records::{PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
 use xenadmin_xapi::{Call, Int, calls, refs};
@@ -394,7 +395,7 @@ pub(super) async fn verify(
             r.created = Some(ResourceTarget::Disk(disk));
         }
         Kind::Cleanup => {
-            if crate::snapshots::optional_record(s, "VDI", &plan.disk.to_string())
+            if crate::snapshots::optional_record::<class::Vdi>(s, &plan.disk.to_string())
                 .await?
                 .is_some()
             {

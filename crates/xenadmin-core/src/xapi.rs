@@ -1182,7 +1182,7 @@ pub(crate) async fn prepare_mutation(
             if !advertises(&candidate, vm_operations::CLONE) {
                 return Err(Error::UnavailableAction);
             }
-            Ok(reference)
+            Ok(reference.into_string())
         }
         OperationAction::Snapshot(
             SnapshotOperation::Delete { .. } | SnapshotOperation::Workflow { .. },

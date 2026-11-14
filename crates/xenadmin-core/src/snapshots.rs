@@ -1,12 +1,13 @@
 use crate::{Error, Inventory, SnapshotId, VdiId, VmId, xapi::Session};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeSet;
 use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{
     vbd_type, vdi_operations, vdi_type, vm_operations, vm_power_state,
 };
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Answer, Ref, any, class, result};
 use xenadmin_xapi::{Reads, kind};
 use xenadmin_xapi::{calls, refs};
 
@@ -72,24 +73,20 @@ pub(crate) fn reference<'a, R: Reads<'a, kind::Reference>>(
         .ok_or(Error::Protocol("invalid snapshot object reference"))
 }
 
-pub(crate) async fn optional_record(
+/// The reference and the record of the object of class `C` with this UUID, or nothing
+/// when the host has no such object. Both keep the class.
+pub(crate) async fn optional_record<C: any::HasUuid + any::HasRecord + any::Identified>(
     session: &Session,
-    class: &str,
     id: &str,
-) -> Result<Option<(String, Value)>, Error> {
+) -> Result<Option<(OpaqueRef<C>, Answer<result::Record<C>>)>, Error> {
     let result = async {
-        let object = reference(
-            &session
-                .call(&format!("{class}.get_by_uuid"), vec![json!(id)])
-                .await?,
-        )?;
-        let record = session
-            .call(&format!("{class}.get_record"), vec![json!(&object)])
-            .await?;
-        if record["uuid"].as_str() != Some(id) {
+        let found = session.send(any::GetByUuid::<C>::new(id)).await?;
+        let object = reference(&found)?;
+        let record = session.send(any::GetRecord(Ref::<C>::new(&object))).await?;
+        if C::uuid(&record).text() != Some(id) {
             return Err(Error::SnapshotConflict);
         }
-        Ok((object.into_string(), record))
+        Ok((object, record))
     }
     .await;
     match result {
@@ -104,8 +101,8 @@ pub(crate) async fn snapshot_record(
     session: &Session,
     parent: VmId,
     snapshot: SnapshotId,
-) -> Result<(String, Value), Error> {
-    let (parent_ref, parent_record) = optional_record(session, "VM", &parent.to_string())
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
+    let (parent_ref, parent_record) = optional_record::<class::Vm>(session, &parent.to_string())
         .await?
         .ok_or(Error::Stale)?;
     if VmRecord::new(&parent_record).is_a_snapshot() != false
@@ -117,7 +114,7 @@ pub(crate) async fn snapshot_record(
     {
         return Err(Error::Stale);
     }
-    let (reference, record) = optional_record(session, "VM", &snapshot.to_string())
+    let (reference, record) = optional_record::<class::Vm>(session, &snapshot.to_string())
         .await?
         .ok_or(Error::Stale)?;
     if VmRecord::new(&record).is_a_snapshot() != true
@@ -183,7 +180,7 @@ pub(crate) async fn deletion_plan(
     }
     let attachments = refs(&record, "VBDs")?;
     for id in disks {
-        let (disk_ref, disk) = optional_record(session, "VDI", &id.to_string())
+        let (disk_ref, disk) = optional_record::<class::Vdi>(session, &id.to_string())
             .await?
             .ok_or(Error::SnapshotConflict)?;
         if !disk_is_snapshot(&disk) {
@@ -289,7 +286,8 @@ pub(crate) async fn destroy_snapshot(
 }
 
 pub(crate) async fn destroy_disk(session: &Session, disk: VdiId) -> Result<(), Error> {
-    let Some((reference, record)) = optional_record(session, "VDI", &disk.to_string()).await?
+    let Some((reference, record)) =
+        optional_record::<class::Vdi>(session, &disk.to_string()).await?
     else {
         return Ok(());
     };

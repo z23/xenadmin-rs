@@ -13,8 +13,10 @@ fails the check and is printed. An absent or empty file passes: nothing was repo
 
 The file also holds a line for every call that was sent with an argument the API's type
 for that parameter does not admit, or with a number of arguments the API does not take:
-`call`, the call's name, the parameter's position or `count`, and what was wrong. No call
-is expected to be reported, so each of those fails the check. Lines that start with `sent`
+`call`, the call's name, the parameter's position or `count`, and what was wrong. A call
+the API does not have at all, such as one whose class is written with another capital,
+has `name` in that place. No call is expected to be reported, so each of those fails the
+check. Lines that start with `sent`
 name the calls that were made at all, and lines that start with `viewed` the places that
 made a view; both are counted and never fail anything.
 """
@@ -71,6 +73,9 @@ def main(arguments):
               f"which {cls} does not have", file=sys.stderr)
     misfits = calls(lines)
     for call, position, what in misfits:
+        if position == "name":
+            print(f"view_audit: {call} was sent, and {what}", file=sys.stderr)
+            continue
         where = "its arguments" if position == "count" else f"parameter {position}"
         print(f"view_audit: {call} was sent with {where} wrong: {what}", file=sys.stderr)
     sent = {line.rstrip("\n").split("\t")[1].removeprefix("Async.")

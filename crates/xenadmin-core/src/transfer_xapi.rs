@@ -10,6 +10,7 @@ use xenadmin_xapi::records::{
     HostRecord, NetworkRecord, PbdRecord, PoolRecord, SrRecord, TaskRecord, VbdRecord, VdiRecord,
     VmRecord,
 };
+use xenadmin_xapi::{Answer, OpaqueRef, any, class};
 use xenadmin_xapi::{calls, refs};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Baseline {
@@ -43,8 +44,11 @@ fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
         .map(|value| crate::snapshots::reference(value).map(String::from))
         .collect()
 }
-async fn fresh(s: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
-    crate::snapshots::optional_record(s, class, &id.to_string())
+async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
+    s: &Session,
+    id: Uuid,
+) -> Result<(OpaqueRef<C>, Answer<xenadmin_xapi::result::Record<C>>), Error> {
+    crate::snapshots::optional_record::<C>(s, &id.to_string())
         .await?
         .ok_or(Error::TransferConflict)
 }
@@ -102,16 +106,16 @@ pub(crate) async fn prepare(
             return Err(Error::ReadOnly);
         }
         let mut prepared = storage_route(s, pool, *sr, true).await?;
-        let (reference, _) = fresh(s, "SR", sr.uuid()).await?;
+        let (reference, _) = fresh::<class::Sr>(s, sr.uuid()).await?;
         prepared.kind = http::Kind::Archive;
         prepared.query = vec![
-            ("sr_id".into(), reference),
+            ("sr_id".into(), reference.into_string()),
             ("restore".into(), "false".into()),
             ("force".into(), "false".into()),
         ];
         return Ok(prepared);
     }
-    let _ = fresh(s, "pool", pool.uuid()).await?;
+    let _ = fresh::<class::Pool>(s, pool.uuid()).await?;
     let hosts = records(s, "host").await?;
     let known_hosts = hosts
         .values()
@@ -136,7 +140,7 @@ pub(crate) async fn prepare(
                     vm,
                     expected_template,
                 } => {
-                    let (r, v) = fresh(s, "VM", vm.uuid()).await?;
+                    let (r, v) = fresh::<class::Vm>(s, vm.uuid()).await?;
                     if VmRecord::new(&v).is_a_template() != *expected_template
                         || VmRecord::new(&v).is_a_snapshot() != false
                     {
@@ -148,8 +152,8 @@ pub(crate) async fn prepare(
                 | ExportSource::Checkpoint {
                     snapshot, parent, ..
                 } => {
-                    let (parent, _) = fresh(s, "VM", parent.uuid()).await?;
-                    let (r, v) = fresh(s, "VM", snapshot.uuid()).await?;
+                    let (parent, _) = fresh::<class::Vm>(s, parent.uuid()).await?;
+                    let (r, v) = fresh::<class::Vm>(s, snapshot.uuid()).await?;
                     if VmRecord::new(&v).is_a_snapshot() != true
                         || VmRecord::new(&v).snapshot_of() != parent
                     {
@@ -432,7 +436,7 @@ pub(crate) async fn storage_route(
     sr: SrId,
     write: bool,
 ) -> Result<http::Prepared, Error> {
-    let (_, pool) = fresh(s, "pool", pool.uuid()).await?;
+    let (_, pool) = fresh::<class::Pool>(s, pool.uuid()).await?;
     let hosts = records(s, "host").await?;
     let known_hosts = hosts
         .values()
@@ -445,7 +449,7 @@ pub(crate) async fn storage_route(
                 .ok_or(Error::TransferEndpoint)
         })
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let (reference, r) = fresh(s, "SR", sr.uuid()).await?;
+    let (reference, r) = fresh::<class::Sr>(s, sr.uuid()).await?;
     idle(&r)?;
     if SrRecord::new(&r).content_type() != "user"
         || (write

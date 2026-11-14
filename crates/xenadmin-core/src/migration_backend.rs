@@ -11,6 +11,7 @@ use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PifRecord, SrRecord, VbdRecord, VdiRecord, VifRecord,
     VmRecord,
 };
+use xenadmin_xapi::{Answer, OpaqueRef, any, class, result};
 use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
@@ -192,12 +193,11 @@ pub(crate) fn idle(r: &Value) -> Result<(), Error> {
         Err(Error::Busy)
     }
 }
-pub(crate) async fn fresh(
+pub(crate) async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
     session: &Session,
-    class: &str,
     uuid: Uuid,
-) -> Result<(String, Value), Error> {
-    snapshots::optional_record(session, class, &uuid.to_string())
+) -> Result<(OpaqueRef<C>, Answer<result::Record<C>>), Error> {
+    snapshots::optional_record::<C>(session, &uuid.to_string())
         .await?
         .ok_or(Error::MigrationConflict)
 }
@@ -223,8 +223,12 @@ pub(crate) async fn nullable_host<'a>(
         .await?)?))
     }
 }
-async fn guest(session: &Session, plan: &Plan, original: bool) -> Result<(String, Value), Error> {
-    let (reference, r) = fresh(session, "VM", plan.vm.uuid()).await?;
+async fn guest(
+    session: &Session,
+    plan: &Plan,
+    original: bool,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
+    let (reference, r) = fresh::<class::Vm>(session, plan.vm.uuid()).await?;
     if VmRecord::new(&r).is_a_template() != false
         || VmRecord::new(&r).is_a_snapshot() != false
         || VmRecord::new(&r).is_control_domain() != false
@@ -370,8 +374,11 @@ fn matches_review(g: &Graph, o: &VmMigration) -> bool {
                 .map(|n| (n.vif, n.expected_network))
                 .collect()
 }
-pub(crate) async fn host(session: &Session, target: HostId) -> Result<String, Error> {
-    let (reference, h) = fresh(session, "host", target.uuid()).await?;
+pub(crate) async fn host(
+    session: &Session,
+    target: HostId,
+) -> Result<OpaqueRef<class::Host>, Error> {
+    let (reference, h) = fresh::<class::Host>(session, target.uuid()).await?;
     idle(&h)?;
     if HostRecord::new(&h).enabled() != true {
         return Err(Error::UnavailableAction);
@@ -388,8 +395,8 @@ pub(crate) async fn sr_visible(
     sr: SrId,
     hostref: &str,
     write: bool,
-) -> Result<String, Error> {
-    let (reference, r) = fresh(session, "SR", sr.uuid()).await?;
+) -> Result<OpaqueRef<class::Sr>, Error> {
+    let (reference, r) = fresh::<class::Sr>(session, sr.uuid()).await?;
     idle(&r)?;
     if write
         && (SrRecord::new(&r).content_type() != "user"
@@ -420,8 +427,8 @@ pub(crate) async fn network_visible(
     network: NetworkId,
     hostref: &str,
     transfer: bool,
-) -> Result<String, Error> {
-    let (reference, r) = fresh(session, "network", network.uuid()).await?;
+) -> Result<OpaqueRef<class::Network>, Error> {
+    let (reference, r) = fresh::<class::Network>(session, network.uuid()).await?;
     idle(&r)?;
     let pifs = refs(&r, "PIFs")?;
     let mut visible = pifs.is_empty() && !transfer;
@@ -454,7 +461,7 @@ async fn validate_destinations(
     let mut disks = serde_json::Map::new();
     for attachment in &plan.graph.disks {
         if let Some(d) = &attachment.disk {
-            let (diskref, r) = fresh(session, "VDI", d.id.uuid()).await?;
+            let (diskref, r) = fresh::<class::Vdi>(session, d.id.uuid()).await?;
             idle(&r)?;
             let placement = plan.operation.disks.iter().find(|p| p.vdi == d.id);
             let destination = placement.map_or(d.sr, |p| p.destination_sr);
@@ -477,7 +484,7 @@ async fn validate_destinations(
                 }
             }
             let sr = sr_visible(session, destination, hostref, moving).await?;
-            disks.insert(diskref, json!(sr));
+            disks.insert(diskref.into_string(), json!(sr));
         }
     }
     // XCP-ng 8.3.0 refuses any VIF entry in a same-pool migrate_send map, even one that
@@ -486,7 +493,7 @@ async fn validate_destinations(
     // change up front; cross-pool moves carry their mappings separately.
     let nics = serde_json::Map::new();
     for p in &plan.operation.networks {
-        let (_, vif) = fresh(session, "VIF", p.vif.uuid()).await?;
+        let (_, vif) = fresh::<class::Vif>(session, p.vif.uuid()).await?;
         let network = network_visible(session, p.destination_network, hostref, false).await?;
         if VifRecord::new(&vif).network() != network {
             return Err(Error::UnsupportedMigration);
@@ -570,11 +577,11 @@ pub(crate) async fn preflight(
     }
     let preflight = Preflight {
         plan,
-        vmref,
-        hostref,
+        vmref: vmref.into_string(),
+        hostref: hostref.into_string(),
         disks,
         nics,
-        transfer,
+        transfer: transfer.map(OpaqueRef::into_string),
     };
     preflight.revalidate(session).await?;
     Ok(preflight)
@@ -705,7 +712,7 @@ pub(crate) async fn verify(
                 {
                     return Err(Error::MigrationConflict);
                 }
-                let (_, r) = fresh(session, "VDI", newdisk.id.uuid()).await?;
+                let (_, r) = fresh::<class::Vdi>(session, newdisk.id.uuid()).await?;
                 if VdiRecord::new(&r).sharable() != false
                     || VdiRecord::new(&r).read_only() != false
                     || VdiRecord::new(&r).is_a_snapshot() != false
@@ -771,7 +778,7 @@ pub(crate) async fn prepare_affinity(session: &Session, plan: &Plan) -> Result<P
 }
 /// Record individually verified replacement disks even when another part of migration failed.
 pub(crate) async fn observed_disks(session: &Session, plan: &Plan) -> Result<Vec<VdiId>, Error> {
-    let (vmref, r) = fresh(session, "VM", plan.vm.uuid()).await?;
+    let (vmref, r) = fresh::<class::Vm>(session, plan.vm.uuid()).await?;
     if VmRecord::new(&r).is_a_template() != false
         || VmRecord::new(&r).is_a_snapshot() != false
         || VmRecord::new(&r).is_control_domain() != false
@@ -807,7 +814,7 @@ pub(crate) async fn observed_disks(session: &Session, plan: &Plan) -> Result<Vec
         {
             continue;
         }
-        let (_, r) = fresh(session, "VDI", d.id.uuid()).await?;
+        let (_, r) = fresh::<class::Vdi>(session, d.id.uuid()).await?;
         if VdiRecord::new(&r).sharable() != false
             || VdiRecord::new(&r).read_only() != false
             || VdiRecord::new(&r).is_a_snapshot() != false

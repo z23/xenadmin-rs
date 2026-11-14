@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::{vdi_type, vm_power_state};
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VmRecord};
 
@@ -155,10 +156,11 @@ pub(crate) async fn fresh(
     vm: &Value,
     expected: &CheckpointMemory,
 ) -> Result<(), Error> {
-    let (reference, disk) = crate::snapshots::optional_record(s, "VDI", &expected.vdi.to_string())
-        .await?
-        .ok_or(Error::TransferConflict)?;
-    let (sr_ref, sr) = crate::snapshots::optional_record(s, "SR", &expected.sr.to_string())
+    let (reference, disk) =
+        crate::snapshots::optional_record::<class::Vdi>(s, &expected.vdi.to_string())
+            .await?
+            .ok_or(Error::TransferConflict)?;
+    let (sr_ref, sr) = crate::snapshots::optional_record::<class::Sr>(s, &expected.sr.to_string())
         .await?
         .ok_or(Error::TransferConflict)?;
     if VmRecord::new(vm).suspend_vdi() != reference

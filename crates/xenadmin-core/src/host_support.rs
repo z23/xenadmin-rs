@@ -4,7 +4,9 @@ use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
+use xenadmin_xapi::class;
 use xenadmin_xapi::records::{HostCrashdumpRecord, HostRecord};
+use xenadmin_xapi::{Answer, OpaqueRef, result};
 use xenadmin_xapi::{calls, refs};
 
 #[path = "host_archive.rs"]
@@ -189,11 +191,11 @@ pub(crate) async fn host_record(
     s: &Session,
     pool: PoolId,
     host: HostId,
-) -> Result<(String, Value), Error> {
-    crate::snapshots::optional_record(s, "pool", &pool.to_string())
+) -> Result<(OpaqueRef<class::Host>, Answer<result::Record<class::Host>>), Error> {
+    crate::snapshots::optional_record::<class::Pool>(s, &pool.to_string())
         .await?
         .ok_or(Error::Stale)?;
-    crate::snapshots::optional_record(s, "host", &host.to_string())
+    crate::snapshots::optional_record::<class::Host>(s, &host.to_string())
         .await?
         .ok_or(Error::Stale)
 }

@@ -433,7 +433,7 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
     )?;
     out.push_str(
         "/// A marker for every class, which says of which class a reference, a record or an\n\
-         /// answer is.\npub mod class {\n    use super::{IsClass, any, records};\n    use serde_json::Value;\n",
+         /// answer is.\npub mod class {\n    #[allow(unused_imports)]\n    use super::{Describes, IsClass, MapField, SetField, TextField, any, records};\n    use serde_json::Value;\n",
     );
     for class in &classes {
         let marker = camel(&class.name);
@@ -448,6 +448,50 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
             literal = literal(&class.name),
             view = view(&class.name),
         );
+        // The fields many classes share, for functions that read them of any class.
+        let kind_of = |name: &str| {
+            class
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| typed(&f.kind))
+        };
+        for (shared, members) in [
+            ("Identified", &[("uuid", "TextField<'a>")][..]),
+            (
+                "Named",
+                &[
+                    ("name_label", "TextField<'a>"),
+                    ("name_description", "TextField<'a>"),
+                ][..],
+            ),
+            (
+                "Operated",
+                &[
+                    ("allowed_operations", "SetField<'a>"),
+                    ("current_operations", "MapField<'a>"),
+                ][..],
+            ),
+            ("Blocked", &[("blocked_operations", "MapField<'a>")][..]),
+            ("Configured", &[("other_config", "MapField<'a>")][..]),
+            ("Tagged", &[("tags", "SetField<'a>")][..]),
+        ] {
+            if members
+                .iter()
+                .all(|(name, kind)| kind_of(name) == Some(*kind))
+            {
+                let _ = writeln!(out, "    impl any::{shared} for {marker} {{");
+                for (name, kind) in members {
+                    let _ = writeln!(
+                        out,
+                        "        #[cfg_attr(debug_assertions, track_caller)]\n        \
+                         fn {name}<'a>(record: impl Describes<'a, Self>) -> {kind} {{\n            records::{view}::new(record).{name}()\n        }}",
+                        view = view(&class.name),
+                    );
+                }
+                out.push_str("    }\n");
+            }
+        }
         for (message, has, constant) in [
             ("get_record", "HasRecord", "GET_RECORD"),
             ("get_by_uuid", "HasUuid", "GET_BY_UUID"),

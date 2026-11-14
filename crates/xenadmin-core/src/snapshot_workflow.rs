@@ -1,8 +1,10 @@
 use crate::{Error, PowerState, SnapshotId, SnapshotName, VdiId, VmId, snapshots, xapi::Session};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::{vdi_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{VdiRecord, VmRecord};
+use xenadmin_xapi::{Answer, OpaqueRef, result};
 use xenadmin_xapi::{calls, refs};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,8 +182,11 @@ fn can(record: &Value, op: &str) -> bool {
         .is_some_and(|ops| ops.iter().any(|v| v == op))
         && VmRecord::new(record).blocked_operations().get(op).is_none()
 }
-async fn parent(session: &Session, vm: VmId) -> Result<(String, Value), Error> {
-    let value = snapshots::optional_record(session, "VM", &vm.to_string())
+async fn parent(
+    session: &Session,
+    vm: VmId,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
+    let value = snapshots::optional_record::<class::Vm>(session, &vm.to_string())
         .await?
         .ok_or(Error::Stale)?;
     if VmRecord::new(&value.1).is_a_snapshot() != false
@@ -302,7 +307,7 @@ pub(crate) async fn plan(
     } else {
         None
     };
-    if !operation.allows(&guest, source.as_ref()) {
+    if !operation.allows(&guest, source.as_deref()) {
         return Err(Error::UnavailableAction);
     }
     let steps = operation.steps();
@@ -333,7 +338,11 @@ impl Prepared {
         session.call(self.method, self.args).await
     }
 }
-async fn source(session: &Session, vm: VmId, plan: &Plan) -> Result<(String, Value), Error> {
+async fn source(
+    session: &Session,
+    vm: VmId,
+    plan: &Plan,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
     let result = snapshots::snapshot_record(session, vm, plan.snapshot()?).await?;
     if !idle(&result.1) {
         return Err(Error::UnavailableAction);
