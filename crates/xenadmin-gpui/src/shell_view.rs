@@ -204,6 +204,11 @@ impl Render for ShellView {
             .gap_2()
             .p_2()
             .child(self.menus.clone())
+            .children(state.experimental.then(|| {
+                probe!("experimental-notice").child(
+                    "Experimental: it has worked on a test lab; how it fails is not yet proven.",
+                )
+            }))
             .child(toolbar(selection, cx))
             .child(
                 h_flex()

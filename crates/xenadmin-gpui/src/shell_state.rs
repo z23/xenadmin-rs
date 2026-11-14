@@ -21,6 +21,7 @@ pub struct ShellState {
     pub notice: Option<String>,
     pub scene: String,
     pub wizard_step: u8,
+    pub experimental: bool,
     history: Vec<Bookmark>,
     future: Vec<Bookmark>,
 }
@@ -52,6 +53,7 @@ impl ShellState {
             notice: None,
             scene: "demo".into(),
             wizard_step: 0,
+            experimental: false,
             history: Vec::new(),
             future: Vec::new(),
         };
@@ -251,6 +253,16 @@ pub fn load_scene(name: &str) -> ShellState {
         }
         "activity" | "failure-help" => {
             state.notice = Some("No operations in this preview. Recheck does not run.".into());
+        }
+        "vm-create" | "guest-tools" | "storage-create" | "network-create" | "ha-policy"
+        | "ovf-import" | "alarms" | "organization" => {
+            state.experimental = true;
+            state.dialog = Some(DialogId::Help);
+            state.dialog_title = "Experimental".into();
+            state.dialog_text = Some(
+                "This area still lives in the Rune front end. This preview does not call a host."
+                    .into(),
+            );
         }
         "host-administration" => {
             if let Some(id) = state.inventory.hosts.keys().next().copied() {
