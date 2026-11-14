@@ -165,8 +165,8 @@ pub(crate) fn operation(r: &Record) -> Option<&Operation> {
 }
 fn class(k: Kind) -> &'static str {
     match k {
-        Kind::Tunnel(_) => "Tunnel",
-        Kind::Sriov => "Network_sriov",
+        Kind::Tunnel(_) => "tunnel",
+        Kind::Sriov => "network_sriov",
     }
 }
 fn fields(k: Kind) -> (&'static str, &'static str, &'static str, &'static str) {
@@ -201,8 +201,8 @@ impl Fresh {
             "VM",
             "Bond",
             "VLAN",
-            "Tunnel",
-            "Network_sriov",
+            "tunnel",
+            "network_sriov",
         ];
         match kind {
             Kind::Tunnel(_) if creating => classes.push("SDN_controller"),

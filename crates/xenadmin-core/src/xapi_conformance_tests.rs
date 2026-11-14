@@ -113,6 +113,52 @@ fn every_call_and_field_the_client_names_exists_in_the_api_of_the_qualified_tool
     }
 }
 
+/// A class written with other capitals than the API's is no class to a host: it answers
+/// that it knows no such message. Such a name is invisible to the test above, which
+/// looks for the classes as the API writes them, and the fixtures answered to the same
+/// misspelling, so `Tunnel.create` and `Network_sriov.create` stood for `tunnel.create`
+/// and `network_sriov.create` until the classes became types. This looks for the like.
+#[test]
+fn no_name_writes_a_class_in_other_capitals_than_the_apis() {
+    let known = catalogue();
+    let spelled: BTreeMap<String, &str> = known
+        .keys()
+        .map(|class| (class.to_ascii_lowercase(), *class))
+        .collect();
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut wrong = BTreeSet::new();
+    for entry in std::fs::read_dir(&directory).unwrap() {
+        let path = entry.unwrap().path();
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !file.ends_with(".rs") || file == "xapi_conformance_tests.rs" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for literal in text.split('"').skip(1).step_by(2) {
+            let call = literal.strip_prefix("Async.").unwrap_or(literal);
+            let Some((class, member)) = call.split_once('.') else {
+                continue;
+            };
+            let identifier = !member.is_empty()
+                && member
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+            // A name wholly in small letters is a permission's: roles list every message
+            // that way, whatever its class's capitals.
+            let permission = !literal.bytes().any(|b| b.is_ascii_uppercase());
+            if let Some(api) = spelled.get(&class.to_ascii_lowercase())
+                && *api != class
+                && identifier
+                && !permission
+                && known[api].messages.contains(member)
+            {
+                wrong.insert(format!("{literal} ({file}): the class is {api}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 /// Where the arguments start when the text after a call's name goes on `, vec![` or
 /// `, parameters: vec![`: the two ways the crate writes a call with its arguments.
 fn arguments_start(text: &str, after_name: usize) -> Option<usize> {
