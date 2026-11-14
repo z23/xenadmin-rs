@@ -1,6 +1,6 @@
 # GPUI migration ledger
 
-Phase 3. The Rune binary is still the released artifact. Supported areas in the GPUI shell are headless previews and do not call a host. The GPUI shell in `xenadmin-gpui` draws the gate scenes headlessly. It does not connect to a pool. Catalogued Rune buttons below stay on the Rune front end until a later phase ports that surface. `xenadmin-desktop` is frozen except for release-blocking fixes; each such fix adds a mirror row.
+Phase 4. The Rune binary is still the released artifact. Supported areas in the GPUI shell are headless previews and do not call a host. Experimental rows below stay unported unless a later row says otherwise. Eight experimental scenes show the notice only. The GPUI shell in `xenadmin-gpui` draws the gate scenes headlessly. It does not connect to a pool. Catalogued Rune buttons below stay on the Rune front end until a later phase ports that surface. `xenadmin-desktop` is frozen except for release-blocking fixes; each such fix adds a mirror row.
 
 ## Commands
 
