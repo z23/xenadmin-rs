@@ -17,20 +17,41 @@ fi
 XENADMIN_XAPI_VIEW_AUDIT="$check_state_dir/view-audit.tsv" cargo test --workspace --locked
 cargo clippy -p xenadmin-gpui --all-targets --features scenes --locked -- -D warnings
 cargo test -p xenadmin-gpui --features scenes --locked
-# The GPUI front end's scene tool renders scenes without a display: the model's registered
-# scenes and the renderer's own fixtures (gallery-*). A PNG needs a graphics adapter (a
-# software one will do); the tool fails when a frame lacks an element its description has.
+# The GPUI front end never blocks on a future: the core's runtime is the only one, and the
+# interface reads the latest state when it is woken.
+if grep -rn 'block_on' crates/xenadmin-gpui/src; then
+    echo "crates/xenadmin-gpui/src names block_on" >&2
+    exit 1
+fi
+# The GPUI front end's scene tool renders scenes without a display, each as the whole window:
+# the model's registered scenes, the renderer's own fixtures and the shell's (gallery-*). A PNG
+# needs a graphics adapter (a software one will do); the tool fails when a frame lacks an
+# element its description has. The files are the CI artifact gpui-ui.
 mkdir -p artifacts/gpui
 cargo build -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes
 gpui_scenes() {
     cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-scenes -- "$@"
 }
 gpui_scenes --list > artifacts/gpui/scenes.txt
-for gpui_scene in demo unavailable-actions gallery-dialog gallery-picker gallery-wizard gallery-properties gallery-stacked gallery-tab gallery-multi gallery-blocks; do
+for gpui_scene in demo large-inventory host-version-notice unavailable-actions interface-large gallery-shell gallery-empty gallery-dialog gallery-picker gallery-wizard gallery-properties gallery-stacked gallery-tab gallery-multi gallery-blocks; do
     gpui_scenes "$gpui_scene" --snap "artifacts/gpui/${gpui_scene}.png" --tree "artifacts/gpui/${gpui_scene}.json" --theme dark --size 1440x900 --scale 1
 done
+gpui_scenes demo --snap artifacts/gpui/demo-light.png --tree artifacts/gpui/demo-light.json --theme light --size 1440x900 --scale 1
+# 800x600 is the smallest size the main window can be given.
+gpui_scenes demo --snap artifacts/gpui/demo-compact.png --tree artifacts/gpui/demo-compact.json --theme dark --size 800x600 --scale 1
+gpui_scenes gallery-shell --snap artifacts/gpui/gallery-shell-light-compact.png --tree artifacts/gpui/gallery-shell-light-compact.json --theme light --size 800x600 --scale 1
 gpui_scenes gallery-dialog --snap artifacts/gpui/gallery-dialog-light-compact.png --tree artifacts/gpui/gallery-dialog-light-compact.json --theme light --size 800x600 --scale 1
 gpui_scenes gallery-tab --snap artifacts/gpui/gallery-tab-light-2x.png --theme light --size 800x600 --scale 2
+# The scenes of gate G2 that an area owns are rendered as soon as the area has registered them.
+for gpui_scene in connect connect-insecure connections connection-settings connection-trust certificate-review inventory-context general-information search-pools; do
+    if grep -qx "$gpui_scene" artifacts/gpui/scenes.txt; then
+        gpui_scenes "$gpui_scene" --snap "artifacts/gpui/${gpui_scene}.png" --tree "artifacts/gpui/${gpui_scene}.json" --theme dark --size 1440x900 --scale 1
+    else
+        echo "GPUI scene ${gpui_scene} is not registered yet: not rendered" >&2
+    fi
+done
+# The client binary itself draws a scene to files with the same flags, without opening a window.
+cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-gpui -- --scene demo --snap artifacts/gpui/client-demo.png --tree artifacts/gpui/client-demo.json --theme dark --size 1440x900 --scale 1
 python3 scripts/view_audit.py "$check_state_dir/view-audit.tsv"
 cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
 python3 -m unittest discover -s lab -p 'test_*.py'
