@@ -1121,6 +1121,50 @@ fn the_zoom_commands_change_the_interface_scale(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_theme_follows_the_appearance_preference_and_keeps_the_accent(cx: &mut TestAppContext) {
+    use xenadmin_ui::prefs::Appearance;
+    // The scene asked for the dark theme; the preference `System` leaves it.
+    let scene = open(cx);
+    let look = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let theme = cx.theme();
+            (
+                theme.mode,
+                theme.primary,
+                theme.button_primary,
+                theme.background,
+            )
+        })
+    };
+    let (mode, dark_accent, dark_button, dark_background) = look(cx);
+    assert_eq!(mode, ThemeMode::Dark);
+    assert_eq!(dark_accent, dark_button);
+    model_side(cx, &scene, |m| {
+        m.preferences.options.appearance = Appearance::Light
+    });
+    let (mode, light_accent, light_button, light_background) = look(cx);
+    assert_eq!(mode, ThemeMode::Light);
+    // The Kit's own primary is neutral: the accent has a hue, in both modes.
+    assert_eq!(light_accent, light_button);
+    assert!(light_accent.s > 0.3 && dark_accent.s > 0.3);
+    assert!((light_accent.h - dark_accent.h).abs() < 0.02);
+    assert!(light_background.l > 0.9 && dark_background.l < 0.2);
+    model_side(cx, &scene, |m| {
+        m.preferences.options.appearance = Appearance::Dark
+    });
+    let (mode, accent, _, background) = look(cx);
+    assert_eq!(
+        (mode, accent, background),
+        (ThemeMode::Dark, dark_accent, dark_background)
+    );
+    // A change of the scale keeps the mode and the accent.
+    model_side(cx, &scene, |m| m.preferences.options.interface_scale = 150);
+    let (mode, accent, _, _) = look(cx);
+    assert_eq!((mode, accent), (ThemeMode::Dark, dark_accent));
+    assert_eq!(cx.update(|cx| f32::from(cx.theme().font_size)), 24.);
+}
+
+#[gpui_kit::test]
 fn the_zoom_shortcuts_apply_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let scene = open(cx);
     let scale =

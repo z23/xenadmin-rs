@@ -91,6 +91,9 @@ pub struct ShellView {
     title: String,
     /// In a narrow window: whether the user opened the navigation pane.
     nav_open: bool,
+    /// Whether the appearance `System` means the desktop's (the
+    /// application) or whatever the theme is (a scene, a test).
+    follows_system: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -170,6 +173,7 @@ impl ShellView {
             look: None,
             title: String::new(),
             nav_open: false,
+            follows_system: false,
             _subscriptions: subscriptions,
         };
         shell.sync(window, cx);
@@ -181,22 +185,12 @@ impl ShellView {
     /// it. The application calls this; a scene or a test does not, so the
     /// theme it asked for stays.
     pub fn follow_system_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.follows_system = true;
         let follow = |shell: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
-            let system = shell
-                .ui
-                .store
-                .read(cx)
-                .model()
-                .preferences
-                .options
-                .appearance
-                == Appearance::System;
-            if system {
-                Theme::sync_system_appearance(Some(window), cx);
-                // The accent is lost with the mode's theme: apply it again.
-                shell.look = None;
-                shell.sync(window, cx);
-            }
+            // `sync` reads the desktop's appearance when the preference is
+            // `System`, and applies the accent again over the mode's theme.
+            shell.look = None;
+            shell.sync(window, cx);
         };
         follow(self, window, cx);
         self._subscriptions
@@ -247,6 +241,9 @@ impl ShellView {
                 .look
                 .is_some_and(|(_, scale)| scale != options.interface_scale);
             self.look = Some(look);
+            if self.follows_system && options.appearance == Appearance::System {
+                Theme::sync_system_appearance(Some(window), cx);
+            }
             theme::apply_options(options, cx);
             if scaled {
                 self.rescale_pane(window, cx);
