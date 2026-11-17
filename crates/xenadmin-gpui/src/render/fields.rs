@@ -4,7 +4,7 @@ use xenadmin_ui::surface::{self as s, ChoiceStyle, Control};
 
 use super::blocks::{Pass, with_reason};
 use super::cache::{TextSpec, TextWidget};
-use super::{join, tip};
+use super::join;
 use crate::kit::*;
 use crate::store::dispatch;
 use crate::widgets::{self, FormRow};
@@ -246,7 +246,6 @@ pub(crate) fn choice(
             )
         }
     };
-    let _ = tip::<&str>;
     widgets::form_row(
         FormRow {
             path,

@@ -17,9 +17,9 @@ pub use gpui_kit::prelude::*;
 pub use gpui_kit::{
     AnyElement, AnyView, AnyWindowHandle, App, AsyncApp, Bounds, ClickEvent, Context, Div,
     ElementId, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla, KeyBinding,
-    Modifiers, MouseButton, Pixels, Role, ScrollHandle, SharedString, Stateful, Subscription, Task,
-    TestSupportExt, WeakEntity, Window, WindowBounds, WindowOptions, canvas, div, point, px,
-    relative, rems, size,
+    KeyDownEvent, Modifiers, MouseButton, Pixels, Role, ScrollHandle, SharedString, Stateful,
+    Subscription, Task, TestSupportExt, WeakEntity, Window, WindowBounds, WindowOptions, canvas,
+    div, point, px, relative, rems, size,
 };
 
 // The channel of the wake bridge.
@@ -52,3 +52,17 @@ pub use gpui_kit::component::table::{
     Column as KitColumn, ColumnSort, DataTable, TableDelegate, TableEvent, TableState,
 };
 pub use gpui_kit::component::tooltip::Tooltip;
+
+/// What the scene tool and the tests need of the Kit's test support. It
+/// exists only with the `scenes` feature (which turns on
+/// `gpui-kit/test-support`) and in the crate's own tests.
+#[cfg(any(test, feature = "scenes"))]
+pub mod testing {
+    pub use gpui_kit::assets::Assets;
+    pub use gpui_kit::base::test_support::texts;
+    pub use gpui_kit::platform::{current_headless_renderer, current_platform};
+    pub use gpui_kit::test::{
+        ElementSnapshot, TestAppContextExt, TestEventExt, TestQueryExt, TestWindowExt,
+    };
+    pub use gpui_kit::{HeadlessAppContext, PlatformTextSystem, ScrollDelta, TestAppContext};
+}

@@ -22,7 +22,7 @@ use crate::kit::*;
 use crate::store::{AppStore, dispatch};
 use crate::widgets::object_grid::ObjectGrid;
 
-/// The scope of the tab body.
+/// The prefix of the scope of a tab body: `tab:<tab key>`.
 pub const TAB_SCOPE: &str = "tab";
 
 /// The scope of a surface.
@@ -82,18 +82,10 @@ impl TextWidget {
         let placeholder = SharedString::from(placeholder.to_owned());
         match self {
             Self::Line(state) => {
-                if state.read(cx).placeholder() != &placeholder {
-                    state.update(cx, |state, cx| {
-                        state.set_placeholder(placeholder, window, cx)
-                    });
-                }
+                state.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
             }
             Self::Area(state) => {
-                if state.read(cx).placeholder() != &placeholder {
-                    state.update(cx, |state, cx| {
-                        state.set_placeholder(placeholder, window, cx)
-                    });
-                }
+                state.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
             }
         }
     }
@@ -109,6 +101,8 @@ impl TextWidget {
 struct TextEntry {
     widget: TextWidget,
     secret: bool,
+    /// The placeholder the widget shows: the Kit has no getter for it.
+    placeholder: String,
     handlers: Rc<RefCell<TextHandlers>>,
     _subscription: Subscription,
 }
@@ -213,6 +207,21 @@ impl WidgetCache {
         }
     }
 
+    /// Drops the scope of every tab body but `scope`: the state of a tab
+    /// goes when another tab is shown.
+    pub fn keep_tab_scope(&mut self, scope: &str, window: &mut Window, cx: &mut App) {
+        let prefix = format!("{TAB_SCOPE}:");
+        let stale: Vec<String> = self
+            .scopes
+            .keys()
+            .filter(|key| key.starts_with(&prefix) && key.as_str() != scope)
+            .cloned()
+            .collect();
+        for key in stale {
+            self.close(&key, window, cx);
+        }
+    }
+
     /// The scopes that hold state now.
     pub fn scopes(&self) -> Vec<String> {
         let mut scopes: Vec<String> = self.scopes.keys().cloned().collect();
@@ -311,6 +320,7 @@ impl WidgetCache {
             TextEntry {
                 widget,
                 secret,
+                placeholder: spec.placeholder.to_owned(),
                 handlers,
                 _subscription: subscription,
             }
@@ -325,7 +335,10 @@ impl WidgetCache {
         if widget.value(cx).as_ref() != spec.value {
             widget.set_value(spec.value, window, cx);
         }
-        widget.set_placeholder(spec.placeholder, window, cx);
+        if entry.placeholder != spec.placeholder {
+            entry.placeholder = spec.placeholder.to_owned();
+            widget.set_placeholder(spec.placeholder, window, cx);
+        }
         widget
     }
 

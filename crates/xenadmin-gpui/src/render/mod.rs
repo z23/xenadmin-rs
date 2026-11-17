@@ -26,8 +26,8 @@ use std::rc::Rc;
 use xenadmin_ui::Model;
 use xenadmin_ui::surface::{Act, Custom, Tone};
 
-pub use blocks::{Pass, blocks, button, button_row};
-pub use cache::WidgetCache;
+pub use blocks::{Pass, blocks, button, button_row, filling_table};
+pub use cache::{TAB_SCOPE, WidgetCache, surface_scope};
 pub use dialogs::{DialogHost, surface_width};
 
 use crate::kit::*;

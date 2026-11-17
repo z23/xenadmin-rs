@@ -28,7 +28,7 @@ pub use experimental_notice::experimental_notice;
 pub use form_row::{FormRow, field_error, form_row};
 pub use object_grid::ObjectGrid;
 pub use outcome_banner::outcome_banner;
-pub use properties_frame::properties_frame;
+pub use properties_frame::{PAGE_LIST_WIDTH, properties_frame};
 pub use property_list::property_list;
 pub use review_panel::review_panel;
 pub use text::{heading, missing_custom, notice, panel, text};

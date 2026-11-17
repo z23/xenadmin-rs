@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use xenadmin_ui::surface::{self as s, Block};
 
-use super::cache::TAB_SCOPE;
 use super::{Ui, fields, join, segment, tip};
 use crate::kit::*;
 use crate::widgets;
@@ -26,21 +25,10 @@ pub struct Pass<'a> {
     pub fill: bool,
     /// What Escape does while a table has the keyboard: the close handler
     /// of the surface the table is in. A table in a tab has none.
-    pub on_cancel: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    pub on_cancel: Option<Rc<dyn Fn(&mut App)>>,
 }
 
-impl<'a> Pass<'a> {
-    /// A pass over the tab body.
-    pub fn tab(ui: &'a Ui, width: Pixels) -> Self {
-        Self {
-            ui,
-            scope: TAB_SCOPE,
-            width,
-            fill: true,
-            on_cancel: None,
-        }
-    }
-
+impl Pass<'_> {
     fn nested(&self, width: Pixels) -> Self {
         Self {
             width,
@@ -52,7 +40,7 @@ impl<'a> Pass<'a> {
 
 /// The index of the top-level table that takes the remaining height: the
 /// last block, when it is a table.
-pub(crate) fn filling_table(pass: &Pass<'_>, blocks: &[Block]) -> Option<usize> {
+pub fn filling_table(pass: &Pass<'_>, blocks: &[Block]) -> Option<usize> {
     let last = blocks.len().checked_sub(1)?;
     (pass.fill && matches!(blocks[last], Block::Table(_))).then_some(last)
 }
