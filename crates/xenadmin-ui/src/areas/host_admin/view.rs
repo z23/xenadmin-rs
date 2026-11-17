@@ -8,8 +8,13 @@
 //! review; the preview notice in a synthetic pool; the error; and a footer
 //! of Close, Back, and Review or Confirm.
 //!
-//! Keys and labels are the Rune ones. `host-close` and `host-back` are new:
-//! Rune gave those two buttons no key.
+//! Keys and labels are the Rune ones: `host-setting-value`,
+//! `host-forget-off`, `host-review`, `host-confirm`, `host-multipath-workflow`,
+//! `host-bmc-settings`, and `host-choice-<title>` on the two options that
+//! were chooser buttons. New keys, for elements Rune left without one and a
+//! test or a driver has to find: `host-close`, `host-back`,
+//! `host-change-review` (and so `host-change-review-stale`), `host-preview`,
+//! `host-unavailable`, `host-error`, `host-power-on-mode`.
 
 use xenadmin_core::{PermissionAssessment, ResourceTarget};
 
@@ -263,9 +268,9 @@ fn footer(m: &Model, w: &Editor, permission: Option<&PermissionAssessment>) -> V
         .disabled_opt(permission.and_then(permissions::denial))
         .disabled_if(change::synthetic(m, w), DEMO);
     // A review that was opened by its command has no draft to go back to.
-    if w.kind.has_draft() || w.kind.page().is_some() {
-        vec![close, button("host-back", "Back", change::back), confirm]
-    } else {
+    if w.kind.opens_on_review() {
         vec![close, confirm]
+    } else {
+        vec![close, button("host-back", "Back", change::back), confirm]
     }
 }

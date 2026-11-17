@@ -27,6 +27,21 @@
 //! [`xenadmin_core::HostOperation`], and a submission that is refused when
 //! anything it was reviewed against has changed.
 //!
+//! What of the Rune dialog has no successor here, and where it went:
+//!
+//! - The chooser itself, its opening button `host-admin-open` and its
+//!   closing caption about passwords, backups and support bundles: the
+//!   Server menu and a server's context menu list the changes now.
+//! - The chooser's three buttons into other modules. "Multipathing with
+//!   storage reconnection…" and "BMC / power-on settings…" are on the
+//!   Multipathing and Power On pages and run the commands
+//!   `storage.multipath-workflow` and `server.power-on-settings` of the
+//!   areas that own those workflows. "Monitoring recording…" is the
+//!   `performance` area's command `server.monitoring-recording`; no page
+//!   here is about monitoring, so nothing here leads to it.
+//! - "Pool VM autostart…" in the pool administration history: the command
+//!   `pool.vm-autostart` in the Pool menu and the pool's context menu.
+//!
 //! The files, in the order to read them:
 //!
 //! - [`change`]: the logic carried over from the Rune module. What a change
@@ -35,7 +50,13 @@
 //! - [`commands`]: the command table, with the eligibility of each command.
 //! - [`view`]: the description of the open surface.
 //! - [`scenes`]: the two scenes, under their Rune names.
-//! - `tests`: the Rune tests, and tests of what the port added.
+//! - `tests`: the Rune tests, what the port changed, and one test for each
+//!   hazard the map lists for the module.
+//!
+//! The server's Properties dialog has only this area's three pages. The
+//! plan gives it more (General, Custom Fields, Alerts), from other areas;
+//! a surface belongs to one area, so until the kernel can collect pages
+//! from several, those areas' settings are their own surfaces.
 
 use crate::prelude::*;
 

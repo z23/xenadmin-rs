@@ -24,6 +24,9 @@ pub fn scenes() -> Vec<SceneSpec> {
 /// with 64 GiB, a control domain of 2 GiB, the operations it allows, boot
 /// and toolstack start times, no power-on mode, a known log destination and
 /// multipathing off. That server is selected. Returns it as the target.
+///
+/// Public because scenes of other areas start from this server, as their
+/// Rune scenes started from `host_admin::scene` (host monitoring does).
 pub fn prepare(m: &mut Model) -> Option<Target> {
     m.load_demo(3, 48);
     let mut i = m.inventory.take()?.as_ref().clone();

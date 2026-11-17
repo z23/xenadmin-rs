@@ -135,7 +135,7 @@ fn open(m: &mut Model, target: &Target, kind: Kind) {
         return;
     };
     m.areas.host_admin.editor = Some(editor);
-    if !kind.has_draft() && kind.page().is_none() {
+    if kind.opens_on_review() {
         change::review(m);
     }
 }

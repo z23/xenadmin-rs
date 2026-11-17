@@ -102,9 +102,19 @@ impl Kind {
     }
 
     /// Whether the user enters something before the review: a text or the
-    /// acknowledgement. Such a review has a way back to its draft.
+    /// acknowledgement.
     pub fn has_draft(self) -> bool {
         matches!(self, Self::Memory | Self::Logging | Self::Forget)
+    }
+
+    /// Whether the command of the change opens its dialog on the review.
+    /// That is so when there is nothing to enter and nothing to choose: the
+    /// dialog's first state would only repeat the review with another
+    /// button. A change with a draft, and a page (which is looked at, and
+    /// left for another page), open on the draft, and their review has a
+    /// Back to it.
+    pub fn opens_on_review(self) -> bool {
+        !self.has_draft() && self.page().is_none()
     }
 }
 
