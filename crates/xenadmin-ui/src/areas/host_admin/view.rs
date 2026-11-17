@@ -73,7 +73,9 @@ fn dialog_id(kind: Kind) -> &'static str {
         Kind::PowerOn => "host-power-on",
         Kind::Memory => "host-dom0-memory",
         Kind::Forget => "host-forget",
-        Kind::Autostart => "pool-autostart",
+        // Not `pool-autostart`: that was the key of the Rune button, which is
+        // now the command `pool.vm-autostart`.
+        Kind::Autostart => "pool-vm-autostart",
         Kind::WakeOnLan | Kind::DisablePowerOn | Kind::Logging | Kind::Multipath => PROPERTIES,
     }
 }
@@ -216,8 +218,16 @@ fn links(m: &Model, w: &Editor) -> Vec<Block> {
 /// A button that runs another area's command on this server. It follows
 /// that command's eligibility: absent while the command is hidden (or its
 /// area has not registered it), disabled with the command's reason. This
-/// surface closes when the other opened, as it did in Rune.
-fn link(m: &Model, w: &Editor, key: &str, label: &str, command: CommandId) -> Option<Button> {
+/// surface gives way to the one the command opens, as it did in Rune (the
+/// `open` of each of those modules cleared `host_workspace`); when the
+/// command is refused after all, it stays and `m.error` has the reason.
+pub(super) fn link(
+    m: &Model,
+    w: &Editor,
+    key: &str,
+    label: &str,
+    command: CommandId,
+) -> Option<Button> {
     let ResourceTarget::Host(host) = w.target else {
         return None;
     };
@@ -229,8 +239,9 @@ fn link(m: &Model, w: &Editor, key: &str, label: &str, command: CommandId) -> Op
     };
     Some(
         button(key, label, move |m| {
-            if m.invoke(command, &target) {
-                super::close(m);
+            let this = m.areas.host_admin.editor.take();
+            if !m.invoke(command, &target) {
+                m.areas.host_admin.editor = this;
             }
         })
         .disabled_opt(reason),
