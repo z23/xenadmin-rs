@@ -60,6 +60,92 @@ XENADMIN_STATE_DIR=/path/to/private/state ./scripts/inspect.sh
 For standalone diagnosis when the desktop is not running, use the authenticated
 [read-only host probe](RUNNING.md#use-the-read-only-host-probe).
 
+## The GPUI build: scenes and inspection
+
+The front end is being moved from Rune to GPUI Kit ([plan](GPUI-MIGRATION.md)). Until
+cutover the released client is the Rune binary `xenadmin-rs`, and the GPUI front end is
+built beside it from `crates/xenadmin-gpui` as two binaries: the client `xenadmin-gpui`
+and the scene tool `xenadmin-scenes`. Everything the GPUI client shows is described by
+the toolkit-free model in `crates/xenadmin-ui`.
+
+### Scenes
+
+A scene is a model set up by a function and rendered as the whole window: title and menu
+bar, toolbar, navigation pane, object header, tabs, tab body, status bar, and any open
+dialog. The scene tool draws one without a display:
+
+```sh
+cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes -- --list
+cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes -- \
+  demo --theme dark --size 1440x900 --scale 1 \
+  --snap artifacts/gpui/demo.png --tree artifacts/gpui/demo.json
+```
+
+- `--list` prints every scene: the registered scenes of the model
+  (`xenadmin_ui::scene::registry()`, under their Rune names), then the fixtures of the
+  renderer and of the shell (`gallery-*`, which are not product scenes). `gallery-shell`
+  shows the toolbar and menus of the plan with commands that do nothing, and
+  `gallery-empty` the window of a first start.
+- `--snap` writes the frame as a PNG and needs a graphics adapter; a software one (Mesa
+  lavapipe) is enough. `--tree` alone needs none.
+- `--tree` writes JSON: `elements` (every element with an id, in reading order, with its
+  id path, role, accessible label, value, description, bounds, and focused, checked,
+  selected, expanded and disabled state), `missing` (elements the description has and the
+  frame lacks) and `model` (the model's own account: title, navigation rows, header,
+  status, tabs, the resolved menus and toolbar with the reason of every disabled command,
+  the flattened tab body and surfaces).
+- The tool exits with 1 when the frame lacks an element its description has, 2 for a
+  wrong command line.
+- `--theme` is `dark` or `light`, `--size` the window in logical pixels (800x600 is the
+  smallest size the main window can be given; below 1100 wide the navigation pane is
+  behind its toggle), `--scale` 1 or 2 device pixels per logical pixel.
+
+The client takes the same flags, when it is built with the `scenes` feature, and returns
+before it opens a window, starts the backend or touches the state directory:
+
+```sh
+cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-gpui -- \
+  --scene demo --snap artifacts/gpui/client-demo.png --tree artifacts/gpui/client-demo.json
+```
+
+Without `--snap` and `--tree`, `--demo` and `--scene NAME` open a real window on the
+fixture. A preview takes no lock on the state directory, restores no session, opens no
+inspection socket and writes nothing. `--version` is answered before anything else.
+
+`./scripts/check.sh` renders the scenes into `artifacts/gpui/`, and CI keeps them as the
+artifact `gpui-ui` beside `rune-ui`. A PNG depends on the fonts and the graphics adapter
+of the machine that made it: it is something to look at, and assertions belong on the
+tree and in the tests. As with Rune, a headless render does not establish Wayland
+behaviour, the clipboard, keyboard input or a screen reader.
+
+### Tests
+
+```sh
+cargo test -p xenadmin-ui --locked                       # the model: no window, no toolkit
+cargo test -p xenadmin-gpui --features scenes --locked   # windows on the Kit's test platform
+```
+
+`tests/renderer.rs` drives the generic renderer and `tests/shell.rs` the shell through
+real events (pointer, keys, text) on a headless window. A test finds an element by its
+id, which is the key the model gave it, or by its accessible label.
+
+### Inspection
+
+The inspection socket belongs to the model, not to a front end: the GPUI client starts it
+under the same condition as the Rune client (this process owns the state directory and
+`XENADMIN_DEV_INSPECT=1`), prints the same `Read-only developer inspection:` line, and
+`./scripts/inspect.sh` reads it unchanged. `./scripts/dev.sh` still starts the Rune
+client. To start the GPUI client with inspection:
+
+```sh
+XENADMIN_DEV_INSPECT=1 cargo run -p xenadmin-gpui --locked --bin xenadmin-gpui
+```
+
+One client owns a state directory: started while the other front end runs on the same
+directory, the second start asks the first to show its window and exits. Give the GPUI
+build a directory of its own (`XENADMIN_STATE_DIR`) to run both, and pass the same
+variable to `./scripts/inspect.sh`.
+
 ## Verification
 
 `./scripts/check.sh` runs isolated protocol and UI fixtures. It does not connect to a
