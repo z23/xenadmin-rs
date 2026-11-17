@@ -30,6 +30,9 @@ pub type DescribeLocalRow = Rc<dyn Fn(&Model, TabId) -> Vec<command::MenuItem>>;
 pub type DescribeMenuBar = Rc<dyn Fn(&Model) -> Vec<command::MenuView>>;
 /// The toolbar, as groups left to right.
 pub type DescribeToolbar = Rc<dyn Fn(&Model) -> Vec<Vec<command::MenuItem>>>;
+/// The toolbar slot of a command: which icon its button shows, and whether
+/// it is one of the icon-only navigation buttons.
+pub type DescribeToolbarSlot = Rc<dyn Fn(CommandId) -> Option<command::ToolbarSlot>>;
 /// Runs a command of the menu bar, the toolbar or a local action row on the
 /// model's target.
 pub type InvokeCommand = Rc<dyn Fn(&mut Model, CommandId)>;
@@ -50,6 +53,8 @@ pub struct Describe {
     pub menu_bar: DescribeMenuBar,
     /// The toolbar.
     pub toolbar: DescribeToolbar,
+    /// The toolbar slot of a command of the toolbar.
+    pub toolbar_slot: DescribeToolbarSlot,
     /// What runs a command chosen from the menu bar, the toolbar, a local
     /// action row or by its shortcut.
     pub invoke: InvokeCommand,
@@ -63,6 +68,7 @@ impl Default for Describe {
             local_row: Rc::new(command::local_row),
             menu_bar: Rc::new(command::menu_bar),
             toolbar: Rc::new(command::toolbar),
+            toolbar_slot: Rc::new(|id| command::find(id).and_then(|spec| spec.toolbar)),
             invoke: Rc::new(|model, id| {
                 // A refusal is written to the model's error line.
                 let target = model.target();
@@ -323,6 +329,11 @@ impl AppStore {
     /// The toolbar, resolved on the model's target.
     pub fn toolbar(&self) -> Vec<Vec<command::MenuItem>> {
         (self.describe.toolbar)(&self.model)
+    }
+
+    /// The toolbar slot of a command of the toolbar.
+    pub fn toolbar_slot(&self, id: CommandId) -> Option<command::ToolbarSlot> {
+        (self.describe.toolbar_slot)(id)
     }
 
     /// Runs a command on the model's target: a menu item, a toolbar button,

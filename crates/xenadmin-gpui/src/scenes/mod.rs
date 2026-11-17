@@ -16,6 +16,7 @@
 //! that made it, so PNGs are artifacts and not goldens; assertions belong on
 //! the tree.
 
+pub mod chrome;
 pub mod gallery;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -64,9 +65,20 @@ impl Default for Options {
 pub struct Setup {
     pub model: Model,
     pub lab: Option<LabRef>,
+    /// Descriptions in place of the model's and the lab's.
+    pub describe: Option<Describe>,
 }
 
 impl Setup {
+    /// A model as it is: what a registered scene set up.
+    pub fn model(model: Model) -> Self {
+        Self {
+            model,
+            lab: None,
+            describe: None,
+        }
+    }
+
     /// A demo model with a lab: the fixture of the renderer tests.
     pub fn lab() -> Self {
         let mut model = Model::fixture();
@@ -74,21 +86,25 @@ impl Setup {
         Self {
             model,
             lab: Some(Lab::new()),
+            describe: None,
         }
     }
 
     fn describe(&self) -> Option<Describe> {
-        self.lab.as_ref().map(Lab::describe)
+        self.describe
+            .clone()
+            .or_else(|| self.lab.as_ref().map(Lab::describe))
     }
 }
 
 /// Every scene name the tool renders: the registered scenes in registry
-/// order, then the gallery.
+/// order, then the renderer's gallery and the shell's fixtures.
 pub fn names() -> Vec<&'static str> {
     scene::registry()
         .iter()
         .map(|spec| spec.name)
         .chain(gallery::SCENES)
+        .chain(chrome::SCENES)
         .collect()
 }
 
@@ -127,8 +143,20 @@ pub fn setup(name: &str) -> Option<Setup> {
         }
         return Some(setup);
     }
+    match name {
+        "gallery-shell" => {
+            return Some(Setup {
+                describe: Some(chrome::describe()),
+                ..Setup::model(chrome::shell_model())
+            });
+        }
+        // Nothing connected and nothing saved: the window a first start
+        // shows.
+        "gallery-empty" => return Some(Setup::model(Model::fixture())),
+        _ => {}
+    }
     let mut model = Model::fixture();
-    scene::apply(name, &mut model).then_some(Setup { model, lab: None })
+    scene::apply(name, &mut model).then(|| Setup::model(model))
 }
 
 /// What a scene window is made of.

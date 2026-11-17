@@ -4,7 +4,7 @@
 //! All are Lucide icons. Those outside the Kit's default set are embedded by
 //! [`crate::assets::AppAssets`]; a test below loads every icon named here.
 
-use xenadmin_ui::command::{CommandId, ToolbarSlot};
+use xenadmin_ui::command::ToolbarSlot;
 use xenadmin_ui::nav::NavView;
 use xenadmin_ui::object::ObjectKind;
 
@@ -62,13 +62,6 @@ pub fn slot_icon(slot: ToolbarSlot) -> Option<Lucide> {
     ICONS
         .into_iter()
         .find_map(|(known, icon)| (known == slot).then_some(icon))
-}
-
-/// The icon of a toolbar command, by the slot the registry gives it.
-pub fn command_icon(id: CommandId) -> Option<Lucide> {
-    xenadmin_ui::command::find(id)
-        .and_then(|spec| spec.toolbar)
-        .and_then(slot_icon)
 }
 
 #[cfg(test)]

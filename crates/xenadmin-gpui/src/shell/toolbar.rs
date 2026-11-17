@@ -6,7 +6,7 @@
 //! command that is not eligible is not in its group at all; any other
 //! disabled command stays, greyed, with its reason as its tooltip.
 
-use xenadmin_ui::command::{self, MenuItem, ToolbarGroup};
+use xenadmin_ui::command::{MenuItem, ToolbarGroup};
 
 use super::{icons, menus};
 use crate::kit::*;
@@ -18,13 +18,12 @@ pub const TOOLBAR_KEY: &str = "toolbar";
 
 /// One toolbar button: its id is the command id. Back and Forward show
 /// their icons only; the others an icon and the label.
-fn toolbar_button(store: &Entity<AppStore>, item: &MenuItem) -> Button {
+fn toolbar_button(store: &Entity<AppStore>, item: &MenuItem, cx: &App) -> Button {
     let command = item.id;
     let label = SharedString::from(item.label.clone());
-    let icon = icons::command_icon(command);
-    let compact = command::find(command)
-        .and_then(|spec| spec.toolbar)
-        .is_some_and(|slot| slot.group == ToolbarGroup::Navigation);
+    let slot = store.read(cx).toolbar_slot(command);
+    let icon = slot.and_then(icons::slot_icon);
+    let compact = slot.is_some_and(|slot| slot.group == ToolbarGroup::Navigation);
     let button = Button::new(SharedString::from(command.0));
     let button = match icon {
         Some(icon) if compact => button
@@ -59,20 +58,23 @@ fn toolbar_button(store: &Entity<AppStore>, item: &MenuItem) -> Button {
     }
 }
 
-/// The toolbar row.
+/// The toolbar row. Each group is a toolbar of its own, so the arrow keys
+/// move among the buttons of a group, and a window too narrow for all of
+/// them puts the later groups on a second line instead of cutting them off.
 pub fn toolbar(ui: &Ui, cx: &App) -> AnyElement {
     let groups = ui.store.read(cx).toolbar();
     let theme = cx.theme();
     let border = theme.border;
-    let mut bar = Toolbar::new("toolbar-items");
-    for (index, group) in groups.iter().enumerate() {
+    let bars = groups.iter().enumerate().map(|(index, group)| {
+        let mut bar = Toolbar::new(("toolbar-group", index));
         if index > 0 {
-            bar = bar.content(Separator::vertical().h_4().mx_1());
+            bar = bar.content(Separator::vertical().h_4().mr_1());
         }
         for item in group {
-            bar = bar.child(toolbar_button(&ui.store, item));
+            bar = bar.child(toolbar_button(&ui.store, item, cx));
         }
-    }
+        bar
+    });
     h_flex()
         .id(TOOLBAR_KEY)
         .test_support()
@@ -80,10 +82,13 @@ pub fn toolbar(ui: &Ui, cx: &App) -> AnyElement {
         .aria_label("Toolbar")
         .w_full()
         .flex_none()
+        .flex_wrap()
+        .gap_x_1()
+        .gap_y_0p5()
         .px_2()
         .py_1()
         .border_b_1()
         .border_color(border)
-        .child(bar)
+        .children(bars)
         .into_any_element()
 }

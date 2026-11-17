@@ -572,7 +572,6 @@ fn the_selection_stays_on_its_object_across_an_inventory_update(cx: &mut TestApp
     assert_eq!(selected.kind, ObjectKind::Vm);
     assert_eq!(Some(&selected), database.object.as_ref());
     assert_eq!(cursor(cx, &scene), Some(database.id.clone()));
-    let host = nav_row(cx, &scene, "xcp-lab-01");
     let folded = on(cx, &scene, |window, cx| {
         // Fold the first host, so expansion is something to keep too.
         let rows = window
@@ -587,10 +586,6 @@ fn the_selection_stays_on_its_object_across_an_inventory_update(cx: &mut TestApp
         rows
     });
     assert_eq!(folded, 1);
-    let top_before = on(cx, &scene, |window, _| {
-        window.find(id(&database.id)).bounds().top()
-    });
-
     // The inventory changes under the selection: another guest is renamed
     // so that it sorts first on the selected guest's host, and one goes.
     model_side(cx, &scene, |m| {
@@ -628,7 +623,6 @@ fn the_selection_stays_on_its_object_across_an_inventory_update(cx: &mut TestApp
         // moves by whole rows: it is still on screen.
         assert!(window.find(id(&database.id)).visible());
     });
-    let _ = (host, top_before);
 
     // The object goes: the selection moves to its parent and the status
     // bar says why.
@@ -846,7 +840,7 @@ async fn a_tree_row_has_the_context_menu_of_its_object(cx: &mut TestAppContext) 
             })
             .collect()
     });
-    assert_eq!(copied, [object.id.clone()]);
+    assert_eq!(copied, std::slice::from_ref(&object.id));
     assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
     assert!(!cx.update(|cx| scene.view.read(cx).nav().read(cx).menu_open()));
 
@@ -1183,16 +1177,7 @@ fn the_status_bar_counts_open_the_notifications_view(cx: &mut TestAppContext) {
     assert!(scene::apply("host-version-notice", &mut model_of_scene));
     let options = Options::default();
     let scene = cx
-        .update(|cx| {
-            scenes::open_shell(
-                cx,
-                Setup {
-                    model: model_of_scene,
-                    lab: None,
-                },
-                &options,
-            )
-        })
+        .update(|cx| scenes::open_shell(cx, Setup::model(model_of_scene), &options))
         .expect("shell window");
     cx.run_until_parked();
     settle(cx, &scene);

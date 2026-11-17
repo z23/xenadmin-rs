@@ -36,7 +36,7 @@ use xenadmin_ui::prefs::{Appearance, Preferences};
 use xenadmin_ui::{Model, scene};
 
 use crate::assets::AppAssets;
-use crate::intents::{self, Hooks};
+use crate::intents::{self, Hook, Hooks};
 use crate::kit::*;
 use crate::shell::{self, ShellView};
 use crate::store::AppStore;
@@ -269,7 +269,7 @@ fn shut_down(store: &Entity<AppStore>, console: &Hooks, closed: &Cell<bool>, cx:
 /// File > Exit (`Intent::Quit`), and the window going away under the
 /// application. The shutdown runs before the quit because a quit observer
 /// is given 200 ms in all, and `Window::remove_window` asks no one.
-pub fn hooks(store: &Entity<AppStore>) -> (Hooks, Rc<dyn Fn(&mut App)>) {
+pub fn hooks(store: &Entity<AppStore>) -> (Hooks, Hook) {
     let console = Hooks::default();
     let closed = Rc::new(Cell::new(false));
     let quit = {

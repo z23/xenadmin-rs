@@ -30,6 +30,11 @@ use crate::store::AppStore;
 /// ported.
 pub const CONSOLE_WINDOWS_NOT_PORTED: &str = "console windows are not ported yet";
 
+/// Something the application does, given the application context.
+pub type Hook = Rc<dyn Fn(&mut App)>;
+/// What opens, closes or activates a detached console window.
+pub type ConsoleWindowHook = Rc<dyn Fn(ConsoleWindowRequest, &mut App)>;
+
 /// What the application provides beyond the platform's services.
 ///
 /// SEAM FOR THE CONSOLE ENGINEER: the three console hooks do nothing yet.
@@ -38,15 +43,15 @@ pub const CONSOLE_WINDOWS_NOT_PORTED: &str = "console windows are not ported yet
 #[derive(Clone)]
 pub struct Hooks {
     /// Runs the close path of the main window and quits. `Intent::Quit`.
-    pub quit: Rc<dyn Fn(&mut App)>,
+    pub quit: Hook,
     /// Opens, closes or activates a detached console window.
     /// `Intent::ConsoleWindow`.
-    pub console_window: Rc<dyn Fn(ConsoleWindowRequest, &mut App)>,
+    pub console_window: ConsoleWindowHook,
     /// Releases the keys and buttons a console holds down in its guest.
     /// Called when the main window is deactivated and when it closes.
-    pub release_console_input: Rc<dyn Fn(&mut App)>,
+    pub release_console_input: Hook,
     /// Closes every detached console window. Called by the close path.
-    pub close_console_windows: Rc<dyn Fn(&mut App)>,
+    pub close_console_windows: Hook,
 }
 
 impl Default for Hooks {
