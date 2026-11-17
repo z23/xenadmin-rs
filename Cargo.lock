@@ -10249,9 +10249,12 @@ dependencies = [
 name = "xenadmin-ui"
 version = "0.20.0"
 dependencies = [
+ "image",
  "serde",
+ "serde_json",
  "uuid",
  "xenadmin-core",
+ "zeroize",
 ]
 
 [[package]]

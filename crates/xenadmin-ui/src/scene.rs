@@ -1,0 +1,409 @@
+//! Scenes: named model states the scene tool renders and tests start from.
+//!
+//! A scene sets the model up exactly as the Rune scene function did. The
+//! scene tool then renders whatever the model describes. All Rune scene
+//! names stay; [`unported`] lists the ones no area has registered yet, so
+//! progress is countable and nothing is forgotten.
+//!
+//! Each area exports `fn scenes() -> Vec<SceneSpec>` through its
+//! [`crate::areas::AreaSpec`]; [`registry`] concatenates them after the
+//! kernel's own.
+
+use std::sync::OnceLock;
+
+use serde_json::json;
+
+use crate::command::{self, KERNEL};
+use crate::model::Model;
+use crate::object::{ObjectRef, Target};
+use crate::surface;
+
+/// One scene.
+#[derive(Clone, Copy, Debug)]
+pub struct SceneSpec {
+    pub name: &'static str,
+    /// Sets up a model that starts as [`Model::fixture`].
+    pub apply: fn(&mut Model),
+    pub area: &'static str,
+}
+
+impl SceneSpec {
+    pub const fn new(name: &'static str, area: &'static str, apply: fn(&mut Model)) -> Self {
+        Self { name, apply, area }
+    }
+}
+
+/// The 128 scenes of the Rune application (`AppSpec.scenes` in
+/// `crates/xenadmin-desktop/src/main.rs`), in its order.
+pub const RUNE_APP_SCENES: [&str; 128] = [
+    "demo",
+    "large-inventory",
+    "host-version-notice",
+    "interface-large",
+    "inventory-context",
+    "general-information",
+    "options",
+    "help",
+    "console-details",
+    "batch-power",
+    "batch-properties",
+    "batch-delete",
+    "lifecycle-permissions",
+    "batch-move",
+    "batch-cross-pool",
+    "batch-export",
+    "snapshot-batch-export",
+    "console-recovery",
+    "console-frame",
+    "console-actual-size",
+    "console-typing-review",
+    "multiple-consoles",
+    "guest-connections",
+    "external-tools",
+    "host-console",
+    "search-pools",
+    "performance",
+    "metric-presets",
+    "unavailable-actions",
+    "vm-devices",
+    "properties",
+    "properties-running",
+    "vm-create",
+    "device-properties",
+    "home-host",
+    "firmware-create",
+    "creation-cloud",
+    "creation-cloud-pending",
+    "secure-boot",
+    "vm-migration",
+    "vm-recovery",
+    "vm-recovery-force",
+    "cross-pool",
+    "archive-export",
+    "ha-policy",
+    "failure-help",
+    "checkpoint-export",
+    "xva-compression",
+    "cloud-init",
+    "cloud-init-review",
+    "ovf-import",
+    "ovf-export",
+    "disk-export",
+    "snapshots",
+    "snapshot-create",
+    "snapshot-ancestry",
+    "snapshot-information",
+    "snapshot-restore",
+    "snapshot-edit",
+    "snapshot-capture",
+    "connections",
+    "connection-trust",
+    "certificate-review",
+    "network-interfaces",
+    "network-services",
+    "network-fabric",
+    "network-fabric-pool",
+    "network-fabric-pool-select",
+    "network-sriov",
+    "network-ipv6",
+    "network-topology",
+    "management-network",
+    "management-dhcp",
+    "management-vlan",
+    "management-bond",
+    "management-ipv6-bond",
+    "management-bond-guests",
+    "management-vlan-bond",
+    "host-administration",
+    "host-memory",
+    "host-monitoring",
+    "local-conversion",
+    "local-conversion-review",
+    "host-monitoring-catalog",
+    "host-support",
+    "host-restore",
+    "host-crashdump-delete",
+    "host-power-settings",
+    "snapshot-schedules",
+    "snapshot-schedule-review",
+    "alarms",
+    "alarms-review",
+    "alarms-email",
+    "network-create",
+    "activity",
+    "organization",
+    "organization-review",
+    "appliances",
+    "appliance-review",
+    "disk-cleanup",
+    "disk-grow",
+    "disk-copy",
+    "storage-create",
+    "storage-review",
+    "storage-local",
+    "storage-local-review",
+    "storage-hba",
+    "storage-hba-review",
+    "storage-repair",
+    "storage-graph",
+    "storage-multipath",
+    "storage-maintenance",
+    "storage-cache",
+    "storage-discovery",
+    "storage-auth-review",
+    "pool-security",
+    "pool-join",
+    "root-password",
+    "pool-dissolve",
+    "guest-tools",
+    "guest-tools-review",
+    "pool-security-review",
+    "pool-policies",
+    "pool-policy-review",
+    "pool-administration",
+    "connection-settings",
+    "connect",
+    "connect-insecure",
+];
+
+/// The scene of the Rune console window (`console_windows::scene`), which is
+/// registered on the child window and so is not in the application's list.
+pub const CONSOLE_WINDOW_SCENE: &str = "console-window";
+
+/// Scenes the Rune application registers in debug builds only.
+pub const DEBUG_ONLY_SCENES: [&str; 1] = ["pool-join"];
+
+/// Every Rune scene name: the application's 128 and `console-window`.
+pub fn rune_scenes() -> impl Iterator<Item = &'static str> {
+    RUNE_APP_SCENES
+        .into_iter()
+        .chain(std::iter::once(CONSOLE_WINDOW_SCENE))
+}
+
+/// The Rune application scene with this name. The Rune front end checks its
+/// own list against this one; new code uses [`find`].
+pub fn rune_app_scene(name: &str) -> Option<&'static str> {
+    RUNE_APP_SCENES.into_iter().find(|scene| *scene == name)
+}
+
+fn demo(m: &mut Model) {
+    m.load_demo(3, 48);
+}
+
+fn large_inventory(m: &mut Model) {
+    m.load_demo(16, 2000);
+}
+
+fn host_version_notice(m: &mut Model) {
+    m.load_demo(3, 48);
+    if let Some(inventory) = m.inventory.take() {
+        let mut inventory = inventory.as_ref().clone();
+        if let Some(host) = inventory.hosts.values_mut().next() {
+            host.version = "8.2.1".into();
+        }
+        m.inventory = Some(std::sync::Arc::new(inventory));
+    }
+}
+
+fn unavailable_actions(m: &mut Model) {
+    m.load_demo(3, 48);
+    m.demo = false;
+    m.error = Some("Synthetic unavailable-action preview • no host connection".into());
+    if let Some(inventory) = m.inventory.clone() {
+        if let Ok(vm) = xenadmin_core::VmId::parse("30000000-0000-0000-0000-000000000001") {
+            m.select(Target::one(ObjectRef::vm(inventory.pool_id, vm)));
+        }
+    }
+}
+
+/// The scenes the kernel owns. They set what the K1 model has (the demo
+/// inventory, the demo flag, the selection); K2 completes them when the
+/// model has sessions and navigation.
+fn kernel_scenes() -> Vec<SceneSpec> {
+    vec![
+        SceneSpec::new("demo", KERNEL, demo),
+        SceneSpec::new("large-inventory", KERNEL, large_inventory),
+        SceneSpec::new("host-version-notice", KERNEL, host_version_notice),
+        SceneSpec::new("unavailable-actions", KERNEL, unavailable_actions),
+    ]
+}
+
+/// Every registered scene: the kernel's, then each area's in the order of
+/// [`crate::areas::specs`]. Built once.
+pub fn registry() -> &'static [SceneSpec] {
+    static REGISTRY: OnceLock<Vec<SceneSpec>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut scenes = kernel_scenes();
+        for area in crate::areas::specs() {
+            scenes.extend((area.scenes)());
+        }
+        scenes
+    })
+}
+
+/// The registered scene with this name.
+pub fn find(name: &str) -> Option<&'static SceneSpec> {
+    registry().iter().find(|scene| scene.name == name)
+}
+
+/// Applies the scene to the model. False when no such scene is registered.
+pub fn apply(name: &str, m: &mut Model) -> bool {
+    match find(name) {
+        Some(scene) => {
+            (scene.apply)(m);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The Rune scene names that are registered, in Rune order.
+pub fn ported() -> Vec<&'static str> {
+    rune_scenes().filter(|name| find(name).is_some()).collect()
+}
+
+/// The Rune scene names no area has registered yet, in Rune order.
+pub fn unported() -> Vec<&'static str> {
+    rune_scenes().filter(|name| find(name).is_none()).collect()
+}
+
+/// The element tree of a model as JSON: what the scene tool writes next to
+/// the PNG. It holds the selection, the tabs, the resolved menus, toolbar
+/// and local action row, the flattened tab body and every open surface,
+/// back to front.
+pub fn tree(m: &Model) -> serde_json::Value {
+    let tab = m.active_tab();
+    let body = m
+        .tab_body(tab)
+        .map(|body| surface::flatten_blocks("tab", &body.blocks()));
+    let surfaces: Vec<_> = m
+        .surfaces()
+        .iter()
+        .map(|surface| {
+            json!({
+                "id": surface.id,
+                "title": surface.title,
+                "experimental": surface.experimental,
+                "size": surface.size,
+                "nodes": surface::flatten(surface),
+            })
+        })
+        .collect();
+    json!({
+        "demo": m.demo,
+        "error": m.error,
+        "scope": m.selection.scope.objects,
+        "target": m.target().objects,
+        "tabs": m.tabs(),
+        "active_tab": tab,
+        "menus": command::menu_bar(m),
+        "toolbar": command::toolbar(m),
+        "local": command::local_row(m, tab),
+        "tab": body,
+        "surfaces": surfaces,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn every_rune_scene_is_registered_or_listed_as_unported() {
+        assert_eq!(rune_scenes().count(), 129);
+        let rune: BTreeSet<_> = rune_scenes().collect();
+        assert_eq!(rune.len(), 129, "a Rune scene name is listed twice");
+        let ported = ported();
+        let unported = unported();
+        assert_eq!(ported.len() + unported.len(), 129);
+        for name in rune_scenes() {
+            let registered = find(name).is_some();
+            assert_ne!(registered, unported.contains(&name), "{name}");
+            assert_eq!(registered, ported.contains(&name), "{name}");
+        }
+        // The count the migration ledger tracks.
+        println!("scenes ported: {} of 129", ported.len());
+        println!("scenes not ported: {unported:?}");
+    }
+
+    #[test]
+    fn registered_scene_names_are_unique_and_name_a_known_area() {
+        let areas: Vec<_> = crate::areas::specs().iter().map(|area| area.id).collect();
+        let mut seen = BTreeSet::new();
+        for scene in registry() {
+            assert!(
+                seen.insert(scene.name),
+                "{} is registered twice",
+                scene.name
+            );
+            assert!(
+                scene.area == KERNEL || areas.contains(&scene.area),
+                "{} names the unknown area {}",
+                scene.name,
+                scene.area
+            );
+        }
+    }
+
+    #[test]
+    fn the_rune_application_list_keeps_its_names() {
+        assert_eq!(RUNE_APP_SCENES.len(), 128);
+        assert_eq!(rune_app_scene("demo"), Some("demo"));
+        assert_eq!(rune_app_scene("pool-join"), Some("pool-join"));
+        assert_eq!(rune_app_scene(CONSOLE_WINDOW_SCENE), None);
+        assert!(
+            DEBUG_ONLY_SCENES
+                .iter()
+                .all(|name| rune_app_scene(name).is_some())
+        );
+    }
+
+    #[test]
+    fn the_kernel_scenes_set_up_the_demo_inventory() {
+        let mut m = Model::fixture();
+        assert!(apply("demo", &mut m));
+        assert!(m.demo);
+        let inventory = m.inventory.clone().expect("inventory");
+        assert_eq!((inventory.hosts.len(), inventory.vms.len()), (3, 48));
+        assert!(inventory.details.pool.is_some(), "details are populated");
+
+        let mut m = Model::fixture();
+        assert!(apply("large-inventory", &mut m));
+        let inventory = m.inventory.clone().expect("inventory");
+        assert_eq!((inventory.hosts.len(), inventory.vms.len()), (16, 2000));
+
+        let mut m = Model::fixture();
+        assert!(apply("host-version-notice", &mut m));
+        let inventory = m.inventory.clone().expect("inventory");
+        assert_eq!(
+            inventory
+                .hosts
+                .values()
+                .next()
+                .map(|host| host.version.as_str()),
+            Some("8.2.1")
+        );
+
+        let mut m = Model::fixture();
+        assert!(apply("unavailable-actions", &mut m));
+        assert!(!m.demo);
+        assert!(m.error.is_some());
+        assert_eq!(m.selection.scope.vms().len(), 1);
+
+        assert!(!apply("no-such-scene", &mut m));
+    }
+
+    #[test]
+    fn the_tree_of_a_scene_is_json_with_menus_and_selection() {
+        let mut m = Model::fixture();
+        assert!(apply("unavailable-actions", &mut m));
+        let tree = tree(&m);
+        assert_eq!(tree["demo"], json!(false));
+        assert_eq!(tree["scope"][0]["kind"], json!("vm"));
+        assert_eq!(tree["active_tab"], json!("general"));
+        assert_eq!(tree["menus"].as_array().map(Vec::len), Some(10));
+        assert_eq!(tree["menus"][0]["title"], json!("File"));
+        assert!(tree["surfaces"].is_array());
+    }
+}

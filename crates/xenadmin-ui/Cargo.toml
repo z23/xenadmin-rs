@@ -8,9 +8,13 @@ description = "Toolkit-free UI model shared by the desktop front ends."
 publish = false
 
 [dependencies]
+# Snapshot previews and console screenshots; the version the Rune front end uses.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
 xenadmin-core = { path = "../xenadmin-core" }
+zeroize.workspace = true
 
 [lints]
 workspace = true

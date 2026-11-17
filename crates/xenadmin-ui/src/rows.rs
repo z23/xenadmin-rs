@@ -1,9 +1,12 @@
 //! Inventory rows for the current object-type page.
 //!
-//! The Rune table still owns sort direction and the natural name order. This
-//! module owns the projection and the column comparison.
+//! The Rune table still owns sort direction and passes its natural name
+//! order in. This module owns the projection and the column comparison. The
+//! byte labels are in [`crate::format`].
 
 use xenadmin_core::{HostId, Inventory, VmId};
+
+use crate::format::{memory_label, storage_bytes};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InventoryPage {
@@ -24,24 +27,6 @@ pub struct DisplayRow {
     pub memory: String,
     pub description: String,
     pub vm: Option<VmId>,
-}
-
-pub fn memory_label(value: u64) -> String {
-    if value == 0 {
-        "—".into()
-    } else if value >= 1 << 30 {
-        format!("{:.1} GiB", value as f64 / (1u64 << 30) as f64)
-    } else {
-        format!("{:.0} MiB", value as f64 / (1u64 << 20) as f64)
-    }
-}
-
-pub fn storage_bytes(value: Option<u64>) -> String {
-    match value {
-        None => "Unknown".into(),
-        Some(0) => "0 B".into(),
-        Some(value) => memory_label(value),
-    }
 }
 
 pub fn project_rows(
@@ -152,13 +137,6 @@ pub fn compare_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn storage_labels_keep_the_desktop_wording() {
-        assert_eq!(storage_bytes(None), "Unknown");
-        assert_eq!(storage_bytes(Some(0)), "0 B");
-        assert_eq!(memory_label(0), "—");
-    }
 
     #[test]
     fn a_name_query_keeps_matching_guests() {
