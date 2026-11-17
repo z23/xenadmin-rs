@@ -483,7 +483,7 @@ fn reviewing_failed_member_certificate_does_not_load_saved_host_credentials() {
 
 // -- profile_reconnect.rs -----------------------------------------------------
 
-mod reconnecting {
+mod against_a_fixture_server {
     use std::{
         io::{BufRead, Read, Write},
         sync::{
@@ -645,6 +645,19 @@ mod reconnecting {
             assert!(start.elapsed() < Duration::from_secs(20), "{what}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// Whether the scope session `id` is in this state both in what the
+    /// model adopted for it and in what the connection list saw: the two
+    /// are read at different moments of one poll.
+    fn shows(h: &Harness, id: ProfileId, state: ConnectionState) -> bool {
+        let adopted = h.model.snapshot.as_ref().map(|snapshot| snapshot.state());
+        let listed = h
+            .model
+            .workspace
+            .snapshot(id)
+            .map(|snapshot| snapshot.state());
+        h.model.workspace.selected == Some(id) && adopted == Some(state) && listed == Some(state)
     }
 
     fn ready(c: &Connection) {
@@ -873,6 +886,64 @@ mod reconnecting {
         session::disconnect_all(&mut h.model);
     }
 
+    // Plan package P2.9: Add Server from the Home tab to a connected pool,
+    // and Disconnect from its row.
+    #[test]
+    fn add_server_connects_shows_the_pool_and_keeps_no_password() {
+        let pool = PoolId::from(uuid::Uuid::new_v4());
+        let server = Server::new(pool);
+        let mut f = Fixture::new();
+        f.model.workspace.restore_started = true;
+        f.model.backend = Ok(Backend::with_state_directory(f.directory.clone()).unwrap());
+        let mut h = home(&mut f);
+        h.click("server.add");
+        h.type_text("profile-name", "Typed pool");
+        h.type_text("host-endpoint", server.endpoint.as_str());
+        h.type_text("username", "operator");
+        h.type_text("password", "typed-secret");
+        h.click("connect");
+        assert_eq!(h.model.error, None);
+        assert_eq!(h.surface_id(), None, "the form closes");
+        assert!(
+            h.model.workspace.password.is_empty(),
+            "the draft is cleared as it is handed to the core"
+        );
+        let id = h.model.workspace.selected.expect("the new session has the scope");
+        poll_until(&mut h, "the session is ready", |h| {
+            shows(h, id, ConnectionState::Ready)
+        });
+        assert_eq!(
+            server.logins(),
+            [("operator".into(), "typed-secret".into())]
+        );
+        // The tree selection is the pool the connection turned out to be.
+        assert_eq!(
+            h.model.scope(),
+            &Target::one(ObjectRef::pool(pool)),
+            "the saved connection became its pool"
+        );
+        assert_eq!(h.model.header().name, "Fixture pool");
+        let stored = std::fs::read_to_string(f.directory.join("profiles.json")).unwrap();
+        assert!(stored.contains("Typed pool") && !stored.contains("typed-secret"));
+        assert!(h.model.workspace.credential_tasks.is_empty());
+
+        // Home lists it as connected; its row disconnects it.
+        h.model.show_home();
+        assert!(h.has_text("Typed pool") && h.has_text("Connected"));
+        h.select_row(TABLE, &id.to_string());
+        assert!(!ids(&h.local_row()).contains(&"server.connect"));
+        h.click("server.disconnect");
+        poll_until(&mut h, "the session is closed", |h| {
+            shows(h, id, ConnectionState::Disconnected)
+        });
+        assert!(h.has_text("Disconnected"));
+        let row = h.local_row();
+        assert!(!ids(&row).contains(&"server.disconnect"));
+        assert_eq!(reason(&row, "server.connect"), None);
+        assert_eq!(reason(&row, "server.remove-connection"), None);
+        session::disconnect_all(&mut h.model);
+    }
+
     // Plan package P3.8: a lost session and its renewal as the interface
     // shows them. (Rune had no test of the views for this; the core has its
     // own of the connection.)
@@ -896,16 +967,8 @@ mod reconnecting {
 
         // The host goes away.
         drop(server);
-        // Both what the model adopted for the scope session and what the
-        // connection list saw: the two are read at different moments of one
-        // poll.
-        let shows = |h: &Harness, state: ConnectionState| {
-            let adopted = h.model.snapshot.as_ref().map(|snapshot| snapshot.state());
-            let listed = h.model.workspace.snapshot(id).map(|snapshot| snapshot.state());
-            adopted == Some(state) && listed == Some(state)
-        };
         poll_until(&mut h, "the session notices the loss", |h| {
-            shows(h, ConnectionState::Reconnecting)
+            shows(h, id, ConnectionState::Reconnecting)
         });
         assert_eq!(
             h.try_click("reconnect-confirm"),
@@ -949,7 +1012,7 @@ mod reconnecting {
         // credentials it had, without a prompt.
         let server = Server::at(address, pool);
         poll_until(&mut h, "the session is renewed", |h| {
-            shows(h, ConnectionState::Ready)
+            shows(h, id, ConnectionState::Ready)
         });
         assert_ne!(
             h.model.snapshot.as_ref().unwrap().generation(),
