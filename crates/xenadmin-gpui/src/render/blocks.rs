@@ -86,7 +86,7 @@ fn block(
             } else {
                 GridHeight::Rows
             };
-            ObjectGrid::render(pass, table, height, window, cx)
+            ObjectGrid::render(pass, base, table, height, window, cx)
         }
         Block::Review(review) => {
             widgets::review_panel(pass.ui, &join(base, &review.key), review, cx)

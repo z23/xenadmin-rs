@@ -163,7 +163,7 @@ pub fn pressable(
 }
 
 /// Joins a path of the flattened description, as `surface::flatten` does.
-pub(crate) fn join(base: &str, segment: &str) -> String {
+pub fn join(base: &str, segment: &str) -> String {
     if base.is_empty() {
         segment.to_owned()
     } else {

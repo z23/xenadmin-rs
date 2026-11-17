@@ -47,7 +47,7 @@ pub use gpui_kit::component::{
 // Components.
 pub use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 pub use gpui_kit::component::checkbox::Checkbox;
-pub use gpui_kit::component::dialog::Dialog;
+pub use gpui_kit::component::dialog::{Dialog, DialogEntrance};
 pub use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 pub use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 pub use gpui_kit::component::progress::Progress;

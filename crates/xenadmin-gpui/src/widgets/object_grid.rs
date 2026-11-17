@@ -68,6 +68,8 @@ pub type OnCancel = Rc<dyn Fn(&mut App)>;
 struct Shared {
     /// The latest description.
     table: s::Table,
+    /// The path of the table in the flattened description.
+    path: String,
     /// The width of each column now.
     widths: Vec<Pixels>,
     /// Widths the user dragged, by column id.
@@ -249,7 +251,7 @@ impl TableDelegate for GridDelegate {
         let id = if sortable {
             s::Table::column_key(&shared.table.key, &column.id)
         } else {
-            format!("{}/columns/{}", shared.table.key, column.id)
+            format!("{}/columns/{}", shared.path, column.id)
         };
         let order = shared
             .table
@@ -495,6 +497,7 @@ impl ObjectGrid {
         let selectable = table.selection != Selection::None;
         let shared = Rc::new(RefCell::new(Shared {
             table: table.clone(),
+            path: String::new(),
             widths: Vec::new(),
             dragged: HashMap::new(),
             index: HashMap::new(),
@@ -540,9 +543,11 @@ impl ObjectGrid {
         &self.inner.table
     }
 
-    /// Draws `table`, after bringing the grid in step with it.
+    /// Draws `table`, after bringing the grid in step with it. `base` is
+    /// the path prefix of the flattened description.
     pub fn render(
         pass: &Pass<'_>,
+        base: &str,
         table: &s::Table,
         height: GridHeight,
         window: &mut Window,
@@ -552,6 +557,7 @@ impl ObjectGrid {
         let grid = ui.cache.borrow_mut().grid(pass.scope, &table.key, || {
             Self::new(table, &ui.store, window, cx)
         });
+        grid.inner.shared.borrow_mut().path = crate::render::join(base, &table.key);
         grid.sync(pass, table, cx);
 
         let rows = table.rows.len();

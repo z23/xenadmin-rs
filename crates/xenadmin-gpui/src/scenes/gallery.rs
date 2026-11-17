@@ -536,7 +536,7 @@ fn guest_rows(lab: &Lab, m: &Model) -> Vec<Row> {
         .collect()
 }
 
-fn grid_target(m: &Model, rows: &[String]) -> Target {
+pub(crate) fn grid_target(m: &Model, rows: &[String]) -> Target {
     let pool = m.inventory.as_ref().map(|inventory| inventory.pool_id);
     Target::many(
         rows.iter()

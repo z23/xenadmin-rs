@@ -88,9 +88,37 @@ pub fn names() -> Vec<&'static str> {
 /// The model of a scene. `None` when no scene has that name.
 pub fn setup(name: &str) -> Option<Setup> {
     if gallery::SCENES.contains(&name) {
-        let setup = Setup::lab();
-        let lab = setup.lab.as_ref()?;
-        return gallery::apply(name, lab).then_some(setup);
+        let mut setup = Setup::lab();
+        let lab = setup.lab.clone()?;
+        if !gallery::apply(name, &lab) {
+            return None;
+        }
+        // The table scenes show a selection: the third guest, and for the
+        // multi selection the second to the fourth.
+        let mut guests: Vec<(String, String)> = setup
+            .model
+            .inventory
+            .iter()
+            .flat_map(|inventory| inventory.guests())
+            .map(|vm| (vm.name.clone(), vm.id.to_string()))
+            .collect();
+        guests.sort_by(|left, right| xenadmin_ui::natural_cmp(&left.0, &right.0));
+        let ids: Vec<String> = guests.into_iter().map(|(_, id)| id).take(4).collect();
+        if ids.len() == 4 {
+            let selected = match name {
+                "gallery-tab" => vec![ids[2].clone()],
+                "gallery-multi" => ids[1..4].to_vec(),
+                _ => Vec::new(),
+            };
+            if !selected.is_empty() {
+                let target = gallery::grid_target(&setup.model, &selected);
+                setup.model.select_in_grid(target);
+                let mut lab = lab.borrow_mut();
+                lab.selected = selected.first().cloned();
+                lab.marked = selected;
+            }
+        }
+        return Some(setup);
     }
     let mut model = Model::fixture();
     scene::apply(name, &mut model).then_some(Setup { model, lab: None })

@@ -15,7 +15,22 @@ fi
 # view's class lacks: a record read as another class, or a fixture with a field the API
 # does not have. Only what the tests mean may be reported.
 XENADMIN_XAPI_VIEW_AUDIT="$check_state_dir/view-audit.tsv" cargo test --workspace --locked
+cargo clippy -p xenadmin-gpui --all-targets --features scenes --locked -- -D warnings
 cargo test -p xenadmin-gpui --features scenes --locked
+# The GPUI front end's scene tool renders scenes without a display: the model's registered
+# scenes and the renderer's own fixtures (gallery-*). A PNG needs a graphics adapter (a
+# software one will do); the tool fails when a frame lacks an element its description has.
+mkdir -p artifacts/gpui
+cargo build -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes
+gpui_scenes() {
+    cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-scenes -- "$@"
+}
+gpui_scenes --list > artifacts/gpui/scenes.txt
+for gpui_scene in demo unavailable-actions gallery-dialog gallery-wizard gallery-properties gallery-tab gallery-blocks; do
+    gpui_scenes "$gpui_scene" --snap "artifacts/gpui/${gpui_scene}.png" --tree "artifacts/gpui/${gpui_scene}.json" --theme dark --size 1440x900 --scale 1
+done
+gpui_scenes gallery-dialog --snap artifacts/gpui/gallery-dialog-light-compact.png --tree artifacts/gpui/gallery-dialog-light-compact.json --theme light --size 800x600 --scale 1
+gpui_scenes gallery-tab --snap artifacts/gpui/gallery-tab-light-2x.png --theme light --size 800x600 --scale 2
 python3 scripts/view_audit.py "$check_state_dir/view-audit.tsv"
 cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
 python3 -m unittest discover -s lab -p 'test_*.py'

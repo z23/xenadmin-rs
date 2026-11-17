@@ -111,18 +111,17 @@ impl DialogHost {
     fn open(&self, id: String, window: &mut Window, cx: &mut App) {
         let ui = self.ui.clone();
         let first_frame = Rc::new(Cell::new(true));
-        // What the dialog showed last: it is drawn while the Kit animates
-        // the dialog out, when the model has the surface no more.
-        let last: Rc<RefCell<Option<Surface>>> = Rc::default();
         window.open_dialog(cx, move |dialog, window, cx| {
-            let live = ui.store.read(cx).surface(&id);
-            let closing = live.is_none();
-            let surface = live.or_else(|| last.borrow().clone());
-            let Some(surface) = surface else {
-                return dialog.close_button(false).keyboard(false);
-            };
-            *last.borrow_mut() = Some(surface.clone());
-            surface_dialog(dialog, &ui, &surface, closing, &first_frame, window, cx)
+            // A surface appears and goes at once. Without an exit animation
+            // the Kit removes a closed dialog in the same update, so this
+            // builder never runs for a surface the model has no more: no
+            // frame shows a form whose state is gone, and no widget is made
+            // again for a secret after its scope was closed.
+            let dialog = dialog.entrance(DialogEntrance::None);
+            match ui.store.read(cx).surface(&id) {
+                Some(surface) => surface_dialog(dialog, &ui, &surface, &first_frame, window, cx),
+                None => dialog.close_button(false).keyboard(false).overlay(false),
+            }
         });
     }
 }
@@ -139,7 +138,6 @@ fn surface_dialog(
     dialog: Dialog,
     ui: &Ui,
     surface: &Surface,
-    closing: bool,
     first_frame: &Rc<Cell<bool>>,
     window: &mut Window,
     cx: &mut App,
@@ -164,9 +162,7 @@ fn surface_dialog(
         on_cancel: Some(close.clone()),
     };
 
-    if !closing {
-        ui.cache.borrow_mut().begin(&scope);
-    }
+    ui.cache.borrow_mut().begin(&scope);
     let header = header(surface, cx);
     let body = match &surface.kind {
         SurfaceKind::Properties {
@@ -222,14 +218,12 @@ fn surface_dialog(
             .into_any_element(),
     };
     let footer = footer(ui, surface, cx);
-    if !closing {
-        ui.cache.borrow_mut().end(&scope, window, cx);
-        if first_frame.replace(false) {
-            // The first text field takes the keyboard when a surface opens.
-            let first = ui.cache.borrow().first_text(&scope);
-            if let Some(first) = first {
-                first.focus(window, cx);
-            }
+    ui.cache.borrow_mut().end(&scope, window, cx);
+    if first_frame.replace(false) {
+        // The first text field takes the keyboard when a surface opens.
+        let first = ui.cache.borrow().first_text(&scope);
+        if let Some(first) = first {
+            first.focus(window, cx);
         }
     }
 
