@@ -1121,15 +1121,14 @@ fn the_zoom_commands_change_the_interface_scale(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_zoom_shortcuts_apply_while_a_dialog_is_open_and_never_in_a_console(cx: &mut TestAppContext) {
+fn the_zoom_shortcuts_apply_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let scene = open(cx);
     let scale =
         |cx: &mut TestAppContext| model(cx, &scene, |m| m.preferences.options.interface_scale);
-    model_side(cx, &scene, |_| {});
     let lab = scene.lab.clone().expect("lab");
     cx.update(|cx| {
         scene.store.update(cx, |store, cx| {
-            store.run(|_| lab.borrow_mut().open.push(DIALOG), cx)
+            store.run(|_| lab.borrow_mut().open.push(DIALOG), cx);
         });
     });
     cx.run_until_parked();
@@ -1139,12 +1138,100 @@ fn the_zoom_shortcuts_apply_while_a_dialog_is_open_and_never_in_a_console(cx: &m
         window.press("ctrl-=", cx);
     });
     assert_eq!(scale(cx), 110);
-    // The bindings name the console's key context as the place they do not
-    // apply. (The console canvas is the console engineer's; the context is
-    // the contract.)
-    let bindings = shell::actions::bindings();
-    assert!(!bindings.is_empty());
-    assert_eq!(shell::actions::CONSOLE_CONTEXT, "Console");
+    on(cx, &scene, |window, cx| window.press("ctrl-0", cx));
+    assert_eq!(scale(cx), 100);
+}
+
+/// A stand-in for the shell with a console in it: the two key contexts and
+/// a record of the commands that arrive.
+struct ConsoleProbe {
+    shell: FocusHandle,
+    console: FocusHandle,
+    commands: Rc<RefCell<Vec<&'static str>>>,
+}
+
+impl Render for ConsoleProbe {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("probe-shell")
+            .test_support()
+            .track_focus(&self.shell)
+            .key_context(shell::actions::SHELL_CONTEXT)
+            .on_action(
+                cx.listener(|probe, action: &shell::actions::RunCommand, _, _| {
+                    probe.commands.borrow_mut().push(action.id);
+                }),
+            )
+            .size_full()
+            .child(
+                div()
+                    .id("probe-console")
+                    .test_support()
+                    .track_focus(&self.console)
+                    .key_context(shell::actions::CONSOLE_CONTEXT)
+                    .size_8(),
+            )
+    }
+}
+
+#[gpui_kit::test]
+fn no_command_shortcut_is_delivered_while_a_console_has_the_keyboard(cx: &mut TestAppContext) {
+    let commands: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+    let (window, probe) = cx
+        .update(|cx| {
+            gpui_kit::init(cx);
+            xenadmin_gpui::init(cx);
+            let commands = commands.clone();
+            gpui_kit::open_window(WindowOptions::default(), cx, move |_, cx| {
+                cx.new(|cx| ConsoleProbe {
+                    shell: cx.focus_handle(),
+                    console: cx.focus_handle(),
+                    commands,
+                })
+            })
+        })
+        .expect("window");
+    let (in_shell, in_console) = cx.update(|cx| {
+        let probe = probe.read(cx);
+        (probe.shell.clone(), probe.console.clone())
+    });
+    let press_all = |cx: &mut TestAppContext, focus: &FocusHandle| {
+        cx.update_window(window, |_, window, cx| {
+            focus.focus(window, cx);
+            window.render_frame(cx);
+            for keys in [
+                "ctrl-=",
+                "ctrl-+",
+                "ctrl--",
+                "ctrl-0",
+                "alt-left",
+                "alt-right",
+                "ctrl-q",
+            ] {
+                window.press(keys, cx);
+            }
+        })
+        .expect("window");
+        cx.run_until_parked();
+    };
+    // In the shell every shortcut of the kernel's commands arrives.
+    press_all(cx, &in_shell);
+    assert_eq!(
+        *commands.borrow(),
+        [
+            "view.zoom-in",
+            "view.zoom-in",
+            "view.zoom-out",
+            "view.zoom-reset",
+            "nav.back",
+            "nav.forward",
+            "file.exit"
+        ]
+    );
+    // In the console none does: every key is the guest's.
+    commands.borrow_mut().clear();
+    press_all(cx, &in_console);
+    assert!(commands.borrow().is_empty(), "{:?}", commands.borrow());
 }
 
 #[gpui_kit::test]

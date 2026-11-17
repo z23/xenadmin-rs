@@ -308,14 +308,17 @@ impl NavPane {
             let scope_rows = nav::selected_ids(model, &rows);
             (rows, scope_rows, model.nav.view, model.nav.filter.clone())
         };
-        if self.search.read(cx).value().as_ref() != filter {
-            let text = SharedString::from(filter.clone());
-            self.search
-                .update(cx, |input, cx| input.set_value(text, window, cx));
-        }
         let view_changed = view != self.view;
         if filter != self.filter {
             self.filter_expansion.clear();
+            // The box follows the model when the model changed the text
+            // (a scene, a command), never when the two merely differ: a
+            // keystroke whose event is still on its way must not be undone.
+            if self.search.read(cx).value().as_ref() != filter {
+                let text = SharedString::from(filter.clone());
+                self.search
+                    .update(cx, |input, cx| input.set_value(text, window, cx));
+            }
         }
         let rows_changed = rows != self.rows || view_changed || filter != self.filter;
         let scope_changed = scope_rows != self.scope_rows || view_changed;
@@ -523,11 +526,16 @@ impl NavPane {
             }
             menu
         });
-        let dismiss = cx.subscribe_in(&menu, window, |pane, _, _: &DismissEvent, window, cx| {
+        let dismiss = cx.subscribe_in(&menu, window, |pane, menu, _: &DismissEvent, window, cx| {
             pane.menu = None;
             // Chosen or not, the model's menu is over.
             dispatch(&pane.store, cx, |m| m.close_context_menu());
-            pane.tree_stop.focus(window, cx);
+            // The keys go back to the tree, unless a press elsewhere has
+            // already taken them there.
+            let held = menu.focus_handle(cx).contains_focused(window, cx);
+            if held || window.focused(cx).is_none() {
+                pane.tree_stop.focus(window, cx);
+            }
             cx.notify();
         });
         menu.focus_handle(cx).focus(window, cx);
