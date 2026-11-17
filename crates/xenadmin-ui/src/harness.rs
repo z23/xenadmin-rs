@@ -21,8 +21,10 @@ use std::path::PathBuf;
 use crate::command::{self, CommandId, Eligibility, MenuItem, MenuView};
 use crate::intent::Intent;
 use crate::model::Model;
-use crate::object::Target;
+use crate::nav::{NavRow, NavView};
+use crate::object::{ObjectRef, Target};
 use crate::scene;
+use crate::selection::MenuOrigin;
 use crate::surface::{self, Element, Handle, Node, Surface};
 use crate::tabs::{TabBody, TabId};
 
@@ -558,6 +560,73 @@ impl Harness {
             .into_iter()
             .flatten()
             .collect()
+    }
+
+    // -- Navigation and context menus --------------------------------------
+
+    /// The rows of the active navigation view, narrowed by the filter: what
+    /// the tree shows.
+    pub fn nav_rows(&self) -> Vec<NavRow> {
+        crate::nav::rows(&self.model)
+    }
+
+    /// The first row of the navigation tree with this label. Panics, listing
+    /// the labels there, when there is none.
+    #[track_caller]
+    pub fn nav_row(&self, label: &str) -> NavRow {
+        let rows = self.nav_rows();
+        match rows.iter().find(|row| row.label == label) {
+            Some(row) => row.clone(),
+            None => panic!(
+                "no row `{label}` in the {} view; it has {:?}",
+                self.model.nav.view.title(),
+                rows.iter()
+                    .map(|row| row.label.as_str())
+                    .collect::<Vec<_>>()
+            ),
+        }
+    }
+
+    /// Presses the first row of the navigation tree with this label, as a
+    /// click on it does: an object row selects its object.
+    #[track_caller]
+    pub fn press_nav(&mut self, label: &str) {
+        let row = self.nav_row(label);
+        self.model.select_nav_row(&row.id);
+    }
+
+    /// Switches the navigation view.
+    pub fn open_view(&mut self, view: NavView) {
+        self.model.set_nav_view(view);
+    }
+
+    /// A secondary press on the row of an object, in the tree or in a grid
+    /// of the active tab. Returns the items of the menu that opens,
+    /// flattened; none when no menu opens.
+    pub fn open_menu(&mut self, object: ObjectRef, origin: MenuOrigin) -> Vec<MenuItem> {
+        if !self.model.open_context_menu(object, origin) {
+            return Vec::new();
+        }
+        self.model.context_menu().into_iter().flatten().collect()
+    }
+
+    /// Chooses an item of the open context menu. `Err` carries the reason
+    /// when the menu is stale or closed, or the command is refused. The menu
+    /// closes either way.
+    pub fn try_choose(&mut self, command: &str) -> Result<(), String> {
+        let id = Self::command_id(command)?;
+        self.model
+            .invoke_context(id)
+            .map_err(|refused| refused.to_string())
+    }
+
+    /// Chooses an item of the open context menu. Panics with the reason
+    /// when it is refused.
+    #[track_caller]
+    pub fn choose(&mut self, command: &str) {
+        if let Err(reason) = self.try_choose(command) {
+            panic!("cannot choose `{command}`: {reason}");
+        }
     }
 
     // -- Time and intents ---------------------------------------------------
@@ -1193,6 +1262,40 @@ mod tests {
                 "search"
             ])
         );
+    }
+
+    #[test]
+    fn the_tree_and_a_context_menu_are_driven_like_a_user_does() {
+        let mut h = Harness::scene("demo");
+        assert_eq!(h.nav_rows()[0].label, "Demonstration pool");
+        h.press_nav("Database");
+        let vm = h.model.selected().cloned().expect("the VM is selected");
+        assert_eq!(vm.kind, crate::ObjectKind::Vm);
+        assert_eq!(h.model.header().name, "Database");
+        // A heading selects nothing.
+        h.open_view(NavView::Objects);
+        h.press_nav("Servers");
+        assert_eq!(h.model.selected(), Some(&vm));
+        h.open_view(NavView::Infrastructure);
+        // The context menu of the VM offers Copy UUID and runs it.
+        let items = h.open_menu(vm.clone(), MenuOrigin::Tree);
+        assert!(items.iter().any(|item| item.id.0 == "object.copy-uuid"));
+        h.choose("object.copy-uuid");
+        assert!(matches!(h.take_intents().as_slice(), [Intent::CopyText(text)] if *text == vm.id));
+        // The menu is closed now.
+        assert_eq!(
+            h.try_choose("object.copy-uuid"),
+            Err("The command object.copy-uuid is not available for this selection.".into())
+        );
+        // No row, no menu.
+        let gone = ObjectRef::new(vm.pool, crate::ObjectKind::Vm, uuid::Uuid::from_u128(7));
+        assert!(h.open_menu(gone, MenuOrigin::Grid).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "no row `No such row` in the Infrastructure view")]
+    fn a_missing_tree_row_panics_with_the_labels_there() {
+        Harness::scene("demo").press_nav("No such row");
     }
 
     #[test]
