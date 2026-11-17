@@ -73,8 +73,6 @@ pub fn command_icon(id: CommandId) -> Option<Lucide> {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::component::IconNamed as _;
-
     use super::*;
     use crate::assets::AppAssets;
     use crate::kit::AssetSource as _;

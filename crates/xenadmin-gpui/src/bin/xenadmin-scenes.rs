@@ -94,27 +94,12 @@ fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 fn run(request: &Request) -> Result<(), String> {
-    let output = scenes::render(&request.name, &request.options, request.snap.is_some())?;
-    if let (Some(path), Some(image)) = (&request.snap, &output.image) {
-        image
-            .save(path)
-            .map_err(|error| format!("{} was not written: {error}", path.display()))?;
-    }
-    if let Some(path) = &request.tree {
-        let text = serde_json::to_string_pretty(&output.tree)
-            .map_err(|error| format!("the tree was not serialised: {error}"))?;
-        std::fs::write(path, text + "\n")
-            .map_err(|error| format!("{} was not written: {error}", path.display()))?;
-    }
-    let missing = scenes::missing_keys(&output.tree);
-    if !missing.is_empty() {
-        return Err(format!(
-            "the frame of `{}` lacks elements its description has: {}",
-            request.name,
-            missing.join(", ")
-        ));
-    }
-    Ok(())
+    scenes::write(
+        &request.name,
+        &request.options,
+        request.snap.as_deref(),
+        request.tree.as_deref(),
+    )
 }
 
 fn main() -> ExitCode {

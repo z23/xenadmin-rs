@@ -301,6 +301,37 @@ pub fn render_setup(
     Ok(Output { image, tree })
 }
 
+/// Renders a scene and writes what was asked for: the frame as a PNG, the
+/// element tree as JSON. An error also when the frame lacks an element its
+/// description has; the files are written first, so they can be looked at.
+pub fn write(
+    name: &str,
+    options: &Options,
+    snap: Option<&std::path::Path>,
+    tree: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let output = render(name, options, snap.is_some())?;
+    if let (Some(path), Some(image)) = (snap, &output.image) {
+        image
+            .save(path)
+            .map_err(|error| format!("{} was not written: {error}", path.display()))?;
+    }
+    if let Some(path) = tree {
+        let text = serde_json::to_string_pretty(&output.tree)
+            .map_err(|error| format!("the tree was not serialised: {error}"))?;
+        std::fs::write(path, text + "\n")
+            .map_err(|error| format!("{} was not written: {error}", path.display()))?;
+    }
+    let missing = missing_keys(&output.tree);
+    if !missing.is_empty() {
+        return Err(format!(
+            "the frame of `{name}` lacks elements its description has: {}",
+            missing.join(", ")
+        ));
+    }
+    Ok(())
+}
+
 fn id_string(id: &ElementId) -> String {
     match id {
         ElementId::Name(name) => name.to_string(),
