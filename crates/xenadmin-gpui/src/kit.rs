@@ -22,6 +22,10 @@ pub use gpui_kit::{
     div, point, px, relative, rems, size,
 };
 
+/// A keyed element marked for the test support: what `.test_support()`
+/// returns (the element itself in a build without the feature).
+pub type Keyed = gpui_kit::base::ObservedElement<Stateful<Div>>;
+
 // The channel of the wake bridge.
 pub use gpui_kit::base::async_util::{Receiver, Sender, unbounded};
 

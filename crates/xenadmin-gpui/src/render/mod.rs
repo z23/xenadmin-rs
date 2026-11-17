@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use xenadmin_ui::Model;
-use xenadmin_ui::surface::{Act, Custom, Tone};
+use xenadmin_ui::surface::{Act, Custom};
 
 pub use blocks::{Pass, blocks, button, button_row, filling_table};
 pub use cache::{TAB_SCOPE, WidgetCache, surface_scope};
@@ -90,6 +90,12 @@ impl Ui {
         self.column_widths.borrow().clone()
     }
 
+    /// The focus handle of a pressable element the renderer draws itself,
+    /// kept with the widget state of `scope`.
+    pub fn focus_handle(&self, scope: &str, key: &str, cx: &mut App) -> FocusHandle {
+        self.cache.borrow_mut().focus_handle(scope, key, cx)
+    }
+
     /// Runs a handler of a description on the model.
     pub fn run(&self, cx: &mut App, act: impl FnOnce(&mut Model)) {
         dispatch(&self.store, cx, act);
@@ -106,22 +112,35 @@ impl Ui {
     }
 }
 
-/// The text colour of a tone.
-pub fn tone_color(tone: Tone, cx: &App) -> Hsla {
-    let theme = cx.theme();
-    match tone {
-        Tone::Normal => theme.foreground,
-        Tone::Muted => theme.muted_foreground,
-        Tone::Success => theme.success,
-        Tone::Warning => theme.warning,
-        Tone::Danger => theme.danger,
-    }
-}
+pub use crate::theme::tone_color;
 
 /// A tooltip with plain text, for `.tooltip(..)` of any element with an id.
 pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let text: SharedString = text.into();
     move |window, cx| Tooltip::new(text.clone()).build(window, cx)
+}
+
+/// A keyed element the keyboard can reach and press: a Tab stop that a
+/// click, Enter and Space activate. `focus` comes from [`Ui::focus_handle`].
+pub fn pressable(
+    id: impl Into<ElementId>,
+    focus: &FocusHandle,
+    on_press: impl Fn(&mut Window, &mut App) + 'static,
+) -> Keyed {
+    let on_press = Rc::new(on_press);
+    let on_key = Rc::clone(&on_press);
+    div()
+        .id(id)
+        .test_support()
+        .track_focus(focus)
+        .cursor_pointer()
+        .on_click(move |_, window, cx| on_press(window, cx))
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                on_key(window, cx);
+                cx.stop_propagation();
+            }
+        })
 }
 
 /// Joins a path of the flattened description, as `surface::flatten` does.

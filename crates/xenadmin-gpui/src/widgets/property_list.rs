@@ -38,31 +38,39 @@ pub fn property_list(ui: &Ui, base: &str, items: &[Property], cx: &App) -> AnyEl
                         .child(label.clone()),
                 )
                 .child(
-                    div()
+                    h_flex()
                         .flex_1()
                         .min_w_0()
-                        .text_color(tone_color(item.tone, cx))
-                        .child(value.clone()),
+                        .items_start()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .text_color(tone_color(item.tone, cx))
+                                .child(value.clone()),
+                        )
+                        .when(item.copy, |row| {
+                            let store = ui.store.clone();
+                            let text = item.value.clone();
+                            row.child(
+                                Button::new(SharedString::from(format!("{id}-copy")))
+                                    .icon(IconName::Copy)
+                                    .ghost()
+                                    .xsmall()
+                                    .accessibility_label(SharedString::from(format!(
+                                        "Copy {}",
+                                        item.label
+                                    )))
+                                    .tooltip(SharedString::from(format!("Copy {}", item.label)))
+                                    .on_click(move |_, _, cx| {
+                                        let text = text.clone();
+                                        crate::store::dispatch(&store, cx, move |m| {
+                                            m.copy_text(text)
+                                        });
+                                    }),
+                            )
+                        }),
                 )
-                .when(item.copy, |row| {
-                    let store = ui.store.clone();
-                    let text = item.value.clone();
-                    row.child(
-                        Button::new(SharedString::from(format!("{id}-copy")))
-                            .icon(IconName::Copy)
-                            .ghost()
-                            .xsmall()
-                            .accessibility_label(SharedString::from(format!(
-                                "Copy {}",
-                                item.label
-                            )))
-                            .tooltip(SharedString::from(format!("Copy {}", item.label)))
-                            .on_click(move |_, _, cx| {
-                                let text = text.clone();
-                                crate::store::dispatch(&store, cx, move |m| m.copy_text(text));
-                            }),
-                    )
-                })
         }))
         .into_any_element()
 }

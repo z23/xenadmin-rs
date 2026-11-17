@@ -12,7 +12,7 @@ use xenadmin_ui::object::ObjectKind;
 use xenadmin_ui::tabs::{TabBody, TabId};
 
 use crate::kit::*;
-use crate::render::{DialogHost, Pass, Ui, blocks};
+use crate::render::{DialogHost, Pass, Ui, blocks, pressable};
 use crate::store::{AppStore, dispatch};
 use crate::widgets;
 
@@ -29,6 +29,8 @@ pub const TAB_EMPTY_KEY: &str = "tab-empty";
 /// The path prefix of the tab body in the flattened description.
 pub const TAB_BASE: &str = "tab";
 
+/// The scope of the widget state of the header and the tab strip.
+const CHROME_SCOPE: &str = "chrome";
 /// The padding around the tab body.
 const BODY_PADDING: f32 = 16.0;
 
@@ -123,11 +125,15 @@ pub fn object_header(ui: &Ui, cx: &App) -> AnyElement {
 
 /// The tab strip: the tabs of the model, the active one marked. A press
 /// chooses the tab in the model.
-pub fn tab_strip(ui: &Ui, cx: &App) -> AnyElement {
+pub fn tab_strip(ui: &Ui, cx: &mut App) -> AnyElement {
     let (tabs, active) = {
         let model = ui.store.read(cx).model();
         (model.tabs(), model.active_tab())
     };
+    let handles: std::collections::HashMap<&'static str, FocusHandle> = tabs
+        .iter()
+        .map(|tab| (tab.key(), ui.focus_handle(CHROME_SCOPE, tab.key(), cx)))
+        .collect();
     let theme = cx.theme();
     let border = theme.border;
     let primary = theme.primary;
@@ -149,40 +155,27 @@ pub fn tab_strip(ui: &Ui, cx: &App) -> AnyElement {
         .children(tabs.iter().map(|tab| {
             let tab = *tab;
             let selected = tab == active;
-            let choose = {
-                let store = ui.store.clone();
-                move |cx: &mut App| dispatch(&store, cx, move |m| m.set_active_tab(tab))
-            };
-            let on_key = choose.clone();
-            div()
-                .id(tab.key())
-                .test_support()
-                .role(Role::Tab)
-                .aria_label(tab.title())
-                .aria_selected(selected)
-                .tab_index(0)
-                .px_3()
-                .py_2()
-                .text_sm()
-                .border_b_2()
-                .cursor_pointer()
-                .border_color(if selected {
-                    primary
-                } else {
-                    gpui_kit::transparent_black()
-                })
-                .text_color(if selected { foreground } else { muted })
-                .when(selected, |tab| tab.font_medium())
-                .hover(|style| style.bg(hover))
-                .focus_visible(|style| style.border_color(ring))
-                .on_click(move |_, _, cx| choose(cx))
-                .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        on_key(cx);
-                        cx.stop_propagation();
-                    }
-                })
-                .child(tab.title())
+            let store = ui.store.clone();
+            pressable(tab.key(), &handles[tab.key()], move |_, cx| {
+                dispatch(&store, cx, move |m| m.set_active_tab(tab));
+            })
+            .role(Role::Tab)
+            .aria_label(tab.title())
+            .aria_selected(selected)
+            .px_3()
+            .py_2()
+            .text_sm()
+            .border_b_2()
+            .border_color(if selected {
+                primary
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .text_color(if selected { foreground } else { muted })
+            .when(selected, |tab| tab.font_medium())
+            .hover(|style| style.bg(hover))
+            .focus_visible(move |style| style.bg(hover).border_color(ring))
+            .child(tab.title())
         }))
         .into_any_element()
 }

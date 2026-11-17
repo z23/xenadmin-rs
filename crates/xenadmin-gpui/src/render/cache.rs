@@ -42,6 +42,8 @@ struct Scope {
     grids: HashMap<String, ObjectGrid>,
     /// Whether a collapsible group is folded, by its path.
     folded: HashMap<String, bool>,
+    /// The focus handles of the renderer's own pressable elements.
+    handles: HashMap<String, FocusHandle>,
     /// The entries the current pass used.
     used: HashSet<String>,
     /// The first text field the current pass drew, for the initial focus.
@@ -413,6 +415,17 @@ impl WidgetCache {
             .grids
             .entry(key.to_owned())
             .or_insert_with(create)
+            .clone()
+    }
+
+    /// The focus handle of a pressable element the renderer draws itself
+    /// (a tab, a page of a properties dialog, the title of a section that
+    /// folds). It is a Tab stop.
+    pub(crate) fn focus_handle(&mut self, scope: &str, key: &str, cx: &mut App) -> FocusHandle {
+        self.scope(scope)
+            .handles
+            .entry(key.to_owned())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone()
     }
 

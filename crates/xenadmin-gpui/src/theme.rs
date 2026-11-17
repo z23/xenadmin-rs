@@ -7,13 +7,14 @@
 //! one, and an outlined control's edge reaches about three to one against
 //! the surface behind it. The same values are carried here.
 //!
-//! In the Kit the brand colour is `primary` (the primary button, a checked
-//! box, the selected radio). `accent` is the neutral hover surface and stays
-//! as it is.
+//! In the Kit the brand colour is `primary` (a checked box, the selected
+//! radio) and `button_primary` (the primary button, which has colours of
+//! its own). `accent` is the neutral hover surface and stays as it is.
 
 use xenadmin_ui::prefs::{Appearance, Options};
+use xenadmin_ui::surface::Tone;
 
-use crate::kit::{App, Hsla, Theme, ThemeMode, oklch, px};
+use crate::kit::{ActiveTheme, App, Hsla, Theme, ThemeMode, gpui_kit, oklch, px};
 
 /// The accent hue of the Rune client.
 const ACCENT_HUE: f32 = 256.0;
@@ -56,11 +57,42 @@ pub fn apply(mode: ThemeMode, zoom: f32, cx: &mut App) {
         theme.primary_hover = accent(emphasis + 0.05);
         theme.primary_active = accent(emphasis - 0.05);
         theme.primary_foreground = oklch(1.0, 0.0, 0.0);
+        // The primary button has colours of its own in the Kit.
+        theme.button_primary = accent(emphasis);
+        theme.button_primary_hover = accent(emphasis + 0.05);
+        theme.button_primary_active = accent(emphasis - 0.05);
+        theme.button_primary_foreground = oklch(1.0, 0.0, 0.0);
+        theme.progress_bar = accent(emphasis);
+        theme.link = accent(if dark { 0.72 } else { 0.50 });
+        // The selected row of a table and of a list: the accent, faint.
+        theme.table_active = accent(emphasis).opacity(if dark { 0.30 } else { 0.16 });
+        theme.table_active_border = accent(emphasis).opacity(0.0);
+        theme.list_active = accent(emphasis).opacity(if dark { 0.26 } else { 0.14 });
+        // What is behind a dialog is dimmed enough to read as out of reach.
+        theme.overlay = gpui_kit::hsla(0.0, 0.0, 0.0, if dark { 0.55 } else { 0.32 });
         theme.ring = accent(if dark { 0.68 } else { 0.55 });
         // The edge of a text field, a select and an unchecked box.
         theme.input = gray(if dark { 0.52 } else { 0.66 });
         theme.font_size = px(BASE_FONT_SIZE * zoom);
     });
+}
+
+/// The colour of a text in a tone. The Kit's status colours are fills: as
+/// text on the light surface they have too little contrast, so the light
+/// theme takes darker ones (each more than 4.5 to one on white).
+pub fn tone_color(tone: Tone, cx: &App) -> Hsla {
+    let theme = cx.theme();
+    let dark = theme.mode.is_dark();
+    match tone {
+        Tone::Normal => theme.foreground,
+        Tone::Muted => theme.muted_foreground,
+        Tone::Success if dark => oklch(0.80, 0.17, 150.0),
+        Tone::Success => oklch(0.47, 0.13, 150.0),
+        Tone::Warning if dark => oklch(0.83, 0.15, 85.0),
+        Tone::Warning => oklch(0.50, 0.12, 70.0),
+        Tone::Danger if dark => oklch(0.74, 0.17, 25.0),
+        Tone::Danger => oklch(0.50, 0.19, 27.0),
+    }
 }
 
 /// [`apply`] from the stored options.

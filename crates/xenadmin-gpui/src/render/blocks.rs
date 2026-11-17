@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use xenadmin_ui::surface::{self as s, Block};
 
-use super::{Ui, fields, join, segment, tip};
+use super::{Ui, fields, join, pressable, segment, tip};
 use crate::kit::*;
 use crate::widgets;
 use crate::widgets::object_grid::{GridHeight, ObjectGrid};
@@ -156,25 +156,39 @@ fn group(
                 .font_semibold()
                 .child(SharedString::from(group.title.clone())),
         );
-    let header = div()
-        .id(SharedString::from(path.to_owned()))
-        .test_support()
+    let label = SharedString::from(group.title.clone());
+    let header = if group.collapsible {
+        let focus = pass.ui.focus_handle(pass.scope, path, cx);
+        let ui = pass.ui.clone();
+        let scope = pass.scope.to_owned();
+        let toggled = path.to_owned();
+        let ring = cx.theme().ring;
+        pressable(
+            SharedString::from(path.to_owned()),
+            &focus,
+            move |window, _| {
+                ui.cache.borrow_mut().toggle_folded(&scope, &toggled);
+                window.refresh();
+            },
+        )
         .role(Role::Group)
-        .aria_label(SharedString::from(group.title.clone()))
-        .when(group.collapsible, |header| {
-            let ui = pass.ui.clone();
-            let scope = pass.scope.to_owned();
-            let path = path.to_owned();
-            header
-                .aria_expanded(!folded)
-                .cursor_pointer()
-                .tab_index(0)
-                .on_click(move |_, window, _| {
-                    ui.cache.borrow_mut().toggle_folded(&scope, &path);
-                    window.refresh();
-                })
-        })
-        .child(title);
+        .aria_label(label)
+        .aria_expanded(!folded)
+        .rounded(px(4.))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .focus_visible(move |style| style.border_color(ring))
+        .child(title)
+        .into_any_element()
+    } else {
+        div()
+            .id(SharedString::from(path.to_owned()))
+            .test_support()
+            .role(Role::Group)
+            .aria_label(label)
+            .child(title)
+            .into_any_element()
+    };
     v_flex()
         .w_full()
         .gap_2()

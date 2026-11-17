@@ -191,6 +191,8 @@ fn surface_dialog(
             let store = ui.store.clone();
             let on_page = on_page.clone();
             widgets::properties_frame(
+                ui,
+                &scope,
                 &surface.pages_key(),
                 pages,
                 current,

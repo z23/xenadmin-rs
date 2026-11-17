@@ -3,7 +3,7 @@
 use xenadmin_ui::surface::OptionItem;
 
 use crate::kit::*;
-use crate::render::tip;
+use crate::render::{Ui, pressable, tip};
 
 /// The width of the page list.
 pub const PAGE_LIST_WIDTH: f32 = 208.0;
@@ -11,14 +11,17 @@ pub const PAGE_LIST_WIDTH: f32 = 208.0;
 /// Draws the page list on the left and `page` on the right, each with its
 /// own scroll, in a frame of height `height`. `on_page` receives the id of
 /// the page the user picked.
+#[allow(clippy::too_many_arguments)]
 pub fn properties_frame(
+    ui: &Ui,
+    scope: &str,
     list_key: &str,
     pages: &[OptionItem],
     current: &str,
     on_page: impl Fn(&str, &mut Window, &mut App) + Clone + 'static,
     page: AnyElement,
     height: Pixels,
-    cx: &App,
+    cx: &mut App,
 ) -> AnyElement {
     let theme = cx.theme();
     let border = theme.border;
@@ -28,6 +31,7 @@ pub fn properties_frame(
     let foreground = theme.foreground;
     let radius = theme.radius;
     let primary = theme.primary;
+    let ring = theme.ring;
     let current_label = pages
         .iter()
         .find(|item| item.id == current)
@@ -57,12 +61,22 @@ pub fn properties_frame(
             let label = SharedString::from(item.label.clone());
             let id = item.id.clone();
             let on_page = on_page.clone();
-            v_flex()
-                .id(SharedString::from(key))
-                .test_support()
-                .role(Role::Tab)
+            let row = match &disabled {
+                Some(_) => div().id(SharedString::from(key)).test_support(),
+                None => {
+                    let focus = ui.focus_handle(scope, &key, cx);
+                    pressable(SharedString::from(key), &focus, move |window, cx| {
+                        on_page(&id, window, cx);
+                    })
+                    .hover(move |style| style.bg(hover))
+                    .focus_visible(move |style| style.border_color(ring))
+                }
+            };
+            row.role(Role::Tab)
                 .aria_label(label.clone())
                 .aria_selected(selected)
+                .flex()
+                .flex_col()
                 .w_full()
                 .px_2()
                 .py_1p5()
@@ -75,14 +89,10 @@ pub fn properties_frame(
                     gpui_kit::transparent_black()
                 })
                 .when(selected, |row| row.bg(selected_fill).font_medium())
-                .map(|row| match disabled {
-                    Some(reason) => row.text_color(muted).tooltip(tip(reason)),
-                    None => row
-                        .text_color(foreground)
-                        .cursor_pointer()
-                        .hover(|style| style.bg(hover))
-                        .tab_index(0)
-                        .on_click(move |_, window, cx| on_page(&id, window, cx)),
+                .text_color(if disabled.is_some() { muted } else { foreground })
+                .when_some(disabled, |row, reason| {
+                    row.aria_description(SharedString::from(reason.clone()))
+                        .tooltip(tip(reason))
                 })
                 .child(label)
                 .when_some(item.detail.clone(), |row, detail| {
