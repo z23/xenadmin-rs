@@ -15,7 +15,8 @@
 use std::path::PathBuf;
 
 use xenadmin_core::{
-    ConnectionProfile, CredentialMode, Endpoint, ProfileId, ProxyConfiguration, ProxyEndpoint,
+    ConnectionProfile, ConnectionState, CredentialMode, Endpoint, ProfileId, ProxyConfiguration,
+    ProxyEndpoint,
 };
 
 use super::home::TABLE;
@@ -31,7 +32,7 @@ use crate::surface::{duplicate_keys, flatten_blocks};
 /// A harness over the model of a fixture. The fixture keeps the state
 /// directory and removes it when the test ends.
 fn harness(fixture: &mut Fixture) -> Harness {
-    Harness::with(std::mem::replace(&mut fixture.model, Model::fixture()))
+    Harness::with(std::mem::take(&mut fixture.model))
 }
 
 /// The connect form of a fixture is open at the start (`begin_new`); this
@@ -499,16 +500,36 @@ mod reconnecting {
     /// A local JSON-RPC server that answers a login, the first event batch
     /// with one pool, and a logout (the Rune fixture).
     struct Server {
+        address: std::net::SocketAddr,
         endpoint: Endpoint,
         stop: Arc<AtomicBool>,
         logins: Arc<Mutex<Vec<(String, String)>>>,
     }
     impl Server {
         fn new(pool: PoolId) -> Self {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            Self::on(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), pool)
+        }
+
+        /// A server on the address another one had: the host is back. The
+        /// address is free once the thread of the dropped server has seen
+        /// its stop flag.
+        fn at(address: std::net::SocketAddr, pool: PoolId) -> Self {
+            let start = Instant::now();
+            loop {
+                match std::net::TcpListener::bind(address) {
+                    Ok(listener) => return Self::on(listener, pool),
+                    Err(error) => {
+                        assert!(start.elapsed() < Duration::from_secs(3), "{error}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+        }
+
+        fn on(listener: std::net::TcpListener, pool: PoolId) -> Self {
             listener.set_nonblocking(true).unwrap();
-            let endpoint =
-                Endpoint::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+            let address = listener.local_addr().unwrap();
+            let endpoint = Endpoint::parse(&format!("http://{address}")).unwrap();
             let stop = Arc::new(AtomicBool::new(false));
             let logins = Arc::new(Mutex::new(Vec::new()));
             let signal = stop.clone();
@@ -528,6 +549,7 @@ mod reconnecting {
                 }
             });
             Self {
+                address,
                 endpoint,
                 stop,
                 logins,
@@ -609,6 +631,20 @@ mod reconnecting {
         );
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(&body);
+    }
+
+    /// Polls the model, as its window does on every wake, until the
+    /// condition holds.
+    fn poll_until(h: &mut Harness, what: &str, condition: impl Fn(&Harness) -> bool) {
+        let start = Instant::now();
+        loop {
+            h.tick(0.02);
+            if condition(h) {
+                return;
+            }
+            assert!(start.elapsed() < Duration::from_secs(20), "{what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn ready(c: &Connection) {
@@ -834,6 +870,100 @@ mod reconnecting {
         assert_eq!(server.logins().len(), 1);
         assert!(h.model.workspace.active[&profile.id].latest().is_current());
         assert!(h.model.workspace.session_accounts.is_empty());
+        session::disconnect_all(&mut h.model);
+    }
+
+    // Plan package P3.8: a lost session and its renewal as the interface
+    // shows them. (Rune had no test of the views for this; the core has its
+    // own of the connection.)
+    #[test]
+    fn a_lost_session_shows_as_reconnecting_and_its_renewal_leaves_old_reviews_stale() {
+        const LOST: &str = "Cannot reach the XCP-ng management endpoint";
+        let pool = PoolId::from(uuid::Uuid::new_v4());
+        let server = Server::new(pool);
+        let address = server.address;
+        let mut f = Fixture::new();
+        let profile = connected(&mut f, &server, pool);
+        let id = profile.id;
+        let mut h = harness(&mut f);
+        h.tick(0.1);
+        let generation = h.model.workspace.active[&id].latest().generation();
+        // A Reconnect As review of the session as it is now.
+        open(&mut h, id);
+        h.type_text("reconnect-username", "root");
+        h.type_text("reconnect-password", "typed-before-the-loss");
+        assert_eq!(h.node("reconnect-confirm").disabled, None);
+
+        // The host goes away.
+        drop(server);
+        // Both what the model adopted for the scope session and what the
+        // connection list saw: the two are read at different moments of one
+        // poll.
+        let shows = |h: &Harness, state: ConnectionState| {
+            let adopted = h.model.snapshot.as_ref().map(|snapshot| snapshot.state());
+            let listed = h.model.workspace.snapshot(id).map(|snapshot| snapshot.state());
+            adopted == Some(state) && listed == Some(state)
+        };
+        poll_until(&mut h, "the session notices the loss", |h| {
+            shows(h, ConnectionState::Reconnecting)
+        });
+        assert_eq!(
+            h.try_click("reconnect-confirm"),
+            Err(reconnect::STALE.into())
+        );
+        h.click("reconnect-cancel");
+        assert_eq!(
+            h.model.connection_status(),
+            "Connection lost • inventory is stale • reconnecting…"
+        );
+        assert!(!h.model.can_mutate());
+        assert!(h.model.inventory.is_some(), "the stale inventory stays");
+        h.model.show_home();
+        h.select_row(TABLE, &id.to_string());
+        assert_eq!(
+            h.model.target().kind(),
+            ObjectKind::Pool,
+            "the session is still its pool"
+        );
+        assert!(h.has_text("Reconnecting…"));
+        assert!(h.has_text(LOST));
+        assert!(h.has_text("Last failure stage: "));
+        assert_eq!(
+            h.node(&format!("profile-permissions-{id}")).text.as_deref(),
+            Some("Session permissions are unavailable until the connection is current")
+        );
+        let row = h.local_row();
+        assert_eq!(
+            reason(&row, "server.disconnect"),
+            None,
+            "a session that is reconnecting can be disconnected"
+        );
+        assert!(
+            reason(&row, "server.reconnect-as").is_some(),
+            "no review of a session that is not current"
+        );
+        assert!(!ids(&row).contains(&"server.connect"));
+        assert!(!ids(&row).contains(&"server.review-certificate"));
+
+        // The host is back at its address: the session is renewed with the
+        // credentials it had, without a prompt.
+        let server = Server::at(address, pool);
+        poll_until(&mut h, "the session is renewed", |h| {
+            shows(h, ConnectionState::Ready)
+        });
+        assert_ne!(
+            h.model.snapshot.as_ref().unwrap().generation(),
+            generation
+        );
+        assert_eq!(
+            server.logins(),
+            [("operator".into(), "synthetic-original".into())]
+        );
+        assert!(h.model.connection_status().starts_with("Connected directly"));
+        assert!(h.has_text("Connected") && !h.has_text("Reconnecting…"));
+        assert!(!h.has_text(LOST) && !h.has_text("Last failure stage: "));
+        assert_eq!(reason(&h.local_row(), "server.reconnect-as"), None);
+        assert_eq!(h.surface_id(), None);
         session::disconnect_all(&mut h.model);
     }
 }
