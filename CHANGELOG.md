@@ -150,6 +150,14 @@ again for that, because no published version reads format 5.
   in the record's own field. The inspection looked for that mark under a key where
   hosts do not write it and so relied on the older `other_config` key alone. Importing
   archives remains experimental.
+- Creating or removing a tunnel or an SR-IOV network could not have worked, nor could
+  the review that precedes it: the client wrote the two classes of the API with a
+  capital letter, and a host answers a call on a class it does not know by that exact
+  name with "no such message" (finding 66 of the
+  [live report](docs/reports/2026-11-09-lab-qualification.md)). The names are now the
+  API's. The inventory itself listed tunnels as before, since a host's event
+  subscription takes class names in any capitals. Both areas remain experimental and
+  have not been run against a host.
 - A host that answered a login by naming its coordinator at a plain `http` address was
   followed there, and the pool's password went with the second login unencrypted. Only
   a loopback address can be named that way, since no other plain address is accepted
