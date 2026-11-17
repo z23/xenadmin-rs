@@ -32,6 +32,9 @@ pub type Act = Rc<dyn Fn(&mut Model)>;
 pub type ActText = Rc<dyn Fn(&mut Model, &str)>;
 /// The handler of a multi-selection table: the ids of all selected rows.
 pub type ActRows = Rc<dyn Fn(&mut Model, &[String])>;
+/// The handler of a sortable table: the id of the column and whether the
+/// order is descending.
+pub type ActSort = Rc<dyn Fn(&mut Model, &str, bool)>;
 
 /// Wraps a closure as an [`Act`].
 pub fn act(handler: impl Fn(&mut Model) + 'static) -> Act {
@@ -591,6 +594,9 @@ pub struct Column {
     pub align: Align,
     /// Preferred width in pixels. Without one the column shares the rest.
     pub width: Option<u32>,
+    /// A press on the header sorts by this column, when the table has
+    /// [`Table::sorted`].
+    pub sortable: bool,
 }
 
 impl Column {
@@ -601,6 +607,12 @@ impl Column {
 
     pub fn width(mut self, pixels: u32) -> Self {
         self.width = Some(pixels);
+        self
+    }
+
+    /// The header sorts the table by this column.
+    pub fn sortable(mut self) -> Self {
+        self.sortable = true;
         self
     }
 }
@@ -648,10 +660,20 @@ impl TableSelection {
     }
 }
 
+/// The order the rows of a table are in. The model sorts; the table only
+/// shows which column the order follows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableSort {
+    /// The id of the column.
+    pub column: String,
+    pub descending: bool,
+}
+
 #[derive(Clone)]
 pub struct Table {
     pub key: String,
     pub columns: Vec<Column>,
+    /// Already in the order to show.
     pub rows: Rc<Vec<Row>>,
     pub selection: TableSelection,
     /// Single selection: receives the id of the row the user selected.
@@ -664,6 +686,11 @@ pub struct Table {
     /// [`crate::command::resolve`] against the model's target after the row
     /// was selected.
     pub row_menu: Vec<CommandId>,
+    /// The column the rows are ordered by, when the user can change it.
+    pub sort: Option<TableSort>,
+    /// A press on the header of a sortable column: receives the column id
+    /// and whether the new order is descending.
+    pub on_sort: Option<ActSort>,
     /// Shown instead of rows when there are none.
     pub empty: String,
 }
@@ -706,9 +733,35 @@ impl Table {
         self
     }
 
+    /// The user can order the rows by the columns marked
+    /// [`Column::sortable`]. `column` and `descending` say how `rows` are
+    /// ordered now; `on_sort` receives the column the user pressed and
+    /// whether the new order is descending (a press on the current column
+    /// reverses it, a press on another column starts ascending). The model
+    /// sorts and keeps the order; the table never sorts by itself.
+    pub fn sorted(
+        mut self,
+        column: impl Into<String>,
+        descending: bool,
+        on_sort: impl Fn(&mut Model, &str, bool) + 'static,
+    ) -> Self {
+        self.sort = Some(TableSort {
+            column: column.into(),
+            descending,
+        });
+        self.on_sort = Some(Rc::new(on_sort));
+        self
+    }
+
     /// The key of a row in the flattened description: `<table key>:<row id>`.
     pub fn row_key(table: &str, row: &str) -> String {
         format!("{table}:{row}")
+    }
+
+    /// The key of the header of a sortable column in the flattened
+    /// description: `<table key>#<column id>`.
+    pub fn column_key(table: &str, column: &str) -> String {
+        format!("{table}#{column}")
     }
 }
 
@@ -1146,6 +1199,7 @@ pub fn column(id: impl Into<String>, title: impl Into<String>) -> Column {
         title: title.into(),
         align: Align::Start,
         width: None,
+        sortable: false,
     }
 }
 
@@ -1174,6 +1228,8 @@ pub fn table(
         on_select_many: None,
         on_activate: None,
         row_menu: Vec::new(),
+        sort: None,
+        on_sort: None,
         empty: String::new(),
     }
 }
@@ -1346,7 +1402,8 @@ macro_rules! blocks {
 /// - `label` is the accessible name: a field label, a button label, a title.
 /// - `value` is the current value: the text of a field (bullets for a
 ///   secret), the label of the selected option, a property value, the state
-///   of an outcome, the detail line of an option.
+///   of an outcome, the detail line of an option, `ascending` or
+///   `descending` on the header of the column a table is sorted by.
 /// - `disabled` is the reason the element cannot be used.
 /// - `checked` is the state of a checkbox, and for an option, a page, a step
 ///   or a selectable row whether it is the selected one.
@@ -1461,10 +1518,12 @@ pub enum Handle {
         id: String,
         on_pick: ActText,
     },
-    /// A table.
+    /// A table. `row_menu` is the table's row context menu, to be resolved
+    /// with [`crate::command::resolve`] against the model's target.
     Table {
         multi: bool,
         on_select_many: Option<ActRows>,
+        row_menu: Vec<CommandId>,
     },
     /// One row of the table with key `table`.
     Row {
@@ -1474,6 +1533,15 @@ pub enum Handle {
         on_select: Option<ActText>,
         on_select_many: Option<ActRows>,
         on_activate: Option<ActText>,
+    },
+    /// The header of a sortable column of the table with key `table`. A
+    /// press calls `on_sort` with `column` and `descending`, the order the
+    /// press asks for.
+    Sort {
+        table: String,
+        column: String,
+        descending: bool,
+        on_sort: ActSort,
     },
     /// A toolbar button or a button of a local action row: it invokes the
     /// command on the model's target. A description never contains one; the
@@ -1940,11 +2008,37 @@ impl Walk {
             Handle::Table {
                 multi,
                 on_select_many: table.on_select_many.clone(),
+                row_menu: table.row_menu.clone(),
             },
         );
         let header = join(&path, "columns");
         for column in &table.columns {
-            self.push(Node::new(join(&header, &column.id), "columnheader").text(&column.title));
+            let mut node = Node::new(join(&header, &column.id), "columnheader").text(&column.title);
+            let current = table
+                .sort
+                .as_ref()
+                .filter(|sort| sort.column == column.id)
+                .map(|sort| sort.descending);
+            if let Some(descending) = current {
+                node = node.value(if descending {
+                    "descending"
+                } else {
+                    "ascending"
+                });
+            }
+            match (&table.on_sort, column.sortable) {
+                (Some(on_sort), true) => self.push_with(
+                    node.key(Table::column_key(&table.key, &column.id)),
+                    Handle::Sort {
+                        table: table.key.clone(),
+                        column: column.id.clone(),
+                        // A press on the current column reverses the order.
+                        descending: current == Some(false),
+                        on_sort: on_sort.clone(),
+                    },
+                ),
+                _ => self.push(node),
+            }
         }
         if table.rows.is_empty() {
             if !table.empty.is_empty() {
@@ -2084,13 +2178,17 @@ mod tests {
                 properties([("Name", "vm-1"), ("State", "Running")]),
                 table(
                     "sample-disks",
-                    [column("name", "Name"), column("size", "Size").right()],
+                    [
+                        column("name", "Name").sortable(),
+                        column("size", "Size").right()
+                    ],
                     [
                         row("d1", ["Disk 1", "8.0 GiB"]),
                         row("d2", ["Disk 2", "1.0 GiB"])
                     ],
                 )
-                .single(Some("d2"), |_, _| {}),
+                .single(Some("d2"), |_, _| {})
+                .sorted("name", false, |_, _, _| {}),
                 table("sample-empty", [("name", "Name")], []).empty("No snapshots"),
                 review("sample-review", ["The VM will move."])
                     .affected([property("VM", "vm-1").key("sample-review-vm")])
@@ -2182,6 +2280,17 @@ mod tests {
         );
         assert_eq!(node(&nodes, "sample-disks:d2").checked, Some(true));
         assert_eq!(node(&nodes, "sample-disks:d1").checked, Some(false));
+        let header = node(&nodes, "sample-disks#name");
+        assert_eq!(
+            (header.role, header.text.as_deref(), header.value.as_deref()),
+            ("columnheader", Some("Name"), Some("ascending"))
+        );
+        // A column that is not sortable has a header without a key.
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node.key.as_deref() != Some("sample-disks#size"))
+        );
         assert_eq!(
             node(&nodes, "sample-empty-empty").text.as_deref(),
             Some("No snapshots")

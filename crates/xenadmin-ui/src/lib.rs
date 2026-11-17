@@ -72,10 +72,10 @@ pub mod prelude {
     pub use crate::surface::{
         Act, ActText, Block, Button, ButtonStyle, Choice, ChoiceStyle, Column, Control, Custom,
         Field, Group, Notice, NoticeKind, OptionItem, Outcome, OutcomeState, Property, Review, Row,
-        Surface, SurfaceKind, SurfaceSize, Table, TableSelection, Text, Tone, actions, alert,
-        button, caption, checkbox, choice, column, columns, custom, divider, group, heading, input,
-        notice, option, outcome, properties, property, review, row, secret_input, select, table,
-        text, textarea,
+        Surface, SurfaceKind, SurfaceSize, Table, TableSelection, TableSort, Text, Tone, actions,
+        alert, button, caption, checkbox, choice, column, columns, custom, divider, group, heading,
+        input, notice, option, outcome, properties, property, review, row, secret_input, select,
+        table, text, textarea,
     };
     pub use crate::tabs::{TabBody, TabId};
 }

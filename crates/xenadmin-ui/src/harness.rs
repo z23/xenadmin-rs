@@ -219,7 +219,8 @@ impl Harness {
     // -- Interaction --------------------------------------------------------
 
     /// Presses the element: a button, a checkbox, an option (which picks
-    /// it), a row (which selects it), a toolbar or local-row command.
+    /// it), a row (which selects it), the header of a sortable column, a
+    /// toolbar or local-row command.
     /// `Err` carries the reason when the element is disabled, or says that
     /// it is missing or cannot be pressed.
     pub fn try_click(&mut self, key: &str) -> Result<(), String> {
@@ -241,13 +242,19 @@ impl Harness {
                 (true, _, Some(on_select_many)) => on_select_many(&mut self.model, &[id]),
                 _ => return Err(format!("the row `{key}` cannot be selected")),
             },
+            Some(Handle::Sort {
+                column,
+                descending,
+                on_sort,
+                ..
+            }) => on_sort(&mut self.model, &column, descending),
             Some(Handle::Command(id)) => {
                 let target = self.model.target();
                 self.model
                     .try_invoke(id, &target)
                     .map_err(|refused| refused.to_string())?;
             }
-            Some(Handle::Edit { .. }) | Some(Handle::Table { .. }) | None => {
+            Some(Handle::Edit { .. } | Handle::Table { .. }) | None => {
                 return Err(format!(
                     "the element `{key}` ({}) cannot be pressed",
                     element.node.role
@@ -394,11 +401,25 @@ impl Harness {
             Some(Handle::Table {
                 multi: true,
                 on_select_many: Some(on_select_many),
+                ..
             }) => {
                 let rows: Vec<String> = rows.iter().map(|row| (*row).to_owned()).collect();
                 on_select_many(&mut self.model, &rows);
             }
             _ => panic!("`{key}` is not a multi-selection table"),
+        }
+    }
+
+    /// Presses the header of a sortable column of the table `key`: the
+    /// table's `on_sort` receives the column and the new direction (a press
+    /// on the column the table is sorted by reverses the order). Panics when
+    /// the table or the column is missing or the column is not sortable.
+    #[track_caller]
+    pub fn sort(&mut self, key: &str, column: &str) {
+        self.enabled(key);
+        let header = surface::Table::column_key(key, column);
+        if let Err(reason) = self.try_click(&header) {
+            panic!("cannot sort `{key}` by `{column}`: {reason}");
         }
     }
 
@@ -515,6 +536,22 @@ impl Harness {
         command::local_row(&self.model, self.model.active_tab())
     }
 
+    /// The row context menu of the table with key `key`: the table's
+    /// `row_menu` commands resolved against the model's target, which is the
+    /// row the test selected before (a right click selects the row first).
+    /// Hidden commands are omitted. Panics when the table is missing.
+    #[track_caller]
+    pub fn row_menu(&self, key: &str) -> Vec<MenuItem> {
+        match self.element(key) {
+            Ok(Element {
+                handle: Some(Handle::Table { row_menu, .. }),
+                ..
+            }) => command::resolve(&self.model, &row_menu, &self.model.target()),
+            Ok(element) => panic!("`{key}` ({}) is not a table", element.node.role),
+            Err(missing) => panic!("{missing}"),
+        }
+    }
+
     /// The context menu of a target, flattened.
     pub fn context_menu(&self, target: &Target) -> Vec<MenuItem> {
         command::context_menu(&self.model, target)
@@ -611,6 +648,7 @@ pub(crate) mod probe {
         pub disk: Option<String>,
         pub disks: Vec<String>,
         pub activated: Option<String>,
+        pub sort: Option<(String, bool)>,
         pub presses: u32,
         pub submits: u32,
         pub polls: u32,
@@ -720,8 +758,15 @@ pub(crate) mod probe {
                         ),
                         table(
                             "probe-disks",
-                            [("name", "Name"), ("size", "Size")],
+                            [column("name", "Name").sortable(), column("size", "Size")],
                             disk_rows()
+                        )
+                        .sorted(
+                            s.sort.as_ref().map_or("name", |sort| sort.0.as_str()),
+                            s.sort.as_ref().is_some_and(|sort| sort.1),
+                            |m, column, descending| {
+                                m.areas.probe.sort = Some((column.to_owned(), descending))
+                            }
                         )
                         .single(s.disk.as_deref(), |m, id| {
                             m.areas.probe.disk = Some(id.to_owned())
@@ -737,7 +782,8 @@ pub(crate) mod probe {
                             .probe
                             .disks =
                             ids.to_vec()),
-                        table("probe-plain", [("name", "Name")], [row("p1", ["Plain"])]),
+                        table("probe-plain", [("name", "Name")], [row("p1", ["Plain"])])
+                            .row_menu([CommandId("probe.open"), CommandId("probe.missing")]),
                         button("probe-press", "Press", |m| m.areas.probe.presses += 1),
                     ])
                     .footer([
@@ -930,6 +976,49 @@ mod tests {
             h.try_click("probe-plain:p1"),
             Err("the row `probe-plain:p1` cannot be selected".into())
         );
+    }
+
+    #[test]
+    fn sort_presses_a_sortable_header_and_a_second_press_reverses_the_order() {
+        let mut h = open_probe();
+        assert_eq!(
+            h.node("probe-disks#name").value.as_deref(),
+            Some("ascending")
+        );
+        h.sort("probe-disks", "name");
+        assert_eq!(h.model.areas.probe.sort, Some(("name".into(), true)));
+        assert_eq!(
+            h.node("probe-disks#name").value.as_deref(),
+            Some("descending")
+        );
+        h.click("probe-disks#name");
+        assert_eq!(h.model.areas.probe.sort, Some(("name".into(), false)));
+        // Size is not sortable: its header has no key.
+        assert!(h.find("probe-disks#size").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot sort `probe-disks` by `size`")]
+    fn sort_refuses_a_column_that_is_not_sortable() {
+        open_probe().sort("probe-disks", "size");
+    }
+
+    #[test]
+    fn a_row_menu_resolves_the_tables_commands_on_the_target() {
+        let mut h = open_probe();
+        let menu = h.row_menu("probe-plain");
+        assert_eq!(menu.len(), 1, "an unknown command is omitted");
+        assert_eq!(menu[0].id, CommandId("probe.open"));
+        assert_eq!(menu[0].disabled, None);
+        assert!(h.row_menu("probe-disks").is_empty());
+        h.model.areas.probe.name = "busy".into();
+        assert_eq!(
+            h.row_menu("probe-plain")[0].disabled.as_deref(),
+            Some("The probe is busy.")
+        );
+        // Hidden for the target: the menu omits it.
+        h.model.areas.probe.active = false;
+        assert!(h.row_menu("probe-plain").is_empty());
     }
 
     #[test]
