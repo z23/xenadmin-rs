@@ -98,11 +98,14 @@ pub fn spec() -> AreaSpec {
 
 fn poll(m: &mut Model, _clock: f64) -> bool {
     let files = files::poll(m);
+    // Building the sheet for the first time changes nothing that is shown:
+    // a description is always up to date (`current`).
+    let built = m.areas.search.sheet.place.is_some();
     let rebuilt = sync(m);
     if rebuilt {
         prune_grid(m);
     }
-    files || rebuilt
+    files || (rebuilt && built)
 }
 
 /// The tree selection presets the query.

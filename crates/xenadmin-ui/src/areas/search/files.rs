@@ -329,7 +329,7 @@ pub fn poll(m: &mut Model) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A private directory under the system's temporary directory, removed

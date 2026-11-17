@@ -493,7 +493,9 @@ pub fn add_source(
 
 /// Runs the query over every pool that has an inventory (the Rune
 /// `rebuild`). An invalid query empties the results and shows the error; it
-/// never falls back to an unfiltered list.
+/// never falls back to an unfiltered list. The sources are listed all the
+/// same (Rune emptied them too, and with them the pool scope the user might
+/// need to correct the query).
 pub fn rebuild(m: &Model, sheet: &mut Sheet) {
     let sessions = session::sessions(m);
     sheet.rows = Rc::default();
@@ -501,17 +503,6 @@ pub fn rebuild(m: &Model, sheet: &mut Sheet) {
     sheet.sources.clear();
     sheet.signature = signature_of(&sessions);
     sheet.unavailable = 0;
-    if let Some(name) = &sheet.preset.missing {
-        sheet.error = Some(format!(
-            "The saved search \"{name}\" is no longer stored on this computer."
-        ));
-        return;
-    }
-    if let Err(error) = sheet.query.validate() {
-        sheet.error = Some(error);
-        return;
-    }
-    sheet.error = None;
     // The selected session is the scope session, as in the tree
     // (`session::session_for_pool`); Rune compared with the profile selected
     // last, which the scope session is.
@@ -538,12 +529,7 @@ pub fn rebuild(m: &Model, sheet: &mut Sheet) {
     for inventory in synthetic {
         pools.insert(inventory.pool_id, (None, false, inventory));
     }
-    let mut rows = Vec::new();
     for (pool, (profile, current, inventory)) in pools {
-        match sheet.query.run(&inventory) {
-            Ok(found) => rows.extend(found),
-            Err(error) => sheet.error = Some(error),
-        }
         sheet.sources.insert(
             pool,
             Source {
@@ -554,6 +540,24 @@ pub fn rebuild(m: &Model, sheet: &mut Sheet) {
                 inventory,
             },
         );
+    }
+    if let Some(name) = &sheet.preset.missing {
+        sheet.error = Some(format!(
+            "The saved search \"{name}\" is no longer stored on this computer."
+        ));
+        return;
+    }
+    if let Err(error) = sheet.query.validate() {
+        sheet.error = Some(error);
+        return;
+    }
+    sheet.error = None;
+    let mut rows = Vec::new();
+    for source in sheet.sources.values() {
+        match sheet.query.run(&source.inventory) {
+            Ok(found) => rows.extend(found),
+            Err(error) => sheet.error = Some(error),
+        }
     }
     if let Some(only) = &sheet.preset.only {
         rows.retain(|result| only.contains(&result.key()));
