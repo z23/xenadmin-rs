@@ -70,12 +70,13 @@ pub mod prelude {
     pub use crate::scene::SceneSpec;
     pub use crate::secret::SecretText;
     pub use crate::surface::{
-        Act, ActText, Block, Button, ButtonStyle, Choice, ChoiceStyle, Column, Control, Custom,
-        Field, Group, Notice, NoticeKind, OptionItem, Outcome, OutcomeState, Property, Review, Row,
-        Surface, SurfaceKind, SurfaceSize, Table, TableSelection, TableSort, Text, Tone, actions,
-        alert, button, caption, checkbox, choice, column, columns, custom, divider, group, heading,
-        input, notice, option, outcome, properties, property, review, row, secret_input, select,
-        table, text, textarea,
+        Act, ActRows, ActSort, ActText, Align, Block, Button, ButtonStyle, Choice, ChoiceStyle,
+        Column, Control, Custom, Field, Group, Notice, NoticeKind, OptionItem, Outcome,
+        OutcomeState, Property, Review, Row, Surface, SurfaceKind, SurfaceSize, Table,
+        TableSelection, TableSort, Text, Tone, act, act_text, actions, alert, button, caption,
+        checkbox, choice, column, columns, custom, divider, group, heading, input, no_op, notice,
+        option, outcome, properties, property, review, row, secret_input, select, table, text,
+        textarea,
     };
     pub use crate::tabs::{TabBody, TabId};
 }
