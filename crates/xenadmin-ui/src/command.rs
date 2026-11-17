@@ -463,10 +463,135 @@ fn exit(m: &mut Model, _: &Target) {
     m.send(Intent::Quit);
 }
 
-/// The commands the kernel owns. K2 adds Back, Forward, the View toggles and
-/// the interface scale commands here.
+fn can_go_back(m: &Model, _: &Target) -> Eligibility {
+    Eligibility::enabled_if(
+        m.can_go_back(),
+        "There is no earlier selection to go back to.",
+    )
+}
+
+fn can_go_forward(m: &Model, _: &Target) -> Eligibility {
+    Eligibility::enabled_if(
+        m.can_go_forward(),
+        "There is no later selection to go forward to.",
+    )
+}
+
+fn can_grow(m: &Model, _: &Target) -> Eligibility {
+    let options = m.preferences.options;
+    Eligibility::enabled_if(
+        options.scale_step(true) != options.interface_scale,
+        "The interface is at its largest size.",
+    )
+}
+
+fn can_shrink(m: &Model, _: &Target) -> Eligibility {
+    let options = m.preferences.options;
+    Eligibility::enabled_if(
+        options.scale_step(false) != options.interface_scale,
+        "The interface is at its smallest size.",
+    )
+}
+
+fn can_reset_size(m: &Model, _: &Target) -> Eligibility {
+    Eligibility::enabled_if(
+        m.preferences.options.interface_scale != 100,
+        "The interface is at its normal size.",
+    )
+}
+
+/// The kinds whose objects have a UUID to copy.
+const WITH_UUID: &[ObjectKind] = &[
+    ObjectKind::Pool,
+    ObjectKind::Host,
+    ObjectKind::Vm,
+    ObjectKind::Template,
+    ObjectKind::StorageRepository,
+    ObjectKind::Network,
+    ObjectKind::VirtualDisk,
+    ObjectKind::Snapshot,
+    ObjectKind::Appliance,
+];
+
+fn has_uuid(_: &Model, target: &Target) -> Eligibility {
+    match target.single() {
+        Some(object) if WITH_UUID.contains(&object.kind) && object.uuid().is_some() => {
+            Eligibility::Enabled
+        }
+        _ => Eligibility::Hidden,
+    }
+}
+
+fn copy_uuid(m: &mut Model, target: &Target) {
+    if let Some(object) = target.single() {
+        m.copy_text(object.id.clone());
+    }
+}
+
+/// The commands the kernel owns: Back and Forward, the View toggles, the
+/// interface size, Copy UUID and Exit.
+///
+/// The interface size commands are the Rune `app_key`: Ctrl with plus (or
+/// equals), minus and 0. A command has one shortcut, so the shell binds
+/// `ctrl-+` to `view.zoom-in` as well, and delivers none of the three while
+/// a console has the keyboard.
 fn kernel_commands() -> Vec<CommandSpec> {
     vec![
+        CommandSpec::new("nav.back", "Back", KERNEL)
+            .toolbar(ToolbarSlot::BACK)
+            .shortcut("alt-left")
+            .eligibility(can_go_back)
+            .invoke(|m, _| {
+                m.back();
+            }),
+        CommandSpec::new("nav.forward", "Forward", KERNEL)
+            .toolbar(ToolbarSlot::FORWARD)
+            .shortcut("alt-right")
+            .eligibility(can_go_forward)
+            .invoke(|m, _| {
+                m.forward();
+            }),
+        CommandSpec::new("view.custom-templates", "Custom Templates", KERNEL)
+            .menu(place::VIEW_CUSTOM_TEMPLATES)
+            .checked(|m| m.nav.show_custom_templates)
+            .invoke(|m, _| m.nav.show_custom_templates = !m.nav.show_custom_templates),
+        CommandSpec::new("view.builtin-templates", "Built-in Templates", KERNEL)
+            .menu(place::VIEW_BUILTIN_TEMPLATES)
+            .checked(|m| m.nav.show_builtin_templates)
+            .invoke(|m, _| m.nav.show_builtin_templates = !m.nav.show_builtin_templates),
+        CommandSpec::new("view.local-storage", "Local Storage", KERNEL)
+            .menu(place::VIEW_LOCAL_STORAGE)
+            .checked(|m| m.nav.show_local_storage)
+            .invoke(|m, _| m.nav.show_local_storage = !m.nav.show_local_storage),
+        CommandSpec::new("view.toolbar", "Toolbar", KERNEL)
+            .menu(place::VIEW_TOOLBAR)
+            .checked(|m| m.nav.show_toolbar)
+            .invoke(|m, _| m.nav.show_toolbar = !m.nav.show_toolbar),
+        CommandSpec::new("view.zoom-in", "Larger Interface", KERNEL)
+            .menu(place::VIEW_LARGER)
+            .shortcut("ctrl-=")
+            .eligibility(can_grow)
+            .invoke(|m, _| {
+                let scale = m.preferences.options.scale_step(true);
+                m.set_interface_scale(scale);
+            }),
+        CommandSpec::new("view.zoom-out", "Smaller Interface", KERNEL)
+            .menu(place::VIEW_SMALLER)
+            .shortcut("ctrl--")
+            .eligibility(can_shrink)
+            .invoke(|m, _| {
+                let scale = m.preferences.options.scale_step(false);
+                m.set_interface_scale(scale);
+            }),
+        CommandSpec::new("view.zoom-reset", "Reset Interface Size", KERNEL)
+            .menu(place::VIEW_RESET_SIZE)
+            .shortcut("ctrl-0")
+            .eligibility(can_reset_size)
+            .invoke(|m, _| m.set_interface_scale(100)),
+        CommandSpec::new("object.copy-uuid", "Copy UUID", KERNEL)
+            .context(WITH_UUID)
+            .eligibility(has_uuid)
+            .invoke(copy_uuid),
         CommandSpec::new("file.exit", "Exit", KERNEL)
             .menu(place::FILE_EXIT)
             .shortcut("ctrl-q")

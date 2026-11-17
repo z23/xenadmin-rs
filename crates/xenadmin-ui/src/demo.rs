@@ -1,10 +1,18 @@
-//! The synthetic pool used by the demo and large-inventory scenes.
+//! The synthetic pool used by the demo and large-inventory scenes, the
+//! saved connection that stands for it, and the scenes the kernel owns.
 //!
-//! Detail records are filled by [`crate::populate_demo_details`] afterwards,
-//! as the Rune scene does.
+//! [`demonstration`] builds the inventory; detail records are filled by
+//! [`crate::populate_demo_details`] afterwards, as the Rune scene does.
+//! [`crate::Model::load_demo`] is the Rune `demo_sized`: it makes the pool a
+//! synthetic session and selects it. [`crate::Model::demo`] is a fixture with
+//! it loaded.
 
 use std::collections::BTreeMap;
 
+use crate::command::KERNEL;
+use crate::model::Model;
+use crate::object::{ObjectRef, Target};
+use crate::scene::SceneSpec;
 use xenadmin_core::{
     ConnectionProfile, Endpoint, Host, HostId, Inventory, Network, PoolId, PowerState, ProfileId,
     Snapshot, SnapshotAction, SnapshotId, SnapshotInventory, Storage, Vm, VmId,
@@ -124,5 +132,169 @@ pub fn demonstration(host_count: usize, vm_count: usize) -> Inventory {
         }],
         revision: 1,
         details: Default::default(),
+    }
+}
+
+// -- The kernel's scenes ------------------------------------------------------
+
+/// The Rune `demo`: three hosts and 48 guests.
+fn demo(m: &mut Model) {
+    m.load_demo(3, 48);
+}
+
+/// A pool larger than the lab's, for measuring the interface.
+fn large_inventory(m: &mut Model) {
+    m.load_demo(16, 2000);
+}
+
+/// One host outside the qualified release: the status bar says so.
+fn host_version_notice(m: &mut Model) {
+    demo(m);
+    if let Some(inventory) = m.inventory.take() {
+        let mut inventory = inventory.as_ref().clone();
+        if let Some(host) = inventory.hosts.values_mut().next() {
+            host.version = "8.2.1".into();
+        }
+        m.inventory = Some(std::sync::Arc::new(inventory));
+    }
+}
+
+/// The interface at 125 percent.
+fn interface_large(m: &mut Model) {
+    demo(m);
+    m.preferences.options.interface_scale = 125;
+}
+
+/// An inventory that is not a demo and has no connection: every action is
+/// unavailable, each with its reason. A running guest is selected.
+fn unavailable_actions(m: &mut Model) {
+    demo(m);
+    m.demo = false;
+    m.error = Some("Synthetic unavailable-action preview • no host connection".into());
+    if let Some(inventory) = m.inventory.clone()
+        && let Ok(vm) = VmId::parse("30000000-0000-0000-0000-000000000001")
+    {
+        m.select(Target::one(ObjectRef::vm(inventory.pool_id, vm)));
+    }
+}
+
+/// The scenes the kernel owns, under their Rune names. The other scenes of
+/// the Rune kernel modules belong to the `general`, `search`, `settings` and
+/// `connections` areas.
+pub fn scenes() -> Vec<SceneSpec> {
+    vec![
+        SceneSpec::new("demo", KERNEL, demo),
+        SceneSpec::new("large-inventory", KERNEL, large_inventory),
+        SceneSpec::new("host-version-notice", KERNEL, host_version_notice),
+        SceneSpec::new("interface-large", KERNEL, interface_large),
+        SceneSpec::new("unavailable-actions", KERNEL, unavailable_actions),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::object::ObjectKind;
+    use crate::scene::apply;
+    use crate::tabs::TabId;
+
+    #[test]
+    fn the_kernel_scenes_set_up_the_demo_inventory() {
+        let mut m = Model::fixture();
+        assert!(apply("demo", &mut m));
+        assert!(m.demo);
+        let inventory = m.inventory.clone().expect("inventory");
+        assert_eq!((inventory.hosts.len(), inventory.vms.len()), (3, 48));
+        assert!(inventory.details.pool.is_some(), "details are populated");
+        assert_eq!(m.scope().kind(), ObjectKind::Pool);
+        assert_eq!(m.status().demo, Some(crate::model::DEMO_BANNER));
+
+        let mut m = Model::fixture();
+        assert!(apply("large-inventory", &mut m));
+        let inventory = m.inventory.clone().expect("inventory");
+        assert_eq!((inventory.hosts.len(), inventory.vms.len()), (16, 2000));
+        // Hosts and guests are all in the tree, under one pool.
+        let rows = crate::nav::rows(&m);
+        assert_eq!(
+            rows.iter().filter(|row| row.icon == ObjectKind::Vm).count(),
+            2000
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.icon == ObjectKind::Host)
+                .count(),
+            16
+        );
+
+        let mut m = Model::fixture();
+        assert!(apply("host-version-notice", &mut m));
+        let inventory = m.inventory.clone().expect("inventory");
+        assert_eq!(
+            inventory
+                .hosts
+                .values()
+                .next()
+                .map(|host| host.version.as_str()),
+            Some("8.2.1")
+        );
+        assert_eq!(
+            m.status().host_notice.as_deref(),
+            Some(
+                "Not qualified on this host version: xcp-lab-01 (8.2.1). This client has only been run against XCP-ng 8.3. Looking is safe; treat any change here as untested."
+            )
+        );
+
+        let mut m = Model::fixture();
+        assert!(apply("interface-large", &mut m));
+        assert!(m.demo);
+        assert_eq!(m.preferences.options.interface_scale, 125);
+        assert_eq!(m.preferences.options.zoom(), 1.25);
+
+        let mut m = Model::fixture();
+        assert!(apply("unavailable-actions", &mut m));
+        assert!(!m.demo);
+        assert_eq!(
+            m.status().error.as_deref(),
+            Some("Synthetic unavailable-action preview • no host connection")
+        );
+        assert_eq!(m.selection.scope.vms().len(), 1);
+        assert_eq!(m.active_tab(), TabId::General);
+        assert_eq!(m.header().state.as_deref(), Some("Running"));
+        assert!(!m.can_mutate());
+        assert_eq!(m.status().connection, "No host connected");
+        assert_eq!(m.status().demo, None);
+
+        assert!(!apply("no-such-scene", &mut m));
+    }
+
+    #[test]
+    fn the_five_kernel_scenes_are_registered_under_their_rune_names() {
+        let names: Vec<_> = scenes().iter().map(|scene| scene.name).collect();
+        assert_eq!(
+            names,
+            [
+                "demo",
+                "large-inventory",
+                "host-version-notice",
+                "interface-large",
+                "unavailable-actions"
+            ]
+        );
+        for name in names {
+            assert!(crate::scene::rune_app_scene(name).is_some(), "{name}");
+            assert_eq!(
+                crate::scene::find(name).map(|scene| scene.area),
+                Some(KERNEL)
+            );
+        }
+    }
+
+    #[test]
+    fn the_demo_profile_has_a_fixed_id_and_cannot_be_mistaken_for_a_host() {
+        let profile = profile();
+        assert_eq!(profile.id.to_string(), PROFILE);
+        assert_eq!(profile.id, profile_id());
+        assert_eq!(profile.name, "Demonstration pool");
+        assert!(profile.endpoint.as_str().contains("demonstration.invalid"));
     }
 }

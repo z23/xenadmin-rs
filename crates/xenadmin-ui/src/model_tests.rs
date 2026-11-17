@@ -1021,3 +1021,140 @@ fn the_selected_target_is_a_host_a_repository_or_a_network() {
         None
     );
 }
+
+// -- Kernel commands ------------------------------------------------------------
+
+#[test]
+fn back_and_forward_are_toolbar_commands_that_say_why_they_are_disabled() {
+    let mut m = Model::demo(3, 48);
+    let pool = demo_pool(&m);
+    let none = Target::none();
+    assert_eq!(
+        m.eligibility(CommandId("nav.back"), &none),
+        Eligibility::disabled("There is no earlier selection to go back to.")
+    );
+    let toolbar = command::toolbar(&m);
+    assert_eq!(
+        toolbar[0]
+            .iter()
+            .map(|item| (item.id.0, item.disabled.is_some()))
+            .collect::<Vec<_>>(),
+        [("nav.back", true), ("nav.forward", true)]
+    );
+    m.select(Target::one(vm_ref(pool, 1)));
+    assert!(m.invoke(CommandId("nav.back"), &none));
+    assert_eq!(m.scope().kind(), ObjectKind::Pool);
+    assert_eq!(
+        m.eligibility(CommandId("nav.forward"), &none),
+        Eligibility::Enabled
+    );
+    assert!(m.invoke(CommandId("nav.forward"), &none));
+    assert_eq!(m.scope(), &Target::one(vm_ref(pool, 1)));
+    assert_eq!(
+        m.try_invoke(CommandId("nav.forward"), &none),
+        Err(Refused::Disabled(
+            "There is no later selection to go forward to.".into()
+        ))
+    );
+}
+
+#[test]
+fn the_view_menu_toggles_the_tree_and_steps_the_interface_size() {
+    let mut m = Model::demo(3, 48);
+    let none = Target::none();
+    let view = |m: &Model| {
+        command::menu_bar(m)
+            .into_iter()
+            .find(|menu| menu.menu == command::Menu::View)
+            .expect("View menu")
+    };
+    let item = |m: &Model, id: &str| {
+        view(m)
+            .items()
+            .find(|item| item.id.0 == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} is not in the View menu"))
+    };
+    assert_eq!(
+        view(&m)
+            .items()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "Custom Templates",
+            "Built-in Templates",
+            "Local Storage",
+            "Toolbar",
+            "Larger Interface",
+            "Smaller Interface",
+            "Reset Interface Size",
+        ]
+    );
+    assert_eq!(item(&m, "view.custom-templates").checked, Some(true));
+    assert_eq!(item(&m, "view.builtin-templates").checked, Some(false));
+    assert_eq!(item(&m, "view.local-storage").checked, Some(true));
+    assert_eq!(item(&m, "view.toolbar").checked, Some(true));
+    assert!(m.invoke(CommandId("view.builtin-templates"), &none));
+    assert!(m.invoke(CommandId("view.toolbar"), &none));
+    assert!(m.nav.show_builtin_templates && !m.nav.show_toolbar);
+    assert_eq!(item(&m, "view.toolbar").checked, Some(false));
+
+    // Ctrl with plus, minus and 0 (the Rune `app_key`).
+    assert_eq!(
+        item(&m, "view.zoom-reset").disabled.as_deref(),
+        Some("The interface is at its normal size.")
+    );
+    assert_eq!(item(&m, "view.zoom-in").shortcut, Some("ctrl-="));
+    assert!(m.invoke(CommandId("view.zoom-in"), &none));
+    assert!(m.invoke(CommandId("view.zoom-in"), &none));
+    assert_eq!(m.preferences.options.interface_scale, 125);
+    for _ in 0..3 {
+        assert!(m.invoke(CommandId("view.zoom-out"), &none));
+    }
+    assert_eq!(m.preferences.options.interface_scale, 90);
+    assert!(m.invoke(CommandId("view.zoom-reset"), &none));
+    assert_eq!(m.preferences.options.interface_scale, 100);
+    m.set_interface_scale(200);
+    assert_eq!(
+        m.try_invoke(CommandId("view.zoom-in"), &none),
+        Err(Refused::Disabled(
+            "The interface is at its largest size.".into()
+        ))
+    );
+    m.set_interface_scale(80);
+    assert_eq!(
+        item(&m, "view.zoom-out").disabled.as_deref(),
+        Some("The interface is at its smallest size.")
+    );
+}
+
+#[test]
+fn copy_uuid_is_in_the_context_menu_of_an_object_with_a_uuid() {
+    let mut m = Model::demo(3, 48);
+    let pool = demo_pool(&m);
+    let vm = vm_ref(pool, 1);
+    assert!(m.open_context_menu(vm.clone(), MenuOrigin::Grid));
+    assert!(
+        m.context_menu()
+            .iter()
+            .flatten()
+            .any(|item| item.id.0 == "object.copy-uuid" && item.label == "Copy UUID")
+    );
+    assert_eq!(m.invoke_context(CommandId("object.copy-uuid")), Ok(()));
+    assert!(matches!(m.take_intents().as_slice(), [Intent::CopyText(text)] if *text == vm.id));
+    // Not for several objects, and not for a folder.
+    assert_eq!(
+        m.eligibility(
+            CommandId("object.copy-uuid"),
+            &Target::many([vm.clone(), vm_ref(pool, 2)])
+        ),
+        Eligibility::Hidden
+    );
+    assert_eq!(
+        m.eligibility(
+            CommandId("object.copy-uuid"),
+            &Target::one(ObjectRef::new(None, ObjectKind::Folder, "/Production"))
+        ),
+        Eligibility::Hidden
+    );
+}

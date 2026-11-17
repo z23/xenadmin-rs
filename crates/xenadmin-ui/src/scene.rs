@@ -13,9 +13,8 @@ use std::sync::OnceLock;
 
 use serde_json::json;
 
-use crate::command::{self, KERNEL};
+use crate::command;
 use crate::model::Model;
-use crate::object::{ObjectRef, Target};
 use crate::surface;
 
 /// One scene.
@@ -186,54 +185,12 @@ pub fn rune_app_scene(name: &str) -> Option<&'static str> {
     RUNE_APP_SCENES.into_iter().find(|scene| *scene == name)
 }
 
-fn demo(m: &mut Model) {
-    m.load_demo(3, 48);
-}
-
-fn large_inventory(m: &mut Model) {
-    m.load_demo(16, 2000);
-}
-
-fn host_version_notice(m: &mut Model) {
-    m.load_demo(3, 48);
-    if let Some(inventory) = m.inventory.take() {
-        let mut inventory = inventory.as_ref().clone();
-        if let Some(host) = inventory.hosts.values_mut().next() {
-            host.version = "8.2.1".into();
-        }
-        m.inventory = Some(std::sync::Arc::new(inventory));
-    }
-}
-
-fn unavailable_actions(m: &mut Model) {
-    m.load_demo(3, 48);
-    m.demo = false;
-    m.error = Some("Synthetic unavailable-action preview • no host connection".into());
-    if let Some(inventory) = m.inventory.clone()
-        && let Ok(vm) = xenadmin_core::VmId::parse("30000000-0000-0000-0000-000000000001")
-    {
-        m.select(Target::one(ObjectRef::vm(inventory.pool_id, vm)));
-    }
-}
-
-/// The scenes the kernel owns. They set what the K1 model has (the demo
-/// inventory, the demo flag, the selection); K2 completes them when the
-/// model has sessions and navigation.
-fn kernel_scenes() -> Vec<SceneSpec> {
-    vec![
-        SceneSpec::new("demo", KERNEL, demo),
-        SceneSpec::new("large-inventory", KERNEL, large_inventory),
-        SceneSpec::new("host-version-notice", KERNEL, host_version_notice),
-        SceneSpec::new("unavailable-actions", KERNEL, unavailable_actions),
-    ]
-}
-
 /// Every registered scene: the kernel's, then each area's in the order of
 /// [`crate::areas::specs`]. Built once.
 pub fn registry() -> &'static [SceneSpec] {
     static REGISTRY: OnceLock<Vec<SceneSpec>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        let mut scenes = kernel_scenes();
+        let mut scenes = crate::demo::scenes();
         for area in crate::areas::specs() {
             scenes.extend((area.scenes)());
         }
@@ -268,9 +225,10 @@ pub fn unported() -> Vec<&'static str> {
 }
 
 /// The element tree of a model as JSON: what the scene tool writes next to
-/// the PNG. It holds the selection, the tabs, the resolved menus, toolbar
-/// and local action row, the flattened tab body and every open surface,
-/// back to front.
+/// the PNG. It holds the window title, the navigation view with its rows,
+/// the selection, the object header, the tabs, the resolved menus, toolbar
+/// and local action row, the flattened tab body, the status bar and every
+/// open surface, back to front.
 pub fn tree(m: &Model) -> serde_json::Value {
     let tab = m.active_tab();
     let body = m
@@ -289,9 +247,22 @@ pub fn tree(m: &Model) -> serde_json::Value {
             })
         })
         .collect();
+    let rows = crate::nav::rows(m);
+    let selected = crate::nav::selected_ids(m, &rows);
     json!({
+        "title": m.window_title(),
         "demo": m.demo,
         "error": m.error,
+        "interface_scale": m.preferences.options.interface_scale,
+        "nav": {
+            "view": m.nav.view,
+            "filter": m.nav.filter,
+            "rows": rows,
+            "selected": selected,
+        },
+        "header": m.header(),
+        "status": m.status(),
+        "experimental_notice": m.experimental_notice(),
         "scope": m.selection.scope.objects,
         "target": m.target().objects,
         "tabs": m.tabs(),
@@ -338,7 +309,7 @@ mod tests {
                 scene.name
             );
             assert!(
-                scene.area == KERNEL || areas.contains(&scene.area),
+                scene.area == command::KERNEL || areas.contains(&scene.area),
                 "{} names the unknown area {}",
                 scene.name,
                 scene.area
@@ -360,41 +331,6 @@ mod tests {
     }
 
     #[test]
-    fn the_kernel_scenes_set_up_the_demo_inventory() {
-        let mut m = Model::fixture();
-        assert!(apply("demo", &mut m));
-        assert!(m.demo);
-        let inventory = m.inventory.clone().expect("inventory");
-        assert_eq!((inventory.hosts.len(), inventory.vms.len()), (3, 48));
-        assert!(inventory.details.pool.is_some(), "details are populated");
-
-        let mut m = Model::fixture();
-        assert!(apply("large-inventory", &mut m));
-        let inventory = m.inventory.clone().expect("inventory");
-        assert_eq!((inventory.hosts.len(), inventory.vms.len()), (16, 2000));
-
-        let mut m = Model::fixture();
-        assert!(apply("host-version-notice", &mut m));
-        let inventory = m.inventory.clone().expect("inventory");
-        assert_eq!(
-            inventory
-                .hosts
-                .values()
-                .next()
-                .map(|host| host.version.as_str()),
-            Some("8.2.1")
-        );
-
-        let mut m = Model::fixture();
-        assert!(apply("unavailable-actions", &mut m));
-        assert!(!m.demo);
-        assert!(m.error.is_some());
-        assert_eq!(m.selection.scope.vms().len(), 1);
-
-        assert!(!apply("no-such-scene", &mut m));
-    }
-
-    #[test]
     fn the_tree_of_a_scene_is_json_with_menus_and_selection() {
         let mut m = Model::fixture();
         assert!(apply("unavailable-actions", &mut m));
@@ -405,5 +341,13 @@ mod tests {
         assert_eq!(tree["menus"].as_array().map(Vec::len), Some(10));
         assert_eq!(tree["menus"][0]["title"], json!("File"));
         assert!(tree["surfaces"].is_array());
+        assert_eq!(tree["title"], json!("Database"));
+        assert_eq!(tree["header"]["name"], json!("Database"));
+        assert_eq!(tree["header"]["state"], json!("Running"));
+        assert_eq!(tree["status"]["connection"], json!("No host connected"));
+        assert_eq!(tree["nav"]["view"], json!("infrastructure"));
+        assert_eq!(tree["nav"]["rows"][0]["label"], json!("Demonstration pool"));
+        assert_eq!(tree["nav"]["selected"].as_array().map(Vec::len), Some(1));
+        assert_eq!(tree["experimental_notice"], json!(false));
     }
 }

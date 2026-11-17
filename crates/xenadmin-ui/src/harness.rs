@@ -1068,21 +1068,28 @@ mod tests {
     fn without_a_surface_the_toolbar_the_local_row_and_the_tab_body_are_reachable() {
         let mut h = Harness::new();
         h.model.areas.probe.active = true;
+        // The kernel's Back and Forward lead the toolbar.
         assert_eq!(
             h.keys(),
             [
+                "nav.back",
+                "nav.forward",
                 "probe.tool",
                 "probe.open",
                 "probe-tab-text",
                 "probe-tab-button"
             ]
         );
+        assert_eq!(
+            h.try_click("nav.back"),
+            Err("There is no earlier selection to go back to.".into())
+        );
         assert!(matches!(h.tab(), TabBody::Blocks(blocks) if blocks.len() == 2));
         assert_eq!(h.node("probe.tool").path, "toolbar/probe.tool");
         h.click("probe.tool");
         assert_eq!(h.model.areas.probe.tool_runs, 1);
         assert_eq!(h.local_row().len(), 1);
-        assert_eq!(h.toolbar().len(), 1);
+        assert_eq!(h.toolbar().len(), 3);
         // A local-row command is a button like any other.
         h.click("probe.open");
         assert_eq!(h.surface().id, "probe");

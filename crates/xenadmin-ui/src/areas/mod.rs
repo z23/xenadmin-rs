@@ -135,36 +135,57 @@ macro_rules! areas {
 
 // The order is the layering order of surfaces: `Model::surfaces` stacks the
 // open surfaces of the areas in this order, so a later area's surface is in
-// front of an earlier one's. Within one area the area's own `surfaces`
-// function gives the order.
+// front of an earlier one's, and the surface in front is the only one that
+// takes input. Within one area the area's own `surfaces` function gives the
+// order. The experimental notice follows the surface in front
+// (`Model::experimental_notice`): a supported surface in front of an
+// experimental one suppresses it.
 //
-// It is derived from the Rune `view()` (map `rune-kernel.md`, section 13).
-// Rune drew one exclusive chain where the first open dialog of a fixed
-// ranking hid the others, then independent layers over it. An earlier rank
-// in the chain is therefore "in front", and the modules rely on that for
-// drill-down: a dialog opens a child that ranks before it. So the list
-// below is the chain in reverse rank (back to front), then the independent
-// layers back to front:
+// The order is set from the Rune `view()` (map `rune-kernel.md`, section
+// 13). Rune drew one exclusive chain in which the first open dialog of a
+// fixed ranking hid the others, then independent layers over it. An earlier
+// rank in the chain is therefore "in front", and the modules rely on that
+// for drill-down: a dialog opens a child that ranks before it. The list is
+// the chain in reverse rank (back to front), each area at the rank of its
+// backmost dialog, then the independent layers back to front:
 //
-//   chain:  power (force review, unknown outcome, placement, recovery),
-//           snapshots, vm_properties, vm_lifecycle (and cloud-init),
-//           migration, cross_pool, transfers, network (generic resource
-//           editor, network workspace) with its children network_services
-//           and management_network, pool (pool editor, dissolve),
-//           pool_security, storage, vm_devices (disk workspace), events
-//           (activity), organization (and vApps), host_admin, performance
-//           (host monitoring), storage_maintenance (storage graph),
-//           host_services (support, power), schedules_alarms, connections
-//   layers: search, bulk_export, bulk_edit, vm_tools, general, settings,
-//           console
+//   chain:  power (unknown outcome 30, force review 29, placement 26,
+//           recovery 23), snapshots (28), vm_properties (27), vm_lifecycle
+//           (25, cloud-init 20), migration (24), cross_pool (22), transfers
+//           (21, local conversion 7), network (generic resource editor 19,
+//           network workspace 10) with its children network_services and
+//           management_network, pool (pool editor 18, dissolve 17),
+//           pool_security (16), storage (15), vm_devices (disk workspace
+//           14), organization (12, vApps 11), host_admin (9), performance
+//           (host monitoring 8), storage_maintenance (storage graph 6),
+//           host_services (support 5, power 4), schedules_alarms (snapshot
+//           schedules 3, alarms 2), connections (the connect form 1)
+//   layers: search (32), bulk_export (33), bulk_edit (bulk delete 33, bulk
+//           properties 34), general (38), settings (39), console (console
+//           windows 40), vm_tools (external tools 41), events (outcome
+//           explanation 42)
 //
-// Known approximations, for the kernel engineer to refine when the areas
-// have landed: an area has one position although Rune ranked its dialogs
-// separately (the connection manager was a layer while the connect form led
-// the chain; the bulk dialogs of power, migration and cross_pool were
-// layers; snapshot inspection and the outcome explanation were front
-// layers). If a child surface turns out behind its opener, the opener
-// should close itself or the order here should change.
+// Where one area had dialogs at several ranks, the choices are:
+//
+// - `events` is in front of everything. Its Rune Activity dialog (13) is the
+//   Notifications view now and no longer a surface; what remains are the
+//   outcome explanation (the front-most Rune layer, opened from other areas'
+//   surfaces), the cancel and dismiss reviews and the acknowledgement.
+// - `vm_tools` is at the rank of External Tools (41), which Options opens;
+//   its guest tools dialog (37) is opened from a tab and never over another
+//   area's surface.
+// - `power`, `migration` and `cross_pool` are at the rank of their chain
+//   dialogs. Their batch dialogs were layers (33) because Rune opened them
+//   from the row menu over the Search and Connections dialogs, which are
+//   tabs now.
+// - `snapshots` is at the rank of its dialog (28); snapshot inspection (36)
+//   opens from the Snapshots tab.
+// - `connections` is at the rank of the connect form: in front of the whole
+//   chain. The Connections manager (31) is the Home tab now.
+//
+// If a child surface turns out behind its opener, the opener closes itself
+// when it opens the child, or the order here changes; the test below lists
+// the drill-downs that are known.
 areas!(
     power,
     snapshots,
@@ -180,7 +201,6 @@ areas!(
     pool_security,
     storage,
     vm_devices,
-    events,
     organization,
     host_admin,
     performance,
@@ -191,10 +211,11 @@ areas!(
     search,
     bulk_export,
     bulk_edit,
-    vm_tools,
     general,
     settings,
     console,
+    vm_tools,
+    events,
 );
 
 /// The spec of every area, in layering order. Built once.
@@ -277,8 +298,55 @@ mod tests {
             ("storage", "storage_maintenance"),
             ("network", "network_services"),
             ("network", "management_network"),
+            // Reconnect As from the pool security dialog.
+            ("pool_security", "connections"),
+            // Snapshot export from the snapshot dialogs.
+            ("snapshots", "bulk_export"),
+            ("snapshots", "transfers"),
+            // Options opens External Tools; the console windows manager is
+            // over Options.
+            ("settings", "console"),
+            ("settings", "vm_tools"),
+            ("console", "vm_tools"),
         ] {
             assert!(position(opener) < position(child), "{opener} -> {child}");
         }
+        // "Explain outcome" opens from the surfaces of every other area.
+        assert_eq!(AREA_IDS.last(), Some(&"events"));
+        // The power confirmation and the unknown-outcome acknowledgement are
+        // behind every other dialog, as in Rune.
+        assert_eq!(AREA_IDS.first(), Some(&"power"));
+    }
+
+    #[test]
+    fn the_experimental_notice_follows_the_surface_in_front() {
+        // Rune: main.rs `dialogs_outside_the_supported_core_carry_the_experimental_notice`,
+        // the rule that a supported dialog in front of an experimental one
+        // suppresses the notice. The example area's dialog is experimental,
+        // the probe's is not, and the probe is the later area.
+        let mut m = Model::demo(3, 48);
+        assert!(!m.experimental_notice(), "nothing is open");
+        let inventory = m.inventory.clone().expect("inventory");
+        let vm = *inventory.vms.keys().next().expect("a VM");
+        m.select(crate::object::Target::one(crate::object::ObjectRef::vm(
+            inventory.pool_id,
+            vm,
+        )));
+        let target = m.target();
+        assert!(m.invoke(example_tests::RENAME, &target));
+        assert!(m.experimental_notice());
+        m.areas.probe.open = true;
+        let surfaces = m.surfaces();
+        assert_eq!(
+            surfaces
+                .iter()
+                .map(|surface| surface.id.as_str())
+                .collect::<Vec<_>>(),
+            ["example-rename", "probe"]
+        );
+        assert!(!surfaces[1].experimental);
+        assert!(!m.experimental_notice(), "a supported surface is in front");
+        m.areas.probe.open = false;
+        assert!(m.experimental_notice());
     }
 }
