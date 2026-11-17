@@ -228,6 +228,9 @@ pub fn can_remove(m: &Model, target: &Target) -> Eligibility {
 pub fn remove(m: &mut Model, target: &Target) {
     if let Some(id) = profile_of(m, target) {
         session::remove(m, id);
+        // A connection without a keyring password is gone at once: its row
+        // must not stay the target of the action row until the next poll.
+        m.reconcile_selection();
     }
 }
 
@@ -460,5 +463,10 @@ pub fn tab(m: &Model, tab: TabId, scope: &Target) -> Option<TabBody> {
             .credential_status
             .clone()
             .map(|status| caption(status).key("connections-credential-status")),
+        // The Connections dialog showed the shared error line: a refused
+        // edit or removal is reported where the user pressed.
+        m.error
+            .clone()
+            .map(|error| alert(error).key("connections-error")),
     ]))
 }

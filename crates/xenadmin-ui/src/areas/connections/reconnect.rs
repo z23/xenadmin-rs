@@ -106,18 +106,22 @@ fn current(m: &Model, e: &Editor) -> bool {
         }) == Some(e.observed)
 }
 
-/// Why the reviewed reconnect cannot be confirmed although its fields are
-/// filled in: the model is synthetic, the window does not own the state
-/// directory, or the saved connection or the pool changed.
+/// The review is stale: the saved connection or the pool changed after the
+/// dialog opened.
 fn stale(m: &Model, e: &Editor) -> Option<String> {
+    (!current(m, e)).then(|| STALE.to_owned())
+}
+
+/// Why the reconnect cannot be confirmed whatever is typed: the model is
+/// synthetic, the window does not own the state directory, or the review is
+/// stale. Rune disabled the button without a reason for the first two.
+fn refused(m: &Model, e: &Editor) -> Option<String> {
     if m.demo {
         Some("Demo mode cannot change infrastructure.".into())
     } else if !m.workspace.writable {
-        Some("Another XenAdmin RS window owns this state directory. Close it before changing connections here.".into())
-    } else if !current(m, e) {
-        Some(STALE.into())
+        Some("This window cannot change connections while another window owns the state directory.".into())
     } else {
-        None
+        stale(m, e)
     }
 }
 
@@ -227,6 +231,7 @@ fn edit(m: &mut Model, change: impl FnOnce(&mut Editor)) {
 pub fn surface(m: &Model) -> Option<Surface> {
     let e = m.areas.connections.reconnect.as_ref()?;
     let stale = stale(m, e);
+    let refused = refused(m, e);
     let body = blocks![
         review(
             "reconnect-review",
@@ -243,7 +248,7 @@ pub fn surface(m: &Model) -> Option<Surface> {
             property("Pool UUID", e.pool.to_string()).copyable(),
             property("Endpoint", e.profile.endpoint.to_string()),
         ])
-        .stale(stale.clone()),
+        .stale(stale),
         input("reconnect-username", "Session username", &e.username, |m, text| {
             edit(m, |e| e.username = text.to_owned())
         })
@@ -267,7 +272,7 @@ pub fn surface(m: &Model) -> Option<Surface> {
                 button("reconnect-cancel", "Cancel", close),
                 button("reconnect-confirm", "Reconnect", apply)
                     .primary()
-                    .disabled_opt(stale)
+                    .disabled_opt(refused)
                     .disabled_if(
                         e.username.trim().is_empty(),
                         BLANK_ACCOUNT,
