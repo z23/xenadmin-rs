@@ -918,3 +918,74 @@ fn only_the_file_dialogs_carry_the_experimental_notice() {
     let local: Vec<&str> = h.local_row().iter().map(|item| item.id.0).collect();
     assert_eq!(local, ["search.save", "search.export"]);
 }
+
+#[test]
+fn a_result_opens_only_in_a_current_pool_and_its_place_is_checked_again_after_the_move() {
+    let mut h = Harness::with(Model::demo(3, 48));
+    let inventory = h.model.inventory.clone().unwrap();
+    let pool = inventory.pool_id;
+    h.select(Target::none());
+    h.open_tab(TabId::Search);
+    let results = InventorySearch::default().run(&inventory).unwrap();
+    let vm = inventory.guests().next().unwrap().id;
+    let result = results.iter().find(|r| r.object == Id::Vm(vm)).unwrap();
+    // The source decides first: none, synthetic, stale, current.
+    let mut w = sheet(&h).clone();
+    assert_eq!(query::open_refusal(&w, result), Some(query::SYNTHETIC));
+    let source = w.sources.get_mut(&pool).unwrap();
+    source.profile = Some(crate::demo::profile_id());
+    assert_eq!(query::open_refusal(&w, result), Some(query::RECONNECT));
+    w.sources.get_mut(&pool).unwrap().current = true;
+    assert_eq!(query::open_refusal(&w, result), None);
+    w.sources.clear();
+    assert_eq!(query::open_refusal(&w, result), Some(query::UNAVAILABLE));
+    // A source that claims to be current does not open a result while the
+    // session itself is not: the session is asked again.
+    {
+        let source = h.model.areas.search.sheet.sources.get_mut(&pool).unwrap();
+        source.profile = Some(crate::demo::profile_id());
+        source.current = true;
+    }
+    navigate(&mut h.model, &result.key());
+    assert!(h.model.scope().is_empty());
+    assert_eq!(sheet(&h).error.as_deref(), Some(query::RECONNECT));
+    // A validated place becomes the tree selection and shows the object,
+    // in the tree that has it.
+    h.open_view(NavView::SavedSearches);
+    let destination = navigation(&inventory, result).unwrap();
+    show(&mut h.model, result, destination);
+    assert_eq!(h.model.scope(), &Target::one(ObjectRef::vm(pool, vm)));
+    assert_eq!(h.model.active_tab(), TabId::General);
+    assert_eq!(h.model.nav.view, NavView::Infrastructure);
+    // A snapshot opens its VM on the Snapshots tab with the snapshot
+    // selected there.
+    let snapshot = results
+        .iter()
+        .find(|r| r.kind == SearchKind::Snapshot)
+        .expect("the demo has snapshots");
+    let destination = navigation(&inventory, snapshot).unwrap();
+    let parent = destination.object.clone();
+    h.select(Target::none());
+    h.open_tab(TabId::Search);
+    show(&mut h.model, snapshot, destination);
+    assert_eq!(h.model.scope(), &Target::one(parent));
+    assert_eq!(h.model.active_tab(), TabId::Snapshots);
+    assert_eq!(h.model.target(), Target::one(object_of(snapshot)));
+    // The inventory of the scope session no longer has the object: the
+    // selection returns to where it was and the reason is shown.
+    h.select(ObjectRef::pool(pool));
+    h.open_tab(TabId::Search);
+    let destination = navigation(&inventory, result).unwrap();
+    let mut next = inventory.as_ref().clone();
+    next.vms.remove(&vm);
+    next.revision += 1;
+    h.model.inventory = Some(Arc::new(next));
+    show(&mut h.model, result, destination);
+    assert_eq!(h.model.scope(), &Target::one(ObjectRef::pool(pool)));
+    assert_eq!(h.model.active_tab(), TabId::Search);
+    assert_eq!(sheet(&h).error.as_deref(), Some(query::UNAVAILABLE));
+    assert_eq!(
+        h.node("search-error").text.as_deref(),
+        Some(query::UNAVAILABLE)
+    );
+}

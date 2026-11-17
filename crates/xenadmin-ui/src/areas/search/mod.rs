@@ -332,18 +332,20 @@ pub(crate) fn import_apply(m: &mut Model) {
 /// `navigate`, "Open in pool"). Only in a pool whose connection is current;
 /// the place of the result is validated in the inventory the search saw and
 /// again in the inventory of the scope session after the selection moved
-/// there. A refusal is shown and nothing else changes.
+/// there ([`show`]). A refusal is shown and nothing else changes.
 pub(crate) fn navigate(m: &mut Model, key: &str) {
     sync(m);
     let sheet = &m.areas.search.sheet;
     let Some(result) = sheet.result(key).cloned() else {
         return;
     };
-    let refuse = |m: &mut Model, error: String| m.areas.search.sheet.error = Some(error);
-    let Some(profile) = sheet.sources.get(&result.pool).and_then(|s| s.profile) else {
-        refuse(m, query::SYNTHETIC.into());
+    let refusal = query::open_refusal(sheet, &result);
+    let profile = sheet.sources.get(&result.pool).and_then(|s| s.profile);
+    let (None, Some(profile)) = (refusal, profile) else {
+        refuse(m, refusal.unwrap_or(query::SYNTHETIC).into());
         return;
     };
+    // The source may be older than the session: ask the session itself.
     let session = crate::session::sessions(m)
         .into_iter()
         .find(|view| view.profile == profile);
@@ -355,15 +357,26 @@ pub(crate) fn navigate(m: &mut Model, key: &str) {
         refuse(m, query::RECONNECT.into());
         return;
     };
-    let destination = match query::navigation(&inventory, &result) {
-        Ok(destination) => destination,
-        Err(error) => {
-            refuse(m, error);
-            return;
-        }
-    };
+    match query::navigation(&inventory, &result) {
+        Ok(destination) => show(m, &result, destination),
+        Err(error) => refuse(m, error),
+    }
+}
+
+fn refuse(m: &mut Model, error: String) {
+    m.areas.search.sheet.error = Some(error);
+}
+
+/// Moves the tree selection to a destination that was validated, and
+/// validates it again in the inventory of the scope session, which the
+/// selection has just made the result's pool. A snapshot shows on the
+/// Snapshots tab of its VM; any other object on its first tab. When the
+/// second validation fails the selection returns to where it was, with the
+/// reason.
+pub(crate) fn show(m: &mut Model, result: &xenadmin_core::SearchResult, destination: Destination) {
+    let (scope, view) = (m.scope().clone(), m.nav.view);
     // A saved search has no row for the object: show the tree that has.
-    if m.nav.view == NavView::SavedSearches || m.nav.view == NavView::Organization {
+    if view == NavView::SavedSearches || view == NavView::Organization {
         m.set_nav_view(NavView::Infrastructure);
     }
     m.select(Target::one(destination.object));
@@ -371,7 +384,7 @@ pub(crate) fn navigate(m: &mut Model, key: &str) {
         .inventory
         .as_ref()
         .ok_or_else(|| "Pool inventory is unavailable".to_owned())
-        .and_then(|inventory| query::navigation(inventory, &result));
+        .and_then(|inventory| query::navigation(inventory, result));
     match after {
         Ok(destination) => {
             if let Some(snapshot) = destination.snapshot
@@ -386,9 +399,9 @@ pub(crate) fn navigate(m: &mut Model, key: &str) {
             }
         }
         Err(error) => {
-            // The inventory changed under the switch: the selection falls
-            // back to what is still there.
-            m.reconcile_selection();
+            m.set_nav_view(view);
+            m.select(scope);
+            m.set_active_tab(TabId::Search);
             sync(m);
             refuse(m, error);
         }
