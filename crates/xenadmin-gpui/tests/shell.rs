@@ -355,6 +355,52 @@ fn the_window_has_its_regions_from_the_model(cx: &mut TestAppContext) {
     assert_eq!(shell::window_title("XenAdmin RS"), "XenAdmin RS");
 }
 
+/// Gate G2's review item, for the shell: an action is a command in the
+/// menu bar, the toolbar or a tab's local action row, or a button of a
+/// dialog. Every button the shell draws is in the menu bar or the toolbar,
+/// or is the pane toggle, which shows and hides the pane and acts on
+/// nothing. (What is inside the tab body is the description of an area:
+/// its local action row and, here, the sort buttons of the lab's grid.)
+#[gpui_kit::test]
+fn no_region_has_an_action_button_of_its_own(cx: &mut TestAppContext) {
+    for (width, height) in [(1440., 900.), (900., 700.)] {
+        let scene = open_sized(cx, width, height, |_| {});
+        let stray: Vec<String> = on(cx, &scene, |window, _| {
+            window
+                .find_all_by_role(Role::Button)
+                .into_iter()
+                .filter(|button| {
+                    let path: Vec<String> = scenes::id_path(button);
+                    let within = |key: &str| path.iter().any(|segment| segment == key);
+                    !(within("app-menu-bar")
+                        || within(toolbar::TOOLBAR_KEY)
+                        || within(xenadmin_gpui::scene_view::TAB_BODY_KEY)
+                        || within(shell::TOGGLE_KEY))
+                })
+                .map(|button| format!("{:?} at {:?}", button.label(), scenes::id_path(&button)))
+                .collect()
+        });
+        assert!(stray.is_empty(), "buttons outside their places: {stray:#?}");
+        // And the buttons that are there are the commands of the store.
+        let toolbar_ids: Vec<String> = cx.update(|cx| {
+            scene
+                .store
+                .read(cx)
+                .toolbar()
+                .into_iter()
+                .flatten()
+                .map(|item| item.id.0.to_owned())
+                .collect()
+        });
+        on(cx, &scene, |window, _| {
+            let bar = window.within(toolbar::TOOLBAR_KEY);
+            for id in &toolbar_ids {
+                assert_eq!(bar.find(self::id(id)).role(), Some(Role::Button), "{id}");
+            }
+        });
+    }
+}
+
 #[gpui_kit::test]
 fn the_tree_shows_the_rows_of_the_model_with_their_state(cx: &mut TestAppContext) {
     let scene = open(cx);
