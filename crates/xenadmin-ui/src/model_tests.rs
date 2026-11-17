@@ -779,6 +779,22 @@ fn can_mutate_needs_a_writable_current_connection_in_every_pool() {
     assert!(!m.can_mutate());
 }
 
+#[test]
+fn show_home_selects_nothing_and_shows_the_connection_list_from_any_view() {
+    let mut m = Model::demo(3, 48);
+    let pool = demo_pool(&m);
+    m.select(Target::one(vm_ref(pool, 1)));
+    m.set_nav_view(NavView::Notifications);
+    m.show_home();
+    assert_eq!(m.nav.view, NavView::Infrastructure);
+    assert!(m.scope().is_empty());
+    assert_eq!(m.active_tab(), TabId::Home);
+    // The scope session stays, and Back returns to the VM.
+    assert_eq!(m.workspace.selected, Some(crate::demo::profile_id()));
+    assert!(m.back());
+    assert_eq!(m.scope(), &Target::one(vm_ref(pool, 1)));
+}
+
 // -- Notifications view ---------------------------------------------------------
 
 #[test]

@@ -823,6 +823,7 @@ impl Model {
 
     /// Selects nothing and shows the Home tab: the connection list.
     pub fn show_home(&mut self) {
+        self.set_nav_view(NavView::Infrastructure);
         self.select(Target::none());
         self.set_active_tab(TabId::Home);
     }

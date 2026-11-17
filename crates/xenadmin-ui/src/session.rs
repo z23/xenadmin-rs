@@ -1311,6 +1311,12 @@ pub struct SessionView {
     /// The status word: "Connected", "Connecting…", "Connection failed",
     /// "Disconnected", ..., or "Demo" for a synthetic session.
     pub status: &'static str,
+    /// The connection generation of the latest snapshot: it changes on
+    /// every reconnect, and with it every captured observation goes stale.
+    pub generation: Option<u64>,
+    /// The latest snapshot is current (`Ready`). Never for a synthetic
+    /// session.
+    pub current: bool,
     /// The inventory, when the session has one (also a stale one).
     pub inventory: Option<Arc<Inventory>>,
     pub synthetic: bool,
@@ -1344,7 +1350,8 @@ pub fn sessions(m: &Model) -> Vec<SessionView> {
         .map(|profile| {
             let id = profile.id;
             let synthetic = m.workspace.synthetic.contains_key(&id);
-            let state = m.workspace.snapshot(id).map(|snapshot| snapshot.state());
+            let snapshot = m.workspace.snapshot(id);
+            let state = snapshot.as_ref().map(|snapshot| snapshot.state());
             SessionView {
                 profile: id,
                 name: profile.name.clone(),
@@ -1354,6 +1361,10 @@ pub fn sessions(m: &Model) -> Vec<SessionView> {
                 } else {
                     status_word(state)
                 },
+                generation: snapshot.as_ref().map(|snapshot| snapshot.generation()),
+                current: snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.is_current()),
                 inventory: inventory_of(m, id),
                 synthetic,
                 selected: m.workspace.selected == Some(id),
