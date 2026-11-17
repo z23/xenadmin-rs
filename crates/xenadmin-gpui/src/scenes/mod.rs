@@ -106,7 +106,7 @@ pub fn setup(name: &str) -> Option<Setup> {
         let ids: Vec<String> = guests.into_iter().map(|(_, id)| id).take(4).collect();
         if ids.len() == 4 {
             let selected = match name {
-                "gallery-tab" => vec![ids[2].clone()],
+                "gallery-tab" | "gallery-picker" => vec![ids[2].clone()],
                 "gallery-multi" => ids[1..4].to_vec(),
                 _ => Vec::new(),
             };

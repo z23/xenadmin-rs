@@ -33,6 +33,7 @@ pub const DIALOG: &str = "lab-dialog";
 pub const WIZARD: &str = "lab-wizard";
 pub const PROPERTIES: &str = "lab-properties";
 pub const CONFIRM: &str = "lab-confirm";
+pub const PICKER: &str = "lab-picker";
 /// The key of the lab's table.
 pub const TABLE: &str = "lab-vms";
 
@@ -117,7 +118,7 @@ impl Lab {
     pub fn describe(lab: &LabRef) -> Describe {
         let (for_surfaces, for_body, for_local) = (lab.clone(), lab.clone(), lab.clone());
         Describe {
-            surfaces: Rc::new(move |_| surfaces(&for_surfaces)),
+            surfaces: Rc::new(move |m| surfaces(&for_surfaces, m)),
             tab_body: Rc::new(move |m, _| tab_body(&for_body, m)),
             local_row: Rc::new(move |m, _| {
                 let lab = for_local.borrow();
@@ -149,13 +150,14 @@ fn close(lab: &LabRef, id: &'static str) -> impl Fn(&mut Model) + 'static {
     }
 }
 
-pub fn surfaces(lab: &LabRef) -> Vec<Surface> {
+pub fn surfaces(lab: &LabRef, m: &Model) -> Vec<Surface> {
     let open = lab.borrow().open.clone();
     open.iter()
         .map(|id| match *id {
             WIZARD => wizard(lab),
             PROPERTIES => properties_dialog(lab),
             CONFIRM => confirm(lab),
+            PICKER => picker(lab, m),
             _ => dialog(lab),
         })
         .collect()
@@ -494,6 +496,27 @@ fn confirm(lab: &LabRef) -> Surface {
         .on_close(close(lab, CONFIRM))
 }
 
+/// A table in a surface: pick one of the guests.
+fn picker(lab: &LabRef, m: &Model) -> Surface {
+    let chosen = lab.borrow().selected.clone();
+    let pressed = lab.clone();
+    Surface::dialog(PICKER, "Choose a VM")
+        .large()
+        .body(blocks![
+            text("The copy takes its disks from the VM chosen here."),
+            guests_table(lab, m, false),
+        ])
+        .footer([
+            button("lab-cancel", "Cancel", close(lab, PICKER)),
+            button("lab-choose", "Choose", move |_| {
+                log(&pressed, "press:lab-choose")
+            })
+            .primary()
+            .disabled_if(chosen.is_none(), "Select a VM first."),
+        ])
+        .on_close(close(lab, PICKER))
+}
+
 /// The guests of the model's inventory as rows, in the lab's order.
 fn guest_rows(lab: &Lab, m: &Model) -> Vec<Row> {
     if lab.empty {
@@ -731,8 +754,9 @@ pub fn tab_body(lab: &LabRef, m: &Model) -> Option<TabBody> {
 }
 
 /// The names of the gallery scenes.
-pub const SCENES: [&str; 7] = [
+pub const SCENES: [&str; 8] = [
     "gallery-dialog",
+    "gallery-picker",
     "gallery-wizard",
     "gallery-properties",
     "gallery-stacked",
@@ -747,6 +771,10 @@ pub fn apply(name: &str, lab: &LabRef) -> bool {
     let mut lab = lab.borrow_mut();
     match name {
         "gallery-dialog" => lab.open = vec![DIALOG],
+        "gallery-picker" => {
+            lab.open = vec![PICKER];
+            lab.body = Body::None;
+        }
         "gallery-wizard" => {
             lab.open = vec![WIZARD];
             lab.step = 1;

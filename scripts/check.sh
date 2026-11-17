@@ -26,7 +26,7 @@ gpui_scenes() {
     cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-scenes -- "$@"
 }
 gpui_scenes --list > artifacts/gpui/scenes.txt
-for gpui_scene in demo unavailable-actions gallery-dialog gallery-wizard gallery-properties gallery-tab gallery-blocks; do
+for gpui_scene in demo unavailable-actions gallery-dialog gallery-picker gallery-wizard gallery-properties gallery-stacked gallery-tab gallery-multi gallery-blocks; do
     gpui_scenes "$gpui_scene" --snap "artifacts/gpui/${gpui_scene}.png" --tree "artifacts/gpui/${gpui_scene}.json" --theme dark --size 1440x900 --scale 1
 done
 gpui_scenes gallery-dialog --snap artifacts/gpui/gallery-dialog-light-compact.png --tree artifacts/gpui/gallery-dialog-light-compact.json --theme light --size 800x600 --scale 1

@@ -22,7 +22,9 @@ use xenadmin_gpui::kit::testing::{
 };
 use xenadmin_gpui::kit::*;
 use xenadmin_gpui::render::{ColumnWidths, surface_scope};
-use xenadmin_gpui::scenes::gallery::{self, Body, CONFIRM, DIALOG, Lab, PROPERTIES, TABLE, WIZARD};
+use xenadmin_gpui::scenes::gallery::{
+    self, Body, CONFIRM, DIALOG, Lab, PICKER, PROPERTIES, TABLE, WIZARD,
+};
 use xenadmin_gpui::scenes::{self, Options, SceneWindow, Setup};
 use xenadmin_ui::intent::Intent;
 use xenadmin_ui::surface::Table;
@@ -700,6 +702,44 @@ fn stacked_surfaces_keep_the_order_of_the_model(cx: &mut TestAppContext) {
     on(cx, &scene, |window, cx| {
         assert!(!window.has_active_dialog(cx))
     });
+}
+
+#[gpui_kit::test]
+fn a_table_in_a_surface_selects_and_escape_closes_the_surface(cx: &mut TestAppContext) {
+    let scene = open(cx, |lab| {
+        lab.open = vec![PICKER];
+        lab.body = Body::None;
+    });
+    let guests = guests(cx, &scene);
+    on(cx, &scene, |window, cx| {
+        let choose = window.find("lab-choose");
+        assert_eq!(choose.disabled(), Some(true));
+        assert_eq!(choose.description(), Some("Select a VM first."));
+        // The table has its rows inside the dialog, and room for them.
+        let table = window.find(id(TABLE)).bounds();
+        assert!(table.size.height > px(200.), "{table:?}");
+        window.click(row(&guests[1]), cx);
+    });
+    assert_eq!(
+        lab(&scene, |lab| lab.selected.clone()),
+        Some(guests[1].clone())
+    );
+    on(cx, &scene, |window, cx| {
+        assert_eq!(window.find("lab-choose").disabled(), None);
+        assert_eq!(window.find(row(&guests[1])).selected(), Some(true));
+        // The table has the keyboard. Escape still closes the surface, and
+        // the selection is not lost on the way.
+        window.press("escape", cx);
+    });
+    assert_eq!(
+        log(&scene).last().map(String::as_str),
+        Some("close:lab-picker")
+    );
+    assert!(presented(cx, &scene).is_empty());
+    assert_eq!(
+        lab(&scene, |lab| lab.selected.clone()),
+        Some(guests[1].clone())
+    );
 }
 
 #[gpui_kit::test]
