@@ -406,13 +406,13 @@ fn reviewable(w: &Editor) -> Result<HostOperation, String> {
 pub fn blocked(w: &Editor) -> Option<String> {
     match w.kind {
         Kind::Memory | Kind::Logging => operation(w).err().filter(|reason| reason == MISSING),
-        Kind::Forget => {
+        Kind::Forget => operation(w).err().or_else(|| {
             let a = HostOperation::ForgetDeadHost {
                 verified_power_off: true,
             }
             .availability(&w.initial, w.target);
             (!a.is_available()).then(|| a.explanation())
-        }
+        }),
         _ => reviewable(w).err(),
     }
 }
