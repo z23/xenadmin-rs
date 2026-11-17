@@ -58,5 +58,15 @@ Phase 1 extracts the toolkit-free model. Views are not ported in that phase.
 The Rune binary stays the released artifact. `xenadmin-core`,
 `xenadmin-xapi`, and `xenadmin-process` stay unchanged.
 
+## 2026-11-17: the operator's direction
+
+The operator asked for the migration to be finished. From here the plan's packages are
+ported on the branch `gpui-migration`, and this record no longer describes an evaluation
+only. The Rune binary is still the released artifact until the cutover gate, and the
+limits above stay as stated until a run closes or confirms them. One of them was wrong
+when written: `gpui_kit::platform::current_headless_renderer` is exported by the pinned
+Kit, and a scene renders to a PNG in process with it (first shown on 2026-11-17 on the
+operator's workstation; a runner with only a software adapter has not been tried).
+
 This note is an engineering record, not legal advice. The Kit and `gpui-pre`
 are Apache-2.0. That does not change the licence of the existing crates.

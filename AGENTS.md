@@ -45,9 +45,12 @@ in docs/ARCHITECTURE.md. Link to the owning document instead of duplicating its 
 
 ## Front-end migration
 
-[docs/GPUI-MIGRATION.md](docs/GPUI-MIGRATION.md) is the GPUI Kit evaluation. The Rune
-binary remains the released artifact until that plan's cutover gate. Phase 0 has
-not passed; do not port views past a failed gate.
+[docs/GPUI-MIGRATION.md](docs/GPUI-MIGRATION.md) is the plan of the move to GPUI Kit. The
+Rune binary remains the released artifact until that plan's cutover gate. Gate G0 did not
+pass as written: what its seat run left open is recorded as accepted limits in
+[docs/decisions/0006-console-key-codes.md](docs/decisions/0006-console-key-codes.md), and on
+2026-11-17 the operator directed that the migration be finished. Views are ported by the
+plan's packages; a limit that a later run closes or confirms is recorded where it was stated.
 
 - Spikes come before ported views.
 - Selection, tabs, commands, drafts and scenes belong in a toolkit-free model.
