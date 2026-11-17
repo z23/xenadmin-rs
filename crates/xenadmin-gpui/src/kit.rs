@@ -26,6 +26,12 @@ pub use gpui_kit::{
 /// returns (the element itself in a build without the feature).
 pub type Keyed = gpui_kit::base::ObservedElement<Stateful<Div>>;
 
+// The action the Kit binds Enter to inside a dialog.
+pub use gpui_kit::base::actions::Confirm;
+
+// The actions the Kit binds Tab and Shift+Tab to in a text area.
+pub use gpui_kit::base::input::{IndentInline, OutdentInline};
+
 // The channel of the wake bridge.
 pub use gpui_kit::base::async_util::{Receiver, Sender, unbounded};
 

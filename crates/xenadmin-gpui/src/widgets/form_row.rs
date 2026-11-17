@@ -23,14 +23,17 @@ pub fn form_row(row: FormRow, cx: &App) -> AnyElement {
     v_flex()
         .w_full()
         .gap_1()
-        .when_some(row.label.filter(|label| !label.is_empty()), |column, label| {
-            column.child(
-                div()
-                    .text_sm()
-                    .font_medium()
-                    .child(SharedString::from(label)),
-            )
-        })
+        .when_some(
+            row.label.filter(|label| !label.is_empty()),
+            |column, label| {
+                column.child(
+                    div()
+                        .text_sm()
+                        .font_medium()
+                        .child(SharedString::from(label)),
+                )
+            },
+        )
         .child(row.control)
         .when_some(row.help, |column, help| {
             let help = SharedString::from(help);

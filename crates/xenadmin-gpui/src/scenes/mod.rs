@@ -22,8 +22,8 @@ use xenadmin_ui::surface::{self, Node};
 use xenadmin_ui::{Model, scene};
 
 use crate::kit::testing::{
-    Assets, ElementSnapshot, HeadlessAppContext, PlatformTextSystem, TestQueryExt,
-    TestWindowExt, current_headless_renderer, current_platform,
+    Assets, ElementSnapshot, HeadlessAppContext, PlatformTextSystem, TestQueryExt, TestWindowExt,
+    current_headless_renderer, current_platform,
 };
 use crate::kit::*;
 use crate::scene_view::{SceneView, TAB_BASE};
@@ -179,7 +179,11 @@ pub fn render_setup(
         return Err(format!("the scale is 1 or 2, not {}", options.scale));
     }
     let mut cx = if capture {
-        HeadlessAppContext::with_platform(text_system(), Arc::new(Assets), current_headless_renderer)
+        HeadlessAppContext::with_platform(
+            text_system(),
+            Arc::new(Assets),
+            current_headless_renderer,
+        )
     } else {
         HeadlessAppContext::with_platform(text_system(), Arc::new(Assets), || Ok(None))
     };
@@ -202,7 +206,11 @@ pub fn render_setup(
         .update_window(scene.window, |_, window, cx| {
             let mut tree = tree_json(window, cx, &scene.store);
             tree["scene"] = json!(name);
-            tree["theme"] = json!(if options.mode.is_dark() { "dark" } else { "light" });
+            tree["theme"] = json!(if options.mode.is_dark() {
+                "dark"
+            } else {
+                "light"
+            });
             tree["scale"] = json!(options.scale);
             tree
         })

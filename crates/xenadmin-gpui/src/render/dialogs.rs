@@ -18,7 +18,7 @@ use xenadmin_ui::surface::{Surface, SurfaceKind, SurfaceSize};
 
 use super::blocks::{Pass, blocks, button_row};
 use super::cache::surface_scope;
-use super::{Ui, join, segment};
+use super::{Ui, element_id, join};
 use crate::kit::*;
 use crate::store::dispatch;
 use crate::widgets;
@@ -346,7 +346,7 @@ fn footer(ui: &Ui, surface: &Surface, cx: &App) -> Option<AnyElement> {
             .font_normal()
             .when_some(surface.footer_note.as_ref(), |column, note| {
                 column.child(widgets::text(
-                    join(&base, &segment(note.key.as_ref(), 0)),
+                    element_id(&base, note.key.as_ref(), 0),
                     note,
                     cx,
                 ))

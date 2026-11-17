@@ -55,6 +55,8 @@ struct Scope {
 pub(crate) struct TextHandlers {
     pub on_edit: ActText,
     pub on_submit: Option<Act>,
+    /// An edit was handed to the model since the last pass.
+    pub delivered: bool,
 }
 
 /// A single-line or multi-line text widget.
@@ -84,10 +86,14 @@ impl TextWidget {
         let placeholder = SharedString::from(placeholder.to_owned());
         match self {
             Self::Line(state) => {
-                state.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
+                state.update(cx, |state, cx| {
+                    state.set_placeholder(placeholder, window, cx)
+                });
             }
             Self::Area(state) => {
-                state.update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
+                state.update(cx, |state, cx| {
+                    state.set_placeholder(placeholder, window, cx)
+                });
             }
         }
     }
@@ -105,8 +111,33 @@ struct TextEntry {
     secret: bool,
     /// The placeholder the widget shows: the Kit has no getter for it.
     placeholder: String,
+    /// The model's text at the last pass. For a secret, only its length
+    /// and whether it was empty are kept, never the text.
+    seen: Seen,
     handlers: Rc<RefCell<TextHandlers>>,
     _subscription: Subscription,
+}
+
+/// What a pass remembers of the model's text, to tell a change made by the
+/// model from an edit of the user that has not reached the model yet.
+#[derive(Clone, PartialEq, Eq)]
+enum Seen {
+    Text(String),
+    /// A secret is not copied: a fingerprint that changes when it does.
+    Secret(u64),
+}
+
+impl Seen {
+    fn of(value: &str, secret: bool) -> Self {
+        if secret {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            value.hash(&mut hasher);
+            Self::Secret(hasher.finish())
+        } else {
+            Self::Text(value.to_owned())
+        }
+    }
 }
 
 /// One option of a select control, as the Kit's select wants it.
@@ -237,6 +268,16 @@ impl WidgetCache {
         Some(entry.widget.value(cx).to_string())
     }
 
+    /// The Kit state of a single-line text field, if the scope holds one.
+    /// For tests: it outlives the scope, so a test can see what became of
+    /// the buffer after the scope was closed.
+    pub fn text_input(&self, scope: &str, key: &str) -> Option<Entity<InputState>> {
+        match &self.scopes.get(scope)?.texts.get(key)?.widget {
+            TextWidget::Line(state) => Some(state.clone()),
+            TextWidget::Area(_) => None,
+        }
+    }
+
     /// The first text field the last pass of the scope drew.
     pub(crate) fn first_text(&self, scope: &str) -> Option<TextWidget> {
         let scope = self.scopes.get(scope)?;
@@ -271,6 +312,7 @@ impl WidgetCache {
             let handlers = Rc::new(RefCell::new(TextHandlers {
                 on_edit: spec.on_edit.clone(),
                 on_submit: spec.on_submit.cloned(),
+                delivered: false,
             }));
             let value = SharedString::from(spec.value.to_owned());
             let placeholder = SharedString::from(spec.placeholder.to_owned());
@@ -323,18 +365,32 @@ impl WidgetCache {
                 widget,
                 secret,
                 placeholder: spec.placeholder.to_owned(),
+                seen: Seen::of(spec.value, secret),
                 handlers,
                 _subscription: subscription,
             }
         });
-        *entry.handlers.borrow_mut() = TextHandlers {
-            on_edit: spec.on_edit.clone(),
-            on_submit: spec.on_submit.cloned(),
+        let delivered = {
+            let mut handlers = entry.handlers.borrow_mut();
+            handlers.on_edit = spec.on_edit.clone();
+            handlers.on_submit = spec.on_submit.cloned();
+            std::mem::take(&mut handlers.delivered)
         };
         let widget = entry.widget.clone();
-        // The model's text is the truth. Writing only on a difference keeps
-        // the caret where the user types: `set_value` moves it to the end.
-        if widget.value(cx).as_ref() != spec.value {
+        // The model's text is the truth, and the widget is written only
+        // where it differs: `set_value` moves the caret to the end.
+        //
+        // The widget may also differ because the user has just typed and
+        // the edit is still on its way to the model (the Kit delivers it
+        // when the current update ends, and a frame can be drawn before
+        // that). Writing then would undo the keystroke. So the widget is
+        // corrected when the model's text changed since the last pass, or
+        // when an edit has been delivered and the model answered with
+        // another text than the widget has.
+        let seen = Seen::of(spec.value, spec.secret);
+        let model_changed = entry.seen != seen;
+        entry.seen = seen;
+        if (model_changed || delivered) && widget.value(cx).as_ref() != spec.value {
             widget.set_value(spec.value, window, cx);
         }
         if entry.placeholder != spec.placeholder {
@@ -361,8 +417,7 @@ impl WidgetCache {
         scope.used.insert(key.to_owned());
         let entry = scope.selects.entry(key.to_owned()).or_insert_with(|| {
             let handler = Rc::new(RefCell::new(on_pick.clone()));
-            let widget =
-                cx.new(|cx| SelectState::new(select_options(options), None, window, cx));
+            let widget = cx.new(|cx| SelectState::new(select_options(options), None, window, cx));
             let subscription = cx.subscribe(&widget, {
                 let store = store.clone();
                 let handler = Rc::clone(&handler);
@@ -455,7 +510,11 @@ fn edited(
     secret: bool,
     cx: &mut App,
 ) {
-    let on_edit = handlers.borrow().on_edit.clone();
+    let on_edit = {
+        let mut handlers = handlers.borrow_mut();
+        handlers.delivered = true;
+        handlers.on_edit.clone()
+    };
     if secret {
         let value = SecretText::from(value.as_ref());
         dispatch(store, cx, move |m| on_edit(m, value.expose()));

@@ -124,7 +124,12 @@ pub struct GridDelegate {
 
 impl GridDelegate {
     /// Reports a press on the header of a sortable column to the model.
-    fn sort_pressed(shared: &Rc<RefCell<Shared>>, store: &Entity<AppStore>, col_ix: usize, cx: &mut App) {
+    fn sort_pressed(
+        shared: &Rc<RefCell<Shared>>,
+        store: &Entity<AppStore>,
+        col_ix: usize,
+        cx: &mut App,
+    ) {
         let request = {
             let mut shared = shared.borrow_mut();
             // The Kit moved its own indicator; the next pass puts the
@@ -150,7 +155,12 @@ impl GridDelegate {
 
     /// Makes `id` the selection unless the selection has it already: what a
     /// right click does before the menu opens.
-    fn select_for_menu(shared: &Rc<RefCell<Shared>>, store: &Entity<AppStore>, id: &str, cx: &mut App) {
+    fn select_for_menu(
+        shared: &Rc<RefCell<Shared>>,
+        store: &Entity<AppStore>,
+        id: &str,
+        cx: &mut App,
+    ) {
         let request = {
             let shared = shared.borrow();
             if shared.table.selection.contains(id) {
@@ -339,7 +349,11 @@ impl TableDelegate for GridDelegate {
                             shared.anchor = Some(id.clone());
                         }
                         shared.table.selection = Selection::Multi(next.clone());
-                        shared.table.on_select_many.clone().map(|handler| (handler, next))
+                        shared
+                            .table
+                            .on_select_many
+                            .clone()
+                            .map(|handler| (handler, next))
                     };
                     if let Some((on_select_many, rows)) = request {
                         dispatch(&store, cx, move |m| on_select_many(m, &rows));
@@ -535,10 +549,9 @@ impl ObjectGrid {
         cx: &mut App,
     ) -> AnyElement {
         let ui = pass.ui;
-        let grid = ui
-            .cache
-            .borrow_mut()
-            .grid(pass.scope, &table.key, || Self::new(table, &ui.store, window, cx));
+        let grid = ui.cache.borrow_mut().grid(pass.scope, &table.key, || {
+            Self::new(table, &ui.store, window, cx)
+        });
         grid.sync(pass, table, cx);
 
         let rows = table.rows.len();
@@ -557,7 +570,10 @@ impl ObjectGrid {
             move |_: &ActivateRow, _: &mut Window, cx: &mut App| {
                 let request = {
                     let shared = shared.borrow();
-                    let row = state.read(cx).selected_row().and_then(|ix| shared.row_id(ix));
+                    let row = state
+                        .read(cx)
+                        .selected_row()
+                        .and_then(|ix| shared.row_id(ix));
                     row.zip(shared.table.on_activate.clone())
                 };
                 match request {
@@ -659,14 +675,11 @@ impl ObjectGrid {
                     .as_ref()
                     .and_then(|id| shared.index.get(id).copied()),
                 // The cursor stays where it is while its row is selected.
-                Selection::Multi(_) => state
-                    .read(cx)
-                    .selected_row()
-                    .filter(|ix| {
-                        shared
-                            .row_id(*ix)
-                            .is_some_and(|id| table.selection.contains(&id))
-                    }),
+                Selection::Multi(_) => state.read(cx).selected_row().filter(|ix| {
+                    shared
+                        .row_id(*ix)
+                        .is_some_and(|id| table.selection.contains(&id))
+                }),
             };
             (wanted, shared.multi())
         };

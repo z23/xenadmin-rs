@@ -4,8 +4,9 @@ use std::rc::Rc;
 
 use xenadmin_ui::surface::{self as s, Block};
 
-use super::{Ui, fields, join, pressable, segment, tip};
+use super::{Ui, element_id, fields, join, pressable, segment, tip};
 use crate::kit::*;
+use crate::store::dispatch;
 use crate::widgets;
 use crate::widgets::object_grid::{GridHeight, ObjectGrid};
 
@@ -74,11 +75,9 @@ fn block(
     let anonymous = join(base, &format!("#{index}"));
     match block {
         Block::Heading(value) => widgets::heading(anonymous, value, cx),
-        Block::Text(text) => {
-            widgets::text(join(base, &segment(text.key.as_ref(), index)), text, cx)
-        }
+        Block::Text(text) => widgets::text(element_id(base, text.key.as_ref(), index), text, cx),
         Block::Notice(notice) => {
-            widgets::notice(join(base, &segment(notice.key.as_ref(), index)), notice, cx)
+            widgets::notice(element_id(base, notice.key.as_ref(), index), notice, cx)
         }
         Block::Field(field) => fields::field(pass, base, field, window, cx),
         Block::Choice(choice) => fields::choice(pass, base, choice, window, cx),
@@ -100,16 +99,16 @@ fn block(
         Block::Actions(buttons) => button_row(pass.ui, buttons, cx).into_any_element(),
         Block::Group(group) => {
             let path = join(base, &segment(group.key.as_ref(), index));
-            self::group(pass, &path, group, window, cx)
+            let id = element_id(base, group.key.as_ref(), index);
+            self::group(pass, &id, &path, group, window, cx)
         }
         Block::Columns(columns) => self::columns(pass, &anonymous, columns, window, cx),
-        Block::Custom(custom) => {
-            let path = join(base, &segment(custom.key.as_ref(), index));
-            match pass.ui.custom(&custom.name) {
-                Some(render) => render(custom, pass.ui, window, cx),
-                None => widgets::missing_custom(path, custom, cx),
+        Block::Custom(custom) => match pass.ui.custom(&custom.name) {
+            Some(render) => render(custom, pass.ui, window, cx),
+            None => {
+                widgets::missing_custom(element_id(base, custom.key.as_ref(), index), custom, cx)
             }
-        }
+        },
         Block::Divider => div()
             .id(SharedString::from(anonymous))
             .test_support()
@@ -124,6 +123,7 @@ fn block(
 /// folded state is the front end's.
 fn group(
     pass: &Pass<'_>,
+    id: &str,
     path: &str,
     group: &s::Group,
     window: &mut Window,
@@ -164,7 +164,7 @@ fn group(
         let toggled = path.to_owned();
         let ring = cx.theme().ring;
         pressable(
-            SharedString::from(path.to_owned()),
+            SharedString::from(id.to_owned()),
             &focus,
             move |window, _| {
                 ui.cache.borrow_mut().toggle_folded(&scope, &toggled);
@@ -182,7 +182,7 @@ fn group(
         .into_any_element()
     } else {
         div()
-            .id(SharedString::from(path.to_owned()))
+            .id(SharedString::from(id.to_owned()))
             .test_support()
             .role(Role::Group)
             .aria_label(label)
@@ -272,7 +272,19 @@ pub fn button(ui: &Ui, button: &s::Button) -> Button {
         Some(reason) => styled
             .disabled(true)
             .tooltip(SharedString::from(reason.clone())),
-        None => styled.on_click(ui.on_click(&button.on_press)),
+        None => {
+            // In a dialog the Kit sends Enter to the dialog as its confirm
+            // action. The button that has the keyboard takes it first: Enter
+            // presses the focused button, in a dialog as outside one.
+            let store = ui.store.clone();
+            let on_press = button.on_press.clone();
+            styled
+                .on_click(ui.on_click(&button.on_press))
+                .on_action(move |_: &Confirm, _, cx| {
+                    let on_press = on_press.clone();
+                    dispatch(&store, cx, move |m| on_press(m));
+                })
+        }
     }
 }
 
@@ -288,12 +300,19 @@ pub fn button_row(ui: &Ui, buttons: &[s::Button], _cx: &App) -> Div {
 /// has no tooltip of its own.
 pub(crate) fn with_reason(
     id: String,
+    label: &str,
     reason: Option<&String>,
     control: impl IntoElement,
 ) -> AnyElement {
     match reason {
+        // The reason is the tooltip, and the description of a group named
+        // like the control, so assistive technology reads it too.
         Some(reason) => div()
             .id(SharedString::from(id))
+            .test_support()
+            .role(Role::Group)
+            .aria_label(SharedString::from(label.to_owned()))
+            .aria_description(SharedString::from(reason.clone()))
             .w_full()
             .tooltip(tip(reason.clone()))
             .child(control)

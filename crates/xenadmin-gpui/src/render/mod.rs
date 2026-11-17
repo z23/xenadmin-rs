@@ -11,7 +11,8 @@
 //!   widget is corrected only where it differs.
 //! - Every keyed element has `.id(key)`, the test-support marking, and an
 //!   accessible role and label. An element without a key takes the path the
-//!   flattened description gives it, so the two lists can be merged.
+//!   flattened description gives it as its id (`tab/#0`,
+//!   `<surface>/<review>/lines/#1`), so the two lists can be merged.
 //! - A disabled control shows its reason as a tooltip.
 
 mod blocks;
@@ -64,6 +65,11 @@ impl Ui {
             customs: Rc::new(RefCell::new(HashMap::new())),
             column_widths: Rc::new(RefCell::new(None)),
         }
+    }
+
+    /// The widget state the renderer keeps, for tests.
+    pub fn widgets(&self) -> std::cell::Ref<'_, WidgetCache> {
+        self.cache.borrow()
     }
 
     /// Registers the element drawn for `Custom { name, .. }`.
@@ -122,6 +128,10 @@ pub fn tip(text: impl Into<SharedString>) -> impl Fn(&mut Window, &mut App) -> A
 
 /// A keyed element the keyboard can reach and press: a Tab stop that a
 /// click, Enter and Space activate. `focus` comes from [`Ui::focus_handle`].
+///
+/// Inside a dialog the Kit binds Enter to its confirm action, which is
+/// dispatched before any key listener: the element handles that action
+/// too, so Enter presses what has the keyboard there as well.
 pub fn pressable(
     id: impl Into<ElementId>,
     focus: &FocusHandle,
@@ -129,12 +139,14 @@ pub fn pressable(
 ) -> Keyed {
     let on_press = Rc::new(on_press);
     let on_key = Rc::clone(&on_press);
+    let on_confirm = Rc::clone(&on_press);
     div()
         .id(id)
         .test_support()
         .track_focus(focus)
         .cursor_pointer()
         .on_click(move |_, window, cx| on_press(window, cx))
+        .on_action(move |_: &Confirm, window, cx| on_confirm(window, cx))
         .on_key_down(move |event: &KeyDownEvent, window, cx| {
             if matches!(event.keystroke.key.as_str(), "enter" | "space") {
                 on_key(window, cx);
@@ -149,6 +161,15 @@ pub(crate) fn join(base: &str, segment: &str) -> String {
         segment.to_owned()
     } else {
         format!("{base}/{segment}")
+    }
+}
+
+/// The id of an element of a description: its key when it has one, else
+/// its path in the flattened description.
+pub(crate) fn element_id(base: &str, key: Option<&String>, index: usize) -> String {
+    match key {
+        Some(key) => key.clone(),
+        None => join(base, &format!("#{index}")),
     }
 }
 

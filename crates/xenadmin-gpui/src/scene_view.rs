@@ -83,11 +83,7 @@ pub fn object_header(ui: &Ui, cx: &App) -> AnyElement {
         .px_4()
         .pt_3()
         .pb_2()
-        .child(
-            Icon::new(kind_icon(header.icon))
-                .size_5()
-                .text_color(muted),
-        )
+        .child(Icon::new(kind_icon(header.icon)).size_5().text_color(muted))
         .child(
             div()
                 .min_w_0()
@@ -281,10 +277,7 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
                 .into_any_element()
         }
         Some(TabBody::Custom(custom)) => {
-            let path = match &custom.key {
-                Some(key) => format!("{TAB_BASE}/{key}"),
-                None => format!("{TAB_BASE}/#0"),
-            };
+            let path = crate::render::element_id(TAB_BASE, custom.key.as_ref(), 0);
             let element = match ui.custom(&custom.name) {
                 Some(render) => render(&custom, ui, window, cx),
                 None => widgets::missing_custom(path, &custom, cx),

@@ -21,18 +21,20 @@ pub fn review_panel(ui: &Ui, path: &str, review: &Review, cx: &App) -> AnyElemen
         .aria_label("Review")
         .gap_3()
         .when(!review.lines.is_empty(), |panel| {
-            panel.child(v_flex().gap_1().children(review.lines.iter().enumerate().map(
-                |(index, line)| {
-                    let line = SharedString::from(line.clone());
-                    div()
-                        .id(SharedString::from(format!("{path}/lines/#{index}")))
-                        .test_support()
-                        .role(Role::Label)
-                        .aria_label(line.clone())
-                        .text_sm()
-                        .child(line)
-                },
-            )))
+            panel.child(
+                v_flex()
+                    .gap_1()
+                    .children(review.lines.iter().enumerate().map(|(index, line)| {
+                        let line = SharedString::from(line.clone());
+                        div()
+                            .id(SharedString::from(format!("{path}/lines/#{index}")))
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(line.clone())
+                            .text_sm()
+                            .child(line)
+                    })),
+            )
         })
         .when(!review.affected.is_empty(), |panel| {
             panel
@@ -51,26 +53,28 @@ pub fn review_panel(ui: &Ui, path: &str, review: &Review, cx: &App) -> AnyElemen
                 ))
         })
         .when(!review.warnings.is_empty(), |panel| {
-            panel.child(v_flex().gap_1().children(
-                review.warnings.iter().enumerate().map(|(index, line)| {
-                    let line = SharedString::from(line.clone());
-                    h_flex()
-                        .id(SharedString::from(format!("{path}/warnings/#{index}")))
-                        .test_support()
-                        .role(Role::Label)
-                        .aria_label(line.clone())
-                        .items_start()
-                        .gap_2()
-                        .text_sm()
-                        .text_color(warning)
-                        .child(
-                            div()
-                                .pt_0p5()
-                                .child(Icon::new(IconName::TriangleAlert).small()),
-                        )
-                        .child(div().flex_1().min_w_0().child(line))
-                }),
-            ))
+            panel.child(
+                v_flex()
+                    .gap_1()
+                    .children(review.warnings.iter().enumerate().map(|(index, line)| {
+                        let line = SharedString::from(line.clone());
+                        h_flex()
+                            .id(SharedString::from(format!("{path}/warnings/#{index}")))
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(line.clone())
+                            .items_start()
+                            .gap_2()
+                            .text_sm()
+                            .text_color(warning)
+                            .child(
+                                div()
+                                    .pt_0p5()
+                                    .child(Icon::new(IconName::TriangleAlert).small()),
+                            )
+                            .child(div().flex_1().min_w_0().child(line))
+                    })),
+            )
         })
         .when_some(review.stale.clone(), |panel, stale| {
             let stale = SharedString::from(stale);
@@ -84,11 +88,7 @@ pub fn review_panel(ui: &Ui, path: &str, review: &Review, cx: &App) -> AnyElemen
                     .gap_2()
                     .text_sm()
                     .text_color(danger)
-                    .child(
-                        div()
-                            .pt_0p5()
-                            .child(Icon::new(IconName::CircleX).small()),
-                    )
+                    .child(div().pt_0p5().child(Icon::new(IconName::CircleX).small()))
                     .child(div().flex_1().min_w_0().child(stale)),
             )
         })

@@ -3,7 +3,7 @@
 use xenadmin_ui::surface::Property;
 
 use crate::kit::*;
-use crate::render::{Ui, join, segment, tone_color};
+use crate::render::{Ui, element_id, tone_color};
 
 /// The width of the label column.
 const LABEL_WIDTH: f32 = 168.0;
@@ -17,7 +17,7 @@ pub fn property_list(ui: &Ui, base: &str, items: &[Property], cx: &App) -> AnyEl
         .w_full()
         .gap_1p5()
         .children(items.iter().enumerate().map(|(index, item)| {
-            let id = join(base, &segment(item.key.as_ref(), index));
+            let id = element_id(base, item.key.as_ref(), index);
             let label = SharedString::from(item.label.clone());
             let value = SharedString::from(item.value.clone());
             h_flex()

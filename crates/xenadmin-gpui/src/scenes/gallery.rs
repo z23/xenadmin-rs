@@ -19,9 +19,9 @@ use serde_json::json;
 use xenadmin_ui::command::{self, CommandId};
 use xenadmin_ui::object::{ObjectKind, ObjectRef, Target};
 use xenadmin_ui::surface::{
-    Block, NoticeKind, OutcomeState, Row, Surface, Tone, actions, alert, button, caption,
-    checkbox, choice, column, columns, custom, divider, group, heading, input, notice, option,
-    outcome, properties, property, review, row, secret_input, select, table, text, textarea,
+    Block, NoticeKind, OutcomeState, Row, Surface, Tone, actions, alert, button, caption, checkbox,
+    choice, column, columns, custom, divider, group, heading, input, notice, option, outcome,
+    properties, property, review, row, secret_input, select, table, text, textarea,
 };
 use xenadmin_ui::tabs::TabBody;
 use xenadmin_ui::{Model, SecretText, blocks, memory_label};
@@ -188,9 +188,14 @@ fn dialog(lab: &LabRef) -> Surface {
         .help("Shown in the tree and in every list.")
         .error_opt(name_error)
         .on_submit(move |_| log(&l8, "submit:lab-name")),
-        secret_input("lab-password", "Password", &state.password, move |_, value| {
-            l2.borrow_mut().password.set(value);
-        })
+        secret_input(
+            "lab-password",
+            "Password",
+            &state.password,
+            move |_, value| {
+                l2.borrow_mut().password.set(value);
+            }
+        )
         .placeholder("Password of the remote pool"),
         textarea("lab-notes", "Description", &state.notes, move |_, value| {
             l3.borrow_mut().notes = value.to_owned();
@@ -212,8 +217,7 @@ fn dialog(lab: &LabRef) -> Surface {
             "lab-mode",
             [
                 option("full", "Full copy").detail("Independent disks. Takes longer."),
-                option("fast", "Fast clone")
-                    .detail("Shares unchanged blocks with the original."),
+                option("fast", "Fast clone").detail("Shares unchanged blocks with the original."),
                 option("linked", "Linked clone")
                     .disabled_if(true, "The storage repository cannot link disks."),
             ],
@@ -245,9 +249,11 @@ fn dialog(lab: &LabRef) -> Surface {
             property("Storage", "Local storage on xcp-lab-01"),
         ])
         .warning("The original keeps running while its disks are copied.")
-        .stale(state.stale.then_some(
-            "The inventory changed after this review was prepared. Review it again."
-        )),
+        .stale(
+            state.stale.then_some(
+                "The inventory changed after this review was prepared. Review it again."
+            )
+        ),
     ];
     Surface::dialog(DIALOG, "Copy VM")
         .subtitle("web-01 • 6f1c0a52-8d3e-4b71-9c5a-2e7d0f4b9a13")
@@ -345,14 +351,23 @@ fn wizard(lab: &LabRef) -> Surface {
             )
             .affected([
                 property("Template", state.template.clone().unwrap_or_default()),
-                property("Storage", state.storage.clone().unwrap_or_else(|| "Local storage".into())),
+                property(
+                    "Storage",
+                    state
+                        .storage
+                        .clone()
+                        .unwrap_or_else(|| "Local storage".into())
+                ),
             ]),
         ],
     };
     let last = step == STEPS.len() - 1;
     let invalid = step == 1 && state.name.trim().is_empty();
     let forward = if last {
-        button("lab-create", "Create", move |_| log(&l3, "press:lab-create")).primary()
+        button("lab-create", "Create", move |_| {
+            log(&l3, "press:lab-create")
+        })
+        .primary()
     } else {
         button("lab-next", "Next", move |_| {
             let mut lab = l3.borrow_mut();
@@ -386,54 +401,50 @@ fn properties_dialog(lab: &LabRef) -> Surface {
         lab.clone(),
         lab.clone(),
     );
-    let body = match state.page.as_str() {
-        "cpu" => blocks![
-            heading("Processors and memory"),
-            choice(
-                "lab-view",
-                [option("list", "2 vCPUs"), option("tree", "4 vCPUs")],
-                Some(state.view.as_str()),
-                move |_, id| l1.borrow_mut().view = id.to_owned(),
-            )
-            .label("Processors")
-            .segmented(),
-            notice(
-                NoticeKind::Info,
-                "A change of the processor count takes effect at the next start."
-            ),
-        ],
-        "advanced" => blocks![
-            heading("Advanced"),
-            properties((0..18).map(|index| property(
-                format!("Platform key {index}"),
-                format!("value {index}")
-            ))),
-        ],
-        _ => blocks![
-            heading("General"),
-            input("lab-name", "Name", &state.name, move |_, value| {
-                l1.borrow_mut().name = value.to_owned();
-            }),
-            textarea("lab-notes", "Description", &state.notes, move |_, value| {
-                l2.borrow_mut().notes = value.to_owned();
-            }),
-            checkbox(
-                "lab-start",
-                "Start with the host",
-                state.start,
-                move |_| {
+    let body =
+        match state.page.as_str() {
+            "cpu" => blocks![
+                heading("Processors and memory"),
+                choice(
+                    "lab-view",
+                    [option("list", "2 vCPUs"), option("tree", "4 vCPUs")],
+                    Some(state.view.as_str()),
+                    move |_, id| l1.borrow_mut().view = id.to_owned(),
+                )
+                .label("Processors")
+                .segmented(),
+                notice(
+                    NoticeKind::Info,
+                    "A change of the processor count takes effect at the next start."
+                ),
+            ],
+            "advanced" => blocks![
+                heading("Advanced"),
+                properties((0..18).map(|index| property(
+                    format!("Platform key {index}"),
+                    format!("value {index}")
+                ))),
+            ],
+            _ => blocks![
+                heading("General"),
+                input("lab-name", "Name", &state.name, move |_, value| {
+                    l1.borrow_mut().name = value.to_owned();
+                }),
+                textarea("lab-notes", "Description", &state.notes, move |_, value| {
+                    l2.borrow_mut().notes = value.to_owned();
+                }),
+                checkbox("lab-start", "Start with the host", state.start, move |_| {
                     let mut lab = l3.borrow_mut();
                     lab.start = !lab.start;
-                }
-            ),
-            properties([
-                property("UUID", "6f1c0a52-8d3e-4b71-9c5a-2e7d0f4b9a13")
-                    .key("lab-uuid")
-                    .copyable(),
-                property("Power state", "Running").tone(Tone::Success),
-            ]),
-        ],
-    };
+                }),
+                properties([
+                    property("UUID", "6f1c0a52-8d3e-4b71-9c5a-2e7d0f4b9a13")
+                        .key("lab-uuid")
+                        .copyable(),
+                    property("Power state", "Running").tone(Tone::Success),
+                ]),
+            ],
+        };
     Surface::properties(
         PROPERTIES,
         "Properties",
@@ -468,9 +479,9 @@ fn confirm(lab: &LabRef) -> Surface {
     let confirmed = lab.clone();
     Surface::dialog(CONFIRM, "Save the changes?")
         .small()
-        .body(blocks![
-            text("The VM is running. The new name is shown at once; the rest waits for a restart."),
-        ])
+        .body(blocks![text(
+            "The VM is running. The new name is shown at once; the rest waits for a restart."
+        ),])
         .footer([
             button("lab-confirm-no", "Keep editing", close(lab, CONFIRM)),
             button("lab-confirm-yes", "Save", move |_| {
@@ -546,11 +557,15 @@ fn guests_table(lab: &LabRef, m: &Model, multi: bool) -> Block {
         ],
         guest_rows(&state, m),
     )
-    .sorted(state.sort.0.clone(), state.sort.1, move |_, column, descending| {
-        let mut lab = l1.borrow_mut();
-        lab.sort = (column.to_owned(), descending);
-        lab.log.push(format!("sort:{column}:{descending}"));
-    })
+    .sorted(
+        state.sort.0.clone(),
+        state.sort.1,
+        move |_, column, descending| {
+            let mut lab = l1.borrow_mut();
+            lab.sort = (column.to_owned(), descending);
+            lab.log.push(format!("sort:{column}:{descending}"));
+        },
+    )
     .on_activate(move |_, id| log(&l2, format!("activate:{id}")))
     .row_menu([CommandId("object.copy-uuid")])
     .empty("No virtual machines match.");
@@ -587,9 +602,12 @@ fn every_block(lab: &LabRef) -> Vec<Block> {
         text("A warning text.").tone(Tone::Warning),
         alert("An alert: the host did not answer.").key("lab-alert"),
         notice(NoticeKind::Info, "An information notice.").key("lab-info"),
-        notice(NoticeKind::Warning, "The pool has one host without a current update.")
-            .title("Update pending")
-            .key("lab-warning"),
+        notice(
+            NoticeKind::Warning,
+            "The pool has one host without a current update."
+        )
+        .title("Update pending")
+        .key("lab-warning"),
         notice(NoticeKind::Danger, "The storage repository is detached.").key("lab-danger"),
         notice(NoticeKind::Preview, "Synthetic data. No host is connected.").key("lab-preview"),
         divider(),
@@ -598,15 +616,10 @@ fn every_block(lab: &LabRef) -> Vec<Block> {
                 input("lab-name", "Name", &state.name, move |_, value| {
                     l1.borrow_mut().name = value.to_owned();
                 }),
-                checkbox(
-                    "lab-start",
-                    "Start with the host",
-                    state.start,
-                    move |_| {
-                        let mut lab = l2.borrow_mut();
-                        lab.start = !lab.start;
-                    }
-                ),
+                checkbox("lab-start", "Start with the host", state.start, move |_| {
+                    let mut lab = l2.borrow_mut();
+                    lab.start = !lab.start;
+                }),
             ],
             blocks![properties([
                 property("UUID", "6f1c0a52-8d3e-4b71-9c5a-2e7d0f4b9a13")
@@ -619,22 +632,52 @@ fn every_block(lab: &LabRef) -> Vec<Block> {
         group(
             "Operations",
             blocks![
-                outcome_of("lab-running", OutcomeState::Running(Some(0.4)), "Copying web-01")
-                    .action(button("lab-cancel-task", "Cancel", logged(lab, "press:lab-cancel-task"))),
-                outcome_of("lab-waiting", OutcomeState::Running(None), "Waiting for the host"),
-                outcome_of("lab-succeeded", OutcomeState::Succeeded, "web-01 was copied"),
+                outcome_of(
+                    "lab-running",
+                    OutcomeState::Running(Some(0.4)),
+                    "Copying web-01"
+                )
+                .action(button(
+                    "lab-cancel-task",
+                    "Cancel",
+                    logged(lab, "press:lab-cancel-task")
+                )),
+                outcome_of(
+                    "lab-waiting",
+                    OutcomeState::Running(None),
+                    "Waiting for the host"
+                ),
+                outcome_of(
+                    "lab-succeeded",
+                    OutcomeState::Succeeded,
+                    "web-01 was copied"
+                ),
                 outcome_of("lab-failed", OutcomeState::Failed, "The copy failed")
                     .line("SR_FULL: the storage repository has no room."),
-                outcome_of("lab-partial", OutcomeState::Partial, "Two of three disks were copied"),
-                outcome_of("lab-unknown", OutcomeState::Unknown, "The outcome is unknown")
-                    .line("The connection was lost before the host answered.")
-                    .action(button("lab-recheck", "Recheck", logged(lab, "press:lab-recheck")).primary())
-                    .action(button(
-                        "lab-acknowledge",
-                        "Acknowledge",
-                        logged(lab, "press:lab-acknowledge")
-                    )),
-                outcome_of("lab-cancelled", OutcomeState::Cancelled, "The copy was cancelled"),
+                outcome_of(
+                    "lab-partial",
+                    OutcomeState::Partial,
+                    "Two of three disks were copied"
+                ),
+                outcome_of(
+                    "lab-unknown",
+                    OutcomeState::Unknown,
+                    "The outcome is unknown"
+                )
+                .line("The connection was lost before the host answered.")
+                .action(
+                    button("lab-recheck", "Recheck", logged(lab, "press:lab-recheck")).primary()
+                )
+                .action(button(
+                    "lab-acknowledge",
+                    "Acknowledge",
+                    logged(lab, "press:lab-acknowledge")
+                )),
+                outcome_of(
+                    "lab-cancelled",
+                    OutcomeState::Cancelled,
+                    "The copy was cancelled"
+                ),
             ]
         )
         .key("lab-operations"),
@@ -646,11 +689,23 @@ fn every_block(lab: &LabRef) -> Vec<Block> {
         .collapsed(),
         actions([
             button("lab-primary", "Primary", logged(lab, "press:lab-primary")).primary(),
-            button("lab-secondary", "Secondary", logged(lab, "press:lab-secondary")),
-            button("lab-danger-button", "Danger", logged(lab, "press:lab-danger-button")).danger(),
+            button(
+                "lab-secondary",
+                "Secondary",
+                logged(lab, "press:lab-secondary")
+            ),
+            button(
+                "lab-danger-button",
+                "Danger",
+                logged(lab, "press:lab-danger-button")
+            )
+            .danger(),
             button("lab-ghost", "Ghost", logged(lab, "press:lab-ghost")).ghost(),
-            button("lab-disabled", "Disabled", move |_| log(&l3, "press:lab-disabled"))
-                .disabled_if(true, "Demo mode cannot change infrastructure."),
+            button("lab-disabled", "Disabled", move |_| log(
+                &l3,
+                "press:lab-disabled"
+            ))
+            .disabled_if(true, "Demo mode cannot change infrastructure."),
         ]),
         custom("lab-missing", json!({ "series": 2 })).key("lab-custom"),
     ]

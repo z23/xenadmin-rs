@@ -55,11 +55,21 @@ pub(crate) fn field(
                     .disabled(disabled)
                     .into_any_element(),
                 // A text area has no id of its own: the keyed wrapper is
-                // what tests and the tree find.
+                // what tests and the tree find. The Kit binds Tab in a text
+                // area to indentation, which would hold the keyboard in a
+                // form: here Tab and Shift+Tab move on, as in every field.
                 TextWidget::Area(state) => div()
                     .id(key.clone())
                     .test_support()
                     .w_full()
+                    .capture_action(|_: &IndentInline, window, cx| {
+                        window.focus_next(cx);
+                        cx.stop_propagation();
+                    })
+                    .capture_action(|_: &OutdentInline, window, cx| {
+                        window.focus_prev(cx);
+                        cx.stop_propagation();
+                    })
                     .child(
                         Textarea::new(&state)
                             .aria_label(label.clone())
@@ -67,7 +77,10 @@ pub(crate) fn field(
                     )
                     .into_any_element(),
             };
-            (with_reason(wrap, field.disabled.as_ref(), control), true)
+            (
+                with_reason(wrap, &field.label, field.disabled.as_ref(), control),
+                true,
+            )
         }
         Control::Checkbox { checked, on_toggle } => {
             let store = ui.store.clone();
@@ -76,14 +89,12 @@ pub(crate) fn field(
                 .label(label.clone())
                 .checked(*checked)
                 .disabled(disabled)
-                .when_some(field.disabled.clone(), |checkbox, reason| {
-                    checkbox.tooltip(SharedString::from(reason))
-                })
                 .on_change(move |_: &bool, _, cx| {
                     let on_toggle = on_toggle.clone();
                     dispatch(&store, cx, move |m| on_toggle(m));
                 });
-            (control.into_any_element(), false)
+            let control = with_reason(wrap, &field.label, field.disabled.as_ref(), control);
+            (control, false)
         }
         Control::Select {
             options,
@@ -101,7 +112,10 @@ pub(crate) fn field(
                 window,
                 cx,
             );
-            (with_reason(wrap, field.disabled.as_ref(), control), true)
+            (
+                with_reason(wrap, &field.label, field.disabled.as_ref(), control),
+                true,
+            )
         }
     };
     widgets::form_row(
@@ -241,6 +255,7 @@ pub(crate) fn choice(
             );
             with_reason(
                 format!("{}-reason", choice.key),
+                choice.label.as_deref().unwrap_or_default(),
                 choice.disabled.as_ref(),
                 control,
             )

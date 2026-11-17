@@ -64,18 +64,20 @@ pub fn outcome_banner(ui: &Ui, path: &str, outcome: &Outcome, cx: &App) -> AnyEl
             },
         )
         .when(!outcome.lines.is_empty(), |panel| {
-            panel.child(v_flex().gap_1().children(outcome.lines.iter().enumerate().map(
-                |(index, line)| {
-                    let line = SharedString::from(line.clone());
-                    div()
-                        .id(SharedString::from(format!("{path}/lines/#{index}")))
-                        .test_support()
-                        .role(Role::Label)
-                        .aria_label(line.clone())
-                        .text_sm()
-                        .child(line)
-                },
-            )))
+            panel.child(
+                v_flex()
+                    .gap_1()
+                    .children(outcome.lines.iter().enumerate().map(|(index, line)| {
+                        let line = SharedString::from(line.clone());
+                        div()
+                            .id(SharedString::from(format!("{path}/lines/#{index}")))
+                            .test_support()
+                            .role(Role::Label)
+                            .aria_label(line.clone())
+                            .text_sm()
+                            .child(line)
+                    })),
+            )
         })
         .when(!outcome.actions.is_empty(), |panel| {
             panel.child(button_row(ui, &outcome.actions, cx))

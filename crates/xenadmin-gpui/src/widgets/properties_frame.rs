@@ -89,7 +89,11 @@ pub fn properties_frame(
                     gpui_kit::transparent_black()
                 })
                 .when(selected, |row| row.bg(selected_fill).font_medium())
-                .text_color(if disabled.is_some() { muted } else { foreground })
+                .text_color(if disabled.is_some() {
+                    muted
+                } else {
+                    foreground
+                })
                 .when_some(disabled, |row, reason| {
                     row.aria_description(SharedString::from(reason.clone()))
                         .tooltip(tip(reason))
