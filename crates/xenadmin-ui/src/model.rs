@@ -427,17 +427,11 @@ impl Model {
     /// The one place a VM command is submitted. A synthetic inventory
     /// refuses with `Error::Stale`; more than [`MAX_OPERATIONS`] unresolved
     /// operations refuse with `Error::Busy`; without a connection the answer
-    /// is `Error::Closed`. The handle is kept in `operations` and wakes the
-    /// model when it changes; its record reaches `operation_rows` at the
-    /// next poll.
+    /// is `Error::Closed` (in that order: [`admit`]). The handle is kept in
+    /// `operations` and wakes the model when it changes; its record reaches
+    /// `operation_rows` at the next poll.
     pub fn submit_tracked_command(&mut self, command: VmCommand) -> Result<OperationId, Error> {
-        if self.demo {
-            return Err(Error::Stale);
-        }
-        self.operations.retain(|op| !op.latest().state.terminal());
-        if self.operations.len() >= MAX_OPERATIONS {
-            return Err(Error::Busy);
-        }
+        self.admit_command()?;
         let id = OperationId::new();
         let operation = self
             .connection
@@ -449,6 +443,16 @@ impl Model {
         }
         self.operations.push(operation);
         Ok(id)
+    }
+
+    /// The refusals of [`Model::submit_tracked_command`] that do not depend
+    /// on the command, without submitting anything. Handles of finished
+    /// operations are forgotten first, as a submission does.
+    pub fn admit_command(&mut self) -> Result<(), Error> {
+        if !self.demo {
+            self.operations.retain(|op| !op.latest().state.terminal());
+        }
+        admit(self.demo, self.operations.len(), self.connection.is_some())
     }
 
     /// Keeps the handle of a resource operation a module has just
@@ -1661,6 +1665,23 @@ impl Model {
             true
         }
     }
+}
+
+/// Whether a VM command may be submitted: the order of the refusals of
+/// [`Model::submit_tracked_command`]. A synthetic inventory is stale
+/// whatever else holds; then the cap on unresolved operations; then the
+/// missing connection.
+pub fn admit(demo: bool, unresolved: usize, connected: bool) -> Result<(), Error> {
+    if demo {
+        return Err(Error::Stale);
+    }
+    if unresolved >= MAX_OPERATIONS {
+        return Err(Error::Busy);
+    }
+    if !connected {
+        return Err(Error::Closed);
+    }
+    Ok(())
 }
 
 /// The Rune `dev_inspection::start`.

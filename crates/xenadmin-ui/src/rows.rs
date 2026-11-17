@@ -149,4 +149,24 @@ mod tests {
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|row| row.name.contains("Xen Orchestra")));
     }
+
+    // Rune: main.rs `search_and_host_filter_select_matching_objects`, the
+    // second half.
+    #[test]
+    fn a_host_filter_keeps_only_the_guests_on_that_host() {
+        let inventory = crate::demonstration(3, 48);
+        let host = inventory.hosts.keys().next().copied();
+        let rows = project_rows(&inventory, InventoryPage::Guests, host, "Xen Orchestra");
+        assert!(!rows.is_empty());
+        for row in &rows {
+            assert_eq!(inventory.vms[&row.vm.unwrap()].host, host);
+        }
+        // One VM's row is the row the page shows for it.
+        let vm = inventory.vms.values().next().unwrap();
+        let all = project_rows(&inventory, InventoryPage::Guests, None, "");
+        assert_eq!(
+            all.iter().find(|row| row.vm == Some(vm.id)),
+            Some(&vm_row(&inventory, vm))
+        );
+    }
 }

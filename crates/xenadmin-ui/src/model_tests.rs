@@ -216,19 +216,38 @@ fn loading_the_demo_again_drops_the_lists_of_the_previous_view() {
 // -- Shared helpers -----------------------------------------------------------
 
 #[test]
-fn a_synthetic_inventory_refuses_every_submission_as_stale() {
+fn the_submission_choke_point_refuses_demo_then_a_full_list_then_a_missing_connection() {
+    // The refusals in the order `submit_tracked_command` makes them. A
+    // command itself cannot be built here: every `VmCommand` carries an
+    // observation only a current connection gives.
+    let stale = Error::Stale.to_string();
+    let busy = Error::Busy.to_string();
+    let closed = Error::Closed.to_string();
+    let text = |result: Result<(), Error>| result.map_err(|error| error.to_string());
+    assert_eq!(text(admit(true, 0, true)), Err(stale.clone()));
+    assert_eq!(text(admit(true, MAX_OPERATIONS, false)), Err(stale.clone()));
+    assert_eq!(text(admit(false, MAX_OPERATIONS, true)), Err(busy.clone()));
+    assert_eq!(text(admit(false, MAX_OPERATIONS + 5, false)), Err(busy));
+    assert_eq!(
+        text(admit(false, MAX_OPERATIONS - 1, false)),
+        Err(closed.clone())
+    );
+    assert_eq!(text(admit(false, MAX_OPERATIONS - 1, true)), Ok(()));
+    assert_eq!(MAX_OPERATIONS, 64);
+
+    // On a model: the demo is stale, a fixture without a connection is closed.
     let mut m = Model::demo(3, 48);
-    let command = |m: &Model| {
-        // No observation can be taken in demo; the choke point refuses before
-        // it looks at the command.
-        let _ = m;
-        None::<VmCommand>
-    };
-    assert!(command(&m).is_none());
+    assert_eq!(text(m.admit_command()), Err(stale.clone()));
+    m.demo = false;
+    assert_eq!(text(m.admit_command()), Err(closed.clone()));
+    assert_eq!(text(Model::fixture().admit_command()), Err(closed));
+    assert!(m.operations.is_empty());
+
+    // The power area's path in demo: the VM cannot even be observed.
+    let mut m = Model::demo(3, 48);
     assert!(m.snapshot.is_none());
-    // The power area's path: the request cannot even be observed.
     m.diagnose_actions(VmId::parse("30000000-0000-0000-0000-000000000001").unwrap());
-    assert_eq!(m.error.as_deref(), Some(Error::Stale.to_string().as_str()));
+    assert_eq!(m.error.as_deref(), Some(stale.as_str()));
     assert!(m.diagnostics.is_none());
 }
 
@@ -1157,4 +1176,52 @@ fn copy_uuid_is_in_the_context_menu_of_an_object_with_a_uuid() {
         ),
         Eligibility::Hidden
     );
+}
+
+// -- Two saved connections to one pool -----------------------------------------
+
+#[test]
+fn two_saved_connections_to_one_pool_show_it_once_through_the_scope_session() {
+    // Rune: search_tests.rs
+    // `aliases_deduplicate_by_pool_and_prefer_current_selected_session_without_comparing_revisions`,
+    // the part a synthetic session can show: one source per pool, and the
+    // scope session wins. (A current connection beating a stale one needs a
+    // real snapshot.)
+    let mut m = Model::demo(3, 48);
+    let pool = demo_pool(&m);
+    let mut copy = m.inventory.clone().unwrap().as_ref().clone();
+    copy.revision += 100;
+    let alias = m.add_synthetic_pool("Alias of the demonstration pool", copy);
+    assert_eq!(
+        session::session_for_pool(&m, pool),
+        Some(crate::demo::profile_id()),
+        "the scope session wins, even with a lower revision"
+    );
+    let rows = crate::nav::view_rows(&m, NavView::Infrastructure);
+    let roots: Vec<_> = rows.iter().filter(|row| row.parent.is_none()).collect();
+    assert_eq!(roots.len(), 2);
+    assert_eq!(
+        roots.iter().map(|row| row.icon).collect::<Vec<_>>(),
+        [ObjectKind::Connection, ObjectKind::Pool]
+    );
+    assert_eq!(
+        rows.iter().filter(|row| row.icon == ObjectKind::Vm).count(),
+        48,
+        "the pool's objects are listed once"
+    );
+    // Selecting the other saved connection makes it the scope session, and
+    // the pool is then shown through it.
+    m.select(Target::one(ObjectRef::new(
+        None,
+        ObjectKind::Connection,
+        alias,
+    )));
+    assert_eq!(m.workspace.selected, Some(alias));
+    assert_eq!(session::session_for_pool(&m, pool), Some(alias));
+    assert!(
+        m.reconcile_selection(),
+        "the connection node is its pool now"
+    );
+    assert_eq!(m.scope(), &Target::one(ObjectRef::pool(pool)));
+    assert!(m.notice.is_none());
 }
