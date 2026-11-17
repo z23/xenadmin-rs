@@ -2,7 +2,7 @@
 //!
 //! This is the data half of the Rune `metric_presets.rs` (`Kind`, `Preset`,
 //! `Catalog` with its validation), moved here ahead of the `performance`
-//! area because `Preferences` embeds the [`Catalog`] and the stored file
+//! area because `Preferences` embeds the `Catalog` and the stored file
 //! format must not change. Saving, applying and removing a preset from the
 //! Performance tab are still to be ported and build on this module.
 

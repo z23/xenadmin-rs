@@ -2,7 +2,7 @@
 //!
 //! This is the Rune `external_tool_command.rs`, unchanged in what it does:
 //! it never used the toolkit. It was moved here ahead of the `vm_tools`
-//! area because `Preferences` embeds the [`Catalog`] and the stored file
+//! area because `Preferences` embeds the `Catalog` and the stored file
 //! format must not change. The area's editor and launcher (`external_tools.rs`)
 //! are still to be ported and build on this module.
 
