@@ -91,6 +91,9 @@ pub trait Call: Sized {
     const ASYNC: &'static str;
     /// The type of what the call gives, as the description writes it.
     const RESULT: &'static str;
+    /// What kind of answer that is: a reference or a record of a class, or something
+    /// the bindings give no type. An [`Answer`] carries it.
+    type Result: ResultKind;
     /// The arguments after the session, in the API's order, as the JSON that is sent.
     fn arguments(self) -> Vec<serde_json::Value>;
     /// The call by its name, with its arguments.
@@ -103,15 +106,62 @@ pub trait Call: Sized {
     }
 }
 
+/// The class of a reference or a record where nothing says which it is: a value read by
+/// key, a string the client kept. It is accepted for any class on the caller's word.
+pub struct Unclassed;
+
+/// A class of the API as a type. The markers in [`class`] are these, and a reference, a
+/// record and a call's answer carry one, so that a `VM` is not taken for a `host` where
+/// the compiler can follow it.
+pub trait IsClass: Sized + 'static {
+    /// The class's name in the API.
+    const NAME: &'static str;
+    /// The view of its records.
+    type View<'a>;
+    /// A view of a record the caller says is of this class.
+    fn view(record: &serde_json::Value) -> Self::View<'_>;
+}
+
+/// Whether something of class `Self` may go where class `C` is wanted: a class fits
+/// itself, and what has no class fits anywhere, on the caller's word.
+pub trait Fits<C> {}
+impl<C: IsClass> Fits<C> for C {}
+impl<C> Fits<C> for Unclassed {}
+
 /// A reference to an object of class `C`, as an argument of a call. One is made with the
-/// function for its class in [`refs`], from text or from a value a host sent. The class is
-/// the caller's word, written where the reference is used; the compiler holds it against
-/// the parameter the reference is given to.
+/// function for its class in [`refs`], or with `into()` from a reference that already has
+/// that class: a view's field, the answer to a call, an [`OpaqueRef`]. The compiler holds
+/// the class against the parameter the reference is given to. For text and for a JSON
+/// value the class is the caller's word, written where the reference is used.
+///
+/// ```
+/// use xenadmin_xapi::{Answer, Call, calls, class, records::VmRecord, refs, result};
+/// let record = serde_json::json!({"resident_on": "OpaqueRef:h"});
+/// // A view's field knows its class, and so does the answer to a call.
+/// let call = calls::host::GetRecord(VmRecord::new(&record).resident_on().into());
+/// assert_eq!(call.arguments(), ["OpaqueRef:h"]);
+/// let found: Answer<result::Reference<class::Vm>> = Answer::new("OpaqueRef:v".into());
+/// assert_eq!(calls::vm::GetRecord(refs::vm(&found)).arguments(), ["OpaqueRef:v"]);
+/// ```
+///
+/// A host's reference is not accepted for a VM, by either way of giving it:
+///
+/// ```compile_fail,E0277
+/// use xenadmin_xapi::{calls, records::VmRecord};
+/// let record = serde_json::json!({"resident_on": "OpaqueRef:h"});
+/// let _ = calls::vm::GetRecord(VmRecord::new(&record).resident_on().into());
+/// ```
+///
+/// ```compile_fail,E0277
+/// use xenadmin_xapi::{records::VmRecord, refs};
+/// let record = serde_json::json!({"resident_on": "OpaqueRef:h"});
+/// let _ = refs::vm(VmRecord::new(&record).resident_on());
+/// ```
 pub struct Ref<'a, C> {
     source: RefSource<'a>,
     class: std::marker::PhantomData<fn() -> C>,
 }
-/// What a reference is made from: text, or a value as a host sent it (a field of a
+/// What a reference is sent from: text, or a value as a host sent it (a field of a
 /// record, the answer to a call), which goes back unread.
 #[derive(Clone, Copy)]
 pub struct RefSource<'a>(Sent<'a>);
@@ -120,36 +170,56 @@ enum Sent<'a> {
     Text(&'a str),
     Json(&'a serde_json::Value),
 }
-impl<'a> From<&'a str> for RefSource<'a> {
-    fn from(reference: &'a str) -> Self {
-        Self(Sent::Text(reference))
+/// What a reference of class `C` can be made from. Text and a JSON value have no class
+/// and are taken on the caller's word. A view's field, an [`OpaqueRef`] and a call's
+/// answer have one, and are taken only where it fits.
+pub trait Refers<'a, C> {
+    /// Where the reference is sent from.
+    fn source(self) -> RefSource<'a>;
+}
+impl<'a, C> Refers<'a, C> for &'a str {
+    fn source(self) -> RefSource<'a> {
+        RefSource(Sent::Text(self))
     }
 }
-impl<'a> From<&'a String> for RefSource<'a> {
-    fn from(reference: &'a String) -> Self {
-        Self(Sent::Text(reference))
+impl<'a, C> Refers<'a, C> for &'a String {
+    fn source(self) -> RefSource<'a> {
+        RefSource(Sent::Text(self))
     }
 }
-impl<'a> From<&'a serde_json::Value> for RefSource<'a> {
-    fn from(value: &'a serde_json::Value) -> Self {
-        Self(Sent::Json(value))
+impl<'a, C> Refers<'a, C> for &'a serde_json::Value {
+    fn source(self) -> RefSource<'a> {
+        RefSource(Sent::Json(self))
     }
 }
-impl<'a> From<RefField<'a>> for RefSource<'a> {
-    fn from(field: RefField<'a>) -> Self {
-        Self(Sent::Json(field.0))
+impl<'a, C> Refers<'a, C> for FieldValue<'a> {
+    fn source(self) -> RefSource<'a> {
+        RefSource(Sent::Json(self.0))
     }
 }
-impl<'a> From<FieldValue<'a>> for RefSource<'a> {
-    fn from(field: FieldValue<'a>) -> Self {
-        Self(Sent::Json(field.0))
+impl<'a, C, D: Fits<C>> Refers<'a, C> for RefField<'a, D> {
+    fn source(self) -> RefSource<'a> {
+        RefSource(Sent::Json(self.0))
+    }
+}
+impl<'a, C, D: Fits<C>> Refers<'a, C> for &'a OpaqueRef<D> {
+    fn source(self) -> RefSource<'a> {
+        RefSource(Sent::Text(&self.0))
+    }
+}
+impl<'a, C, R: ResultKind> Refers<'a, C> for &'a Answer<R>
+where
+    R::Class: Fits<C>,
+{
+    fn source(self) -> RefSource<'a> {
+        RefSource(Sent::Json(&self.0))
     }
 }
 impl<'a, C> Ref<'a, C> {
-    /// A reference the caller says is of class `C`.
-    pub fn new(source: impl Into<RefSource<'a>>) -> Self {
+    /// A reference of class `C`.
+    pub fn new(source: impl Refers<'a, C>) -> Self {
         Self {
-            source: source.into(),
+            source: source.source(),
             class: std::marker::PhantomData,
         }
     }
@@ -167,6 +237,424 @@ impl<C> Clone for Ref<'_, C> {
     }
 }
 impl<C> Copy for Ref<'_, C> {}
+impl<'a, C, D: Fits<C>> From<RefField<'a, D>> for Ref<'a, C> {
+    fn from(field: RefField<'a, D>) -> Self {
+        Self::new(field)
+    }
+}
+impl<'a, C, D: Fits<C>> From<&'a OpaqueRef<D>> for Ref<'a, C> {
+    fn from(reference: &'a OpaqueRef<D>) -> Self {
+        Self::new(reference)
+    }
+}
+
+/// A reference the client holds: the text a host gave for an object, with the class the
+/// reference is of. A reader that returns one takes the class from what it read: a
+/// view's field or a call's answer give theirs, and a value read by key gives none.
+/// It reads as text wherever text is wanted.
+pub struct OpaqueRef<C = Unclassed>(String, std::marker::PhantomData<fn() -> C>);
+impl<C> OpaqueRef<C> {
+    /// A reference as text. Its class is the one the place it is made for gives it.
+    pub fn new(reference: impl Into<String>) -> Self {
+        Self(reference.into(), std::marker::PhantomData)
+    }
+    /// The reference as text.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    /// The text alone, without its class.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+impl<C> Clone for OpaqueRef<C> {
+    fn clone(&self) -> Self {
+        Self::new(self.0.clone())
+    }
+}
+impl<C> std::fmt::Debug for OpaqueRef<C> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+impl<C> std::fmt::Display for OpaqueRef<C> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+impl<C> std::ops::Deref for OpaqueRef<C> {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+impl<C> AsRef<str> for OpaqueRef<C> {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+impl<C> From<OpaqueRef<C>> for String {
+    fn from(reference: OpaqueRef<C>) -> Self {
+        reference.0
+    }
+}
+impl<C> From<OpaqueRef<C>> for serde_json::Value {
+    fn from(reference: OpaqueRef<C>) -> Self {
+        serde_json::Value::String(reference.0)
+    }
+}
+/// Two references compare where their classes fit: a host's is not compared with a VM's.
+impl<C, D: Fits<C>> PartialEq<OpaqueRef<D>> for OpaqueRef<C> {
+    fn eq(&self, other: &OpaqueRef<D>) -> bool {
+        self.0 == other.0
+    }
+}
+impl<C: Fits<C>> Eq for OpaqueRef<C> {}
+/// References order and hash as their text does, so they can be the keys of a map.
+impl<C: Fits<C>> PartialOrd for OpaqueRef<C> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<C: Fits<C>> Ord for OpaqueRef<C> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+impl<C> std::hash::Hash for OpaqueRef<C> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+impl<C> std::borrow::Borrow<str> for OpaqueRef<C> {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+impl<C> PartialEq<str> for OpaqueRef<C> {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+impl<C> PartialEq<&str> for OpaqueRef<C> {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+impl<C> PartialEq<String> for OpaqueRef<C> {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+impl<C> PartialEq<OpaqueRef<C>> for String {
+    fn eq(&self, other: &OpaqueRef<C>) -> bool {
+        *self == other.0
+    }
+}
+impl<C> PartialEq<OpaqueRef<C>> for &str {
+    fn eq(&self, other: &OpaqueRef<C>) -> bool {
+        *self == other.0
+    }
+}
+impl<C> PartialEq<serde_json::Value> for OpaqueRef<C> {
+    fn eq(&self, other: &serde_json::Value) -> bool {
+        *other == self.0
+    }
+}
+impl<C> PartialEq<OpaqueRef<C>> for serde_json::Value {
+    fn eq(&self, other: &OpaqueRef<C>) -> bool {
+        *self == other.0
+    }
+}
+/// A reference is written out, and read back, as its text.
+impl<C> serde::Serialize for OpaqueRef<C> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+impl<'de, C> serde::Deserialize<'de> for OpaqueRef<C> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(Self::new)
+    }
+}
+
+/// The kinds of answer a call gives. A message's [`Call::Result`] is one of these.
+pub mod result {
+    use std::marker::PhantomData;
+    /// Nothing.
+    pub struct Void;
+    /// Something the bindings give no type: text, a number, a map of other things.
+    pub struct Other;
+    /// A reference to an object of class `C`.
+    pub struct Reference<C>(PhantomData<fn() -> C>);
+    /// A record of class `C`.
+    pub struct Record<C>(PhantomData<fn() -> C>);
+    /// The records of class `C` by their references.
+    pub struct Records<C>(PhantomData<fn() -> C>);
+    /// References to objects of class `C`.
+    pub struct References<C>(PhantomData<fn() -> C>);
+}
+/// A kind of answer, and the class of the reference it is when it is one.
+pub trait ResultKind {
+    /// The class of the reference the answer is; [`Unclassed`] for any other answer.
+    type Class;
+}
+impl ResultKind for result::Void {
+    type Class = Unclassed;
+}
+impl ResultKind for result::Other {
+    type Class = Unclassed;
+}
+impl<C> ResultKind for result::Reference<C> {
+    type Class = C;
+}
+impl<C> ResultKind for result::Record<C> {
+    type Class = Unclassed;
+}
+impl<C> ResultKind for result::Records<C> {
+    type Class = Unclassed;
+}
+impl<C> ResultKind for result::References<C> {
+    type Class = Unclassed;
+}
+
+/// What a host answered to a call, with the kind of answer the call gives. It reads as
+/// the JSON value it is. Where the call gives a record of a class, a view of another
+/// class does not accept it; where it gives a reference, the reference keeps its class.
+///
+/// ```
+/// use xenadmin_xapi::{Answer, class, records::VmRecord, result};
+/// let answer: Answer<result::Record<class::Vm>> =
+///     Answer::new(serde_json::json!({"uuid": "u", "VCPUs_max": 2}));
+/// assert_eq!(VmRecord::new(&answer).uuid(), "u");
+/// assert_eq!(answer.view().vcpus_max(), 2);
+/// assert_eq!(answer["uuid"], "u");
+/// ```
+///
+/// ```compile_fail,E0277
+/// use xenadmin_xapi::{Answer, class, records::HostRecord, result};
+/// let answer: Answer<result::Record<class::Vm>> =
+///     Answer::new(serde_json::json!({"uuid": "u"}));
+/// let _ = HostRecord::new(&answer);
+/// ```
+pub struct Answer<R>(serde_json::Value, std::marker::PhantomData<fn() -> R>);
+impl<R> Answer<R> {
+    /// An answer of the kind the call that was made gives.
+    pub fn new(value: serde_json::Value) -> Self {
+        Self(value, std::marker::PhantomData)
+    }
+    /// The JSON value alone, without its kind.
+    pub fn into_value(self) -> serde_json::Value {
+        self.0
+    }
+}
+impl<C: IsClass> Answer<result::Record<C>> {
+    /// The view of the record.
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub fn view(&self) -> C::View<'_> {
+        C::view(&self.0)
+    }
+}
+impl<C> Answer<result::Reference<C>> {
+    /// The reference as a field of its class, for a reader of references.
+    pub fn reference(&self) -> RefField<'_, C> {
+        RefField::typed(&self.0)
+    }
+}
+impl<R> std::ops::Deref for Answer<R> {
+    type Target = serde_json::Value;
+    fn deref(&self) -> &serde_json::Value {
+        &self.0
+    }
+}
+impl<R> Clone for Answer<R> {
+    fn clone(&self) -> Self {
+        Self::new(self.0.clone())
+    }
+}
+/// An answer may hold what must not be printed, so its contents are not.
+impl<R> std::fmt::Debug for Answer<R> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Answer(..)")
+    }
+}
+impl<R> From<Answer<R>> for serde_json::Value {
+    fn from(answer: Answer<R>) -> Self {
+        answer.0
+    }
+}
+impl<R> PartialEq<serde_json::Value> for Answer<R> {
+    fn eq(&self, other: &serde_json::Value) -> bool {
+        self.0 == *other
+    }
+}
+impl<R> serde::Serialize for Answer<R> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+/// What a view of class `C` can be made over: a JSON value, on the caller's word, or the
+/// answer to a call that gives a record of that class.
+pub trait Describes<'a, C> {
+    /// The record.
+    fn record(self) -> &'a serde_json::Value;
+}
+impl<'a, C> Describes<'a, C> for &'a serde_json::Value {
+    fn record(self) -> &'a serde_json::Value {
+        self
+    }
+}
+/// A reference to a reference, as an iterator over borrowed records gives.
+impl<'a, C> Describes<'a, C> for &&'a serde_json::Value {
+    fn record(self) -> &'a serde_json::Value {
+        self
+    }
+}
+impl<'a, C: IsClass> Describes<'a, C> for &'a Answer<result::Record<C>> {
+    fn record(self) -> &'a serde_json::Value {
+        &self.0
+    }
+}
+
+/// The messages nearly every class has, for whichever class: its record by reference,
+/// its reference by UUID, and all its records. A function that does the same for
+/// several classes takes the class as a type and makes these; the class has to have the
+/// message, or it does not compile. The fields many classes share are here the same
+/// way: a function that reads the `uuid` or the operations of whichever class takes the
+/// class as a type, and a class without the field does not compile.
+///
+/// ```
+/// use xenadmin_xapi::{any, class};
+/// fn idle<C: any::Operated>(record: &serde_json::Value) -> bool {
+///     C::current_operations(record).entries().is_some_and(|running| running.is_empty())
+/// }
+/// let record = serde_json::json!({"uuid": "u", "current_operations": {}});
+/// assert!(idle::<class::Vm>(&record));
+/// assert_eq!(<class::Vm as any::Identified>::uuid(&record), "u");
+/// ```
+///
+/// A host's metrics have no operations to ask for:
+///
+/// ```compile_fail,E0277
+/// use xenadmin_xapi::{any, class};
+/// fn idle<C: any::Operated>(_: &serde_json::Value) {}
+/// idle::<class::HostMetrics>(&serde_json::Value::Null);
+/// ```
+///
+/// ```
+/// use xenadmin_xapi::{Call, any, class, refs};
+/// assert_eq!(
+///     any::GetRecord(refs::pif("OpaqueRef:p")).request(),
+///     ("PIF.get_record", vec!["OpaqueRef:p".into()])
+/// );
+/// assert_eq!(any::GetByUuid::<class::Sr>::new("u").request().0, "SR.get_by_uuid");
+/// assert_eq!(any::GetAllRecords::<class::Vm>::new().request().0, "VM.get_all_records");
+/// ```
+pub mod any {
+    use super::{Call, Describes, IsClass, MapField, Ref, SetField, TextField, result};
+    use serde_json::Value;
+    use std::marker::PhantomData;
+    /// A class whose records have a `uuid`.
+    pub trait Identified: IsClass {
+        /// The record's `uuid`.
+        fn uuid<'a>(record: impl Describes<'a, Self>) -> TextField<'a>;
+    }
+    /// A class whose records have a name and a description.
+    pub trait Named: IsClass {
+        /// The record's `name_label`.
+        fn name_label<'a>(record: impl Describes<'a, Self>) -> TextField<'a>;
+        /// The record's `name_description`.
+        fn name_description<'a>(record: impl Describes<'a, Self>) -> TextField<'a>;
+    }
+    /// A class whose records say which operations they allow and which are running.
+    pub trait Operated: IsClass {
+        /// The record's `allowed_operations`.
+        fn allowed_operations<'a>(record: impl Describes<'a, Self>) -> SetField<'a>;
+        /// The record's `current_operations`.
+        fn current_operations<'a>(record: impl Describes<'a, Self>) -> MapField<'a>;
+    }
+    /// A class whose records say which operations are blocked.
+    pub trait Blocked: IsClass {
+        /// The record's `blocked_operations`.
+        fn blocked_operations<'a>(record: impl Describes<'a, Self>) -> MapField<'a>;
+    }
+    /// A class whose records have an `other_config`.
+    pub trait Configured: IsClass {
+        /// The record's `other_config`.
+        fn other_config<'a>(record: impl Describes<'a, Self>) -> MapField<'a>;
+    }
+    /// A class whose records have tags.
+    pub trait Tagged: IsClass {
+        /// The record's `tags`.
+        fn tags<'a>(record: impl Describes<'a, Self>) -> SetField<'a>;
+    }
+    /// A class with `get_record`.
+    pub trait HasRecord: IsClass {
+        /// `Class.get_record` and its name as a task.
+        const GET_RECORD: [&'static str; 2];
+    }
+    /// A class with `get_by_uuid`.
+    pub trait HasUuid: IsClass {
+        /// `Class.get_by_uuid` and its name as a task.
+        const GET_BY_UUID: [&'static str; 2];
+    }
+    /// A class with `get_all_records`.
+    pub trait HasAllRecords: IsClass {
+        /// `Class.get_all_records` and its name as a task.
+        const GET_ALL_RECORDS: [&'static str; 2];
+    }
+    /// `Class.get_record`.
+    pub struct GetRecord<'a, C>(pub Ref<'a, C>);
+    impl<C: HasRecord> Call for GetRecord<'_, C> {
+        const NAME: &'static str = C::GET_RECORD[0];
+        const ASYNC: &'static str = C::GET_RECORD[1];
+        const RESULT: &'static str = "record";
+        type Result = result::Record<C>;
+        fn arguments(self) -> Vec<Value> {
+            vec![self.0.json()]
+        }
+    }
+    /// `Class.get_by_uuid`.
+    pub struct GetByUuid<'a, C>(&'a str, PhantomData<fn() -> C>);
+    impl<'a, C> GetByUuid<'a, C> {
+        /// The call for the object with this UUID.
+        pub fn new(uuid: &'a str) -> Self {
+            Self(uuid, PhantomData)
+        }
+    }
+    impl<C: HasUuid> Call for GetByUuid<'_, C> {
+        const NAME: &'static str = C::GET_BY_UUID[0];
+        const ASYNC: &'static str = C::GET_BY_UUID[1];
+        const RESULT: &'static str = "ref";
+        type Result = result::Reference<C>;
+        fn arguments(self) -> Vec<Value> {
+            vec![Value::String(self.0.to_owned())]
+        }
+    }
+    /// `Class.get_all_records`.
+    pub struct GetAllRecords<C>(PhantomData<fn() -> C>);
+    impl<C> GetAllRecords<C> {
+        /// The call.
+        pub fn new() -> Self {
+            Self(PhantomData)
+        }
+    }
+    impl<C> Default for GetAllRecords<C> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+    impl<C: HasAllRecords> Call for GetAllRecords<C> {
+        const NAME: &'static str = C::GET_ALL_RECORDS[0];
+        const ASYNC: &'static str = C::GET_ALL_RECORDS[1];
+        const RESULT: &'static str = "records";
+        type Result = result::Records<C>;
+        fn arguments(self) -> Vec<Value> {
+            Vec::new()
+        }
+    }
+}
 
 /// A whole number as an argument of a call. Calls send it as a string of digits, which is
 /// how the API's own bindings write a 64-bit integer.
@@ -354,10 +842,86 @@ typed_field!(
     /// A `datetime` field, which hosts send as text.
     TimeField
 );
-typed_field!(
-    /// A reference to an object: a field of a type `X ref`.
-    RefField
-);
+/// A reference to an object: a field of a type `X ref`. `C` is the class the API gives
+/// the field; a reference that did not come through a view has none.
+pub struct RefField<'a, C = Unclassed>(&'a serde_json::Value, std::marker::PhantomData<fn() -> C>);
+impl<'a> RefField<'a> {
+    /// A reference that did not come through a record view, such as a member of a set.
+    pub fn of(value: &'a serde_json::Value) -> Self {
+        Self::typed(value)
+    }
+}
+impl<'a, C> RefField<'a, C> {
+    fn typed(value: &'a serde_json::Value) -> Self {
+        Self(value, std::marker::PhantomData)
+    }
+    /// The JSON value as the host sent it, for the few reads no reader here covers.
+    pub fn value(self) -> &'a serde_json::Value {
+        self.0
+    }
+    /// Whether the record does not carry the field, or carries null for it.
+    pub fn is_null(self) -> bool {
+        self.0.is_null()
+    }
+}
+impl<C> Clone for RefField<'_, C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<C> Copy for RefField<'_, C> {}
+impl<C> std::fmt::Debug for RefField<'_, C> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_tuple("RefField").field(self.0).finish()
+    }
+}
+impl<'a, C> From<RefField<'a, C>> for FieldValue<'a> {
+    fn from(field: RefField<'a, C>) -> Self {
+        FieldValue(field.0)
+    }
+}
+/// Two references compare where their classes fit: a field that refers to a host is not
+/// compared with one that refers to a VM.
+impl<C, D: Fits<C>> PartialEq<RefField<'_, D>> for RefField<'_, C> {
+    fn eq(&self, other: &RefField<'_, D>) -> bool {
+        self.0 == other.0
+    }
+}
+impl<C, D: Fits<C>> PartialEq<OpaqueRef<D>> for RefField<'_, C> {
+    fn eq(&self, other: &OpaqueRef<D>) -> bool {
+        *self.0 == other.0
+    }
+}
+impl<C> PartialEq<serde_json::Value> for RefField<'_, C> {
+    fn eq(&self, other: &serde_json::Value) -> bool {
+        self.0 == other
+    }
+}
+impl<C> PartialEq<RefField<'_, C>> for serde_json::Value {
+    fn eq(&self, other: &RefField<'_, C>) -> bool {
+        self == other.0
+    }
+}
+impl<C> PartialEq<str> for RefField<'_, C> {
+    fn eq(&self, other: &str) -> bool {
+        *self.0 == *other
+    }
+}
+impl<C> PartialEq<&str> for RefField<'_, C> {
+    fn eq(&self, other: &&str) -> bool {
+        *self.0 == **other
+    }
+}
+impl<C> PartialEq<String> for RefField<'_, C> {
+    fn eq(&self, other: &String) -> bool {
+        *self.0 == *other
+    }
+}
+impl<C> serde::Serialize for RefField<'_, C> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
 typed_field!(
     /// A field whose type is an enumeration; its values are in [`enumerations`].
     ChoiceField
@@ -422,16 +986,35 @@ pub mod kind {
 /// assert_eq!(reference(vm.vcpus_max()), None);
 /// ```
 pub trait Reads<'a, K> {
+    /// The class of the reference that is read, where the value is one and says so;
+    /// [`Unclassed`] otherwise. A reader of references gives its result this class.
+    type Class;
     /// The JSON value to read.
     fn raw(self) -> &'a serde_json::Value;
 }
 impl<'a, K> Reads<'a, K> for &'a serde_json::Value {
+    type Class = Unclassed;
     fn raw(self) -> &'a serde_json::Value {
         self
     }
 }
 /// A plain field, whose kind is not known, is accepted like a JSON value.
 impl<'a, K> Reads<'a, K> for FieldValue<'a> {
+    type Class = Unclassed;
+    fn raw(self) -> &'a serde_json::Value {
+        self.0
+    }
+}
+/// A call's answer is read like the JSON value it is, and keeps its class when it is a
+/// reference.
+impl<'a, K, R: ResultKind> Reads<'a, K> for &'a Answer<R> {
+    type Class = R::Class;
+    fn raw(self) -> &'a serde_json::Value {
+        &self.0
+    }
+}
+impl<'a, C> Reads<'a, kind::Reference> for RefField<'a, C> {
+    type Class = C;
     fn raw(self) -> &'a serde_json::Value {
         self.0
     }
@@ -439,6 +1022,7 @@ impl<'a, K> Reads<'a, K> for FieldValue<'a> {
 macro_rules! reads {
     ($($field:ident as $kind:ident),+) => {
         $(impl<'a> Reads<'a, kind::$kind> for $field<'a> {
+            type Class = Unclassed;
             fn raw(self) -> &'a serde_json::Value {
                 self.0
             }
@@ -450,7 +1034,6 @@ reads!(
     TextField as Text,
     TimeField as Text,
     ChoiceField as Text,
-    RefField as Reference,
     WholeField as Whole,
     RealField as Real,
     SetField as Set,
@@ -481,7 +1064,6 @@ impl<'a> Textual<'a> for ChoiceField<'a> {
 compares_with!(FlagField: bool);
 compares_with!(TextField: str, &str, String);
 compares_with!(TimeField: str, &str, String);
-compares_with!(RefField: str, &str, String);
 compares_with!(ChoiceField: str, &str, String);
 compares_with!(WholeField: i32, i64, u32, u64, usize, str, &str, String);
 compares_with!(RealField: f64, i64, u64);
@@ -503,7 +1085,7 @@ impl<'a> TimeField<'a> {
         self.0.as_str()
     }
 }
-impl<'a> RefField<'a> {
+impl<'a, C> RefField<'a, C> {
     /// The reference, when the host sent a string. The null reference is a reference.
     pub fn reference(self) -> Option<&'a str> {
         self.0.as_str()
@@ -709,7 +1291,7 @@ pub mod audit {
 
     /// What is wrong with the arguments of one call, the session's token included where
     /// the call takes a session: for each, the position and what [`misfit`] says, as the
-    /// lines' last two fields. Nothing for a call the catalogue does not have.
+    /// lines' last two fields. A call the catalogue does not have is reported as that.
     pub fn call_misfits(method: &str, arguments: &[serde_json::Value]) -> Vec<String> {
         let name = method.strip_prefix("Async.").unwrap_or(method);
         let Some(message) = name.split_once('.').and_then(|(class, message)| {
@@ -722,7 +1304,10 @@ pub mod audit {
                 .ok()?;
             Some(&class.messages[at])
         }) else {
-            return Vec::new();
+            // A name the API does not have is the first thing that can be wrong with a
+            // call: a host answers that it knows no such message. A class written with
+            // another capital is such a name.
+            return vec!["name\tthe API has no such message".into()];
         };
         if !(message.required..=message.parameters.len()).contains(&arguments.len()) {
             let takes = if message.required == message.parameters.len() {
@@ -922,7 +1507,7 @@ mod tests {
         let flag: FlagField = vm.is_a_snapshot();
         let text: TextField = vm.name_label();
         let choice: ChoiceField = vm.power_state();
-        let reference: RefField = vm.resident_on();
+        let reference: RefField<class::Host> = vm.resident_on();
         let whole: WholeField = vm.vcpus_max();
         let set: SetField = vm.vbds();
         let map: MapField = vm.other_config();
@@ -1093,8 +1678,16 @@ mod tests {
             ["count\ttakes 3 to 4, given 5"]
         );
         // A call the API does not have is for the conformance test, not for this one.
-        assert!(call_misfits("VM.no_such_call", &good).is_empty());
-        assert!(call_misfits("nothing", &[]).is_empty());
+        // A call the API does not have is reported as such, whatever it is given: a
+        // message its class lacks, a class written with another capital, no class.
+        for unknown in ["VM.no_such_call", "Tunnel.get_all_records", "nothing"] {
+            assert_eq!(
+                call_misfits(unknown, &good),
+                ["name\tthe API has no such message"],
+                "{unknown}"
+            );
+        }
+        assert!(call_misfits("tunnel.get_all_records", &good[..1]).is_empty());
         // Whole numbers go as numbers or as digits; anything else is named.
         assert_eq!(misfit("int", &json!(4)), None);
         assert_eq!(misfit("int", &json!("2147483648")), None);
@@ -1263,7 +1856,91 @@ mod tests {
             .map(|message| 1 + message.parameters.len() - message.required)
             .sum();
         assert_eq!((with_session().count(), types), (1941, 2016));
-        assert_eq!(source.matches("const NAME: &'static str = ").count(), types);
+        assert_eq!(
+            source.matches("const ASYNC: &'static str = ").count(),
+            types
+        );
+    }
+
+    #[test]
+    fn a_reference_a_record_and_an_answer_carry_their_class() {
+        use calls::{host, vm};
+        let record = json!({"resident_on": "OpaqueRef:h", "snapshot_of": "OpaqueRef:v"});
+        let view = records::VmRecord::new(&record);
+        // A view's reference field has the class the API gives it.
+        let home: RefField<class::Host> = view.resident_on();
+        let parent: RefField<class::Vm> = view.snapshot_of();
+        assert_eq!(home.reference(), Some("OpaqueRef:h"));
+        // It goes into a call of its class without the caller naming the class, and the
+        // function for its class takes it too.
+        assert_eq!(host::GetRecord(home.into()).arguments(), ["OpaqueRef:h"]);
+        assert_eq!(vm::GetRecord(refs::vm(parent)).arguments(), ["OpaqueRef:v"]);
+        // A reader of references keeps the class of what it read.
+        fn read<'a, R: Reads<'a, kind::Reference>>(value: R) -> Option<OpaqueRef<R::Class>> {
+            value.raw().as_str().map(OpaqueRef::new)
+        }
+        let kept: OpaqueRef<class::Host> = read(home).unwrap();
+        let loose: OpaqueRef = read(&record["resident_on"]).unwrap();
+        assert_eq!(host::GetRecord((&kept).into()).arguments(), ["OpaqueRef:h"]);
+        // Without a class, the caller says which it is.
+        assert_eq!(
+            host::GetRecord(refs::host(&loose)).arguments(),
+            ["OpaqueRef:h"]
+        );
+        // A reference reads as its text, compares with text and with a field, and is
+        // written and read back as text.
+        assert_eq!(
+            (kept.len(), &kept[..9], kept.to_string()),
+            (11, "OpaqueRef", "OpaqueRef:h".to_owned())
+        );
+        assert!(
+            kept == "OpaqueRef:h" && kept == loose && home == kept && record["resident_on"] == kept
+        );
+        assert_eq!(json!([&kept]), json!(["OpaqueRef:h"]));
+        let back: OpaqueRef<class::Host> = serde_json::from_value(json!("OpaqueRef:h")).unwrap();
+        assert!(back == kept);
+        // Two fields that refer to objects of one class compare; of two classes they do
+        // not compile, like a host's reference given for a VM (the examples hold that).
+        assert!(view.resident_on() == view.affinity() || view.affinity().is_null());
+
+        // The answer to a call is of the kind the call gives.
+        fn answered<M: Call>(_: &M, value: Value) -> Answer<M::Result> {
+            Answer::new(value)
+        }
+        let found = answered(&vm::GetByUuid("u"), json!("OpaqueRef:v"));
+        let kept: OpaqueRef<class::Vm> = read(&found).unwrap();
+        assert_eq!(kept, "OpaqueRef:v");
+        assert_eq!(vm::GetRecord(refs::vm(&found)).arguments(), ["OpaqueRef:v"]);
+        assert_eq!(
+            vm::GetRecord(found.reference().into()).arguments(),
+            ["OpaqueRef:v"]
+        );
+        let fetched = answered(&vm::GetRecord(refs::vm(&kept)), record.clone());
+        assert_eq!(
+            records::VmRecord::new(&fetched).resident_on(),
+            "OpaqueRef:h"
+        );
+        assert_eq!(fetched.view().resident_on(), "OpaqueRef:h");
+        assert_eq!(fetched["snapshot_of"], "OpaqueRef:v");
+        assert_eq!(format!("{fetched:?}"), "Answer(..)");
+        // The messages nearly every class has, for a class given as a type.
+        fn lookup<C: any::HasRecord + any::HasUuid + any::HasAllRecords>() -> [&'static str; 3] {
+            [
+                any::GetRecord::<C>(Ref::new("r")).request().0,
+                any::GetByUuid::<C>::new("u").request().0,
+                any::GetAllRecords::<C>::new().request().0,
+            ]
+        }
+        assert_eq!(
+            lookup::<class::Vdi>(),
+            ["VDI.get_record", "VDI.get_by_uuid", "VDI.get_all_records"]
+        );
+        assert_eq!(<class::VmAppliance as IsClass>::NAME, "VM_appliance");
+        let all = answered(
+            &any::GetAllRecords::<class::Vm>::new(),
+            json!({"OpaqueRef:v": record}),
+        );
+        assert_eq!(all.as_object().map(serde_json::Map::len), Some(1));
     }
 
     #[test]
@@ -1297,8 +1974,15 @@ mod tests {
         // A parameter the description does not name is named for its place.
         assert!(out.contains("pub struct A;") && out.contains("pub struct BThing;"));
         assert!(out.contains(
-            "pub fn b_thing<'a>(reference: impl Into<RefSource<'a>>) -> Ref<'a, class::BThing> {"
+            "pub fn b_thing<'a>(reference: impl Refers<'a, class::BThing>) -> Ref<'a, class::BThing> {"
         ));
+        // A class is a type, with the messages nearly every class has where it has them,
+        // and a call says what kind of answer it gives.
+        assert!(out.contains("impl IsClass for BThing {"));
+        assert!(out.contains("type View<'a> = records::BThingRecord<'a>;"));
+        assert!(!out.contains("impl any::HasRecord for A {"));
+        assert!(out.contains("type Result = result::Void;"));
+        assert!(out.contains("pub fn new(record: impl Describes<'a, class::A>) -> Self {"));
         assert!(out.contains("pub struct Start<'a>(\n"));
         assert!(out.contains("            pub Ref<'a, class::A>,\n"));
         assert!(out.contains("pub struct StartWithArgument1<'a> {\n"));

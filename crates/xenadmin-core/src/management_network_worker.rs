@@ -72,7 +72,7 @@ impl ResourceRequest {
         self.save(j).await?;
         let value =
             tokio::select! {_=c.cancelled()=>return Err(Error::Closed),v=s.call(method,args)=>v?};
-        self.record.task = Some(xapi::reply_reference(&value)?);
+        self.record.task = Some(xapi::reply_reference(&value)?.into_string());
         self.record = j.resource_evidence(&self.record)?;
         self.announce().await;
         if self.stopped_after_recovery() {

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use xenadmin_xapi::enumerations::{vbd_operations, vbd_type, vm_power_state};
 use xenadmin_xapi::records::{HostRecord, PbdRecord, SrRecord, VbdRecord, VdiRecord, VmRecord};
+use xenadmin_xapi::{Answer, OpaqueRef, any, class, result};
 use xenadmin_xapi::{Call, calls, refs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,8 +154,11 @@ impl Step {
         }
     }
 }
-async fn fresh(session: &Session, class: &str, id: uuid::Uuid) -> Result<(String, Value), Error> {
-    crate::snapshots::optional_record(session, class, &id.to_string())
+async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
+    session: &Session,
+    id: uuid::Uuid,
+) -> Result<(OpaqueRef<C>, Answer<result::Record<C>>), Error> {
+    crate::snapshots::optional_record::<C>(session, &id.to_string())
         .await?
         .ok_or(Error::DeviceConflict)
 }
@@ -177,8 +181,12 @@ fn permits(drive: &Value, operation: &str) -> Result<(), Error> {
         Err(Error::UnavailableAction)
     }
 }
-async fn guest(session: &Session, vm: VmId, writing: bool) -> Result<(String, Value), Error> {
-    let (reference, record) = fresh(session, "VM", vm.uuid()).await?;
+async fn guest(
+    session: &Session,
+    vm: VmId,
+    writing: bool,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
+    let (reference, record) = fresh::<class::Vm>(session, vm.uuid()).await?;
     if VmRecord::new(&record).is_a_snapshot() != false
         || VmRecord::new(&record).is_a_template() != false
         || VmRecord::new(&record).is_control_domain() != false
@@ -196,9 +204,14 @@ async fn guest(session: &Session, vm: VmId, writing: bool) -> Result<(String, Va
     }
     Ok((reference, record))
 }
-async fn media(session: &Session, guest: &Value, image: VdiId, sr: SrId) -> Result<String, Error> {
-    let (image_ref, disk) = fresh(session, "VDI", image.uuid()).await?;
-    let (sr_ref, storage) = fresh(session, "SR", sr.uuid()).await?;
+async fn media(
+    session: &Session,
+    guest: &Value,
+    image: VdiId,
+    sr: SrId,
+) -> Result<OpaqueRef<class::Vdi>, Error> {
+    let (image_ref, disk) = fresh::<class::Vdi>(session, image.uuid()).await?;
+    let (sr_ref, storage) = fresh::<class::Sr>(session, sr.uuid()).await?;
     if source(&disk).is_none()
         || VdiRecord::new(&disk).sr() != sr_ref
         || VdiRecord::new(&disk).missing() != false
@@ -243,8 +256,8 @@ async fn cd(
     vm: &str,
     id: VbdId,
     previous: Option<VdiId>,
-) -> Result<String, Error> {
-    let (reference, record) = fresh(session, "VBD", id.uuid()).await?;
+) -> Result<OpaqueRef<class::Vbd>, Error> {
+    let (reference, record) = fresh::<class::Vbd>(session, id.uuid()).await?;
     if VbdRecord::new(&record).vm() != vm
         || VbdRecord::new(&record).type_() != vbd_type::CD
         || VbdRecord::new(&record).empty() != previous.is_none()
@@ -252,7 +265,7 @@ async fn cd(
         return Err(Error::DeviceConflict);
     }
     if let Some(previous) = previous {
-        let (previous_ref, _) = fresh(session, "VDI", previous.uuid()).await?;
+        let (previous_ref, _) = fresh::<class::Vdi>(session, previous.uuid()).await?;
         if VbdRecord::new(&record).vdi() != previous_ref {
             return Err(Error::DeviceConflict);
         }
@@ -339,7 +352,7 @@ pub(crate) async fn verify(session: &Session, vm: VmId, step: &Step) -> Result<b
     let id = match step {
         Step::Eject { cd, .. } | Step::Insert { cd, .. } => *cd,
     };
-    let (_, record) = fresh(session, "VBD", id.uuid()).await?;
+    let (_, record) = fresh::<class::Vbd>(session, id.uuid()).await?;
     if VbdRecord::new(&record).vm() != vm_ref || VbdRecord::new(&record).type_() != vbd_type::CD {
         return Err(Error::DeviceConflict);
     }
@@ -347,8 +360,8 @@ pub(crate) async fn verify(session: &Session, vm: VmId, step: &Step) -> Result<b
         Step::Eject { .. } => Ok(VbdRecord::new(&record).empty() == true
             && VbdRecord::new(&record).vdi() == "OpaqueRef:NULL"),
         Step::Insert { image, sr, .. } => {
-            let (image_ref, disk) = fresh(session, "VDI", image.uuid()).await?;
-            let (sr_ref, _) = fresh(session, "SR", sr.uuid()).await?;
+            let (image_ref, disk) = fresh::<class::Vdi>(session, image.uuid()).await?;
+            let (sr_ref, _) = fresh::<class::Sr>(session, sr.uuid()).await?;
             Ok(VbdRecord::new(&record).empty() == false
                 && VbdRecord::new(&record).vdi() == image_ref
                 && VdiRecord::new(&disk).sr() == sr_ref)

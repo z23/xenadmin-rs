@@ -133,7 +133,8 @@ impl MutationRequest {
                 }
             };
             if let Some(evidence) = &mut plan.evidence[index] {
-                evidence.result_reference = Some(crate::snapshots::reference(&response)?);
+                evidence.result_reference =
+                    Some(crate::snapshots::reference(&response)?.into_string());
             }
             self.record.device_plan = Some(plan.clone());
             self.record.state = OperationState::Verifying;

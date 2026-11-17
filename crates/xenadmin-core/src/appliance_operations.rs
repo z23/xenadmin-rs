@@ -48,13 +48,18 @@ fn idle(record: &Value) -> Result<(), Error> {
     }
 }
 fn ref_value(value: &Value) -> Result<String, Error> {
-    xapi::reply_reference(value)
+    xapi::reply_reference(value).map(xenadmin_xapi::OpaqueRef::into_string)
 }
 async fn group(session: &Session, id: ApplianceId) -> Result<(String, Value), Error> {
     xapi::read(session, ResourceTarget::Appliance(id)).await
 }
 async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
-    let reference = ref_value(&session.send(calls::vm::GetByUuid(&id.to_string())).await?)?;
+    let reference = ref_value(
+        &session
+            .send(calls::vm::GetByUuid(&id.to_string()))
+            .await?
+            .into_value(),
+    )?;
     let record = session
         .send(calls::vm::GetRecord(refs::vm(&reference)))
         .await?;
@@ -67,7 +72,7 @@ async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
     {
         return Err(Error::InvalidResourceCommand);
     }
-    Ok((reference, record))
+    Ok((reference, record.into_value()))
 }
 async fn members(session: &Session, record: &Value) -> Result<BTreeSet<VmId>, Error> {
     let refs = VmApplianceRecord::new(record)

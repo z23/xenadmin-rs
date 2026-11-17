@@ -73,7 +73,8 @@ impl ResourceRequest {
             let asynchronous =
                 self.record.disk_plan.as_ref().ok_or(Error::Journal)?.kinds[index].asynchronous();
             if asynchronous {
-                self.disk_step_mut(index)?.task = Some(crate::snapshots::reference(&result)?);
+                self.disk_step_mut(index)?.task =
+                    Some(crate::snapshots::reference(&result)?.into_string());
             } else {
                 self.disk_step_mut(index)?.completed = true;
                 self.disk_step_mut(index)?.ended = true;

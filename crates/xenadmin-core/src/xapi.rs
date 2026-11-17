@@ -12,7 +12,7 @@ use xenadmin_xapi::{calls, refs};
 use zeroize::Zeroizing;
 
 use xenadmin_xapi::{
-    Reads, SetField, TextField, Textual, WholeField,
+    OpaqueRef, Reads, SetField, TextField, Textual, WholeField,
     enumerations::{event_operation, vm_operations, vm_power_state},
     kind,
     records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord, VmRecord},
@@ -45,8 +45,8 @@ const OPTIONAL_CLASSES: &[&str] = &[
     "PBD",
     "Bond",
     "VLAN",
-    "Tunnel",
-    "Network_sriov",
+    "tunnel",
+    "network_sriov",
     "SDN_controller",
     "PCI",
     "VM_guest_metrics",
@@ -296,10 +296,16 @@ impl Session {
     }
 
     /// Sends a call written as its message, whose arguments are named and typed where
-    /// the call is made.
-    pub(crate) async fn send(&self, call: impl xenadmin_xapi::Call) -> Result<Value, Error> {
+    /// the call is made. The answer is of the kind the message gives: a record or a
+    /// reference of a class keeps that class.
+    pub(crate) async fn send<M: xenadmin_xapi::Call>(
+        &self,
+        call: M,
+    ) -> Result<xenadmin_xapi::Answer<M::Result>, Error> {
         let (method, parameters) = call.request();
-        self.call(method, parameters).await
+        self.call(method, parameters)
+            .await
+            .map(xenadmin_xapi::Answer::new)
     }
 
     pub(crate) async fn storage_probe_xml(
@@ -557,7 +563,7 @@ impl Session {
             host: refs::host(&destination),
         })
         .await?;
-        Ok((reference, destination))
+        Ok((reference.into_string(), destination.into_string()))
     }
 }
 
@@ -1122,7 +1128,7 @@ pub(crate) async fn prepare_mutation(
             patch.validate()?;
             patch.target_guard(&record)?;
             patch.preflight_remote(session, &parent).await?;
-            let record = patch.resolve_record(session, record).await?;
+            let record = patch.resolve_record(session, record.into_value()).await?;
             patch.preflight(&record)?;
             Ok(parent)
         }
@@ -1162,7 +1168,7 @@ pub(crate) async fn prepare_mutation(
             if !advertises(&candidate, vm_operations::REVERT) {
                 return Err(Error::UnavailableAction);
             }
-            Ok(reference)
+            Ok(reference.into_string())
         }
         OperationAction::Recovery(_)
         | OperationAction::Migration(_)
@@ -1176,7 +1182,7 @@ pub(crate) async fn prepare_mutation(
             if !advertises(&candidate, vm_operations::CLONE) {
                 return Err(Error::UnavailableAction);
             }
-            Ok(reference)
+            Ok(reference.into_string())
         }
         OperationAction::Snapshot(
             SnapshotOperation::Delete { .. } | SnapshotOperation::Workflow { .. },
@@ -1185,9 +1191,9 @@ pub(crate) async fn prepare_mutation(
     }
 }
 
-pub(crate) fn opaque_reference<'a>(
-    value: impl Reads<'a, kind::Reference>,
-) -> Result<String, Error> {
+pub(crate) fn opaque_reference<'a, R: Reads<'a, kind::Reference>>(
+    value: R,
+) -> Result<OpaqueRef<R::Class>, Error> {
     let value = value.raw();
     value
         .as_str()
@@ -1198,7 +1204,7 @@ pub(crate) fn opaque_reference<'a>(
                 && value.len() <= 1024
                 && value.bytes().all(|byte| byte.is_ascii_graphic())
         })
-        .map(str::to_owned)
+        .map(OpaqueRef::new)
         .ok_or(Error::Protocol("invalid object reference"))
 }
 
@@ -1237,7 +1243,7 @@ pub(crate) fn snapshot_task_result(task: &Value) -> Result<String, Error> {
         _ => None,
     }
     .ok_or(Error::Protocol("invalid snapshot result value"))?;
-    opaque_reference(&json!(content))
+    opaque_reference(&json!(content)).map(xenadmin_xapi::OpaqueRef::into_string)
 }
 
 pub(crate) async fn verify_created_snapshot(

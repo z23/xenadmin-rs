@@ -76,7 +76,7 @@ impl ResourceRequest {
                 .asynchronous();
             if asynchronous {
                 self.storage_graph_step_mut(index)?.task =
-                    Some(crate::snapshots::reference(&result)?);
+                    Some(crate::snapshots::reference(&result)?.into_string());
             } else {
                 self.storage_graph_step_mut(index)?.completed = true;
                 self.storage_graph_step_mut(index)?.ended = true;

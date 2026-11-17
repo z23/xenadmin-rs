@@ -4,9 +4,9 @@ use crate::{
     snapshot_capture::{Plan, SnapshotPreviewImage},
     snapshot_preview,
 };
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use xenadmin_xapi::records::{BlobRecord, PoolRecord, VmRecord};
+use xenadmin_xapi::{Answer, OpaqueRef, class, result};
 use xenadmin_xapi::{calls, refs};
 
 async fn bounded<T>(
@@ -49,7 +49,7 @@ fn source(journal: &Journal, record: &ResourceOperationRecord) -> Result<(), Err
 async fn snapshot(
     session: &Session,
     record: &ResourceOperationRecord,
-) -> Result<(String, Value), Error> {
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
     let pool_ref = session
         .send(calls::pool::GetByUuid(&record.pool.to_string()))
         .await?;
@@ -298,7 +298,7 @@ impl ResourceRequest {
             .snapshot_preview_plan
             .as_mut()
             .unwrap()
-            .create_reference = Some(crate::snapshots::reference(&reply)?);
+            .create_reference = Some(crate::snapshots::reference(&reply)?.into_string());
         if !self.preview_merge(journal).await? {
             return Ok(());
         }

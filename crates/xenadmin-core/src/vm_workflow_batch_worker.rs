@@ -127,7 +127,13 @@ impl ResourceRequest {
                 child.record.batch_parent = Some(self.record.id);
                 child.batch_permit = Some(permit);
                 child
-                    .run_session(s, Some(reference), directory, c.clone(), updates)
+                    .run_session(
+                        s,
+                        Some(reference.into_string()),
+                        directory,
+                        c.clone(),
+                        updates,
+                    )
                     .await;
             }
             self.reload(j)?;

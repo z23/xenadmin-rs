@@ -865,6 +865,34 @@ Raw evidence (sanitized JSON written by the live harness) stays outside the repo
    written to. The client shows such disks in the repository's list like any others.
    Whether it should point them out is open.
 
+66. **The client wrote two of the API's classes with a capital letter the API does not
+   give them, and a host knows no such class in a call.** The API's classes for a
+   tunnel and for an SR-IOV network are `tunnel` and `network_sriov`; the client wrote
+   `Tunnel` and `Network_sriov`. A host takes the class in a call's name exactly: asked
+   on 2026-11-14 with a read-only session, the lab's coordinator answered
+   `Tunnel.get_all_records` and `Network_sriov.get_all_records` with
+   `MESSAGE_METHOD_UNKNOWN`, and the same calls under the API's spelling with an empty
+   list. What followed from the spelling: creating or removing a tunnel or an SR-IOV
+   network was sent as `Async.Tunnel.create` and the like, which a host refuses; the
+   review of such a change read the two classes' records by the same names, and so did
+   the reading of a tunnel or an SR-IOV network as an operation's target; and when a
+   host lacks some optional class, the inventory asks for each optional class in turn
+   and would have taken the refusal to mean that the host has neither of these two.
+   The ordinary inventory was not affected: the event subscription takes class names
+   in any capitals, and the lab's sessions had listed `tunnel` as available all along
+   (the inventory tables scenario records it). None of the rest was seen on the lab
+   because the two workflows have no recorded run there (P10-11 and P10-12 of the
+   ledger) and the lab's hosts have every optional class, and none of it was seen by
+   the checks because each looked the other way: the fixtures answered to the
+   misspelling, the test of the names the client writes looked only for classes as the
+   API writes them, and the debug check of sent calls reported nothing for a call it
+   did not know. It came out when the classes were made types in the bindings, where a
+   class the API lacks cannot be named. Fixed in the code and in the fixtures; the
+   names of these calls now come from the bindings; the test now looks for any class
+   written with other capitals, and the debug check reports a call the API does not
+   have (over the core's tests, 279 distinct calls and none unknown). The two workflows
+   stay experimental and still have no live run; this makes one possible.
+
 ## Console observation
 
 The host console applied no implicit shift to keysym events: `:` arrived as `;` and

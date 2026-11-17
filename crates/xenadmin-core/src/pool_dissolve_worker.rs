@@ -79,7 +79,7 @@ impl ResourceRequest {
                 .asynchronous();
             if asynchronous {
                 self.pool_dissolve_step_mut(index)?.task =
-                    Some(crate::snapshots::reference(&result)?);
+                    Some(crate::snapshots::reference(&result)?.into_string());
             } else {
                 self.pool_dissolve_step_mut(index)?.completed = true;
                 self.pool_dissolve_step_mut(index)?.ended = true;

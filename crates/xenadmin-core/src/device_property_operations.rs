@@ -1,5 +1,6 @@
 use super::*;
 use crate::{DeviceProperty as Change, DeviceQos, DiskAccess};
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::{vbd_type, vm_power_state};
 use xenadmin_xapi::records::{VbdRecord, VdiRecord, VifRecord, VmRecord};
 
@@ -98,7 +99,7 @@ async fn current(
 ) -> Result<Current, Error> {
     let vm_ref = guest(session, vm, !verify && change.requires_halted()).await?;
     if !verify {
-        let (_, v) = fresh(session, "VM", vm.uuid()).await?;
+        let (_, v) = fresh::<class::Vm>(session, vm.uuid()).await?;
         idle(&v)?;
         if !matches!(
             VmRecord::new(&v).power_state().name(),
@@ -108,7 +109,7 @@ async fn current(
         }
     }
     if let Change::NicRate { vif, .. } = change {
-        let (reference, record) = fresh(session, "VIF", vif.uuid()).await?;
+        let (reference, record) = fresh::<class::Vif>(session, vif.uuid()).await?;
         if VifRecord::new(&record).vm() != vm_ref
             || (!verify && VifRecord::new(&record).currently_attached() != false)
         {
@@ -116,8 +117,8 @@ async fn current(
         }
         idle(&record)?;
         return Ok(Current {
-            reference,
-            record,
+            reference: reference.into_string(),
+            record: record.into_value(),
             attachment: None,
         });
     }
@@ -130,8 +131,8 @@ async fn current(
         | Change::DisableCbt { vbd, vdi } => (*vbd, *vdi),
         _ => unreachable!(),
     };
-    let (vr, v) = fresh(session, "VBD", vbd.uuid()).await?;
-    let (reference, record) = fresh(session, "VDI", vdi.uuid()).await?;
+    let (vr, v) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
+    let (reference, record) = fresh::<class::Vdi>(session, vdi.uuid()).await?;
     if VbdRecord::new(&v).vm() != vm_ref
         || VbdRecord::new(&v).vdi() != reference
         || VbdRecord::new(&v).type_() != vbd_type::DISK
@@ -154,9 +155,9 @@ async fn current(
         return Err(Error::DeviceInUse);
     }
     Ok(Current {
-        reference,
-        record,
-        attachment: Some((vr, v)),
+        reference: reference.into_string(),
+        record: record.into_value(),
+        attachment: Some((vr.into_string(), v.into_value())),
     })
 }
 fn subject<'a>(current: &'a Current, change: &Change) -> (&'a str, &'a Value) {

@@ -190,7 +190,8 @@ impl MutationRequest {
                 }
             };
             if plan.steps[index].asynchronous() {
-                plan.evidence[index].task = Some(crate::snapshots::reference(&response)?);
+                plan.evidence[index].task =
+                    Some(crate::snapshots::reference(&response)?.into_string());
                 self.record.state = OperationState::Tracking;
                 self.sync_snapshot_workflow(&plan);
                 if self.save_snapshot_evidence(journal, false).await? {

@@ -154,7 +154,7 @@ async fn vm(session: &Session, id: VmId) -> Result<(String, Value), Error> {
     {
         return Err(Error::ResourceInUse);
     }
-    Ok((r, v))
+    Ok((r.into_string(), v.into_value()))
 }
 fn checks(op: &Op) -> Vec<Verify> {
     let mut result = Vec::new();

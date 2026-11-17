@@ -7,11 +7,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{
     storage_operations, vbd_operations, vbd_type, vdi_operations, vdi_type, vm_operations,
     vm_power_state,
 };
 use xenadmin_xapi::records::{HostRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Answer, any, class, result};
 use xenadmin_xapi::{Call, Int, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
@@ -191,8 +193,7 @@ fn id<T: From<Uuid>>(r: &Value) -> Result<T, Error> {
         .map(T::from)
         .ok_or(Error::VmLifecycleConflict)
 }
-fn reference<'a>(v: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let v = v.raw();
+fn reference<'a, R: Reads<'a, kind::Reference>>(v: R) -> Result<OpaqueRef<R::Class>, Error> {
     snapshots::reference(v)
 }
 fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
@@ -201,7 +202,7 @@ fn refs(r: &Value, key: &str) -> Result<Vec<String>, Error> {
         .filter(|v| v.len() <= 256)
         .ok_or(Error::VmLifecycleConflict)?
         .iter()
-        .map(reference)
+        .map(|value| reference(value).map(String::from))
         .collect()
 }
 fn idle(r: &Value) -> Result<(), Error> {
@@ -256,8 +257,11 @@ pub(crate) fn permits_memory_limits_for_test(r: &Value) -> Result<(), Error> {
 pub(crate) fn permits_vcpu_change_for_test(r: &Value) -> Result<(), Error> {
     permits_vcpu_change(r)
 }
-async fn fresh(session: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
-    snapshots::optional_record(session, class, &id.to_string())
+async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
+    session: &Session,
+    id: Uuid,
+) -> Result<(OpaqueRef<C>, Answer<result::Record<C>>), Error> {
+    snapshots::optional_record::<C>(session, &id.to_string())
         .await?
         .ok_or(Error::VmLifecycleConflict)
 }
@@ -266,8 +270,11 @@ fn ordinary(r: &Value) -> bool {
         && VmRecord::new(r).is_control_domain() == false
         && VmRecord::new(r).is_a_template().get().is_some()
 }
-async fn source(session: &Session, plan: &Plan) -> Result<(String, Value), Error> {
-    let (reference, r) = fresh(session, "VM", plan.source.uuid()).await?;
+async fn source(
+    session: &Session,
+    plan: &Plan,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
+    let (reference, r) = fresh::<class::Vm>(session, plan.source.uuid()).await?;
     if !ordinary(&r)
         || VmRecord::new(&r).is_a_template() != plan.operation.template()
         || VmRecord::new(&r).power_state() != vm_power_state::HALTED
@@ -292,7 +299,11 @@ async fn source(session: &Session, plan: &Plan) -> Result<(String, Value), Error
     }
     Ok((reference, r))
 }
-async fn target(session: &Session, plan: &Plan, vm: VmId) -> Result<(String, Value), Error> {
+async fn target(
+    session: &Session,
+    plan: &Plan,
+    vm: VmId,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
     if vm == plan.source {
         return source(session, plan).await;
     }
@@ -304,15 +315,15 @@ async fn target(session: &Session, plan: &Plan, vm: VmId) -> Result<(String, Val
     {
         return Err(Error::VmLifecycleConflict);
     }
-    let (reference, r) = fresh(session, "VM", vm.uuid()).await?;
+    let (reference, r) = fresh::<class::Vm>(session, vm.uuid()).await?;
     if !ordinary(&r) || VmRecord::new(&r).power_state() != vm_power_state::HALTED {
         return Err(Error::VmLifecycleConflict);
     }
     idle(&r)?;
     Ok((reference, r))
 }
-async fn sr(session: &Session, sr: SrId) -> Result<String, Error> {
-    let (reference, r) = fresh(session, "SR", sr.uuid()).await?;
+async fn sr(session: &Session, sr: SrId) -> Result<OpaqueRef<class::Sr>, Error> {
+    let (reference, r) = fresh::<class::Sr>(session, sr.uuid()).await?;
     if SrRecord::new(&r).content_type() != "user" {
         return Err(Error::UnavailableAction);
     }
@@ -350,10 +361,10 @@ async fn validate_create_choices(
     } = operation
     {
         sr(session, *chosen_sr).await?;
-        let (_, network) = fresh(session, "network", network.uuid()).await?;
+        let (_, network) = fresh::<class::Network>(session, network.uuid()).await?;
         idle(&network)?;
         if let Some(image) = iso {
-            let (_, image) = fresh(session, "VDI", image.uuid()).await?;
+            let (_, image) = fresh::<class::Vdi>(session, image.uuid()).await?;
             require_iso_image(session, &image).await?;
         }
         let _ = firmware;
@@ -424,7 +435,7 @@ pub(crate) async fn plan(
             }
             if let Some(host) = bios_host {
                 bios_eligible(&record, *firmware)?;
-                let (_, h) = fresh(session, "host", host.uuid()).await?;
+                let (_, h) = fresh::<class::Host>(session, host.uuid()).await?;
                 let map = string_map(HostRecord::new(&h).bios_strings())?;
                 if map.is_empty() {
                     return Err(Error::UnsupportedVmLifecycle);
@@ -627,10 +638,10 @@ fn ordinary_disk(r: &Value) -> bool {
         && VdiRecord::new(r).is_a_snapshot() == false
 }
 async fn validate_owned_disks(session: &Session, vm: VmId, disks: &[VdiId]) -> Result<(), Error> {
-    let (vm_ref, vm_record) = fresh(session, "VM", vm.uuid()).await?;
+    let (vm_ref, vm_record) = fresh::<class::Vm>(session, vm.uuid()).await?;
     let attachments = refs(&vm_record, "VBDs")?;
     for disk in disks {
-        let (disk_ref, record) = fresh(session, "VDI", disk.uuid()).await?;
+        let (disk_ref, record) = fresh::<class::Vdi>(session, disk.uuid()).await?;
         idle(&record)?;
         if !ordinary_disk(&record) {
             return Err(Error::DeviceInUse);
@@ -722,7 +733,7 @@ pub(crate) async fn prepare(
                 }
                 if let Some(host) = bios_host {
                     bios_eligible(&current, *firmware)?;
-                    let (_, h) = fresh(session, "host", host.uuid()).await?;
+                    let (_, h) = fresh::<class::Host>(session, host.uuid()).await?;
                     if plan.bios_identity.as_ref()
                         != Some(&string_map(HostRecord::new(&h).bios_strings())?)
                     {
@@ -739,7 +750,7 @@ pub(crate) async fn prepare(
         Step::CopyBios { vm, host } => {
             let (vr, r) = target(session, plan, vm).await?;
             bios_eligible(&r, GuestFirmware::Inherited)?;
-            let (hr, h) = fresh(session, "host", host.uuid()).await?;
+            let (hr, h) = fresh::<class::Host>(session, host.uuid()).await?;
             if plan.bios_identity.as_ref() != Some(&string_map(HostRecord::new(&h).bios_strings())?)
             {
                 return Err(Error::VmLifecycleConflict);
@@ -911,8 +922,8 @@ pub(crate) async fn prepare(
         }
         Step::EjectIso { vm, vbd, image } => {
             let (vm_ref, _) = target(session, plan, vm).await?;
-            let (vbd_ref, r) = fresh(session, "VBD", vbd.uuid()).await?;
-            let (image_ref, _) = fresh(session, "VDI", image.uuid()).await?;
+            let (vbd_ref, r) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
+            let (image_ref, _) = fresh::<class::Vdi>(session, image.uuid()).await?;
             if VbdRecord::new(&r).vm() != vm_ref
                 || VbdRecord::new(&r).vdi() != image_ref
                 || VbdRecord::new(&r).type_() != vbd_type::CD
@@ -925,7 +936,7 @@ pub(crate) async fn prepare(
         }
         Step::InstallIso { vm, image } => {
             let (vm_ref, r) = target(session, plan, vm).await?;
-            let (image_ref, image_record) = fresh(session, "VDI", image.uuid()).await?;
+            let (image_ref, image_record) = fresh::<class::Vdi>(session, image.uuid()).await?;
             require_iso_image(session, &image_record).await?;
             let (_, cd) = first_cd(session, &r)
                 .await?
@@ -948,8 +959,8 @@ pub(crate) async fn prepare(
         }
         Step::ClaimDisk { vm, vbd, disk } => {
             let (vm_ref, _) = target(session, plan, vm).await?;
-            let (vbd_ref, attachment) = fresh(session, "VBD", vbd.uuid()).await?;
-            let (disk_ref, record) = fresh(session, "VDI", disk.uuid()).await?;
+            let (vbd_ref, attachment) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
+            let (disk_ref, record) = fresh::<class::Vdi>(session, disk.uuid()).await?;
             if plan
                 .baseline
                 .get("VBD")
@@ -1000,7 +1011,7 @@ pub(crate) async fn prepare(
             Ok(call(calls::vm::Destroy(refs::vm(&reference)).request()))
         }
         Step::DestroyDisk { disk, snapshot } => {
-            let (reference, r) = fresh(session, "VDI", disk.uuid()).await?;
+            let (reference, r) = fresh::<class::Vdi>(session, disk.uuid()).await?;
             if !refs(&r, "VBDs")?.is_empty()
                 || (!snapshot && !ordinary_disk(&r))
                 || (snapshot
@@ -1044,11 +1055,14 @@ fn string_map<'a>(v: impl Reads<'a, kind::Map>) -> Result<serde_json::Map<String
 
 async fn first_cd(session: &Session, vm: &Value) -> Result<Option<(VbdId, Value)>, Error> {
     for attachment in refs(vm, "VBDs")? {
-        let mut r = session
+        let r = session
             .send(calls::vbd::GetRecord(refs::vbd(&attachment)))
             .await?;
         if VbdRecord::new(&r).type_() == vbd_type::CD {
             let id = id(&r)?;
+            // The record is handed on with the reference it was read by, under a key of
+            // the client's own.
+            let mut r = r.into_value();
             r["ref"] = json!(attachment);
             return Ok(Some((id, r)));
         }
@@ -1356,7 +1370,7 @@ pub(crate) fn record_result(plan: &mut Plan, index: usize, result: &Value) -> Re
     } = plan.steps[index]
         && let Some(evidence) = &mut plan.groups[group].evidence[device_index]
     {
-        evidence.result_reference = Some(reference(result)?);
+        evidence.result_reference = Some(reference(result)?.into_string());
     }
     Ok(())
 }
@@ -1445,8 +1459,8 @@ pub(crate) async fn verify(
             Ok(true)
         }
         Step::CopyBios { vm, host } => {
-            let (_, r) = fresh(session, "VM", vm.uuid()).await?;
-            let (hr, _) = fresh(session, "host", host.uuid()).await?;
+            let (_, r) = fresh::<class::Vm>(session, vm.uuid()).await?;
+            let (hr, _) = fresh::<class::Host>(session, host.uuid()).await?;
             Ok(ordinary(&r)
                 && VmRecord::new(&r).power_state() == vm_power_state::HALTED
                 && VmRecord::new(&r).affinity() == hr
@@ -1454,7 +1468,8 @@ pub(crate) async fn verify(
                     == Some(&string_map(VmRecord::new(&r).bios_strings())?))
         }
         Step::Set { vm, change } => {
-            let Some((_, r)) = snapshots::optional_record(session, "VM", &vm.to_string()).await?
+            let Some((_, r)) =
+                snapshots::optional_record::<class::Vm>(session, &vm.to_string()).await?
             else {
                 return Ok(false);
             };
@@ -1506,7 +1521,7 @@ pub(crate) async fn verify(
             })
         }
         Step::Provision { vm } => {
-            let (_, r) = fresh(session, "VM", vm.uuid()).await?;
+            let (_, r) = fresh::<class::Vm>(session, vm.uuid()).await?;
             Ok(plan.evidence[index].completed
                 && VmRecord::new(&r).is_a_template() == false
                 && VmRecord::new(&r).power_state() == vm_power_state::HALTED
@@ -1515,7 +1530,7 @@ pub(crate) async fn verify(
         Step::ConfigureDevices { .. } => Ok(plan.evidence[index].completed),
         Step::RefreshAllowedOperations { .. } => Ok(plan.evidence[index].completed),
         Step::CheckHosts { vm } => {
-            let (reference, _) = fresh(session, "VM", vm.uuid()).await?;
+            let (reference, _) = fresh::<class::Vm>(session, vm.uuid()).await?;
             compatible_hosts(session, &reference).await?;
             Ok(true)
         }
@@ -1545,7 +1560,7 @@ pub(crate) async fn verify(
             Ok(ok)
         }
         Step::InstallIso { vm, image } => {
-            let (_, r) = fresh(session, "VM", vm.uuid()).await?;
+            let (_, r) = fresh::<class::Vm>(session, vm.uuid()).await?;
             let Some((_, cd)) = first_cd(session, &r).await? else {
                 return Ok(false);
             };
@@ -1560,14 +1575,14 @@ pub(crate) async fn verify(
             Ok(id::<VdiId>(&disk)? == image)
         }
         Step::EjectIso { vm, vbd, .. } => {
-            let (vm_ref, _) = fresh(session, "VM", vm.uuid()).await?;
-            let (_, r) = fresh(session, "VBD", vbd.uuid()).await?;
+            let (vm_ref, _) = fresh::<class::Vm>(session, vm.uuid()).await?;
+            let (_, r) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
             Ok(VbdRecord::new(&r).vm() == vm_ref && VbdRecord::new(&r).empty() == true)
         }
         Step::ClaimDisk { vm, vbd, disk } => {
-            let (vm_ref, _) = fresh(session, "VM", vm.uuid()).await?;
-            let (_, v) = fresh(session, "VBD", vbd.uuid()).await?;
-            let (disk_ref, _) = fresh(session, "VDI", disk.uuid()).await?;
+            let (vm_ref, _) = fresh::<class::Vm>(session, vm.uuid()).await?;
+            let (_, v) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
+            let (disk_ref, _) = fresh::<class::Vdi>(session, disk.uuid()).await?;
             Ok(VbdRecord::new(&v).vm() == vm_ref
                 && VbdRecord::new(&v).vdi() == disk_ref
                 && VbdRecord::new(&v)
@@ -1575,25 +1590,24 @@ pub(crate) async fn verify(
                     .get("owner")
                     .is_some_and(Value::is_string))
         }
-        Step::DestroySnapshot { snapshot, .. } => {
-            Ok(
-                snapshots::optional_record(session, "VM", &snapshot.to_string())
-                    .await?
-                    .is_none(),
-            )
-        }
-        Step::DestroyVm => Ok(
-            snapshots::optional_record(session, "VM", &plan.source.to_string())
-                .await?
-                .is_none(),
-        ),
-        Step::DestroyDisk { disk, .. } => {
-            Ok(
-                snapshots::optional_record(session, "VDI", &disk.to_string())
-                    .await?
-                    .is_none(),
-            )
-        }
+        Step::DestroySnapshot { snapshot, .. } => Ok(snapshots::optional_record::<class::Vm>(
+            session,
+            &snapshot.to_string(),
+        )
+        .await?
+        .is_none()),
+        Step::DestroyVm => Ok(snapshots::optional_record::<class::Vm>(
+            session,
+            &plan.source.to_string(),
+        )
+        .await?
+        .is_none()),
+        Step::DestroyDisk { disk, .. } => Ok(snapshots::optional_record::<class::Vdi>(
+            session,
+            &disk.to_string(),
+        )
+        .await?
+        .is_none()),
     }
 }
 

@@ -88,7 +88,8 @@ impl ResourceRequest {
             self.record.detail = format!("Submitting {}", self.record.steps[index].label);
             self.save_dispatch(j)?;
             let value = tokio::select! {biased; _=c.cancelled()=>return Err(Error::Closed),value=s.call(method,args)=>value?};
-            self.topology_step_mut(index)?.task = Some(xapi::reply_reference(&value)?);
+            self.topology_step_mut(index)?.task =
+                Some(xapi::reply_reference(&value)?.into_string());
             self.record = j.topology_evidence(&self.record, index)?;
             self.announce().await;
             if self.stopped_after_recovery() {

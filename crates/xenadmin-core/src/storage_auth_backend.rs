@@ -25,6 +25,7 @@ pub(super) async fn secret_reference(session: &Session, id: SecretId) -> Result<
             .send(calls::secret::GetByUuid(&id.to_string()))
             .await?,
     )
+    .map(xenadmin_xapi::OpaqueRef::into_string)
 }
 pub(super) async fn secret_uuid(session: &Session, reference: &str) -> Result<SecretId, Error> {
     let value = session

@@ -115,7 +115,8 @@ impl MutationRequest {
                 Err(error) => return self.lifecycle_error(journal, &plan, index, error).await,
             };
             if plan.steps[index].asynchronous() {
-                plan.evidence[index].task = Some(crate::snapshots::reference(&response)?);
+                plan.evidence[index].task =
+                    Some(crate::snapshots::reference(&response)?.into_string());
                 self.sync_lifecycle(&plan);
                 self.record.state = OperationState::Tracking;
                 if self.save_lifecycle_evidence(journal, false).await? {

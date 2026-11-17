@@ -6,6 +6,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::{vbd_mode, vbd_type};
 use xenadmin_xapi::records::{NetworkRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
 use xenadmin_xapi::{Reads, kind};
@@ -106,7 +107,7 @@ pub(crate) async fn capture(
         ExportSource::Snapshot { snapshot, .. } => snapshot.uuid(),
         ExportSource::Checkpoint { .. } => return Err(Error::TransferConflict),
     };
-    let (reference, v) = super::import::fresh(s, "VM", id).await?;
+    let (reference, v) = super::import::fresh::<class::Vm>(s, id).await?;
     let cpus = u32::try_from(num(VmRecord::new(&v).vcpus_at_startup())?)
         .ok()
         .filter(|n| (1..=256).contains(n))

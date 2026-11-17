@@ -64,8 +64,8 @@ pub(super) fn decode(
             id,
             NetworkTunnel {
                 id,
-                transport: refs.link("pif", view.transport_pif()),
-                access: refs.link("pif", view.access_pif()),
+                transport: refs.link(view.transport_pif()),
+                access: refs.link(view.access_pif()),
                 protocol: view.protocol().name().and_then(TunnelProtocol::parse),
                 controller_active: active,
                 controller_error: status.map(|map| {
@@ -83,8 +83,8 @@ pub(super) fn decode(
             id,
             NetworkSriov {
                 id,
-                physical: refs.link("pif", view.physical_pif()),
-                logical: refs.link("pif", view.logical_pif()),
+                physical: refs.link(view.physical_pif()),
+                logical: refs.link(view.logical_pif()),
                 requires_reboot: boolean(view.requires_reboot())?,
                 mode: view
                     .configuration_mode()
@@ -100,7 +100,7 @@ pub(super) fn decode(
             id,
             NetworkPciDevice {
                 id,
-                host: refs.link("host", view.host()),
+                host: refs.link(view.host()),
                 address: text(view.pci_id(), 64),
                 vendor_id: text(view.vendor_id(), 16),
                 device_id: text(view.device_id(), 16),
@@ -117,7 +117,7 @@ pub(super) fn decode(
     };
     for (_, record) in store.class("pif") {
         let view = PifRecord::new(record);
-        if let (Ok(id), Some(pci)) = (id(view.uuid()), refs.link("pci", view.pci())) {
+        if let (Ok(id), Some(pci)) = (id(view.uuid()), refs.link(view.pci())) {
             result.pif_pci.insert(id, pci);
         }
     }

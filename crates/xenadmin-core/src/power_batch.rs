@@ -179,7 +179,7 @@ async fn read(session: &crate::xapi::Session, vm: VmId) -> Result<(String, Value
     {
         return Err(Error::Stale);
     }
-    Ok((reference, value))
+    Ok((reference.into_string(), value.into_value()))
 }
 pub(crate) async fn prepare_item(
     session: &crate::xapi::Session,

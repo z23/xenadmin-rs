@@ -1499,7 +1499,12 @@ async fn run(
                         _=cancel.cancelled()=>break None,
                         _=inventory_check.tick(), if !check_every.is_zero() && !token.is_empty() && host_reads.is_empty()=>{
                             let session = session.clone();
-                            host_reads.spawn(async move { session.send(calls::host::GetAllRecords).await });
+                            host_reads.spawn(async move {
+                        session
+                            .send(calls::host::GetAllRecords)
+                            .await
+                            .map(xenadmin_xapi::Answer::into_value)
+                    });
                             continue;
                         }
                         read=host_reads.join_next(), if !host_reads.is_empty()=>{

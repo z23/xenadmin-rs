@@ -36,7 +36,7 @@ impl MutationRequest {
             return Ok(());
         }
         let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=prepared.send(session)=>result?};
-        self.record.task = Some(crate::snapshots::reference(&task)?);
+        self.record.task = Some(crate::snapshots::reference(&task)?.into_string());
         self.record.state = OperationState::Tracking;
         if self.save_migration_evidence(journal, false).await? {
             return Ok(());

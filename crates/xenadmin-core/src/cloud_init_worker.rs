@@ -346,7 +346,7 @@ impl ResourceRequest {
             false,
         )
         .await?;
-        if creation.reference.as_ref() != Some(&disk_ref)
+        if creation.reference.as_deref() != Some(disk_ref.as_str())
             || VdiRecord::new(&d).other_config()[cloud_init::MARKER]
                 != config.configuration_id.to_string()
             || VdiRecord::new(&d).other_config()[crate::transfer::disk::MARKER]

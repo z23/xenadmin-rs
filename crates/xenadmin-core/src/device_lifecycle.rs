@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::SetField;
 use xenadmin_xapi::enumerations::{
     storage_operations, vbd_mode, vbd_type, vdi_operations, vdi_type, vif_locking_mode,
     vm_power_state,
 };
 use xenadmin_xapi::records::{NetworkRecord, SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Answer, any, class, result};
 use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
@@ -397,12 +399,14 @@ fn number<'a>(value: impl Reads<'a, kind::Whole>) -> Option<u64> {
     let value = value.raw();
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
-fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let value = value.raw();
+fn reference<'a, R: Reads<'a, kind::Reference>>(value: R) -> Result<OpaqueRef<R::Class>, Error> {
     crate::snapshots::reference(value)
 }
-async fn fresh(session: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
-    crate::snapshots::optional_record(session, class, &id.to_string())
+async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
+    session: &Session,
+    id: Uuid,
+) -> Result<(OpaqueRef<C>, Answer<result::Record<C>>), Error> {
+    crate::snapshots::optional_record::<C>(session, &id.to_string())
         .await?
         .ok_or(Error::DeviceConflict)
 }
@@ -424,8 +428,8 @@ fn permits(record: &Value, allowed: SetField<'_>, operation: &str) -> Result<(),
     }
     Ok(())
 }
-async fn guest(session: &Session, vm: VmId, halted: bool) -> Result<String, Error> {
-    let (reference, record) = fresh(session, "VM", vm.uuid()).await?;
+async fn guest(session: &Session, vm: VmId, halted: bool) -> Result<OpaqueRef<class::Vm>, Error> {
+    let (reference, record) = fresh::<class::Vm>(session, vm.uuid()).await?;
     if VmRecord::new(&record).is_a_snapshot() != false
         || VmRecord::new(&record).is_a_template() != false
         || VmRecord::new(&record).is_control_domain() != false
@@ -441,11 +445,11 @@ async fn guest(session: &Session, vm: VmId, halted: bool) -> Result<String, Erro
     Ok(reference)
 }
 async fn network(session: &Session, id: NetworkId) -> Result<(String, u64), Error> {
-    let (reference, record) = fresh(session, "network", id.uuid()).await?;
+    let (reference, record) = fresh::<class::Network>(session, id.uuid()).await?;
     let mtu = number(NetworkRecord::new(&record).mtu())
         .filter(|n| *n >= 576 && *n <= 65535)
         .ok_or(Error::DeviceConflict)?;
-    Ok((reference, mtu))
+    Ok((reference.into_string(), mtu))
 }
 async fn allowed_slot(session: &Session, vm: &str, class: &str, device: &str) -> Result<(), Error> {
     let slots = session
@@ -472,7 +476,7 @@ fn refs(record: &Value, key: &str) -> Result<Vec<String>, Error> {
         .filter(|items| items.len() <= 256)
         .ok_or(Error::DeviceConflict)?
         .iter()
-        .map(reference)
+        .map(|value| reference(value).map(String::from))
         .collect()
 }
 async fn attachment(
@@ -481,9 +485,9 @@ async fn attachment(
     vbd: VbdId,
     disk: VdiId,
     deleting: bool,
-) -> Result<(String, Value), Error> {
-    let (reference, record) = fresh(session, "VBD", vbd.uuid()).await?;
-    let (disk_ref, disk_record) = fresh(session, "VDI", disk.uuid()).await?;
+) -> Result<(OpaqueRef<class::Vbd>, Answer<result::Record<class::Vbd>>), Error> {
+    let (reference, record) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
+    let (disk_ref, disk_record) = fresh::<class::Vdi>(session, disk.uuid()).await?;
     if VbdRecord::new(&record).vm() != vm
         || VbdRecord::new(&record).vdi() != disk_ref
         || VbdRecord::new(&record).type_() != vbd_type::DISK
@@ -510,8 +514,12 @@ async fn attachment(
     }
     Ok((reference, record))
 }
-async fn nic(session: &Session, vm: &str, id: VifId) -> Result<(String, Value), Error> {
-    let (reference, record) = fresh(session, "VIF", id.uuid()).await?;
+async fn nic(
+    session: &Session,
+    vm: &str,
+    id: VifId,
+) -> Result<(OpaqueRef<class::Vif>, Answer<result::Record<class::Vif>>), Error> {
+    let (reference, record) = fresh::<class::Vif>(session, id.uuid()).await?;
     if VifRecord::new(&record).vm() != vm || VifRecord::new(&record).currently_attached() != false {
         return Err(Error::DeviceConflict);
     }
@@ -539,7 +547,7 @@ pub(crate) async fn plan(
             size,
             device,
         } => {
-            let (_, record) = fresh(session, "SR", sr.uuid()).await?;
+            let (_, record) = fresh::<class::Sr>(session, sr.uuid()).await?;
             if SrRecord::new(&record).content_type() == "iso" {
                 return Err(Error::DeviceConflict);
             }
@@ -569,7 +577,7 @@ pub(crate) async fn plan(
             device,
             read_only,
         } => {
-            let (_, disk) = fresh(session, "VDI", vdi.uuid()).await?;
+            let (_, disk) = fresh::<class::Vdi>(session, vdi.uuid()).await?;
             if !ordinary_disk(&disk)
                 || !refs(&disk, "VBDs")?.is_empty()
                 || (!*read_only && VdiRecord::new(&disk).read_only() != false)
@@ -775,7 +783,7 @@ pub(crate) async fn prepare_step(
     let prepared = match &plan.steps[index] {
         Step::GuestTools(_) | Step::Property(_) => unreachable!(),
         Step::CreateDisk { sr, name, size } => {
-            let (sr_ref, record) = fresh(session, "SR", sr.uuid()).await?;
+            let (sr_ref, record) = fresh::<class::Sr>(session, sr.uuid()).await?;
             if SrRecord::new(&record).content_type() == "iso" {
                 return Err(Error::DeviceConflict);
             }
@@ -795,13 +803,13 @@ pub(crate) async fn prepare_step(
         } => {
             allowed_slot(session, &vm_ref, "VBD", device).await?;
             let disk_ref = if *cd {
-                "OpaqueRef:NULL".into()
+                OpaqueRef::new("OpaqueRef:NULL")
             } else {
                 let id = match disk {
                     Some(id) => *id,
                     None => created_disk(plan)?,
                 };
-                let (reference, record) = fresh(session, "VDI", id.uuid()).await?;
+                let (reference, record) = fresh::<class::Vdi>(session, id.uuid()).await?;
                 if !ordinary_disk(&record)
                     || !refs(&record, "VBDs")?.is_empty()
                     || (!*read_only && VdiRecord::new(&record).read_only() != false)
@@ -822,7 +830,7 @@ pub(crate) async fn prepare_step(
             Prepared::of(calls::vbd::Destroy(refs::vbd(&reference)).request())
         }
         Step::DestroyDisk { disk } => {
-            let (reference, record) = fresh(session, "VDI", disk.uuid()).await?;
+            let (reference, record) = fresh::<class::Vdi>(session, disk.uuid()).await?;
             if !ordinary_disk(&record) || !refs(&record, "VBDs")?.is_empty() {
                 return Err(Error::DeviceInUse);
             }
@@ -912,7 +920,7 @@ async fn creation_matches(
     }
     Ok(match &plan.steps[index] {
         Step::CreateDisk { sr, name, size } => {
-            let (sr_ref, sr_record) = fresh(session, "SR", sr.uuid()).await?;
+            let (sr_ref, sr_record) = fresh::<class::Sr>(session, sr.uuid()).await?;
             idle(&sr_record)?;
             ordinary_disk(record)
                 && VdiRecord::new(record).sr() == sr_ref
@@ -929,11 +937,10 @@ async fn creation_matches(
             cd,
         } => {
             let disk_ref = if *cd {
-                "OpaqueRef:NULL".into()
+                OpaqueRef::new("OpaqueRef:NULL")
             } else {
-                fresh(
+                fresh::<class::Vdi>(
                     session,
-                    "VDI",
                     match disk {
                         Some(id) => *id,
                         None => created_disk(plan)?,
@@ -1022,7 +1029,10 @@ pub(crate) async fn verify_step(
             if candidates.next().is_some() {
                 return Err(Error::DeviceConflict);
             }
-            (self::reference(&json!(reference))?, record.clone())
+            (
+                self::reference(&json!(reference))?.into_string(),
+                record.clone(),
+            )
         };
         let uuid = record["uuid"]
             .as_str()
@@ -1058,30 +1068,27 @@ pub(crate) async fn verify_step(
         return Ok(true);
     }
     match &plan.steps[index] {
-        Step::DestroyAttachment { vbd, .. } => {
-            Ok(
-                crate::snapshots::optional_record(session, "VBD", &vbd.to_string())
-                    .await?
-                    .is_none(),
-            )
-        }
-        Step::DestroyDisk { disk } => {
-            Ok(
-                crate::snapshots::optional_record(session, "VDI", &disk.to_string())
-                    .await?
-                    .is_none(),
-            )
-        }
-        Step::DestroyNic { vif, .. } => {
-            Ok(
-                crate::snapshots::optional_record(session, "VIF", &vif.to_string())
-                    .await?
-                    .is_none(),
-            )
-        }
+        Step::DestroyAttachment { vbd, .. } => Ok(crate::snapshots::optional_record::<class::Vbd>(
+            session,
+            &vbd.to_string(),
+        )
+        .await?
+        .is_none()),
+        Step::DestroyDisk { disk } => Ok(crate::snapshots::optional_record::<class::Vdi>(
+            session,
+            &disk.to_string(),
+        )
+        .await?
+        .is_none()),
+        Step::DestroyNic { vif, .. } => Ok(crate::snapshots::optional_record::<class::Vif>(
+            session,
+            &vif.to_string(),
+        )
+        .await?
+        .is_none()),
         Step::MoveNic { vif, to, mac, .. } => {
             let (network_ref, _) = network(session, *to).await?;
-            let (_, record) = fresh(session, "VIF", vif.uuid()).await?;
+            let (_, record) = fresh::<class::Vif>(session, vif.uuid()).await?;
             let vm_ref = guest(session, vm, false).await?;
             Ok(VifRecord::new(&record).vm() == vm_ref
                 && VifRecord::new(&record).network() == network_ref

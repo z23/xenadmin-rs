@@ -6,10 +6,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{
     vbd_operations, vbd_type, vdi_operations, vdi_type, vif_operations, vm_power_state,
 };
 use xenadmin_xapi::records::{SrRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Answer, Ref, any, class, result};
 use xenadmin_xapi::{Call, Int, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 
@@ -411,7 +413,7 @@ impl PreparedDevice {
     }
 }
 
-fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+fn reference<'a, R: Reads<'a, kind::Reference>>(value: R) -> Result<OpaqueRef<R::Class>, Error> {
     let value = value.raw();
     value
         .as_str()
@@ -422,18 +424,19 @@ fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error
                 && value.len() <= 1024
                 && value.bytes().all(|byte| byte.is_ascii_graphic())
         })
-        .map(str::to_owned)
+        .map(OpaqueRef::new)
         .ok_or(Error::Protocol("invalid device reference"))
 }
-async fn fresh(session: &Session, class: &'static str, id: Uuid) -> Result<(String, Value), Error> {
-    let object = session
-        .call(&format!("{class}.get_by_uuid"), vec![json!(id.to_string())])
+async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
+    session: &Session,
+    id: Uuid,
+) -> Result<(OpaqueRef<C>, Answer<result::Record<C>>), Error> {
+    let found = session
+        .send(any::GetByUuid::<C>::new(&id.to_string()))
         .await?;
-    let object = reference(&object)?;
-    let record = session
-        .call(&format!("{class}.get_record"), vec![json!(&object)])
-        .await?;
-    if record["uuid"].as_str() != Some(id.to_string().as_str()) {
+    let object = reference(&found)?;
+    let record = session.send(any::GetRecord(Ref::<C>::new(&object))).await?;
+    if C::uuid(&record).text() != Some(id.to_string().as_str()) {
         return Err(Error::Stale);
     }
     Ok((object, record))
@@ -505,7 +508,7 @@ async fn prepare_operation(
     operation: &DeviceOperation,
 ) -> Result<PreparedDevice, Error> {
     operation.validate()?;
-    let (vm_reference, guest) = fresh(session, "VM", vm.uuid()).await?;
+    let (vm_reference, guest) = fresh::<class::Vm>(session, vm.uuid()).await?;
     if VmRecord::new(&guest).is_a_template() != false
         || VmRecord::new(&guest).is_a_snapshot() != false
         || VmRecord::new(&guest).is_control_domain() != false
@@ -525,13 +528,13 @@ async fn prepare_operation(
     }
     let result = match operation {
         DeviceOperation::InsertCd { vbd, image } => {
-            let (cd_reference, cd) = fresh(session, "VBD", vbd.uuid()).await?;
+            let (cd_reference, cd) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
             owns(&cd, &vm_reference)?;
             if VbdRecord::new(&cd).type_() != vbd_type::CD || VbdRecord::new(&cd).empty() != true {
                 return Err(Error::DeviceConflict);
             }
             permits(&cd, vbd_operations::INSERT)?;
-            let (image_reference, disk) = fresh(session, "VDI", image.uuid()).await?;
+            let (image_reference, disk) = fresh::<class::Vdi>(session, image.uuid()).await?;
             if VdiRecord::new(&disk).missing() != false {
                 return Err(Error::DeviceInUse);
             }
@@ -551,7 +554,7 @@ async fn prepare_operation(
             )
         }
         DeviceOperation::EjectCd { vbd } => {
-            let (cd_reference, cd) = fresh(session, "VBD", vbd.uuid()).await?;
+            let (cd_reference, cd) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
             owns(&cd, &vm_reference)?;
             if VbdRecord::new(&cd).type_() != vbd_type::CD || VbdRecord::new(&cd).empty() != false {
                 return Err(Error::DeviceConflict);
@@ -560,7 +563,7 @@ async fn prepare_operation(
             PreparedDevice::of(calls::vbd::Eject(refs::vbd(&cd_reference)).task())
         }
         DeviceOperation::PlugDisk { vbd } | DeviceOperation::UnplugDisk { vbd } => {
-            let (device_reference, device) = fresh(session, "VBD", vbd.uuid()).await?;
+            let (device_reference, device) = fresh::<class::Vbd>(session, vbd.uuid()).await?;
             owns(&device, &vm_reference)?;
             let plugging = matches!(operation, DeviceOperation::PlugDisk { .. });
             if VbdRecord::new(&device).type_() != vbd_type::DISK
@@ -587,7 +590,7 @@ async fn prepare_operation(
             }
         }
         DeviceOperation::PlugNic { vif } | DeviceOperation::UnplugNic { vif } => {
-            let (device_reference, device) = fresh(session, "VIF", vif.uuid()).await?;
+            let (device_reference, device) = fresh::<class::Vif>(session, vif.uuid()).await?;
             owns(&device, &vm_reference)?;
             let plugging = matches!(operation, DeviceOperation::PlugNic { .. });
             if VifRecord::new(&device).currently_attached() != !plugging
@@ -620,7 +623,7 @@ async fn prepare_operation(
             if VmRecord::new(&guest).power_state() != vm_power_state::HALTED {
                 return Err(Error::DeviceRequiresHaltedVm);
             }
-            let (disk_reference, disk) = fresh(session, "VDI", vdi.uuid()).await?;
+            let (disk_reference, disk) = fresh::<class::Vdi>(session, vdi.uuid()).await?;
             if unsigned(VdiRecord::new(&disk).virtual_size()) != Some(*expected_size) {
                 return Err(Error::DeviceConflict);
             }

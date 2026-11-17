@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, net::Ipv4Addr};
 use xenadmin_xapi::enumerations::{
     ip_configuration_mode, ipv6_configuration_mode, sriov_configuration_mode, tunnel_protocol,
 };
+use xenadmin_xapi::{Call, calls};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TunnelProtocol {
@@ -220,13 +221,19 @@ impl NetworkFabricOperation {
     }
     pub(crate) fn method(&self) -> &'static str {
         match (&self.review.kind, &self.change) {
-            (NetworkFabricKind::Tunnel(_), NetworkFabricChange::Create) => "Async.Tunnel.create",
-            (NetworkFabricKind::Tunnel(_), NetworkFabricChange::Delete(_)) => {
-                "Async.Tunnel.destroy"
+            // The names come from the bindings: the API writes these two classes without
+            // a capital, and a name it does not have would not compile.
+            (NetworkFabricKind::Tunnel(_), NetworkFabricChange::Create) => {
+                calls::tunnel::Create::ASYNC
             }
-            (NetworkFabricKind::Sriov, NetworkFabricChange::Create) => "Async.Network_sriov.create",
+            (NetworkFabricKind::Tunnel(_), NetworkFabricChange::Delete(_)) => {
+                calls::tunnel::Destroy::ASYNC
+            }
+            (NetworkFabricKind::Sriov, NetworkFabricChange::Create) => {
+                calls::network_sriov::Create::ASYNC
+            }
             (NetworkFabricKind::Sriov, NetworkFabricChange::Delete(_)) => {
-                "Async.Network_sriov.destroy"
+                calls::network_sriov::Destroy::ASYNC
             }
         }
     }

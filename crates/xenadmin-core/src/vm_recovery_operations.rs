@@ -195,7 +195,8 @@ impl MutationRequest {
                 }
             };
             if plan.steps[index].asynchronous() {
-                plan.evidence[index].task = Some(crate::snapshots::reference(&response)?);
+                plan.evidence[index].task =
+                    Some(crate::snapshots::reference(&response)?.into_string());
                 self.record.recovery_plan = Some(Box::new(plan.clone()));
                 self.record.state = OperationState::Tracking;
                 if self.save_recovery_evidence(j, false).await? {

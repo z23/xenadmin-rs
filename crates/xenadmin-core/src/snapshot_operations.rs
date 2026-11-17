@@ -1,5 +1,6 @@
 use super::*;
 use crate::{OperationStep, StepState, snapshots};
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::vm_power_state;
 use xenadmin_xapi::records::VmRecord;
 use xenadmin_xapi::{calls, refs};
@@ -27,14 +28,15 @@ impl DeleteStep {
         match self {
             Self::DiscardMemory => {
                 if let Some(memory) = plan.memory
-                    && snapshots::optional_record(session, "VDI", &memory.to_string())
+                    && snapshots::optional_record::<class::Vdi>(session, &memory.to_string())
                         .await?
                         .is_some()
                 {
                     return Ok(false);
                 }
                 let record =
-                    snapshots::optional_record(session, "VM", &plan.snapshot.to_string()).await?;
+                    snapshots::optional_record::<class::Vm>(session, &plan.snapshot.to_string())
+                        .await?;
                 if record.is_none() {
                     return Ok(true);
                 }
@@ -42,16 +44,18 @@ impl DeleteStep {
                     snapshots::snapshot_record(session, parent, plan.snapshot).await?;
                 Ok(VmRecord::new(&record).power_state() == vm_power_state::HALTED)
             }
-            Self::Snapshot => {
-                Ok(
-                    snapshots::optional_record(session, "VM", &plan.snapshot.to_string())
-                        .await?
-                        .is_none(),
-                )
-            }
-            Self::Disk(id) => Ok(snapshots::optional_record(session, "VDI", &id.to_string())
-                .await?
-                .is_none()),
+            Self::Snapshot => Ok(snapshots::optional_record::<class::Vm>(
+                session,
+                &plan.snapshot.to_string(),
+            )
+            .await?
+            .is_none()),
+            Self::Disk(id) => Ok(snapshots::optional_record::<class::Vdi>(
+                session,
+                &id.to_string(),
+            )
+            .await?
+            .is_none()),
         }
     }
     async fn send(
@@ -278,7 +282,8 @@ impl MutationRequest {
             // needs to recompute the new VM's allowed operations (see below).
             let refreshed = tokio::select! {_=cancel.cancelled()=>Err(Error::Closed),result=session.send(calls::vm::UpdateAllowedOperations(refs::vm(&reference)))=>result};
             self.record.steps[0].state = StepState::Verified;
-            self.record.steps[0].detail = verified_detail(refreshed);
+            self.record.steps[0].detail =
+                verified_detail(refreshed.map(xenadmin_xapi::Answer::into_value));
             return self.persist_steps(journal).await;
         }
         if self.record.steps[0].state != StepState::Pending {
@@ -331,7 +336,8 @@ impl MutationRequest {
             return Err(Error::SnapshotConflict);
         }
         self.record.steps[0].state = StepState::Verified;
-        self.record.steps[0].detail = verified_detail(refreshed);
+        self.record.steps[0].detail =
+            verified_detail(refreshed.map(xenadmin_xapi::Answer::into_value));
         self.persist_steps(journal).await
     }
 }

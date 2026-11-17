@@ -165,8 +165,8 @@ pub(crate) fn operation(r: &Record) -> Option<&Operation> {
 }
 fn class(k: Kind) -> &'static str {
     match k {
-        Kind::Tunnel(_) => "Tunnel",
-        Kind::Sriov => "Network_sriov",
+        Kind::Tunnel(_) => "tunnel",
+        Kind::Sriov => "network_sriov",
     }
 }
 fn fields(k: Kind) -> (&'static str, &'static str, &'static str, &'static str) {
@@ -201,8 +201,8 @@ impl Fresh {
             "VM",
             "Bond",
             "VLAN",
-            "Tunnel",
-            "Network_sriov",
+            "tunnel",
+            "network_sriov",
         ];
         match kind {
             Kind::Tunnel(_) if creating => classes.push("SDN_controller"),
@@ -538,7 +538,7 @@ async fn identity_for(
     let child_id = crate::PifId::from(network::uuid(&child_record)?);
     let (resolved_ref, resolved) = xapi::read(s, ResourceTarget::Pif(child_id)).await?;
     if resolved_ref != child_ref
-        || resolved != child_record
+        || resolved != *child_record
         || baseline[&class(op.review.kind).to_ascii_lowercase()].contains(&id)
         || baseline["pif"].contains(&child_id.uuid())
         || network::uuid(&network::related(s, "PIF", &value[parent]).await?)?

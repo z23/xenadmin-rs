@@ -359,5 +359,5 @@ pub(super) async fn task(
     {
         return conflict();
     }
-    Ok((id, value))
+    Ok((id, value.into_value()))
 }

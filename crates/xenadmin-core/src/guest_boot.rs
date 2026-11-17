@@ -233,12 +233,14 @@ pub(crate) async fn read(
     let guest = readiness(
         session
             .send(calls::vm::GetSecurebootReadiness(refs::vm(&r)))
-            .await,
+            .await
+            .map(xenadmin_xapi::Answer::into_value),
     );
     let pool = readiness(
         session
             .send(calls::pool::GetGuestSecurebootReadiness(refs::pool(&pr)))
-            .await,
+            .await
+            .map(xenadmin_xapi::Answer::into_value),
     );
     let after = session.send(calls::vm::GetRecord(refs::vm(&r))).await?;
     if VmRecord::new(&before).uuid() != VmRecord::new(&after).uuid()

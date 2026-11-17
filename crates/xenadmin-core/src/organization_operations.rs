@@ -38,7 +38,7 @@ async fn read(session: &Session, id: OrganizationObjectId) -> Result<(String, Va
     {
         return Err(Error::UnavailableAction);
     }
-    Ok((reference, fresh))
+    Ok((reference.into_string(), fresh))
 }
 fn option_string(record: &Value, field: &str, key: &str) -> Result<Option<String>, Error> {
     let map = record[field]

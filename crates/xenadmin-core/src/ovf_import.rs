@@ -6,6 +6,7 @@ use xenadmin_xapi::enumerations::{
     on_crash_behaviour, on_normal_exit, vbd_mode, vbd_type, vif_locking_mode, vm_power_state,
 };
 use xenadmin_xapi::records::{NetworkRecord, VbdRecord, VdiRecord, VifRecord, VmRecord};
+use xenadmin_xapi::{Answer, OpaqueRef, any, class, result};
 use xenadmin_xapi::{Call, calls, refs};
 use xenadmin_xapi::{Reads, kind};
 pub(crate) const MARKER: &str = "xenadmin-rs-ovf-import";
@@ -140,17 +141,20 @@ fn idle(v: &Value) -> Result<(), Error> {
         Ok(())
     }
 }
-pub(crate) async fn fresh(s: &Session, class: &str, id: Uuid) -> Result<(String, Value), Error> {
-    crate::snapshots::optional_record(s, class, &id.to_string())
+pub(crate) async fn fresh<C: any::HasUuid + any::HasRecord + any::Identified>(
+    s: &Session,
+    id: Uuid,
+) -> Result<(OpaqueRef<C>, Answer<result::Record<C>>), Error> {
+    crate::snapshots::optional_record::<C>(s, &id.to_string())
         .await?
         .ok_or(Error::TransferConflict)
 }
 async fn network(s: &Session, id: NetworkId) -> Result<(String, u64), Error> {
-    let (r, v) = fresh(s, "network", id.uuid()).await?;
+    let (r, v) = fresh::<class::Network>(s, id.uuid()).await?;
     let mtu = number(NetworkRecord::new(&v).mtu())
         .filter(|n| (576..=65535).contains(n))
         .ok_or(Error::TransferConflict)?;
-    Ok((r, mtu))
+    Ok((r.into_string(), mtu))
 }
 pub(crate) async fn prepare(
     s: &Session,
@@ -221,9 +225,13 @@ pub(crate) async fn prepare(
         steps,
     })
 }
-async fn guest(s: &Session, p: &ImportPlan, g: usize) -> Result<(String, Value), Error> {
+async fn guest(
+    s: &Session,
+    p: &ImportPlan,
+    g: usize,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
     let st = p.step(Kind::Guest { guest: g })?;
-    let (r, v) = fresh(s, "VM", st.uuid.ok_or(Error::TransferConflict)?).await?;
+    let (r, v) = fresh::<class::Vm>(s, st.uuid.ok_or(Error::TransferConflict)?).await?;
     if Some(r.as_str()) != st.reference.as_deref()
         || VmRecord::new(&v).other_config()[MARKER] != st.token.to_string()
         || VmRecord::new(&v).is_a_template() != false
@@ -242,7 +250,7 @@ async fn disk(
     g: usize,
     d: usize,
     unattached: bool,
-) -> Result<(String, Value), Error> {
+) -> Result<(OpaqueRef<class::Vdi>, Answer<result::Record<class::Vdi>>), Error> {
     let st = p.step(Kind::Disk { guest: g, disk: d })?;
     let expected = p.disk(g, d)?;
     let (r, v) = crate::transfer::disk::disk_record(
@@ -328,31 +336,48 @@ pub(crate) async fn provenance(
     index: usize,
 ) -> Result<(String, Uuid, Value), Error> {
     let step = p.steps.get(index).ok_or(Error::TransferConflict)?;
-    let class = step.kind.class().ok_or(Error::TransferConflict)?;
-    let marker = if class == "VDI" {
-        crate::transfer::disk::MARKER
-    } else {
-        MARKER
-    };
-    let all = s.call(&format!("{class}.get_all_records"), vec![]).await?;
+    // Which class a step creates is known only here; each arm reads that class's own
+    // records with that class's own calls.
+    match step.kind {
+        Kind::Guest { .. } => provenance_of::<class::Vm>(s, p, index, step, MARKER).await,
+        Kind::Disk { .. } => {
+            provenance_of::<class::Vdi>(s, p, index, step, crate::transfer::disk::MARKER).await
+        }
+        Kind::Attachment { .. } => provenance_of::<class::Vbd>(s, p, index, step, MARKER).await,
+        Kind::Nic { .. } => provenance_of::<class::Vif>(s, p, index, step, MARKER).await,
+        _ => Err(Error::TransferConflict),
+    }
+}
+/// The one object of class `C` that carries a step's token, with its reference and UUID.
+async fn provenance_of<C>(
+    s: &Session,
+    p: &ImportPlan,
+    index: usize,
+    step: &Step,
+    marker: &str,
+) -> Result<(String, Uuid, Value), Error>
+where
+    C: any::HasAllRecords + any::HasUuid + any::HasRecord + any::Identified + any::Configured,
+{
+    let all = s.send(any::GetAllRecords::<C>::new()).await?;
     let records = all
         .as_object()
         .filter(|r| r.len() <= 10000)
         .ok_or(Error::TransferLimit)?;
     let found = records
         .iter()
-        .filter(|(_, r)| r["other_config"][marker] == step.token.to_string())
+        .filter(|(_, r)| C::other_config(*r)[marker] == step.token.to_string())
         .collect::<Vec<_>>();
     if found.len() != 1 {
         return Err(Error::TransferConflict);
     }
     let (reference, v) = found[0];
-    let id = v["uuid"]
-        .as_str()
+    let id = C::uuid(v)
+        .text()
         .and_then(|s| s.parse().ok())
         .ok_or(Error::TransferConflict)?;
     if p.baseline
-        .get(class)
+        .get(C::NAME)
         .ok_or(Error::TransferConflict)?
         .contains(&id)
         || step.reference.as_ref().is_some_and(|r| r != reference)
@@ -364,11 +389,11 @@ pub(crate) async fn provenance(
     {
         return Err(Error::TransferConflict);
     }
-    let (actual, v) = fresh(s, class, id).await?;
-    if actual != *reference || v["other_config"][marker] != step.token.to_string() {
+    let (actual, v) = fresh::<C>(s, id).await?;
+    if actual != *reference || C::other_config(&v)[marker] != step.token.to_string() {
         return Err(Error::TransferConflict);
     }
-    Ok((actual, id, v))
+    Ok((actual.into_string(), id, v.into_value()))
 }
 pub(crate) async fn identify(
     s: &Session,
@@ -517,7 +542,7 @@ pub(crate) async fn upload_target(
     let (r, _) = disk(s, p, g, d, true).await?;
     let mut route = crate::transfer::xapi::storage_route(s, pool, p.sr, true).await?;
     route.query = vec![
-        ("vdi".into(), r),
+        ("vdi".into(), r.into_string()),
         ("format".into(), p.disk(g, d)?.format.extension().into()),
     ];
     Ok(route)

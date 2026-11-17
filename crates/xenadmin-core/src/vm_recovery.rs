@@ -4,8 +4,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use xenadmin_xapi::class;
 use xenadmin_xapi::enumerations::{domain_type, task_status_type, vm_operations, vm_power_state};
 use xenadmin_xapi::records::{TaskRecord, VmRecord};
+use xenadmin_xapi::{Answer, OpaqueRef, result};
 use xenadmin_xapi::{Call, calls, refs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,8 +310,11 @@ fn advertised(r: &Value, op: &str) -> bool {
             .entries()
             .is_some_and(|b| !b.contains_key(op))
 }
-async fn guest(s: &Session, vm: VmId) -> Result<(String, Value), Error> {
-    let (reference, r) = crate::snapshots::optional_record(s, "VM", &vm.to_string())
+async fn guest(
+    s: &Session,
+    vm: VmId,
+) -> Result<(OpaqueRef<class::Vm>, Answer<result::Record<class::Vm>>), Error> {
+    let (reference, r) = crate::snapshots::optional_record::<class::Vm>(s, &vm.to_string())
         .await?
         .ok_or(Error::Stale)?;
     if !normal(&r) {
@@ -609,7 +614,7 @@ pub(crate) async fn task(s: &Session, plan: &mut Plan, index: usize) -> Result<V
     if TaskRecord::new(&r).status() == task_status_type::SUCCESS {
         e.completed = true
     }
-    Ok(r)
+    Ok(r.into_value())
 }
 pub(crate) async fn verify(
     s: &Session,

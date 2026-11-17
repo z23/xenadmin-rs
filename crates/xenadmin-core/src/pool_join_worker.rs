@@ -115,7 +115,7 @@ async fn destination(session: &Session, spec: &JoinSpec) -> Result<Vec<HostId>, 
     idle(&record)?;
     let (ids, hosts) = host_ids(session).await?;
     let master = xapi::reply_reference(PoolRecord::new(&record).master())?;
-    let host = hosts.get(&master).ok_or(Error::Stale)?;
+    let host = hosts.get(master.as_str()).ok_or(Error::Stale)?;
     require(
         HostRecord::new(host).uuid() == spec.coordinator.to_string()
             && HostRecord::new(host).address() == spec.address,

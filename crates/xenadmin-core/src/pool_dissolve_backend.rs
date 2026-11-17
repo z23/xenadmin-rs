@@ -185,7 +185,7 @@ pub(super) async fn task(
     {
         return Err(Error::ResourceConflict);
     }
-    Ok((id, value))
+    Ok((id, value.into_value()))
 }
 pub(super) async fn verify(
     s: &Session,

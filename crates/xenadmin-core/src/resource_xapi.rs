@@ -1,6 +1,7 @@
 use super::*;
 use crate::xapi::Session;
 use serde_json::{Value, json};
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{storage_operations, task_allowed_operations, task_status_type};
 use xenadmin_xapi::records::{HostRecord, NetworkRecord, PoolRecord, SrRecord, TaskRecord};
 use xenadmin_xapi::{Reads, kind};
@@ -34,7 +35,7 @@ pub(super) struct Step {
     pub check: Check,
 }
 
-fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
+fn reference<'a, R: Reads<'a, kind::Reference>>(value: R) -> Result<OpaqueRef<R::Class>, Error> {
     let value = value.raw();
     value
         .as_str()
@@ -44,7 +45,7 @@ fn reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error
                 && value.len() <= 512
                 && value.bytes().all(|byte| byte.is_ascii_graphic())
         })
-        .map(str::to_owned)
+        .map(OpaqueRef::new)
         .ok_or(Error::Protocol("invalid resource reference"))
 }
 pub(super) async fn read(
@@ -65,7 +66,7 @@ pub(super) async fn read(
     if record["uuid"].as_str() != Some(target.uuid().to_string().as_str()) {
         return Err(Error::Stale);
     }
-    Ok((reference, record))
+    Ok((reference.into_string(), record))
 }
 fn empty_network(record: &Value) -> Result<(), Error> {
     for field in ["PIFs", "VIFs"] {
@@ -451,8 +452,9 @@ pub(super) async fn arguments(
         }
     }
 }
-pub(super) fn reply_reference<'a>(value: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let value = value.raw();
+pub(super) fn reply_reference<'a, R: Reads<'a, kind::Reference>>(
+    value: R,
+) -> Result<OpaqueRef<R::Class>, Error> {
     reference(value)
 }
 fn cancellable_task(record: &Value) -> Result<(), Error> {
@@ -596,6 +598,7 @@ async fn verify_created(
         session
             .send(calls::network::GetRecord(refs::network(reference)))
             .await?
+            .into_value()
     } else {
         let records = session.send(calls::network::GetAllRecords).await?;
         let records = records

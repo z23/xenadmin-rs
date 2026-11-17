@@ -7,6 +7,7 @@ use crate::{
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use xenadmin_xapi::OpaqueRef;
 use xenadmin_xapi::enumerations::{storage_operations, vdi_type};
 use xenadmin_xapi::records::{
     HostMetricsRecord, HostRecord, PbdRecord, PoolRecord, SrRecord, VbdRecord, VdiRecord, VmRecord,
@@ -28,8 +29,7 @@ fn idle(v: &Value) -> Result<(), Error> {
         "Storage or host has an active operation",
     )
 }
-fn reference<'a>(v: impl Reads<'a, kind::Reference>) -> Result<String, Error> {
-    let v = v.raw();
+fn reference<'a, R: Reads<'a, kind::Reference>>(v: R) -> Result<OpaqueRef<R::Class>, Error> {
     crate::snapshots::reference(v)
 }
 fn uuid(v: &Value) -> Result<uuid::Uuid, Error> {
@@ -384,7 +384,7 @@ fn ref_set<'a>(value: impl Reads<'a, kind::Set>) -> Result<BTreeSet<String>, Err
         .ok_or(Error::ResourceConflict)?;
     let set = a
         .iter()
-        .map(reference)
+        .map(|value| reference(value).map(String::from))
         .collect::<Result<BTreeSet<_>, _>>()?;
     require(set.len() == a.len(), "Duplicate storage graph reference")?;
     Ok(set)
@@ -542,7 +542,7 @@ async fn multipath_graph(
             for bref in &expected_vbds {
                 let b = &vbds[bref];
                 let vm_ref = reference(VbdRecord::new(b).vm())?;
-                let vm = vms.get(&vm_ref).ok_or(Error::ResourceConflict)?;
+                let vm = vms.get(vm_ref.as_str()).ok_or(Error::ResourceConflict)?;
                 let declared = ref_set(VmRecord::new(vm).vbds())?;
                 require(
                     declared.contains(bref),
@@ -564,7 +564,7 @@ async fn multipath_graph(
             for b in vbds.values().filter(|b| VbdRecord::new(b).vdi() == *dref) {
                 if VbdRecord::new(b).currently_attached() != false {
                     let vm = reference(VbdRecord::new(b).vm())?;
-                    let resident = vms.get(&vm).ok_or(Error::ResourceConflict)?;
+                    let resident = vms.get(vm.as_str()).ok_or(Error::ResourceConflict)?;
                     require(
                         !block && VmRecord::new(resident).resident_on() != h,
                         "Active virtual disks prevent multipath maintenance",
@@ -884,5 +884,5 @@ pub(super) async fn task(
                 .any(|(n, e)| n != index && e.task_uuid == Some(id)),
         "Storage task identity changed",
     )?;
-    Ok((id, v))
+    Ok((id, v.into_value()))
 }

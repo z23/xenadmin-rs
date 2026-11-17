@@ -447,7 +447,7 @@ impl ResourceRequest {
                     xapi::Check::Scan | xapi::Check::Network | xapi::Check::Storage
                 )
             {
-                self.record.task = Some(xapi::reply_reference(&value)?);
+                self.record.task = Some(xapi::reply_reference(&value)?.into_string());
                 self.record = journal.resource_evidence(&self.record)?;
                 self.announce().await;
                 if self.stopped_after_recovery() {
@@ -469,7 +469,7 @@ impl ResourceRequest {
                     .completed = true;
             }
             if matches!(step.check, xapi::Check::CreatedNetwork) {
-                self.record.result_reference = Some(xapi::reply_reference(&value)?);
+                self.record.result_reference = Some(xapi::reply_reference(&value)?.into_string());
             }
             if matches!(
                 &self.record.action,
@@ -477,7 +477,7 @@ impl ResourceRequest {
                     crate::PoolSecurityOperation::AddSubject { .. }
                 ))
             ) {
-                self.record.result_reference = Some(xapi::reply_reference(&value)?);
+                self.record.result_reference = Some(xapi::reply_reference(&value)?.into_string());
             }
             if matches!(step.check, xapi::Check::Pool) {
                 self.record.pool_completed = true;
@@ -837,7 +837,7 @@ impl ResourceRequest {
             if self.stopped_after_recovery() {
                 return Ok(());
             }
-            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.network_fabric_plan.as_ref().is_some_and(|p|p.completed) || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0})) } else { session.send(calls::task::GetRecord(refs::task(&reference))).await } }=>result};
+            let task = tokio::select! {_=cancel.cancelled()=>return Err(Error::Closed),result=async { if self.record.result_reference.is_some() || self.record.pool_completed || self.record.network_fabric_plan.as_ref().is_some_and(|p|p.completed) || self.record.appliance_completed || self.record.snapshot_policy_evidence.as_ref().is_some_and(|e|e.completed) { Ok(json!({"status":task_status_type::SUCCESS,"progress":1.0})) } else { session.send(calls::task::GetRecord(refs::task(&reference))).await.map(xenadmin_xapi::Answer::into_value) } }=>result};
             let task = match task {
                 Ok(task) => {
                     backoff = 1;

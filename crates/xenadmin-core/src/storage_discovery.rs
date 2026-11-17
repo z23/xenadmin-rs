@@ -185,7 +185,7 @@ impl DiscoveryRequest {
                     .map(StorageDiscoveryResult::LocalRepositories)
             }
             StorageQuery::Backends => {
-                decode_backends(&session.send(calls::sm::GetAllRecords).await?)
+                decode_backends(&session.send(calls::sm::GetAllRecords).await?.into_value())
                     .map(StorageDiscoveryResult::Backends)
             }
             query => {
@@ -245,7 +245,8 @@ impl DiscoveryRequest {
                         config[password] = json!(&*entry.password);
                     }
                 }
-                let backends = decode_backends(&session.send(calls::sm::GetAllRecords).await?)?;
+                let backends =
+                    decode_backends(&session.send(calls::sm::GetAllRecords).await?.into_value())?;
                 if !backends
                     .iter()
                     .any(|b| b.kind == kind && b.features.iter().any(|f| f == "SR_PROBE"))

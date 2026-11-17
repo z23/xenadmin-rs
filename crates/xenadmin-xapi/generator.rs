@@ -162,16 +162,16 @@ fn distinct<'a>(what: &str, names: impl Iterator<Item = (&'a str, String)>) -> R
 /// value, and the untyped `FieldValue` for a kind there is no type for.
 fn typed(kind: &str) -> &'static str {
     match kind {
-        "bool" => "FlagField",
-        "string" | "string option" => "TextField",
-        "datetime" => "TimeField",
-        "int" => "WholeField",
-        "float" => "RealField",
-        _ if kind.ends_with(" set") => "SetField",
-        _ if kind.starts_with('(') && kind.ends_with(") map") => "MapField",
-        _ if kind.starts_with("enum ") => "ChoiceField",
-        _ if kind.ends_with(" ref") => "RefField",
-        _ => "FieldValue",
+        "bool" => "FlagField<'a>",
+        "string" | "string option" => "TextField<'a>",
+        "datetime" => "TimeField<'a>",
+        "int" => "WholeField<'a>",
+        "float" => "RealField<'a>",
+        _ if kind.ends_with(" set") => "SetField<'a>",
+        _ if kind.starts_with('(') && kind.ends_with(") map") => "MapField<'a>",
+        _ if kind.starts_with("enum ") => "ChoiceField<'a>",
+        _ if kind.ends_with(" ref") => "RefField<'a>",
+        _ => "FieldValue<'a>",
     }
 }
 
@@ -201,6 +201,36 @@ fn argument(kind: &str, value: &str) -> (String, bool, String) {
         ),
         _ => ("Value".into(), false, value.to_owned()),
     }
+}
+
+/// The kind of answer a call of the API result type `result` gives: a reference or a
+/// record of a class the description has, all the records of one, a set of references to
+/// one, nothing, or something the bindings give no type.
+fn answer(result: &str, known: &BTreeSet<&str>) -> String {
+    let class = |name: &str| known.contains(name).then(|| camel(name));
+    if result == "void" {
+        return "result::Void".into();
+    }
+    if let Some(name) = result.strip_suffix(" ref set").and_then(class) {
+        return format!("result::References<class::{name}>");
+    }
+    if let Some(name) = result.strip_suffix(" ref").and_then(class) {
+        return format!("result::Reference<class::{name}>");
+    }
+    if let Some(name) = result.strip_suffix(" record").and_then(class) {
+        return format!("result::Record<class::{name}>");
+    }
+    if let Some((key, value)) = result
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(") map"))
+        .and_then(|inner| inner.split_once(" -> "))
+        && let Some(name) = key.strip_suffix(" ref")
+        && value.strip_suffix(" record") == Some(name)
+        && let Some(name) = class(name)
+    {
+        return format!("result::Records<class::{name}>");
+    }
+    "result::Other".into()
 }
 
 /// The generated source for a description, or why it cannot be generated.
@@ -247,6 +277,7 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
         enumerations.keys().map(|name| (*name, snake(name))),
     )?;
 
+    let known: BTreeSet<&str> = classes.iter().map(|c| c.name.as_str()).collect();
     let mut out = String::from(
         "// Generated from data/xenapi.json by generator.rs when this crate is built.\n\n",
     );
@@ -310,7 +341,7 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
     out.push_str(
         "/// A view of a record for every class: one method for each field, which returns the\n\
          /// field as the host sent it, null when the record does not carry it.\n\
-         pub mod records {\n    #[allow(unused_imports)]\n    use super::{ChoiceField, FieldValue, FlagField, MapField, RealField, RefField, SetField, TextField, TimeField, WholeField};\n    use serde_json::Value;\n",
+         pub mod records {\n    #[allow(unused_imports)]\n    use super::{ChoiceField, Describes, FieldValue, FlagField, MapField, RealField, RefField, SetField, TextField, TimeField, WholeField, class};\n    use serde_json::Value;\n",
     );
     for class in &classes {
         let name = view(&class.name);
@@ -319,22 +350,45 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
             "\n    /// A `{class}` record.\n    #[derive(Clone, Copy)]\n    pub struct {name}<'a>(&'a Value);\n    \
              #[allow(clippy::wrong_self_convention)]\n    impl<'a> {name}<'a> {{\n        \
              /// The class these records are of.\n        pub const CLASS: &'static str = {literal};\n        \
+             /// A view of a JSON value, which the caller says is a record of this class, or\n        \
+             /// of the answer to a call that gives one.\n        \
              #[cfg_attr(debug_assertions, track_caller)]\n        \
-             pub fn new(record: &'a Value) -> Self {{\n            \
+             pub fn new(record: impl Describes<'a, class::{marker}>) -> Self {{\n            \
+             let record = record.record();\n            \
              #[cfg(debug_assertions)]\n            \
              crate::audit::observe(Self::CLASS, record, std::panic::Location::caller());\n            \
              Self(record)\n        }}\n        \
              /// The whole record, as the host sent it.\n        pub fn record(self) -> &'a Value {{\n            self.0\n        }}\n",
             class = class.name,
             literal = literal(&class.name),
+            marker = camel(&class.name),
         );
         for field in &class.fields {
+            // A reference to an object of a class the description has says which.
+            let referred = field
+                .kind
+                .strip_suffix(" ref")
+                .filter(|class| !class.contains(' ') && known.contains(class));
+            let (typed, made) = match referred {
+                Some(class) => (
+                    format!("RefField<'a, class::{}>", camel(class)),
+                    "RefField::typed".to_owned(),
+                ),
+                None => {
+                    let typed = typed(&field.kind);
+                    let made = if typed == "RefField<'a>" {
+                        "RefField::typed"
+                    } else {
+                        typed.trim_end_matches("<'a>")
+                    };
+                    (typed.to_owned(), made.to_owned())
+                }
+            };
             let _ = write!(
                 out,
-                "        /// `{field}`: `{kind}`, {qualifier}.\n        pub fn {method}(self) -> {typed}<'a> {{\n            \
-                 {typed}(&self.0[{literal}])\n        }}\n",
+                "        /// `{field}`: `{kind}`, {qualifier}.\n        pub fn {method}(self) -> {typed} {{\n            \
+                 {made}(&self.0[{literal}])\n        }}\n",
                 field = field.name,
-                typed = typed(&field.kind),
                 kind = field.kind,
                 qualifier = field.qualifier,
                 method = snake(&field.name),
@@ -377,29 +431,93 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
         "class modules",
         classes.iter().map(|c| (c.name.as_str(), snake(&c.name))),
     )?;
-    let known: BTreeSet<&str> = classes.iter().map(|c| c.name.as_str()).collect();
     out.push_str(
-        "/// A marker for every class, which says of which class a reference is.\npub mod class {\n",
+        "/// A marker for every class, which says of which class a reference, a record or an\n\
+         /// answer is.\npub mod class {\n    #[allow(unused_imports)]\n    use super::{Describes, IsClass, MapField, SetField, TextField, any, records};\n    use serde_json::Value;\n",
     );
     for class in &classes {
+        let marker = camel(&class.name);
         let _ = writeln!(
             out,
-            "    /// `{}`.\n    pub struct {};",
-            class.name,
-            camel(&class.name)
+            "    /// `{name}`.\n    pub struct {marker};\n    impl IsClass for {marker} {{\n        \
+             const NAME: &'static str = {literal};\n        \
+             type View<'a> = records::{view}<'a>;\n        \
+             #[cfg_attr(debug_assertions, track_caller)]\n        \
+             fn view(record: &Value) -> Self::View<'_> {{\n            records::{view}::new(record)\n        }}\n    }}",
+            name = class.name,
+            literal = literal(&class.name),
+            view = view(&class.name),
         );
+        // The fields many classes share, for functions that read them of any class.
+        let kind_of = |name: &str| {
+            class
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .map(|f| typed(&f.kind))
+        };
+        for (shared, members) in [
+            ("Identified", &[("uuid", "TextField<'a>")][..]),
+            (
+                "Named",
+                &[
+                    ("name_label", "TextField<'a>"),
+                    ("name_description", "TextField<'a>"),
+                ][..],
+            ),
+            (
+                "Operated",
+                &[
+                    ("allowed_operations", "SetField<'a>"),
+                    ("current_operations", "MapField<'a>"),
+                ][..],
+            ),
+            ("Blocked", &[("blocked_operations", "MapField<'a>")][..]),
+            ("Configured", &[("other_config", "MapField<'a>")][..]),
+            ("Tagged", &[("tags", "SetField<'a>")][..]),
+        ] {
+            if members
+                .iter()
+                .all(|(name, kind)| kind_of(name) == Some(*kind))
+            {
+                let _ = writeln!(out, "    impl any::{shared} for {marker} {{");
+                for (name, kind) in members {
+                    let _ = writeln!(
+                        out,
+                        "        #[cfg_attr(debug_assertions, track_caller)]\n        \
+                         fn {name}<'a>(record: impl Describes<'a, Self>) -> {kind} {{\n            records::{view}::new(record).{name}()\n        }}",
+                        view = view(&class.name),
+                    );
+                }
+                out.push_str("    }\n");
+            }
+        }
+        for (message, has, constant) in [
+            ("get_record", "HasRecord", "GET_RECORD"),
+            ("get_by_uuid", "HasUuid", "GET_BY_UUID"),
+            ("get_all_records", "HasAllRecords", "GET_ALL_RECORDS"),
+        ] {
+            if class.messages.iter().any(|m| m.name == message) {
+                let _ = writeln!(
+                    out,
+                    "    impl any::{has} for {marker} {{\n        const {constant}: [&'static str; 2] = [{plain}, {asynchronous}];\n    }}",
+                    plain = literal(&format!("{}.{message}", class.name)),
+                    asynchronous = literal(&format!("Async.{}.{message}", class.name)),
+                );
+            }
+        }
     }
     out.push_str(
-        "}\n\n/// For every class, a reference that the caller says is of that class, made from\n\
-         /// text or from a value a host sent. The class is checked against the parameter the\n\
-         /// reference is given to; that it is a reference of that class is the caller's\n\
-         /// word, written where it is used.\n\
-         pub mod refs {\n    use super::{Ref, RefSource, class};\n",
+        "}\n\n/// For every class, a reference of that class as an argument of a call. Text and a\n\
+         /// JSON value are taken on the caller's word, written where the reference is used.\n\
+         /// A view's field, an `OpaqueRef` and a call's answer carry their class and are\n\
+         /// taken only when it is this one.\n\
+         pub mod refs {\n    use super::{Ref, Refers, class};\n",
     );
     for class in &classes {
         let _ = writeln!(
             out,
-            "    /// A reference to a `{name}`.\n    pub fn {function}<'a>(reference: impl Into<RefSource<'a>>) -> Ref<'a, class::{marker}> {{\n        Ref::new(reference)\n    }}",
+            "    /// A reference to a `{name}`.\n    pub fn {function}<'a>(reference: impl Refers<'a, class::{marker}>) -> Ref<'a, class::{marker}> {{\n        Ref::new(reference)\n    }}",
             name = class.name,
             function = snake(&class.name),
             marker = camel(&class.name)
@@ -512,7 +630,12 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
                      const NAME: &'static str = {plain};\n            \
                      const ASYNC: &'static str = {asynchronous};\n            \
                      const RESULT: &'static str = {result};\n            \
+                     type Result = {kind};\n            \
                      fn arguments(self) -> Vec<Value> {{\n                vec![{arguments}]\n            }}\n        }}",
+                    kind = answer(
+                        message.result.first().map_or("void", String::as_str),
+                        &known
+                    ),
                     anonymous = if lifetime.is_empty() { "" } else { "<'_>" },
                     plain = literal(&format!("{}.{}", class.name, message.name)),
                     asynchronous = literal(&format!("Async.{}.{}", class.name, message.name)),
@@ -533,7 +656,7 @@ pub fn generate(description: &[u8]) -> Result<String, String> {
         let _ = write!(
             out,
             "\n    /// The messages of `{class}`.\n    pub mod {module} {{\n        \
-             #[allow(unused_imports)]\n        use crate::{{Call, Int, Ref, class}};\n        \
+             #[allow(unused_imports)]\n        use crate::{{Call, Int, Ref, class, result}};\n        \
              #[allow(unused_imports)]\n        use serde_json::Value;\n{body}    }}\n",
             class = class.name,
             module = snake(&class.name),

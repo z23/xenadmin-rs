@@ -52,17 +52,17 @@ pub(super) async fn request(
         );
         return Some(RpcReply::Json(json!({"result":""})));
     }
-    if !method.starts_with("Async.Tunnel.") && !method.starts_with("Async.Network_sriov.") {
+    if !method.starts_with("Async.tunnel.") && !method.starts_with("Async.network_sriov.") {
         return None;
     }
     let mut m = records.lock().unwrap();
     let index = writes.fetch_add(1, Ordering::SeqCst) + 1;
-    let class = if method.contains("Tunnel") {
-        "Tunnel"
+    let class = if method.contains("tunnel") {
+        "tunnel"
     } else {
-        "Network_sriov"
+        "network_sriov"
     };
-    let (parent, child, parents, children) = if class == "Tunnel" {
+    let (parent, child, parents, children) = if class == "tunnel" {
         (
             "transport_PIF",
             "access_PIF",
@@ -98,7 +98,7 @@ pub(super) async fn request(
         new["PCI"] = json!("OpaqueRef:NULL");
         new["network"] = json!("OpaqueRef:network");
         new[children] = json!([object_ref]);
-        if class == "Tunnel" {
+        if class == "tunnel" {
             new["MTU"] = json!("-1");
             new["device"] = json!(format!("tunnel{index}"));
         } else {
@@ -106,7 +106,7 @@ pub(super) async fn request(
         }
         // A tunnel and an SR-IOV network each carry their own class's fields.
         let mut object = json!({"uuid":object_id,parent:r["params"][1],child:child_ref});
-        if class == "Tunnel" {
+        if class == "tunnel" {
             object["protocol"] = r["params"].get(3).cloned().unwrap_or(json!("gre"));
             object["status"] = json!({"active":"false"});
         } else {

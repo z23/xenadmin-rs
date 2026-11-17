@@ -73,9 +73,9 @@ async fn fixture(kind: Kind, fault: Fault) -> (Mock, Records, Arc<AtomicUsize>) 
     ])));
     if fault == Fault::OldIdentity {
         let class = if matches!(kind, Kind::Tunnel(_)) {
-            "Tunnel"
+            "tunnel"
         } else {
-            "Network_sriov"
+            "network_sriov"
         };
         records
             .lock()
@@ -170,12 +170,12 @@ async fn fixture(kind: Kind, fault: Fault) -> (Mock, Records, Arc<AtomicUsize>) 
             if method == "task.cancel" {
                 return Some(RpcReply::Json(json!({"result":""})));
             }
-            if method.starts_with("Async.Tunnel.") || method.starts_with("Async.Network_sriov.") {
+            if method.starts_with("Async.tunnel.") || method.starts_with("Async.network_sriov.") {
                 let mut map = records.lock().unwrap();
                 let class = if matches!(kind, Kind::Tunnel(_)) {
-                    "Tunnel"
+                    "tunnel"
                 } else {
-                    "Network_sriov"
+                    "network_sriov"
                 };
                 let object_ref = format!("OpaqueRef:{class}");
                 let (parent, child, parents, children) = if matches!(kind, Kind::Tunnel(_)) {

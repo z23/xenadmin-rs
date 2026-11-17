@@ -197,7 +197,7 @@ impl ResourceRequest {
             format: crate::DiskImageFormat::Vhd,
         };
         let mut route = transfer::disk::prepare(s, self.record.pool, &action, None).await?;
-        route.query.push(("task_id".into(), task));
+        route.query.push(("task_id".into(), task.into_string()));
         self.reload(j)?;
         if self.stop_before_dispatch() {
             self.save(j).await?;

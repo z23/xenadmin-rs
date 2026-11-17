@@ -171,7 +171,7 @@ impl ResourceRequest {
             return Ok(());
         }
         let result = bounded(cancel, session.call(method, args)).await?;
-        self.record.task = Some(xapi::reply_reference(&result)?);
+        self.record.task = Some(xapi::reply_reference(&result)?.into_string());
         if !self.auth_merge(journal).await? {
             return Ok(());
         }

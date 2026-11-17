@@ -106,7 +106,8 @@ impl ResourceRequest {
         self.save_cross_dispatch(journal).await?;
         peer_current(&inputs, &peer)?;
         let value = tokio::select! { _=cancel.cancelled()=>return Err(Error::Closed), _=peer.cancel.cancelled()=>return Err(Error::Closed), value=peer.session.send(calls::host::MigrateReceive { host: refs::host(&prepared.host), network: refs::network(&prepared.network), options: json!({}) })=>value? };
-        let receiver = backend::receiver(value, &prepared, &operation.transfer_address)?;
+        let receiver =
+            backend::receiver(value.into_value(), &prepared, &operation.transfer_address)?;
         if receiver["session_id"] == peer.session.session_cookie() {
             return Err(Error::Protocol(
                 "Migration receiver reused the active desktop session",
@@ -170,7 +171,7 @@ impl ResourceRequest {
             receiver_session.keep_for_server = false;
         }
         let reply = reply?;
-        self.record.task = Some(xapi::reply_reference(&reply)?);
+        self.record.task = Some(xapi::reply_reference(&reply)?.into_string());
         self.record = journal.resource_evidence(&self.record)?;
         self.announce().await;
         if self.stopped_after_recovery() {

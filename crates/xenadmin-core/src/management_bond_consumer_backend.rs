@@ -243,7 +243,7 @@ impl Graph {
             refs(VmRecord::new(&v).vifs())? == interfaces,
             "Guest VM interface membership is inconsistent",
         )?;
-        Ok(v)
+        Ok(v.into_value())
     }
     async fn locality(
         &self,

@@ -73,7 +73,7 @@ impl ResourceRequest {
                 .as_mut()
                 .ok_or(Error::Journal)?
                 .items[index]
-                .task = Some(xapi::reply_reference(&result)?);
+                .task = Some(xapi::reply_reference(&result)?.into_string());
             if !self.merge_batch_evidence(journal, index).await? {
                 return Ok(());
             }
