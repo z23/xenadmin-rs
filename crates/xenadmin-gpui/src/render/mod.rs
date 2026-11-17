@@ -38,14 +38,21 @@ use crate::store::{AppStore, dispatch};
 /// snapshot tree. Registered by name with [`Ui::register_custom`].
 pub type CustomRender = Rc<dyn Fn(&Custom, &Ui, &mut Window, &mut App) -> AnyElement>;
 
+/// Reads the stored width of a column: the model, the table key, the
+/// column id.
+pub type GetColumnWidth = Rc<dyn Fn(&Model, &str, &str) -> Option<f32>>;
+/// Stores the width of a column: the model, the table key, the column id,
+/// the width in pixels.
+pub type SetColumnWidth = Rc<dyn Fn(&mut Model, &str, &str, f32)>;
+
 /// Where a table's column widths are kept when the user resizes a column.
 /// Without one the widths live as long as the table is shown.
 #[derive(Clone)]
 pub struct ColumnWidths {
     /// The stored width of `column` of `table`, if any.
-    pub get: Rc<dyn Fn(&Model, &str, &str) -> Option<f32>>,
+    pub get: GetColumnWidth,
     /// Stores the width the user gave `column` of `table`.
-    pub set: Rc<dyn Fn(&mut Model, &str, &str, f32)>,
+    pub set: SetColumnWidth,
 }
 
 /// What every render function needs. Cheap to clone.

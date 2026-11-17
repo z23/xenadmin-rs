@@ -11,6 +11,9 @@
 //! screen reader: the platform is the Kit's test platform.
 #![cfg(feature = "scenes")]
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Duration;
 
 use xenadmin_gpui::kit::testing::{
@@ -18,7 +21,7 @@ use xenadmin_gpui::kit::testing::{
     TestWindowExt as _,
 };
 use xenadmin_gpui::kit::*;
-use xenadmin_gpui::render::surface_scope;
+use xenadmin_gpui::render::{ColumnWidths, surface_scope};
 use xenadmin_gpui::scenes::gallery::{self, Body, CONFIRM, DIALOG, Lab, PROPERTIES, TABLE, WIZARD};
 use xenadmin_gpui::scenes::{self, Options, SceneWindow, Setup};
 use xenadmin_ui::intent::Intent;
@@ -531,6 +534,61 @@ fn a_multi_selection_is_kept_by_id(cx: &mut TestAppContext) {
     // A plain click selects one row again.
     on(cx, &scene, |window, cx| window.click(row(&guests[0]), cx));
     assert_eq!(lab(&scene, |lab| lab.marked.clone()), [guests[0].clone()]);
+}
+
+#[gpui_kit::test]
+fn a_dragged_column_width_is_reported_and_kept(cx: &mut TestAppContext) {
+    let scene = open(cx, |lab| lab.body = Body::Table);
+    // Where the shell keeps the widths.
+    let stored: Rc<RefCell<HashMap<(String, String), f32>>> = Rc::default();
+    cx.update(|cx| {
+        let ui = scene.view.read(cx).ui().clone();
+        let (reading, writing) = (stored.clone(), stored.clone());
+        ui.persist_column_widths(ColumnWidths {
+            get: Rc::new(move |_, table, column| {
+                reading
+                    .borrow()
+                    .get(&(table.to_owned(), column.to_owned()))
+                    .copied()
+            }),
+            set: Rc::new(move |_, table, column, width| {
+                writing
+                    .borrow_mut()
+                    .insert((table.to_owned(), column.to_owned()), width);
+            }),
+        });
+    });
+    settle(cx, &scene);
+    let state = ("col-header", 1usize);
+    on(cx, &scene, |window, cx| {
+        let header = window.find(state).bounds();
+        assert_eq!(header.size.width, px(140.), "the declared width");
+        // The first column has no declared width: it has the rest.
+        let name = window.find(("col-header", 0usize)).bounds();
+        assert!(name.size.width > px(400.), "{name:?}");
+        let edge = point(header.right() - px(1.), header.center().y);
+        window.drag(edge, edge + point(px(60.), px(0.)), cx);
+    });
+    let width = stored
+        .borrow()
+        .get(&(TABLE.to_owned(), "state".to_owned()))
+        .copied()
+        .expect("the width was reported");
+    assert!((width - 200.).abs() < 2., "{width}");
+    assert_eq!(stored.borrow().len(), 1, "only the column that was dragged");
+    on(cx, &scene, |window, _| {
+        let header = window.find(state).bounds();
+        assert!(
+            (header.size.width - px(width)).abs() < px(1.),
+            "kept: {header:?}"
+        );
+    });
+    // The rows change: the width stays.
+    model_side(cx, &scene, |lab| lab.sort = ("name".into(), true));
+    on(cx, &scene, |window, _| {
+        let header = window.find(state).bounds();
+        assert!((header.size.width - px(width)).abs() < px(1.), "{header:?}");
+    });
 }
 
 #[gpui_kit::test]

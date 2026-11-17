@@ -1,14 +1,12 @@
 //! Draws a list of blocks.
 
-use std::rc::Rc;
-
 use xenadmin_ui::surface::{self as s, Block};
 
 use super::{Ui, element_id, fields, join, pressable, segment, tip};
 use crate::kit::*;
 use crate::store::dispatch;
 use crate::widgets;
-use crate::widgets::object_grid::{GridHeight, ObjectGrid};
+use crate::widgets::object_grid::{GridHeight, ObjectGrid, OnCancel};
 
 /// Below this width per column, the columns of a `Columns` block stack.
 const COLUMN_MIN_WIDTH: f32 = 300.0;
@@ -26,7 +24,7 @@ pub struct Pass<'a> {
     pub fill: bool,
     /// What Escape does while a table has the keyboard: the close handler
     /// of the surface the table is in. A table in a tab has none.
-    pub on_cancel: Option<Rc<dyn Fn(&mut App)>>,
+    pub on_cancel: Option<OnCancel>,
 }
 
 impl Pass<'_> {

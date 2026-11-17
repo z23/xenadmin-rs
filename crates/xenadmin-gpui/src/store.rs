@@ -19,15 +19,22 @@ use xenadmin_ui::{Model, command};
 use crate::bridge::{WakeReceiver, wake_channel};
 use crate::kit::*;
 
+/// The open surfaces, back to front.
+pub type DescribeSurfaces = Rc<dyn Fn(&Model) -> Vec<Surface>>;
+/// The body of a tab.
+pub type DescribeTab = Rc<dyn Fn(&Model, TabId) -> Option<TabBody>>;
+/// The local action row of a tab.
+pub type DescribeLocalRow = Rc<dyn Fn(&Model, TabId) -> Vec<command::MenuItem>>;
+
 /// Where the descriptions come from. The model answers by default; a test
 /// or the scene tool's gallery substitutes its own, to render descriptions
 /// no area provides.
 #[derive(Clone)]
 pub struct Describe {
-    pub surfaces: Rc<dyn Fn(&Model) -> Vec<Surface>>,
-    pub tab_body: Rc<dyn Fn(&Model, TabId) -> Option<TabBody>>,
+    pub surfaces: DescribeSurfaces,
+    pub tab_body: DescribeTab,
     /// The local action row of a tab.
-    pub local_row: Rc<dyn Fn(&Model, TabId) -> Vec<command::MenuItem>>,
+    pub local_row: DescribeLocalRow,
 }
 
 impl Default for Describe {

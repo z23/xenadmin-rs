@@ -402,6 +402,7 @@ impl WidgetCache {
 
     /// The widget of a select control, kept in step with the options and
     /// the selected option of the description.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn select(
         &mut self,
         scope: &str,
