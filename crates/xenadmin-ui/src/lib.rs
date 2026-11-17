@@ -3,7 +3,7 @@
 //! Everything of the front end except drawing lives here: the [`Model`], the
 //! areas with their editors, the vocabulary an area describes its surfaces
 //! and tab bodies with ([`surface`]), the command table ([`command`]), the
-//! tab matrix ([`tabs`]), the scenes ([`scene`]) and the [`Harness`] that
+//! tab matrix ([`tabs`]), the scenes ([`mod@scene`]) and the [`Harness`] that
 //! drives all of it in tests. Rune and GPUI types do not live here.
 //!
 //! `notes/briefs/MODEL-API.md` is the reference for area ports.
