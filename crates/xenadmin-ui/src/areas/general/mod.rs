@@ -21,6 +21,7 @@
 use crate::prelude::*;
 
 mod information;
+mod operations;
 mod resources;
 #[cfg(test)]
 mod tests;
@@ -107,7 +108,12 @@ fn body(m: &Model, view: &View, tab: TabId, object: &ObjectRef) -> Option<Vec<Bl
     let vm = object.vm_id();
     let host = object.host_id();
     Some(match (tab, object.kind) {
-        (TabId::General, K::Vm | K::Template) => information::vm_general(view, vm?),
+        (TabId::General, K::Vm) => {
+            let mut blocks = information::vm_general(view, vm?);
+            blocks.push(operations::vm_operations(m, object.pool?, vm?).into());
+            blocks
+        }
+        (TabId::General, K::Template) => information::vm_general(view, vm?),
         (TabId::General, K::Host) => information::host_general(view, host?),
         (TabId::General, K::Pool) => information::pool_general(view),
         (TabId::General, K::StorageRepository) => resources::storage_general(m, view, object),

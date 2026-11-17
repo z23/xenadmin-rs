@@ -510,3 +510,91 @@ fn a_saved_connection_that_shows_no_pool_has_a_general_tab() {
     assert_eq!(value("Status").as_deref(), Some("Demo"));
     assert!(tab(&h.model, TabId::Memory, &Target::one(node)).is_none());
 }
+
+// Rune: the "Operations" section of the details pane (`details` of
+// `main.rs`), which had no test of its own.
+#[test]
+fn the_general_tab_of_a_vm_lists_its_recent_operations_without_controls() {
+    use xenadmin_core::{OperationRecord, OperationState};
+    let mut h = Harness::scene("demo");
+    let pool = pool(&h);
+    let vm = xenadmin_core::VmId::from(
+        uuid::Uuid::parse_str("30000000-0000-0000-0000-000000000001").unwrap(),
+    );
+    let record = |index: u128, pool: String, vm: &str, state: OperationState| -> OperationRecord {
+        serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0000 + index),
+            "pool": pool,
+            "vm": vm,
+            "action": "Start",
+            "state": state,
+            "progress": null,
+            "detail": format!("Synthetic operation {index}"),
+            "created_at_ms": index as u64,
+        }))
+        .unwrap()
+    };
+    let this = "30000000-0000-0000-0000-000000000001";
+    let mut rows: Vec<OperationRecord> = (1..=12)
+        .map(|index| record(index, pool.to_string(), this, OperationState::Succeeded))
+        .collect();
+    rows.push(record(20, pool.to_string(), this, OperationState::OutcomeUnknown));
+    rows.push(record(
+        21,
+        pool.to_string(),
+        "30000000-0000-0000-0000-000000000002",
+        OperationState::Failed,
+    ));
+    rows.push(record(
+        22,
+        "10000000-0000-0000-0000-000000000063".into(),
+        this,
+        OperationState::Failed,
+    ));
+    h.model.operation_rows = rows;
+    h.select(Target::one(ObjectRef::vm(pool, vm)));
+    h.open_tab(TabId::General);
+    let shown: Vec<_> = h
+        .nodes()
+        .into_iter()
+        .filter(|node| {
+            node.key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("vm-operation-"))
+        })
+        .collect();
+    // Ten at most; the unresolved one first, then the newest; never the
+    // record of another VM or of the same id in another pool.
+    assert_eq!(shown.len(), 10);
+    assert_eq!(shown[0].label.as_deref(), Some("Start • OutcomeUnknown"));
+    assert_eq!(shown[0].value.as_deref(), Some("unknown"));
+    assert_eq!(shown[1].label.as_deref(), Some("Start • Succeeded"));
+    assert!(h.has_text("Synthetic operation 12"));
+    assert!(!h.has_text("Synthetic operation 3"));
+    assert!(!h.has_text("Synthetic operation 21"));
+    assert!(!h.has_text("Synthetic operation 22"));
+    assert_eq!(
+        h.node("general-operations-note").text.as_deref(),
+        Some("Demo mode cannot change infrastructure.")
+    );
+    // Information only: the section has no button.
+    let section: Vec<_> = h
+        .nodes()
+        .into_iter()
+        .filter(|node| node.path.contains("general-operations"))
+        .collect();
+    assert!(!section.is_empty());
+    assert!(section.iter().all(|node| node.role != "button"));
+    h.assert_unique_keys();
+    // A template has no Operations section, as in Rune.
+    let template = inventory(&h)
+        .vms
+        .values()
+        .find(|vm| vm.is_template && !vm.is_control_domain)
+        .map(|vm| vm.id);
+    if let Some(template) = template {
+        h.select(Target::one(ObjectRef::template(pool, template)));
+        h.open_tab(TabId::General);
+        assert!(h.find("general-operations").is_none());
+    }
+}
