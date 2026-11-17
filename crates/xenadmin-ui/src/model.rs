@@ -567,8 +567,10 @@ impl Model {
     pub fn object_row(&self, object: &ObjectRef) -> Option<DisplayRow> {
         let inventory = self.inventory_for(object.pool?)?;
         let page = match object.kind {
-            ObjectKind::Vm => crate::rows::InventoryPage::Guests,
-            ObjectKind::Template => crate::rows::InventoryPage::Templates,
+            ObjectKind::Vm | ObjectKind::Template => {
+                let vm = inventory.vms.get(&object.vm_id()?)?;
+                return Some(crate::rows::vm_row(&inventory, vm));
+            }
             ObjectKind::Host => crate::rows::InventoryPage::Hosts,
             ObjectKind::StorageRepository => crate::rows::InventoryPage::Storage,
             ObjectKind::Network => crate::rows::InventoryPage::Networks,

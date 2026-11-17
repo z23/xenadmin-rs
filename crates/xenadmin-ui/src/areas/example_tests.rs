@@ -312,7 +312,8 @@ mod tests {
     #[test]
     fn the_command_follows_the_selection() {
         let mut h = Harness::scene("demo");
-        // Nothing selected: the command is hidden, so the VM menu omits it.
+        // The demo scene selects the pool, not a VM: the command is hidden, so
+        // the VM menu omits it.
         assert_eq!(h.eligibility("example.rename"), Eligibility::Hidden);
         assert!(h.menu_item("example.rename").is_none());
         let inventory = h.model.inventory.clone().expect("inventory");

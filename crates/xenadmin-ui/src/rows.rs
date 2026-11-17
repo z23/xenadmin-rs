@@ -29,6 +29,24 @@ pub struct DisplayRow {
     pub vm: Option<VmId>,
 }
 
+/// The row of one VM or template.
+pub fn vm_row(inventory: &Inventory, vm: &xenadmin_core::Vm) -> DisplayRow {
+    DisplayRow {
+        id: vm.id.to_string(),
+        name: vm.name.clone(),
+        state: vm.power_state.to_string(),
+        location: vm
+            .host
+            .and_then(|id| inventory.hosts.get(&id))
+            .map(|host| host.name.clone())
+            .unwrap_or_else(|| "—".into()),
+        cpu: vm.vcpus.to_string(),
+        memory: memory_label(vm.memory_bytes),
+        description: vm.description.clone(),
+        vm: Some(vm.id),
+    }
+}
+
 pub fn project_rows(
     inventory: &Inventory,
     page: InventoryPage,
@@ -36,11 +54,6 @@ pub fn project_rows(
     query: &str,
 ) -> Vec<DisplayRow> {
     let query = query.trim().to_lowercase();
-    let host_name = |id: Option<HostId>| {
-        id.and_then(|id| inventory.hosts.get(&id))
-            .map(|host| host.name.clone())
-            .unwrap_or_else(|| "—".into())
-    };
     let mut rows = Vec::new();
     match page {
         InventoryPage::Guests | InventoryPage::Templates => {
@@ -49,16 +62,7 @@ pub fn project_rows(
                     && vm.is_template == (page == InventoryPage::Templates)
                     && host_filter.is_none_or(|id| vm.host == Some(id))
             }) {
-                rows.push(DisplayRow {
-                    id: vm.id.to_string(),
-                    name: vm.name.clone(),
-                    state: vm.power_state.to_string(),
-                    location: host_name(vm.host),
-                    cpu: vm.vcpus.to_string(),
-                    memory: memory_label(vm.memory_bytes),
-                    description: vm.description.clone(),
-                    vm: Some(vm.id),
-                });
+                rows.push(vm_row(inventory, vm));
             }
         }
         InventoryPage::Hosts => {
