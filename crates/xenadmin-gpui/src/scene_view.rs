@@ -8,11 +8,11 @@
 //! owns a [`DialogHost`] as this view does.
 
 use xenadmin_ui::command::MenuItem;
-use xenadmin_ui::object::ObjectKind;
 use xenadmin_ui::tabs::{TabBody, TabId};
 
 use crate::kit::*;
 use crate::render::{DialogHost, Pass, Ui, blocks, pressable};
+use crate::shell::icons::kind_icon;
 use crate::store::{AppStore, dispatch};
 use crate::widgets;
 
@@ -33,22 +33,6 @@ pub const TAB_BASE: &str = "tab";
 const CHROME_SCOPE: &str = "chrome";
 /// The padding around the tab body.
 const BODY_PADDING: f32 = 16.0;
-
-fn kind_icon(kind: ObjectKind) -> IconName {
-    match kind {
-        ObjectKind::Pool | ObjectKind::Connection => IconName::Globe,
-        ObjectKind::Host => IconName::Cpu,
-        ObjectKind::Vm | ObjectKind::Appliance => IconName::SquareTerminal,
-        ObjectKind::Template => IconName::File,
-        ObjectKind::StorageRepository | ObjectKind::VirtualDisk => IconName::HardDrive,
-        ObjectKind::Network => IconName::Network,
-        ObjectKind::Snapshot => IconName::Calendar,
-        ObjectKind::Folder => IconName::Folder,
-        ObjectKind::Tag => IconName::Star,
-        ObjectKind::SavedSearch => IconName::Search,
-        ObjectKind::None | ObjectKind::Multi => IconName::Inbox,
-    }
-}
 
 /// The header of the selected object: its icon, its name, its state and
 /// where it is.
@@ -195,10 +179,7 @@ fn local_button(store: &Entity<AppStore>, item: &MenuItem) -> Button {
         None => {
             let store = store.clone();
             base.on_click(move |_, _, cx| {
-                dispatch(&store, cx, move |m| {
-                    let target = m.target();
-                    m.invoke(command, &target);
-                });
+                store.update(cx, |store, cx| store.invoke(command, cx));
             })
         }
     }

@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use xenadmin_ui::command::CommandId;
 use xenadmin_ui::intent::Intent;
 use xenadmin_ui::surface::Surface;
 use xenadmin_ui::tabs::{TabBody, TabId};
@@ -25,6 +26,16 @@ pub type DescribeSurfaces = Rc<dyn Fn(&Model) -> Vec<Surface>>;
 pub type DescribeTab = Rc<dyn Fn(&Model, TabId) -> Option<TabBody>>;
 /// The local action row of a tab.
 pub type DescribeLocalRow = Rc<dyn Fn(&Model, TabId) -> Vec<command::MenuItem>>;
+/// The menu bar: always the ten menus.
+pub type DescribeMenuBar = Rc<dyn Fn(&Model) -> Vec<command::MenuView>>;
+/// The toolbar, as groups left to right.
+pub type DescribeToolbar = Rc<dyn Fn(&Model) -> Vec<Vec<command::MenuItem>>>;
+/// Runs a command of the menu bar, the toolbar or a local action row on the
+/// model's target.
+pub type InvokeCommand = Rc<dyn Fn(&mut Model, CommandId)>;
+/// The surfaces the front end shows by itself, in front of the model's:
+/// the typed-path prompt that stands in for a file chooser.
+pub type FrontSurfaces = Rc<dyn Fn(&Model) -> Vec<Surface>>;
 
 /// Where the descriptions come from. The model answers by default; a test
 /// or the scene tool's gallery substitutes its own, to render descriptions
@@ -35,6 +46,13 @@ pub struct Describe {
     pub tab_body: DescribeTab,
     /// The local action row of a tab.
     pub local_row: DescribeLocalRow,
+    /// The menu bar.
+    pub menu_bar: DescribeMenuBar,
+    /// The toolbar.
+    pub toolbar: DescribeToolbar,
+    /// What runs a command chosen from the menu bar, the toolbar, a local
+    /// action row or by its shortcut.
+    pub invoke: InvokeCommand,
 }
 
 impl Default for Describe {
@@ -43,6 +61,13 @@ impl Default for Describe {
             surfaces: Rc::new(Model::surfaces),
             tab_body: Rc::new(Model::tab_body),
             local_row: Rc::new(command::local_row),
+            menu_bar: Rc::new(command::menu_bar),
+            toolbar: Rc::new(command::toolbar),
+            invoke: Rc::new(|model, id| {
+                // A refusal is written to the model's error line.
+                let target = model.target();
+                model.invoke(id, &target);
+            }),
         }
     }
 }
@@ -59,6 +84,7 @@ enum IntentSink {
 pub struct AppStore {
     model: Model,
     describe: Describe,
+    front: Option<FrontSurfaces>,
     intents: IntentSink,
     /// Counts the updates. Caches keyed by it are valid for one state.
     revision: u64,
@@ -80,6 +106,7 @@ impl AppStore {
         Self {
             model,
             describe: Describe::default(),
+            front: None,
             intents: IntentSink::Record(Vec::new()),
             revision: 0,
             surfaces: RefCell::new(None),
@@ -238,13 +265,33 @@ impl AppStore {
         cx.notify();
     }
 
+    /// Says which surfaces the front end shows by itself. They are in front
+    /// of the model's. Their handlers run through [`Self::run`] like any
+    /// other, so a change of what they show is drawn.
+    pub fn set_front_surfaces(&mut self, front: Option<FrontSurfaces>, cx: &mut Context<Self>) {
+        self.front = front;
+        self.touch(cx);
+    }
+
+    /// Draws again without a change of the model: something the
+    /// descriptions read besides the model has changed.
+    pub fn touch(&mut self, cx: &mut Context<Self>) {
+        self.revision += 1;
+        *self.surfaces.borrow_mut() = None;
+        cx.notify();
+    }
+
     /// The open surfaces, back to front. Built once per update: the dialog
     /// host and every dialog read the same list.
     pub fn surfaces(&self) -> Rc<Vec<Surface>> {
         if let Some(surfaces) = self.surfaces.borrow().as_ref() {
             return Rc::clone(surfaces);
         }
-        let surfaces = Rc::new((self.describe.surfaces)(&self.model));
+        let mut surfaces = (self.describe.surfaces)(&self.model);
+        if let Some(front) = &self.front {
+            surfaces.extend(front(&self.model));
+        }
+        let surfaces = Rc::new(surfaces);
         *self.surfaces.borrow_mut() = Some(Rc::clone(&surfaces));
         surfaces
     }
@@ -266,6 +313,24 @@ impl AppStore {
     /// resolved on the model's target.
     pub fn local_row(&self, tab: TabId) -> Vec<command::MenuItem> {
         (self.describe.local_row)(&self.model, tab)
+    }
+
+    /// The menu bar, resolved on the model's target.
+    pub fn menu_bar(&self) -> Vec<command::MenuView> {
+        (self.describe.menu_bar)(&self.model)
+    }
+
+    /// The toolbar, resolved on the model's target.
+    pub fn toolbar(&self) -> Vec<Vec<command::MenuItem>> {
+        (self.describe.toolbar)(&self.model)
+    }
+
+    /// Runs a command on the model's target: a menu item, a toolbar button,
+    /// a button of a local action row or a shortcut. The command checks its
+    /// eligibility again; a refusal is in the model's error line.
+    pub fn invoke(&mut self, id: CommandId, cx: &mut Context<Self>) {
+        let invoke = Rc::clone(&self.describe.invoke);
+        self.run(move |model| invoke(model, id), cx);
     }
 }
 

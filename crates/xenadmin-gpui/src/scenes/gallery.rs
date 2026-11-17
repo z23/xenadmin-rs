@@ -127,6 +127,7 @@ impl Lab {
                 }
                 command::resolve(m, &lab.local, &m.target())
             }),
+            ..Describe::default()
         }
     }
 }

@@ -6,6 +6,10 @@
 //! applies the scene and renders what the model then describes. The
 //! `gallery-*` names are the renderer's own fixtures ([`gallery`]).
 //!
+//! A scene is rendered as the whole window: the shell (title and menu bar,
+//! toolbar, navigation pane, status bar) around the content of the scene.
+//! [`open`] opens the content alone, for the renderer tests.
+//!
 //! The window is a test window: the Kit's deterministic platform with the
 //! machine's real text system and, for a PNG, an offscreen renderer. What a
 //! PNG shows depends on the fonts and the graphics adapter of the machine
@@ -21,12 +25,15 @@ use serde_json::{Value, json};
 use xenadmin_ui::surface::{self, Node};
 use xenadmin_ui::{Model, scene};
 
+use crate::assets::AppAssets;
+use crate::intents::Hooks;
 use crate::kit::testing::{
-    Assets, ElementSnapshot, HeadlessAppContext, PlatformTextSystem, TestQueryExt, TestWindowExt,
+    ElementSnapshot, HeadlessAppContext, PlatformTextSystem, TestQueryExt, TestWindowExt,
     current_headless_renderer, current_platform,
 };
 use crate::kit::*;
 use crate::scene_view::{SceneView, TAB_BASE};
+use crate::shell::ShellView;
 use crate::store::{AppStore, Describe};
 use gallery::{Lab, LabRef};
 
@@ -132,10 +139,17 @@ pub struct SceneWindow {
     pub lab: Option<LabRef>,
 }
 
-/// Opens the window of a scene. Call it inside `cx.update` of a test or
-/// headless application context; it initialises the Kit, the renderer's
-/// key bindings and the theme.
-pub fn open(cx: &mut App, setup: Setup, options: &Options) -> Result<SceneWindow, String> {
+/// What the window of a whole scene is made of.
+pub struct ShellWindow {
+    pub window: AnyWindowHandle,
+    pub view: Entity<ShellView>,
+    pub store: Entity<AppStore>,
+    pub lab: Option<LabRef>,
+}
+
+/// Initialises the Kit, the key bindings and the theme, and makes the store
+/// of a scene.
+fn prepare(cx: &mut App, setup: Setup, options: &Options) -> (Entity<AppStore>, Option<LabRef>) {
     gpui_kit::init(cx);
     crate::init(cx);
     // A capture must show the final state, not a dialog on its way in.
@@ -147,24 +161,50 @@ pub fn open(cx: &mut App, setup: Setup, options: &Options) -> Result<SceneWindow
     if let Some(describe) = describe {
         store.update(cx, |store, cx| store.set_describe(describe, cx));
     }
-    let (window, view) = gpui_kit::open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                origin: point(px(0.), px(0.)),
-                size: size(px(options.width), px(options.height)),
-            })),
-            focus: false,
-            show: false,
-            ..Default::default()
-        },
-        cx,
-        {
-            let store = store.clone();
-            move |window, cx| cx.new(|cx| SceneView::new(store, window, cx))
-        },
-    )
+    (store, lab)
+}
+
+fn window_options(options: &Options) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(options.width), px(options.height)),
+        })),
+        focus: false,
+        show: false,
+        ..Default::default()
+    }
+}
+
+/// Opens the content of a scene alone: the object header, the tab strip,
+/// the tab body and the surfaces, without the shell. Call it inside
+/// `cx.update` of a test or headless application context.
+pub fn open(cx: &mut App, setup: Setup, options: &Options) -> Result<SceneWindow, String> {
+    let (store, lab) = prepare(cx, setup, options);
+    let (window, view) = gpui_kit::open_window(window_options(options), cx, {
+        let store = store.clone();
+        move |window, cx| cx.new(|cx| SceneView::new(store, window, cx))
+    })
     .map_err(|error| format!("the scene window did not open: {error}"))?;
     Ok(SceneWindow {
+        window,
+        view,
+        store,
+        lab,
+    })
+}
+
+/// Opens the whole window of a scene: the shell around its content. The
+/// model's intents are recorded, not performed. Call it inside `cx.update`
+/// of a test or headless application context.
+pub fn open_shell(cx: &mut App, setup: Setup, options: &Options) -> Result<ShellWindow, String> {
+    let (store, lab) = prepare(cx, setup, options);
+    let (window, view) = gpui_kit::open_window(window_options(options), cx, {
+        let store = store.clone();
+        move |window, cx| cx.new(|cx| ShellView::new(store, Hooks::default(), window, cx))
+    })
+    .map_err(|error| format!("the scene window did not open: {error}"))?;
+    Ok(ShellWindow {
         window,
         view,
         store,
@@ -209,13 +249,13 @@ pub fn render_setup(
     let mut cx = if capture {
         HeadlessAppContext::with_platform(
             text_system(),
-            Arc::new(Assets),
+            Arc::new(AppAssets),
             current_headless_renderer,
         )
     } else {
-        HeadlessAppContext::with_platform(text_system(), Arc::new(Assets), || Ok(None))
+        HeadlessAppContext::with_platform(text_system(), Arc::new(AppAssets), || Ok(None))
     };
-    let scene = cx.update(|cx| open(cx, setup, options))?;
+    let scene = cx.update(|cx| open_shell(cx, setup, options))?;
     cx.run_until_parked();
     // The dialog host presents the surfaces after the first update, and
     // widgets created in a frame are corrected in the next: draw until the
