@@ -31,6 +31,15 @@ pub fn kind_icon(kind: ObjectKind) -> Lucide {
     }
 }
 
+/// The icon of a row of a navigation view. A row of the Notifications
+/// view stands for no object: it takes the view's icon.
+pub fn row_icon(view: NavView, kind: ObjectKind) -> Lucide {
+    match (view, kind) {
+        (NavView::Notifications, ObjectKind::None) => view_icon(view),
+        _ => kind_icon(kind),
+    }
+}
+
 /// The icon of a navigation view in the view switcher.
 pub fn view_icon(view: NavView) -> Lucide {
     match view {

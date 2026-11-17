@@ -339,6 +339,9 @@ impl ShellView {
         });
         let quit = Rc::clone(&self.hooks.quit);
         TitleBar::new()
+            // The Kit's bar is 34 px high whatever the font: at a large
+            // interface scale the menus would not fit in it.
+            .h(rems(2.125))
             // The close button of a client-side decoration.
             .on_close_window(move |_, _, cx| quit(cx))
             .child(

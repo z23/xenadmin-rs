@@ -12,7 +12,7 @@ use xenadmin_ui::tabs::{TabBody, TabId};
 
 use crate::kit::*;
 use crate::render::{DialogHost, Pass, Ui, blocks, pressable};
-use crate::shell::icons::kind_icon;
+use crate::shell::icons::row_icon;
 use crate::store::{AppStore, dispatch};
 use crate::widgets;
 
@@ -37,7 +37,10 @@ const BODY_PADDING: f32 = 16.0;
 /// The header of the selected object: its icon, its name, its state and
 /// where it is.
 pub fn object_header(ui: &Ui, cx: &App) -> AnyElement {
-    let header = ui.store.read(cx).model().header();
+    let (header, view) = {
+        let model = ui.store.read(cx).model();
+        (model.header(), model.nav.view)
+    };
     let theme = cx.theme();
     let muted = theme.muted_foreground;
     let name = SharedString::from(header.name.clone());
@@ -67,7 +70,11 @@ pub fn object_header(ui: &Ui, cx: &App) -> AnyElement {
         .px_4()
         .pt_3()
         .pb_2()
-        .child(Icon::new(kind_icon(header.icon)).size_5().text_color(muted))
+        .child(
+            Icon::new(row_icon(view, header.icon))
+                .size_5()
+                .text_color(muted),
+        )
         .child(
             div()
                 .min_w_0()

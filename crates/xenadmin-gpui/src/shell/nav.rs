@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 use xenadmin_ui::command::MenuItem;
 use xenadmin_ui::nav::{self, NavRow, NavView};
-use xenadmin_ui::object::{ObjectKind, ObjectRef};
+use xenadmin_ui::object::ObjectRef;
 use xenadmin_ui::selection::MenuOrigin;
 
 use super::{icons, menus};
@@ -55,7 +55,7 @@ const PAGE: usize = 10;
 
 /// What a row shows besides its label, by row id.
 struct RowMeta {
-    icon: ObjectKind,
+    icon: Lucide,
     status: Option<SharedString>,
     object: Option<ObjectRef>,
     /// The row shows the model's scope.
@@ -266,7 +266,7 @@ impl NavPane {
                     (
                         SharedString::from(row.id.clone()),
                         RowMeta {
-                            icon: row.icon,
+                            icon: icons::row_icon(self.view, row.icon),
                             status: row.status.clone().map(SharedString::from),
                             object: row.object.clone(),
                             in_scope: self.scope_rows.contains(&row.id),
@@ -744,7 +744,7 @@ fn tree_row(
     let muted = theme.muted_foreground;
     let hover = theme.accent;
     let scope = theme.list_active;
-    let icon = row.map_or(ObjectKind::None, |row| row.icon);
+    let icon = row.map_or(Lucide::Inbox, |row| row.icon);
     let status = row.and_then(|row| row.status.clone());
     let in_scope = row.is_some_and(|row| row.in_scope);
     let heading = row.is_some_and(|row| row.object.is_none());
@@ -810,7 +810,7 @@ fn tree_row(
                 .gap_1p5()
                 .child(chevron)
                 .child(
-                    Icon::new(icons::kind_icon(icon))
+                    Icon::new(icon)
                         .small()
                         .flex_none()
                         .text_color(state_color(status.as_deref(), cx)),
