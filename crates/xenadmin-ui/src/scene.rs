@@ -209,10 +209,10 @@ fn unavailable_actions(m: &mut Model) {
     m.load_demo(3, 48);
     m.demo = false;
     m.error = Some("Synthetic unavailable-action preview • no host connection".into());
-    if let Some(inventory) = m.inventory.clone() {
-        if let Ok(vm) = xenadmin_core::VmId::parse("30000000-0000-0000-0000-000000000001") {
-            m.select(Target::one(ObjectRef::vm(inventory.pool_id, vm)));
-        }
+    if let Some(inventory) = m.inventory.clone()
+        && let Ok(vm) = xenadmin_core::VmId::parse("30000000-0000-0000-0000-000000000001")
+    {
+        m.select(Target::one(ObjectRef::vm(inventory.pool_id, vm)));
     }
 }
 

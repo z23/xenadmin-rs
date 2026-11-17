@@ -678,7 +678,8 @@ fn in_context(spec: &CommandSpec, target: &Target) -> bool {
 fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec<MenuItem>> {
     // Commands with a menu position keep the order of the menu bar; the
     // others follow in registry order as a last group.
-    type Position = (u8, Option<(Menu, u8)>, u8);
+    type Group = Option<(Menu, u8)>;
+    type Position = (u8, Group, u8);
     let mut placed: Vec<(Position, &CommandSpec)> = specs
         .iter()
         .filter(|spec| in_context(spec, target))
@@ -688,7 +689,7 @@ fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec
         })
         .collect();
     placed.sort_by_key(|(position, _)| *position);
-    let mut groups: Vec<(Option<(Menu, u8)>, Vec<MenuItem>)> = Vec::new();
+    let mut groups: Vec<(Group, Vec<MenuItem>)> = Vec::new();
     for ((_, group, _), spec) in placed {
         let Some(item) = resolve_spec(m, spec, target) else {
             continue;
