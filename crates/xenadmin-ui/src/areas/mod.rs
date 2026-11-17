@@ -48,8 +48,9 @@ pub struct AreaSpec {
     /// model is about to show another pool, or none. An area drops here
     /// everything that belongs to the view of the previous pool (what the
     /// Rune `clear_view`, `disconnect_selected` and `demo_sized` cleared of
-    /// its modules). It runs before `m.connection`, `m.snapshot` and
-    /// `m.inventory` are re-pointed, and before `on_scope_change`.
+    /// its modules). It runs while `m.connection`, `m.snapshot` and
+    /// `m.inventory` still describe the previous session, and before
+    /// `on_scope_change`.
     pub on_session_change: fn(&mut Model),
     /// The rows of a navigation view the area provides
     /// ([`crate::nav::NavView::provider`] says who is asked): Organization

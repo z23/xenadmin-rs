@@ -637,10 +637,14 @@ pub fn start_connection(
 }
 
 /// Drops everything that belongs to the view of the previous pool: the Rune
-/// `clear_view`. The kernel's part is here; every area drops its part in its
-/// `on_session_change` hook, which this calls. It does not clear
+/// `clear_view`. Every area drops its part first, in its
+/// `on_session_change` hook, while the model still describes the previous
+/// session; then the kernel drops its own. It does not clear
 /// `operation_rows`, `resource_rows` or `resource_operations`.
 pub fn clear_view(m: &mut Model) {
+    for area in crate::areas::specs() {
+        (area.on_session_change)(m);
+    }
     // A synthetic session keeps its inventory while another session is the
     // scope session.
     if m.demo
@@ -657,9 +661,6 @@ pub fn clear_view(m: &mut Model) {
     m.selection.grid = Target::none();
     m.selection.menu = None;
     m.demo = false;
-    for area in crate::areas::specs() {
-        (area.on_session_change)(m);
-    }
 }
 
 /// Makes a session the scope session without moving the tree selection:
