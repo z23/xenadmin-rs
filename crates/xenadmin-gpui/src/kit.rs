@@ -92,5 +92,7 @@ pub mod testing {
     pub use gpui_kit::test::{
         ElementSnapshot, TestAppContextExt, TestEventExt, TestQueryExt, TestWindowExt,
     };
-    pub use gpui_kit::{HeadlessAppContext, PlatformTextSystem, ScrollDelta, TestAppContext};
+    pub use gpui_kit::{
+        HeadlessAppContext, PlatformTextSystem, ScrollDelta, TestAppContext, VisualTestContext,
+    };
 }

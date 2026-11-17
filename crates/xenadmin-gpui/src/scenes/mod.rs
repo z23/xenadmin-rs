@@ -198,10 +198,21 @@ pub fn open(cx: &mut App, setup: Setup, options: &Options) -> Result<SceneWindow
 /// model's intents are recorded, not performed. Call it inside `cx.update`
 /// of a test or headless application context.
 pub fn open_shell(cx: &mut App, setup: Setup, options: &Options) -> Result<ShellWindow, String> {
+    open_shell_with(cx, setup, options, Hooks::default())
+}
+
+/// [`open_shell`] with the application's hooks given: what the close of
+/// the window and its deactivation call.
+pub fn open_shell_with(
+    cx: &mut App,
+    setup: Setup,
+    options: &Options,
+    hooks: Hooks,
+) -> Result<ShellWindow, String> {
     let (store, lab) = prepare(cx, setup, options);
     let (window, view) = gpui_kit::open_window(window_options(options), cx, {
         let store = store.clone();
-        move |window, cx| cx.new(|cx| ShellView::new(store, Hooks::default(), window, cx))
+        move |window, cx| cx.new(|cx| ShellView::new(store, hooks, window, cx))
     })
     .map_err(|error| format!("the scene window did not open: {error}"))?;
     Ok(ShellWindow {

@@ -43,6 +43,8 @@ pub const SEARCH_LABEL: &str = "Search inventory";
 pub const SEARCH_PLACEHOLDER: &str = "Search name, UUID or host";
 /// The id of the view switcher.
 pub const SWITCHER_KEY: &str = "nav-views";
+/// The name of the id of a row's chevron: `(FOLD_KEY, <place on screen>)`.
+pub const FOLD_KEY: &str = "nav-fold";
 /// The id of the text shown when the view has no rows.
 pub const EMPTY_KEY: &str = "nav-empty";
 
@@ -750,7 +752,8 @@ fn tree_row(
         let pane = pane.clone();
         let id = id.clone();
         div()
-            .id(("nav-fold", index))
+            .id((FOLD_KEY, index))
+            .test_support()
             .flex_none()
             .rounded_sm()
             .text_color(muted)
@@ -831,6 +834,7 @@ impl Render for NavPane {
         let theme = cx.theme();
         let background = theme.sidebar;
         let foreground = theme.sidebar_foreground;
+        let border = theme.border;
         let menu = self.menu.as_ref().map(|open| {
             deferred(
                 anchored()
@@ -847,6 +851,8 @@ impl Render for NavPane {
             .aria_label("Sidebar")
             .size_full()
             .min_w_0()
+            .border_r_1()
+            .border_color(border)
             .bg(background)
             .text_color(foreground)
             .child(self.search_box(cx))

@@ -401,7 +401,6 @@ impl Render for ShellView {
         let theme = cx.theme();
         let background = theme.background;
         let foreground = theme.foreground;
-        let border = theme.border;
 
         let content = v_flex()
             .id(CONTENT_KEY)
@@ -420,13 +419,7 @@ impl Render for ShellView {
                         .size(px(sidebar_width * zoom))
                         .size_range(px(low * zoom)..px(high * zoom))
                         .fixed()
-                        .child(
-                            div()
-                                .size_full()
-                                .border_r_1()
-                                .border_color(border)
-                                .child(self.nav.clone()),
-                        ),
+                        .child(self.nav.clone()),
                 )
                 .child(resizable_panel().child(content))
                 .into_any_element()
