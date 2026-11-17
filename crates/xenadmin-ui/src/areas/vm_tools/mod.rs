@@ -7,6 +7,11 @@
 
 use crate::areas::AreaSpec;
 
+/// External tool declarations and their command expansion (the Rune
+/// `external_tool_command.rs`). Already here because `Preferences` stores
+/// the catalog.
+pub mod command;
+
 /// The state of the area: its editors and workspaces. `m.areas.vm_tools`.
 #[derive(Default)]
 pub struct State {}

@@ -6,9 +6,29 @@
 use std::collections::BTreeMap;
 
 use xenadmin_core::{
-    Host, HostId, Inventory, Network, PoolId, PowerState, Snapshot, SnapshotAction, SnapshotId,
-    SnapshotInventory, Storage, Vm, VmId,
+    ConnectionProfile, Endpoint, Host, HostId, Inventory, Network, PoolId, PowerState, ProfileId,
+    Snapshot, SnapshotAction, SnapshotId, SnapshotInventory, Storage, Vm, VmId,
 };
+
+/// The id of the saved connection that stands for the synthetic pool.
+pub const PROFILE: &str = "d0000000-0000-0000-0000-000000000001";
+
+/// The saved connection of the synthetic pool: a preview profile with a
+/// fixed id. It is never stored and can never connect.
+pub fn profile() -> ConnectionProfile {
+    let mut profile = ConnectionProfile::new(
+        "Demonstration pool".into(),
+        Endpoint::parse("https://demonstration.invalid").expect("demo endpoint"),
+        "root".into(),
+    );
+    profile.id = profile_id();
+    profile
+}
+
+/// [`PROFILE`] as a profile id.
+pub fn profile_id() -> ProfileId {
+    crate::session::profile_id(PROFILE).expect("demo profile id")
+}
 
 pub fn demonstration(host_count: usize, vm_count: usize) -> Inventory {
     let pool_id = PoolId::parse("10000000-0000-0000-0000-000000000001").expect("pool id");

@@ -653,6 +653,8 @@ pub(crate) mod probe {
         pub submits: u32,
         pub polls: u32,
         pub tool_runs: u32,
+        /// The scope and session hooks the kernel called, in order.
+        pub hooks: Vec<&'static str>,
     }
 
     pub fn spec() -> AreaSpec {
@@ -660,6 +662,8 @@ pub(crate) mod probe {
             commands,
             surfaces,
             poll,
+            on_scope_change: |m| m.areas.probe.hooks.push("scope"),
+            on_session_change: |m| m.areas.probe.hooks.push("session"),
             ..AreaSpec::new("probe")
         }
     }
@@ -1168,7 +1172,20 @@ mod tests {
         assert!(h.surfaces().is_empty());
         let tree = h.tree();
         assert_eq!(tree["demo"], serde_json::json!(true));
-        assert_eq!(tree["tabs"], serde_json::json!(["home", "search"]));
+        // The demo scene shows the synthetic pool, selected.
+        assert_eq!(tree["scope"][0]["kind"], serde_json::json!("pool"));
+        assert_eq!(
+            tree["tabs"],
+            serde_json::json!([
+                "general",
+                "memory",
+                "storage",
+                "networking",
+                "ha",
+                "users",
+                "search"
+            ])
+        );
     }
 
     #[test]

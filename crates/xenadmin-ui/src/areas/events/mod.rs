@@ -7,6 +7,10 @@
 
 use crate::areas::AreaSpec;
 
+/// `Family` and `HiddenKey` of the Rune `activity.rs`: what `Preferences`
+/// stores for a hidden history entry.
+pub mod hidden;
+
 /// The state of the area: its editors and workspaces. `m.areas.events`.
 #[derive(Default)]
 pub struct State {}

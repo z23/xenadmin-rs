@@ -7,6 +7,10 @@
 
 use crate::areas::AreaSpec;
 
+/// The graph preset catalog `Preferences` stores (the data of the Rune
+/// `metric_presets.rs`).
+pub mod presets;
+
 /// The state of the area: its editors and workspaces. `m.areas.performance`.
 #[derive(Default)]
 pub struct State {}

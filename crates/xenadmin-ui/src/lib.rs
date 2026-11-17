@@ -10,17 +10,23 @@
 
 pub mod areas;
 pub mod command;
-mod demo;
+pub mod demo;
 mod demo_details;
+pub mod diagnostics;
 pub mod format;
 pub mod harness;
 pub mod intent;
+pub mod launch;
 pub mod model;
+pub mod nav;
 pub mod object;
+pub mod permissions;
+pub mod prefs;
 mod rows;
 pub mod scene;
 pub mod secret;
 pub mod selection;
+pub mod session;
 pub mod surface;
 pub mod tabs;
 mod tree;
@@ -37,12 +43,14 @@ pub use harness::Harness;
 pub use intent::{
     ConsoleWindowId, ConsoleWindowRequest, FileFilter, FileMode, FileRequest, Intent,
 };
-pub use model::{Model, Waker};
+pub use model::{Header, Model, Status, Waker};
+pub use nav::{NavRow, NavView};
 pub use object::{ObjectKind, ObjectRef, Target};
+pub use prefs::{Appearance, Options, Preferences};
 pub use rows::{DisplayRow, InventoryPage, compare_rows, project_rows};
 pub use scene::SceneSpec;
 pub use secret::SecretText;
-pub use selection::Selection;
+pub use selection::{MenuOrigin, Selection};
 pub use surface::{Act, ActText, Block, Surface, SurfaceKind, SurfaceSize};
 pub use tabs::{TabBody, TabId, tabs_for};
 // The infrastructure tree rows of the Rune front end. `Node` here is the
@@ -66,7 +74,9 @@ pub mod prelude {
         ConsoleWindowId, ConsoleWindowRequest, FileFilter, FileMode, FileRequest, Intent,
     };
     pub use crate::model::Model;
+    pub use crate::nav::{NavRow, NavView};
     pub use crate::object::{ObjectKind, ObjectRef, Target};
+    pub use crate::permissions;
     pub use crate::scene::SceneSpec;
     pub use crate::secret::SecretText;
     pub use crate::surface::{

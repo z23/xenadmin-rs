@@ -19,7 +19,7 @@ use crate::surface::Surface;
 use crate::tabs::{TabBody, TabId};
 
 #[cfg(test)]
-mod example_tests;
+pub(crate) mod example_tests;
 
 /// What an area gives the kernel. Every field but `id` has a default that
 /// does nothing: write `AreaSpec { commands, surfaces, ..AreaSpec::new("id") }`.
@@ -44,6 +44,18 @@ pub struct AreaSpec {
     /// The tree scope changed. An area closes an editor that belongs to the
     /// previous scope here.
     pub on_scope_change: fn(&mut Model),
+    /// The scope session changed, was reset or is being disconnected: the
+    /// model is about to show another pool, or none. An area drops here
+    /// everything that belongs to the view of the previous pool (what the
+    /// Rune `clear_view`, `disconnect_selected` and `demo_sized` cleared of
+    /// its modules). It runs before `m.connection`, `m.snapshot` and
+    /// `m.inventory` are re-pointed, and before `on_scope_change`.
+    pub on_session_change: fn(&mut Model),
+    /// The rows of a navigation view the area provides
+    /// ([`crate::nav::NavView::provider`] says who is asked): Organization
+    /// from `organization`, Saved Searches from `search`. Parents before
+    /// children, ids unique within the view.
+    pub nav_rows: fn(&Model, crate::nav::NavView) -> Vec<crate::nav::NavRow>,
 }
 
 fn no_commands() -> Vec<CommandSpec> {
@@ -68,6 +80,10 @@ fn no_poll(_: &mut Model, _: f64) -> bool {
 
 fn no_scope_change(_: &mut Model) {}
 
+fn no_nav_rows(_: &Model, _: crate::nav::NavView) -> Vec<crate::nav::NavRow> {
+    Vec::new()
+}
+
 impl AreaSpec {
     /// An area that provides nothing yet.
     pub const fn new(id: &'static str) -> Self {
@@ -79,6 +95,8 @@ impl AreaSpec {
             tab: no_tab,
             poll: no_poll,
             on_scope_change: no_scope_change,
+            on_session_change: no_scope_change,
+            nav_rows: no_nav_rows,
         }
     }
 }
