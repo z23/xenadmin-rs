@@ -888,7 +888,7 @@ async fn a_tree_row_has_the_context_menu_of_its_object(cx: &mut TestAppContext) 
     });
     assert_eq!(copied, std::slice::from_ref(&object.id));
     assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
-    assert!(!cx.update(|cx| scene.view.read(cx).nav().read(cx).menu_open()));
+    assert!(!cx.update(|cx| scene.view.read(cx).menu_open()));
 
     // By the keyboard: Shift+F10 on the cursor's row, Escape to leave.
     on(cx, &scene, |window, cx| {
@@ -925,6 +925,80 @@ async fn a_tree_row_has_the_context_menu_of_its_object(cx: &mut TestAppContext) 
     on(cx, &scene, |window, _| {
         assert!(window.try_find("popup-menu").is_none());
     });
+}
+
+#[gpui_kit::test]
+async fn the_shell_shows_whatever_context_menu_the_model_has_open(cx: &mut TestAppContext) {
+    use xenadmin_ui::selection::MenuOrigin;
+    let scene = open(cx);
+    let database = nav_row(cx, &scene, "Database");
+    let object = database.object.clone().expect("the guest");
+    let host = nav_row(cx, &scene, "xcp-lab-01");
+    let shown = |cx: &mut TestAppContext| {
+        on(cx, &scene, |window, _| {
+            window.try_find("popup-menu").is_some()
+        })
+    };
+    // The model opens a menu by itself, as a scene does: it is on screen,
+    // inside the window, with the model's items.
+    assert!(!shown(cx));
+    let target = object.clone();
+    model_side(cx, &scene, move |m| {
+        assert!(m.open_context_menu(target, MenuOrigin::Grid));
+    });
+    on(cx, &scene, |window, _| {
+        let menu = window.find("popup-menu").bounds();
+        let viewport = window.viewport_size();
+        assert!(menu.left() >= px(0.) && menu.right() <= viewport.width);
+        assert!(menu.top() >= px(0.) && menu.bottom() <= viewport.height);
+        assert_eq!(
+            window.find_by_label("Copy UUID").role(),
+            Some(Role::MenuItem)
+        );
+    });
+    assert!(cx.update(|cx| scene.view.read(cx).menu_open()));
+    // The model ends it (another selection does): it is gone.
+    let elsewhere = host.object.clone().expect("the host");
+    model_side(cx, &scene, move |m| {
+        m.select(xenadmin_ui::object::Target::one(elsewhere));
+    });
+    assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
+    assert!(!shown(cx));
+    assert!(!cx.update(|cx| scene.view.read(cx).menu_open()));
+
+    // The secondary button on a row, then on another row while the first
+    // menu is open: the second menu replaces the first, at the new place.
+    on(cx, &scene, |window, cx| {
+        window.right_click(id(&database.id), cx)
+    });
+    let first = on(cx, &scene, |window, _| window.find("popup-menu").bounds());
+    on(cx, &scene, |window, cx| {
+        window.right_click(id(&host.id), cx)
+    });
+    let second = on(cx, &scene, |window, _| window.find("popup-menu").bounds());
+    assert_ne!(first.origin, second.origin);
+    assert_eq!(
+        model(cx, &scene, |m| m
+            .selection
+            .menu
+            .as_ref()
+            .map(|menu| menu.object.clone())),
+        host.object
+    );
+    assert_eq!(
+        model(cx, &scene, |m| m.scope().single().cloned()),
+        host.object
+    );
+    // A press outside the menu closes it, in the model too.
+    on(cx, &scene, |window, cx| {
+        window.click(TabId::General.key(), cx)
+    });
+    cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    settle(cx, &scene);
+    assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
 }
 
 #[gpui_kit::test]

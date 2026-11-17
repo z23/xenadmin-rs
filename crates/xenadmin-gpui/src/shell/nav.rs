@@ -13,18 +13,19 @@
 //! - the keyboard: the pane's own Tab stop takes the keys and moves the
 //!   cursor (the Kit tree's focus handle is no Tab stop and cannot be made
 //!   one);
-//! - the context menu of a row, opened by the secondary button, the Menu
-//!   key or Shift+F10, from the model's `open_context_menu`.
+//! - the context menu of a row: the secondary button, the Menu key or
+//!   Shift+F10 ask the model for it (`open_context_menu`), and the shell
+//!   presents whatever menu the model has open.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use xenadmin_ui::command::MenuItem;
 use xenadmin_ui::nav::{self, NavRow, NavView};
 use xenadmin_ui::object::ObjectRef;
 use xenadmin_ui::selection::MenuOrigin;
 
-use super::{icons, menus};
+use super::icons;
+use super::menus::MenuAnchor;
 use crate::kit::*;
 use crate::render::{Ui, pressable, tone_color};
 use crate::store::{AppStore, dispatch};
@@ -62,13 +63,6 @@ struct RowMeta {
     in_scope: bool,
 }
 
-/// The context menu the pane has open.
-struct OpenMenu {
-    menu: Entity<PopupMenu>,
-    position: Point<Pixels>,
-    _dismiss: Subscription,
-}
-
 pub struct NavPane {
     ui: Ui,
     store: Entity<AppStore>,
@@ -96,12 +90,13 @@ pub struct NavPane {
     scope_rows: Vec<String>,
     /// The store revision the pane was last brought in line with.
     revision: Option<u64>,
-    menu: Option<OpenMenu>,
+    /// Where the shell opens the menu the pane asks the model for.
+    anchor: MenuAnchor,
     _subscriptions: Vec<Subscription>,
 }
 
 impl NavPane {
-    pub fn new(ui: Ui, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(ui: Ui, anchor: MenuAnchor, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let store = ui.store.clone();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder(SEARCH_PLACEHOLDER));
         let tree = cx.new(|cx| TreeState::new(cx));
@@ -153,7 +148,7 @@ impl NavPane {
             cursor: None,
             scope_rows: Vec::new(),
             revision: None,
-            menu: None,
+            anchor,
             _subscriptions: subscriptions,
         };
         pane.sync(window, cx);
@@ -175,9 +170,22 @@ impl NavPane {
         self.visible.iter().map(ToString::to_string).collect()
     }
 
-    /// Whether a context menu of a row is open.
-    pub fn menu_open(&self) -> bool {
-        self.menu.is_some()
+    /// Where the context menu of a row that shows `object` opens when no
+    /// pointer said where: at the row.
+    pub fn menu_position(
+        &self,
+        object: &ObjectRef,
+        window: &Window,
+        cx: &App,
+    ) -> Option<Point<Pixels>> {
+        let row = self
+            .rows
+            .iter()
+            .find(|row| row.object.as_ref() == Some(object))?;
+        let id = SharedString::from(row.id.clone());
+        self.visible
+            .contains(&id)
+            .then(|| self.row_position(&id, window, cx))
     }
 
     fn row(&self, id: &str) -> Option<&NavRow> {
@@ -485,8 +493,9 @@ impl NavPane {
         }
     }
 
-    /// Opens the context menu of a row. `position` is where the pointer
-    /// pressed; without it the menu opens at the row.
+    /// Asks the model for the context menu of a row. `position` is where
+    /// the pointer pressed; without it the menu opens at the row. The shell
+    /// presents the menu the model then has open.
     fn open_menu(
         &mut self,
         id: &SharedString,
@@ -497,54 +506,13 @@ impl NavPane {
         let Some(object) = self.meta.get(id).and_then(|meta| meta.object.clone()) else {
             return;
         };
-        let groups = self.store.update(cx, |store, cx| {
-            let mut opened = false;
-            store.run(
-                |m| opened = m.open_context_menu(object, MenuOrigin::Tree),
-                cx,
-            );
-            if opened {
-                store.model().context_menu()
-            } else {
-                Vec::new()
-            }
-        });
-        if groups.iter().all(Vec::is_empty) {
-            dispatch(&self.store, cx, |m| m.close_context_menu());
-            return;
-        }
+        // The keys come back here when the menu closes.
+        self.tree_stop.focus(window, cx);
         let position = position.unwrap_or_else(|| self.row_position(id, window, cx));
-        let store = self.store.clone();
-        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
-            for (index, group) in groups.iter().enumerate() {
-                if index > 0 {
-                    menu = menu.separator();
-                }
-                for item in group {
-                    menu = menu.item(context_item(&store, item));
-                }
-            }
-            menu
+        self.anchor.request(position);
+        dispatch(&self.store, cx, move |m| {
+            m.open_context_menu(object, MenuOrigin::Tree);
         });
-        let dismiss = cx.subscribe_in(&menu, window, |pane, menu, _: &DismissEvent, window, cx| {
-            pane.menu = None;
-            // Chosen or not, the model's menu is over.
-            dispatch(&pane.store, cx, |m| m.close_context_menu());
-            // The keys go back to the tree, unless a press elsewhere has
-            // already taken them there.
-            let held = menu.focus_handle(cx).contains_focused(window, cx);
-            if held || window.focused(cx).is_none() {
-                pane.tree_stop.focus(window, cx);
-            }
-            cx.notify();
-        });
-        menu.focus_handle(cx).focus(window, cx);
-        self.menu = Some(OpenMenu {
-            menu,
-            position,
-            _dismiss: dismiss,
-        });
-        cx.notify();
     }
 
     /// Where a menu opened by the keyboard appears: under the start of the
@@ -702,27 +670,6 @@ impl NavPane {
     }
 }
 
-/// One item of a row's context menu. A disabled item carries its reason in
-/// its name, as in the menu bar: the Kit's menu has no tooltip.
-fn context_item(store: &Entity<AppStore>, item: &MenuItem) -> PopupMenuItem {
-    let command = item.id;
-    let store = store.clone();
-    let mut entry = PopupMenuItem::new(SharedString::from(menus::item_name(item)))
-        .disabled(item.disabled.is_some());
-    if let Some(checked) = item.checked {
-        entry = entry.checked(checked);
-    }
-    entry.on_click(move |_, _, cx| {
-        dispatch(&store, cx, move |m| {
-            // The model checks the captured selection again; a refusal is
-            // said in the error line.
-            if let Err(refused) = m.invoke_context(command) {
-                m.error = Some(refused.to_string());
-            }
-        });
-    })
-}
-
 /// The colour of a row's icon: what is running is green, what failed is
 /// red, the rest is quiet.
 fn state_color(status: Option<&str>, cx: &App) -> Hsla {
@@ -843,15 +790,6 @@ impl Render for NavPane {
         let background = theme.sidebar;
         let foreground = theme.sidebar_foreground;
         let border = theme.border;
-        let menu = self.menu.as_ref().map(|open| {
-            deferred(
-                anchored()
-                    .position(open.position)
-                    .snap_to_window_with_margin(px(8.))
-                    .child(open.menu.clone()),
-            )
-            .with_priority(1)
-        });
         v_flex()
             .id(PANE_KEY)
             .test_support()
@@ -866,6 +804,5 @@ impl Render for NavPane {
             .child(self.search_box(cx))
             .child(self.tree_area(cx))
             .child(self.view_switcher(cx))
-            .children(menu)
     }
 }

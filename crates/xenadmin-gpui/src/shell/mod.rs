@@ -33,9 +33,12 @@ use std::rc::Rc;
 
 use xenadmin_ui::command::{CommandId, MenuView};
 use xenadmin_ui::model::APPLICATION_NAME;
+use xenadmin_ui::object::ObjectRef;
 use xenadmin_ui::prefs::{Appearance, Preferences};
+use xenadmin_ui::selection::MenuOrigin;
 
 use self::actions::{RunCommand, SHELL_CONTEXT};
+use self::menus::MenuAnchor;
 use self::nav::NavPane;
 use crate::intents::Hooks;
 use crate::kit::*;
@@ -76,6 +79,19 @@ pub fn window_title(title: &str) -> String {
     }
 }
 
+/// The context menu the shell shows: the one the model has open.
+struct OpenMenu {
+    menu: Entity<PopupMenu>,
+    position: Point<Pixels>,
+    /// The model's menu it was built from.
+    key: (MenuOrigin, ObjectRef),
+    /// The count of positioned requests when it was presented.
+    request: u64,
+    /// What had the keyboard before the menu took it.
+    restore: Option<FocusHandle>,
+    _dismiss: Subscription,
+}
+
 pub struct ShellView {
     ui: Ui,
     hooks: Hooks,
@@ -94,6 +110,8 @@ pub struct ShellView {
     /// Whether the appearance `System` means the desktop's (the
     /// application) or whatever the theme is (a scene, a test).
     follows_system: bool,
+    menu: Option<OpenMenu>,
+    menu_anchor: MenuAnchor,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -120,7 +138,8 @@ impl ShellView {
             }),
         });
         let dialogs = cx.new(|cx| DialogHost::new(ui.clone(), window, cx));
-        let nav = cx.new(|cx| NavPane::new(ui.clone(), window, cx));
+        let menu_anchor = MenuAnchor::default();
+        let nav = cx.new(|cx| NavPane::new(ui.clone(), menu_anchor.clone(), window, cx));
         let installed = store.read(cx).menu_bar();
         menus::install(&installed, cx);
         let menu_bar = AppMenuBar::new(cx);
@@ -174,6 +193,8 @@ impl ShellView {
             title: String::new(),
             nav_open: false,
             follows_system: false,
+            menu: None,
+            menu_anchor,
             _subscriptions: subscriptions,
         };
         shell.sync(window, cx);
@@ -212,6 +233,11 @@ impl ShellView {
     /// The split between the navigation pane and the content.
     pub fn split(&self) -> &Entity<ResizableState> {
         &self.split
+    }
+
+    /// Whether a context menu is shown.
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
     }
 
     /// The title the window was last given.
@@ -263,7 +289,135 @@ impl ShellView {
                 bar.update(cx, |bar, cx| bar.reload(cx));
             });
         }
+        self.sync_menu(window, cx);
         cx.notify();
+    }
+
+    /// Keeps the context menu on screen equal to the one the model has
+    /// open: a row asked for it (`Model::open_context_menu`), and choosing
+    /// an item, another selection, another tab or another session ends it.
+    fn sync_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let wanted = self
+            .ui
+            .store
+            .read(cx)
+            .model()
+            .selection
+            .menu
+            .as_ref()
+            .map(|menu| (menu.origin, menu.object.clone()));
+        let requests = self.menu_anchor.requests();
+        match (&self.menu, wanted) {
+            (Some(open), Some(key)) if open.key == key && open.request == requests => {}
+            (_, Some(key)) => self.present_menu(key, window, cx),
+            (Some(_), None) => {
+                self.end_menu(window, cx);
+            }
+            (None, None) => {}
+        }
+    }
+
+    fn present_menu(
+        &mut self,
+        key: (MenuOrigin, ObjectRef),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A menu that is replaced gives the keyboard back first, so the
+        // new one remembers the right place.
+        self.end_menu(window, cx);
+        let groups = self.ui.store.read(cx).model().context_menu();
+        if groups.iter().all(Vec::is_empty) {
+            // Nothing applies to the row: no empty box.
+            dispatch(&self.ui.store, cx, |m| m.close_context_menu());
+            return;
+        }
+        let position = self
+            .menu_anchor
+            .take_position()
+            .unwrap_or_else(|| self.default_menu_position(&key, window, cx));
+        let restore = window.focused(cx);
+        let store = self.ui.store.clone();
+        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
+            for (index, group) in groups.iter().enumerate() {
+                if index > 0 {
+                    menu = menu.separator();
+                }
+                for item in group {
+                    menu = menu.item(menus::context_item(&store, item));
+                }
+            }
+            menu
+        });
+        let dismiss = cx.subscribe_in(&menu, window, |shell, _, _: &DismissEvent, window, cx| {
+            shell.menu_dismissed(window, cx);
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        self.menu = Some(OpenMenu {
+            menu,
+            position,
+            key,
+            request: self.menu_anchor.requests(),
+            restore,
+            _dismiss: dismiss,
+        });
+    }
+
+    /// Takes the menu off the screen and gives the keyboard back to what
+    /// had it, unless a press elsewhere has already moved it on.
+    fn end_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
+        let open = self.menu.take()?;
+        let held = open.menu.focus_handle(cx).contains_focused(window, cx);
+        if held || window.focused(cx).is_none() {
+            match &open.restore {
+                Some(handle) => handle.focus(window, cx),
+                None => self.focus.focus(window, cx),
+            }
+        }
+        cx.notify();
+        Some(open.request)
+    }
+
+    /// The menu closed itself: Escape, a press outside it, or an item was
+    /// chosen. The model's menu is over too, unless a newer one was asked
+    /// for in the same press.
+    fn menu_dismissed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request) = self.end_menu(window, cx) else {
+            return;
+        };
+        if request == self.menu_anchor.requests() {
+            dispatch(&self.ui.store, cx, |m| m.close_context_menu());
+        } else {
+            self.sync_menu(window, cx);
+        }
+    }
+
+    /// Where a menu opens that no pointer placed: at the row of the tree
+    /// for a menu of the tree, else beside the pane at mid height. Only a
+    /// menu the model opened by itself (a scene) comes here for a grid.
+    fn default_menu_position(
+        &self,
+        (origin, object): &(MenuOrigin, ObjectRef),
+        window: &Window,
+        cx: &App,
+    ) -> Point<Pixels> {
+        let at_row = (*origin == MenuOrigin::Tree)
+            .then(|| self.nav.read(cx).menu_position(object, window, cx))
+            .flatten();
+        at_row.unwrap_or_else(|| {
+            let viewport = window.viewport_size();
+            let pane = self
+                .split
+                .read(cx)
+                .sizes()
+                .first()
+                .copied()
+                .unwrap_or(px(0.));
+            point(
+                (pane + window.rem_size() * 3.).min(viewport.width * 0.5),
+                viewport.height * 0.5,
+            )
+        })
     }
 
     /// The pane keeps its width in the units of the interface scale: when
@@ -429,6 +583,15 @@ impl Render for ShellView {
         let title_bar = self.title_bar(narrow, cx);
         let toolbar = show_toolbar.then(|| toolbar::toolbar(&self.ui, cx));
         let status = status::status_bar(&self.ui, cx);
+        let menu = self.menu.as_ref().map(|open| {
+            deferred(
+                anchored()
+                    .position(open.position)
+                    .snap_to_window_with_margin(px(8.))
+                    .child(open.menu.clone()),
+            )
+            .with_priority(1)
+        });
         v_flex()
             .id(ROOT_KEY)
             .test_support()
@@ -442,5 +605,6 @@ impl Render for ShellView {
             .children(toolbar)
             .child(div().w_full().flex_1().min_h_0().child(body))
             .child(status)
+            .children(menu)
     }
 }

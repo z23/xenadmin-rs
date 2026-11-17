@@ -6,15 +6,71 @@
 //! application menus whose items carry [`RunCommand`], and the Kit's
 //! `AppMenuBar` draws them in the window.
 //!
+//! The context menu of a row is the model's too (`Model::context_menu`):
+//! its items are built here and the shell presents it.
+//!
 //! Three steps make a change visible (kit-platform.md, 3.3): `cx.set_menus`,
 //! the copy in the Kit's `GlobalState`, and `AppMenuBar::reload`. The reload
 //! closes an open menu, so the shell does all three only when the resolved
 //! menus differ from the ones it installed last.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use xenadmin_ui::command::{MenuEntry, MenuItem, MenuView};
 
 use super::actions::RunCommand;
 use crate::kit::*;
+use crate::store::{AppStore, dispatch};
+
+/// Where the next context menu opens. Whoever asks the model for a context
+/// menu from a pointer press or from a row says where first; the shell
+/// reads it when it presents the menu the model has open.
+#[derive(Clone, Default)]
+pub struct MenuAnchor {
+    position: Rc<Cell<Option<Point<Pixels>>>>,
+    requests: Rc<Cell<u64>>,
+}
+
+impl MenuAnchor {
+    /// The menu about to be asked for opens at `position`.
+    pub fn request(&self, position: Point<Pixels>) {
+        self.position.set(Some(position));
+        self.requests.set(self.requests.get() + 1);
+    }
+
+    /// The position of the last request, once.
+    pub fn take_position(&self) -> Option<Point<Pixels>> {
+        self.position.take()
+    }
+
+    /// How many menus were asked for with a position. A presented menu
+    /// that is older than the last request is replaced.
+    pub fn requests(&self) -> u64 {
+        self.requests.get()
+    }
+}
+
+/// One item of a context menu. A disabled item carries its reason in its
+/// name, as in the menu bar. Choosing it runs the command through the
+/// model's context menu, which checks the captured selection again; a
+/// refusal is said in the error line.
+pub fn context_item(store: &Entity<AppStore>, item: &MenuItem) -> PopupMenuItem {
+    let command = item.id;
+    let store = store.clone();
+    let mut entry =
+        PopupMenuItem::new(SharedString::from(item_name(item))).disabled(item.disabled.is_some());
+    if let Some(checked) = item.checked {
+        entry = entry.checked(checked);
+    }
+    entry.on_click(move |_, _, cx| {
+        dispatch(&store, cx, move |m| {
+            if let Err(refused) = m.invoke_context(command) {
+                m.error = Some(refused.to_string());
+            }
+        });
+    })
+}
 
 /// What a menu shows when no command of it applies to the selection. The
 /// ten menus keep their places whatever is selected.
