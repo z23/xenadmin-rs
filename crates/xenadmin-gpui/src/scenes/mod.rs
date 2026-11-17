@@ -1,0 +1,391 @@
+//! The scene tool: any scene as a PNG and as an element tree, without a
+//! display.
+//!
+//! A scene is a model set up by a function. For a registered scene name
+//! (`xenadmin_ui::scene::registry()`) the tool builds `Model::fixture()`,
+//! applies the scene and renders what the model then describes. The
+//! `gallery-*` names are the renderer's own fixtures ([`gallery`]).
+//!
+//! The window is a test window: the Kit's deterministic platform with the
+//! machine's real text system and, for a PNG, an offscreen renderer. What a
+//! PNG shows depends on the fonts and the graphics adapter of the machine
+//! that made it, so PNGs are artifacts and not goldens; assertions belong on
+//! the tree.
+
+pub mod gallery;
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use serde_json::{Value, json};
+use xenadmin_ui::surface::{self, Node};
+use xenadmin_ui::{Model, scene};
+
+use crate::kit::testing::{
+    Assets, ElementSnapshot, HeadlessAppContext, PlatformTextSystem, TestQueryExt,
+    TestWindowExt, current_headless_renderer, current_platform,
+};
+use crate::kit::*;
+use crate::scene_view::{SceneView, TAB_BASE};
+use crate::store::{AppStore, Describe};
+use gallery::{Lab, LabRef};
+
+/// How a scene is rendered.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Options {
+    /// The size of the window in logical pixels.
+    pub width: f32,
+    pub height: f32,
+    pub mode: ThemeMode,
+    /// 1 or 2 device pixels per logical pixel.
+    pub scale: f32,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            width: 1440.,
+            height: 900.,
+            mode: ThemeMode::Dark,
+            scale: 1.,
+        }
+    }
+}
+
+/// A model set up for a scene, and for a gallery scene the lab its
+/// descriptions come from.
+pub struct Setup {
+    pub model: Model,
+    pub lab: Option<LabRef>,
+}
+
+impl Setup {
+    /// A demo model with a lab: the fixture of the renderer tests.
+    pub fn lab() -> Self {
+        let mut model = Model::fixture();
+        model.load_demo(3, 48);
+        Self {
+            model,
+            lab: Some(Lab::new()),
+        }
+    }
+
+    fn describe(&self) -> Option<Describe> {
+        self.lab.as_ref().map(Lab::describe)
+    }
+}
+
+/// Every scene name the tool renders: the registered scenes in registry
+/// order, then the gallery.
+pub fn names() -> Vec<&'static str> {
+    scene::registry()
+        .iter()
+        .map(|spec| spec.name)
+        .chain(gallery::SCENES)
+        .collect()
+}
+
+/// The model of a scene. `None` when no scene has that name.
+pub fn setup(name: &str) -> Option<Setup> {
+    if gallery::SCENES.contains(&name) {
+        let setup = Setup::lab();
+        let lab = setup.lab.as_ref()?;
+        return gallery::apply(name, lab).then_some(setup);
+    }
+    let mut model = Model::fixture();
+    scene::apply(name, &mut model).then_some(Setup { model, lab: None })
+}
+
+/// What a scene window is made of.
+pub struct SceneWindow {
+    pub window: AnyWindowHandle,
+    pub view: Entity<SceneView>,
+    pub store: Entity<AppStore>,
+    pub lab: Option<LabRef>,
+}
+
+/// Opens the window of a scene. Call it inside `cx.update` of a test or
+/// headless application context; it initialises the Kit, the renderer's
+/// key bindings and the theme.
+pub fn open(cx: &mut App, setup: Setup, options: &Options) -> Result<SceneWindow, String> {
+    gpui_kit::init(cx);
+    crate::init(cx);
+    // A capture must show the final state, not a dialog on its way in.
+    cx.set_reduce_motion(true);
+    crate::theme::apply(options.mode, setup.model.preferences.options.zoom(), cx);
+    let describe = setup.describe();
+    let lab = setup.lab;
+    let store = cx.new(|_| AppStore::new(setup.model));
+    if let Some(describe) = describe {
+        store.update(cx, |store, cx| store.set_describe(describe, cx));
+    }
+    let (window, view) = gpui_kit::open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.), px(0.)),
+                size: size(px(options.width), px(options.height)),
+            })),
+            focus: false,
+            show: false,
+            ..Default::default()
+        },
+        cx,
+        {
+            let store = store.clone();
+            move |window, cx| cx.new(|cx| SceneView::new(store, window, cx))
+        },
+    )
+    .map_err(|error| format!("the scene window did not open: {error}"))?;
+    Ok(SceneWindow {
+        window,
+        view,
+        store,
+        lab,
+    })
+}
+
+/// A rendered scene.
+pub struct Output {
+    /// The frame, when a capture was asked for.
+    pub image: Option<image::RgbaImage>,
+    pub tree: Value,
+}
+
+/// One platform text system per thread: building a platform starts worker
+/// threads that are never joined.
+fn text_system() -> Arc<dyn PlatformTextSystem> {
+    thread_local! {
+        static TEXT_SYSTEM: Arc<dyn PlatformTextSystem> = current_platform(true).text_system();
+    }
+    TEXT_SYSTEM.with(Arc::clone)
+}
+
+/// Renders a scene. With `capture` the frame is drawn by the offscreen
+/// renderer, which needs a graphics adapter (a software one will do);
+/// without it only the tree is made and no adapter is needed.
+pub fn render(name: &str, options: &Options, capture: bool) -> Result<Output, String> {
+    let setup = setup(name).ok_or_else(|| format!("no scene is named `{name}`"))?;
+    render_setup(name, setup, options, capture)
+}
+
+/// [`render`] for a model set up by the caller.
+pub fn render_setup(
+    name: &str,
+    setup: Setup,
+    options: &Options,
+    capture: bool,
+) -> Result<Output, String> {
+    if options.scale != 1. && options.scale != 2. {
+        return Err(format!("the scale is 1 or 2, not {}", options.scale));
+    }
+    let mut cx = if capture {
+        HeadlessAppContext::with_platform(text_system(), Arc::new(Assets), current_headless_renderer)
+    } else {
+        HeadlessAppContext::with_platform(text_system(), Arc::new(Assets), || Ok(None))
+    };
+    let scene = cx.update(|cx| open(cx, setup, options))?;
+    cx.run_until_parked();
+    // The dialog host presents the surfaces after the first update, and
+    // widgets created in a frame are corrected in the next: draw until the
+    // frame is settled.
+    for _ in 0..3 {
+        cx.update_window(scene.window, |_, window, cx| {
+            if options.scale == 1. {
+                window.set_scale_factor(1.);
+            }
+            window.render_frame(cx);
+        })
+        .map_err(|error| format!("the scene did not draw: {error}"))?;
+        cx.run_until_parked();
+    }
+    let tree = cx
+        .update_window(scene.window, |_, window, cx| {
+            let mut tree = tree_json(window, cx, &scene.store);
+            tree["scene"] = json!(name);
+            tree["theme"] = json!(if options.mode.is_dark() { "dark" } else { "light" });
+            tree["scale"] = json!(options.scale);
+            tree
+        })
+        .map_err(|error| format!("the scene did not draw: {error}"))?;
+    let image = if capture {
+        let full = cx
+            .capture_screenshot(scene.window)
+            .map_err(|error| format!("the frame was not captured: {error}"))?;
+        Some(if options.scale == 1. {
+            // The offscreen target has the size of the 2x test window; the
+            // 1x frame is its top left quarter.
+            image::imageops::crop_imm(&full, 0, 0, options.width as u32, options.height as u32)
+                .to_image()
+        } else {
+            full
+        })
+    } else {
+        None
+    };
+    Ok(Output { image, tree })
+}
+
+fn id_string(id: &ElementId) -> String {
+    match id {
+        ElementId::Name(name) => name.to_string(),
+        ElementId::NamedInteger(name, index) => format!("{name}:{index}"),
+        ElementId::Integer(index) => index.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// The ids on the way to an element, without the view segments: those are
+/// allocation-order ids and shift when a scene creates entities in another
+/// order.
+pub fn id_path(element: &ElementSnapshot) -> Vec<String> {
+    element
+        .path()
+        .iter()
+        .filter(|id| !matches!(id, ElementId::View(_)))
+        .map(id_string)
+        .collect()
+}
+
+/// The nodes of everything the model describes now, by scope: the tab body
+/// under [`TAB_BASE`], each surface under its id.
+pub fn described(store: &AppStore) -> BTreeMap<String, Vec<Node>> {
+    let model = store.model();
+    let mut scopes = BTreeMap::new();
+    if let Some(body) = store.tab_body(model.active_tab()) {
+        scopes.insert(
+            TAB_BASE.to_owned(),
+            surface::flatten_blocks(TAB_BASE, &body.blocks()),
+        );
+    }
+    for surface in store.surfaces().iter() {
+        scopes.insert(surface.id.clone(), surface::flatten(surface));
+    }
+    scopes
+}
+
+/// The keys of a description that must be elements of the frame.
+///
+/// All of them, except what the frame cannot hold: the options of a
+/// drop-down that is closed, what is inside a section that starts folded,
+/// and the rows of a table after its first (a table draws the rows that are
+/// in view only).
+pub fn required_keys(nodes: &[Node]) -> Vec<String> {
+    let folded: Vec<String> = nodes
+        .iter()
+        .filter(|node| node.role == "group" && node.value.as_deref() == Some("collapsed"))
+        .map(|node| format!("{}/", node.path))
+        .collect();
+    let mut tables_seen = BTreeSet::new();
+    nodes
+        .iter()
+        .filter(|node| !folded.iter().any(|prefix| node.path.starts_with(prefix)))
+        .filter(|node| node.role != "option")
+        .filter(|node| {
+            if node.role != "row" {
+                return true;
+            }
+            let table = node.path.rsplit_once('/').map_or("", |(table, _)| table);
+            tables_seen.insert(table.to_owned())
+        })
+        .filter_map(|node| node.key.clone())
+        .collect()
+}
+
+fn bounds_json(bounds: Bounds<Pixels>) -> Value {
+    json!([
+        f32::from(bounds.origin.x),
+        f32::from(bounds.origin.y),
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    ])
+}
+
+/// The element tree of the last frame, merged with the model's flattened
+/// description.
+///
+/// `elements` lists every element with an id, in reading order, with its id
+/// path, what the Kit exposes of it (role, label, value, description,
+/// bounds, focus, checked, selected, disabled) and, where the id is the key
+/// or the path of a node of the description, that node: its text, its
+/// disabled reason and its tone are there even where the Kit exposes none.
+/// `missing` lists the nodes that must be in the frame and are not.
+/// `model` is the model's own account of the scene.
+pub fn tree_json(window: &Window, cx: &App, store: &Entity<AppStore>) -> Value {
+    let store = store.read(cx);
+    let scopes = described(store);
+    let mut found: BTreeSet<(String, String)> = BTreeSet::new();
+    let elements: Vec<Value> = window
+        .elements()
+        .iter()
+        .map(|element| {
+            let path = id_path(element);
+            let id = path.last().cloned().unwrap_or_default();
+            // The scope is the surface the element is in, else the tab.
+            let scope = path
+                .iter()
+                .rev()
+                .find(|segment| segment.as_str() != TAB_BASE && scopes.contains_key(*segment))
+                .cloned()
+                .unwrap_or_else(|| TAB_BASE.to_owned());
+            let node = scopes.get(&scope).and_then(|nodes| {
+                nodes
+                    .iter()
+                    .find(|node| node.key.as_deref() == Some(id.as_str()) || node.path == id)
+            });
+            if let Some(node) = node {
+                found.insert((scope.clone(), node.path.clone()));
+            }
+            json!({
+                "id": id,
+                "path": path,
+                "role": element.role().map(|role| format!("{role:?}")),
+                "label": element.label(),
+                "value": element.value(),
+                "description": element.description(),
+                "placeholder": element.placeholder(),
+                "bounds": bounds_json(element.bounds()),
+                "visible": element.visible(),
+                "focused": element.focused(),
+                "checked": element.checked(),
+                "selected": element.selected(),
+                "expanded": element.expanded(),
+                "disabled": element.disabled(),
+                "node": node,
+            })
+        })
+        .collect();
+    let mut missing = Vec::new();
+    for (scope, nodes) in &scopes {
+        let required: BTreeSet<String> = required_keys(nodes).into_iter().collect();
+        for node in nodes {
+            let needed = node.key.as_ref().is_some_and(|key| required.contains(key));
+            if needed && !found.contains(&(scope.clone(), node.path.clone())) {
+                missing.push(json!({ "scope": scope, "node": node }));
+            }
+        }
+    }
+    let viewport = window.viewport_size();
+    json!({
+        "viewport": [f32::from(viewport.width), f32::from(viewport.height)],
+        "elements": elements,
+        "missing": missing,
+        "model": scene::tree(store.model()),
+    })
+}
+
+/// The keys the description requires and the frame does not have, as
+/// `<scope>: <key>`.
+pub fn missing_keys(tree: &Value) -> Vec<String> {
+    tree["missing"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            format!(
+                "{}: {}",
+                entry["scope"].as_str().unwrap_or_default(),
+                entry["node"]["key"].as_str().unwrap_or_default()
+            )
+        })
+        .collect()
+}

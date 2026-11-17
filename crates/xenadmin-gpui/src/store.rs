@@ -26,6 +26,8 @@ use crate::kit::*;
 pub struct Describe {
     pub surfaces: Rc<dyn Fn(&Model) -> Vec<Surface>>,
     pub tab_body: Rc<dyn Fn(&Model, TabId) -> Option<TabBody>>,
+    /// The local action row of a tab.
+    pub local_row: Rc<dyn Fn(&Model, TabId) -> Vec<command::MenuItem>>,
 }
 
 impl Default for Describe {
@@ -33,6 +35,7 @@ impl Default for Describe {
         Self {
             surfaces: Rc::new(Model::surfaces),
             tab_body: Rc::new(Model::tab_body),
+            local_row: Rc::new(command::local_row),
         }
     }
 }
@@ -255,7 +258,7 @@ impl AppStore {
     /// The local action row of a tab: the commands registered for it,
     /// resolved on the model's target.
     pub fn local_row(&self, tab: TabId) -> Vec<command::MenuItem> {
-        command::local_row(&self.model, tab)
+        (self.describe.local_row)(&self.model, tab)
     }
 }
 
