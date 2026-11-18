@@ -9,7 +9,7 @@ use crate::kit::testing::{
     ElementSnapshot, TestEventExt as _, TestQueryExt as _, TestWindowExt as _,
 };
 use crate::kit::*;
-use crate::scene_view::{TAB_BODY_KEY, TAB_SCROLL_KEY};
+use crate::scene_view::{TAB_BODY_KEY, TAB_COLUMN_KEY, TAB_SCROLL_KEY};
 
 /// One step of scrolling.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,11 +48,14 @@ fn name(id: &ElementId) -> Option<&str> {
 }
 
 /// Whether the element with this key is a body that scrolls: of a tab
-/// (`tab-scroll`), of a dialog or a wizard (`<surface>-body`), of a
-/// properties page (`<surface>-pages-page`). The renderer marks exactly
-/// these for the test support.
+/// (`tab-scroll`; of a tab that ends in a table also `tab-results-body`,
+/// the table's part, and `tab-column`, which holds both parts and scrolls
+/// when sections follow a short table), of a dialog or a wizard
+/// (`<surface>-body`), of a properties page (`<surface>-pages-page`). The
+/// renderer marks exactly these for the test support.
 pub fn is_scroll_body(key: &str) -> bool {
     key == TAB_SCROLL_KEY
+        || key == TAB_COLUMN_KEY
         || key.ends_with("-page")
         || (key.ends_with("-body") && key != TAB_BODY_KEY)
 }
