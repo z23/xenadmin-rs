@@ -196,6 +196,7 @@ pub fn apply(m: &mut Model) {
             c.disconnect();
         }
         for (id, _) in affected {
+            m.forget_operations_of(id);
             m.workspace.active.remove(&id);
             m.workspace.seen.remove(&id);
             m.workspace.session_accounts.remove(&id);

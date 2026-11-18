@@ -221,6 +221,10 @@ fn latest(m: &Model, pool: PoolId) -> Vec<Block> {
             move |m| crate::areas::events::show_history(m, pool)
         )
         .ghost()]),
+        // An unfinished IPv6 management handover of the pool, as the Rune
+        // continuation panel said it; its two buttons are commands of the
+        // `management_network` area on the local row.
+        crate::areas::management_network::continuation_notes(m, pool),
     ]
 }
 

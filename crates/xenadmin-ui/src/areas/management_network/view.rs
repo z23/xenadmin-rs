@@ -592,6 +592,17 @@ fn toggle_ipv6_member(m: &mut Model, id: PifId) {
 
 // -- The continuation of an unfinished IPv6 handover ---------------------------------------
 
+/// The caption of each unfinished IPv6 handover of a pool, without the
+/// panel's buttons: for a tab whose local row has the two continuation
+/// commands (the NICs and Networking tabs of the `network` area). Empty
+/// when the pool has none.
+pub fn continuation_notes(m: &Model, pool: PoolId) -> Vec<Block> {
+    ipv6::handovers(m, pool)
+        .into_iter()
+        .map(|h| caption(h.caption).key(format!("ipv6-bond-handover-note-{}", h.record)).into())
+        .collect()
+}
+
 /// The Rune continuation panel for a pool: per unfinished IPv6 handover its
 /// caption and the buttons "Leave partial configuration…" and "Review stage
 /// {n}…". Empty when the pool has none. Public: a tab or a record list of
