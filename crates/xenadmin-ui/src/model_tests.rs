@@ -1253,3 +1253,171 @@ fn two_saved_connections_to_one_pool_show_it_once_through_the_scope_session() {
     assert_eq!(m.scope(), &Target::one(ObjectRef::pool(pool)));
     assert!(m.notice.is_none());
 }
+
+// -- The third kernel round: tab changes, the close path, the status counters ----
+
+/// The tab changes the probe area was told of since the last call.
+fn tab_log(m: &mut Model) -> Vec<(TabId, TabId, String)> {
+    std::mem::take(&mut m.areas.probe.tabs)
+}
+
+#[test]
+fn a_tab_change_is_reported_once_after_the_change_is_complete() {
+    use ObjectKind as K;
+    let mut m = Model::demo(3, 48);
+    let pool = demo_pool(&m);
+    m.select(Target::one(vm_ref(pool, 1)));
+    m.set_active_tab(TabId::General);
+    tab_log(&mut m);
+    m.areas.probe.hooks.clear();
+
+    // Choosing a tab: from the one shown to the one chosen.
+    m.set_active_tab(TabId::Console);
+    assert_eq!(
+        tab_log(&mut m),
+        [(TabId::General, TabId::Console, "Console on Vm after 0".into())]
+    );
+    // Choosing the tab that is shown is no change.
+    m.set_active_tab(TabId::Console);
+    assert!(tab_log(&mut m).is_empty());
+
+    // Another object of the same kind keeps the tab: nothing is reported,
+    // though the scope hook ran.
+    m.select(Target::one(vm_ref(pool, 2)));
+    assert_eq!(m.active_tab(), TabId::Console);
+    assert_eq!(hook_log(&m), ["scope"]);
+    assert!(tab_log(&mut m).is_empty());
+
+    // A scope change that changes the tab: reported after the scope hook,
+    // when the model already shows the new object and its tab.
+    m.select(Target::one(ObjectRef::pool(pool)));
+    let shown = m.active_tab();
+    assert_ne!(shown, TabId::Console, "a pool has no Console tab");
+    assert_eq!(
+        tab_log(&mut m),
+        [(
+            TabId::Console,
+            shown,
+            format!("{shown:?} on {:?} after 2", K::Pool)
+        )]
+    );
+
+    // Back is a scope change like any other.
+    assert!(m.back());
+    assert_eq!(
+        tab_log(&mut m),
+        [(shown, TabId::Console, "Console on Vm after 3".into())]
+    );
+
+    // The Notifications view has its own two tabs: entering it, switching
+    // between them and leaving it are tab changes.
+    m.set_nav_view(NavView::Notifications);
+    let first = m.active_tab();
+    assert!(matches!(first, TabId::Alerts | TabId::Events));
+    let other = if first == TabId::Alerts {
+        TabId::Events
+    } else {
+        TabId::Alerts
+    };
+    m.set_active_tab(other);
+    m.set_nav_view(NavView::Infrastructure);
+    let log = tab_log(&mut m);
+    assert_eq!(
+        log.iter().map(|(from, to, _)| (*from, *to)).collect::<Vec<_>>(),
+        [
+            (TabId::Console, first),
+            (first, other),
+            (other, TabId::Console)
+        ]
+    );
+
+    // One change made of several steps is reported once, from where it
+    // began to where it ended.
+    m.show_notifications(first);
+    assert_eq!(
+        tab_log(&mut m)
+            .iter()
+            .map(|(from, to, _)| (*from, *to))
+            .collect::<Vec<_>>(),
+        [(TabId::Console, first)]
+    );
+    m.show_home();
+    let log = tab_log(&mut m);
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!((log[0].0, log[0].1), (first, TabId::Home));
+    assert!(log[0].2.starts_with("Home on "), "{log:?}");
+
+    // An object that disappears hands the selection to its parent: the tab
+    // change of that is reported too.
+    // (Only a VM has the Snapshots tab, so the parent shows another.)
+    m.select(Target::one(vm_ref(pool, 3)));
+    m.set_active_tab(TabId::Snapshots);
+    tab_log(&mut m);
+    change_inventory(&mut m, |inventory| {
+        let id = vm_ref(pool, 3).vm_id().unwrap();
+        inventory.vms.remove(&id);
+    });
+    assert!(m.reconcile_selection());
+    let log = tab_log(&mut m);
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert_eq!(log[0].0, TabId::Snapshots);
+    assert_eq!(log[0].1, m.active_tab());
+}
+
+#[test]
+fn the_status_counters_show_the_history_of_every_pool() {
+    use crate::areas::events::activity::Tab;
+    let mut m = Model::demo(3, 48);
+    let pool = demo_pool(&m);
+    m.operation_rows = vec![
+        vm_record(1, &pool.to_string(), OperationState::OutcomeUnknown),
+        vm_record(2, &pool.to_string(), OperationState::Tracking),
+    ];
+    let status = m.status();
+    assert_eq!((status.operations, status.unknown_outcomes), (1, 1));
+    m.areas.events.search = "left over".into();
+    m.show_unknown_outcomes();
+    assert_eq!(m.nav.view, NavView::Notifications);
+    assert_eq!(m.active_tab(), TabId::Events);
+    assert_eq!(m.areas.events.list, Tab::History);
+    assert_eq!(m.areas.events.state_filter, UNKNOWN_OUTCOME_STATE);
+    assert_eq!(m.areas.events.pool, None, "every pool");
+    assert!(m.areas.events.search.is_empty());
+    // The filter is the name of the state the counter counts.
+    assert_eq!(
+        format!("{:?}", OperationState::OutcomeUnknown),
+        UNKNOWN_OUTCOME_STATE
+    );
+    m.show_operations();
+    assert_eq!(m.active_tab(), TabId::Events);
+    assert_eq!(m.areas.events.list, Tab::History);
+    assert!(m.areas.events.state_filter.is_empty());
+}
+
+#[test]
+fn closing_the_model_closes_the_detached_console_windows() {
+    use crate::intent::ConsoleWindowRequest;
+    let mut m = Model::fixture();
+    assert!(crate::scene::apply("multiple-consoles", &mut m));
+    let open = crate::areas::console::windows::open_windows(&m);
+    assert_eq!(open.len(), 2);
+    m.take_intents();
+    // Another pool shown in the main window leaves the windows alone: this
+    // is why the session hook cannot be what closes them.
+    session::clear_view(&mut m);
+    assert_eq!(crate::areas::console::windows::open_windows(&m).len(), 2);
+    assert!(m.take_intents().is_empty());
+    // The close of the main window ends every one, and the front end is
+    // asked to close each window.
+    m.close();
+    assert!(crate::areas::console::windows::open_windows(&m).is_empty());
+    let closed: Vec<_> = m
+        .take_intents()
+        .into_iter()
+        .filter_map(|intent| match intent {
+            Intent::ConsoleWindow(ConsoleWindowRequest::Close(id)) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closed.len(), 2, "{closed:?}");
+}

@@ -857,6 +857,11 @@ pub(crate) mod probe {
         pub both_runs: u32,
         /// The scope and session hooks the kernel called, in order.
         pub hooks: Vec<&'static str>,
+        /// The tab changes the kernel reported, in order: the tab left, the
+        /// tab shown, and what the model said when the hook ran (its active
+        /// tab, the kind of its scope, how many scope and session hooks had
+        /// run before).
+        pub tabs: Vec<(TabId, TabId, String)>,
     }
 
     pub fn spec() -> AreaSpec {
@@ -866,6 +871,15 @@ pub(crate) mod probe {
             poll,
             on_scope_change: |m| m.areas.probe.hooks.push("scope"),
             on_session_change: |m| m.areas.probe.hooks.push("session"),
+            on_tab_change: |m, from, to| {
+                let seen = format!(
+                    "{:?} on {:?} after {}",
+                    m.active_tab(),
+                    m.scope().kind(),
+                    m.areas.probe.hooks.len()
+                );
+                m.areas.probe.tabs.push((from, to, seen));
+            },
             ..AreaSpec::new("probe")
         }
     }
