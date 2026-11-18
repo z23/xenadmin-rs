@@ -24,9 +24,9 @@ const AREA: &str = "migration";
 pub const MIGRATE: CommandId = CommandId("vm.migrate");
 pub const MOVE: CommandId = CommandId("vm.move");
 
-/// The command of the `cross_pool` area (not ported yet) that the second
-/// step of the wizard leads to: the Rune button "Move / copy to another
-/// pool…". Its id is the one the map of that area proposes.
+/// The command of the `cross_pool` area that the second step of the wizard
+/// leads to: the Rune button "Move / copy to another pool…", under the
+/// label that command has on one VM.
 pub const MOVE_TO_POOL: CommandId = CommandId("vm.move-to-pool");
 
 /// In menu order. Labels are the plan's (Menus table).

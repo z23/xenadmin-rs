@@ -31,7 +31,7 @@
 //!
 //! Eligibility is in `commands.rs`. Every command is for ONE object: all
 //! are hidden for several (deleting several at once is the `bulk_edit`
-//! area's, not ported yet).
+//! area's: `vm.delete-several`, `templates.delete-several`).
 //!
 //! # Surfaces
 //!
