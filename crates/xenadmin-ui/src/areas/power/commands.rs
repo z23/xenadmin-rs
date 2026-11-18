@@ -106,9 +106,9 @@ pub fn commands() -> Vec<CommandSpec> {
             .eligibility(can_boot_recovery)
             .invoke(boot_recovery),
         // Present only for a VM whose finished recovery boot left a boot
-        // order to restore. `place` has no constant for it.
+        // order to restore.
         CommandSpec::new(RECOVERY_RESTORE_BOOT.0, "Restore Saved Boot Order", AREA)
-            .menu(MenuPath::new(Menu::Vm, 2, 105).submenu(place::VM_POWER_SUBMENU))
+            .menu(place::VM_RECOVERY_RESTORE_BOOT)
             .context(VM)
             .eligibility(can_restore_boot)
             .invoke(restore_boot),

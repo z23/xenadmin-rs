@@ -38,6 +38,36 @@ pub fn text(id: String, text: &Text, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+/// The suffix of the id of the selectable run inside a preformatted block.
+pub const PREFORMATTED_RUN: &str = "-run";
+
+/// A text that keeps its line breaks, in the monospace face, in a quiet
+/// frame. The pointer selects in it as in one text (the window's selection
+/// layer copies the selection); a line longer than the width wraps. An
+/// alert keeps the alert role.
+pub fn preformatted(id: String, text: &Text, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let value = SharedString::from(text.text.clone());
+    let run = SharedString::from(format!("{id}{PREFORMATTED_RUN}"));
+    div()
+        .id(SharedString::from(id))
+        .test_support()
+        .role(if text.alert { Role::Alert } else { Role::Label })
+        .aria_label(value.clone())
+        .w_full()
+        .px_3()
+        .py_2()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.muted.opacity(0.5))
+        .font_family(theme.mono_font_family.clone())
+        .text_size(theme.mono_font_size)
+        .text_color(tone_color(text.tone, cx))
+        .child(SelectableText::new(run, value))
+        .into_any_element()
+}
+
 /// A tinted, bordered box: the frame of a notice, a review and an outcome.
 pub fn panel(tone: Tone, cx: &App) -> Div {
     let theme = cx.theme();

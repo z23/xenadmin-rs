@@ -765,6 +765,24 @@ impl Harness {
         }
     }
 
+    /// Answers the oldest queued file prompt as a prompt that could not be
+    /// shown does, with what the desktop said. Panics when none is queued.
+    #[track_caller]
+    pub fn fail_file(&mut self, error: &str) {
+        let index = self
+            .model
+            .intents
+            .iter()
+            .position(|intent| matches!(intent, Intent::ChooseFile(_)))
+            .unwrap_or_else(|| panic!("no file prompt is queued: {:?}", self.model.intents));
+        if let Intent::ChooseFile(request) = self.model.intents.remove(index) {
+            request.answer(
+                &mut self.model,
+                crate::intent::FileAnswer::Failed(error.to_owned()),
+            );
+        }
+    }
+
     /// Answers the oldest queued clipboard read. Panics when none is queued.
     #[track_caller]
     pub fn answer_clipboard(&mut self, text: Option<&str>) {

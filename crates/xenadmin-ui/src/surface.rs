@@ -279,11 +279,20 @@ pub struct Text {
     pub text: String,
     pub tone: Tone,
     pub alert: bool,
+    /// The text keeps its line breaks, is drawn in a monospace face and can
+    /// be selected and copied as one text ([`preformatted`]).
+    pub preformatted: bool,
 }
 
 impl Text {
     pub fn key(mut self, key: impl Into<String>) -> Self {
         self.key = Some(key.into());
+        self
+    }
+
+    /// Keeps the line breaks, in a monospace face, selectable as one text.
+    pub fn preformatted(mut self) -> Self {
+        self.preformatted = true;
         self
     }
 
@@ -1026,8 +1035,12 @@ pub enum ButtonStyle {
     /// Rune `Neutral` and `Outline`.
     #[default]
     Secondary,
-    /// Force and destructive actions (Rune `Danger` and `Warning`).
+    /// Force and destructive actions (Rune `Danger`).
     Danger,
+    /// An action that gives something up without destroying anything: it
+    /// asks for a second look, not for alarm (Rune `Warning`: "Review
+    /// unknown outcome", "Acknowledge outcome").
+    Warning,
     Ghost,
 }
 
@@ -1053,6 +1066,11 @@ impl Button {
 
     pub fn danger(self) -> Self {
         self.style(ButtonStyle::Danger)
+    }
+
+    /// The Rune `Warning` variant: see [`ButtonStyle::Warning`].
+    pub fn warning(self) -> Self {
+        self.style(ButtonStyle::Warning)
     }
 
     /// The secondary style, which is the default. It exists so that a port
@@ -1151,7 +1169,16 @@ pub fn text(value: impl Into<String>) -> Text {
         text: value.into(),
         tone: Tone::Normal,
         alert: false,
+        preformatted: false,
     }
+}
+
+/// A text that keeps its line breaks and is selectable as one text, in a
+/// monospace face: the details of an operation record, a list of UUIDs, a
+/// host's error text. Lines too long for the width wrap; nothing is cut.
+/// Its node has the role `preformatted` and the whole text.
+pub fn preformatted(value: impl Into<String>) -> Text {
+    text(value).preformatted()
 }
 
 /// Muted text: help, status, review lines.
@@ -2031,7 +2058,13 @@ impl Walk {
     }
 
     fn text(&mut self, path: String, text: &Text) {
-        let role = if text.alert { "alert" } else { "text" };
+        let role = if text.alert {
+            "alert"
+        } else if text.preformatted {
+            "preformatted"
+        } else {
+            "text"
+        };
         self.push(
             Node::new(path, role)
                 .key_opt(text.key.as_ref())
@@ -2051,10 +2084,10 @@ impl Walk {
     }
 
     fn button(&mut self, base: &str, button: &Button) {
-        let tone = if button.style == ButtonStyle::Danger {
-            Tone::Danger
-        } else {
-            Tone::Normal
+        let tone = match button.style {
+            ButtonStyle::Danger => Tone::Danger,
+            ButtonStyle::Warning => Tone::Warning,
+            _ => Tone::Normal,
         };
         let node = Node::new(join(base, &button.key), "button")
             .key(&button.key)

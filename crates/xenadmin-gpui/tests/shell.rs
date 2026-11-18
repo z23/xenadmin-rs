@@ -1552,6 +1552,15 @@ fn the_status_bar_counts_open_the_notifications_view(cx: &mut TestAppContext) {
     });
     assert_eq!(model(cx, &scene, |m| m.nav.view), NavView::Notifications);
     assert_eq!(model(cx, &scene, Model::active_tab), TabId::Events);
+    // The count of unknown outcomes shows them: the History list of every
+    // pool, filtered to that state.
+    let history = xenadmin_ui::areas::events::activity::Tab::History;
+    model(cx, &scene, |m| {
+        let events = &m.areas.events;
+        assert_eq!(events.list, history);
+        assert_eq!(events.state_filter, "OutcomeUnknown");
+        assert_eq!(events.pool, None);
+    });
     on(cx, &scene, |window, _| {
         assert_eq!(
             window.find(NavView::Notifications.key()).selected(),
@@ -1575,6 +1584,136 @@ fn the_status_bar_counts_open_the_notifications_view(cx: &mut TestAppContext) {
         window.click(status::OPERATIONS_KEY, cx)
     });
     assert_eq!(model(cx, &scene, |m| m.nav.view), NavView::Notifications);
+    // The count of operations shows every record: the filter is gone.
+    model(cx, &scene, |m| {
+        let events = &m.areas.events;
+        assert_eq!(m.active_tab(), TabId::Events);
+        assert_eq!(events.list, history);
+        assert_eq!(events.state_filter, "");
+        assert_eq!(events.pool, None);
+    });
+    // The keyboard presses a count as the pointer does.
+    on(cx, &scene, |window, cx| {
+        window.click(NavView::Infrastructure.key(), cx);
+    });
+    on(cx, &scene, |window, cx| {
+        let mut presses = 0;
+        while !focused(window, status::UNKNOWN_KEY) {
+            window.press("shift-tab", cx);
+            presses += 1;
+            assert!(presses < 60, "Shift+Tab never reached the count");
+        }
+        window.press("enter", cx);
+    });
+    model(cx, &scene, |m| {
+        assert_eq!(m.nav.view, NavView::Notifications);
+        assert_eq!(m.areas.events.state_filter, "OutcomeUnknown");
+    });
+}
+
+#[gpui_kit::test]
+fn a_fullscreen_request_toggles_the_main_window_and_a_consoles_goes_to_its_hook(
+    cx: &mut TestAppContext,
+) {
+    use xenadmin_ui::intent::{ConsoleWindowId, WindowRef};
+    let asked: Rc<RefCell<Vec<ConsoleWindowId>>> = Rc::default();
+    let hooks = Hooks {
+        console_fullscreen: {
+            let asked = asked.clone();
+            Rc::new(move |id, _| asked.borrow_mut().push(id))
+        },
+        ..Hooks::default()
+    };
+    let scene = cx
+        .update(|cx| scenes::open_shell_with(cx, Setup::lab(), &Options::default(), hooks.clone()))
+        .expect("shell window");
+    cx.run_until_parked();
+    settle(cx, &scene);
+    cx.update(|cx| intents::install(&scene.store, hooks, cx));
+    assert!(!on(cx, &scene, |window, _| window.is_fullscreen()));
+    model_side(cx, &scene, |m| m.toggle_fullscreen(WindowRef::Main));
+    assert!(on(cx, &scene, |window, _| window.is_fullscreen()));
+    assert!(asked.borrow().is_empty());
+    // A second request leaves fullscreen: it is a toggle.
+    model_side(cx, &scene, |m| m.toggle_fullscreen(WindowRef::Main));
+    assert!(!on(cx, &scene, |window, _| window.is_fullscreen()));
+    // A console window's request is the console's to perform.
+    model_side(cx, &scene, |m| {
+        m.toggle_fullscreen(WindowRef::Console(ConsoleWindowId(4)));
+    });
+    assert_eq!(*asked.borrow(), [ConsoleWindowId(4)]);
+    assert!(!on(cx, &scene, |window, _| window.is_fullscreen()));
+}
+
+#[gpui_kit::test]
+fn a_prompt_that_failed_and_was_given_no_typed_path_tells_the_request_why(cx: &mut TestAppContext) {
+    let scene = open(cx);
+    let services = cx.update(|cx| intents::install(&scene.store, Hooks::default(), cx));
+    let heard: Rc<RefCell<Vec<String>>> = Rc::default();
+    let request = || {
+        let (replies, failures) = (heard.clone(), heard.clone());
+        FileRequest::save(
+            "Export filtered entries",
+            "activity.json",
+            move |_, path| {
+                replies.borrow_mut().push(format!("reply {path:?}"));
+            },
+        )
+        .on_failure(move |m, error| {
+            failures.borrow_mut().push(format!("failed {error}"));
+            m.error = Some(format!("Cannot open save dialog: {error}"));
+        })
+    };
+    // The chooser did not answer: the path is asked for as text.
+    cx.update(|cx| {
+        assert!(
+            services
+                .ask_typed_path(request(), "no portal".into())
+                .is_none()
+        );
+        scene.store.update(cx, |store, cx| store.touch(cx));
+    });
+    cx.run_until_parked();
+    settle(cx, &scene);
+    assert!(
+        heard.borrow().is_empty(),
+        "nothing is said while it is open"
+    );
+    // Closed without a path: the request hears what the portal said, not a
+    // cancellation, and its text is on the error line.
+    on(cx, &scene, |window, cx| {
+        assert!(window.find(intents::TYPED_PATH).visible());
+        window.click(intents::TYPED_PATH_CANCEL, cx);
+    });
+    assert_eq!(*heard.borrow(), ["failed no portal"]);
+    assert!(!services.typed_path_open());
+    on(cx, &scene, |window, _| {
+        assert_eq!(
+            window.find(status::ERROR_KEY).label(),
+            Some("Cannot open save dialog: no portal")
+        );
+    });
+    // Escape closes it the same way.
+    cx.update(|cx| {
+        let _ = services.ask_typed_path(request(), "portal timed out".into());
+        scene.store.update(cx, |store, cx| store.touch(cx));
+    });
+    cx.run_until_parked();
+    settle(cx, &scene);
+    on(cx, &scene, |window, cx| window.press("escape", cx));
+    assert_eq!(
+        *heard.borrow(),
+        ["failed no portal", "failed portal timed out"]
+    );
+    // The chooser itself, cancelled by the user, is a cancellation.
+    model_side(cx, &scene, |m| m.choose_file(request()));
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    assert_eq!(
+        heard.borrow().last().map(String::as_str),
+        Some("reply None")
+    );
 }
 
 #[gpui_kit::test]

@@ -6,7 +6,11 @@
 //!
 //! - `ChooseFile`: the desktop's file chooser (`cx.prompt_for_paths`,
 //!   `cx.prompt_for_new_path`). When no portal answers, a dialog asks for
-//!   the path as text instead (plan risk R9).
+//!   the path as text instead (plan risk R9). The request hears
+//!   `FileAnswer::Failed` with what the portal said only when that dialog
+//!   is closed without a path: then no prompt chose anything.
+//! - `ToggleFullscreen`: the main window toggles itself; a console
+//!   window's request goes to a hook, see [`Hooks`].
 //! - `OpenUrl`, `CopyText`, `ReadClipboard`: the platform's.
 //! - `Quit`: the application's one close path.
 //! - `ConsoleWindow`: SEAM, see [`Hooks`].
@@ -14,13 +18,15 @@
 //! A reply goes back to the model in an update of its own, after the one
 //! that queued the intent has finished.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use xenadmin_ui::Model;
 use xenadmin_ui::blocks;
-use xenadmin_ui::intent::{ConsoleWindowRequest, FileMode, FileRequest, Intent};
+use xenadmin_ui::intent::{
+    ConsoleWindowId, ConsoleWindowRequest, FileAnswer, FileMode, FileRequest, Intent, WindowRef,
+};
 use xenadmin_ui::surface::{Block, NoticeKind, Surface, button, input, notice as notice_block};
 
 use crate::kit::*;
@@ -34,6 +40,8 @@ pub const CONSOLE_WINDOWS_NOT_PORTED: &str = "console windows are not ported yet
 pub type Hook = Rc<dyn Fn(&mut App)>;
 /// What opens, closes or activates a detached console window.
 pub type ConsoleWindowHook = Rc<dyn Fn(ConsoleWindowRequest, &mut App)>;
+/// What toggles the fullscreen state of a detached console window.
+pub type ConsoleFullscreenHook = Rc<dyn Fn(ConsoleWindowId, &mut App)>;
 
 /// What the application provides beyond the platform's services.
 ///
@@ -52,6 +60,13 @@ pub struct Hooks {
     pub release_console_input: Hook,
     /// Closes every detached console window. Called by the close path.
     pub close_console_windows: Hook,
+    /// Toggles the fullscreen state of a detached console window.
+    /// `Intent::ToggleFullscreen(WindowRef::Console(id))`. SEAM as above.
+    pub console_fullscreen: ConsoleFullscreenHook,
+    /// The main window, once the shell has one: the shell sets it
+    /// (`ShellView::new`), and `Intent::ToggleFullscreen(WindowRef::Main)`
+    /// toggles that window. Clones of the hooks share it.
+    pub main_window: Rc<Cell<Option<AnyWindowHandle>>>,
 }
 
 impl Default for Hooks {
@@ -63,6 +78,10 @@ impl Default for Hooks {
             }),
             release_console_input: Rc::new(|_| {}),
             close_console_windows: Rc::new(|_| {}),
+            console_fullscreen: Rc::new(|id, _| {
+                eprintln!("{CONSOLE_WINDOWS_NOT_PORTED}: fullscreen of {id:?}");
+            }),
+            main_window: Rc::default(),
         }
     }
 }
@@ -169,26 +188,34 @@ impl Services {
     /// was cancelled.
     #[must_use]
     pub fn ask_typed_path(&self, request: FileRequest, problem: String) -> Option<FileRequest> {
+        self.replace_typed_path(request, problem)
+            .map(|replaced| replaced.request)
+    }
+
+    /// [`Self::ask_typed_path`], returning the whole request it replaced:
+    /// that one failed too, and its owner is told what its portal said.
+    fn replace_typed_path(&self, request: FileRequest, problem: String) -> Option<TypedPath> {
         let start = self.start_directory();
         let text = match (&request.mode, &request.suggested_name) {
             (FileMode::Save, Some(name)) => start.join(name).display().to_string(),
             _ => format!("{}/", start.display().to_string().trim_end_matches('/')),
         };
-        self.typed
-            .borrow_mut()
-            .replace(TypedPath {
-                request,
-                text,
-                problem,
-                error: None,
-                replace: None,
-            })
-            .map(|replaced| replaced.request)
+        self.typed.borrow_mut().replace(TypedPath {
+            request,
+            text,
+            problem,
+            error: None,
+            replace: None,
+        })
     }
 
+    /// Closing the dialog without a path: the chooser failed and nothing
+    /// was typed in its place, so the request hears the failure.
     fn cancel(&self, model: &mut Model) {
         if let Some(typed) = self.typed.borrow_mut().take() {
-            (typed.request.reply)(model, None);
+            typed
+                .request
+                .answer(model, FileAnswer::Failed(typed.problem));
         }
     }
 
@@ -335,11 +362,18 @@ fn choose_file(services: &Services, request: FileRequest, cx: &mut Context<AppSt
                 if let Some(path) = &path {
                     services.remember(path, mode);
                 }
-                let reply = request.reply.clone();
-                store.run(move |m| reply(m, path), cx);
+                let answer = path.map_or(FileAnswer::Cancelled, FileAnswer::Chosen);
+                store.run(move |m| request.answer(m, answer), cx);
             }
-            Err(problem) => match services.ask_typed_path(request, problem) {
-                Some(replaced) => store.run(move |m| (replaced.reply)(m, None), cx),
+            Err(problem) => match services.replace_typed_path(request, problem) {
+                Some(replaced) => store.run(
+                    move |m| {
+                        replaced
+                            .request
+                            .answer(m, FileAnswer::Failed(replaced.problem));
+                    },
+                    cx,
+                ),
                 None => store.touch(cx),
             },
         });
@@ -364,6 +398,18 @@ pub fn perform(services: &Services, hooks: &Hooks, intent: Intent, cx: &mut Cont
         Intent::ConsoleWindow(request) => {
             let open = Rc::clone(&hooks.console_window);
             cx.defer(move |cx| open(request, cx));
+        }
+        Intent::ToggleFullscreen(WindowRef::Main) => {
+            let main = hooks.main_window.get();
+            cx.defer(move |cx| {
+                if let Some(main) = main {
+                    let _ = cx.update_window(main, |_, window, _| window.toggle_fullscreen());
+                }
+            });
+        }
+        Intent::ToggleFullscreen(WindowRef::Console(id)) => {
+            let toggle = Rc::clone(&hooks.console_fullscreen);
+            cx.defer(move |cx| toggle(id, cx));
         }
         Intent::Quit => {
             let quit = Rc::clone(&hooks.quit);
@@ -493,6 +539,31 @@ mod tests {
         services.cancel(&mut model);
         services.cancel(&mut model);
         assert_eq!(cancelled.get(), 1);
+        // A request that wants to hear of a failed prompt hears what the
+        // portal said when the dialog is closed without a path, and its
+        // reply is not called.
+        let failures: Rc<RefCell<Vec<String>>> = Rc::default();
+        let request = {
+            let failures = failures.clone();
+            FileRequest::save("Export", "x.json", |_, _| panic!("no path and no cancel"))
+                .on_failure(move |_, error| failures.borrow_mut().push(error.to_owned()))
+        };
+        assert!(
+            services
+                .ask_typed_path(request.clone(), "no portal".into())
+                .is_none()
+        );
+        services.cancel(&mut model);
+        assert_eq!(*failures.borrow(), ["no portal"]);
+        // A second failed prompt replaces the dialog: the first request is
+        // handed back with its own problem.
+        let _ = services.replace_typed_path(request.clone(), "first".into());
+        let replaced = services
+            .replace_typed_path(request, "second".into())
+            .expect("the first request");
+        assert_eq!(replaced.problem, "first");
+        services.cancel(&mut model);
+        assert_eq!(*failures.borrow(), ["no portal", "second"]);
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

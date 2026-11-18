@@ -41,9 +41,15 @@ pub fn fields(spec: &CommandSpec) -> [String; 8] {
         let kinds: Vec<&str> = spec.context.iter().map(|kind| kind.label()).collect();
         kinds.join(", ")
     };
-    let local = spec
-        .local
-        .map_or_else(none, |row| format!("{}.{}", row.tab.title(), row.order));
+    let rows: Vec<String> = spec
+        .local_rows()
+        .map(|row| format!("{}.{}", row.tab.title(), row.order))
+        .collect();
+    let local = if rows.is_empty() {
+        none()
+    } else {
+        rows.join(", ")
+    };
     [
         spec.id.0.to_owned(),
         spec.label.to_owned(),

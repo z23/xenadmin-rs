@@ -45,6 +45,15 @@ pub struct AreaSpec {
     /// The tree scope changed. An area closes an editor that belongs to the
     /// previous scope here.
     pub on_scope_change: fn(&mut Model),
+    /// The active tab is another one than before: `from` was shown, `to` is
+    /// shown now ([`Model::active_tab`]). It runs after whatever changed it
+    /// has finished: [`Model::set_active_tab`], a change of the scope whose
+    /// new object shows another tab (after `on_scope_change`), Back and
+    /// Forward, and a change of the navigation view (the Notifications view
+    /// has its own two tabs). It does not run while the tab stays the same
+    /// for another object, nor for a tab that disappears under the selection
+    /// without any of those calls (a server that stopped being live).
+    pub on_tab_change: fn(&mut Model, TabId, TabId),
     /// The scope session changed, was reset or is being disconnected: the
     /// model is about to show another pool, or none. An area drops here
     /// everything that belongs to the view of the previous pool (what the
@@ -99,6 +108,8 @@ fn no_poll(_: &mut Model, _: f64) -> bool {
 
 fn no_scope_change(_: &mut Model) {}
 
+fn no_tab_change(_: &mut Model, _: TabId, _: TabId) {}
+
 fn no_nav_rows(_: &Model, _: crate::nav::NavView) -> Vec<crate::nav::NavRow> {
     Vec::new()
 }
@@ -124,6 +135,7 @@ impl AreaSpec {
             tab: no_tab,
             poll: no_poll,
             on_scope_change: no_scope_change,
+            on_tab_change: no_tab_change,
             on_session_change: no_scope_change,
             nav_rows: no_nav_rows,
             on_nav_change: no_scope_change,

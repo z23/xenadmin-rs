@@ -38,6 +38,8 @@ pub type Keyed = gpui_kit::base::ObservedElement<Stateful<Div>>;
 // The actions the Kit binds Enter to inside a dialog and Escape to in a
 // table, a menu and a dialog.
 pub use gpui_kit::base::actions::{Cancel, Confirm};
+// Text the pointer can select: the preformatted block.
+pub use gpui_kit::base::{SelectableText, TextSelection};
 
 // The actions the Kit binds Tab and Shift+Tab to in a text area.
 pub use gpui_kit::base::input::{IndentInline, OutdentInline};
