@@ -257,7 +257,7 @@ areas!(
 );
 
 /// The spec of every area, in layering order, and after them the kernel's
-/// own entry ([`crate::properties::spec`], id `kernel`): the kernel hears of
+/// own entry (`crate::properties::spec`, id `kernel`): the kernel hears of
 /// a scope change and a session change through the same two hooks, after
 /// every area. Built once.
 pub fn specs() -> &'static [AreaSpec] {

@@ -6,7 +6,7 @@
 //! Destination, Power On), while a [`Surface`] belongs to one area and a
 //! command id is registered once. So the dialog, its state and its commands
 //! are here, and an area hands in its pages through three hooks of its
-//! [`AreaSpec`](crate::areas::AreaSpec):
+//! [`AreaSpec`]:
 //!
 //! - `property_pages(&Model, &Target) -> Vec<PropertyPage>`: the pages it
 //!   has for this target, each with its id, label, place in the page list
