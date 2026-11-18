@@ -808,6 +808,8 @@ const PENDING: &[&str] = &[
     "storage.multipath-workflow",
     // settings, Options: vm_tools.
     "tools.external-tools",
+    // snapshots, the Snapshots tab: bulk_export.
+    "snapshot.export",
 ];
 
 /// Ids the tests use for a command that does not exist, on purpose.
