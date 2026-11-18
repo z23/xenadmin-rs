@@ -41,6 +41,7 @@ use xenadmin_ui::surface::{self as s, Align, TableSelection as Selection};
 
 use crate::kit::*;
 use crate::render::{ColumnWidths, MenuRequest, Pass, tone_color};
+use crate::shell::menus;
 use crate::store::{AppStore, dispatch};
 
 gpui_kit::actions!(object_grid, [ActivateRow]);
@@ -335,7 +336,9 @@ impl GridDelegate {
         items.into_iter().fold(menu, |menu, item| {
             let store = store.clone();
             let command = item.id;
-            let mut entry = PopupMenuItem::new(SharedString::from(item.label.clone()))
+            // The Kit's item has no tooltip and no description: one that
+            // cannot be chosen says why in its name, as in every menu.
+            let mut entry = PopupMenuItem::new(SharedString::from(menus::item_name(&item)))
                 .disabled(item.disabled.is_some());
             if let Some(checked) = item.checked {
                 entry = entry.checked(checked);

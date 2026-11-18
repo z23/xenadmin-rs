@@ -294,3 +294,42 @@ fn the_menu_key_opens_the_menu_of_a_row_that_is_no_tree_object_at_the_row(cx: &m
         close(cx, scene);
     }
 }
+
+/// A command of a row menu that cannot run says why in the name of its
+/// item, as the items of the menu bar and of an object's menu do: the Kit's
+/// menu item has no tooltip and no description. Without a connection every
+/// command of the snapshots is unavailable.
+#[gpui_kit::test]
+fn a_row_menu_item_that_cannot_be_chosen_says_why_in_its_name(cx: &mut TestAppContext) {
+    let scene = common::open_scene_with(cx, "snapshots", WIDE, |m| m.demo = false);
+    let rows = row_keys(cx, &scene, SNAPSHOTS);
+    press_row(cx, &scene, &rows[1]);
+    must(&mut *cx, &scene, Key("menu"));
+    let names = popup_labels(cx, &scene);
+    assert_eq!(names.len(), 5, "{names:?}");
+    for name in &names {
+        // The label, a dash, the reason.
+        let reason = name.split_once(" \u{2014} ").map(|(_, reason)| reason);
+        assert!(
+            reason.is_some_and(|reason| reason.contains("require a current connection")),
+            "`{name}` does not say why it cannot be chosen"
+        );
+    }
+    // Choosing one does nothing.
+    on(cx, &scene, |window, cx| {
+        window.within("popup-menu").click(1, cx);
+    });
+    common::settle(cx, &scene);
+    assert_eq!(front(cx, &scene), None);
+    must(&mut *cx, &scene, Key("escape"));
+    // The same with the pointer: the Kit's own popup of the table.
+    let at = on(cx, &scene, |window, _| {
+        common::locate(window, None, &rows[1])
+            .unwrap_or_else(|error| panic!("{error}"))
+            .bounds()
+            .center()
+    });
+    secondary_press_at(cx, &scene, at);
+    assert_eq!(popup_labels(cx, &scene), names);
+    close(cx, scene);
+}

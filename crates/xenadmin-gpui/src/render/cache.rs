@@ -19,6 +19,7 @@ use std::sync::Arc;
 use xenadmin_ui::SecretText;
 use xenadmin_ui::surface::{self as s, Act, ActText, OptionItem};
 
+use super::blocks::with_reason;
 use crate::kit::*;
 use crate::store::{AppStore, dispatch};
 use crate::widgets::object_grid::ObjectGrid;
@@ -196,7 +197,11 @@ impl Seen {
 pub(crate) struct SelectOption {
     pub id: SharedString,
     pub label: SharedString,
-    pub disabled: bool,
+    /// The key of the option: `<key of the select>-<id>` unless the
+    /// description names it.
+    pub key: String,
+    /// Why the option cannot be picked.
+    pub reason: Option<String>,
 }
 
 impl SelectItem for SelectOption {
@@ -211,7 +216,20 @@ impl SelectItem for SelectOption {
     }
 
     fn disabled(&self) -> bool {
-        self.disabled
+        self.reason.is_some()
+    }
+
+    /// The row of the option in the open list. The Kit's row has neither a
+    /// tooltip nor a description, so an option that cannot be picked is
+    /// drawn in a group that has both: the reason is under the pointer and
+    /// in the accessibility tree.
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        with_reason(
+            format!("{}-reason", self.key),
+            &self.label,
+            self.reason.as_ref(),
+            self.label.clone(),
+        )
     }
 }
 
@@ -224,7 +242,7 @@ struct SelectEntry {
     _subscription: Subscription,
 }
 
-fn select_options(options: &[OptionItem]) -> SearchableVec<SelectOption> {
+fn select_options(key: &str, options: &[OptionItem]) -> SearchableVec<SelectOption> {
     SearchableVec::new(
         options
             .iter()
@@ -234,7 +252,11 @@ fn select_options(options: &[OptionItem]) -> SearchableVec<SelectOption> {
                     Some(detail) => format!("{} ({detail})", option.label).into(),
                     None => option.label.clone().into(),
                 },
-                disabled: option.disabled.is_some(),
+                key: option
+                    .key
+                    .clone()
+                    .unwrap_or_else(|| format!("{key}-{}", option.id)),
+                reason: option.disabled.clone(),
             })
             .collect::<Vec<_>>(),
     )
@@ -487,7 +509,8 @@ impl WidgetCache {
         scope.used.insert(key.to_owned());
         let entry = scope.selects.entry(key.to_owned()).or_insert_with(|| {
             let handler = Rc::new(RefCell::new(on_pick.clone()));
-            let widget = cx.new(|cx| SelectState::new(select_options(options), None, window, cx));
+            let widget =
+                cx.new(|cx| SelectState::new(select_options(key, options), None, window, cx));
             let subscription = cx.subscribe(&widget, {
                 let store = store.clone();
                 let handler = Rc::clone(&handler);
@@ -512,7 +535,7 @@ impl WidgetCache {
         let widget = entry.widget.clone();
         if entry.options != options {
             entry.options = options.to_vec();
-            let items = select_options(options);
+            let items = select_options(key, options);
             widget.update(cx, |state, cx| state.set_items(items, window, cx));
         }
         let wanted: Option<SharedString> = selected

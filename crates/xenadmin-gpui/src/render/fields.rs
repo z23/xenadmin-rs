@@ -201,14 +201,21 @@ pub(crate) fn choice(
                 let checked = choice.selected.as_ref() == Some(&option.id);
                 let reason = reason_of(option);
                 let pick = pick(option);
-                let radio = Radio::new(SharedString::from(option_key(option)))
+                let own_key = option_key(option);
+                let radio = Radio::new(SharedString::from(own_key.clone()))
                     .label(SharedString::from(option.label.clone()))
                     .checked(checked)
                     .disabled(reason.is_some())
-                    .when_some(reason, |radio, reason| {
-                        radio.tooltip(SharedString::from(reason))
-                    })
                     .on_click(move |_: &bool, _, cx| pick(cx));
+                // The Kit's radio has a tooltip and no description: the
+                // reason is the tooltip and the description of a group
+                // around the option, as for a disabled field.
+                let radio = with_reason(
+                    format!("{own_key}-reason"),
+                    &option.label,
+                    reason.as_ref(),
+                    radio,
+                );
                 v_flex()
                     .gap_0p5()
                     .child(radio)
