@@ -823,6 +823,8 @@ const PENDING: &[&str] = &[
     "tools.external-tools",
     // snapshots, the Snapshots tab: bulk_export.
     "snapshot.export",
+    // migration, the second step of the wizard: cross_pool.
+    "vm.move-to-pool",
 ];
 
 /// Ids the tests use for a command that does not exist, on purpose.
