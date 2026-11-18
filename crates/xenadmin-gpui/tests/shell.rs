@@ -839,23 +839,40 @@ fn the_toolbar_shows_a_power_command_only_while_it_applies(cx: &mut TestAppConte
     );
 }
 
-/// Where an item of the model's open context menu is in the popup the shell
-/// builds from it: the items in order, with one separator between groups.
+/// Where an entry of the top level of the model's open context menu (an
+/// item, or a submenu by its label) is in the popup the shell builds from
+/// it: the entries in order, with one separator between groups.
 fn popup_index(cx: &mut TestAppContext, scene: &ShellWindow, label: &str) -> usize {
     model(cx, scene, |m| {
         let mut index = 0;
-        for (group, items) in m.context_menu().into_iter().enumerate() {
+        for (group, entries) in m.context_menu().into_iter().enumerate() {
             if group > 0 {
                 index += 1;
             }
-            for item in items {
-                if item.label == label {
+            for entry in entries {
+                let found = match &entry {
+                    MenuEntry::Item(item) => item.label == label,
+                    MenuEntry::Submenu { label: name, .. } => *name == label,
+                };
+                if found {
                     return index;
                 }
                 index += 1;
             }
         }
-        panic!("the context menu has no item {label}")
+        panic!("the top level of the context menu has no entry {label}")
+    })
+}
+
+/// The items of a submenu of the model's open context menu.
+fn submenu_items(cx: &mut TestAppContext, scene: &ShellWindow, label: &str) -> Vec<MenuItem> {
+    model(cx, scene, |m| {
+        m.context_menu()
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.submenu() == Some(label))
+            .map(MenuEntry::into_items)
+            .unwrap_or_else(|| panic!("the context menu has no submenu {label}"))
     })
 }
 
@@ -876,9 +893,8 @@ async fn a_tree_row_has_the_context_menu_of_its_object(cx: &mut TestAppContext) 
     assert!(model(cx, &scene, |m| m.selection.menu.is_some()));
     assert!(model(cx, &scene, Model::context_menu_valid));
     let items: Vec<String> = model(cx, &scene, |m| {
-        m.context_menu()
+        m.context_items()
             .into_iter()
-            .flatten()
             .map(|item| item.label)
             .collect()
     });
@@ -1910,4 +1926,149 @@ fn closing_the_window_runs_the_close_path_and_leaving_it_lets_go_of_console_inpu
     let allowed = visual.simulate_close();
     assert!(allowed);
     assert_eq!(quits.get(), 1);
+}
+
+/// The whole window over a live session of the fixture server: a pool, a
+/// host and a halted guest the session may change. Power commands ask for
+/// their confirmation, so choosing one opens a dialog and writes nothing.
+fn open_live(cx: &mut TestAppContext) -> (ShellWindow, xenadmin_ui::testing::Live) {
+    let mut live = xenadmin_ui::testing::Live::with_vm();
+    let mut model = std::mem::take(&mut live.h.model);
+    model.preferences.options.review_power = true;
+    let options = Options {
+        width: 1440.,
+        height: 900.,
+        ..Options::default()
+    };
+    let scene = cx
+        .update(|cx| scenes::open_shell(cx, Setup::model(model), &options))
+        .expect("shell window");
+    cx.run_until_parked();
+    settle(cx, &scene);
+    (scene, live)
+}
+
+/// The id of the dialog in front, if any.
+fn front(cx: &mut TestAppContext, scene: &ShellWindow) -> Option<String> {
+    model(cx, scene, |m| m.front_surface().map(|surface| surface.id))
+}
+
+const POWER: &str = command::place::VM_POWER_SUBMENU;
+
+#[gpui_kit::test]
+async fn a_context_menu_nests_and_its_submenu_is_reached_by_pointer_and_by_keyboard(
+    cx: &mut TestAppContext,
+) {
+    let (scene, live) = open_live(cx);
+    let guest = live.vm();
+    let row = model(cx, &scene, |m| {
+        nav::rows(m)
+            .into_iter()
+            .find(|row| row.object.as_ref() == Some(&guest))
+            .expect("the guest is in the tree")
+    });
+    // The secondary button on the guest: its menu, whose top level is
+    // short because the power commands are one entry of it.
+    on(cx, &scene, |window, cx| window.right_click(id(&row.id), cx));
+    let power = popup_index(cx, &scene, POWER);
+    let items = submenu_items(cx, &scene, POWER);
+    let start = items
+        .iter()
+        .position(|item| item.id.0 == "vm.start")
+        .expect("Start is in the submenu");
+    assert_eq!(items[start].disabled, None, "a halted guest can start");
+    let top = model(cx, &scene, |m| m.context_menu().iter().flatten().count());
+    assert!(top <= 20, "the top level has {top} entries");
+    on(cx, &scene, |window, _| {
+        // A submenu's items are not on screen until it is opened.
+        assert!(window.try_find("submenu").is_none());
+        assert_eq!(
+            window.within("popup-menu").find(power).role(),
+            Some(Role::MenuItem)
+        );
+    });
+    // Pressing the entry opens the submenu beside it, inside the window.
+    on(cx, &scene, |window, cx| {
+        window.within("popup-menu").click(power, cx)
+    });
+    on(cx, &scene, |window, _| {
+        let submenu = window.find("submenu").bounds();
+        let viewport = window.viewport_size();
+        assert!(submenu.left() >= px(0.) && submenu.right() <= viewport.width);
+        assert!(submenu.top() >= px(0.) && submenu.bottom() <= viewport.height);
+        assert_eq!(
+            window.within("submenu").find_by_label("Start").role(),
+            Some(Role::MenuItem)
+        );
+    });
+    assert!(model(cx, &scene, |m| m.selection.menu.is_some()));
+    // Choosing an item of the submenu closes the whole menu and runs the
+    // command on the row's object: Start asks for its confirmation.
+    on(cx, &scene, |window, cx| {
+        window.within("submenu").click(start, cx)
+    });
+    cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    settle(cx, &scene);
+    assert_eq!(front(cx, &scene).as_deref(), Some("power-confirm"));
+    assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
+    assert!(!cx.update(|cx| scene.view.read(cx).menu_open()));
+    model_side(cx, &scene, |m| {
+        let surface = m.front_surface().expect("the confirmation");
+        (surface.on_close)(m);
+    });
+    assert_eq!(front(cx, &scene), None);
+
+    // By the keyboard alone: the menu of the row the cursor is on, Down to
+    // its first entry (the power submenu), Right into the submenu, whose
+    // first item that can be chosen is Start, and Enter.
+    on(cx, &scene, |window, cx| window.click(id(&row.id), cx));
+    on(cx, &scene, |window, cx| {
+        assert!(focused(window, pane::TREE_KEY));
+        window.press("shift-f10", cx);
+    });
+    assert!(model(cx, &scene, |m| m.selection.menu.is_some()));
+    assert_eq!(popup_index(cx, &scene, POWER), 0);
+    on(cx, &scene, |window, cx| window.press("down", cx));
+    on(cx, &scene, |window, _| {
+        assert!(window.try_find("submenu").is_some(), "the entry is selected");
+    });
+    on(cx, &scene, |window, cx| window.press("right", cx));
+    // Left goes back to the top level and Right in again: the keys stay
+    // in the menu.
+    on(cx, &scene, |window, cx| window.press("left", cx));
+    assert!(model(cx, &scene, |m| m.selection.menu.is_some()));
+    on(cx, &scene, |window, cx| window.press("right", cx));
+    // Escape inside the submenu ends the whole menu, and the keys are
+    // back in the tree.
+    on(cx, &scene, |window, cx| window.press("escape", cx));
+    cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    settle(cx, &scene);
+    assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
+    assert_eq!(front(cx, &scene), None, "Escape chose nothing");
+    on(cx, &scene, |window, cx| {
+        assert!(
+            focused(window, pane::TREE_KEY),
+            "the keys are back in the tree"
+        );
+        window.press("shift-f10", cx);
+    });
+    for key in ["down", "right", "enter"] {
+        on(cx, &scene, |window, cx| window.press(key, cx));
+    }
+    cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    settle(cx, &scene);
+    assert_eq!(front(cx, &scene).as_deref(), Some("power-confirm"));
+    assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
+    assert!(!cx.update(|cx| scene.view.read(cx).menu_open()));
+    // Nothing was written: the confirmation was not given.
+    assert_eq!(live.server.count("Async.VM.start"), 0);
 }
