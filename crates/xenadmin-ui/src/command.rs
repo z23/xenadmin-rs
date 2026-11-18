@@ -377,6 +377,10 @@ pub struct CommandSpec {
     /// The further tabs whose local action row shows the command: the
     /// second and later [`CommandSpec::local`] calls.
     pub local_more: [Option<LocalRow>; LocalRow::MORE],
+    /// The kinds of tree scope whose tabs show the command on their local
+    /// action row ([`CommandSpec::local_scopes`]); `None` for every scope
+    /// that has the tab.
+    pub local_scopes: Option<&'static [ObjectKind]>,
     pub shortcut: Option<&'static str>,
     /// The command accepts several objects. A command that does not is
     /// left out of the context menu of a multi-selection.
@@ -412,6 +416,7 @@ impl CommandSpec {
             context_submenu: None,
             local: None,
             local_more: [None; LocalRow::MORE],
+            local_scopes: None,
             shortcut: None,
             multi: false,
             eligibility: always_enabled,
@@ -477,6 +482,18 @@ impl CommandSpec {
             index += 1;
         }
         panic!("a command is on the local action row of too many tabs");
+    }
+
+    /// Keeps the command off the local action rows unless the tree scope is
+    /// one object of one of these kinds: for a command whose eligibility
+    /// cannot be `Hidden` elsewhere because a menu or the toolbar shows it
+    /// for every target (New Storage belongs on the Storage tab of a pool
+    /// and of a server, not on a VM's). It filters the rows only: menus,
+    /// the toolbar and context menus do not read it. A command whose
+    /// eligibility is `Hidden` for the foreign kinds needs none of this.
+    pub const fn local_scopes(mut self, kinds: &'static [ObjectKind]) -> Self {
+        self.local_scopes = Some(kinds);
+        self
     }
 
     /// Every tab whose local action row shows the command, in the order of
@@ -997,8 +1014,10 @@ fn alone(entry: MenuEntry) -> MenuEntry {
 }
 
 fn local_row_of(specs: &[CommandSpec], m: &Model, tab: TabId, target: &Target) -> Vec<MenuItem> {
+    let scope = m.scope().kind();
     let mut placed: Vec<(u8, &CommandSpec)> = specs
         .iter()
+        .filter(|spec| spec.local_scopes.is_none_or(|kinds| kinds.contains(&scope)))
         .filter_map(|spec| {
             spec.local_rows()
                 .find(|row| row.tab == tab)
@@ -1347,6 +1366,33 @@ mod tests {
         let networking = local_row_of(&specs(), &m, TabId::Networking, &Target::none());
         assert_eq!(labels(&networking), ["Add Interface"]);
         assert!(local_row_of(&specs(), &m, TabId::General, &Target::none()).is_empty());
+    }
+
+    #[test]
+    fn a_local_row_shows_a_command_only_for_the_scope_kinds_it_names() {
+        // Never hidden by its eligibility (a menu shows it for every
+        // target), on the row for a pool and a server only.
+        let create = CommandSpec::new("t.create", "New", "t")
+            .local(TabId::Storage, 5)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host]);
+        let mut specs = specs();
+        specs.push(create);
+        let mut m = Model::fixture();
+        let row = |m: &Model, target: &Target| {
+            labels(&local_row_of(&specs, m, TabId::Storage, target)).contains(&"New")
+        };
+        m.select(Target::one(vm(1)));
+        assert!(!row(&m, &m.target()), "not on a VM's Storage tab");
+        m.select(Target::one(ObjectRef::pool(pool())));
+        assert!(row(&m, &m.target()));
+        // The scope decides, not the grid selection the command acts on.
+        assert!(row(&m, &Target::one(vm(1))));
+        m.select(Target::none());
+        assert!(!row(&m, &m.target()));
+        // A command without the filter is on the row of every scope.
+        assert!(
+            labels(&local_row_of(&specs, &m, TabId::Storage, &Target::none())).contains(&"Add")
+        );
     }
 
     #[test]
