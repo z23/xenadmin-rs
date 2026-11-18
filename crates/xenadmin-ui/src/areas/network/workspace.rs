@@ -84,6 +84,8 @@ pub enum InterfaceEditor {
     },
 }
 
+// One form exists at a time: its size does not matter.
+#[allow(clippy::large_enum_variant)]
 pub enum Form {
     /// Nothing to enter (Rune `Browse`, without its hub): a staged review,
     /// or a page whose changes are all staged.
