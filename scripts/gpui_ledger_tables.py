@@ -16,7 +16,10 @@ What `check` compares, and what it needs:
   always                     every Markdown table of the ledger has one cell count per table;
                              the Scenes table is what `scenes` prints;
                              every successor of the Tests table is a test function of the file
-                             it names; the "Tests by disposition" table counts the Tests table
+                             it names; a row without one is retired or open; the "Tests by
+                             disposition" table counts the Tests table. A Rune test that a file
+                             of crates/xenadmin-gpui/tests names, while its row has no successor
+                             there, is printed "to review" (a window half that landed later)
   with --commands FILE       the Commands table is what scripts/gpui_commands_table.py prints
                              from FILE (the output of `xenadmin-scenes --commands`)
   while crates/xenadmin-desktop exists
@@ -323,9 +326,18 @@ def check(ledger, commands):
         for where, function in successors(row[4]):
             if where not in tests.get(function, []):
                 problems.append(f"Tests: {row[1]}: no test `{function}` in {where}")
-        if not successors(row[4]) and not row[3].startswith("retired"):
-            problems.append(f"Tests: {row[1]}: no successor and not retired")
+        if not successors(row[4]) and not row[3].startswith(("retired", "open")):
+            problems.append(f"Tests: {row[1]}: no successor and neither retired nor open")
     notes.append(f"tests: {len(rows)} rows; " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    functions = collections.Counter(where.split(":")[0] for places in tests.values() for where in places)
+    notes.append(f"test functions of the new crates: {functions['ui']} in xenadmin-ui, {functions['gpui']} in xenadmin-gpui")
+    window_tests = "".join(
+        path.read_text(encoding="utf-8") for path in sorted((GPUI / "tests").rglob("*.rs"))
+    )
+    for row in rows:
+        cited = re.search(r"\b" + re.escape(bare(row[1])) + r"\b", window_tests)
+        if cited and not any(where.startswith("gpui:tests") for where, _ in successors(row[4])):
+            notes.append(f"to review: {row[1]} is named in crates/xenadmin-gpui/tests and its row has no successor there")
     _, summary = table_under(text, "Tests by disposition")
     stated = {row[0]: int(row[1]) for row in summary if row[1].isdigit()}
     wanted = dict(counts)
