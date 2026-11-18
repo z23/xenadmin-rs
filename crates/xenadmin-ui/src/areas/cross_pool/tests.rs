@@ -1168,7 +1168,7 @@ fn a_submitted_live_move_closes_the_detached_console_windows_of_the_guest_too() 
     let targets = console::scenes::guests(&model);
     let (moving, staying) = (targets[0].clone(), targets[1].clone());
     let pool = moving.pool;
-    let mut window_of = |model: &mut Model, target: &console::ConsoleTarget| {
+    let window_of = |model: &mut Model, target: &console::ConsoleTarget| {
         console::open_synthetic(model, target.clone());
         windows::detach(model).expect("a free console window")
     };

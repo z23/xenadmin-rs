@@ -50,6 +50,7 @@ pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new(CANCEL_TASK.0, "Review cancellation…", AREA)
             .local(TabId::Events, 10)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| review_eligibility(m, events_row(m), true))
             .invoke(|m, _| {
                 let list = m.areas.events.list;
@@ -57,6 +58,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(EXPLAIN.0, "Explain outcome…", AREA)
             .local(TabId::Events, 20)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| match events_row(m).and_then(|row| row.help) {
                 Some(_) => Eligibility::Enabled,
                 None => Eligibility::Hidden,
@@ -68,6 +70,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(HIDE.0, "Hide completed entry", AREA)
             .local(TabId::Events, 30)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| match history_row(m) {
                 Some(row) => Eligibility::enabled_if(row.terminal, activity::UNRESOLVED),
                 None => Eligibility::Hidden,
@@ -80,6 +83,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .invoke(|m, _| activity::toggle_hidden(m)),
         CommandSpec::new(RECHECK.0, "Recheck outcome", AREA)
             .local(TabId::Events, 40)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| on_record(m, control::recheck_eligibility))
             .invoke(|m, _| {
                 if let Some(key) = history_key(m) {
@@ -91,6 +95,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(ACKNOWLEDGE.0, "Acknowledge unknown outcome…", AREA)
             .local(TabId::Events, 50)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| on_record(m, control::acknowledge_eligibility))
             .invoke(|m, _| {
                 if let Some(key) = history_key(m) {
@@ -99,6 +104,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(REQUEST_CANCEL.0, "Request cancellation", AREA)
             .local(TabId::Events, 60)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| on_record(m, control::cancel_eligibility))
             .dynamic_label(|m, _| {
                 history_key(m).map(|key| control::cancel_label(m, key).to_owned())
@@ -113,6 +119,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(EXPORT.0, "Export filtered entries…", AREA)
             .local(TabId::Events, 90)
             .local(TabId::Alerts, 90)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| export_eligibility(m))
             .invoke(|m, _| {
                 let list = activity::shown(m).unwrap_or(m.areas.events.list);
@@ -120,6 +127,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(DISMISS.0, "Review dismissal…", AREA)
             .local(TabId::Alerts, 10)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| {
                 review_eligibility(m, activity::selected(m, Tab::Messages), false)
             })

@@ -51,6 +51,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(MenuPath::new(Menu::Vm, 6, 30))
             .context(VM)
             .local(TabId::Storage, 60)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(cloud_init)
             .dynamic_label(cloud_init_label)
             .invoke(|m, target| {

@@ -38,6 +38,7 @@ pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new(DATA_SOURCES.0, "Data Sources…", AREA)
             .local(TabId::Performance, 10)
+            .local_scopes(&[ObjectKind::Host, ObjectKind::Vm])
             .eligibility(view_eligibility)
             .checked(|m| view(m).is_some_and(|view| view.choosing_sources))
             .invoke(|m, _| {
@@ -49,16 +50,19 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(PRESETS.0, "Graph Presets…", AREA)
             .local(TabId::Performance, 20)
+            .local_scopes(&[ObjectKind::Host, ObjectKind::Vm])
             .eligibility(view_eligibility)
             .checked(|m| view(m).is_some_and(|view| view.show_presets))
             .invoke(|m, _| presets::toggle(m)),
         CommandSpec::new(RECONNECT.0, "Reconnect Metrics", AREA)
             .local(TabId::Performance, 30)
+            .local_scopes(&[ObjectKind::Host, ObjectKind::Vm])
             .eligibility(can_reconnect)
             .invoke(|m, _| metrics::reload(m)),
         CommandSpec::new(MONITORING.0, "Monitoring Recording…", AREA)
             .menu(MENU)
             .local(TabId::Performance, 40)
+            .local_scopes(&[ObjectKind::Host])
             .eligibility(|m, target| {
                 let known = target
                     .single()

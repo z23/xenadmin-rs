@@ -433,6 +433,7 @@ fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(OPEN_RESULT.0, "Open in Pool", "search")
             .context(RESULT_KINDS)
             .local(TabId::Search, 10)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(can_open)
             .invoke(|m, target| {
                 if let Some(key) = target.single().and_then(key_of) {
@@ -441,12 +442,14 @@ fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(SAVE.0, "Save Search", "search")
             .local(TabId::Search, 20)
+            .local_scopes(&ObjectKind::ALL)
             .invoke(|m, _| {
                 sync(m);
                 m.areas.search.dialog = Some(Dialog::Save);
             }),
         CommandSpec::new(EXPORT.0, "Export Saved Searches", "search")
             .local(TabId::Search, 30)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| {
                 if m.areas.search.files.busy {
                     Eligibility::disabled(files::BUSY)
@@ -461,6 +464,7 @@ fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(REMOVE.0, "Delete Saved Search", "search")
             .context(&[ObjectKind::SavedSearch])
             .local(TabId::Search, 40)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(
                 |m, target| match target.single_of(ObjectKind::SavedSearch) {
                     None => Eligibility::Hidden,

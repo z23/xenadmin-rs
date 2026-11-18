@@ -2228,3 +2228,7 @@ mod resource_per_pool_tests;
 #[cfg(test)]
 #[path = "context_menu_tests.rs"]
 mod context_menu_tests;
+
+#[cfg(test)]
+#[path = "local_row_tests.rs"]
+mod local_row_tests;

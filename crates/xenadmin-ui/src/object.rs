@@ -32,6 +32,25 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
+    /// Every kind, in the order of the declaration.
+    pub const ALL: [Self; 15] = [
+        Self::None,
+        Self::Pool,
+        Self::Host,
+        Self::Vm,
+        Self::Template,
+        Self::StorageRepository,
+        Self::Network,
+        Self::VirtualDisk,
+        Self::Snapshot,
+        Self::Appliance,
+        Self::Folder,
+        Self::Tag,
+        Self::SavedSearch,
+        Self::Connection,
+        Self::Multi,
+    ];
+
     /// The singular noun the interface uses for the kind.
     pub fn label(self) -> &'static str {
         match self {

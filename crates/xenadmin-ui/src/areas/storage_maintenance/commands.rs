@@ -43,6 +43,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .context(&[ObjectKind::StorageRepository])
             // The order the storage area left free for it.
             .local(TabId::Storage, 20)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| match repository(m, target) {
                 Ok(_) => Eligibility::Enabled,
                 Err(refusal) => refusal,

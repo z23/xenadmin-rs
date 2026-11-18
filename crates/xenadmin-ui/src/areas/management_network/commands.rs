@@ -60,6 +60,7 @@ pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new(CONFIGURE.0, "Configure Management IP", AREA)
             .local(TabId::Networking, 210)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(&[ObjectKind::Host])
             .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| on_management(m, target, configurable))
@@ -70,6 +71,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(MOVE.0, "Move Management Interface", AREA)
             .local(TabId::Networking, 220)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(&[ObjectKind::Host])
             .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| on_management(m, target, configurable))
@@ -80,6 +82,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(BOND_CREATE.0, "Create Management Bond", AREA)
             .local(TabId::Nics, 210)
+            .local_scopes(&[ObjectKind::Host])
             .context(&[ObjectKind::Host])
             .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| {
@@ -98,6 +101,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(BOND_REMOVE.0, "Remove Management Bond", AREA)
             .local(TabId::Nics, 220)
+            .local_scopes(&[ObjectKind::Host])
             .context(&[ObjectKind::Host])
             .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| {
@@ -115,6 +119,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(BOND_IPV6.0, "Staged IPv6 Management Bond", AREA)
             .local(TabId::Nics, 230)
+            .local_scopes(&[ObjectKind::Host])
             .context(&[ObjectKind::Host])
             .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| {
@@ -133,6 +138,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(IPV6_CONTINUE.0, "Review Next IPv6 Handover Stage", AREA)
             .local(TabId::Nics, 240)
             .local(TabId::Networking, 240)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(&[ObjectKind::Host, ObjectKind::Pool])
             .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(on_handover)
@@ -148,6 +154,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(IPV6_LEAVE.0, "Leave Partial IPv6 Handover", AREA)
             .local(TabId::Nics, 250)
             .local(TabId::Networking, 250)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(&[ObjectKind::Host, ObjectKind::Pool])
             .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(on_handover)
