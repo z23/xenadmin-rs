@@ -32,8 +32,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lab_support::{Client, Evidence, Lab, Outside, Platform};
 use serde_json::json;
-use xenadmin_core::{OperationId, VmCommand, VmId, VmSettingEdit, VmSettingsPatch};
+use xenadmin_core::{
+    OperationId, OperationState, PowerAction, PowerState, VmCommand, VmId, VmSettingEdit,
+    VmSettingsPatch,
+};
 use xenadmin_gpui::shell::status;
+use xenadmin_ui::command::Menu;
+use xenadmin_ui::nav::NavView;
 use xenadmin_ui::object::ObjectRef;
 use xenadmin_ui::tabs::TabId;
 
@@ -310,6 +315,249 @@ fn lab_g2_add_server_and_follow_the_host() {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     assert!(leaked.is_empty(), "the password is in {leaked:?}");
+    client.close();
+    evidence.finish();
+}
+
+/// A client on the fresh state directory of this run, connected to the
+/// coordinator through Add Server.
+fn connected(lab: &Lab, evidence: &mut Evidence, platform: Platform) -> Client {
+    lab_support::assert_fresh_state();
+    let mut client = Client::start(platform);
+    add_server(&mut client, lab, evidence);
+    client
+}
+
+/// Tools > Options: "Review routine VM power actions" on, so that a
+/// routine power action asks for its confirmation.
+fn review_power_actions(client: &mut Client, evidence: &mut Evidence) {
+    client.menu(Menu::Tools, "tools.options");
+    assert_eq!(client.front().as_deref(), Some("settings-dialog"));
+    client.press("settings-review-power");
+    client.press("settings-apply");
+    if client.front().is_some() {
+        client.press("settings-close");
+    }
+    assert_eq!(client.front(), None);
+    assert!(client.model(|m| m.preferences.options.review_power));
+    evidence.step("Options: routine power actions are reviewed", json!(true));
+}
+
+fn power_state(client: &mut Client, vm: VmId) -> PowerState {
+    client.model(|m| {
+        m.inventory.as_ref().expect("inventory").vms[&vm]
+            .power_state
+            .clone()
+    })
+}
+
+/// Seconds since the epoch for a time as XAPI writes it, `YYYYMMDDTHH:MM:SSZ`.
+fn host_time(text: &str) -> Option<i64> {
+    let digits = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    if text.len() != 18 || !text.is_ascii() || &text[8..9] != "T" || !text.ends_with('Z') {
+        return None;
+    }
+    let (year, month, day) = (digits(0..4)?, digits(4..6)?, digits(6..8)?);
+    let (hour, minute, second) = (digits(9..11)?, digits(12..14)?, digits(15..17)?);
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let year_of_era = y - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// A running guest is given until its host offers a clean shutdown and
+/// until 75 seconds after its start, as the core's live harness does: a
+/// request sent before the guest's kernel listens is lost and the host
+/// holds its task for many minutes.
+fn wait_guest_ready(client: &mut Client, vm: VmId, evidence: &mut Evidence) {
+    if power_state(client, vm) != PowerState::Running {
+        return;
+    }
+    let took = client.wait(
+        "the host offers a clean shutdown of the guest",
+        Duration::from_secs(180),
+        |client| {
+            client.model(|m| {
+                m.inventory.as_ref().expect("inventory").vms[&vm]
+                    .allowed_actions
+                    .contains(&PowerAction::CleanShutdown)
+            })
+        },
+    );
+    let age = client.model(|m| {
+        let inventory = m.inventory.as_ref()?;
+        let metrics = inventory.details.vms.get(&vm)?.metrics?;
+        let started = host_time(
+            inventory
+                .details
+                .vm_metrics
+                .get(&metrics)?
+                .start_time
+                .as_deref()?,
+        )?;
+        Some(stamp() as i64 - started)
+    });
+    if let Some(age) = age.filter(|age| (0..75).contains(age)) {
+        client.pass(Duration::from_secs((75 - age) as u64));
+    }
+    evidence.step(
+        "the guest is ready for a clean shutdown",
+        json!({ "seconds": seconds(took), "seconds_since_start": age }),
+    );
+}
+
+/// The newest operation record of a guest.
+fn newest_operation(client: &mut Client, vm: VmId) -> Option<(OperationId, OperationState)> {
+    client.model(|m| {
+        m.operation_rows
+            .iter()
+            .filter(|record| record.vm == vm)
+            .max_by_key(|record| record.created_at_ms)
+            .map(|record| (record.id, record.state.clone()))
+    })
+}
+
+/// The row of an operation in the list the Events tab shows: its key and
+/// the texts of its cells.
+fn history_row(client: &mut Client, operation: OperationId) -> Option<(String, Vec<String>)> {
+    let nodes = client.nodes();
+    let id = operation.to_string();
+    let at = nodes.iter().position(|node| {
+        node.role == "row" && node.key.as_deref().is_some_and(|key| key.ends_with(&id))
+    })?;
+    let cells = nodes[at + 1..]
+        .iter()
+        .take_while(|node| node.role == "cell")
+        .filter_map(|node| node.text.clone())
+        .collect();
+    Some((nodes[at].key.clone()?, cells))
+}
+
+/// Submits the open power confirmation and follows the operation to its
+/// end: the record, the power state the host reports and what the General
+/// tab says of it. Returns the operation and how long it took.
+fn confirm_and_follow(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    vm: VmId,
+    name: &str,
+    expected: PowerState,
+) -> (OperationId, f64) {
+    assert_eq!(client.front().as_deref(), Some("power-confirm"));
+    client.snap(evidence, &format!("{name}-confirmation"));
+    let before = newest_operation(client, vm).map(|(id, _)| id);
+    client.press("power-confirm-submit");
+    client.wait(
+        "the operation is recorded",
+        Duration::from_secs(30),
+        |client| newest_operation(client, vm).is_some_and(|(id, _)| Some(id) != before),
+    );
+    let (operation, state) = newest_operation(client, vm).expect("the record");
+    let operations = client
+        .chrome(status::OPERATIONS_KEY)
+        .and_then(|element| element.label().map(str::to_owned));
+    client.snap(evidence, &format!("{name}-in-progress"));
+    evidence.step(
+        "the operation shows where it was started",
+        json!({ "operation": operation.to_string(), "state": format!("{state:?}"), "status_bar": operations }),
+    );
+    let took = client.wait(
+        "the operation finished and the host reports the power state",
+        Duration::from_secs(360),
+        |client| {
+            power_state(client, vm) == expected
+                && newest_operation(client, vm).is_some_and(|(_, state)| state.terminal())
+        },
+    );
+    let (_, state) = newest_operation(client, vm).expect("the record");
+    assert_eq!(state, OperationState::Succeeded);
+    let shown = client
+        .node(&format!("vm-operation-{operation}"))
+        .expect("the General tab shows the operation");
+    let said = format!("{:?} {:?}", shown.label, shown.text);
+    assert!(said.contains("Succeeded"), "the General tab says {said}");
+    client.snap(evidence, &format!("{name}-outcome"));
+    evidence.step(
+        "the outcome shows where it was started",
+        json!({ "seconds": seconds(took), "general_tab": shown.label, "power_state": format!("{expected:?}") }),
+    );
+    (operation, seconds(took))
+}
+
+/// P3.1 and P3.2: a refused action says why, Shut Down from the VM menu
+/// through its confirmation, the progress and the outcome on the General
+/// tab and in the Events tab of the Notifications view, Start from the
+/// toolbar.
+#[test]
+#[ignore]
+fn lab_p3_power_and_events() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-1-power-and-events");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    review_power_actions(&mut client, &mut evidence);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    client.tab(TabId::General);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    wait_guest_ready(&mut client, vm, &mut evidence);
+
+    // A refused action shows its reason: Start on a running guest.
+    let reason = client
+        .try_menu(Menu::Vm, "vm.start")
+        .expect_err("Start is disabled for a running guest");
+    assert!(!reason.is_empty(), "the disabled item gives a reason");
+    assert!(
+        client.try_toolbar("vm.start").is_err(),
+        "the toolbar offers no Start for a running guest"
+    );
+    evidence.step("Start is refused for a running guest", json!(reason));
+    evidence.note("start_refused_with", json!(reason));
+
+    // Shut Down from the VM menu, through its confirmation.
+    client.menu(Menu::Vm, "vm.shutdown");
+    let (shutdown, took) = confirm_and_follow(
+        &mut client,
+        &mut evidence,
+        vm,
+        "shut-down",
+        PowerState::Halted,
+    );
+    evidence.note("shut_down_seconds", json!(took));
+
+    // The Events tab of the Notifications view has the record.
+    client.nav_view(NavView::Notifications);
+    client.tab(TabId::Events);
+    client.press("activity-History");
+    let row = history_row(&mut client, shutdown).expect("the Events tab has the shutdown");
+    assert_eq!(row.1, ["Shut down", "Succeeded"]);
+    // The row is drawn, and choosing it shows the outcome of the record.
+    client.press(&row.0);
+    let outcome = client.node("activity-outcome").expect("the outcome");
+    client.snap(&mut evidence, "events-history");
+    evidence.step(
+        "the Events tab has the record and its outcome",
+        json!({ "row": row.1, "outcome": outcome.label, "lines": outcome.text }),
+    );
+    evidence.note("events_row", json!(row.1));
+
+    // Start again, from the toolbar.
+    client.nav_view(NavView::Infrastructure);
+    client.select(&object);
+    client.tab(TabId::General);
+    client
+        .try_toolbar("vm.start")
+        .expect("the toolbar offers Start for a halted guest");
+    let (_, took) =
+        confirm_and_follow(&mut client, &mut evidence, vm, "start", PowerState::Running);
+    evidence.note("start_seconds", json!(took));
+    evidence.note("guest", json!(name));
+    evidence.note(
+        "power_batch",
+        json!("not run: see the report (two halted guests need the tools guest stopped)"),
+    );
     client.close();
     evidence.finish();
 }
