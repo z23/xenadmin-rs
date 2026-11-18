@@ -31,8 +31,8 @@ pub mod selection;
 pub mod session;
 pub mod surface;
 pub mod tabs;
-#[cfg(test)]
-pub(crate) mod testing;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 mod tree;
 
 pub use areas::{AreaSpec, Areas};

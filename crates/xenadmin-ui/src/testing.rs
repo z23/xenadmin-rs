@@ -1,9 +1,12 @@
-//! Test support shared by the kernel and every area (`cfg(test)` only).
+//! Test support shared by the kernel, every area and the tests of the GPUI
+//! front end. It is compiled for this crate's own tests and, for another
+//! crate's tests, with the feature `test-support` (a dev-dependency turns
+//! it on); no released binary has it.
 //!
 //! - [`TempDir`]: a private directory under the system's temporary
 //!   directory, removed on drop (the crate has no `tempfile`).
-//! - [`Fixture`] (`session::tests`): a model with a writable, empty profile
-//!   store in a private directory.
+//! - [`Fixture`]: a model with a writable, empty profile store in a private
+//!   directory (the Rune `profiles_view::tests::Fixture`).
 //! - [`Server`]: a local JSON-RPC server that answers a login, the first
 //!   event batch with one pool, and a logout. With [`connected`] a fixture
 //!   gets a real `Backend` and a live, current session against it, so a
@@ -35,27 +38,28 @@ use std::{
 
 use xenadmin_core::{
     Backend, Connection, ConnectionProfile, CredentialMode, Credentials, Endpoint, PoolId,
+    ProfileStore,
 };
 
 use crate::Harness;
-use crate::session;
-pub(crate) use crate::session::tests::Fixture;
+use crate::model::Model;
+use crate::session::{self, Workspace};
 
 /// A private directory under the system's temporary directory, removed
 /// with everything in it on drop.
-pub(crate) struct TempDir(PathBuf);
+pub struct TempDir(PathBuf);
 
 impl TempDir {
     /// `label` goes into the directory's name, to tell whose it is when a
     /// crashed run leaves one behind.
-    pub(crate) fn new(label: &str) -> Self {
+    pub fn new(label: &str) -> Self {
         let path =
             std::env::temp_dir().join(format!("xenadmin-ui-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         Self(path)
     }
 
-    pub(crate) fn path(&self) -> &Path {
+    pub fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -66,23 +70,52 @@ impl Drop for TempDir {
     }
 }
 
+/// A model that owns a private, empty state directory with a writable
+/// profile store. It leaves the connect form open, in front (the Rune
+/// fixture did): `Harness::with(std::mem::take(&mut fixture.model))`, and
+/// keep the fixture alive, because its directory goes with it.
+pub struct Fixture {
+    pub model: Model,
+    pub directory: PathBuf,
+}
+
+impl Fixture {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        let directory =
+            std::env::temp_dir().join(format!("xenadmin-profiles-ui-{}", uuid::Uuid::new_v4()));
+        let mut model = Model::fixture();
+        model.workspace = Workspace::load(None, false);
+        model.workspace.writable = true;
+        model.workspace.store = Ok(ProfileStore::open(directory.clone()).unwrap());
+        session::begin_new(&mut model);
+        Self { model, directory }
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
 /// A local JSON-RPC server that answers a login, the first event batch
 /// with one pool, and a logout (the Rune fixture).
-pub(crate) struct Server {
-    pub(crate) address: std::net::SocketAddr,
-    pub(crate) endpoint: Endpoint,
+pub struct Server {
+    pub address: std::net::SocketAddr,
+    pub endpoint: Endpoint,
     stop: Arc<AtomicBool>,
     logins: Arc<Mutex<Vec<(String, String)>>>,
 }
 impl Server {
-    pub(crate) fn new(pool: PoolId) -> Self {
+    pub fn new(pool: PoolId) -> Self {
         Self::on(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), pool)
     }
 
     /// A server on the address another one had: the host is back. The
     /// address is free once the thread of the dropped server has seen
     /// its stop flag.
-    pub(crate) fn at(address: std::net::SocketAddr, pool: PoolId) -> Self {
+    pub fn at(address: std::net::SocketAddr, pool: PoolId) -> Self {
         let start = Instant::now();
         loop {
             match std::net::TcpListener::bind(address) {
@@ -125,7 +158,7 @@ impl Server {
         }
     }
 
-    pub(crate) fn logins(&self) -> Vec<(String, String)> {
+    pub fn logins(&self) -> Vec<(String, String)> {
         self.logins.lock().unwrap().clone()
     }
 }
@@ -204,7 +237,7 @@ fn serve(stream: std::net::TcpStream, pool: PoolId, logins: &Mutex<Vec<(String, 
 
 /// Polls the model, as its window does on every wake, until the
 /// condition holds.
-pub(crate) fn poll_until(h: &mut Harness, what: &str, condition: impl Fn(&Harness) -> bool) {
+pub fn poll_until(h: &mut Harness, what: &str, condition: impl Fn(&Harness) -> bool) {
     let start = Instant::now();
     loop {
         h.tick(0.02);
@@ -216,7 +249,7 @@ pub(crate) fn poll_until(h: &mut Harness, what: &str, condition: impl Fn(&Harnes
     }
 }
 
-pub(crate) fn ready(c: &Connection) {
+pub fn ready(c: &Connection) {
     let start = Instant::now();
     while !c.latest().is_current() {
         assert!(
@@ -234,7 +267,7 @@ pub(crate) fn ready(c: &Connection) {
 /// `connection`, `snapshot` and `inventory` are those of the session; the
 /// snapshot is current, so `can_mutate` holds what a read-only session
 /// allows. Returns the saved profile.
-pub(crate) fn connected(f: &mut Fixture, server: &Server, pool: PoolId) -> ConnectionProfile {
+pub fn connected(f: &mut Fixture, server: &Server, pool: PoolId) -> ConnectionProfile {
     let m = &mut f.model;
     // `Fixture::new` leaves the connect form open, in front.
     session::cancel_editor(m);
