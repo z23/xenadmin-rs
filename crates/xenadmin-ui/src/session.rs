@@ -1016,11 +1016,20 @@ pub fn connect_all(m: &mut Model) {
     pump_loads(m);
 }
 
-/// "Forget saved password".
+/// "Forget saved password" of the connect form: the password of the saved
+/// connection being edited.
 pub fn forget_password(m: &mut Model) {
     let Some(id) = m.workspace.editing else {
         return;
     };
+    forget_password_of(m, id);
+}
+
+/// Forgets the saved password of one saved connection, which need not be
+/// open in the connect form (Server > Password > Forget Password). The
+/// keyring entry goes first; the profile becomes session-only when the
+/// keyring answers (`apply_credential_result`).
+pub fn forget_password_of(m: &mut Model, id: ProfileId) {
     if !m.workspace.writable {
         return;
     }
