@@ -64,8 +64,27 @@ Keep these workspace boundaries small:
 | --- | --- |
 | `crates/xenadmin-core` | Public application types and facade. Private modules for pool ownership, XAPI, operations, console, metrics, and local persistence |
 | `crates/xenadmin-desktop` | Rune views, UI state, snapshot adaptation, frame presentation, physical input, and desktop integration |
+| `crates/xenadmin-ui` | The toolkit-free model of the interface that replaces the Rune one: selection and scope, navigation rows, the tab matrix, the command table and eligibility, editors and reviews, scenes, preferences. It describes what it shows as plain data and depends on no UI toolkit |
+| `crates/xenadmin-gpui` | The GPUI Kit front end, built beside the Rune one until cutover: the application start, the main window and its shell, the generic renderer of the model's descriptions, the console and chart views, and the scene tool |
 | `tools/host-probe` | CLI consumer of the core for protocol qualification and lab acceptance |
 | `crates/xenadmin-core/tests` | Local controllable HTTP, TLS, and RFB protocol fixtures |
+
+The front end is being moved from Rune to GPUI Kit; the
+[migration plan](GPUI-MIGRATION.md) owns the sequence, the target layout and the rules,
+and `crates/xenadmin-desktop` stays the released front end until its cutover. Between the
+two new crates the ownership is:
+
+- `xenadmin-ui` owns everything except drawing. `Model` is the one state of the
+  interface; a front end is its only writer, through one store. Its methods return without
+  waiting for a host, and it writes to disk only when the process owns the state
+  directory. What it cannot do itself (a file chooser, a URL, the clipboard, a console
+  window, quitting) it asks the front end for as an intent.
+- `xenadmin-gpui` owns widget state only: scroll offsets, focus, text buffers, which tree
+  rows are folded, widths while they are dragged. GPUI and Kit types do not leave it, and
+  it reaches GPUI only through the `gpui_kit` facade. It never blocks on a future: the
+  core's waker reaches the store through a channel that collapses a burst into one poll,
+  and console frames have a waker of their own so that they do not redraw the shell.
+- `xenadmin-core` depends on neither.
 
 Raw wire records stay inside the core's private `xapi` modules. Their generated views,
 enumerations and catalogue come from `crates/xenadmin-xapi`, the one crate under the
