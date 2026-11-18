@@ -39,6 +39,7 @@ use crate::areas::{self, AreaSpec};
 use crate::command::{CommandId, CommandSpec, Eligibility, KERNEL, place};
 use crate::model::Model;
 use crate::object::{ObjectKind, Target};
+use crate::scene::SceneSpec;
 use crate::surface::{Block, Button, Surface, Text};
 use crate::tabs::TabId;
 
@@ -488,10 +489,22 @@ fn close(m: &mut Model) {
 /// [`areas::AREA_IDS`].
 pub(crate) fn spec() -> AreaSpec {
     AreaSpec {
+        scenes,
         on_scope_change: close,
         on_session_change: close,
         ..AreaSpec::new(KERNEL)
     }
+}
+
+/// The scene of the dialog itself, which no Rune scene shows (Rune had no
+/// Properties dialog of a server): the server of the `host_admin` scenes
+/// with its Properties dialog open on the first page.
+fn scenes() -> Vec<SceneSpec> {
+    vec![SceneSpec::new("host-properties", KERNEL, |m| {
+        if let Some(target) = areas::host_admin::scenes::prepare(m) {
+            m.invoke(SERVER, &target);
+        }
+    })]
 }
 
 fn eligibility(m: &Model, target: &Target, kind: PropertiesKind) -> Eligibility {
