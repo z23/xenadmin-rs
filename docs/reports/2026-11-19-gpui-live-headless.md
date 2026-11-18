@@ -81,13 +81,14 @@ and the variables `XENADMIN_LAB_MANIFEST`, `XENADMIN_LAB_PASSWORD_FILE` and
 `/var/lib/libvirt/images/xenadmin-rs-lab/evidence/gpui/<unix time>-<scenario>/`: numbered
 `NN-<step>.png` frames, `NN-<step>.tree.json` element trees and a `summary.json` with the
 steps, their times and the results. The table gives the last run of each scenario, all
-between 23:35 and 23:52 UTC on 2026-11-18 (10:35 to 10:52 local on the 19th), in the order
-they were run. Durations are of the whole test, connection included.
+between 23:35 and 23:57 UTC on 2026-11-18 (10:35 to 10:57 local on the 19th), in the order
+they were run, except that scenario 2 was run once more at the end (its run in sequence,
+`1795044958-p3-1-power-and-events`, also passed, in 36.2 s). Durations are of the whole test, connection included.
 
 | # | Scenario | Test | Result | Duration | Evidence directory |
 | --- | --- | --- | --- | --- | --- |
 | 1 | G2: Add Server, inventory follows the host | `lab_g2_add_server_and_follow_the_host` | passed | 15.9 s | `1795044929-g2-add-server-and-follow` |
-| 2 | P3.1, P3.2: power and Events | `lab_p3_power_and_events` | passed | 36.2 s | `1795044958-p3-1-power-and-events` |
+| 2 | P3.1, P3.2: power and Events | `lab_p3_power_and_events` | passed | 40.5 s | `1795046213-p3-1-power-and-events` |
 | 3 | P3.3: console | `lab_p3_console` | passed | 116.5 s | `1795044995-p3-3-console` |
 | 3 | P3.3: Save Screenshot | `lab_p3_console_save_screenshot` | passed | 25.9 s | `1795045111-p3-3-console-save-screenshot` |
 | 4 | P3.4: snapshots | `lab_p3_snapshots` | passed | 59.6 s | `1795045138-p3-4-snapshots` |
@@ -126,7 +127,7 @@ Shut Down from the VM menu, through its confirmation: the record appears on the 
 while the host works, ends "Shut down • Succeeded" after 8.3 s with the guest halted; the
 Events tab of the Notifications view has the row ("Shut down", "Succeeded") and, with the
 row chosen, the outcome with the host task's result (`08-events-history.png`). Start from
-the toolbar through its confirmation: running after 6.2 s.
+the toolbar through its confirmation: running after 6.1 s.
 
 The power batch (its own test): the pool's Search tab narrowed to VMs by its Filters, a
 press on the row of `lab-guest` and a press with the secondary modifier on the row of
@@ -267,10 +268,16 @@ showed that is worth knowing:
 
 ## Checks
 
-Recorded in the hand-over of this work, with the commit they were run at: `cargo fmt --all
--- --check`, the two `clippy` runs with `-D warnings`, `cargo test -p xenadmin-ui --locked`
-and `cargo test -p xenadmin-gpui --features scenes --locked` (the lab tests stay ignored
-there).
+Run at the commit that holds the last change to the tests (`e2d4572`; only this report
+changed afterwards):
+
+- `cargo fmt --all -- --check`: clean.
+- `cargo clippy -p xenadmin-gpui --all-targets --features scenes --locked -- -D warnings`: clean.
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`: clean.
+- `cargo test -p xenadmin-ui --locked`: 965 passed, 2 ignored, and 1 passed, 2 ignored in the
+  documentation tests.
+- `cargo test -p xenadmin-gpui --features scenes --locked`: 204 passed; the 13 tests of
+  `lab_live` and one other test stay ignored.
 
 ## State of the lab afterwards
 
