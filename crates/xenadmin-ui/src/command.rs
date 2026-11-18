@@ -286,6 +286,12 @@ pub mod place {
     }
     pub const WINDOW_CLOSE_ALL_CONSOLES: MenuPath = at(Menu::Window, 2, 10);
 
+    /// Submenus of the context menus for commands the menu bar does not
+    /// hold ([`super::CommandSpec::context_submenu`]): tags, folders and
+    /// custom fields of any object; the management interface of a server.
+    pub const CONTEXT_ORGANIZE: &str = "Organize";
+    pub const CONTEXT_MANAGEMENT_INTERFACE: &str = "Management Interface";
+
     pub const HELP_HELP: MenuPath = at(Menu::Help, 1, 10);
     pub const HELP_WEBSITE: MenuPath = at(Menu::Help, 2, 10);
     pub const HELP_ABOUT: MenuPath = at(Menu::Help, 9, 10);

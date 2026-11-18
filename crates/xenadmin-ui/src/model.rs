@@ -2143,3 +2143,7 @@ mod tests;
 #[cfg(test)]
 #[path = "per_pool_tests.rs"]
 mod per_pool_tests;
+
+#[cfg(test)]
+#[path = "context_menu_tests.rs"]
+mod context_menu_tests;

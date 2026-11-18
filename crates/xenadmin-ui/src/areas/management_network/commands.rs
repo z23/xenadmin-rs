@@ -61,6 +61,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(CONFIGURE.0, "Configure Management IP", AREA)
             .local(TabId::Networking, 210)
             .context(&[ObjectKind::Host])
+            .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| on_management(m, target, configurable))
             .invoke(|m, target| {
                 if let Ok((pool, _, id)) = subject(m, target) {
@@ -70,6 +71,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(MOVE.0, "Move Management Interface", AREA)
             .local(TabId::Networking, 220)
             .context(&[ObjectKind::Host])
+            .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| on_management(m, target, configurable))
             .invoke(|m, target| {
                 if let Ok((pool, _, id)) = subject(m, target) {
@@ -79,6 +81,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(BOND_CREATE.0, "Create Management Bond", AREA)
             .local(TabId::Nics, 210)
             .context(&[ObjectKind::Host])
+            .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| {
                 on_management(m, target, |i, p| match parent(i, p) {
                     Parent::Ipv6 | Parent::Bonded => Eligibility::Hidden,
@@ -96,6 +99,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(BOND_REMOVE.0, "Remove Management Bond", AREA)
             .local(TabId::Nics, 220)
             .context(&[ObjectKind::Host])
+            .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| {
                 on_management(m, target, |i, p| match parent(i, p) {
                     Parent::Ipv6 | Parent::Physical | Parent::Unknown => Eligibility::Hidden,
@@ -112,6 +116,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(BOND_IPV6.0, "Staged IPv6 Management Bond", AREA)
             .local(TabId::Nics, 230)
             .context(&[ObjectKind::Host])
+            .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(|m, target| {
                 on_management(m, target, |i, p| match parent(i, p) {
                     Parent::Ipv6 => {
@@ -129,6 +134,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .local(TabId::Nics, 240)
             .local(TabId::Networking, 240)
             .context(&[ObjectKind::Host, ObjectKind::Pool])
+            .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(on_handover)
             .dynamic_label(|m, target| {
                 handover(m, target)
@@ -143,6 +149,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .local(TabId::Nics, 250)
             .local(TabId::Networking, 250)
             .context(&[ObjectKind::Host, ObjectKind::Pool])
+            .context_submenu(place::CONTEXT_MANAGEMENT_INTERFACE)
             .eligibility(on_handover)
             .invoke(|m, target| {
                 if let Some((pool, h)) = handover(m, target) {
