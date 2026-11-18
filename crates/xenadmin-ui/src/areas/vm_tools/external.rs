@@ -163,8 +163,8 @@ pub(super) struct Configure {
 }
 
 pub(super) struct Job {
-    label: String,
-    receiver: mpsc::Receiver<String>,
+    pub(super) label: String,
+    pub(super) receiver: mpsc::Receiver<String>,
 }
 
 static RUNNING: AtomicUsize = AtomicUsize::new(0);
@@ -865,10 +865,10 @@ fn launch_body(m: &Model, p: &Launch) -> Vec<Block> {
 fn launch_refusal(m: &Model, p: &Launch) -> Option<&'static str> {
     if synthetic(m, p) {
         Some(NO_LAUNCH_IN_DEMO)
-    } else if p.review.is_none() {
-        Some(REVIEW_FIRST)
     } else if !current_workspace(m, p) {
         Some(CONNECTION_CHANGED)
+    } else if p.review.is_none() {
+        Some(REVIEW_FIRST)
     } else if m.areas.vm_tools.external.jobs.len() >= 8 {
         Some(TOO_MANY)
     } else {
