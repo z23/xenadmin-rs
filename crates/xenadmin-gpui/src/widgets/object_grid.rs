@@ -87,6 +87,9 @@ struct Shared {
     index: HashMap<String, usize>,
     /// The row a Shift click extends from.
     anchor: Option<String>,
+    /// The other end of a range made with Shift: the row Shift+Up and
+    /// Shift+Down move.
+    cursor: Option<String>,
     /// Selections the grid made itself: their events are not the user's.
     echo_select: Vec<usize>,
     echo_clear: usize,
@@ -214,6 +217,76 @@ impl GridDelegate {
     /// Asks the model for the kernel's context menu of the object a row
     /// stands for, after saying where it was asked. The row is selected
     /// first unless the selection has it.
+    /// Changes a multi selection from the keyboard. False when the table
+    /// has no multi selection or no rows: the key is not the grid's then.
+    fn extend_selection(
+        shared: &Rc<RefCell<Shared>>,
+        state: &Entity<TableState<Self>>,
+        store: &Entity<AppStore>,
+        extend: Extend,
+        cx: &mut App,
+    ) -> bool {
+        let kit_row = state.read(cx).selected_row();
+        let (request, show) = {
+            let mut shared = shared.borrow_mut();
+            let Selection::Multi(current) = shared.table.selection.clone() else {
+                return false;
+            };
+            let count = shared.table.rows.len();
+            if count == 0 {
+                return false;
+            }
+            let (from, to) = match extend {
+                Extend::All => (0, count - 1),
+                Extend::By(step) => {
+                    let index_of = |id: &Option<String>| {
+                        id.as_ref().and_then(|id| shared.index.get(id).copied())
+                    };
+                    // The range starts at the row pressed last; without
+                    // one at the keyboard's row, or the first selected row.
+                    let selected = shared
+                        .table
+                        .rows
+                        .iter()
+                        .position(|row| current.contains(&row.id));
+                    match index_of(&shared.anchor).or(kit_row).or(selected) {
+                        Some(from) if from < count => {
+                            let end = index_of(&shared.cursor).unwrap_or(from);
+                            (from, end.saturating_add_signed(step).min(count - 1))
+                        }
+                        // Nothing to extend: the first row.
+                        _ => (0, 0),
+                    }
+                }
+            };
+            let next: Vec<String> = shared.table.rows[from.min(to)..=from.max(to)]
+                .iter()
+                .map(|row| row.id.clone())
+                .collect();
+            shared.anchor = shared.row_id(from);
+            shared.cursor = shared.row_id(to);
+            let request = (next != current).then(|| {
+                shared.table.selection = Selection::Multi(next.clone());
+                shared
+                    .table
+                    .on_select_many
+                    .clone()
+                    .map(|handler| (handler, next))
+            });
+            (
+                request.flatten(),
+                matches!(extend, Extend::By(_)).then_some(to),
+            )
+        };
+        if let Some(row) = show {
+            state.update(cx, |table, cx| table.scroll_to_row(row, cx));
+        }
+        if let Some((on_select_many, rows)) = request {
+            dispatch(store, cx, move |m| on_select_many(m, &rows));
+        }
+        true
+    }
+
     fn open_object_menu(
         shared: &Rc<RefCell<Shared>>,
         store: &Entity<AppStore>,
@@ -368,6 +441,7 @@ impl TableDelegate for GridDelegate {
                             match (anchor, shared.index.get(&id).copied()) {
                                 (Some(from), Some(to)) => {
                                     let (low, high) = (from.min(to), from.max(to));
+                                    shared.cursor = Some(id.clone());
                                     shared.table.rows[low..=high]
                                         .iter()
                                         .map(|row| row.id.clone())
@@ -376,6 +450,7 @@ impl TableDelegate for GridDelegate {
                                 _ => vec![id.clone()],
                             }
                         } else {
+                            shared.cursor = None;
                             let mut next = current.clone();
                             match next.iter().position(|row| row == &id) {
                                 Some(position) => {
@@ -547,6 +622,7 @@ impl ObjectGrid {
             dragged: HashMap::new(),
             index: HashMap::new(),
             anchor: None,
+            cursor: None,
             echo_select: Vec::new(),
             echo_clear: 0,
             columns_dirty: true,
@@ -671,21 +747,42 @@ impl ObjectGrid {
                     };
                     match on_clear {
                         Some(on_clear) => {
-                            shared.borrow_mut().anchor = None;
+                            let mut ends = shared.borrow_mut();
+                            (ends.anchor, ends.cursor) = (None, None);
+                            drop(ends);
                             dispatch(&store, cx, move |m| on_clear(m));
                         }
                         None => cx.propagate(),
                     }
                 }
             })
-            // The Menu key and Shift+F10: the context menu of the object
-            // the keyboard's row stands for, at that row.
+            // Shift+Up and Shift+Down extend a multi selection by a row,
+            // the secondary modifier with A selects every row; the Menu
+            // key and Shift+F10 open the context menu of the object the
+            // keyboard's row stands for, at that row.
             .on_key_down({
                 let shared = Rc::clone(&grid.inner.shared);
                 let state = state.clone();
                 let store = ui.store.clone();
                 move |event: &KeyDownEvent, _, cx| {
                     let keystroke = &event.keystroke;
+                    let modifiers = keystroke.modifiers;
+                    let shift_only = modifiers.shift
+                        && !(modifiers.control || modifiers.alt || modifiers.platform);
+                    let extend = match keystroke.key.as_str() {
+                        "down" if shift_only => Some(Extend::By(1)),
+                        "up" if shift_only => Some(Extend::By(-1)),
+                        "a" if modifiers.secondary(cx) && !(modifiers.shift || modifiers.alt) => {
+                            Some(Extend::All)
+                        }
+                        _ => None,
+                    };
+                    if let Some(extend) = extend {
+                        if GridDelegate::extend_selection(&shared, &state, &store, extend, cx) {
+                            cx.stop_propagation();
+                        }
+                        return;
+                    }
                     let menu_key = keystroke.key == "menu"
                         || (keystroke.key == "f10" && keystroke.modifiers.shift);
                     if !menu_key {
@@ -888,6 +985,7 @@ fn on_event(
                     }
                     Selection::Multi(selected) => {
                         shared.anchor = Some(id.clone());
+                        shared.cursor = None;
                         if selected.len() == 1 && selected[0] == id {
                             None
                         } else {
@@ -928,7 +1026,9 @@ fn on_event(
             match (on_cancel, on_clear) {
                 (Some(on_cancel), _) => on_cancel(cx),
                 (None, Some(on_clear)) => {
-                    shared.borrow_mut().anchor = None;
+                    let mut ends = shared.borrow_mut();
+                    (ends.anchor, ends.cursor) = (None, None);
+                    drop(ends);
                     dispatch(store, cx, move |m| on_clear(m));
                 }
                 (None, None) => dispatch(store, cx, |_| {}),
@@ -1006,6 +1106,15 @@ fn row_position(state: &Entity<TableState<GridDelegate>>, row: usize, cx: &App) 
         list.left() + px(24.),
         y.clamp(list.top(), list.bottom().max(list.top())),
     )
+}
+
+/// What the keyboard asks of a multi selection.
+#[derive(Clone, Copy)]
+enum Extend {
+    /// Move the end of the range by so many rows.
+    By(isize),
+    /// Every row.
+    All,
 }
 
 enum Request {

@@ -120,6 +120,12 @@ impl Ui {
         self.menu_request.borrow().clone()
     }
 
+    /// Whether the widget of a text field of a scope is still held: what
+    /// was typed into a field that is no longer drawn must be gone.
+    pub fn holds_text(&self, scope: &str, key: &str) -> bool {
+        self.cache.borrow().holds_text(scope, key)
+    }
+
     /// The focus handle of a pressable element the renderer draws itself,
     /// kept with the widget state of `scope`.
     pub fn focus_handle(&self, scope: &str, key: &str, cx: &mut App) -> FocusHandle {

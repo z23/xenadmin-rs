@@ -33,6 +33,11 @@ pub fn surface_width(size: SurfaceSize) -> Pixels {
     }
 }
 
+/// The id of the element the body of a dialog or a wizard is seen through.
+pub fn body_key(surface: &str) -> String {
+    format!("{surface}-body")
+}
+
 /// The padding of a dialog, on every side.
 const PADDING: f32 = 20.0;
 /// The margin the Kit keeps around a dialog.
@@ -201,13 +206,17 @@ fn surface_dialog(
                 cx,
             )
         }
+        // The body is the part that scrolls. The element with the id is
+        // what it is seen through: its bounds are what of the body is on
+        // screen, and a wheel turn over it scrolls the body.
         SurfaceKind::Dialog | SurfaceKind::Wizard { .. } => div()
+            .id(SharedString::from(body_key(&surface.id)))
+            .test_support()
             .flex_1()
             .min_h_0()
             .overflow_hidden()
             .child(
                 v_flex()
-                    .id(SharedString::from(format!("{}-body", surface.id)))
                     .size_full()
                     .overflow_y_scrollbar()
                     .gap_3()

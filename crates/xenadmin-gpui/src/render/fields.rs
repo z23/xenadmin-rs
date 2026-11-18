@@ -49,10 +49,14 @@ pub(crate) fn field(
                 .borrow_mut()
                 .text(pass.scope, spec, &ui.store, window, cx);
             let control = match widget {
+                // A field of a tab filters what the tab shows: it has the
+                // Kit's own button that empties it (the Rune filters had a
+                // clear button each). A field of a form has none.
                 TextWidget::Line(state) => Input::new(&state)
                     .id(key.clone())
                     .aria_label(label.clone())
                     .disabled(disabled)
+                    .cleanable(pass.scope.starts_with(super::TAB_SCOPE))
                     .into_any_element(),
                 // A text area has no id of its own: the keyed wrapper is
                 // what tests and the tree find. The Kit binds Tab in a text

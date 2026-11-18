@@ -289,6 +289,14 @@ impl WidgetCache {
         scope.used = used;
     }
 
+    /// Whether a scope holds the widget, and so the typed text, of a text
+    /// field. A field a pass did not draw is dropped at the end of it.
+    pub fn holds_text(&self, scope: &str, key: &str) -> bool {
+        self.scopes
+            .get(scope)
+            .is_some_and(|scope| scope.texts.contains_key(key))
+    }
+
     /// Drops a scope, emptying the buffer of every secret field first.
     pub fn close(&mut self, scope: &str, window: &mut Window, cx: &mut App) {
         if let Some(mut scope) = self.scopes.remove(scope) {
