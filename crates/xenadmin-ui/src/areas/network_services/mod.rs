@@ -95,7 +95,8 @@ pub mod service;
 pub mod topology;
 pub mod view;
 
-// TESTS
+#[cfg(test)]
+mod tests;
 
 /// The state of the area. `m.areas.network_services`.
 #[derive(Default)]
