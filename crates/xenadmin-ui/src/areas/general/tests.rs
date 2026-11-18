@@ -512,9 +512,10 @@ fn a_saved_connection_that_shows_no_pool_has_a_general_tab() {
 }
 
 // Rune: the "Operations" section of the details pane (`details` of
-// `main.rs`), which had no test of its own.
+// `main.rs`), which had no test of its own: the records, and under each
+// what Rune showed there (the controls are the power and events areas').
 #[test]
-fn the_general_tab_of_a_vm_lists_its_recent_operations_without_controls() {
+fn the_general_tab_of_a_vm_lists_its_recent_operations_with_their_rune_controls() {
     use xenadmin_core::{OperationRecord, OperationState};
     let mut h = Harness::scene("demo");
     let pool = pool(&h);
@@ -539,6 +540,16 @@ fn the_general_tab_of_a_vm_lists_its_recent_operations_without_controls() {
         .map(|index| record(index, pool.to_string(), this, OperationState::Succeeded))
         .collect();
     rows.push(record(20, pool.to_string(), this, OperationState::OutcomeUnknown));
+    // An operation in progress that can be asked to cancel.
+    let mut running = serde_json::to_value(record(
+        19,
+        pool.to_string(),
+        this,
+        OperationState::Tracking,
+    ))
+    .unwrap();
+    running["can_cancel"] = true.into();
+    rows.push(serde_json::from_value(running).unwrap());
     rows.push(record(
         21,
         pool.to_string(),
@@ -568,7 +579,8 @@ fn the_general_tab_of_a_vm_lists_its_recent_operations_without_controls() {
     assert_eq!(shown.len(), 10);
     assert_eq!(shown[0].label.as_deref(), Some("Start • OutcomeUnknown"));
     assert_eq!(shown[0].value.as_deref(), Some("unknown"));
-    assert_eq!(shown[1].label.as_deref(), Some("Start • Succeeded"));
+    assert_eq!(shown[1].label.as_deref(), Some("Start • Tracking"));
+    assert_eq!(shown[2].label.as_deref(), Some("Start • Succeeded"));
     assert!(h.has_text("Synthetic operation 12"));
     assert!(!h.has_text("Synthetic operation 3"));
     assert!(!h.has_text("Synthetic operation 21"));
@@ -577,15 +589,75 @@ fn the_general_tab_of_a_vm_lists_its_recent_operations_without_controls() {
         h.node("general-operations-note").text.as_deref(),
         Some("Demo mode cannot change infrastructure.")
     );
-    // Information only: the section has no button.
-    let section: Vec<_> = h
-        .nodes()
-        .into_iter()
-        .filter(|node| node.path.contains("general-operations"))
-        .collect();
-    assert!(!section.is_empty());
-    assert!(section.iter().all(|node| node.role != "button"));
+    // Under each record what Rune showed under it, and nothing twice.
+    let under = |h: &Harness, index: u128| -> Vec<(String, String)> {
+        let id = uuid::Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0000 + index);
+        h.nodes()
+            .into_iter()
+            .filter(|node| node.role == "button" && node.path.contains(&format!("vm-operation-{id}")))
+            .map(|node| {
+                let key = node.key.unwrap_or_default();
+                (
+                    key.strip_suffix(&id.to_string()).unwrap_or(&key).to_owned(),
+                    node.label.unwrap_or_default(),
+                )
+            })
+            .collect()
+    };
+    let pair = |key: &str, label: &str| (key.to_owned(), label.to_owned());
+    // An unknown outcome: its explanation (events), then the review of the
+    // power area. A fixture record cannot be rechecked.
+    assert_eq!(
+        under(&h, 20),
+        [
+            pair("vm-failure-help-", "Explain outcome…"),
+            pair("operation-unknown-", "Review unknown outcome"),
+        ]
+    );
+    // In progress and cancellable: the request and its reviewed form.
+    assert_eq!(
+        under(&h, 19),
+        [
+            pair("operation-cancel-", "Request cancellation"),
+            pair("recovery-cancel-", "Review cancellation request…"),
+        ]
+    );
+    // A finished record has nothing to press.
+    assert!(under(&h, 12).is_empty());
     h.assert_unique_keys();
+    // The buttons do what they did in Rune. The explanation opens over the
+    // tab; the review is the one acknowledgement dialog, in its Rune style.
+    let unknown = uuid::Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0014);
+    h.click(&format!("vm-failure-help-{unknown}"));
+    assert_eq!(h.surface().id, "failure-help-dialog");
+    h.dismiss();
+    let review = format!("operation-unknown-{unknown}");
+    assert_eq!(h.node(&review).tone, Some(Tone::Warning));
+    h.click(&review);
+    assert_eq!(h.surface().id, "unknown-outcome");
+    assert_eq!(h.surface().title, "Acknowledge unknown outcome");
+    h.dismiss();
+    assert!(h.surfaces().is_empty());
+    // The reviewed cancellation is the power area's recovery review.
+    let running = uuid::Uuid::from_u128(0x8100_0000_0000_0000_0000_0000_0000_0013);
+    h.click(&format!("recovery-cancel-{running}"));
+    assert_eq!(h.surface().id, "vm-recovery");
+    h.dismiss();
+    // Asking directly needs a connection: the refusal is on the error line.
+    h.model.error = None;
+    h.click(&format!("operation-cancel-{running}"));
+    assert_eq!(h.model.error, Some(xenadmin_core::Error::Closed.to_string()));
+    // Above the operations: why each power action is or is not available,
+    // the power area's section.
+    assert!(h.find("power-availability").is_some());
+    assert_eq!(
+        h.node("power-reason-Start").value.as_deref(),
+        Some("Demo mode cannot change infrastructure.")
+    );
+    let keys = h.keys();
+    let position = |key: &str| keys.iter().position(|other| other == key).unwrap();
+    assert!(position("general-summary") < position("power-availability"));
+    assert!(position("power-availability") < position("general-operations"));
     // A template has no Operations section, as in Rune.
     let template = inventory(&h)
         .vms

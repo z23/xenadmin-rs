@@ -164,6 +164,66 @@ fn a_button_runs_its_handler_and_a_disabled_one_shows_its_reason(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
+fn a_warning_button_is_a_style_of_its_own_and_runs_its_handler(cx: &mut TestAppContext) {
+    let scene = open_sized(cx, 1000., 2400., |lab| lab.body = Body::Blocks);
+    on(cx, &scene, |window, cx| {
+        let warning = window.find("lab-warning-button");
+        assert_eq!(warning.role(), Some(Role::Button));
+        assert_eq!(warning.label(), Some("Warning"));
+        window.click("lab-warning-button", cx);
+    });
+    assert_eq!(log(&scene), ["press:lab-warning-button"]);
+    // The description says which style it is: the tree dump has the tone.
+    let node = cx.update(|cx| {
+        let store = scene.store.read(cx);
+        let body = store.tab_body(TabId::General).expect("the lab's body");
+        xenadmin_ui::surface::flatten_blocks("tab", &body.blocks())
+            .into_iter()
+            .find(|node| node.key.as_deref() == Some("lab-warning-button"))
+            .expect("the warning button")
+    });
+    assert_eq!(node.tone, Some(xenadmin_ui::surface::Tone::Warning));
+}
+
+#[gpui_kit::test]
+fn a_preformatted_text_keeps_its_lines_and_is_selected_as_one_text(cx: &mut TestAppContext) {
+    let scene = open_sized(cx, 1000., 2400., |lab| lab.body = Body::Blocks);
+    let (block, caption) = on(cx, &scene, |window, _| {
+        let block = window.find("lab-preformatted");
+        assert_eq!(block.role(), Some(Role::Label));
+        // One element with the whole text, line breaks included.
+        assert_eq!(block.label(), Some(gallery::PREFORMATTED));
+        assert_eq!(gallery::PREFORMATTED.lines().count(), 3);
+        (block.bounds(), window.find("lab-caption").bounds())
+    });
+    // Three lines of text and the frame's padding: at least three times a
+    // one-line paragraph.
+    assert!(
+        block.size.height > caption.size.height * 3.,
+        "{:?} against a line of {:?}",
+        block.size.height,
+        caption.size.height
+    );
+    // The pointer selects across the lines as in one text: from the start
+    // of the first line to the middle of the second.
+    on(cx, &scene, |window, cx| {
+        let from = block.origin + point(px(13.), px(12.));
+        let to = block.origin + point(px(200.), px(12.) + block.size.height / 3.);
+        window.drag(from, to, cx);
+    });
+    let selected = on(cx, &scene, TextSelection::selected_text);
+    assert!(
+        selected.contains('\n'),
+        "the selection crosses a line break: {selected:?}"
+    );
+    assert!(
+        gallery::PREFORMATTED.contains(selected.as_str()),
+        "{selected:?} is one piece of the text"
+    );
+    assert!(selected.starts_with("Start"), "{selected:?}");
+}
+
+#[gpui_kit::test]
 fn typing_reaches_the_model_and_the_model_reaches_the_widget(cx: &mut TestAppContext) {
     let scene = open(cx, |lab| lab.open = vec![DIALOG]);
     on(cx, &scene, |window, cx| {
@@ -1251,6 +1311,19 @@ fn the_tab_strip_and_the_local_action_row_drive_the_model(cx: &mut TestAppContex
         );
         window.click("nav.back", cx);
         window.click("view.zoom-in", cx);
+        // A toggle on the row says that it is on, and pressing it turns
+        // it off.
+        let toolbar = window.find("view.toolbar");
+        assert_eq!(toolbar.role(), Some(Role::Button));
+        assert_eq!(toolbar.checked(), Some(true), "the toolbar is shown");
+        assert_eq!(window.find("view.zoom-in").checked(), None);
+        window.click("view.toolbar", cx);
+    });
+    on(cx, &scene, |window, _| {
+        assert_eq!(window.find("view.toolbar").checked(), Some(false));
+    });
+    cx.update(|cx| {
+        assert!(!scene.store.read(cx).model().nav.show_toolbar);
     });
     cx.update(|cx| {
         let model = scene.store.read(cx).model();

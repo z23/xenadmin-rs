@@ -135,6 +135,9 @@ pub struct Model {
     layout_changed_at: Option<f64>,
     clock: f64,
     tick: Option<f64>,
+    /// A change that may move the active tab is running: its end reports
+    /// the tab change once ([`Model::watch_tab`]).
+    tab_watched: bool,
 }
 
 impl Default for Model {
@@ -178,6 +181,10 @@ pub struct Status {
     /// The shared error line, or else the scope session's connection error.
     pub error: Option<String>,
 }
+
+/// The state filter the unknown-outcomes counter of the status bar sets
+/// ([`Model::show_unknown_outcomes`]): the name of the state.
+pub const UNKNOWN_OUTCOME_STATE: &str = "OutcomeUnknown";
 
 /// The table whose column widths the preferences keep by column id alone,
 /// as the Rune inventory grid stored them: the result grid of the Search
@@ -270,6 +277,7 @@ impl Model {
             layout_changed_at: None,
             clock: 0.0,
             tick: None,
+            tab_watched: false,
         };
         session::apply_initial(&mut m);
         m
@@ -289,12 +297,15 @@ impl Model {
         session::restore_sessions(self);
     }
 
-    /// What the close of the main window runs: preferences are saved and
-    /// every session is disconnected. (The Rune `App::on_close`; the
-    /// console windows close through the `console` area's
-    /// `on_session_change`.)
+    /// What the close of the main window runs: preferences are saved, the
+    /// detached console windows are closed and every session is
+    /// disconnected. (The Rune `App::on_close`. The windows are closed
+    /// here and not by the `console` area's `on_session_change`: that hook
+    /// also runs when the main window shows another pool, where a detached
+    /// console must stay.)
     pub fn close(&mut self) {
         self.save_preferences();
+        areas::console::windows::close_all(self);
         session::disconnect_all(self);
     }
 
@@ -1023,20 +1034,56 @@ impl Model {
         if self.selection.scope == scope {
             return;
         }
-        let from = self.place();
-        if self.nav.view == NavView::Notifications {
-            self.nav.view = NavView::Infrastructure;
-        }
-        self.notice = None;
-        self.go(scope, None);
-        self.selection.history.visit(from);
+        self.watch_tab(|m| {
+            let from = m.place();
+            if m.nav.view == NavView::Notifications {
+                m.nav.view = NavView::Infrastructure;
+            }
+            m.notice = None;
+            m.go(scope, None);
+            m.selection.history.visit(from);
+        });
     }
 
     /// Selects nothing and shows the Home tab: the connection list.
     pub fn show_home(&mut self) {
-        self.set_nav_view(NavView::Infrastructure);
-        self.select(Target::none());
-        self.set_active_tab(TabId::Home);
+        self.watch_tab(|m| {
+            m.set_nav_view(NavView::Infrastructure);
+            m.select(Target::none());
+            m.set_active_tab(TabId::Home);
+        });
+    }
+
+    /// Shows the Notifications view at one of its two tabs, as one change:
+    /// the areas hear of one tab change, from the tab that was shown to
+    /// `tab`.
+    pub fn show_notifications(&mut self, tab: TabId) {
+        self.watch_tab(|m| {
+            m.set_nav_view(NavView::Notifications);
+            m.set_active_tab(tab);
+        });
+    }
+
+    /// Runs a change that may move the active tab, and tells every area
+    /// when the tab that is shown afterwards is another one
+    /// (`on_tab_change`), once the change is complete. Nested changes
+    /// (`show_home` selects and sets a tab) are reported once, by the
+    /// outermost.
+    fn watch_tab<R>(&mut self, change: impl FnOnce(&mut Self) -> R) -> R {
+        if self.tab_watched {
+            return change(self);
+        }
+        let from = self.active_tab();
+        self.tab_watched = true;
+        let result = change(self);
+        self.tab_watched = false;
+        let to = self.active_tab();
+        if from != to {
+            for area in areas::specs() {
+                (area.on_tab_change)(self, from, to);
+            }
+        }
+        result
     }
 
     /// Where Back and Forward would return to from here.
@@ -1089,6 +1136,10 @@ impl Model {
     }
 
     fn step(&mut self, back: bool) -> bool {
+        self.watch_tab(|m| m.step_unwatched(back))
+    }
+
+    fn step_unwatched(&mut self, back: bool) -> bool {
         let from = self.place();
         let mut history = std::mem::take(&mut self.selection.history);
         let usable = |place: &Place| place.scope.objects.iter().all(|object| self.exists(object));
@@ -1186,6 +1237,10 @@ impl Model {
     /// the tab is remembered for the kind of the scope; the place left is
     /// where Back returns to.
     pub fn set_active_tab(&mut self, tab: TabId) {
+        self.watch_tab(|m| m.set_tab_unwatched(tab));
+    }
+
+    fn set_tab_unwatched(&mut self, tab: TabId) {
         if self.nav.view == NavView::Notifications {
             if tabs::NOTIFICATION_TABS.contains(&tab) && self.nav.notification_tab != tab {
                 self.nav.notification_tab = tab;
@@ -1228,12 +1283,14 @@ impl Model {
     /// about it (`on_nav_change`).
     pub fn set_nav_view(&mut self, view: NavView) {
         if self.nav.view != view {
-            self.nav.view = view;
-            self.selection.grid = Target::none();
-            self.selection.menu = None;
-            for area in areas::specs() {
-                (area.on_nav_change)(self);
-            }
+            self.watch_tab(|m| {
+                m.nav.view = view;
+                m.selection.grid = Target::none();
+                m.selection.menu = None;
+                for area in areas::specs() {
+                    (area.on_nav_change)(m);
+                }
+            });
         }
     }
 
@@ -1282,6 +1339,10 @@ impl Model {
     /// selection changed. `poll` calls this; so does anything that removes
     /// a session.
     pub fn reconcile_selection(&mut self) -> bool {
+        self.watch_tab(Self::reconcile_unwatched)
+    }
+
+    fn reconcile_unwatched(&mut self) -> bool {
         let mut changed = false;
         let grid: Vec<ObjectRef> = self
             .selection
@@ -1653,6 +1714,18 @@ impl Model {
         }
     }
 
+    /// A press on the status bar's count of operations in progress: the
+    /// History list of every pool, unfiltered.
+    pub fn show_operations(&mut self) {
+        areas::events::show_states(self, "");
+    }
+
+    /// A press on the status bar's count of unknown outcomes: the History
+    /// list of every pool, filtered to the records whose outcome is unknown.
+    pub fn show_unknown_outcomes(&mut self) {
+        areas::events::show_states(self, UNKNOWN_OUTCOME_STATE);
+    }
+
     /// The window title: the name of the selected object, else the pool of
     /// the scope session, else the application's name.
     pub fn window_title(&self) -> String {
@@ -1730,6 +1803,11 @@ impl Model {
 
     pub fn quit(&mut self) {
         self.send(Intent::Quit);
+    }
+
+    /// Asks the front end to toggle the fullscreen state of a window.
+    pub fn toggle_fullscreen(&mut self, window: crate::intent::WindowRef) {
+        self.send(Intent::ToggleFullscreen(window));
     }
 
     /// Empties the outbox. The front end calls this after every update and

@@ -102,6 +102,16 @@ pub(super) fn choose(m: &mut Model, seat: Seat) {
                 s.message = Some("Cannot start the screenshot writer.".into());
             }
         })
+        .on_failure(move |m, error| {
+            let Some(s) = super::session_mut(m, seat) else {
+                return;
+            };
+            if s.serial != serial {
+                return;
+            }
+            s.export.pending = false;
+            s.message = Some(format!("Cannot open the save dialog: {error}"));
+        })
         .filter("PNG image", ["png"]),
     );
 }

@@ -329,6 +329,78 @@ fn the_dialog_closes_when_the_scope_or_the_session_changes() {
     assert!(h.model.areas.pages.draft.is_none());
 }
 
+/// The kernel hears of a session change through its own entry at the end
+/// of `areas::specs()` (`properties::spec`, id `kernel`): it is not in
+/// `areas::AREAS`. Whoever runs the session hooks over the bare list skips
+/// it, and the Properties dialog of the previous session stays open over
+/// another pool. Each place in `session.rs` that runs the hooks is driven
+/// here without a scope change (which would close the dialog by itself),
+/// and the source is read so that a new place cannot go unnoticed.
+#[test]
+fn every_session_change_reaches_the_kernels_entry_after_the_areas() {
+    // The kernel's entry is the last spec and is not an area.
+    let specs = crate::areas::specs();
+    assert_eq!(specs.len(), crate::areas::AREAS.len() + 1);
+    assert_eq!(specs.last().map(|spec| spec.id), Some("kernel"));
+    assert!(!crate::areas::AREA_IDS.contains(&"kernel"));
+
+    let open = || {
+        let (mut h, target) = server();
+        h.invoke("server.properties");
+        h.pick("host-properties-pages", "multipathing");
+        assert!(h.model.properties.is_some());
+        h.model.areas.probe.hooks.clear();
+        (h, target)
+    };
+    type Change = fn(&mut Model);
+    let changes: [(&str, Change); 2] = [
+        ("clear_view", crate::session::clear_view),
+        ("disconnect_selected", crate::session::disconnect_selected),
+    ];
+    for (name, change) in changes {
+        let (mut h, target) = open();
+        change(&mut h.model);
+        // The areas heard of it, the scope did not change, and the
+        // kernel's entry closed the dialog and told the page's area.
+        assert_eq!(h.model.areas.probe.hooks, ["session"], "{name}");
+        assert_eq!(h.model.scope(), &target, "{name}");
+        assert!(h.model.properties.is_none(), "{name}: the dialog is open");
+        assert_eq!(log(&h).last(), Some(&"Closed"), "{name}");
+        assert!(h.model.areas.host_admin.editor.is_none(), "{name}");
+    }
+
+    // The source: every run of the session hooks is a loop over
+    // `areas::specs()`, and there are exactly the two places driven above.
+    let source = include_str!("session.rs");
+    let code: Vec<&str> = source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with("//"))
+        .collect();
+    let runs: Vec<usize> = code
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("on_session_change)("))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        runs.len(),
+        changes.len(),
+        "session.rs runs the session hooks in another number of places: drive each one above"
+    );
+    for index in runs {
+        assert_eq!(
+            code[index - 1],
+            "for area in crate::areas::specs() {",
+            "the session hooks must run over areas::specs(), which ends with the kernel's entry"
+        );
+    }
+    assert!(
+        !code.iter().any(|line| line.contains("AREAS")),
+        "session.rs must not iterate the bare list of areas"
+    );
+}
+
 #[test]
 fn the_dialog_closes_when_its_object_is_gone_or_its_page_is_withdrawn() {
     let (mut h, target) = server();

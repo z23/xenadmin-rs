@@ -17,7 +17,8 @@
 //! | pool history of `resource_admin.rs` (rows, evidence lines) | the History list: both families in one list; the evidence lines are in the selected row's outcome |
 //! | "Pool: … · change" (`activity-pool`) | a select with the same key |
 //! | review mode of the dialog | the dialogs `task-cancellation` and `message-dismissal` |
-//! | "Acknowledge unknown outcome?" (`main.rs`), `Kind::Acknowledge` (`resource_admin.rs`) | the dialog `acknowledge-unknown`, one for both families |
+//! | "Acknowledge unknown outcome?" (`main.rs`, `unknown_review`) | the dialog `unknown-outcome`, with the Rune title and texts: the one acknowledgement of a VM operation, also what the power area's "Review unknown outcome" opens |
+//! | `Kind::Acknowledge` (`resource_admin.rs`) | the dialog `acknowledge-unknown`: the same review for a resource operation, whose lines differ in substance (a pool's write guard, both pools of a transfer, a batch) |
 //! | "Outcome explanation" | the dialog `failure-help-dialog` |
 //!
 //! Commands (none has a menu path: the plan's Menus table lists none; all
@@ -32,12 +33,12 @@
 //! | `events.recheck` | Recheck outcome | Events (History) | `activity-recheck` |
 //! | `events.acknowledge` | Acknowledge unknown outcome… | Events (History) | "Review unknown outcome", "Acknowledge unknown outcome…" |
 //! | `events.request-cancel` | Request cancellation / Stop remaining steps / Finish current VM and stop / Finish current snapshot and stop | Events (History) | the unkeyed buttons of the details pane and pool history |
-//! | `events.export` | Export filtered entries… | Events | `activity-export` |
+//! | `events.export` | Export filtered entries… | Events and Alerts | `activity-export` |
 //! | `alerts.dismiss` | Review dismissal… | Alerts | `activity-review` |
-//! | `alerts.export` | Export filtered entries… | Alerts | `activity-export` |
 //!
-//! Surfaces: `task-cancellation`, `message-dismissal`, `acknowledge-unknown`
-//! (small), `failure-help-dialog`; all dialogs, none experimental.
+//! Surfaces: `task-cancellation`, `message-dismissal`, `unknown-outcome`
+//! and `acknowledge-unknown` (small), `failure-help-dialog`; all dialogs,
+//! none experimental.
 //! Scenes: `activity`, `failure-help`.
 //!
 //! # For other areas
@@ -74,8 +75,6 @@
 //!   tab button `activity-Messages`: the navigation view and its two tabs.
 //! - The clear buttons of the two filters: the front end's input has its
 //!   own clear affordance; clearing is typing the empty text.
-//! - "Cannot open save dialog: {error}": a file prompt that fails answers
-//!   like a cancelled one.
 //! - The focus return of the outcome explanation (`return_focus`).
 //! - The pool history's limit of twelve records and its hiding of batch
 //!   children: the History list shows every record, as Activity did.
@@ -125,7 +124,13 @@ pub struct State {
     pub search: String,
     /// Substring filter on the state column of Tasks and History.
     pub state_filter: String,
-    /// Substring filter on the priority column of Alerts.
+    /// Substring filter on the priority column of Alerts. Rune had one
+    /// filter for all three lists and emptied it on every switch; a switch
+    /// between Alerts and Events empties both of these ([`tab_changed`]).
+    /// They stay two fields because the kernel reports a tab change only
+    /// between the tabs it showed: after leaving the Notifications view
+    /// from Alerts, [`show`] arrives at Events from an object's tab, and
+    /// one shared text would filter states by a priority.
     pub priority_filter: String,
     /// Pool filter; `None` means all observed pools.
     pub pool: Option<PoolId>,
@@ -153,6 +158,7 @@ pub fn spec() -> AreaSpec {
         surfaces: view::surfaces,
         tab: view::tab,
         poll,
+        on_tab_change: tab_changed,
         ..AreaSpec::new("events")
     }
 }
@@ -169,8 +175,19 @@ fn poll(m: &mut Model, _clock: f64) -> bool {
 
 /// Shows one of the two tabs of the Notifications view.
 pub fn show_tab(m: &mut Model, tab: TabId) {
-    m.set_nav_view(NavView::Notifications);
-    m.set_active_tab(tab);
+    m.show_notifications(tab);
+}
+
+/// A switch between Alerts and Events empties the state filter and the
+/// priority filter, as switching the tab of the Rune Activity dialog did;
+/// the search text stays.
+fn tab_changed(m: &mut Model, from: TabId, to: TabId) {
+    let ours = |tab| matches!(tab, TabId::Alerts | TabId::Events);
+    if ours(from) && ours(to) {
+        let a = &mut m.areas.events;
+        a.state_filter.clear();
+        a.priority_filter.clear();
+    }
 }
 
 /// Shows the Events tab: the Rune `activity::open`. The list, the filters,
@@ -325,6 +342,11 @@ pub fn outcome_actions(m: &Model, key: OperationKey) -> Vec<Button> {
                         acknowledge(m, key);
                     },
                 )
+                // Rune drew the VM family's with its Warning variant.
+                .style(match key.family {
+                    Family::Vm => ButtonStyle::Warning,
+                    Family::Resource => ButtonStyle::Secondary,
+                })
                 .disabled_opt(disabled),
             );
         }

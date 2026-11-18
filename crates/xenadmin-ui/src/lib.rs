@@ -46,7 +46,8 @@ pub use demo_details::populate as populate_demo_details;
 pub use format::{bytes, memory_label, natural_cmp, storage_bytes};
 pub use harness::Harness;
 pub use intent::{
-    ConsoleWindowId, ConsoleWindowRequest, FileFilter, FileMode, FileRequest, Intent,
+    ConsoleWindowId, ConsoleWindowRequest, FileAnswer, FileFilter, FileMode, FileRequest, Intent,
+    WindowRef,
 };
 pub use model::{Header, Model, Status, Waker};
 pub use nav::{NavRow, NavView};
@@ -77,7 +78,8 @@ pub mod prelude {
     };
     pub use crate::format::{bytes, memory_label, natural_cmp, storage_bytes};
     pub use crate::intent::{
-        ConsoleWindowId, ConsoleWindowRequest, FileFilter, FileMode, FileRequest, Intent,
+        ConsoleWindowId, ConsoleWindowRequest, FileAnswer, FileFilter, FileMode, FileRequest,
+        Intent, WindowRef,
     };
     pub use crate::model::{Model, resource_target};
     pub use crate::nav::{NavRow, NavView};
@@ -92,8 +94,8 @@ pub mod prelude {
         ImageData, Notice, NoticeKind, OptionItem, Outcome, OutcomeState, Property, Review, Row,
         Surface, SurfaceKind, SurfaceSize, Table, TableSelection, TableSort, Text, Tone, act,
         act_text, actions, alert, button, caption, checkbox, choice, column, columns, custom,
-        divider, group, heading, image, input, no_op, notice, option, outcome, properties,
-        property, review, row, secret_input, select, table, text, textarea,
+        divider, group, heading, image, input, no_op, notice, option, outcome, preformatted,
+        properties, property, review, row, secret_input, select, table, text, textarea,
     };
     pub use crate::tabs::{TabBody, TabId};
 }

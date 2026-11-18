@@ -376,6 +376,19 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
     h.answer_file(None);
     assert!(!h.model.areas.events.export.pending);
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+    assert_eq!(h.model.areas.events.notice, None, "a cancel says nothing");
+    // A prompt that could not be shown ends the export too, and says why
+    // in the Rune words.
+    h.click("events.export");
+    assert!(h.model.areas.events.export.pending);
+    h.fail_file("org.freedesktop.portal.Desktop is not running");
+    assert!(!h.model.areas.events.export.pending);
+    assert_eq!(
+        h.node("activity-notice").text.as_deref(),
+        Some("Cannot open save dialog: org.freedesktop.portal.Desktop is not running")
+    );
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+    assert_eq!(h.eligibility("events.export"), Eligibility::Enabled);
     h.click("events.export");
     // The list changes under the open prompt: the export is the capture.
     h.open_tab(TabId::Alerts);
@@ -409,7 +422,7 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
     let link = dir.0.join("symlink.json");
     std::os::unix::fs::symlink(&path, &link).unwrap();
     let before = std::fs::read(&path).unwrap();
-    assert!(export::write_private(&link, b"{} ").is_err());
+    assert!(crate::files::write_private(&link, b"{} ").is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
@@ -644,11 +657,11 @@ fn the_alerts_tab_lists_messages_by_priority() {
     assert!(h.find("activity-list").is_none());
     assert!(h.has_text("2 matching entries"));
     // The selection is one for all lists: the task is not a row here.
-    assert_eq!(local(&h), ["alerts.export"]);
+    assert_eq!(local(&h), ["events.export"]);
     let messages = rows(&h, Tab::Messages);
     assert_eq!(messages[0].status, "1");
     h.select_row(TABLE, &messages[1].key);
-    assert_eq!(local(&h), ["alerts.dismiss", "alerts.export"]);
+    assert_eq!(local(&h), ["alerts.dismiss", "events.export"]);
     assert!(h.has_text("Synthetic alert text 2. No host data is used."));
     assert!(h.has_text("Object: VM Unknown"));
     assert_eq!(
@@ -673,13 +686,40 @@ fn switching_between_tasks_and_history_clears_the_state_filter_and_keeps_the_sea
     assert_eq!(h.model.areas.events.search, "synthetic");
     assert!(h.find("activity-show-hidden").is_some());
     assert!(h.find("activity-lists-note").is_none());
-    // The priority filter of Alerts is its own.
+    // A switch between Alerts and Events empties the filter too, as the
+    // tab switch of the Rune dialog did, and keeps the search.
+    h.type_text("activity-state-filter", "succeeded");
     h.open_tab(TabId::Alerts);
-    h.type_text("activity-state-filter", "2");
-    h.open_tab(TabId::Events);
+    assert_eq!(h.node("activity-state-filter").value.as_deref(), Some(""));
     assert!(h.model.areas.events.state_filter.is_empty());
-    h.open_tab(TabId::Alerts);
+    h.type_text("activity-state-filter", "2");
     assert_eq!(h.model.areas.events.priority_filter, "2");
+    h.open_tab(TabId::Events);
+    assert_eq!(h.node("activity-state-filter").value.as_deref(), Some(""));
+    h.open_tab(TabId::Alerts);
+    assert!(h.model.areas.events.priority_filter.is_empty());
+    assert_eq!(h.model.areas.events.search, "synthetic");
+    // Choosing the tab that is shown is no switch: the filter stays.
+    h.type_text("activity-state-filter", "3");
+    h.open_tab(TabId::Alerts);
+    assert_eq!(h.model.areas.events.priority_filter, "3");
+    // A priority typed on Alerts never filters states, also when the
+    // Notifications view was left in between (no switch between its two
+    // tabs is reported then: this is why there are two filters).
+    h.model.set_nav_view(NavView::Infrastructure);
+    super::show(&mut h.model);
+    assert_eq!(h.model.active_tab(), TabId::Events);
+    assert_eq!(h.node("activity-state-filter").value.as_deref(), Some(""));
+    // The counters of the status bar set their filter after the switch.
+    h.open_tab(TabId::Alerts);
+    h.model.show_unknown_outcomes();
+    assert_eq!(h.model.active_tab(), TabId::Events);
+    assert_eq!(h.model.areas.events.list, Tab::History);
+    assert_eq!(h.model.areas.events.state_filter, "OutcomeUnknown");
+    assert_eq!(h.model.areas.events.pool, None);
+    h.model.show_operations();
+    assert!(h.model.areas.events.state_filter.is_empty());
+    assert_eq!(h.model.areas.events.list, Tab::History);
 }
 
 #[test]
@@ -766,19 +806,36 @@ fn an_unknown_vm_outcome_is_rechecked_and_acknowledged_only_through_its_pool() {
     assert_eq!(h.eligibility("events.recheck"), Eligibility::disabled(DEMO));
     assert_eq!(control::recheck(&mut h.model, key), Err(DEMO.into()));
     h.click("events.acknowledge");
-    assert_eq!(h.surface_id().as_deref(), Some("acknowledge-unknown"));
-    assert!(h.has_text("VM: "));
-    assert!(h.has_text(control::ACK_VM));
-    assert_eq!(h.try_click("acknowledge-confirm"), Err(DEMO.into()));
+    // The one acknowledgement of a VM operation: the Rune dialog of
+    // `main.rs`, by its key, its title and its texts.
+    assert_eq!(h.surface_id().as_deref(), Some("unknown-outcome"));
+    assert_eq!(h.surface().title, "Acknowledge unknown outcome");
+    assert!(h.has_text("Acknowledge unknown outcome?"));
+    assert!(
+        h.node("unknown-target")
+            .text
+            .is_some_and(|text| text.starts_with("VM: "))
+    );
+    assert_eq!(
+        h.node("unknown-consequence").text.as_deref(),
+        Some(control::ACK_VM)
+    );
+    assert_eq!(h.node("unknown-acknowledge").tone, Some(Tone::Warning));
+    assert!(h.find("unknown-preview").is_some());
+    assert_eq!(h.try_click("unknown-acknowledge"), Err(DEMO.into()));
     control::confirm_acknowledge(&mut h.model);
-    assert!(h.find("acknowledge-error").is_some());
+    assert!(h.find("unknown-error").is_some());
     assert!(h.model.areas.events.acknowledge.is_some());
     // The record resolves under the open review: it cannot be confirmed.
     h.model.demo = false;
     h.model.operation_rows[0].state = OperationState::Succeeded;
     assert_eq!(
-        h.try_click("acknowledge-confirm"),
+        h.try_click("unknown-acknowledge"),
         Err(control::ACK_STALE.into())
+    );
+    assert_eq!(
+        h.node("unknown-stale").text.as_deref(),
+        Some(control::ACK_STALE)
     );
     h.dismiss();
     assert!(h.model.areas.events.acknowledge.is_none());
@@ -933,6 +990,16 @@ fn a_resource_record_shows_its_evidence_and_local_error_in_the_outcome() {
         h.node("activity-outcome").value.as_deref(),
         Some(OutcomeState::Partial.name())
     );
+    // The detail lines are one preformatted text, one line each, so that
+    // an identifier or a host's error can be selected and copied whole.
+    let details = h.node("activity-details");
+    assert_eq!(details.role, "preformatted");
+    let text = details.text.expect("the detail lines");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() >= 3, "{lines:?}");
+    assert!(lines.contains(&"Scan: Failed — Host task failed: SR_FULL"));
+    assert!(lines.contains(&"Journal write failed"));
+    assert!(lines.iter().all(|line| !line.is_empty()));
 }
 
 // -- 3. Texts that name Rune places (AREAS.md decision 10) ----------------------

@@ -34,5 +34,5 @@ pub use picture::picture;
 pub use properties_frame::{PAGE_LIST_WIDTH, properties_frame};
 pub use property_list::property_list;
 pub use review_panel::review_panel;
-pub use text::{heading, missing_custom, notice, panel, text};
+pub use text::{PREFORMATTED_RUN, heading, missing_custom, notice, panel, preformatted, text};
 pub use wizard_frame::wizard_frame;

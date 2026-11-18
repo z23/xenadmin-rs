@@ -236,6 +236,9 @@ pub mod place {
     pub const VM_FORCE_SHUT_DOWN: MenuPath = at(Menu::Vm, 2, 80).submenu(VM_POWER_SUBMENU);
     pub const VM_FORCE_REBOOT: MenuPath = at(Menu::Vm, 2, 90).submenu(VM_POWER_SUBMENU);
     pub const VM_RECOVERY_START: MenuPath = at(Menu::Vm, 2, 100).submenu(VM_POWER_SUBMENU);
+    /// Present only for a VM whose finished recovery boot left a boot order
+    /// to restore; directly under Start in Recovery Mode.
+    pub const VM_RECOVERY_RESTORE_BOOT: MenuPath = at(Menu::Vm, 2, 105).submenu(VM_POWER_SUBMENU);
     pub const VM_START_ON_SERVER: MenuPath = at(Menu::Vm, 2, 120);
     pub const VM_RESUME_ON_SERVER: MenuPath = at(Menu::Vm, 2, 130);
     pub const VM_MIGRATE: MenuPath = at(Menu::Vm, 3, 10);
@@ -337,6 +340,9 @@ pub struct LocalRow {
 }
 
 impl LocalRow {
+    /// How many tabs a command can be on beyond its first.
+    pub const MORE: usize = 3;
+
     pub const fn new(tab: TabId, order: u8) -> Self {
         Self { tab, order }
     }
@@ -355,8 +361,13 @@ pub struct CommandSpec {
     pub toolbar: Option<ToolbarSlot>,
     /// The object kinds whose context menu shows the command.
     pub context: &'static [ObjectKind],
-    /// The tab whose local action row shows the command.
+    /// The tab whose local action row shows the command: the first
+    /// [`CommandSpec::local`] call. Read [`CommandSpec::local_rows`], which
+    /// has every tab.
     pub local: Option<LocalRow>,
+    /// The further tabs whose local action row shows the command: the
+    /// second and later [`CommandSpec::local`] calls.
+    pub local_more: [Option<LocalRow>; LocalRow::MORE],
     pub shortcut: Option<&'static str>,
     /// The command accepts several objects. A command that does not is
     /// left out of the context menu of a multi-selection.
@@ -390,6 +401,7 @@ impl CommandSpec {
             toolbar: None,
             context: &[],
             local: None,
+            local_more: [None; LocalRow::MORE],
             shortcut: None,
             multi: false,
             eligibility: always_enabled,
@@ -415,9 +427,33 @@ impl CommandSpec {
         self
     }
 
+    /// Puts the command on the local action row of a tab. Call it once per
+    /// tab for a command that belongs to several (the export of Alerts and
+    /// Events): at most `1 + LocalRow::MORE` tabs; a call beyond that
+    /// fails the build of a `const` spec and panics otherwise.
     pub const fn local(mut self, tab: TabId, order: u8) -> Self {
-        self.local = Some(LocalRow::new(tab, order));
-        self
+        let row = Some(LocalRow::new(tab, order));
+        if self.local.is_none() {
+            self.local = row;
+            return self;
+        }
+        let mut index = 0;
+        while index < LocalRow::MORE {
+            if self.local_more[index].is_none() {
+                self.local_more[index] = row;
+                return self;
+            }
+            index += 1;
+        }
+        panic!("a command is on the local action row of too many tabs");
+    }
+
+    /// Every tab whose local action row shows the command, in the order of
+    /// the [`CommandSpec::local`] calls.
+    pub fn local_rows(&self) -> impl Iterator<Item = LocalRow> + '_ {
+        self.local
+            .into_iter()
+            .chain(self.local_more.iter().copied().flatten())
     }
 
     pub const fn shortcut(mut self, keys: &'static str) -> Self {
@@ -843,9 +879,11 @@ fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec
 fn local_row_of(specs: &[CommandSpec], m: &Model, tab: TabId, target: &Target) -> Vec<MenuItem> {
     let mut placed: Vec<(u8, &CommandSpec)> = specs
         .iter()
-        .filter_map(|spec| spec.local.map(|row| (row, spec)))
-        .filter(|(row, _)| row.tab == tab)
-        .map(|(row, spec)| (row.order, spec))
+        .filter_map(|spec| {
+            spec.local_rows()
+                .find(|row| row.tab == tab)
+                .map(|row| (row.order, spec))
+        })
         .collect();
     placed.sort_by_key(|(order, _)| *order);
     placed
@@ -1120,6 +1158,60 @@ mod tests {
         let networking = local_row_of(&specs(), &m, TabId::Networking, &Target::none());
         assert_eq!(labels(&networking), ["Add Interface"]);
         assert!(local_row_of(&specs(), &m, TabId::General, &Target::none()).is_empty());
+    }
+
+    #[test]
+    fn a_command_can_be_on_the_local_row_of_several_tabs() {
+        const EXPORT: CommandSpec = CommandSpec::new("t.export", "Export", "t")
+            .local(TabId::Events, 90)
+            .local(TabId::Alerts, 80);
+        // The first tab is still the field older code reads.
+        assert_eq!(EXPORT.local, Some(LocalRow::new(TabId::Events, 90)));
+        assert_eq!(
+            EXPORT.local_rows().collect::<Vec<_>>(),
+            [
+                LocalRow::new(TabId::Events, 90),
+                LocalRow::new(TabId::Alerts, 80)
+            ]
+        );
+        let other = CommandSpec::new("t.dismiss", "Dismiss", "t").local(TabId::Alerts, 10);
+        assert_eq!(other.local_rows().count(), 1);
+        assert_eq!(
+            CommandSpec::new("t.none", "None", "t").local_rows().count(),
+            0
+        );
+        let m = Model::fixture();
+        let specs = [EXPORT, other];
+        // Each row has it once, at the order given for that tab.
+        let row = |tab| {
+            local_row_of(&specs, &m, tab, &Target::none())
+                .into_iter()
+                .map(|item| item.id.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(row(TabId::Events), ["t.export"]);
+        assert_eq!(row(TabId::Alerts), ["t.dismiss", "t.export"]);
+        assert!(row(TabId::General).is_empty());
+        // The listing names every tab.
+        assert_eq!(
+            crate::command_list::fields(&EXPORT)[5],
+            "Events.90, Alerts.80"
+        );
+        // The registry's own: one export command on both notification tabs.
+        let export = find(CommandId("events.export")).expect("events.export");
+        assert_eq!(
+            export.local_rows().map(|row| row.tab).collect::<Vec<_>>(),
+            [TabId::Events, TabId::Alerts]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "too many tabs")]
+    fn a_command_on_more_local_rows_than_there_is_room_for_is_refused() {
+        let mut spec = CommandSpec::new("t.everywhere", "Everywhere", "t");
+        for tab in TabId::ALL.into_iter().take(LocalRow::MORE + 2) {
+            spec = spec.local(tab, 10);
+        }
     }
 
     #[test]

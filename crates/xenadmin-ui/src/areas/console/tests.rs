@@ -317,6 +317,25 @@ fn chooser_captures_one_frame_and_cancel_or_console_switch_does_not_write() {
     );
     h.answer_file(None);
     assert!(!tab(&h).export.pending);
+    assert_eq!(tab(&h).message, None, "a cancel says nothing");
+
+    // A prompt that could not be shown: the Rune message, with what the
+    // desktop said.
+    pick(&mut h);
+    h.fail_file("no portal");
+    assert!(!tab(&h).export.pending);
+    assert_eq!(
+        h.node(view::MESSAGE).text.as_deref(),
+        Some("Cannot open the save dialog: no portal")
+    );
+    // One that fails after the console was reconnected says nothing: the
+    // prompt belonged to the earlier session.
+    pick(&mut h);
+    tab_mut(&mut h).reconnecting();
+    tab_mut(&mut h).message = None;
+    h.fail_file("too late");
+    assert_eq!(tab(&h).message, None);
+    set_snapshot(&mut h.model, Seat::Tab, pixel(red, ConsoleState::Connected));
 
     pick(&mut h);
     let path = directory.0.join("frame.png");
@@ -690,9 +709,50 @@ fn compact_console_details_returns_to_same_pinned_guest() {
     h.open_tab(TabId::Console);
     assert_eq!(tab(&h).target, target);
     assert!(h.find(view::CANVAS).is_some());
+    // Leaving the tab lets go of what the console holds in its guest; the
+    // console itself stays, so coming back does not reconnect.
+    let serial = tab(&h).serial;
+    let epoch = tab(&h).input_epoch();
     h.open_tab(TabId::General);
+    assert_ne!(tab(&h).input_epoch(), epoch, "input is released");
+    assert_eq!(tab(&h).serial, serial);
     h.open_tab(TabId::Console);
     assert_eq!(tab(&h).target, target);
+    assert_eq!(tab(&h).serial, serial, "the same session");
+}
+
+/// Choosing the Console tab opens the console of the scope object when it
+/// is eligible, which is when its command is enabled. No fixture has a
+/// writable current connection, so what is reached here is the other side:
+/// an object that is not eligible opens nothing and puts nothing on the
+/// error line, and its command stays on the row with the reason.
+#[test]
+fn choosing_the_console_tab_of_an_object_that_is_not_eligible_opens_nothing() {
+    let mut h = Harness::scene("demo");
+    let guest = guests(&h.model)[0].clone();
+    h.select(Target::one(guest.object()));
+    h.model.error = None;
+    h.open_tab(TabId::Console);
+    assert!(super::tab_target(&h.model).is_none());
+    assert_eq!(h.model.error, None);
+    assert_eq!(
+        h.eligibility(commands::OPEN.0),
+        Eligibility::disabled(commands::DEMO)
+    );
+    assert!(h.find(view::CLOSED).is_some());
+    // Another guest while the tab stays Console: the same.
+    let other = guests(&h.model)[1].clone();
+    h.select(Target::one(other.object()));
+    assert_eq!(h.model.active_tab(), TabId::Console);
+    assert!(super::tab_target(&h.model).is_none());
+    assert_eq!(h.model.error, None);
+    // A console that is open for the scope object is not opened again.
+    scenes::show(&mut h.model, other.clone());
+    let serial = tab(&h).serial;
+    h.open_tab(TabId::General);
+    h.open_tab(TabId::Console);
+    assert_eq!(tab(&h).serial, serial);
+    assert_eq!(h.eligibility(commands::OPEN.0), Eligibility::Hidden);
 }
 
 // ---------------------------------------------------------------------------
@@ -803,8 +863,15 @@ fn the_controls_change_the_session_and_ask_the_front_end() {
     h.click(commands::ACTUAL_SIZE.0);
     assert!(!tab(&h).actual_size);
 
+    // Fullscreen is the front end's: the tab's console asks for the main
+    // window, once, and input is released first.
+    let epoch = tab(&h).input_epoch();
     h.click(commands::FULLSCREEN.0);
-    assert_eq!(super::take_fullscreen_requests(&mut h.model), [Seat::Tab]);
+    assert_ne!(tab(&h).input_epoch(), epoch);
+    assert_eq!(
+        format!("{:?}", h.take_intents()),
+        "[ToggleFullscreen(Main)]"
+    );
     assert!(super::take_fullscreen_requests(&mut h.model).is_empty());
 
     let epoch = tab(&h).input_epoch();
@@ -1164,10 +1231,11 @@ fn the_window_scenes_describe_windows_with_their_own_controls() {
         label(&window_nodes(&h, id), "console-actual-size"),
         Some("Fit to panel".into())
     );
+    h.take_intents();
     commands::run(&mut h.model, Seat::Window(id), Control::Fullscreen);
     assert_eq!(
-        super::take_fullscreen_requests(&mut h.model),
-        [Seat::Window(id)]
+        format!("{:?}", h.take_intents()),
+        format!("[ToggleFullscreen(Console({id:?}))]")
     );
 
     let mut h = Harness::scene("multiple-consoles");

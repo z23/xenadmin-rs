@@ -18,8 +18,12 @@ use std::rc::Rc;
 use crate::model::Model;
 
 /// The reply to a file prompt: the chosen path, or `None` when the user
-/// cancelled or no portal answered.
+/// cancelled. A prompt that could not be shown at all answers through
+/// [`FileRequest::on_failure`] when the request has one, and like a
+/// cancelled prompt otherwise.
 pub type FileReply = Rc<dyn Fn(&mut Model, Option<PathBuf>)>;
+/// The reply to a file prompt that failed: what the desktop said.
+pub type FileFailure = Rc<dyn Fn(&mut Model, &str)>;
 /// The reply to a clipboard read: the text, or `None` when the clipboard
 /// holds no text.
 pub type ClipboardReply = Rc<dyn Fn(&mut Model, Option<String>)>;
@@ -36,8 +40,32 @@ pub enum Intent {
     ReadClipboard(ClipboardReply),
     /// Open, close or raise a detached console window.
     ConsoleWindow(ConsoleWindowRequest),
+    /// Toggle the fullscreen state of a window: into fullscreen when it is
+    /// not, out of it when it is.
+    ToggleFullscreen(WindowRef),
     /// Run the close sequence and exit.
     Quit,
+}
+
+/// A window of the application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowRef {
+    /// The main window.
+    Main,
+    /// A detached console window.
+    Console(ConsoleWindowId),
+}
+
+/// How a file prompt ended. The front end hands it to
+/// [`FileRequest::answer`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileAnswer {
+    Chosen(PathBuf),
+    /// The user closed the prompt without choosing.
+    Cancelled,
+    /// No prompt could be shown and nothing was chosen in its place: what
+    /// the desktop said.
+    Failed(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +93,9 @@ pub struct FileRequest {
     pub suggested_name: Option<String>,
     pub filters: Vec<FileFilter>,
     pub reply: FileReply,
+    /// What a prompt that could not be shown answers with
+    /// ([`FileRequest::on_failure`]). `None`: it answers like a cancel.
+    pub failed: Option<FileFailure>,
 }
 
 impl FileRequest {
@@ -79,6 +110,7 @@ impl FileRequest {
             suggested_name: None,
             filters: Vec::new(),
             reply: Rc::new(reply),
+            failed: None,
         }
     }
 
@@ -105,6 +137,24 @@ impl FileRequest {
         reply: impl Fn(&mut Model, Option<PathBuf>) + 'static,
     ) -> Self {
         Self::new(title, FileMode::Directory, reply)
+    }
+
+    /// What to do when the prompt could not be shown: the handler gets the
+    /// desktop's error text ("Cannot open save dialog: {error}"). Without
+    /// it a failed prompt answers the reply with `None`, like a cancel.
+    pub fn on_failure(mut self, failed: impl Fn(&mut Model, &str) + 'static) -> Self {
+        self.failed = Some(Rc::new(failed));
+        self
+    }
+
+    /// Hands the request its answer: the front end's one call, whatever
+    /// happened. A failure without a failure handler is a cancel.
+    pub fn answer(&self, m: &mut Model, answer: FileAnswer) {
+        match (answer, &self.failed) {
+            (FileAnswer::Chosen(path), _) => (self.reply)(m, Some(path)),
+            (FileAnswer::Failed(error), Some(failed)) => failed(m, &error),
+            (FileAnswer::Cancelled | FileAnswer::Failed(_), _) => (self.reply)(m, None),
+        }
     }
 
     /// Adds a filter: a name and extensions without the dot.
@@ -147,6 +197,9 @@ impl fmt::Debug for Intent {
             Self::CopyText(text) => f.debug_tuple("CopyText").field(text).finish(),
             Self::ReadClipboard(_) => f.write_str("ReadClipboard"),
             Self::ConsoleWindow(request) => f.debug_tuple("ConsoleWindow").field(request).finish(),
+            Self::ToggleFullscreen(window) => {
+                f.debug_tuple("ToggleFullscreen").field(window).finish()
+            }
             Self::Quit => f.write_str("Quit"),
         }
     }
@@ -159,6 +212,7 @@ impl fmt::Debug for FileRequest {
             .field("mode", &self.mode)
             .field("suggested_name", &self.suggested_name)
             .field("filters", &self.filters)
+            .field("on_failure", &self.failed.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -220,5 +274,36 @@ mod tests {
             "ConsoleWindow(Activate(ConsoleWindowId(2)))"
         );
         assert!(matches!(intents[5], Intent::Quit));
+    }
+
+    #[test]
+    fn a_failed_prompt_reaches_its_failure_handler_and_is_a_cancel_without_one() {
+        let mut m = Model::fixture();
+        let plain = FileRequest::open("Import", |m, path| {
+            m.error = Some(format!("plain: {path:?}"));
+        });
+        plain.answer(&mut m, FileAnswer::Failed("no portal".into()));
+        assert_eq!(m.error.as_deref(), Some("plain: None"));
+        let request = FileRequest::save("Export", "x.json", |m, path| {
+            m.error = Some(format!("reply: {path:?}"));
+        })
+        .on_failure(|m, error| m.error = Some(format!("Cannot open save dialog: {error}")));
+        assert!(format!("{request:?}").contains("on_failure: true"));
+        request.answer(&mut m, FileAnswer::Failed("no portal".into()));
+        assert_eq!(
+            m.error.as_deref(),
+            Some("Cannot open save dialog: no portal")
+        );
+        request.answer(&mut m, FileAnswer::Cancelled);
+        assert_eq!(m.error.as_deref(), Some("reply: None"));
+        request.answer(&mut m, FileAnswer::Chosen(PathBuf::from("/tmp/x.json")));
+        assert_eq!(m.error.as_deref(), Some("reply: Some(\"/tmp/x.json\")"));
+        // A fullscreen request names its window.
+        m.toggle_fullscreen(WindowRef::Console(ConsoleWindowId(3)));
+        m.toggle_fullscreen(WindowRef::Main);
+        assert_eq!(
+            format!("{:?}", m.take_intents()),
+            "[ToggleFullscreen(Console(ConsoleWindowId(3))), ToggleFullscreen(Main)]"
+        );
     }
 }

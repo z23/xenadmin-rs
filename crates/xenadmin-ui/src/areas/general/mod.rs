@@ -16,7 +16,10 @@
 //! explicit "Unknown" wherever a value is not known.
 //!
 //! The area has no state, no commands and no surfaces: everything it shows
-//! is a tab body.
+//! is a tab body. Two sections of a VM's General tab come from other areas:
+//! "Power" (`power::availability_section`) and the controls under each
+//! record of "Operations" (`power::operation_controls`,
+//! `power::cancellation_review_button`, `events::outcome_actions`).
 
 use crate::prelude::*;
 
@@ -109,7 +112,13 @@ fn body(m: &Model, view: &View, tab: TabId, object: &ObjectRef) -> Option<Vec<Bl
     let host = object.host_id();
     Some(match (tab, object.kind) {
         (TabId::General, K::Vm) => {
+            // After the fields, as in the Rune details pane: why each power
+            // action is or is not available (the power area's section; the
+            // actions themselves are commands), then the VM's operations.
             let mut blocks = information::vm_general(view, vm?);
+            blocks.extend(
+                crate::areas::power::availability_section(m, object).map(Block::from),
+            );
             blocks.push(operations::vm_operations(m, object.pool?, vm?).into());
             blocks
         }

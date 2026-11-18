@@ -15,13 +15,19 @@
 //! New keys, for elements Rune left without one: `activity-list`,
 //! `activity-notice`, `activity-lists-note`, `activity-inventory`,
 //! `activity-count`, `activity-row-source`, `activity-outcome`,
-//! `activity-row-name`, `activity-unresolved`, `activity-export-note`;
+//! `activity-details` (the selected row's detail lines, one preformatted
+//! text), `activity-row-name`, `activity-unresolved`,
+//! `activity-export-note`;
 //! in the two reviews `activity-change-review` (and so
 //! `activity-change-review-stale`), `activity-review-preview`,
 //! `activity-review-error`, `activity-review-close`; in the acknowledgement
-//! `acknowledge-review`, `acknowledge-preview`, `acknowledge-error`,
-//! `acknowledge-cancel`, `acknowledge-confirm`; in the explanation
-//! `failure-help-source`, `failure-help-captured`.
+//! of a resource operation `acknowledge-review`, `acknowledge-preview`,
+//! `acknowledge-error`, `acknowledge-cancel`, `acknowledge-confirm`; in
+//! that of a VM operation (the Rune dialog `unknown-outcome`)
+//! `unknown-target`, `unknown-consequence`, `unknown-stale`,
+//! `unknown-preview`, `unknown-error`, `unknown-cancel`,
+//! `unknown-acknowledge`; in the explanation `failure-help-source`,
+//! `failure-help-captured`.
 
 use xenadmin_core::{OperationState, ResourceTarget};
 
@@ -236,9 +242,17 @@ fn operation_state(state: &OperationState, progress: Option<f64>) -> OutcomeStat
     }
 }
 
+/// The detail lines of the selected row as one text that keeps its line
+/// breaks and can be selected and copied whole: identifiers, a host's
+/// error text, the evidence lines of a record. `None` without a line.
+fn detail_text(lines: impl Iterator<Item = String>) -> Option<Text> {
+    let lines: Vec<String> = lines.collect();
+    (!lines.is_empty()).then(|| preformatted(lines.join("\n")).key("activity-details"))
+}
+
 /// The selected row: its source, then what it is. An operation record and
 /// a task are an outcome with its progress, partial or unknown state; a
-/// message is its text.
+/// message is its text. The detail lines follow as one preformatted text.
 fn details(m: &Model, row: &Row) -> Vec<Block> {
     let lines = row
         .details
@@ -256,9 +270,8 @@ fn details(m: &Model, row: &Row) -> Vec<Block> {
             }
             .unwrap_or((OutcomeState::Unknown, Vec::new()));
             blocks![
-                outcome("activity-outcome", state, title)
-                    .lines(lines)
-                    .lines(more),
+                outcome("activity-outcome", state, title),
+                detail_text(lines.chain(more)),
                 (!row.terminal).then(|| caption(activity::UNRESOLVED).key("activity-unresolved")),
             ]
         }
@@ -273,12 +286,12 @@ fn details(m: &Model, row: &Row) -> Vec<Block> {
                 "cancelled" => OutcomeState::Cancelled,
                 _ => OutcomeState::Running(progress.map(|p| p.clamp(0.0, 1.0) as f32)),
             };
-            blocks![outcome("activity-outcome", state, title).lines(lines)]
+            blocks![
+                outcome("activity-outcome", state, title),
+                detail_text(lines),
+            ]
         }
-        RowTarget::Resource(_) => blocks![
-            heading(row.name.clone()),
-            lines.map(caption).collect::<Vec<_>>(),
-        ],
+        RowTarget::Resource(_) => blocks![heading(row.name.clone()), detail_text(lines)],
     };
     blocks![
         divider(),
@@ -391,10 +404,15 @@ fn close_acknowledge(m: &mut Model) {
 }
 
 /// "Acknowledge unknown outcome?": what is released and what is not
-/// established, for a VM operation and for a resource operation alike.
+/// established. One review, two dialogs by family, because what they say
+/// differs in substance: a VM operation releases this client's block on one
+/// VM, a resource operation the write guard of a pool (or of two).
 fn acknowledge_surface(m: &Model, ack: &Acknowledge) -> Surface {
     let synthetic = control::acknowledge_synthetic(m, ack);
     let stale = control::acknowledge_stale(m, ack);
+    if ack.key.family == Family::Vm {
+        return unknown_outcome(ack, synthetic, stale);
+    }
     Surface::dialog("acknowledge-unknown", "Acknowledge unknown outcome?")
         .small()
         .body(blocks![
@@ -412,6 +430,54 @@ fn acknowledge_surface(m: &Model, ack: &Acknowledge) -> Surface {
                 control::confirm_acknowledge,
             )
             .danger()
+            .disabled_opt(stale)
+            .disabled_if(synthetic, DEMO),
+        ])
+        .on_close(close_acknowledge)
+}
+
+/// The acknowledgement of a VM operation: the Rune `unknown_review` dialog
+/// of `main.rs`, with its key (`unknown-outcome`), its title, its heading,
+/// its two captions and its Warning button. It is reached from the Events
+/// tab (`events.acknowledge`), from a record of a VM's General tab and from
+/// the power area's "Review unknown outcome" alike.
+///
+/// Beyond Rune: the reason it cannot be confirmed any more
+/// (`unknown-stale`), the synthetic-data notice (`unknown-preview`) and a
+/// refusal of the host (`unknown-error`), which keeps the dialog open.
+fn unknown_outcome(ack: &Acknowledge, synthetic: bool, stale: Option<&'static str>) -> Surface {
+    let mut lines = ack.lines.iter();
+    let target = lines.next().cloned().unwrap_or_default();
+    let consequence: Vec<Text> = lines
+        .enumerate()
+        .map(|(index, line)| {
+            caption(line.clone()).key(if index == 0 {
+                "unknown-consequence".to_owned()
+            } else {
+                format!("unknown-consequence-{index}")
+            })
+        })
+        .collect();
+    Surface::dialog("unknown-outcome", "Acknowledge unknown outcome")
+        .small()
+        .body(blocks![
+            heading("Acknowledge unknown outcome?"),
+            caption(target).key("unknown-target"),
+            consequence,
+            stale.map(|reason| alert(reason).key("unknown-stale")),
+            synthetic.then(|| notice(NoticeKind::Preview, ACK_PREVIEW).key("unknown-preview")),
+            ack.error
+                .clone()
+                .map(|error| alert(error).key("unknown-error")),
+        ])
+        .footer([
+            button("unknown-cancel", "Cancel", close_acknowledge),
+            button(
+                "unknown-acknowledge",
+                "Acknowledge outcome",
+                control::confirm_acknowledge,
+            )
+            .warning()
             .disabled_opt(stale)
             .disabled_if(synthetic, DEMO),
         ])

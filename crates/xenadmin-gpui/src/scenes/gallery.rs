@@ -21,8 +21,8 @@ use xenadmin_ui::object::{ObjectKind, ObjectRef, Target};
 use xenadmin_ui::surface::{
     Block, ImageData, NoticeKind, OutcomeState, Row, Surface, Tone, actions, alert, button,
     caption, checkbox, choice, column, columns, custom, divider, group, heading, image, input,
-    notice, option, outcome, properties, property, review, row, secret_input, select, table, text,
-    textarea,
+    notice, option, outcome, preformatted, properties, property, review, row, secret_input, select,
+    table, text, textarea,
 };
 use xenadmin_ui::tabs::TabBody;
 use xenadmin_ui::{Model, SecretText, blocks, memory_label};
@@ -37,6 +37,9 @@ pub const CONFIRM: &str = "lab-confirm";
 pub const PICKER: &str = "lab-picker";
 /// The key of the lab's table.
 pub const TABLE: &str = "lab-vms";
+/// The text of the lab's preformatted block: three lines, the last one
+/// longer than a narrow window.
+pub const PREFORMATTED: &str = "Start \u{b7} Failed\nvm   6f1c0a52-8d3e-4b71-9c5a-2e7d0f4b9a13\nhost SR_BACKEND_FAILURE_46: The VDI is not available [opterr=VDI 3a5e already attached RW]";
 
 /// The steps of the lab's wizard.
 pub const STEPS: [&str; 4] = ["Template", "Name", "Resources", "Review"];
@@ -122,6 +125,8 @@ impl Lab {
                 CommandId("view.zoom-in"),
                 CommandId("view.zoom-out"),
                 CommandId("view.zoom-reset"),
+                // A toggle: the row shows its checked state.
+                CommandId("view.toolbar"),
             ],
             log: Vec::new(),
         }))
@@ -704,6 +709,7 @@ fn every_block(lab: &LabRef) -> Vec<Block> {
         text("A success text.").tone(Tone::Success),
         text("A warning text.").tone(Tone::Warning),
         alert("An alert: the host did not answer.").key("lab-alert"),
+        preformatted(PREFORMATTED).key("lab-preformatted"),
         notice(NoticeKind::Info, "An information notice.").key("lab-info"),
         notice(
             NoticeKind::Warning,
@@ -803,6 +809,12 @@ fn every_block(lab: &LabRef) -> Vec<Block> {
                 logged(lab, "press:lab-danger-button")
             )
             .danger(),
+            button(
+                "lab-warning-button",
+                "Warning",
+                logged(lab, "press:lab-warning-button")
+            )
+            .warning(),
             button("lab-ghost", "Ghost", logged(lab, "press:lab-ghost")).ghost(),
             button("lab-disabled", "Disabled", move |_| log(
                 &l3,

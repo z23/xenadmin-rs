@@ -45,13 +45,15 @@
 //! | Id | Kind | Title | Notice | Rune |
 //! | --- | --- | --- | --- | --- |
 //! | `power-confirm` | dialog, small | Confirm force operation / Confirm power operation | | `force_action` |
-//! | `unknown-outcome` | dialog, small | Acknowledge unknown outcome | | `unknown_review` |
 //! | `vm-placement` | dialog | Choose a destination host | experimental | `vm_placement::dialog` |
 //! | `vm-recovery` | dialog | VM recovery controls | experimental | `vm_recovery_view::dialog` |
 //! | `power-batch` | dialog, large | VM power batch | | `bulk_power::dialog` |
 //!
 //! Back to front they are in that order with placement behind recovery: the
 //! precedence of the Rune dialog chain, the batch being a layer above it.
+//! The Rune `unknown_review` dialog (`unknown-outcome`, "Acknowledge unknown
+//! outcome") is the `events` area's: one dialog for it, which
+//! [`review_unknown`] opens.
 //!
 //! ## Scenes
 //!
@@ -118,7 +120,7 @@
 //!   changed" state, which a grid selection change still shows.
 //!
 //! The files, in the order to read them: [`single`] (one VM: reasons,
-//! request, confirmation, unknown outcome, operation controls), [`batch`],
+//! request, confirmation, operation controls), [`batch`],
 //! [`placement`], [`recovery`] (each carried over from its Rune module),
 //! [`commands`], [`view`], [`scenes`], `tests`.
 
@@ -165,9 +167,6 @@ pub const GONE: &str = "This VM is no longer in the inventory. Select it again a
 pub struct State {
     /// The pending confirmation of one power action (Rune `force_action`).
     pub confirm: Option<single::Confirm>,
-    /// The pending acknowledgement of an unknown outcome (Rune
-    /// `unknown_review`).
-    pub unknown: Option<single::Unknown>,
     /// Start or Resume on a chosen server (Rune `placement`).
     pub placement: Option<placement::Placement>,
     /// A recovery review (Rune `vm_recovery`).

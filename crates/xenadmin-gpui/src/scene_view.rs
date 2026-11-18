@@ -175,8 +175,12 @@ fn local_button(store: &Entity<AppStore>, item: &MenuItem) -> Button {
         .label(SharedString::from(item.label.clone()))
         .outline()
         .small();
+    // A toggle says its state three ways: the pressed state for assistive
+    // technology, the selected fill, and a check mark, because the fill of
+    // an outline button alone is easy to miss.
     let base = match item.checked {
-        Some(checked) => base.selected(checked).toggled(checked),
+        Some(true) => base.selected(true).toggled(true).icon(IconName::Check),
+        Some(false) => base.toggled(false),
         None => base,
     };
     match &item.disabled {

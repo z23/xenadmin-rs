@@ -2,15 +2,17 @@
 //!
 //! One line: the connection state and freshness of the scope session, the
 //! count of operations in progress, the count of unknown outcomes, and what
-//! is selected. The two counts open the Notifications view at its Events.
+//! is selected. The two counts open the History list of the Events tab:
+//! the count of operations every record (`Model::show_operations`), the
+//! count of unknown outcomes the records whose outcome is unknown
+//! (`Model::show_unknown_outcomes`).
 //!
 //! Above the line, each on a line of its own because it can be a sentence
 //! or two: the demo banner, the notice about hosts outside the qualified
 //! release, why the selection moved by itself, and the shared error line.
 
-use xenadmin_ui::nav::NavView;
+use xenadmin_ui::Model;
 use xenadmin_ui::surface::Tone;
-use xenadmin_ui::tabs::TabId;
 
 use crate::kit::*;
 use crate::render::{Ui, pressable, tone_color};
@@ -83,8 +85,16 @@ fn notice(
         .into_any_element()
 }
 
-/// A count that opens the Notifications view at its Events.
-fn events_link(ui: &Ui, key: &'static str, text: String, tone: Tone, cx: &mut App) -> AnyElement {
+/// A count that opens the operation history: `show` is what a press does.
+fn events_link(
+    ui: &Ui,
+    key: &'static str,
+    text: String,
+    tone: Tone,
+    description: &'static str,
+    show: fn(&mut Model),
+    cx: &mut App,
+) -> AnyElement {
     let handle = ui.focus_handle(SCOPE, key, cx);
     let theme = cx.theme();
     let hover = theme.accent;
@@ -94,14 +104,11 @@ fn events_link(ui: &Ui, key: &'static str, text: String, tone: Tone, cx: &mut Ap
     let store = ui.store.clone();
     let text = SharedString::from(text);
     pressable(key, &handle, move |_, cx| {
-        dispatch(&store, cx, |m| {
-            m.set_nav_view(NavView::Notifications);
-            m.set_active_tab(TabId::Events);
-        });
+        dispatch(&store, cx, show);
     })
     .role(Role::Link)
     .aria_label(text.clone())
-    .aria_description("Opens the events of the Notifications view")
+    .aria_description(description)
     .flex_none()
     .px_1p5()
     .rounded(radius)
@@ -167,6 +174,8 @@ pub fn status_bar(ui: &Ui, cx: &mut App) -> AnyElement {
         } else {
             Tone::Muted
         },
+        "Opens the operation history of every pool",
+        Model::show_operations,
         cx,
     );
     let unknown = events_link(
@@ -182,6 +191,8 @@ pub fn status_bar(ui: &Ui, cx: &mut App) -> AnyElement {
         } else {
             Tone::Muted
         },
+        "Opens the operations whose outcome is unknown",
+        Model::show_unknown_outcomes,
         cx,
     );
     let connection = SharedString::from(status.connection.clone());

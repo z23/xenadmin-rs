@@ -73,6 +73,9 @@ fn block(
     let anonymous = join(base, &format!("#{index}"));
     match block {
         Block::Heading(value) => widgets::heading(anonymous, value, cx),
+        Block::Text(text) if text.preformatted => {
+            widgets::preformatted(element_id(base, text.key.as_ref(), index), text, cx)
+        }
         Block::Text(text) => widgets::text(element_id(base, text.key.as_ref(), index), text, cx),
         Block::Notice(notice) => {
             widgets::notice(element_id(base, notice.key.as_ref(), index), notice, cx)
@@ -265,6 +268,7 @@ pub fn button(ui: &Ui, button: &s::Button) -> Button {
         s::ButtonStyle::Primary => base.primary(),
         s::ButtonStyle::Secondary => base.outline(),
         s::ButtonStyle::Danger => base.danger(),
+        s::ButtonStyle::Warning => base.warning(),
         s::ButtonStyle::Ghost => base.ghost(),
     };
     match &button.disabled {

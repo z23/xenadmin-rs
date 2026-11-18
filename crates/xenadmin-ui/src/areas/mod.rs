@@ -45,6 +45,15 @@ pub struct AreaSpec {
     /// The tree scope changed. An area closes an editor that belongs to the
     /// previous scope here.
     pub on_scope_change: fn(&mut Model),
+    /// The active tab is another one than before: `from` was shown, `to` is
+    /// shown now ([`Model::active_tab`]). It runs after whatever changed it
+    /// has finished: [`Model::set_active_tab`], a change of the scope whose
+    /// new object shows another tab (after `on_scope_change`), Back and
+    /// Forward, and a change of the navigation view (the Notifications view
+    /// has its own two tabs). It does not run while the tab stays the same
+    /// for another object, nor for a tab that disappears under the selection
+    /// without any of those calls (a server that stopped being live).
+    pub on_tab_change: fn(&mut Model, TabId, TabId),
     /// The scope session changed, was reset or is being disconnected: the
     /// model is about to show another pool, or none. An area drops here
     /// everything that belongs to the view of the previous pool (what the
@@ -99,6 +108,8 @@ fn no_poll(_: &mut Model, _: f64) -> bool {
 
 fn no_scope_change(_: &mut Model) {}
 
+fn no_tab_change(_: &mut Model, _: TabId, _: TabId) {}
+
 fn no_nav_rows(_: &Model, _: crate::nav::NavView) -> Vec<crate::nav::NavRow> {
     Vec::new()
 }
@@ -124,6 +135,7 @@ impl AreaSpec {
             tab: no_tab,
             poll: no_poll,
             on_scope_change: no_scope_change,
+            on_tab_change: no_tab_change,
             on_session_change: no_scope_change,
             nav_rows: no_nav_rows,
             on_nav_change: no_scope_change,
@@ -187,8 +199,9 @@ macro_rules! areas {
 // the chain in reverse rank (back to front), each area at the rank of its
 // backmost dialog, then the independent layers back to front:
 //
-//   chain:  power (unknown outcome 30, force review 29, placement 26,
-//           recovery 23), snapshots (28), vm_properties (27), vm_lifecycle
+//   chain:  power (force review 29, placement 26, recovery 23; the
+//           unknown outcome review 30 is the events area's dialog now, in
+//           front), snapshots (28), vm_properties (27), vm_lifecycle
 //           (25, cloud-init 20), migration (24), cross_pool (22), transfers
 //           (21, local conversion 7), network (generic resource editor 19,
 //           network workspace 10) with its children network_services and
@@ -360,8 +373,8 @@ mod tests {
         }
         // "Explain outcome" opens from the surfaces of every other area.
         assert_eq!(AREA_IDS.last(), Some(&"events"));
-        // The power confirmation and the unknown-outcome acknowledgement are
-        // behind every other dialog, as in Rune.
+        // The power confirmation is behind every other dialog, as in Rune.
+        // (The unknown-outcome acknowledgement is one dialog of `events`.)
         assert_eq!(AREA_IDS.first(), Some(&"power"));
     }
 

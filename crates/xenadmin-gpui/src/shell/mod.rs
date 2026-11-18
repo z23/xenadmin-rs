@@ -123,6 +123,8 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        // What `Intent::ToggleFullscreen(WindowRef::Main)` toggles.
+        hooks.main_window.set(Some(window.window_handle()));
         let ui = Ui::new(store.clone());
         // Every table keeps the widths the user gave its columns, by the
         // table's key and the column's id.
