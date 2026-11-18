@@ -1272,3 +1272,26 @@ fn the_networking_tab_of_a_network_shows_services_and_coverage() {
         }
     }
 }
+
+/// A row of the network grid is the network as a tree object: its menu is
+/// the kernel's context menu of a network, which has the commands of
+/// `network_services` beside this area's.
+#[test]
+fn a_row_of_the_network_grid_has_the_commands_of_network_services() {
+    use crate::areas::network_services::commands::ALL;
+    let mut h = Harness::scene("pool-administration");
+    let i = inventory(&h);
+    let network = i.networks[0].uuid;
+    h.select(Target::one(ObjectRef::pool(i.pool_id)));
+    h.open_tab(TabId::Networking);
+    let menu = h.open_row_menu("networking-networks-table", &network.to_string());
+    let target = Target::one(ObjectRef::network(i.pool_id, network));
+    let mut offered = 0;
+    for command in ALL {
+        let shown = menu.iter().any(|item| item.id == command);
+        let hidden = h.model.eligibility(command, &target) == Eligibility::Hidden;
+        assert_ne!(shown, hidden, "{command:?}");
+        offered += usize::from(shown);
+    }
+    assert!(offered >= 2, "{menu:?}");
+}

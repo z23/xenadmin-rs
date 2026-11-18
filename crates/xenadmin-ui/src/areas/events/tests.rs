@@ -1002,6 +1002,30 @@ fn a_resource_record_shows_its_evidence_and_local_error_in_the_outcome() {
     assert!(lines.iter().all(|line| !line.is_empty()));
 }
 
+/// The evidence of a transfer (the lines of the transfer dialog) is in the
+/// outcome of its record, also when that dialog is closed.
+#[test]
+fn a_transfer_record_shows_its_stream_and_what_it_retained() {
+    let mut h = events();
+    let pool = pool(&h);
+    let disk = uuid::Uuid::from_u128(22);
+    let mut value = resource_json(pool);
+    value["action"] = json!({"Transfer":{"ImportXva":{"sr":uuid::Uuid::from_u128(4)}}});
+    value["state"] = json!("OutcomeUnknown");
+    value["transfer"] =
+        json!({"bytes":1024,"total":2048,"stream_complete":false,"phase":"Stopped"});
+    value["transfer_created"] = json!({"vms":[],"disks":[disk],"networks":[]});
+    let record: ResourceOperationRecord = serde_json::from_value(value).unwrap();
+    let phase = record.transfer.as_ref().expect("a stream").phase.to_string();
+    let key = resource_key(&record);
+    h.model.resource_rows.push(record);
+    super::show_operation(&mut h.model, key);
+    let text = h.node("activity-details").text.expect("the detail lines");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.contains(&format!("1024 bytes of 2048 · {phase}").as_str()), "{lines:?}");
+    assert!(lines.contains(&format!("Retained disk UUID: {disk}").as_str()), "{lines:?}");
+}
+
 // -- 3. Texts that named Rune places (AREAS.md decision 10) ---------------------
 
 #[test]
