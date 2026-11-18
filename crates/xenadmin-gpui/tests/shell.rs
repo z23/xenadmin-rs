@@ -1006,6 +1006,83 @@ async fn the_shell_shows_whatever_context_menu_the_model_has_open(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+async fn a_grid_row_that_stands_for_an_object_has_its_context_menu_at_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    use xenadmin_ui::selection::MenuOrigin;
+    let scene = open_sized(cx, 1440., 900., |setup| {
+        let mut lab = setup.lab.as_ref().expect("lab").borrow_mut();
+        lab.object_rows = true;
+    });
+    let guest = model(cx, &scene, |m| {
+        let inventory = m.inventory.clone().expect("demo inventory");
+        let mut guests: Vec<_> = inventory.guests().collect();
+        guests.sort_by(|left, right| {
+            xenadmin_ui::natural_cmp(&left.name, &right.name)
+                .then_with(|| left.id.to_string().cmp(&right.id.to_string()))
+        });
+        guests[1].id.to_string()
+    });
+    let row = id(&xenadmin_ui::surface::Table::row_key(TABLE, &guest));
+    let place = on(cx, &scene, |window, cx| {
+        let place = window.find(row.clone()).bounds();
+        window.right_click(row.clone(), cx);
+        place
+    });
+    // The model has the kernel's menu of the row's object open, in the
+    // grid, and the row is the selection.
+    let open = model(cx, &scene, |m| m.selection.menu.clone()).expect("a context menu");
+    assert_eq!(open.origin, MenuOrigin::Grid);
+    assert_eq!(open.object.id, guest);
+    assert_eq!(
+        model(cx, &scene, |m| m.target().single().cloned()),
+        Some(open.object.clone())
+    );
+    // The shell presents it where the pointer pressed: on the row, not at
+    // the place a menu without a pointer gets.
+    on(cx, &scene, |window, _| {
+        let menu = window.find("popup-menu").bounds();
+        assert!(
+            menu.left() >= place.left() && menu.left() <= place.right(),
+            "{menu:?} {place:?}"
+        );
+        assert!(
+            menu.top() >= place.top() - px(2.) && menu.top() <= place.bottom() + px(2.),
+            "{menu:?} {place:?}"
+        );
+        assert_eq!(
+            window.find_by_label("Copy UUID").role(),
+            Some(Role::MenuItem)
+        );
+    });
+    assert!(cx.update(|cx| scene.view.read(cx).menu_open()));
+    // Choosing an item runs the command on the row's object and ends the
+    // menu.
+    on(cx, &scene, |window, cx| {
+        window.within("popup-menu").click(0usize, cx);
+    });
+    cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    settle(cx, &scene);
+    let copied: Vec<String> = cx.update(|cx| {
+        scene
+            .store
+            .read(cx)
+            .recorded_intents()
+            .iter()
+            .filter_map(|intent| match intent {
+                Intent::CopyText(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    });
+    assert_eq!(copied, std::slice::from_ref(&guest));
+    assert!(model(cx, &scene, |m| m.selection.menu.is_none()));
+}
+
+#[gpui_kit::test]
 fn back_and_forward_step_through_the_selections(cx: &mut TestAppContext) {
     let scene = open(cx);
     let pool = model(cx, &scene, |m| m.scope().clone());

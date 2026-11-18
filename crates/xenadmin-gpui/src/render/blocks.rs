@@ -107,6 +107,7 @@ fn block(
                 widgets::missing_custom(element_id(base, custom.key.as_ref(), index), custom, cx)
             }
         },
+        Block::Image(image) => widgets::picture(pass, image, window, cx),
         Block::Divider => div()
             .id(SharedString::from(anonymous))
             .test_support()

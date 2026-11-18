@@ -539,6 +539,195 @@ fn a_multi_selection_is_kept_by_id(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_row_that_stands_for_an_object_asks_the_model_for_its_context_menu(cx: &mut TestAppContext) {
+    use xenadmin_ui::selection::{MenuContext, MenuOrigin};
+    let scene = open(cx, |lab| {
+        lab.body = Body::MultiTable;
+        lab.object_rows = true;
+    });
+    let guests = guests(cx, &scene);
+    let menu = |cx: &mut TestAppContext| -> Option<MenuContext> {
+        cx.update(|cx| scene.store.read(cx).model().selection.menu.clone())
+    };
+    let close = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            scene.store.update(cx, |store, cx| {
+                store.run(|m| m.close_context_menu(), cx);
+            });
+        });
+        cx.run_until_parked();
+        settle(cx, &scene);
+    };
+    let right_click = |cx: &mut TestAppContext, guest: &str| {
+        cx.update_window(scene.window, |_, window, cx| {
+            window.right_click(row(guest), cx);
+        })
+        .expect("window");
+        cx.run_until_parked();
+        settle(cx, &scene);
+    };
+
+    // The secondary button on a row outside the selection: the row is the
+    // selection, and the model has the kernel's menu of its object open.
+    // The table's own commands (`row_menu`) are not shown for such a row.
+    assert!(menu(cx).is_none());
+    right_click(cx, &guests[2]);
+    assert_eq!(lab(&scene, |lab| lab.marked.clone()), [guests[2].clone()]);
+    let open = menu(cx).expect("the model has a context menu open");
+    assert_eq!(open.origin, MenuOrigin::Grid);
+    assert_eq!(open.object.id, guests[2]);
+    assert_eq!(open.target.objects, [open.object.clone()]);
+    cx.update(|cx| assert!(scene.store.read(cx).model().context_menu_valid()));
+    on(cx, &scene, |window, _| {
+        assert!(
+            window.try_find("popup-menu").is_none(),
+            "the Kit's popup of the table's own commands stays closed"
+        );
+    });
+    close(cx);
+
+    // On a row of a larger selection the selection stays, and the menu is
+    // for all of it.
+    let control = Modifiers {
+        control: true,
+        ..Modifiers::default()
+    };
+    on(cx, &scene, |window, cx| window.click(row(&guests[0]), cx));
+    on(cx, &scene, |window, cx| {
+        window.click_with_modifiers(row(&guests[1]), control, cx);
+    });
+    right_click(cx, &guests[0]);
+    assert_eq!(lab(&scene, |lab| lab.marked.len()), 2);
+    let open = menu(cx).expect("a menu for the selection");
+    assert_eq!(open.object.id, guests[0]);
+    assert_eq!(open.target.objects.len(), 2);
+    close(cx);
+
+    // The Menu key opens the menu of the row the keyboard is on, and so
+    // does Shift+F10.
+    on(cx, &scene, |window, cx| window.click(row(&guests[3]), cx));
+    assert!(menu(cx).is_none());
+    on(cx, &scene, |window, cx| window.press("menu", cx));
+    let open = menu(cx).expect("the Menu key opens the menu");
+    assert_eq!(
+        (open.origin, &open.object.id),
+        (MenuOrigin::Grid, &guests[3])
+    );
+    close(cx);
+    on(cx, &scene, |window, cx| window.press("shift-f10", cx));
+    assert_eq!(menu(cx).map(|open| open.object.id), Some(guests[3].clone()));
+    close(cx);
+
+    // Escape in a table of a tab clears the selection, in the model too.
+    assert_eq!(lab(&scene, |lab| lab.marked.clone()), [guests[3].clone()]);
+    on(cx, &scene, |window, cx| window.press("escape", cx));
+    assert_eq!(log(&scene).last().map(String::as_str), Some("clear"));
+    assert!(lab(&scene, |lab| lab.marked.is_empty()));
+    cx.update(|cx| assert!(scene.store.read(cx).model().selection.grid.is_empty()));
+    on(cx, &scene, |window, _| {
+        assert_eq!(window.find(row(&guests[3])).selected(), Some(false));
+    });
+}
+
+#[gpui_kit::test]
+fn a_picture_is_scaled_to_fit_and_a_replaced_one_gives_its_texture_back(cx: &mut TestAppContext) {
+    use std::sync::Arc;
+    let scene = open(cx, |lab| lab.body = Body::Images);
+    let frame = |cx: &mut TestAppContext, key: &str| {
+        cx.update(|cx| {
+            let ui = scene.view.read(cx).ui().clone();
+            let widgets = ui.widgets();
+            let scope = widgets
+                .scopes()
+                .into_iter()
+                .find(|scope| scope.starts_with(xenadmin_gpui::render::TAB_SCOPE))?;
+            widgets.image_frame(&scope, key)
+        })
+    };
+    on(cx, &scene, |window, _| {
+        // 640 by 400 pixels with a maximum of 320 by 200.
+        let picture = window.find("lab-picture");
+        assert_eq!(picture.role(), Some(Role::Image));
+        assert_eq!(picture.label(), Some("Test card"));
+        assert_eq!(picture.bounds().size, size(px(320.), px(200.)));
+        // A PNG without a maximum is drawn at its own size.
+        let png = window.find("lab-png");
+        assert_eq!(png.label(), Some("Encoded test card"));
+        assert_eq!(png.bounds().size, size(px(160.), px(100.)));
+        // Bytes that are no picture: the element is there and says so.
+        let broken = window.find("lab-broken");
+        assert_eq!(broken.role(), Some(Role::Image));
+        assert_eq!(broken.label(), Some("Broken preview"));
+        assert_eq!(broken.description(), Some("The picture cannot be shown."));
+    });
+    assert!(frame(cx, "lab-broken").is_none());
+    let first = frame(cx, "lab-picture").expect("a decoded frame");
+    let png = frame(cx, "lab-png").expect("a decoded PNG");
+    on(cx, &scene, |window, _| {
+        assert!(window.has_image_atlas_entry(&first));
+        assert!(window.has_image_atlas_entry(&png));
+    });
+
+    // The same bytes on the next pass, and equal bytes in another
+    // allocation, keep the frame.
+    model_side(cx, &scene, |_| {});
+    assert!(Arc::ptr_eq(&first, &frame(cx, "lab-picture").unwrap()));
+    model_side(cx, &scene, |lab| lab.picture = gallery::test_card(640, 400));
+    assert!(Arc::ptr_eq(&first, &frame(cx, "lab-picture").unwrap()));
+
+    // Another picture under the same key: the first texture is given back.
+    // It is wider than its maximum allows: its proportions are kept.
+    model_side(cx, &scene, |lab| lab.picture = gallery::test_card(400, 400));
+    let second = frame(cx, "lab-picture").expect("the new frame");
+    assert!(!Arc::ptr_eq(&first, &second));
+    on(cx, &scene, |window, _| {
+        assert!(
+            !window.has_image_atlas_entry(&first),
+            "the old frame is released"
+        );
+        assert!(window.has_image_atlas_entry(&second));
+        assert_eq!(
+            window.find("lab-picture").bounds().size,
+            size(px(200.), px(200.))
+        );
+    });
+
+    // The tab no longer describes pictures: their textures are given back.
+    model_side(cx, &scene, |lab| lab.body = Body::Blocks);
+    assert!(frame(cx, "lab-picture").is_none());
+    on(cx, &scene, |window, _| {
+        assert!(!window.has_image_atlas_entry(&second));
+        assert!(!window.has_image_atlas_entry(&png));
+    });
+}
+
+#[gpui_kit::test]
+fn a_picture_wider_than_its_place_shrinks_with_it(cx: &mut TestAppContext) {
+    let scene = open_sized(cx, 420., 700., |lab| {
+        lab.body = Body::Images;
+        lab.picture = gallery::test_card(1600, 400);
+        lab.png = gallery::encoded(&gallery::test_card(800, 200));
+    });
+    on(cx, &scene, |window, _| {
+        let viewport = window.viewport_size();
+        // No maximum: the width there is, and a quarter of it in height.
+        let png = window.find("lab-png").bounds();
+        assert!(png.right() <= viewport.width, "{png:?}");
+        assert!(
+            png.size.width > px(300.) && png.size.width < px(420.),
+            "{png:?}"
+        );
+        let ratio = f32::from(png.size.width) / f32::from(png.size.height);
+        assert!((ratio - 4.).abs() < 0.05, "{png:?}");
+        // With a maximum of 320 by 200: 320 by 80.
+        assert_eq!(
+            window.find("lab-picture").bounds().size,
+            size(px(320.), px(80.))
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn a_dragged_column_width_is_reported_and_kept(cx: &mut TestAppContext) {
     let scene = open(cx, |lab| lab.body = Body::Table);
     // Where the shell keeps the widths.

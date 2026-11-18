@@ -19,9 +19,10 @@ use serde_json::json;
 use xenadmin_ui::command::{self, CommandId};
 use xenadmin_ui::object::{ObjectKind, ObjectRef, Target};
 use xenadmin_ui::surface::{
-    Block, NoticeKind, OutcomeState, Row, Surface, Tone, actions, alert, button, caption, checkbox,
-    choice, column, columns, custom, divider, group, heading, input, notice, option, outcome,
-    properties, property, review, row, secret_input, select, table, text, textarea,
+    Block, ImageData, NoticeKind, OutcomeState, Row, Surface, Tone, actions, alert, button,
+    caption, checkbox, choice, column, columns, custom, divider, group, heading, image, input,
+    notice, option, outcome, properties, property, review, row, secret_input, select, table, text,
+    textarea,
 };
 use xenadmin_ui::tabs::TabBody;
 use xenadmin_ui::{Model, SecretText, blocks, memory_label};
@@ -53,6 +54,9 @@ pub enum Body {
     Blocks,
     /// A bespoke element by name.
     Custom,
+    /// Pictures: decoded pixels with a maximum size, an encoded PNG, and
+    /// bytes that are no picture.
+    Images,
 }
 
 pub struct Lab {
@@ -76,6 +80,12 @@ pub struct Lab {
     pub empty: bool,
     pub stale: bool,
     pub body: Body,
+    /// The rows of the table stand for the guests: their context menu is
+    /// the kernel's, and Escape clears the selection.
+    pub object_rows: bool,
+    /// The picture of the image blocks: decoded pixels, and a PNG file.
+    pub picture: ImageData,
+    pub png: ImageData,
     /// The commands of the local action row.
     pub local: Vec<CommandId>,
     /// What the handlers did, oldest first.
@@ -104,6 +114,9 @@ impl Lab {
             empty: false,
             stale: false,
             body: Body::Table,
+            object_rows: false,
+            picture: test_card(640, 400),
+            png: encoded(&test_card(160, 100)),
             local: vec![
                 CommandId("nav.back"),
                 CommandId("view.zoom-in"),
@@ -130,6 +143,56 @@ impl Lab {
             ..Describe::default()
         }
     }
+}
+
+/// A picture whose colours and corners tell a wrong channel order, a flip
+/// or a distortion apart: red, green, blue and white bars over a grey ramp,
+/// a red block in the top left corner and a blue one in the bottom right.
+pub fn test_card(width: u32, height: u32) -> ImageData {
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    let corner = (width / 8, height / 5);
+    for y in 0..height {
+        for x in 0..width {
+            let rgb = if x < corner.0 && y < corner.1 {
+                [220, 30, 30]
+            } else if x >= width - corner.0 && y >= height - corner.1 {
+                [30, 60, 220]
+            } else if y < height / 2 {
+                match x * 4 / width {
+                    0 => [200, 40, 40],
+                    1 => [40, 170, 70],
+                    2 => [50, 90, 210],
+                    _ => [240, 240, 240],
+                }
+            } else {
+                let grey = (x * 255 / width.max(1)) as u8;
+                [grey, grey, grey]
+            };
+            pixels.extend([rgb[0], rgb[1], rgb[2], 255]);
+        }
+    }
+    ImageData::rgba(width, height, pixels).expect("width * height * 4 bytes")
+}
+
+/// The PNG file of decoded pixels.
+pub fn encoded(data: &ImageData) -> ImageData {
+    let ImageData::Rgba {
+        width,
+        height,
+        pixels,
+    } = data
+    else {
+        return data.clone();
+    };
+    let mut bytes = Vec::new();
+    image::RgbaImage::from_raw(*width, *height, pixels.to_vec())
+        .expect("width * height * 4 bytes")
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("encoding into memory");
+    ImageData::png(bytes)
 }
 
 fn log(lab: &LabRef, entry: impl Into<String>) {
@@ -546,7 +609,7 @@ fn guest_rows(lab: &Lab, m: &Model) -> Vec<Row> {
             } else {
                 Tone::Muted
             };
-            row(
+            let guest = row(
                 vm.id,
                 [
                     vm.name.clone(),
@@ -555,7 +618,12 @@ fn guest_rows(lab: &Lab, m: &Model) -> Vec<Row> {
                     memory_label(vm.memory_bytes),
                 ],
             )
-            .tone(tone)
+            .tone(tone);
+            if lab.object_rows {
+                guest.object(ObjectRef::vm(inventory.pool_id, vm.id))
+            } else {
+                guest
+            }
         })
         .collect()
 }
@@ -570,7 +638,7 @@ pub(crate) fn grid_target(m: &Model, rows: &[String]) -> Target {
 
 fn guests_table(lab: &LabRef, m: &Model, multi: bool) -> Block {
     let state = lab.borrow();
-    let (l1, l2, l3) = (lab.clone(), lab.clone(), lab.clone());
+    let (l1, l2, l3, l4) = (lab.clone(), lab.clone(), lab.clone(), lab.clone());
     let base = table(
         TABLE,
         [
@@ -593,6 +661,17 @@ fn guests_table(lab: &LabRef, m: &Model, multi: bool) -> Block {
     .on_activate(move |_, id| log(&l2, format!("activate:{id}")))
     .row_menu([CommandId("object.copy-uuid")])
     .empty("No virtual machines match.");
+    let base = if state.object_rows {
+        base.on_clear(move |m| {
+            let mut lab = l4.borrow_mut();
+            lab.selected = None;
+            lab.marked.clear();
+            lab.log.push("clear".into());
+            m.select_in_grid(Target::none());
+        })
+    } else {
+        base
+    };
     let selecting = if multi {
         base.multi(state.marked.clone(), move |m, rows| {
             let mut lab = l3.borrow_mut();
@@ -751,11 +830,27 @@ pub fn tab_body(lab: &LabRef, m: &Model) -> Option<TabBody> {
         Body::Custom => Some(TabBody::Custom(
             custom("lab-chart", json!({ "metric": "cpu" })).key("lab-chart"),
         )),
+        Body::Images => {
+            let lab = lab.borrow();
+            Some(TabBody::Blocks(blocks![
+                heading("Pictures"),
+                caption("Decoded pixels, 640 by 400, drawn at 320 by 200 at most."),
+                image("lab-picture", "Test card", lab.picture.clone()).max_size(320, 200),
+                caption("An encoded PNG, 160 by 100, at its own size."),
+                image("lab-png", "Encoded test card", lab.png.clone()),
+                caption("Bytes that are no picture."),
+                image(
+                    "lab-broken",
+                    "Broken preview",
+                    ImageData::png(*b"not a png")
+                ),
+            ]))
+        }
     }
 }
 
 /// The names of the gallery scenes.
-pub const SCENES: [&str; 8] = [
+pub const SCENES: [&str; 9] = [
     "gallery-dialog",
     "gallery-picker",
     "gallery-wizard",
@@ -764,6 +859,7 @@ pub const SCENES: [&str; 8] = [
     "gallery-tab",
     "gallery-multi",
     "gallery-blocks",
+    "gallery-image",
 ];
 
 /// Sets the lab up for a gallery scene. False when there is none of that
@@ -785,6 +881,7 @@ pub fn apply(name: &str, lab: &LabRef) -> bool {
         "gallery-tab" => lab.body = Body::Table,
         "gallery-multi" => lab.body = Body::MultiTable,
         "gallery-blocks" => lab.body = Body::Blocks,
+        "gallery-image" => lab.body = Body::Images,
         _ => return false,
     }
     true

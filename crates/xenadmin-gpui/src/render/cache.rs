@@ -14,9 +14,10 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use xenadmin_ui::SecretText;
-use xenadmin_ui::surface::{Act, ActText, OptionItem};
+use xenadmin_ui::surface::{self as s, Act, ActText, OptionItem};
 
 use crate::kit::*;
 use crate::store::{AppStore, dispatch};
@@ -40,6 +41,8 @@ struct Scope {
     texts: HashMap<String, TextEntry>,
     selects: HashMap<String, SelectEntry>,
     grids: HashMap<String, ObjectGrid>,
+    /// The decoded picture of each image block, by its key.
+    images: HashMap<String, ImageEntry>,
     /// Whether a collapsible group is folded, by its path.
     folded: HashMap<String, bool>,
     /// The focus handles of the renderer's own pressable elements.
@@ -48,6 +51,54 @@ struct Scope {
     used: HashSet<String>,
     /// The first text field the current pass drew, for the initial focus.
     first_text: Option<String>,
+}
+
+/// A decoded picture: the bytes it was made from and its frame.
+struct ImageEntry {
+    data: s::ImageData,
+    frame: Option<(Arc<RenderImage>, (u32, u32))>,
+}
+
+impl ImageEntry {
+    /// Gives the texture back: dropping the frame alone would leave it in
+    /// the window's atlas.
+    fn release(&mut self, window: &mut Window) {
+        if let Some((frame, _)) = self.frame.take() {
+            let _ = window.drop_image(frame);
+        }
+    }
+}
+
+/// The longest side of a picture the renderer decodes.
+const MAX_IMAGE_SIDE: u32 = 8192;
+
+/// The frame of a picture and its size. The model's pixels are RGBA; a
+/// frame is BGRA.
+fn decode(data: &s::ImageData) -> Option<(RenderImage, (u32, u32))> {
+    let (width, height) = data.size()?;
+    if width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE {
+        return None;
+    }
+    let mut pixels = match data {
+        s::ImageData::Rgba { pixels, .. } => pixels.to_vec(),
+        s::ImageData::Png(bytes) => {
+            let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+                .ok()?
+                .into_rgba8();
+            if (decoded.width(), decoded.height()) != (width, height) {
+                return None;
+            }
+            decoded.into_raw()
+        }
+    };
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let buffer = image::RgbaImage::from_raw(width, height, pixels)?;
+    Some((
+        RenderImage::new([image::Frame::new(buffer)]),
+        (width, height),
+    ))
 }
 
 /// The latest handlers of a text field. A description is rebuilt on every
@@ -228,14 +279,24 @@ impl WidgetCache {
         });
         scope.selects.retain(|key, _| used.contains(key));
         scope.grids.retain(|key, _| used.contains(key));
+        scope.images.retain(|key, entry| {
+            let keep = used.contains(key);
+            if !keep {
+                entry.release(window);
+            }
+            keep
+        });
         scope.used = used;
     }
 
     /// Drops a scope, emptying the buffer of every secret field first.
     pub fn close(&mut self, scope: &str, window: &mut Window, cx: &mut App) {
-        if let Some(scope) = self.scopes.remove(scope) {
+        if let Some(mut scope) = self.scopes.remove(scope) {
             for entry in scope.texts.values().filter(|entry| entry.secret) {
                 entry.widget.set_value("", window, cx);
+            }
+            for entry in scope.images.values_mut() {
+                entry.release(window);
             }
         }
     }
@@ -459,6 +520,44 @@ impl WidgetCache {
     }
 
     /// The grid of a table, created on first use.
+    /// The frame of an image block and its size in pixels, decoded once
+    /// for as long as the description hands over the same bytes. A picture
+    /// that replaces another under the same key releases the texture of the
+    /// one it replaces, and so does a picture that is no longer described
+    /// ([`WidgetCache::end`]) or whose scope closes. `None` when the bytes
+    /// are no picture.
+    pub(crate) fn image(
+        &mut self,
+        scope: &str,
+        image: &s::Image,
+        window: &mut Window,
+    ) -> Option<(Arc<RenderImage>, (u32, u32))> {
+        let scope = self.scope(scope);
+        scope.used.insert(image.key.clone());
+        if let Some(entry) = scope.images.get_mut(&image.key)
+            && (entry.data.same(&image.data) || entry.data == image.data)
+        {
+            // The same picture in another allocation: keep the texture.
+            entry.data = image.data.clone();
+            return entry.frame.clone();
+        }
+        let frame = decode(&image.data).map(|(frame, size)| (Arc::new(frame), size));
+        let entry = ImageEntry {
+            data: image.data.clone(),
+            frame: frame.clone(),
+        };
+        if let Some(mut old) = scope.images.insert(image.key.clone(), entry) {
+            old.release(window);
+        }
+        frame
+    }
+
+    /// The frame an image block is drawn from now, for tests.
+    pub fn image_frame(&self, scope: &str, key: &str) -> Option<Arc<RenderImage>> {
+        let entry = self.scopes.get(scope)?.images.get(key)?;
+        entry.frame.as_ref().map(|(frame, _)| frame.clone())
+    }
+
     pub(crate) fn grid(
         &mut self,
         scope: &str,

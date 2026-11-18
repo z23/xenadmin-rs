@@ -18,18 +18,27 @@
 //!   share the rest. A width the user drags is kept by column id and
 //!   reported to [`ColumnWidths`] so the shell can persist it.
 //! - **Activation** is a double click or Enter.
-//! - **The row menu** is the table's commands resolved on the model's
-//!   target after the row under the pointer was selected.
+//! - **The row menu**: a secondary press selects the row under the pointer
+//!   unless the selection has it. A row that stands for an object
+//!   (`Row::object`) then asks the model for the kernel's context menu of
+//!   that object (`Model::open_context_menu(object, MenuOrigin::Grid)`),
+//!   which the shell presents; the Menu key and Shift+F10 do the same for
+//!   the row the keyboard is on. Any other row gets the table's own
+//!   commands, resolved on the model's target, in the Kit's popup.
+//! - **Escape** in a table of a surface closes the surface; in a tab it
+//!   runs the table's `on_clear`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use xenadmin_ui::command;
+use xenadmin_ui::object::ObjectRef;
+use xenadmin_ui::selection::MenuOrigin;
 use xenadmin_ui::surface::{self as s, Align, TableSelection as Selection};
 
 use crate::kit::*;
-use crate::render::{ColumnWidths, Pass, tone_color};
+use crate::render::{ColumnWidths, MenuRequest, Pass, tone_color};
 use crate::store::{AppStore, dispatch};
 
 gpui_kit::actions!(object_grid, [ActivateRow]);
@@ -85,9 +94,18 @@ struct Shared {
     columns_dirty: bool,
     on_cancel: Option<OnCancel>,
     column_widths: Option<ColumnWidths>,
+    /// Told where a context menu of an object row was asked for.
+    menu_request: Option<MenuRequest>,
+    /// Where the secondary button was last pressed in the grid.
+    secondary_press: Option<Point<Pixels>>,
 }
 
 impl Shared {
+    /// The object the row at `index` stands for.
+    fn row_object(&self, index: usize) -> Option<ObjectRef> {
+        self.table.rows.get(index)?.object.clone()
+    }
+
     fn multi(&self) -> bool {
         matches!(self.table.selection, Selection::Multi(_))
     }
@@ -191,6 +209,27 @@ impl GridDelegate {
             }
             _ => {}
         }
+    }
+
+    /// Asks the model for the kernel's context menu of the object a row
+    /// stands for, after saying where it was asked. The row is selected
+    /// first unless the selection has it.
+    fn open_object_menu(
+        shared: &Rc<RefCell<Shared>>,
+        store: &Entity<AppStore>,
+        id: &str,
+        object: ObjectRef,
+        position: Option<Point<Pixels>>,
+        cx: &mut App,
+    ) {
+        Self::select_for_menu(shared, store, id, cx);
+        let request = shared.borrow().menu_request.clone();
+        if let (Some(request), Some(position)) = (request, position) {
+            request(position);
+        }
+        dispatch(store, cx, move |m| {
+            m.open_context_menu(object, MenuOrigin::Grid);
+        });
     }
 }
 
@@ -420,14 +459,20 @@ impl TableDelegate for GridDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        let (commands, id) = {
+        let (commands, id, object) = {
             let shared = self.shared.borrow();
-            (shared.table.row_menu.clone(), shared.row_id(row_ix))
+            (
+                shared.table.row_menu.clone(),
+                shared.row_id(row_ix),
+                shared.row_object(row_ix),
+            )
         };
         let Some(id) = id else {
             return menu;
         };
-        if commands.is_empty() {
+        // A row that stands for an object has the kernel's menu, which the
+        // model opens (`RightClickedRow`): no popup of the table's own.
+        if commands.is_empty() || object.is_some() {
             return menu;
         }
         // The menu is for the row under the pointer: it is the selection
@@ -507,6 +552,8 @@ impl ObjectGrid {
             columns_dirty: true,
             on_cancel: None,
             column_widths: None,
+            menu_request: None,
+            secondary_press: None,
         }));
         shared.borrow_mut().reindex();
         let state = cx.new(|cx| {
@@ -602,12 +649,88 @@ impl ObjectGrid {
                 GridHeight::Rows => frame.h(fixed).flex_none(),
             })
             .on_action(activate)
+            // Escape while the Kit's table has no row of its own (a multi
+            // selection can stand without one) comes on to here. In a tab
+            // it clears the model's selection; in a surface it goes on to
+            // the dialog, which closes.
+            .on_action({
+                let shared = Rc::clone(&grid.inner.shared);
+                let store = ui.store.clone();
+                move |_: &Cancel, _: &mut Window, cx: &mut App| {
+                    let on_clear = {
+                        let shared = shared.borrow();
+                        let selected = match &shared.table.selection {
+                            Selection::None => false,
+                            Selection::Single(selected) => selected.is_some(),
+                            Selection::Multi(selected) => !selected.is_empty(),
+                        };
+                        match (&shared.on_cancel, selected) {
+                            (None, true) => shared.table.on_clear.clone(),
+                            _ => None,
+                        }
+                    };
+                    match on_clear {
+                        Some(on_clear) => {
+                            shared.borrow_mut().anchor = None;
+                            dispatch(&store, cx, move |m| on_clear(m));
+                        }
+                        None => cx.propagate(),
+                    }
+                }
+            })
+            // The Menu key and Shift+F10: the context menu of the object
+            // the keyboard's row stands for, at that row.
+            .on_key_down({
+                let shared = Rc::clone(&grid.inner.shared);
+                let state = state.clone();
+                let store = ui.store.clone();
+                move |event: &KeyDownEvent, _, cx| {
+                    let keystroke = &event.keystroke;
+                    let menu_key = keystroke.key == "menu"
+                        || (keystroke.key == "f10" && keystroke.modifiers.shift);
+                    if !menu_key {
+                        return;
+                    }
+                    // The Kit's row is the keyboard's; a multi selection
+                    // can stand without one: then the row pressed last, or
+                    // the first selected row.
+                    let row = state.read(cx).selected_row().or_else(|| {
+                        let shared = shared.borrow();
+                        let selected = |id: &String| shared.table.selection.contains(id);
+                        shared
+                            .anchor
+                            .as_ref()
+                            .filter(|id| selected(id))
+                            .and_then(|id| shared.index.get(id).copied())
+                            .or_else(|| shared.table.rows.iter().position(|row| selected(&row.id)))
+                    });
+                    let request = row.and_then(|ix| {
+                        let shared = shared.borrow();
+                        Some((ix, shared.row_id(ix)?, shared.row_object(ix)?))
+                    });
+                    let Some((ix, id, object)) = request else {
+                        return;
+                    };
+                    let position = row_position(&state, ix, cx);
+                    GridDelegate::open_object_menu(
+                        &shared,
+                        &store,
+                        &id,
+                        object,
+                        Some(position),
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }
+            })
             // A right click on the space under the last row must not open
             // the menu of the row that was right-clicked before.
             .capture_any_mouse_down({
                 let state = state.clone();
+                let shared = Rc::clone(&grid.inner.shared);
                 move |event, _, cx| {
                     if event.button == MouseButton::Right {
+                        shared.borrow_mut().secondary_press = Some(event.position);
                         state.update(cx, |table, cx| table.set_right_clicked_row(None, cx));
                     }
                 }
@@ -629,6 +752,7 @@ impl ObjectGrid {
             let mut shared = shared.borrow_mut();
             shared.on_cancel = pass.on_cancel.clone();
             shared.column_widths = pass.ui.column_widths();
+            shared.menu_request = pass.ui.menu_request();
             let rows_changed =
                 !Rc::ptr_eq(&shared.table.rows, &table.rows) && shared.table.rows != table.rows;
             let previous = &shared.table;
@@ -789,20 +913,25 @@ fn on_event(
             }
         }
         TableEvent::ClearSelection => {
-            let on_cancel = {
+            let (on_cancel, on_clear) = {
                 let mut shared = shared.borrow_mut();
                 if shared.echo_clear > 0 {
                     shared.echo_clear -= 1;
                     return;
                 }
-                shared.on_cancel.clone()
+                (shared.on_cancel.clone(), shared.table.on_clear.clone())
             };
-            // Escape in a table clears the Kit's selection. The model has
-            // no such thing: in a surface Escape closes the surface, and
-            // the next pass puts the selection back either way.
-            match on_cancel {
-                Some(on_cancel) => on_cancel(cx),
-                None => dispatch(store, cx, |_| {}),
+            // Escape in a table clears the Kit's selection. In a surface
+            // Escape closes the surface. In a tab the table's `on_clear`
+            // empties the model's selection; without one the next pass
+            // puts the selection back.
+            match (on_cancel, on_clear) {
+                (Some(on_cancel), _) => on_cancel(cx),
+                (None, Some(on_clear)) => {
+                    shared.borrow_mut().anchor = None;
+                    dispatch(store, cx, move |m| on_clear(m));
+                }
+                (None, None) => dispatch(store, cx, |_| {}),
             }
         }
         TableEvent::DoubleClickedRow(ix) => {
@@ -815,9 +944,20 @@ fn on_event(
             }
         }
         TableEvent::RightClickedRow(Some(ix)) => {
-            let id = shared.borrow().row_id(*ix);
-            if let Some(id) = id {
-                GridDelegate::select_for_menu(shared, store, &id, cx);
+            let (id, object, position) = {
+                let mut shared = shared.borrow_mut();
+                (
+                    shared.row_id(*ix),
+                    shared.row_object(*ix),
+                    shared.secondary_press.take(),
+                )
+            };
+            match (id, object) {
+                (Some(id), Some(object)) => {
+                    GridDelegate::open_object_menu(shared, store, &id, object, position, cx);
+                }
+                (Some(id), None) => GridDelegate::select_for_menu(shared, store, &id, cx),
+                (None, _) => {}
             }
         }
         TableEvent::ColumnWidthsChanged(widths) => {
@@ -853,6 +993,19 @@ fn on_event(
         _ => {}
     }
     let _ = table;
+}
+
+/// Where a menu opened by the keyboard appears: under the start of the row
+/// when the row is on screen, else at the nearest edge of the rows.
+fn row_position(state: &Entity<TableState<GridDelegate>>, row: usize, cx: &App) -> Point<Pixels> {
+    let handle = state.read(cx).vertical_scroll_handle.0.borrow();
+    let list = handle.base_handle.bounds();
+    let offset = handle.base_handle.offset().y;
+    let y = list.top() + px(ROW_HEIGHT * (row as f32 + 1.)) + offset;
+    point(
+        list.left() + px(24.),
+        y.clamp(list.top(), list.bottom().max(list.top())),
+    )
 }
 
 enum Request {

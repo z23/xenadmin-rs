@@ -24,6 +24,9 @@ pub use gpui_kit::{
     point, px, relative, rems, size,
 };
 
+// Pictures: a decoded frame (BGRA) and the element that draws it.
+pub use gpui_kit::{ObjectFit, RenderImage, StyledImage, img};
+
 // The application menus: GPUI's own types, which the Kit's menu bar draws.
 // (`Menu` is also the name of the model's enum of menus.)
 pub use gpui_kit::{Menu as AppMenu, MenuItem as AppMenuItem, OwnedMenu, OwnedMenuItem};
@@ -32,8 +35,9 @@ pub use gpui_kit::{Menu as AppMenu, MenuItem as AppMenuItem, OwnedMenu, OwnedMen
 /// returns (the element itself in a build without the feature).
 pub type Keyed = gpui_kit::base::ObservedElement<Stateful<Div>>;
 
-// The action the Kit binds Enter to inside a dialog.
-pub use gpui_kit::base::actions::Confirm;
+// The actions the Kit binds Enter to inside a dialog and Escape to in a
+// table, a menu and a dialog.
+pub use gpui_kit::base::actions::{Cancel, Confirm};
 
 // The actions the Kit binds Tab and Shift+Tab to in a text area.
 pub use gpui_kit::base::input::{IndentInline, OutdentInline};
