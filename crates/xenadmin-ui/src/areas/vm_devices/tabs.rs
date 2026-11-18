@@ -551,7 +551,23 @@ fn known(value: Option<bool>) -> &'static str {
     }
 }
 
-/// The Storage tab of a repository: where it is attached, and its disks.
+/// The Rune storage hub's caption under an attachment that uses credentials.
+pub const ATTACHMENT_CREDENTIALS: &str = "This attachment uses credentials. Repair missing connections can ask the host to clone supported credential references; manual attachment creation requires fresh credentials.";
+
+/// The path counts of an attachment as the Rune storage hub wrote them, one
+/// device after the other: "{device} · {active} / {maximum} paths".
+fn paths(attachment: &xenadmin_core::StorageAttachment) -> String {
+    attachment
+        .paths
+        .iter()
+        .map(|path| format!("{} · {} / {} paths", path.device, path.active, path.maximum))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The Storage tab of a repository: where it is attached (with what the
+/// Rune storage hub showed for each attachment: attached, multipathing,
+/// path counts, credentials), and its disks.
 /// The disks are tree objects: the selection is the grid selection, and a
 /// secondary press opens the context menu of the disk.
 fn repository(m: &Model, pool: PoolId, inventory: &Inventory, sr: SrId) -> Vec<Block> {
@@ -574,9 +590,19 @@ fn repository(m: &Model, pool: PoolId, inventory: &Inventory, sr: SrId) -> Vec<B
                         .unwrap_or_else(|| "Unresolved host".into()),
                     a.id.to_string(),
                     known(a.currently_attached).to_owned(),
+                    known(a.multipathed).to_owned(),
+                    paths(a),
+                    if a.requires_credentials { "Yes" } else { "No" }.to_owned(),
                 ],
             )
         });
+    // The Rune caption of each attachment that uses credentials, once.
+    let credentials = inventory
+        .details
+        .pbds
+        .values()
+        .any(|a| a.sr == Some(sr) && a.requires_credentials)
+        .then(|| caption(ATTACHMENT_CREDENTIALS).key("storage-attachment-credentials"));
     let query = m.areas.vm_devices.disk_search.to_lowercase();
     let mut disks: Vec<_> = inventory
         .details
@@ -646,10 +672,14 @@ fn repository(m: &Model, pool: PoolId, inventory: &Inventory, sr: SrId) -> Vec<B
                         column("name", "Server"),
                         column("uuid", "Attachment UUID"),
                         column("attached", "Attached"),
+                        column("multipathing", "Multipathing"),
+                        column("paths", "Paths"),
+                        column("credentials", "Uses credentials"),
                     ],
                     attachments,
                 )
                 .empty("No host attachment of this repository is in the readable inventory."),
+                credentials,
             ],
         )
         .key("storage-attachments"),

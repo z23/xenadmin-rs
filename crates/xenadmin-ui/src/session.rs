@@ -912,16 +912,21 @@ pub fn cancel_editor(m: &mut Model) {
     m.workspace.password.clear();
 }
 
+/// The status of a session-only connection that "Connect All" skipped.
+/// (Rune: "Open Connect / edit", a button of its connection card; the
+/// command is "Connect…" of the Server menu now.)
+pub const PASSWORD_REQUIRED: &str =
+    "Password required. Use Connect… in the Server menu to enter a password for this session.";
+/// The status of a connection whose password the keyring no longer has.
+pub const NO_SAVED_PASSWORD: &str =
+    "No saved password was found. Use Connect… in the Server menu to enter one.";
+
 pub fn queue_load(m: &mut Model, profile: &ConnectionProfile, purpose: LoadPurpose) {
     if m.workspace.live(profile.id) || m.workspace.loads.contains_key(&profile.id) {
         return;
     }
     if profile.credential_mode != CredentialMode::SecretService {
-        set_profile_status(
-            m,
-            profile.id,
-            "Password required. Open Connect / edit to enter a password for this session.".into(),
-        );
+        set_profile_status(m, profile.id, PASSWORD_REQUIRED.into());
         return;
     }
     if credential_pending(m, profile.id) {
@@ -1130,11 +1135,9 @@ pub fn apply_credential_result(
                         m.save_preferences();
                     }
                 }
-                Ok(CredentialOutcome::Loaded(None)) => set_profile_status(
-                    m,
-                    id,
-                    "No saved password was found. Open Connect / edit to enter one.".into(),
-                ),
+                Ok(CredentialOutcome::Loaded(None)) => {
+                    set_profile_status(m, id, NO_SAVED_PASSWORD.into())
+                }
                 Err(error) => set_profile_status(m, id, error.to_string()),
                 _ => set_profile_status(
                     m,
@@ -1782,7 +1785,7 @@ pub(crate) mod tests {
         assert_eq!(m.workspace.loads.len(), 6);
         assert_eq!(m.workspace.credential_tasks.len(), 4);
         assert_eq!(m.workspace.load_queue.len(), 2);
-        assert!(m.workspace.profile_status[&session.id].contains("Password required"));
+        assert_eq!(m.workspace.profile_status[&session.id], PASSWORD_REQUIRED);
         connect_all(m);
         assert_eq!(m.workspace.credential_tasks.len(), 4);
         let running = match &m.workspace.credential_tasks[0].0 {
@@ -1792,7 +1795,7 @@ pub(crate) mod tests {
         finish(m, running, Ok(CredentialOutcome::Loaded(None)));
         assert_eq!(m.workspace.credential_tasks.len(), 4);
         assert_eq!(m.workspace.loads.len(), 5);
-        assert!(m.workspace.profile_status[&running].contains("No saved password"));
+        assert_eq!(m.workspace.profile_status[&running], NO_SAVED_PASSWORD);
         disconnect_all(m);
         assert!(m.workspace.loads.is_empty());
         assert!(m.workspace.load_queue.is_empty());
@@ -2025,6 +2028,33 @@ pub(crate) mod tests {
         assert_eq!(
             status_word(Some(ConnectionState::Disconnected)),
             "Disconnected"
+        );
+    }
+
+    /// The status texts name the command that exists: "Connect…" of the
+    /// Server menu, not the Rune card's "Connect / edit" button.
+    #[test]
+    fn the_password_status_texts_name_the_connect_command_of_the_server_menu() {
+        let connect = crate::command::registry()
+            .iter()
+            .find(|spec| spec.id.0 == "server.connect")
+            .expect("the command");
+        assert_eq!(connect.label, "Connect…");
+        assert_eq!(
+            connect.menu.map(|path| path.menu),
+            Some(crate::command::Menu::Server)
+        );
+        for text in [PASSWORD_REQUIRED, NO_SAVED_PASSWORD] {
+            assert!(text.contains("Use Connect… in the Server menu"), "{text}");
+            assert!(!text.contains("Connect / edit"), "{text}");
+        }
+        assert_eq!(
+            PASSWORD_REQUIRED,
+            "Password required. Use Connect… in the Server menu to enter a password for this session."
+        );
+        assert_eq!(
+            NO_SAVED_PASSWORD,
+            "No saved password was found. Use Connect… in the Server menu to enter one."
         );
     }
 }

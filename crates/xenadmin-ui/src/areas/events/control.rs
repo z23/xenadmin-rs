@@ -73,6 +73,14 @@ pub fn resource_record(m: &Model, key: HiddenKey) -> Option<&ResourceOperationRe
     m.resource_rows.iter().find(|r| r.id == key.id)
 }
 
+/// The batch a record is a member of.
+pub fn batch_parent(m: &Model, key: HiddenKey) -> Option<OperationId> {
+    match key.family {
+        Family::Vm => vm_record(m, key)?.batch_parent,
+        Family::Resource => resource_record(m, key)?.batch_parent,
+    }
+}
+
 /// The explanation of a record's outcome, when it has one.
 pub fn help(m: &Model, key: HiddenKey) -> Option<FailureHelp> {
     match key.family {

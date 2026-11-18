@@ -74,6 +74,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(place::POOL_HIGH_AVAILABILITY)
             .context(POOL)
             .local(TabId::Ha, 10)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| ha(m, target, can_configure))
             .invoke(|m, target| {
                 if let Some(pool) = pool_of(m, target) {
@@ -82,6 +83,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(HA_DISABLE.0, "Disable HA", AREA)
             .local(TabId::Ha, 20)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| ha(m, target, can_disable))
             .invoke(|m, target| {
                 if let Some(pool) = pool_of(m, target) {
@@ -90,6 +92,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(HA_FAILURES.0, "Failure Tolerance", AREA)
             .local(TabId::Ha, 30)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| {
                 ha(m, target, |i| {
                     let known = policy::administration(i).ha_failures_to_tolerate.is_some();
@@ -103,6 +106,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(HA_OVERCOMMIT.0, "HA Overcommit", AREA)
             .local(TabId::Ha, 40)
+            .local_scopes(&[ObjectKind::Pool])
             .dynamic_label(overcommit_label)
             .eligibility(|m, target| {
                 ha(m, target, |i| {
@@ -113,6 +117,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .invoke(overcommit),
         CommandSpec::new(HA_TIMEOUT.0, "HA Timeout Default", AREA)
             .local(TabId::Ha, 50)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| {
                 ha(m, target, |i| {
                     let editable = policy::timeout_editable(&policy::administration(i));
@@ -126,6 +131,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(HA_RESTART_PRIORITY.0, "Restart Priority", AREA)
             .local(TabId::Ha, 60)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(can_protect)
             .invoke(protect),
         CommandSpec::new(CHANGE_SERVER_PASSWORD.0, "Change Server Password", AREA)

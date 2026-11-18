@@ -323,18 +323,25 @@ struct CapturedEntry {
     entry: Entry,
 }
 
+/// The title of the save prompt. (Rune: "Export activity JSON", of the
+/// Activity dialog; the lists are the Events and Alerts tabs now.)
+pub const PROMPT_TITLE: &str = "Export entries as JSON";
+pub const WRITER_NOT_STARTED: &str = "Cannot start the export writer.";
+pub const WRITER_STOPPED: &str = "The export writer stopped without a result.";
+
 /// What the export says it covers: the list and its filters.
 pub fn scope_label(m: &Model, tab: Tab) -> String {
     let a = &m.areas.events;
     format!(
-        "{}; pool {}; search {:?}; state/priority {:?}; hidden {}",
+        "{}; pool {}; search {:?}; state/priority {:?}; hidden {}; batch members {}",
         tab.title(),
         a.pool
             .map(|id| id.to_string())
             .unwrap_or_else(|| "all observed pools".into()),
         a.search,
         activity::status_filter(m, tab),
-        a.show_hidden
+        a.show_hidden,
+        a.show_children
     )
 }
 
@@ -366,7 +373,7 @@ pub fn choose(m: &mut Model, tab: Tab) {
     m.areas.events.export.pending = true;
     m.areas.events.export.captured = Some(document);
     m.choose_file(
-        FileRequest::save("Export activity JSON", "xenadmin-activity.json", reply)
+        FileRequest::save(PROMPT_TITLE, "xenadmin-activity.json", reply)
             .on_failure(prompt_failed)
             .filter("JSON", ["json"]),
     );
@@ -399,7 +406,7 @@ fn reply(m: &mut Model, path: Option<std::path::PathBuf>) {
         .spawn(move || {
             let result = encode_bounded(&document)
                 .and_then(|bytes| write_private(&path, &bytes))
-                .map(|()| format!("Activity saved to {}", path.display()));
+                .map(|()| format!("Entries saved to {}", path.display()));
             let _ = sender.send(result);
             if let Some(wake) = wake {
                 wake();
@@ -407,10 +414,10 @@ fn reply(m: &mut Model, path: Option<std::path::PathBuf>) {
         });
     if spawned.is_ok() {
         m.areas.events.export.result = Some(receiver);
-        m.areas.events.notice = Some("Saving the captured activity selection…".into());
+        m.areas.events.notice = Some(super::commands::EXPORTING.into());
     } else {
         m.areas.events.export.pending = false;
-        m.areas.events.notice = Some("Cannot start the activity writer.".into());
+        m.areas.events.notice = Some(WRITER_NOT_STARTED.into());
     }
 }
 
@@ -422,11 +429,11 @@ pub fn poll(m: &mut Model) -> bool {
     let result = match receiver.try_recv() {
         Ok(value) => value,
         Err(mpsc::TryRecvError::Empty) => return false,
-        Err(_) => Err("Activity writer stopped without a result.".into()),
+        Err(_) => Err(WRITER_STOPPED.into()),
     };
     m.areas.events.export = Export::default();
     m.areas.events.notice =
-        Some(result.unwrap_or_else(|e| format!("Cannot export activity: {e}")));
+        Some(result.unwrap_or_else(|e| format!("Cannot export the entries: {e}")));
     true
 }
 fn encode_bounded(document: &impl Serialize) -> Result<Vec<u8>, String> {

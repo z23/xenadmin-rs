@@ -77,6 +77,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(MenuPath::new(Menu::Storage, 2, 40))
             .context(REPOSITORY)
             .local(TabId::Storage, 40)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| match repository(m, target) {
                 Ok((pool, _)) => Eligibility::enabled_if(writable(m, pool), NOT_WRITABLE),
                 Err(refusal) => refusal,
@@ -90,18 +91,21 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(place::STORAGE_DETACH)
             .context(REPOSITORY)
             .local(TabId::Storage, 50)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| attachment_change(m, target, Change::Detach))
             .invoke(|m, target| open_attachment_change(m, target, false)),
         CommandSpec::new(REATTACH.0, "Reattach", AREA)
             .menu(place::STORAGE_REATTACH)
             .context(REPOSITORY)
             .local(TabId::Storage, 60)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| attachment_change(m, target, Change::Reattach))
             .invoke(|m, target| open_attachment_change(m, target, false)),
         CommandSpec::new(ATTACHMENT_CREATE.0, "Create Missing Host Attachment", AREA)
             .menu(MenuPath::new(Menu::Storage, 4, 22))
             .context(REPOSITORY)
             .local(TabId::Storage, 62)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| match repository(m, target) {
                 Ok(_) => Eligibility::Enabled,
                 Err(refusal) => refusal,
@@ -115,12 +119,14 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(MenuPath::new(Menu::Storage, 4, 24))
             .context(REPOSITORY)
             .local(TabId::Storage, 64)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| attachment_change(m, target, Change::Remove))
             .invoke(|m, target| open_attachment_change(m, target, true)),
         CommandSpec::new(FORGET.0, "Forget", AREA)
             .menu(place::STORAGE_FORGET)
             .context(REPOSITORY)
             .local(TabId::Storage, 70)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(removal)
             .invoke(|m, target| {
                 if let Ok((pool, sr)) = repository(m, target) {
@@ -131,6 +137,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(place::STORAGE_DESTROY)
             .context(REPOSITORY)
             .local(TabId::Storage, 80)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(removal)
             .invoke(|m, target| {
                 if let Ok((pool, sr)) = repository(m, target) {

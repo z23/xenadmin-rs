@@ -80,31 +80,38 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(NEW.0, "New Virtual Disk", area)
             .menu(place::STORAGE_NEW_VIRTUAL_DISK)
             .local(TabId::Storage, 10)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(add_eligibility)
             .invoke(|m, t| add(m, t, Kind::CreateDisk)),
         CommandSpec::new(ATTACH.0, "Attach Virtual Disk", area)
             .menu(place::STORAGE_ATTACH_VIRTUAL_DISK)
             .local(TabId::Storage, 12)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(add_eligibility)
             .invoke(|m, t| add(m, t, Kind::AttachDisk)),
         CommandSpec::new(ADD_CD.0, "Add CD/DVD Drive", area)
             .local(TabId::Storage, 14)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(add_eligibility)
             .invoke(|m, t| add(m, t, Kind::AddCd)),
         CommandSpec::new(DETACH.0, "Detach", area)
             .local(TabId::Storage, 20)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, t| removal_eligibility(m, t, false))
             .invoke(|m, t| remove(m, t, false)),
         CommandSpec::new(ACTIVATE.0, "Activate", area)
             .local(TabId::Storage, 22)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, t| plug_eligibility(m, t, false))
             .invoke(plug),
         CommandSpec::new(DEACTIVATE.0, "Deactivate", area)
             .local(TabId::Storage, 24)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, t| plug_eligibility(m, t, true))
             .invoke(plug),
         CommandSpec::new(INSERT.0, "Insert ISO", area)
             .local(TabId::Storage, 26)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(insert_eligibility)
             .invoke(|m, t| {
                 if let Some((c, row)) = disk_row(m, t) {
@@ -113,6 +120,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(EJECT.0, "Eject Media", area)
             .local(TabId::Storage, 28)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(eject_eligibility)
             .invoke(|m, t| {
                 if let Some((c, row)) = disk_row(m, t) {
@@ -122,6 +130,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(DISK_PROPERTIES.0, "Properties", area)
             .local(TabId::Storage, 30)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(disk_properties_eligibility)
             .invoke(|m, t| {
                 if let Some((c, row)) = disk_row(m, t) {
@@ -130,29 +139,35 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(GROW.0, "Resize", area)
             .local(TabId::Storage, 32)
+            .local_scopes(&[ObjectKind::Vm, ObjectKind::StorageRepository])
             .context(&[ObjectKind::VirtualDisk])
             .eligibility(|m, t| disk_eligibility(m, t, Mode::Grow))
             .invoke(|m, t| open_disk(m, t, Mode::Grow)),
         CommandSpec::new(COPY.0, "Copy", area)
             .local(TabId::Storage, 34)
+            .local_scopes(&[ObjectKind::Vm, ObjectKind::StorageRepository])
             .context(&[ObjectKind::VirtualDisk])
             .eligibility(|m, t| disk_eligibility(m, t, Mode::Copy))
             .invoke(|m, t| open_disk(m, t, Mode::Copy)),
         CommandSpec::new(CLEANUP.0, "Delete Owned Disk", area)
             .local(TabId::Storage, 36)
+            .local_scopes(&[ObjectKind::Vm, ObjectKind::StorageRepository])
             .context(&[ObjectKind::VirtualDisk])
             .eligibility(|m, t| disk_eligibility(m, t, Mode::Cleanup))
             .invoke(|m, t| open_disk(m, t, Mode::Cleanup)),
         CommandSpec::new(DELETE.0, "Delete", area)
             .local(TabId::Storage, 38)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, t| removal_eligibility(m, t, true))
             .invoke(|m, t| remove(m, t, true)),
         CommandSpec::new(NIC_ADD.0, "Add", area)
             .local(TabId::Networking, 10)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(add_eligibility)
             .invoke(|m, t| add(m, t, Kind::AddNic)),
         CommandSpec::new(NIC_PROPERTIES.0, "Properties", area)
             .local(TabId::Networking, 20)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(nic_edit_eligibility)
             .invoke(|m, t| {
                 if let Some((c, row)) = nic_row(m, t)
@@ -163,6 +178,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(NIC_RATE.0, "Rate Limit", area)
             .local(TabId::Networking, 30)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(nic_rate_eligibility)
             .invoke(|m, t| {
                 if let Some((c, row)) = nic_row(m, t) {
@@ -171,14 +187,17 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(NIC_ACTIVATE.0, "Activate", area)
             .local(TabId::Networking, 40)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, t| nic_plug_eligibility(m, t, false))
             .invoke(nic_plug),
         CommandSpec::new(NIC_DEACTIVATE.0, "Deactivate", area)
             .local(TabId::Networking, 50)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, t| nic_plug_eligibility(m, t, true))
             .invoke(nic_plug),
         CommandSpec::new(NIC_REMOVE.0, "Remove", area)
             .local(TabId::Networking, 90)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(nic_remove_eligibility)
             .invoke(|m, t| {
                 if let Some((c, row)) = nic_row(m, t) {

@@ -534,6 +534,7 @@ macro_rules! properties_command {
     ($kind:expr) => {
         CommandSpec::new($kind.command().0, "Properties", KERNEL)
             .local(TabId::General, LOCAL_ORDER)
+            .local_scopes(const { &[$kind.object_kind()] })
             .eligibility(|m, target| eligibility(m, target, $kind))
             .invoke(|m, target| open(m, target, $kind))
     };

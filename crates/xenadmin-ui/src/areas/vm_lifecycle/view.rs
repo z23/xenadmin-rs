@@ -469,17 +469,19 @@ fn cloud_step(form: &Editor) -> Vec<Block> {
                 &form.cloud_input.hostname,
                 |m, text| with(m, |form| form.cloud_input.hostname = text.to_owned()),
             ),
-            textarea(
+            // User-data and network-config can hold passwords and keys:
+            // private fields, and an edit zeroizes the text it replaces.
+            private_textarea(
                 "creation-cloud-user-data",
                 "User-data (up to 2 MiB)",
                 &form.cloud_input.user_data,
-                |m, text| with(m, |form| form.cloud_input.user_data = text.to_owned()),
+                |m, text| with(m, |form| replace_private(&mut form.cloud_input.user_data, text)),
             ),
-            textarea(
+            private_textarea(
                 "creation-cloud-network",
                 "Optional network-config (up to 1 MiB)",
                 &form.cloud_input.network,
-                |m, text| with(m, |form| form.cloud_input.network = text.to_owned()),
+                |m, text| with(m, |form| replace_private(&mut form.cloud_input.network, text)),
             ),
             caption(cloud::CONSEQUENCES),
         ]),
@@ -756,18 +758,26 @@ fn drive_inputs(m: &Model, p: &drive::Panel) -> Vec<Block> {
             |m, text| drive_edit(m, |p| p.device = text.to_owned()),
         ),
         storage,
-        textarea(
+        private_textarea(
             "cloud-init-user-data",
             "User-data (up to 2 MiB)",
             &p.user_data,
-            |m, text| drive_edit(m, |p| p.user_data = text.to_owned()),
+            |m, text| drive_edit(m, |p| replace_private(&mut p.user_data, text)),
         ),
-        textarea(
+        private_textarea(
             "cloud-init-network",
             "Optional network-config (up to 1 MiB)",
             &p.network,
-            |m, text| drive_edit(m, |p| p.network = text.to_owned()),
+            |m, text| drive_edit(m, |p| replace_private(&mut p.network, text)),
         ),
         caption(drive::PRIVACY),
     ]
+}
+
+/// An edit of a private draft: the text it replaces is zeroized, not just
+/// freed. (Rune edited its `TextEdit` in place and zeroized it on drop.)
+fn replace_private(draft: &mut String, text: &str) {
+    use zeroize::Zeroize;
+    draft.zeroize();
+    draft.push_str(text);
 }

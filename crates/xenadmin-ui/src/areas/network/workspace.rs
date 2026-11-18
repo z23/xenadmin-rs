@@ -54,12 +54,25 @@ pub struct Check {
     pub conflict: bool,
 }
 
+/// Where Back leads from a review that another area handed over: that
+/// area kept the form the review was made from and shows it again. (Rune:
+/// the forms were children of this workspace and Back cleared the review.)
+#[derive(Clone, Copy)]
+pub struct Back {
+    /// The area that staged the review.
+    pub area: &'static str,
+    /// Runs after this dialog closed: it brings the area's form back.
+    pub run: fn(&mut Model),
+}
+
 pub struct Review {
     pub target: ResourceTarget,
     pub observed: Option<ObservedResource>,
     pub operation: ResourceAction,
     pub lines: Vec<String>,
     pub check: Option<Check>,
+    /// `Some`: the review was handed over with a form behind it.
+    pub back: Option<Back>,
 }
 
 /// A change with nothing to enter: target, operation and review lines.
@@ -340,13 +353,39 @@ pub fn prepare_checked(
             operation,
             lines,
             check,
+            back: None,
         });
         w.error = None;
     }
 }
 
-/// Back from the review to what was entered.
+/// Gives the review that was just handed over ([`open_review`]) a Back:
+/// the dialog closes and `back.run` shows the form of the area that staged
+/// it. Nothing happens when no review is open (its observation failed).
+pub fn review_back(m: &mut Model, back: Back) {
+    if let Some(review) = edit(m).and_then(|w| w.review.as_mut()) {
+        review.back = Some(back);
+    }
+}
+
+/// The area whose form is behind the open review, when it was handed over
+/// with a Back.
+pub fn handed_over_by(m: &Model) -> Option<&'static str> {
+    let review = m.areas.network.workspace.as_ref()?.review.as_ref()?;
+    review.back.map(|back| back.area)
+}
+
+/// Back from the review to what was entered: this workspace's own form,
+/// or the form of the area that handed the review over.
 pub fn back(m: &mut Model) {
+    let handed = edit(m)
+        .and_then(|w| w.review.as_ref())
+        .and_then(|review| review.back);
+    if let Some(back) = handed {
+        super::close(m);
+        (back.run)(m);
+        return;
+    }
     if let Some(w) = edit(m) {
         w.review = None;
         w.error = None;

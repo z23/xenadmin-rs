@@ -76,8 +76,26 @@
 //! - The clear buttons of the two filters: the front end's input has its
 //!   own clear affordance; clearing is typing the empty text.
 //! - The focus return of the outcome explanation (`return_focus`).
-//! - The pool history's limit of twelve records and its hiding of batch
-//!   children: the History list shows every record, as Activity did.
+//! - The pool history's limit of twelve records. It was the length of a
+//!   list of cards in a dialog; the History list is a table that scrolls,
+//!   has the filters of Activity, and is also the successor of the Activity
+//!   list, which had no limit. A limit here would take away records that
+//!   Activity showed.
+//!
+//! # Batches
+//!
+//! Rune had two lists of resource operations. The pool history
+//! (`resource_admin.rs`, `history`) left out every record with a
+//! `batch_parent`: a batch of 32 was one entry, and its members were the
+//! lines "VM … · child … · state" under it. The Activity list
+//! (`activity.rs`) had every record as a row. The History list is both:
+//! it shows a batch as its parent, whose details carry the member lines
+//! ([`evidence::resource`]), and the checkbox `activity-show-children`
+//! ("Include the records of batch members") lists the members' own records
+//! too, as Activity did. [`show_operation`] with a member's key checks it.
+//! A member whose batch record is not in the history is always a row:
+//! nothing else would stand for it. The export covers the rows shown and
+//! its scope line says whether members are among them.
 //! - `resource-operation-notice` ("… · View operation history") of
 //!   `resource_admin.rs`: the status bar counts operations and unknown
 //!   outcomes (the kernel's), and [`show_history`] is what a link calls.
@@ -140,6 +158,10 @@ pub struct State {
     pub selected: Option<String>,
     /// Include locally hidden completed entries in History.
     pub show_hidden: bool,
+    /// Include the records of the members of a batch in History. Without
+    /// it a batch is its own record, as in the Rune pool history; with it
+    /// every record is a row, as in the Rune Activity list.
+    pub show_children: bool,
     /// The status line of the tabs.
     pub notice: Option<String>,
     /// The open review of a task cancellation or a message dismissal.
@@ -223,11 +245,15 @@ pub fn show_states(m: &mut Model, state: &str) {
 }
 
 /// Shows the History list with one operation selected. The filters are
-/// cleared, and a locally hidden entry is shown.
+/// cleared, and a locally hidden entry or the record of a batch's member is
+/// shown.
 pub fn show_operation(m: &mut Model, key: OperationKey) {
     show_history(m, key.pool);
     if m.preferences.hidden_history.contains(&key) {
         m.areas.events.show_hidden = true;
+    }
+    if control::batch_parent(m, key).is_some() {
+        m.areas.events.show_children = true;
     }
     m.areas.events.selected = Some(activity::key_of(key));
 }

@@ -181,21 +181,20 @@ pub fn current(m: &Model) -> Cow<'_, Sheet> {
 }
 
 /// Changes the query and runs it again (the Rune handlers that ended in
-/// `rebuild`). The grid selection is dropped: a command can never apply to
-/// rows that are no longer shown.
+/// `rebuild`). As in the Rune table under a filter, a selected row that is
+/// still shown stays selected and stays the target; a row the new query
+/// no longer shows leaves the selection, so no command can apply to it.
 fn change(m: &mut Model, edit: impl FnOnce(&mut Sheet)) {
     sync(m);
     let mut sheet = std::mem::take(&mut m.areas.search.sheet);
     edit(&mut sheet);
     query::rebuild(m, &mut sheet);
     m.areas.search.sheet = sheet;
-    if m.active_tab() == TabId::Search && !m.selection.grid.is_empty() {
-        m.select_in_grid(Target::none());
-    }
+    prune_grid(m);
 }
 
-/// After an inventory update: rows that are no longer among the results
-/// leave the grid selection; the others keep it.
+/// After a new query or an inventory update: rows that are no longer
+/// among the results leave the grid selection; the others keep it.
 fn prune_grid(m: &mut Model) {
     if m.active_tab() != TabId::Search || m.selection.grid.is_empty() {
         return;
@@ -239,9 +238,7 @@ pub(crate) fn reset(m: &mut Model) {
     };
     state.sheet.sort = sort;
     sync(m);
-    if m.active_tab() == TabId::Search && !m.selection.grid.is_empty() {
-        m.select_in_grid(Target::none());
-    }
+    prune_grid(m);
 }
 
 /// Abandons a file job: its prompt, when it is answered, is ignored.
@@ -436,6 +433,7 @@ fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(OPEN_RESULT.0, "Open in Pool", "search")
             .context(RESULT_KINDS)
             .local(TabId::Search, 10)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(can_open)
             .invoke(|m, target| {
                 if let Some(key) = target.single().and_then(key_of) {
@@ -444,12 +442,14 @@ fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(SAVE.0, "Save Search", "search")
             .local(TabId::Search, 20)
+            .local_scopes(&ObjectKind::ALL)
             .invoke(|m, _| {
                 sync(m);
                 m.areas.search.dialog = Some(Dialog::Save);
             }),
         CommandSpec::new(EXPORT.0, "Export Saved Searches", "search")
             .local(TabId::Search, 30)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(|m, _| {
                 if m.areas.search.files.busy {
                     Eligibility::disabled(files::BUSY)
@@ -464,6 +464,7 @@ fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(REMOVE.0, "Delete Saved Search", "search")
             .context(&[ObjectKind::SavedSearch])
             .local(TabId::Search, 40)
+            .local_scopes(&ObjectKind::ALL)
             .eligibility(
                 |m, target| match target.single_of(ObjectKind::SavedSearch) {
                     None => Eligibility::Hidden,

@@ -1022,3 +1022,79 @@ fn texts_name_the_places_of_this_client() {
     );
     assert!(review.lines[1].contains("identified on the Events tab of the Notifications view"));
 }
+
+/// The Rune storage hub wrote, for each host attachment of a repository,
+/// "Attached: … · Multipathing: …", one line per device with its path
+/// counts, and a caption when the attachment uses credentials.
+#[test]
+fn a_repository_shows_multipathing_path_counts_and_credentials_of_each_attachment() {
+    use xenadmin_core::{PbdId, SrId, StorageAttachment, StoragePathCount};
+    let mut h = Harness::scene("demo");
+    let pool = pool(&h);
+    let inventory = inventory(&h);
+    let repository = inventory.storage.first().unwrap().uuid;
+    let hosts: Vec<_> = inventory.hosts.keys().copied().take(2).collect();
+    let ids = [0xa1_u128, 0xa2].map(|n| PbdId::from(uuid::Uuid::from_u128(n)));
+    let attachment = |index: usize| StorageAttachment {
+        id: ids[index],
+        location: None,
+        requires_credentials: false,
+        multipathed: None,
+        paths: Vec::new(),
+        host: Some(hosts[index]),
+        sr: Some(SrId::from(repository)),
+        currently_attached: Some(true),
+    };
+    scenes::amend(&mut h.model, |i| {
+        i.details.pbds.clear();
+        i.details.pbds.insert(ids[0], attachment(0));
+        i.details.pbds.insert(ids[1], attachment(1));
+    });
+    h.select(Target::one(ObjectRef::storage(pool, repository)));
+    h.open_tab(TabId::Storage);
+    let cells = |h: &Harness, id: PbdId| -> Vec<String> {
+        let row = format!("storage-pbds:{id}/");
+        h.nodes()
+            .into_iter()
+            .filter(|node| node.role == "cell" && node.path.contains(&row))
+            .map(|node| node.text.unwrap_or_default())
+            .collect()
+    };
+    // Nothing reported: unknown multipathing, no path line, no caption.
+    assert_eq!(cells(&h, ids[0])[2..], ["Yes", "Unknown", "", "No"]);
+    assert!(h.find("storage-attachment-credentials").is_none());
+
+    scenes::amend(&mut h.model, |i| {
+        let first = i.details.pbds.get_mut(&ids[0]).unwrap();
+        first.multipathed = Some(true);
+        first.requires_credentials = true;
+        first.paths = vec![
+            StoragePathCount {
+                device: "36001405a".into(),
+                active: 2,
+                maximum: 4,
+            },
+            StoragePathCount {
+                device: "36001405b".into(),
+                active: 4,
+                maximum: 4,
+            },
+        ];
+        i.details.pbds.get_mut(&ids[1]).unwrap().multipathed = Some(false);
+    });
+    assert_eq!(
+        cells(&h, ids[0])[2..],
+        [
+            "Yes",
+            "Yes",
+            "36001405a · 2 / 4 paths; 36001405b · 4 / 4 paths",
+            "Yes"
+        ]
+    );
+    assert_eq!(cells(&h, ids[1])[2..], ["Yes", "No", "", "No"]);
+    assert_eq!(
+        h.node("storage-attachment-credentials").text.as_deref(),
+        Some(super::tabs::ATTACHMENT_CREDENTIALS)
+    );
+    h.assert_unique_keys();
+}

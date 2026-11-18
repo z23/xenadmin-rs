@@ -897,8 +897,10 @@ fn workspace_footer(
             .disabled_opt(permission.and_then(permissions::denial))
             .disabled_if(workspace::synthetic(m, w), DEMO);
         // A review opened by its command has no draft to go back to; a
-        // page always has itself.
-        return if drafted || w.page.is_some() {
+        // page always has itself; a review handed over with its form goes
+        // back to that form.
+        let handed = w.review.as_ref().is_some_and(|review| review.back.is_some());
+        return if drafted || w.page.is_some() || handed {
             vec![close, button("network-back", "Back", workspace::back), confirm]
         } else {
             vec![close, confirm]

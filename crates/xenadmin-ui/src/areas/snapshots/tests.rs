@@ -1032,3 +1032,57 @@ fn a_capture_does_not_begin_in_a_synthetic_pool() {
     assert!(h.model.areas.snapshots.dialog.is_none());
     assert!(h.model.areas.snapshots.capture.message.is_none());
 }
+
+/// `snapshot-information` is the key of the SECTION (a group), as the Rune
+/// key was the key of the container of the information and its preview:
+/// everything about the selected snapshot, the saved preview and its Load
+/// button included, is inside the node with that key, and nothing of the
+/// tab's list is.
+#[test]
+fn the_snapshot_information_key_is_the_section_that_holds_details_and_preview() {
+    let h = Harness::scene("snapshot-information");
+    let section = h.node("snapshot-information");
+    assert_eq!(section.role, "group");
+    assert_eq!(section.label.as_deref(), Some("Snapshot information"));
+    let inside = format!("{}/", section.path);
+    for key in [
+        "snapshot-information-source",
+        "snapshot-preview-message",
+        "snapshot-preview-image",
+        "snapshot-preview-load",
+    ] {
+        let node = h.node(key);
+        assert!(
+            node.path.starts_with(&inside),
+            "{key} at {} is outside {}",
+            node.path,
+            section.path
+        );
+    }
+    let table = h.node(TABLE);
+    assert!(!table.path.starts_with(&inside), "{}", table.path);
+    // The description says so too: one Group block with that key.
+    let TabBody::Blocks(blocks) = h.tab() else {
+        panic!("the Snapshots tab is made of blocks")
+    };
+    fn groups<'a>(blocks: &'a [Block], found: &mut Vec<&'a crate::surface::Group>) {
+        for block in blocks {
+            match block {
+                Block::Group(group) => {
+                    found.push(group);
+                    groups(&group.blocks, found);
+                }
+                Block::Columns(columns) => columns.iter().for_each(|c| groups(c, found)),
+                _ => {}
+            }
+        }
+    }
+    let mut found = Vec::new();
+    groups(&blocks, &mut found);
+    let keyed: Vec<_> = found
+        .iter()
+        .filter(|group| group.key.as_deref() == Some("snapshot-information"))
+        .collect();
+    assert_eq!(keyed.len(), 1);
+    assert!(!keyed[0].collapsible);
+}

@@ -26,6 +26,9 @@
 //! assert_eq!(live.server.count("Async.VM.start"), 1);
 //! ```
 //!
+//! - [`custom_templates`]: the demo inventory has no custom template; this
+//!   makes some of a model's guests into them.
+//!
 //! The parts, for a test that wants a read-only session or several pools:
 //!
 //! ```ignore
@@ -45,7 +48,8 @@
 //! `session.logout`; with a VM also `host.get_all_records`,
 //! `Async.VM.start`, `task.get_record` and `task.destroy`. Any other
 //! request panics in its thread and the client sees a closed connection
-//! ([`Server::calls`] still lists it). A test that needs more of the API
+//! ([`Server::calls`] still lists it); with [`Server::hold_unserved`] it
+//! waits instead, which keeps a resource operation unfinished. A test that needs more of the API
 //! extends `respond` here.
 
 use std::{
@@ -68,6 +72,49 @@ use crate::Harness;
 use crate::model::Model;
 use crate::object::ObjectRef;
 use crate::session::{self, Workspace};
+
+/// Gives a fixture custom templates, which the demo inventory lacks: the
+/// last `count` guests of the scope session's inventory become halted
+/// custom templates (`is_default_template == Some(false)`, no current or
+/// blocked operation), named "Custom template 1", "Custom template 2", …
+/// Returns them as tree objects, in that order. The first guests, which
+/// most tests use, stay guests.
+///
+/// For a model a test owns (`Harness::with`, the GPUI tests'
+/// `open_scene_with`): the plain demo keeps its object counts, which
+/// kernel tests rely on.
+pub fn custom_templates(m: &mut Model, count: usize) -> Vec<ObjectRef> {
+    let Some(inventory) = m.inventory.take() else {
+        return Vec::new();
+    };
+    let mut inventory = inventory.as_ref().clone();
+    let pool = inventory.pool_id;
+    let mut ids: Vec<VmId> = inventory
+        .vms
+        .values()
+        .filter(|vm| !vm.is_template && !vm.is_control_domain)
+        .map(|vm| vm.id)
+        .collect();
+    let first = ids.len().saturating_sub(count);
+    let ids = ids.split_off(first);
+    for (index, id) in ids.iter().enumerate() {
+        if let Some(vm) = inventory.vms.get_mut(id) {
+            vm.is_template = true;
+            vm.power_state = xenadmin_core::PowerState::Halted;
+            vm.name = format!("Custom template {}", index + 1);
+        }
+        if let Some(details) = inventory.details.vms.get_mut(id) {
+            details.is_default_template = Some(false);
+            details.current_operations.clear();
+            details.blocked_operations.clear();
+        }
+    }
+    inventory.revision += 1;
+    m.inventory = Some(Arc::new(inventory));
+    ids.into_iter()
+        .map(|id| ObjectRef::template(pool, id))
+        .collect()
+}
 
 /// A private directory under the system's temporary directory, removed
 /// with everything in it on drop.
@@ -138,6 +185,8 @@ struct World {
     lose_replies: bool,
     /// `task.get_record` says the task is pending.
     hold_tasks: bool,
+    /// A request the server does not serve waits instead of failing.
+    hold_unserved: bool,
     /// Events for the next `event.from`.
     pending: Vec<Value>,
 }
@@ -245,6 +294,7 @@ impl Server {
             running: false,
             lose_replies: false,
             hold_tasks: false,
+            hold_unserved: false,
             pending: Vec::new(),
         }));
         let signal = stop.clone();
@@ -318,6 +368,17 @@ impl Server {
     /// success.
     pub fn hold_tasks(&self, hold: bool) {
         self.world.lock().unwrap().hold_tasks = hold;
+    }
+
+    /// While set, a request the server does not serve (the first call of a
+    /// resource operation, `pool.get_by_uuid` for one on the pool) is kept
+    /// waiting, so the operation stays unfinished; cleared, the request is
+    /// dropped without a reply and the operation ends as the core ends one
+    /// whose host cannot be reached (`Rejected`). Held for ten seconds at
+    /// most. Without it such a request panics in its thread, with the same
+    /// end for the operation.
+    pub fn hold_unserved(&self, hold: bool) {
+        self.world.lock().unwrap().hold_unserved = hold;
     }
 }
 impl Drop for Server {
@@ -434,6 +495,13 @@ fn respond(world: &Mutex<World>, method: &str, params: &Value) -> Option<Value> 
             }
         }
         "task.destroy" if has_vm => Value::Null,
+        _ if world.lock().unwrap().hold_unserved => {
+            let start = Instant::now();
+            while world.lock().unwrap().hold_unserved && start.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            return None;
+        }
         _ => panic!("Unexpected fixture request: {method}"),
     })
 }
@@ -696,7 +764,12 @@ mod tests {
                 .any(|r| r.id == id && r.state == OperationState::Succeeded)
         });
         assert_eq!(live.server.count("Async.VM.start"), 1);
-        assert_eq!(live.server.count("task.destroy"), 1);
+        // The core destroys its task after it has recorded the outcome, so
+        // the request can arrive a moment after the record says Succeeded
+        // (it did on a slow runner).
+        poll_until(&mut live.h, "the finished task is destroyed", |_| {
+            live.server.count("task.destroy") == 1
+        });
         poll_until(&mut live.h, "the VM is shown running", |h| {
             h.model
                 .inventory_for(pool)

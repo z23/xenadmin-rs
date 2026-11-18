@@ -70,13 +70,20 @@
 //! - [`close`];
 //! - the command ids of `commands.rs`.
 //!
+//! ## Back from the review to the form
+//!
+//! Rune's Back cleared the review and showed the form again, with what was
+//! entered. Here the hand-over takes the form off the screen and keeps it
+//! in [`State::reviewed`]; the review gets `network::review_back`, and its
+//! Back button (`network-back`) closes the review and makes the kept form
+//! the editor again, without pending query or error. A review that has no
+//! form behind it (the removal of a bond, a continuation of the IPv6
+//! handover invoked without a form) has no Back, as a review opened by its
+//! command in `network`. The kept form is dropped when the review is gone
+//! any other way (`close`, another form, the next poll).
+//!
 //! ## What has no successor here, and why
 //!
-//! - **Back from the review to the form.** Rune's Back cleared the review
-//!   and showed the form again. The shared review dialog of `network` has
-//!   no Back for a review that was handed over, so this area's form is
-//!   closed by the hand-over: to change an entry, close the review and
-//!   open the command again.
 //! - The check marks and plus signs in the labels of the Rune member,
 //!   destination, mode and hash buttons: these are checkboxes and choices
 //!   now. The Rune keys of the buttons are the keys of the checkboxes and
@@ -114,6 +121,9 @@ pub struct State {
     /// The open management change, while it is a form or waits for the
     /// guest impact. Its review is the `network` area's.
     pub editor: Option<Editor>,
+    /// The form whose review is open in the `network` area's dialog: not
+    /// shown, kept for that review's Back ([`back_to_form`]).
+    pub reviewed: Option<Editor>,
 }
 
 pub struct Editor {
@@ -150,7 +160,7 @@ pub fn spec() -> AreaSpec {
         poll,
         on_scope_change: close,
         on_session_change: close,
-        ..AreaSpec::new("management_network")
+        ..AreaSpec::new(AREA)
     }
 }
 
@@ -158,19 +168,46 @@ pub fn spec() -> AreaSpec {
 /// pending query are dropped (a late answer finds nothing to fill).
 pub fn close(m: &mut Model) {
     m.areas.management_network.editor = None;
+    m.areas.management_network.reviewed = None;
 }
 
 /// The Rune `network_admin::poll`: both pending queries, always evaluated.
 fn poll(m: &mut Model, _clock: f64) -> bool {
+    // The review a form was kept for is gone (closed, submitted, replaced):
+    // nothing leads back to that form. It was not shown: no change.
+    if m.areas.management_network.reviewed.is_some() && !handed_over(m) {
+        m.areas.management_network.reviewed = None;
+    }
     let ipv6 = ipv6::poll(m);
     let bond = bond::poll(m);
     ipv6 || bond
+}
+
+const AREA: &str = "management_network";
+
+/// Whether the review open in the `network` dialog is one this area
+/// handed over with a form behind it.
+fn handed_over(m: &Model) -> bool {
+    network::handed_over_by(m) == Some(AREA)
+}
+
+/// The Back of a handed-over review (`network::Back::run`; the review is
+/// closed already): the kept form is the editor again, as Rune's Back
+/// showed the form with what was entered.
+fn back_to_form(m: &mut Model) {
+    let s = &mut m.areas.management_network;
+    if let Some(mut form) = s.reviewed.take() {
+        form.pending = None;
+        form.error = None;
+        s.editor = Some(form);
+    }
 }
 
 /// The Rune `set_form`: the form replaces whatever the area and the
 /// networking area had open, without review, pending query or error.
 pub(crate) fn open_form(m: &mut Model, pool: PoolId, host: HostId, form: Form) {
     network::close(m);
+    m.areas.management_network.reviewed = None;
     m.areas.management_network.editor = Some(Editor {
         pool,
         host,
@@ -191,9 +228,9 @@ pub(crate) fn report(m: &mut Model, error: String) {
 }
 
 /// The Rune `prepare_action`: a complete review. It is handed over to the
-/// shared review dialog of `network`, and this area's form closes. When
-/// the target cannot be observed the form stays, with the error, as in
-/// Rune.
+/// shared review dialog of `network`; this area's form leaves the screen
+/// and is kept for the review's Back. When the target cannot be observed
+/// the form stays, with the error, as in Rune.
 pub(crate) fn stage(
     m: &mut Model,
     pool: PoolId,
@@ -215,6 +252,26 @@ pub(crate) fn stage(
         ResourceTarget::Host(host) => Some(host),
         _ => None,
     };
+    // A form with something to enter is what Back returns to; the removal
+    // of a bond has none.
+    let form = m
+        .areas
+        .management_network
+        .editor
+        .take()
+        .filter(|e| !matches!(e.form, Form::Removal(_)));
     close(m);
     network::open_review(m, pool, None, host, target, operation, lines, Some(check));
+    if form.is_some() && m.areas.network.workspace.as_ref().is_some_and(|w| w.review.is_some()) {
+        m.areas.management_network.reviewed = form;
+        network::review_back(
+            m,
+            network::Back {
+                area: AREA,
+                run: back_to_form,
+            },
+        );
+    }
+    // Otherwise the dialog shows a failed observation instead of a review:
+    // nothing to go back from, and the form is dropped.
 }

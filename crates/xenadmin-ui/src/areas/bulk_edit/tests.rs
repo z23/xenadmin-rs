@@ -793,3 +793,58 @@ fn a_live_session_observes_the_pool_the_batches_are_submitted_with() {
     assert!(editor.observed.is_some());
     assert!(edit::current(&live.h.model, &editor));
 }
+
+/// The shared fixture of custom templates (`crate::testing`), which the
+/// window test of the template half uses: the templates are tree objects of
+/// the pool, the Search tab lists them, and two of them selected in its
+/// grid have `template.properties` in their menu, which opens the Properties
+/// dialog of templates on "Bulk properties". A stale menu does nothing.
+#[test]
+fn two_custom_templates_of_the_fixture_open_bulk_properties_from_the_grid_menu() {
+    let mut model = Model::demo(3, 48);
+    let guests_before = model.inventory.as_ref().unwrap().guests().count();
+    let templates = crate::testing::custom_templates(&mut model, 2);
+    assert_eq!(templates.len(), 2);
+    let mut h = Harness::with(model);
+    let i = inventory(&h);
+    assert_eq!(i.guests().count(), guests_before - 2);
+    for (index, object) in templates.iter().enumerate() {
+        assert_eq!(object.kind, ObjectKind::Template);
+        let vm = &i.vms[&object.vm_id().unwrap()];
+        assert!(vm.is_template);
+        assert_eq!(vm.power_state, PowerState::Halted);
+        assert_eq!(vm.name, format!("Custom template {}", index + 1));
+        assert_eq!(i.details.vms[&vm.id].is_default_template, Some(false));
+    }
+    h.select(Target::one(ObjectRef::pool(i.pool_id)));
+    h.open_tab(TabId::Search);
+    h.type_text("search-text", "Custom template");
+    h.click("search-apply");
+    let several = Target::many(templates.clone());
+    h.model.select_in_grid(several.clone());
+    assert!(
+        h.model
+            .open_context_menu(templates[0].clone(), MenuOrigin::Grid)
+    );
+    assert!(
+        h.model
+            .context_items()
+            .iter()
+            .any(|item| item.id == properties::TEMPLATE && item.disabled.is_none())
+    );
+    assert_eq!(h.model.invoke_context(properties::TEMPLATE), Ok(()));
+    assert_eq!(h.surface().id, "template-properties");
+    assert!(h.has_text("Bulk properties"));
+    assert_eq!(props(&h).targets.len(), 2);
+    h.click("batch-properties-close");
+    // The menu opened on both; the selection changes; the item does nothing.
+    h.model.select_in_grid(several);
+    assert!(
+        h.model
+            .open_context_menu(templates[0].clone(), MenuOrigin::Grid)
+    );
+    h.model.select_in_grid(Target::one(templates[1].clone()));
+    assert!(h.model.invoke_context(properties::TEMPLATE).is_err());
+    assert!(h.model.areas.bulk_edit.properties.is_none());
+    assert!(h.surfaces().is_empty());
+}

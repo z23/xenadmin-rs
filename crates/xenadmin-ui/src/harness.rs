@@ -955,6 +955,7 @@ pub(crate) mod probe {
             CommandSpec::new("probe.open", "Open Probe", "probe")
                 .menu(MenuPath::new(Menu::Tools, 200, 10))
                 .local(TabId::Home, 10)
+                .local_scopes(&[ObjectKind::None])
                 .eligibility(when_active)
                 .invoke(|m, _| m.areas.probe.open = true),
             CommandSpec::new("probe.tool", "Probe Tool", "probe")
@@ -964,6 +965,7 @@ pub(crate) mod probe {
             CommandSpec::new("probe.both", "Probe Both", "probe")
                 .toolbar(ToolbarSlot::new(ToolbarGroup::New, 210))
                 .local(TabId::Home, 20)
+                .local_scopes(&[ObjectKind::None])
                 .eligibility(|m, _| match m.areas.probe.both {
                     true => Eligibility::Enabled,
                     false => Eligibility::Hidden,

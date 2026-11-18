@@ -45,8 +45,10 @@
 //!
 //! What this area uses of others: `migration::{selected, host_label,
 //! sr_label, net_label}` and its scene fixture; `events::show_operation`
-//! (after a submission); `console::{tab_target, close_tab}` (the console of
-//! a guest that moves live closes at submission) and the command
+//! (after a submission); `console::{tab_target, close_tab}` and
+//! `console::windows::{open_windows, close}` (every console of a guest that
+//! moves live, on the tab and in a detached window, closes at submission:
+//! `single::release_console`) and the command
 //! `vm.console` (from [`show_destination`]);
 //! `session::select_transfer_destination`.
 //!

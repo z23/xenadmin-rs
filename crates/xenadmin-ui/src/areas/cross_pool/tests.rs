@@ -1154,3 +1154,50 @@ fn texts_name_the_places_of_this_client() {
     assert!(batch::INTERRUPTION.contains("Reconnect both pools and use Recheck"));
     assert!(batch::CONSOLE.contains("open it from the destination pool"));
 }
+
+/// A submitted live move ends every console of the moving guest: the
+/// Console tab's and the ones in detached console windows. The consoles of
+/// other guests, and of a guest with the same id in another pool, stay.
+#[test]
+fn a_submitted_live_move_closes_the_detached_console_windows_of_the_guest_too() {
+    use crate::areas::console::{self, windows};
+    use crate::intent::ConsoleWindowRequest;
+
+    let mut model = Model::fixture();
+    model.load_demo(3, 48);
+    let targets = console::scenes::guests(&model);
+    let (moving, staying) = (targets[0].clone(), targets[1].clone());
+    let pool = moving.pool;
+    let window_of = |model: &mut Model, target: &console::ConsoleTarget| {
+        console::open_synthetic(model, target.clone());
+        windows::detach(model).expect("a free console window")
+    };
+    let moving_window = window_of(&mut model, &moving);
+    let second_window = window_of(&mut model, &moving);
+    let staying_window = window_of(&mut model, &staying);
+    console::open_synthetic(&mut model, moving.clone());
+    let mut h = Harness::with(model);
+    h.take_intents();
+
+    // Another pool, the same guest id: not these consoles.
+    single::release_console(&mut h.model, PoolId::from(Uuid::new_v4()), &[moving.vm]);
+    assert!(console::tab_target(&h.model).is_some());
+    assert_eq!(windows::open_windows(&h.model).len(), 3);
+
+    single::release_console(&mut h.model, pool, &[moving.vm]);
+    assert!(console::tab_target(&h.model).is_none());
+    let open: Vec<_> = windows::open_windows(&h.model)
+        .into_iter()
+        .map(|window| window.id)
+        .collect();
+    assert_eq!(open, [staying_window]);
+    let closed: Vec<_> = h
+        .take_intents()
+        .into_iter()
+        .filter_map(|intent| match intent {
+            Intent::ConsoleWindow(ConsoleWindowRequest::Close(id)) => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(closed, [moving_window, second_window]);
+}

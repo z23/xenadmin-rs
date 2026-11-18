@@ -475,6 +475,7 @@ macro_rules! tab_command {
     ($id:expr, $label:literal, $order:literal, $control:expr) => {
         CommandSpec::new($id.0, $label, AREA)
             .local(TabId::Console, $order)
+            .local_scopes(&[ObjectKind::Host, ObjectKind::Vm])
             .eligibility(|m, target| tab_state(m, target, $control))
             .invoke(|m, target| tab_run(m, target, $control))
     };
@@ -489,11 +490,13 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(OPEN.0, "Open Console", AREA)
             .context(&[ObjectKind::Vm])
             .local(TabId::Console, 10)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(open_state)
             .invoke(open),
         CommandSpec::new(OPEN_HOST.0, "Open Host Text Console", AREA)
             .context(&[ObjectKind::Host])
             .local(TabId::Console, 11)
+            .local_scopes(&[ObjectKind::Host])
             .eligibility(open_host_state)
             .invoke(open),
         tab_command!(RECONNECT, "Reconnect", 20, Control::Reconnect),
@@ -518,6 +521,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(SEND_CTRL_ALT_DEL.0, "Send Ctrl+Alt+Del", AREA)
             .menu(place::VM_SEND_CTRL_ALT_DEL)
             .local(TabId::Console, 80)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(ctrl_alt_del_state)
             .invoke(|m, target| tab_run(m, target, Control::CtrlAltDelete)),
         tab_command!(SEND_CTRL_ALT_F1, "Ctrl+Alt+F1", 90, Control::CtrlAltF1),
