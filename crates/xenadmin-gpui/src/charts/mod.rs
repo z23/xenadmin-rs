@@ -258,8 +258,9 @@ fn plot(
     let plot = plot.clone();
     #[cfg(feature = "scenes")]
     let record = log::slot(key, window, cx);
+    // Only the test record needs the window and the context.
     #[cfg(not(feature = "scenes"))]
-    let _ = &window;
+    let _ = (&window, &cx);
     div()
         .id(id(key, PLOT))
         .test_support()
