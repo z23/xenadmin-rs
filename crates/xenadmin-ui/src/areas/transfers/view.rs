@@ -83,7 +83,8 @@ fn transfer(m: &Model, p: &Panel) -> Surface {
             button("transfer-close", "Close", panel::close),
         ]);
     }
-    let mut body = blocks![pool_line(m, p)];
+    // The review names the pool in its own lines.
+    let mut body = blocks![(here != Step::Review).then(|| pool_line(m, p)).flatten()];
     if here != Step::Review && !panel::current(m, p) {
         body.extend(blocks![
             caption(panel::STALE)
