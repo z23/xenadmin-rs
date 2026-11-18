@@ -47,7 +47,7 @@ TEST = re.compile(
     r"(?:pub(?:\([a-z]+\))?\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)",
     re.S,
 )
-SCENE = re.compile(r'SceneSpec::new\(\s*"([^"]+)"\s*,\s*("[^"]+"|[A-Z_]+)')
+SCENE = re.compile(r'SceneSpec::new\(\s*("[^"]+"|[A-Za-z_:]+)\s*,\s*("[^"]+"|[A-Z_]+)')
 RUNTIME_HELPER = re.compile(r"fn\s+([a-z0-9_]+)\s*\([^)]*\)\s*->\s*(?:rune::)?Runtime<")
 KEY = re.compile(r'\.key\(\s*"([^"]+)"\s*\)')
 FORMATTED_KEY = re.compile(r'\.key\(\s*format!\(\s*"([^"]+)"')
@@ -98,13 +98,28 @@ def rune_scene_names():
 
 
 def registered_scenes():
-    """Scene name -> (area, place of the registration), from the SceneSpec::new calls."""
+    """Scene name -> (area, place of the registration), from the SceneSpec::new calls.
+
+    The name is a string literal or a constant of a file of the same directory.
+    """
     found = {}
     for path in sorted(UI.rglob("*.rs")):
         if path.name.endswith("tests.rs"):
             continue
         short = place(path)
         for name, area in SCENE.findall(path.read_text(encoding="utf-8")):
+            if name.startswith('"'):
+                name = name.strip('"')
+            else:
+                constant = re.compile(r"const " + name.split("::")[-1] + r': &str = "([^"]+)"')
+                values = [
+                    value
+                    for sibling in sorted(path.parent.glob("*.rs"))
+                    for value in constant.findall(sibling.read_text(encoding="utf-8"))
+                ]
+                if len(values) != 1:
+                    raise SystemExit(f"{short}: cannot resolve the scene name {name}")
+                name = values[0]
             if area.startswith('"'):
                 area = area.strip('"')
             elif short.startswith("ui:areas/"):
