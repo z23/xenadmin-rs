@@ -820,8 +820,6 @@ fn a_pool_is_synthetic_by_its_own_session() {
 /// id leaves this list when its area lands; the list must be empty at the
 /// end of the migration.
 const PENDING: &[&str] = &[
-    // host_admin, page Power On: host_services.
-    "server.power-on-settings",
     // snapshots, the Snapshots tab: bulk_export.
     "snapshot.export",
     // migration, the second step of the wizard: cross_pool.
