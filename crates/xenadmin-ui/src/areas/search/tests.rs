@@ -339,6 +339,24 @@ fn native_search_picker_cancellation_and_closed_workspace_callbacks_are_ignored(
     );
     h.answer_file(None);
     assert!(!h.model.areas.search.files.busy);
+    // A picker that could not be shown ends the job and says so where the
+    // job was started, in the Rune words (which do not repeat the desktop's).
+    h.invoke("file.import-search");
+    h.fail_file("no portal");
+    assert!(!h.model.areas.search.files.busy);
+    assert_eq!(
+        h.node("search-import-error").text.as_deref(),
+        Some("Cannot open search file picker")
+    );
+    h.dismiss();
+    files::export(&mut h.model);
+    assert_eq!(file_prompt(&h), FileMode::Save);
+    h.fail_file("no portal");
+    assert!(!h.model.areas.search.files.busy);
+    assert_eq!(
+        h.model.areas.search.sheet.error.as_deref(),
+        Some("Cannot open search save picker")
+    );
     h.invoke("file.import-search");
     let directory = TempDir::new("search");
     let path = directory.path().join("scope.json");
@@ -464,6 +482,15 @@ fn native_report_export_captures_results_and_ignores_cancelled_or_stale_dialogs(
     );
     h.answer_file(None);
     assert!(!h.model.areas.search.files.busy);
+    assert!(h.find("report-error").is_none(), "a cancel says nothing");
+    // A save picker that could not be shown: the report dialog says so.
+    h.click("search-export-results");
+    h.fail_file("no portal");
+    assert!(!h.model.areas.search.files.busy);
+    assert_eq!(
+        h.node("report-error").text.as_deref(),
+        Some("Cannot open resource report save picker")
+    );
     // A prompt answered after its dialog was closed writes nothing.
     h.click("search-export-results");
     let d = TempDir::new("search");

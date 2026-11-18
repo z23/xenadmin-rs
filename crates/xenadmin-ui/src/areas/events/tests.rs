@@ -376,6 +376,19 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
     h.answer_file(None);
     assert!(!h.model.areas.events.export.pending);
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+    assert_eq!(h.model.areas.events.notice, None, "a cancel says nothing");
+    // A prompt that could not be shown ends the export too, and says why
+    // in the Rune words.
+    h.click("events.export");
+    assert!(h.model.areas.events.export.pending);
+    h.fail_file("org.freedesktop.portal.Desktop is not running");
+    assert!(!h.model.areas.events.export.pending);
+    assert_eq!(
+        h.node("activity-notice").text.as_deref(),
+        Some("Cannot open save dialog: org.freedesktop.portal.Desktop is not running")
+    );
+    assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 0);
+    assert_eq!(h.eligibility("events.export"), Eligibility::Enabled);
     h.click("events.export");
     // The list changes under the open prompt: the export is the capture.
     h.open_tab(TabId::Alerts);
