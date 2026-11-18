@@ -10,6 +10,7 @@
 
 pub mod areas;
 pub mod command;
+pub mod command_list;
 pub mod demo;
 mod demo_details;
 pub mod diagnostics;

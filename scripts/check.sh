@@ -33,6 +33,10 @@ gpui_scenes() {
     cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-scenes -- "$@"
 }
 gpui_scenes --list > artifacts/gpui/scenes.txt
+# The command registry, one line per command (id, label, menu path, toolbar slot, context
+# kinds, local row, shortcut, area): what the Commands table of the migration ledger is made
+# from (scripts/gpui_commands_table.py).
+gpui_scenes --commands > artifacts/gpui/commands.txt
 # Every scene the tool lists is rendered once: an area's scenes are in the list from the moment
 # the area registers them.
 while IFS= read -r gpui_scene; do
