@@ -103,10 +103,14 @@ fn the_interface_size_is_a_draft_until_apply() {
 }
 
 #[test]
-fn external_tools_is_offered_only_while_its_area_provides_the_command() {
-    let h = Harness::scene("options");
-    let registered = crate::command::find(CommandId("tools.external-tools")).is_some();
-    assert_eq!(h.find("configure-external-tools").is_some(), registered);
+fn external_tools_is_offered_by_the_command_of_vm_tools() {
+    // Was `external_tools_is_offered_only_while_its_area_provides_the_command`:
+    // `vm_tools` registers `tools.external-tools` now.
+    let mut h = Harness::scene("options");
+    assert!(crate::command::find(CommandId("tools.external-tools")).is_some());
+    assert_eq!(h.node("configure-external-tools").disabled, None);
+    h.click("configure-external-tools");
+    assert_ne!(h.surface().id, "options");
 }
 
 #[test]

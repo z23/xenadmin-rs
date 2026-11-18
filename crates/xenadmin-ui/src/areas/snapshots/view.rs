@@ -116,8 +116,7 @@ fn blocks_of_buttons(m: &Model, pool: PoolId, chosen: &[&Snapshot], tree: bool) 
 }
 
 /// "Export selection…": `bulk_export`'s command on the selected snapshots.
-/// Absent while that command is hidden or not registered, disabled with its
-/// reason.
+/// Absent while that command is hidden, disabled with its reason.
 fn export(m: &Model, pool: PoolId, chosen: &[&Snapshot]) -> Option<Button> {
     let target = Target::many(
         chosen

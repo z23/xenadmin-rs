@@ -246,9 +246,8 @@ fn links(m: &Model, w: &Editor) -> Vec<Block> {
 }
 
 /// A button that runs another area's command on this server. It follows
-/// that command's eligibility: absent while the command is hidden (or its
-/// area has not registered it), disabled with the command's reason. The
-/// Properties dialog gives way to the surface the command opens, as it did
+/// that command's eligibility: absent while the command is hidden, disabled
+/// with the command's reason. The Properties dialog gives way to the surface the command opens, as it did
 /// in Rune (the `open` of each of those modules cleared `host_workspace`);
 /// when the command is refused after all, the dialog stays and `m.error`
 /// has the reason.

@@ -718,7 +718,8 @@ fn the_multipathing_page_reviews_the_toggle_once_the_server_is_ready() {
 
 /// A page leads to the related workflow of another area by that area's
 /// command, and shows the way exactly as that command allows it: absent
-/// while hidden (or not yet registered), disabled with its reason.
+/// while hidden, disabled with its reason. Both commands are registered
+/// (`storage_maintenance`, `host_services`) and shown on this server.
 #[test]
 fn a_link_to_another_area_follows_that_areas_command() {
     let mut h = server();
@@ -734,6 +735,8 @@ fn a_link_to_another_area_follows_that_areas_command() {
     ] {
         h.pick(PAGES, page);
         let node = h.find(key);
+        assert!(crate::command::find(command).is_some(), "{key}");
+        assert!(node.is_some(), "{key} is offered");
         match h.model.eligibility(command, &target) {
             Eligibility::Hidden => assert!(node.is_none(), "{key}"),
             Eligibility::Disabled(reason) => {

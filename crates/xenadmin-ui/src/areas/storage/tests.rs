@@ -636,9 +636,23 @@ fn the_storage_tab_of_a_pool_lists_its_repositories_as_objects() {
     ] {
         assert!(local.contains(&command), "{command} in {local:?}");
     }
+    // The commands of `storage_maintenance` and `network` on a repository
+    // are on the same row, before this area's own, and in the row's menu.
+    let at = |command: &str| {
+        local
+            .iter()
+            .position(|id| *id == command)
+            .unwrap_or_else(|| panic!("{command} in {local:?}"))
+    };
+    assert!(at("storage.repair") < at("storage.set-default"));
+    assert!(at("storage.set-default") < at("storage.rescan"));
+    assert!(at("storage.rescan") < at("storage.trim"));
     // The row is a tree object: the kernel's context menu.
     let menu = h.open_row_menu("storage-repositories-table", &repository.to_string());
     assert!(menu.iter().any(|item| item.id.0 == "storage.destroy"));
+    for command in ["storage.repair", "storage.set-default", "storage.rescan"] {
+        assert!(menu.iter().any(|item| item.id.0 == command), "{command}");
+    }
     h.choose("storage.destroy");
     assert!(matches!(reviewed(h), StorageOperation::Destroy { .. }));
     h.dismiss();
