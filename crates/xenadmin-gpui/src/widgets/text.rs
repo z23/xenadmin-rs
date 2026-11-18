@@ -162,7 +162,7 @@ pub fn missing_custom(id: String, custom: &Custom, cx: &App) -> AnyElement {
         .rounded(theme.radius)
         .border_1()
         .border_dashed()
-        .border_color(theme.warning)
+        .border_color(tone_color(Tone::Warning, cx))
         .text_sm()
         .text_color(theme.muted_foreground)
         .child(message)

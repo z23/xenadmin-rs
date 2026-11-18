@@ -20,6 +20,9 @@ use crate::kit::{ActiveTheme, App, Hsla, Theme, ThemeMode, gpui_kit, oklch, px};
 const ACCENT_HUE: f32 = 256.0;
 /// The hue the neutral greys lean toward.
 const NEUTRAL_HUE: f32 = 265.0;
+/// How much darker a filled button is under the pointer, and again when
+/// pressed.
+const HOVER_STEP: f32 = 0.04;
 /// The Kit's base font size at an interface scale of 100.
 const BASE_FONT_SIZE: f32 = 16.0;
 
@@ -51,34 +54,52 @@ pub fn apply(mode: ThemeMode, zoom: f32, cx: &mut App) {
     let dark = mode.is_dark();
     Theme::update(cx, |theme| {
         // The emphasised fill gives white text 4.9 (dark) and 5.6 (light)
-        // to one.
+        // to one. Under the pointer and pressed a filled button darkens, so
+        // its white label only gains contrast.
         let emphasis = if dark { 0.55 } else { 0.52 };
+        let white = oklch(1.0, 0.0, 0.0);
         theme.primary = accent(emphasis);
-        theme.primary_hover = accent(emphasis + 0.05);
-        theme.primary_active = accent(emphasis - 0.05);
-        theme.primary_foreground = oklch(1.0, 0.0, 0.0);
+        theme.primary_hover = accent(emphasis - HOVER_STEP);
+        theme.primary_active = accent(emphasis - HOVER_STEP * 2.0);
+        theme.primary_foreground = white;
         // The primary button has colours of its own in the Kit.
         theme.button_primary = accent(emphasis);
-        theme.button_primary_hover = accent(emphasis + 0.05);
-        theme.button_primary_active = accent(emphasis - 0.05);
-        theme.button_primary_foreground = oklch(1.0, 0.0, 0.0);
+        theme.button_primary_hover = accent(emphasis - HOVER_STEP);
+        theme.button_primary_active = accent(emphasis - HOVER_STEP * 2.0);
+        theme.button_primary_foreground = white;
         theme.progress_bar = accent(emphasis);
         theme.link = accent(if dark { 0.72 } else { 0.50 });
         // The selected row of a table and of a list: the accent, faint.
         theme.table_active = accent(emphasis).opacity(if dark { 0.30 } else { 0.16 });
         theme.table_active_border = accent(emphasis).opacity(0.0);
         theme.list_active = accent(emphasis).opacity(if dark { 0.26 } else { 0.14 });
-        // The warning button ("Review unknown outcome", "Acknowledge
-        // outcome"). The Kit writes its label in the status yellow, which
-        // cannot be read on the light surface: a quiet amber fill with a
-        // label of 7 to one or more on it, in both themes.
-        let amber = |lightness: f32, chroma: f32| oklch(lightness, chroma, 80.0);
-        let (fill, label) = if dark { (0.38, 0.92) } else { (0.90, 0.33) };
-        let step = if dark { 0.04 } else { -0.04 };
-        theme.button_warning = amber(fill, 0.08);
-        theme.button_warning_hover = amber(fill + step, 0.09);
-        theme.button_warning_active = amber(fill + step * 2.0, 0.10);
-        theme.button_warning_foreground = amber(label, 0.07);
+        // The destructive and the warning button ("Delete", "Review unknown
+        // outcome", "Acknowledge outcome"). The Kit's are a pale fill with a
+        // label in the status colour: salmon on pink and yellow on cream in
+        // the light theme, and a fill that is hard to tell from the surface
+        // in both. Here they are filled as the primary button is: a fill of
+        // three to one or more against the surface, white text of more than
+        // 4.5 to one on it.
+        let red = |lightness: f32| oklch(lightness, 0.19, 27.0);
+        let danger = if dark { 0.53 } else { 0.50 };
+        theme.button_danger = red(danger);
+        theme.button_danger_hover = red(danger - HOVER_STEP);
+        theme.button_danger_active = red(danger - HOVER_STEP * 2.0);
+        theme.button_danger_foreground = white;
+        let amber = |lightness: f32| oklch(lightness, 0.12, 70.0);
+        let warning = 0.50;
+        theme.button_warning = amber(warning);
+        theme.button_warning_hover = amber(warning - HOVER_STEP);
+        theme.button_warning_active = amber(warning - HOVER_STEP * 2.0);
+        theme.button_warning_foreground = white;
+        // Secondary text. The Kit's light grey has 4.7 to one on white and
+        // less than 4.5 on a selected row and on the muted surface; halved
+        // for a disabled label it falls under two to one.
+        if !dark {
+            theme.muted_foreground = gray(0.50);
+        }
+        // A table's column headings are secondary text, not fainter.
+        theme.table_head_foreground = theme.muted_foreground;
         // What is behind a dialog is dimmed enough to read as out of reach.
         theme.overlay = gpui_kit::hsla(0.0, 0.0, 0.0, if dark { 0.55 } else { 0.32 });
         theme.ring = accent(if dark { 0.68 } else { 0.55 });

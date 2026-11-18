@@ -4,15 +4,15 @@ use xenadmin_ui::surface::{Review, Tone};
 
 use super::{panel, property_list};
 use crate::kit::*;
-use crate::render::{Ui, join};
+use crate::render::{Ui, join, tone_color};
 
 /// What will happen, to what, and what stands in the way: the review lines
 /// word for word, the affected resources, the warnings, and the stale
 /// notice when the reviewed observation is no longer current.
 pub fn review_panel(ui: &Ui, path: &str, review: &Review, cx: &App) -> AnyElement {
     let theme = cx.theme();
-    let warning = theme.warning;
-    let danger = theme.danger;
+    let warning = tone_color(Tone::Warning, cx);
+    let danger = tone_color(Tone::Danger, cx);
     let muted = theme.muted_foreground;
     panel(Tone::Normal, cx)
         .id(SharedString::from(review.key.clone()))
