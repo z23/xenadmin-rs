@@ -630,6 +630,8 @@ pub fn start_connection(
     if let Some(waker) = &m.waker {
         connection.notify_on_change(waker.clone());
     }
+    // The handles of the connection this one replaces will not change again.
+    m.forget_operations_of(profile.id);
     m.workspace.active.insert(profile.id, connection);
     m.workspace.seen.remove(&profile.id);
     m.workspace.profile_status.remove(&profile.id);
@@ -640,7 +642,10 @@ pub fn start_connection(
 /// `clear_view`. Every area drops its part first, in its
 /// `on_session_change` hook, while the model still describes the previous
 /// session; then the kernel drops its own. It does not clear
-/// `operation_rows`, `resource_rows` or `resource_operations`.
+/// `operation_rows`, `resource_rows`, `resource_operations` or `operations`:
+/// the handles of VM operations belong to their session and stay polled
+/// whichever session the scope is in (`Model::forget_operations_of` drops
+/// them when the session's connection is replaced or removed).
 pub fn clear_view(m: &mut Model) {
     for area in crate::areas::specs() {
         (area.on_session_change)(m);
@@ -655,7 +660,6 @@ pub fn clear_view(m: &mut Model) {
     }
     m.diagnostics = None;
     m.diagnostic_results.clear();
-    m.operations.clear();
     m.snapshot = None;
     m.inventory = None;
     m.selection.grid = Target::none();
@@ -777,6 +781,7 @@ pub fn remove_record(m: &mut Model, id: ProfileId) {
         .and_then(|store| store.remove(id).map_err(|error| error.to_string()));
     match result {
         Ok(_) => {
+            m.forget_operations_of(id);
             m.workspace.proxy_sessions.remove(&id);
             m.workspace.active.remove(&id);
             m.workspace.seen.remove(&id);

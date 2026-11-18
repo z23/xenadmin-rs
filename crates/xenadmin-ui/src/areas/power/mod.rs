@@ -258,34 +258,15 @@ impl Guest {
     }
 }
 
-/// Submits a VM command through the connection of the VM's pool and keeps
-/// its handle with the kernel's (`m.operations`). In the scope session this
-/// is `Model::submit_tracked_command`; for another pool the same refusals
-/// are made in the same order (synthetic: `Stale`; 64 unresolved: `Busy`;
-/// no connection: `Closed`).
+/// Submits a VM command through the session of the VM's pool, which keeps
+/// its handle: `Model::submit_tracked_command_for` (synthetic: `Stale`; 64
+/// unresolved operations of that session: `Busy`; no connection: `Closed`).
 pub(crate) fn track_vm(
     m: &mut Model,
     pool: PoolId,
     command: VmCommand,
 ) -> Result<OperationId, Error> {
-    let owner = session::session_for_pool(m, pool);
-    if owner.is_none() || owner == m.workspace.selected {
-        return m.submit_tracked_command(command);
-    }
-    m.operations.retain(|op| !op.latest().state.terminal());
-    let connection = m.connection_for(pool);
-    crate::model::admit(
-        synthetic(m, pool),
-        m.operations.len(),
-        connection.is_some(),
-    )?;
-    let id = OperationId::new();
-    let operation = connection.ok_or(Error::Closed)?.submit(id, command)?;
-    if let Some(waker) = &m.waker {
-        operation.notify_on_change(waker.clone());
-    }
-    m.operations.push(operation);
-    Ok(id)
+    m.submit_tracked_command_for(pool, command)
 }
 
 /// [`track_vm`] with the result in `m.error`, which a success clears (the
@@ -302,12 +283,5 @@ pub(crate) fn permitted(
     pool: PoolId,
     requirements: &xenadmin_core::PermissionRequirements,
 ) -> bool {
-    let assessment = permissions::assess_for(m, pool, requirements);
-    match permissions::denial(&assessment) {
-        Some(reason) => {
-            m.error = Some(reason);
-            false
-        }
-        None => true,
-    }
+    permissions::check_for(m, pool, requirements)
 }

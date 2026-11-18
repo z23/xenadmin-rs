@@ -92,8 +92,16 @@ pub struct Model {
     pub error: Option<String>,
     pub preferences: Preferences,
     /// The handles of the VM operations submitted through
-    /// [`Model::submit_tracked_command`] in the scope session.
+    /// [`Model::submit_tracked_command`] and
+    /// [`Model::submit_tracked_command_for`], of every session. A handle
+    /// belongs to the session it was submitted through and stays here,
+    /// polled, whichever pool the tree shows, until its operation has
+    /// finished or its session's connection is replaced or removed.
     pub operations: Vec<Operation>,
+    /// The session each handle in `operations` was submitted through. A
+    /// handle without an entry (one an area pushed itself) belongs to the
+    /// session that shows its record's pool.
+    pub(crate) operation_sessions: std::collections::BTreeMap<OperationId, ProfileId>,
     /// The merged history of VM operations, oldest first.
     pub operation_rows: Vec<OperationRecord>,
     /// The handles of resource operations, of every pool.
@@ -246,6 +254,7 @@ impl Model {
             error: startup_error,
             preferences,
             operations: Vec::new(),
+            operation_sessions: std::collections::BTreeMap::new(),
             operation_rows: Vec::new(),
             resource_operations: Vec::new(),
             resource_rows: Vec::new(),
@@ -297,6 +306,8 @@ impl Model {
         let mut inventory = crate::demo::demonstration(hosts, vms);
         crate::demo_details::populate(&mut inventory);
         session::clear_view(self);
+        self.operations.clear();
+        self.operation_sessions.clear();
         self.resource_operations.clear();
         self.resource_rows.clear();
         self.operation_rows.clear();
@@ -447,6 +458,39 @@ impl Model {
             .map(|error| error.to_string());
     }
 
+    /// [`Model::control_operation`] over the connection through which a
+    /// pool is reached, for a record of another pool than the scope
+    /// session's (`record.pool`). The result is in `error`, which a success
+    /// clears. A recheck is a control message on the existing operation: it
+    /// never replays a write.
+    pub fn control_operation_for(
+        &mut self,
+        pool: PoolId,
+        id: OperationId,
+        control: OperationControl,
+    ) {
+        self.error = self
+            .try_control_operation_for(pool, id, control)
+            .err()
+            .map(|error| error.to_string());
+    }
+
+    /// [`Model::control_operation_for`] for a caller that shows the refusal
+    /// itself: `error` is left alone. Without a session that shows the pool
+    /// the answer is `Error::Closed`; a read-only connection answers
+    /// `Error::ReadOnly`, one that is not current `Error::Stale`. `Ok` means
+    /// the connection took the request, not that the host answered.
+    pub fn try_control_operation_for(
+        &self,
+        pool: PoolId,
+        id: OperationId,
+        control: OperationControl,
+    ) -> Result<(), Error> {
+        self.connection_for(pool)
+            .ok_or(Error::Closed)?
+            .control_operation(id, control)
+    }
+
     /// [`Model::submit_tracked_command`] for a caller that does not need the
     /// id: the result is in `error`, which is cleared on success.
     pub fn submit_command(&mut self, command: VmCommand) {
@@ -456,35 +500,154 @@ impl Model {
             .map(|e| e.to_string());
     }
 
-    /// The one place a VM command is submitted. A synthetic inventory
-    /// refuses with `Error::Stale`; more than [`MAX_OPERATIONS`] unresolved
-    /// operations refuse with `Error::Busy`; without a connection the answer
-    /// is `Error::Closed` (in that order: [`admit`]). The handle is kept in
-    /// `operations` and wakes the model when it changes; its record reaches
-    /// `operation_rows` at the next poll.
+    /// [`Model::submit_tracked_command_for`] with the result in `error`,
+    /// which is cleared on success.
+    pub fn submit_command_for(&mut self, pool: PoolId, command: VmCommand) {
+        self.error = self
+            .submit_tracked_command_for(pool, command)
+            .err()
+            .map(|e| e.to_string());
+    }
+
+    /// Submits a VM command in the scope session. A synthetic inventory
+    /// refuses with `Error::Stale`; [`MAX_OPERATIONS`] unresolved operations
+    /// of the session refuse with `Error::Busy`; without a connection the
+    /// answer is `Error::Closed` (in that order: [`admit`]). The handle is
+    /// kept in `operations` and wakes the model when it changes; its record
+    /// reaches `operation_rows` at the next poll.
+    ///
+    /// A command whose target may be in another pool goes through
+    /// [`Model::submit_tracked_command_for`].
     pub fn submit_tracked_command(&mut self, command: VmCommand) -> Result<OperationId, Error> {
-        self.admit_command()?;
-        let id = OperationId::new();
-        let operation = self
-            .connection
-            .as_ref()
-            .ok_or(Error::Closed)?
-            .submit(id, command)?;
-        if let Some(waker) = &self.waker {
-            operation.notify_on_change(waker.clone());
-        }
-        self.operations.push(operation);
-        Ok(id)
+        let (owner, synthetic) = (self.workspace.selected, self.demo);
+        let connection = self.connection.clone();
+        self.submit_through(owner, synthetic, connection, command)
+    }
+
+    /// The one place a VM command is submitted for a target of any pool:
+    /// through the session that shows `pool`, with the refusals of
+    /// [`Model::submit_tracked_command`] in the same order, made of that
+    /// session (a synthetic pool: `Stale`; [`MAX_OPERATIONS`] unresolved
+    /// operations of that session: `Busy`; not connected: `Closed`). The
+    /// handle belongs to that session: it stays polled, and its record
+    /// stays in `operation_rows`, when the scope moves to another pool.
+    ///
+    /// A pool no session shows is submitted in the scope session, whose
+    /// connection refuses an observation of another pool as stale.
+    pub fn submit_tracked_command_for(
+        &mut self,
+        pool: PoolId,
+        command: VmCommand,
+    ) -> Result<OperationId, Error> {
+        let Some(owner) = self.other_session(pool) else {
+            return self.submit_tracked_command(command);
+        };
+        let synthetic = self.workspace.synthetic.contains_key(&owner);
+        let connection = self.workspace.active.get(&owner).cloned();
+        self.submit_through(Some(owner), synthetic, connection, command)
     }
 
     /// The refusals of [`Model::submit_tracked_command`] that do not depend
     /// on the command, without submitting anything. Handles of finished
     /// operations are forgotten first, as a submission does.
     pub fn admit_command(&mut self) -> Result<(), Error> {
-        if !self.demo {
+        let connected = self.connection.is_some();
+        self.admit_through(self.workspace.selected, self.demo, connected)
+    }
+
+    /// [`Model::admit_command`] for the session that shows a pool: the
+    /// refusals of [`Model::submit_tracked_command_for`] without submitting.
+    pub fn admit_command_for(&mut self, pool: PoolId) -> Result<(), Error> {
+        let Some(owner) = self.other_session(pool) else {
+            return self.admit_command();
+        };
+        let synthetic = self.workspace.synthetic.contains_key(&owner);
+        let connected = self.workspace.active.contains_key(&owner);
+        self.admit_through(Some(owner), synthetic, connected)
+    }
+
+    /// The session that shows a pool, when it is not the scope session.
+    fn other_session(&self, pool: PoolId) -> Option<ProfileId> {
+        session::session_for_pool(self, pool).filter(|id| self.workspace.selected != Some(*id))
+    }
+
+    /// The session a handle belongs to: the one it was submitted through,
+    /// else the one that shows its record's pool.
+    fn operation_owner(&self, operation: &Operation) -> Option<ProfileId> {
+        let record = operation.latest();
+        self.operation_sessions
+            .get(&record.id)
+            .copied()
+            .or_else(|| session::session_for_pool(self, record.pool))
+    }
+
+    fn admit_through(
+        &mut self,
+        owner: Option<ProfileId>,
+        synthetic: bool,
+        connected: bool,
+    ) -> Result<(), Error> {
+        if !synthetic {
             self.operations.retain(|op| !op.latest().state.terminal());
+            self.forget_operation_sessions();
         }
-        admit(self.demo, self.operations.len(), self.connection.is_some())
+        let unresolved = self
+            .operations
+            .iter()
+            .filter(|operation| self.operation_owner(operation) == owner)
+            .count();
+        admit(synthetic, unresolved, connected)
+    }
+
+    fn submit_through(
+        &mut self,
+        owner: Option<ProfileId>,
+        synthetic: bool,
+        connection: Option<Connection>,
+        command: VmCommand,
+    ) -> Result<OperationId, Error> {
+        self.admit_through(owner, synthetic, connection.is_some())?;
+        let id = OperationId::new();
+        let operation = connection.ok_or(Error::Closed)?.submit(id, command)?;
+        if let Some(waker) = &self.waker {
+            operation.notify_on_change(waker.clone());
+        }
+        if let Some(owner) = owner {
+            self.operation_sessions.insert(id, owner);
+        }
+        self.operations.push(operation);
+        Ok(id)
+    }
+
+    /// Drops the entries of `operation_sessions` whose handle is gone.
+    fn forget_operation_sessions(&mut self) {
+        if self.operation_sessions.is_empty() {
+            return;
+        }
+        let kept: std::collections::BTreeSet<OperationId> =
+            self.operations.iter().map(|op| op.latest().id).collect();
+        self.operation_sessions.retain(|id, _| kept.contains(id));
+    }
+
+    /// Forgets the handles of the VM operations of one session: its
+    /// connection is being replaced or removed, so they will not change
+    /// again. Their records stay in `operation_rows`, and what the journal
+    /// knows of them comes back through the history of the session's next
+    /// connection. (`session::start_connection` and
+    /// `session::remove_record` call it.)
+    pub fn forget_operations_of(&mut self, profile: ProfileId) {
+        let gone: Vec<OperationId> = self
+            .operations
+            .iter()
+            .filter(|operation| self.operation_owner(operation) == Some(profile))
+            .map(|operation| operation.latest().id)
+            .collect();
+        if gone.is_empty() {
+            return;
+        }
+        self.operations
+            .retain(|operation| !gone.contains(&operation.latest().id));
+        self.forget_operation_sessions();
     }
 
     /// Keeps the handle of a resource operation a module has just
@@ -1613,7 +1776,7 @@ impl Model {
     /// 5. every area's `poll`, in the order of [`areas::AREAS`];
     /// 6. the developer inspection socket gets the live connections;
     /// 7. new results of `diagnostics` are detected;
-    /// 8. `operation_rows` is merged from the scope session's history and
+    /// 8. `operation_rows` is merged from the history of every session and
     ///    the handles in `operations`.
     pub fn poll(&mut self, clock: f64) -> bool {
         self.clock = clock;
@@ -1648,25 +1811,7 @@ impl Model {
             self.diagnostic_results = diagnostic_results;
             changed = true;
         }
-        let mut incoming = self
-            .connection
-            .as_ref()
-            .map(|connection| {
-                connection
-                    .operation_history()
-                    .iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        for operation in &self.operations {
-            incoming.push(operation.latest().as_ref().clone());
-        }
-        let rows = merge_operation_rows(&self.operation_rows, incoming);
-        if rows != self.operation_rows {
-            self.operation_rows = rows;
-            changed = true;
-        }
+        changed |= self.poll_operation_rows();
         changed
     }
 
@@ -1707,6 +1852,49 @@ impl Model {
             self.diagnostic_results.clear();
         }
         true
+    }
+
+    /// Merges the VM operation history of every session and the handles in
+    /// `operations` into `operation_rows` ([`merge_operation_rows`]): the
+    /// scope session's connection and every other connection the workspace
+    /// holds, so a record of a pool the tree does not show keeps changing
+    /// (the Events tab filters by pool). A handle whose session is gone
+    /// from the workspace is forgotten first; its record stays.
+    fn poll_operation_rows(&mut self) -> bool {
+        let scope = self.workspace.selected;
+        let orphaned: Vec<OperationId> = self
+            .operation_sessions
+            .iter()
+            .filter(|(_, profile)| {
+                Some(**profile) != scope && !self.workspace.active.contains_key(*profile)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if !orphaned.is_empty() {
+            self.operations
+                .retain(|operation| !orphaned.contains(&operation.latest().id));
+            self.forget_operation_sessions();
+        }
+        let mut incoming: Vec<OperationRecord> = Vec::new();
+        let others = self
+            .workspace
+            .active
+            .iter()
+            .filter(|(id, _)| Some(**id) != scope)
+            .map(|(_, connection)| connection);
+        for connection in self.connection.iter().chain(others) {
+            incoming.extend(connection.operation_history().iter().cloned());
+        }
+        for operation in &self.operations {
+            incoming.push(operation.latest().as_ref().clone());
+        }
+        let rows = merge_operation_rows(&self.operation_rows, incoming);
+        if rows == self.operation_rows {
+            false
+        } else {
+            self.operation_rows = rows;
+            true
+        }
     }
 
     /// Merges the scope session's resource history and the handles in

@@ -193,21 +193,15 @@ pub fn recheck(m: &mut Model, key: HiddenKey) -> Result<&'static str, String> {
             .map(|()| RECHECKING_BOTH)
             .map_err(|e| e.to_string());
     }
-    let connection = match key.family {
-        Family::Resource => {
-            session::resource_control_connection(m, key.id, OperationControl::Recheck)
-        }
-        Family::Vm => m.connection_for(key.pool),
-    };
-    connection
-        .as_ref()
-        .ok_or(Error::Closed)
-        .and_then(|c| match key.family {
-            Family::Vm => c.control_operation(key.id, OperationControl::Recheck),
-            Family::Resource => c.control_resource(key.id, OperationControl::Recheck),
-        })
-        .map(|()| RECHECKING)
-        .map_err(|e| e.to_string())
+    let control = OperationControl::Recheck;
+    match key.family {
+        Family::Vm => m.try_control_operation_for(key.pool, key.id, control),
+        Family::Resource => session::resource_control_connection(m, key.id, control)
+            .ok_or(Error::Closed)
+            .and_then(|c| c.control_resource(key.id, control)),
+    }
+    .map(|()| RECHECKING)
+    .map_err(|e| e.to_string())
 }
 
 // -- Request cancellation -------------------------------------------------------
@@ -289,10 +283,7 @@ pub fn cancel(m: &mut Model, key: HiddenKey) -> Result<(), String> {
     }
     let control = OperationControl::RequestCancellation;
     match key.family {
-        Family::Vm => m
-            .connection_for(key.pool)
-            .ok_or(Error::Closed)
-            .and_then(|c| c.control_operation(key.id, control)),
+        Family::Vm => m.try_control_operation_for(key.pool, key.id, control),
         Family::Resource => session::resource_control_connection(m, key.id, control)
             .ok_or(Error::Closed)
             .and_then(|c| c.control_resource(key.id, control)),
@@ -456,10 +447,7 @@ pub fn confirm_acknowledge(m: &mut Model) {
         Err(Error::Stale)
     } else {
         match key.family {
-            Family::Vm => m
-                .connection_for(key.pool)
-                .ok_or(Error::Closed)
-                .and_then(|c| c.control_operation(key.id, control)),
+            Family::Vm => m.try_control_operation_for(key.pool, key.id, control),
             Family::Resource => control_connection(m, key.id)
                 .ok_or(Error::Closed)
                 .and_then(|c| c.control_resource(key.id, control)),

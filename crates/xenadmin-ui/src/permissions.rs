@@ -74,6 +74,18 @@ pub fn check(m: &mut Model, requirements: &PermissionRequirements) -> bool {
     }
 }
 
+/// [`check`] against the session through which a pool is reached, for a
+/// submission whose target is in another pool than the scope session's.
+pub fn check_for(m: &mut Model, pool: PoolId, requirements: &PermissionRequirements) -> bool {
+    let assessment = assess_for(m, pool, requirements);
+    if assessment.decision().is_denied() {
+        m.error = Some(assessment.explanation());
+        false
+    } else {
+        true
+    }
+}
+
 /// The reason a review's confirm button is disabled: the explanation of a
 /// known denial. `None` when the permission is granted or unknown.
 pub fn denial(assessment: &PermissionAssessment) -> Option<String> {
@@ -93,6 +105,14 @@ pub fn footer_note(assessment: &PermissionAssessment) -> Text {
 pub fn power(m: &Model, action: PowerAction) -> Option<PermissionDecision> {
     m.snapshot
         .as_ref()
+        .map(|snapshot| snapshot.power_permission(action))
+}
+
+/// [`power`] of the session through which a pool is reached: `None` when no
+/// session shows the pool or it has no snapshot (a synthetic pool), which
+/// never blocks.
+pub fn power_for(m: &Model, pool: PoolId, action: PowerAction) -> Option<PermissionDecision> {
+    m.snapshot_for(pool)
         .map(|snapshot| snapshot.power_permission(action))
 }
 
@@ -132,6 +152,9 @@ mod tests {
             assessment.explanation()
         );
         assert_eq!(power(&m, PowerAction::Start), None);
+        assert_eq!(power_for(&m, pool, PowerAction::Start), None);
+        assert!(check_for(&mut m, pool, &requirements));
+        assert!(m.error.is_none());
     }
 
     // Rune: session_permissions_view.rs
