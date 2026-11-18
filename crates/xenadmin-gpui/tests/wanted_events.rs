@@ -1421,3 +1421,128 @@ fn destination_and_mapping_controls_produce_reviewed_typed_plan(cx: &mut TestApp
         ],
     );
 }
+
+/// host_services, wish 79: 65 crashdumps are three pages, and the last
+/// one can be reached and pressed in the smallest window.
+#[gpui_kit::test]
+fn crashdump_catalogue_pages_make_every_captured_candidate_reachable(cx: &mut TestAppContext) {
+    let scene = common::open_scene_with(cx, "host-support", SMALL, |m| {
+        let overview = m
+            .areas
+            .host_services
+            .support
+            .as_mut()
+            .and_then(|panel| panel.overview.as_mut())
+            .expect("the overview of the scene");
+        overview.crashdumps = (1..=65u128)
+            .map(|id| {
+                serde_json::from_value(serde_json::json!({
+                    "uuid": uuid::Uuid::from_u128(id),
+                    "timestamp": "20261108T00:00:00Z",
+                    "size": 4096,
+                }))
+                .expect("a crashdump record")
+            })
+            .collect();
+    });
+    let last = format!("host-crashdump-delete-{}", uuid::Uuid::from_u128(65));
+    must(&mut *cx, &scene, Says("Page 1 of 3"));
+    assert!(!has(cx, &scene, &last));
+    must(&mut *cx, &scene, Press("host-crashdump-next"));
+    must(&mut *cx, &scene, Says("Page 2 of 3"));
+    must(&mut *cx, &scene, Press("host-crashdump-next"));
+    must(&mut *cx, &scene, Says("Page 3 of 3"));
+    press_on(cx, &scene, &last);
+    // The review of that one dump, with its footer in the window.
+    must(
+        &mut *cx,
+        &scene,
+        Inside(&["host-crashdump-submit", "host-support-close"]),
+    );
+    must(
+        &mut *cx,
+        &scene,
+        Says(&*uuid::Uuid::from_u128(65).to_string().leak()),
+    );
+    assert_eq!(submitted(cx, &scene), 0);
+    close(cx, scene);
+}
+
+/// The activity scene with an operation of unknown outcome in its History:
+/// an interrupted join of another pool to the demo pool. The History list
+/// is shown and the row of the join is pressed.
+fn activity_with_a_join(cx: &mut TestAppContext, size: (f32, f32)) -> ShellWindow {
+    let source = uuid::Uuid::from_u128(0xa000_0000_0000_4000_8000_0000_0000_0001);
+    let scene = common::open_scene_with(cx, "activity", size, |m| {
+        let destination = m.inventory.as_ref().expect("the demo inventory").pool_id;
+        let record = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::from_u128(77),
+            "pool": source,
+            "target": {"Pool": source},
+            "action": {"Pool": {"Join": {
+                "source_host": uuid::Uuid::from_u128(78),
+                "destination_pool": destination,
+                "destination_coordinator": uuid::Uuid::from_u128(79),
+                "destination_address": "192.0.2.20",
+            }}},
+            "state": "OutcomeUnknown",
+            "progress": null,
+            "detail": "Fixture interrupted join",
+            "created_at_ms": 0,
+            "can_cancel": false,
+            "cancel_requested": false,
+            "steps": [],
+            "created": null,
+        }))
+        .expect("a join record");
+        m.resource_rows.push(record);
+    });
+    must(&mut *cx, &scene, Press("activity-History"));
+    let rows = rows_in(cx, &scene, "activity-table");
+    let mut found = false;
+    for (key, _) in &rows {
+        press_on(cx, &scene, key);
+        if says(cx, &scene, "Fixture interrupted join") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "no History row is the join: {rows:?}");
+    scene
+}
+
+/// events, wish 13: an interrupted join of another pool to this one is a
+/// row of the History list here, the destination.
+#[gpui_kit::test]
+fn joined_pool_history_is_visible_at_destination_and_acknowledges_both_reservations(
+    cx: &mut TestAppContext,
+) {
+    let scene = activity_with_a_join(cx, WIDE);
+    must(&mut *cx, &scene, Says("Fixture interrupted join"));
+    close(cx, scene);
+}
+
+/// events, wish 11: with an operation of unknown outcome selected, the
+/// explanation opens from the local row and its Close closes it.
+#[gpui_kit::test]
+fn the_outcome_explanation_opens_for_a_selected_unknown_operation(cx: &mut TestAppContext) {
+    for size in BOTH {
+        let scene = activity_with_a_join(cx, *size);
+        must(&mut *cx, &scene, Press("local:events.explain"));
+        must(&mut *cx, &scene, Front("failure-help-dialog"));
+        must(&mut *cx, &scene, Says("Outcome explanation"));
+        must(&mut *cx, &scene, Reach(&["failure-help-outcome"]));
+        must(&mut *cx, &scene, Inside(&["failure-help-close"]));
+        // What it says is its own: the selection of the table behind it
+        // changes and the dialog keeps its content.
+        let before = described(cx, &scene);
+        common::run(cx, &scene, |m| {
+            m.areas.events.search = "no such entry".into()
+        });
+        assert_eq!(described(cx, &scene), before);
+        must(&mut *cx, &scene, Press("failure-help-close"));
+        must(&mut *cx, &scene, NoSurface);
+        assert_eq!(submitted(cx, &scene), 0);
+        close(cx, scene);
+    }
+}
