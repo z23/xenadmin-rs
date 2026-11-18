@@ -2051,3 +2051,7 @@ pub fn merge_resource_rows(
 #[cfg(test)]
 #[path = "model_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "per_pool_tests.rs"]
+mod per_pool_tests;
