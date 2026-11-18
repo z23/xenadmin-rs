@@ -21,7 +21,7 @@
 //! | [`session`], [`Seat`] | reading a session (the front end) |
 //! | [`canvas`]: everything `pub` | the `console-canvas` element |
 //! | [`view::window`], [`windows::closed`], [`windows::close_all`], [`windows::WindowPayload`] | the detached windows |
-//! | `Intent::ToggleFullscreen` | fullscreen: the area asks, the front end toggles the window ([`take_fullscreen_requests`] is the retired stopgap) |
+//! | `Intent::ToggleFullscreen` | fullscreen: the area asks, the front end toggles the window |
 //!
 //! # Where the Rune console went
 //!
@@ -130,10 +130,6 @@ pub struct State {
     /// the tree scope.
     pub(crate) tab: Option<Session>,
     pub(crate) windows: windows::Registry,
-    /// Always empty: fullscreen is asked for with
-    /// `Intent::ToggleFullscreen`. Kept for [`take_fullscreen_requests`]
-    /// until its last caller is gone.
-    pub(crate) fullscreen: Vec<Seat>,
 }
 
 pub fn spec() -> AreaSpec {
@@ -308,17 +304,6 @@ pub(crate) fn open_synthetic(m: &mut Model, target: ConsoleTarget) {
     close_tab(m);
     let session = Session::opened(target, m, None, true);
     m.areas.console.tab = Some(session);
-}
-
-/// DEPRECATED, always empty: Fullscreen is asked for with
-/// `Intent::ToggleFullscreen(WindowRef::Main)` for [`Seat::Tab`] and
-/// `Intent::ToggleFullscreen(WindowRef::Console(id))` for a window
-/// ([`commands::run`]), which the shell performs for the main window and
-/// hands to `Hooks::console_fullscreen` for a console window. The function
-/// stays only until the console's front end no longer calls it; remove it
-/// and `State::fullscreen` then.
-pub fn take_fullscreen_requests(m: &mut Model) -> Vec<Seat> {
-    std::mem::take(&mut m.areas.console.fullscreen)
 }
 
 fn earlier(wake: &mut Option<f64>, seconds: f64) {

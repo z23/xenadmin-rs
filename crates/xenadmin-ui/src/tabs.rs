@@ -194,8 +194,9 @@ pub fn tabs_for(kind: ObjectKind, host_live: bool) -> &'static [TabId] {
 
 /// The areas that can provide a tab for an object kind, by area id, in the
 /// order they are asked. The first whose `tab` function returns a body wins.
-/// The `general` area is the information-only fallback of Storage,
-/// Networking and NICs until their areas land (AREAS.md).
+/// The `general` area comes last for Storage, Networking and NICs: it says
+/// that the pool has no inventory or that the object is no longer in it,
+/// the two cases the owning areas decline.
 pub fn providers(tab: TabId, kind: ObjectKind) -> &'static [&'static str] {
     use ObjectKind as K;
     match tab {

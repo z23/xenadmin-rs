@@ -670,3 +670,90 @@ fn the_general_tab_of_a_vm_lists_its_recent_operations_with_their_rune_controls(
         assert!(h.find("general-operations").is_none());
     }
 }
+
+/// The Storage, Networking and NICs tabs belong to `vm_devices`, `storage`
+/// and `network`: for every kind that has one of them the owning area is
+/// asked first and answers while the object is in the inventory. This area
+/// keeps no body of its own for them; it says only that the object is gone,
+/// or that the pool has no inventory.
+#[test]
+fn the_storage_networking_and_nics_tabs_are_other_areas_and_this_one_says_only_what_is_gone() {
+    let mut h = Harness::scene("demo");
+    let i = inventory(&h);
+    let pool = i.pool_id;
+    let nowhere = uuid::Uuid::from_u128(0xdead);
+    let text = |m: &Model, at: TabId, object: &ObjectRef| {
+        let body = tab(m, at, &Target::one(object.clone()))?;
+        let nodes = crate::surface::flatten_blocks("tab", &body.blocks());
+        assert_eq!(nodes.len(), 1, "{at:?} of {:?} is one line", object.kind);
+        nodes[0].text.clone()
+    };
+    let cases = [
+        (ObjectRef::pool(pool), None, "pool"),
+        (
+            ObjectRef::host(pool, *i.hosts.keys().next().unwrap()),
+            Some(ObjectRef::new(Some(pool), ObjectKind::Host, nowhere)),
+            "host",
+        ),
+        (
+            ObjectRef::vm(pool, i.guests().next().expect("guest").id),
+            Some(ObjectRef::new(Some(pool), ObjectKind::Vm, nowhere)),
+            "VM",
+        ),
+        (
+            ObjectRef::storage(pool, i.storage[0].uuid),
+            Some(ObjectRef::storage(pool, nowhere)),
+            "storage repository",
+        ),
+        (
+            ObjectRef::network(pool, i.networks[0].uuid),
+            Some(ObjectRef::network(pool, nowhere)),
+            "network",
+        ),
+    ];
+    let mut pairs = 0;
+    for (present, absent, what) in &cases {
+        for at in [TabId::Storage, TabId::Networking, TabId::Nics] {
+            if !provides(at, present.kind) {
+                continue;
+            }
+            pairs += 1;
+            // The owner is another area, and it answers for the object.
+            let providers = crate::tabs::providers(at, present.kind);
+            assert_eq!(providers.len(), 2, "{at:?} of {what}");
+            assert_eq!(providers[1], "general");
+            let owner = crate::areas::area(providers[0]).expect("the owning area");
+            assert!(
+                (owner.tab)(&h.model, at, &Target::one(present.clone())).is_some(),
+                "{} answers {at:?} of a {what}",
+                providers[0]
+            );
+            // What this area says of it is never an information body.
+            assert_eq!(
+                text(&h.model, at, present),
+                Some(format!("This {what} is no longer present in the inventory"))
+            );
+            // An object that is not in the inventory: the owner declines
+            // and the tab says so.
+            if let Some(absent) = absent {
+                assert!((owner.tab)(&h.model, at, &Target::one(absent.clone())).is_none());
+                h.select(Target::one(absent.clone()));
+                let shown = h.model.tab_body(at).expect("a body");
+                let nodes = crate::surface::flatten_blocks("tab", &shown.blocks());
+                assert_eq!(
+                    nodes[0].key.as_deref(),
+                    Some("general-missing"),
+                    "{at:?} of {what}"
+                );
+            }
+        }
+    }
+    assert_eq!(pairs, 9, "every pair of a tab and a kind");
+    // A pool without an inventory: one line, for every pair.
+    let elsewhere = PoolId::from(uuid::Uuid::from_u128(0xbeef));
+    let host = ObjectRef::new(Some(elsewhere), ObjectKind::Host, nowhere);
+    assert_eq!(
+        text(&h.model, TabId::Nics, &host).as_deref(),
+        Some("The inventory of this pool is not available. Reconnect to see this object.")
+    );
+}
