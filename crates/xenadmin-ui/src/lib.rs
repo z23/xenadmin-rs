@@ -95,7 +95,8 @@ pub mod prelude {
         Surface, SurfaceKind, SurfaceSize, Table, TableSelection, TableSort, Text, Tone, act,
         act_text, actions, alert, button, caption, checkbox, choice, column, columns, custom,
         divider, group, heading, image, input, no_op, notice, option, outcome, preformatted,
-        properties, property, review, row, secret_input, select, table, text, textarea,
+        private_textarea, properties, property, review, row, secret_input, select, table, text,
+        textarea,
     };
     pub use crate::tabs::{TabBody, TabId};
 }
