@@ -1,14 +1,19 @@
-//! Saved graph presets: the data `Preferences` stores.
+//! Saved graph presets: the Rune `metric_presets.rs`.
 //!
-//! This is the data half of the Rune `metric_presets.rs` (`Kind`, `Preset`,
-//! `Catalog` with its validation), moved here ahead of the `performance`
-//! area because `Preferences` embeds the `Catalog` and the stored file
-//! format must not change. Saving, applying and removing a preset from the
-//! Performance tab are still to be ported and build on this module.
+//! The first half is the data `Preferences` stores (`Kind`, `Preset`,
+//! `Catalog` with its validation); the stored file format is the Rune one.
+//! The second half is what the Performance tab does with the catalog:
+//! showing the presets in place of the charts, saving the current graph
+//! under a name, applying a preset to the current target and removing one.
+//! A preset holds a range and data-source names for a target type, never
+//! samples; applying one never changes the target.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use xenadmin_core::{MetricTarget, MetricsOptions};
+
+use super::metrics;
+use crate::model::Model;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Kind {
@@ -71,6 +76,112 @@ impl Catalog {
         *self = next;
         Ok(())
     }
+}
+
+/// The notice after a save.
+pub const SAVED: &str = "Graph preset saved on this computer";
+/// The notice after a preset was applied.
+pub const APPLIED: &str = "Graph preset applied to the current target";
+/// The refusal of a preset with named sources before the target's source
+/// list is known.
+pub const WAIT: &str = "Wait for the target's data-source list before applying this preset";
+
+/// Shows the presets in place of the charts, or the charts again (the Rune
+/// `open`, which was a toggle).
+pub fn toggle(m: &mut Model) {
+    if let Some(view) = &mut m.areas.performance.metrics {
+        view.show_presets = !view.show_presets;
+        view.choosing_sources = false;
+    }
+}
+
+/// Saves the current range and sources under the drafted name, for the
+/// current target's type. An existing name is updated.
+pub fn save(m: &mut Model) {
+    let Some(view) = &m.areas.performance.metrics else {
+        return;
+    };
+    let preset = Preset {
+        name: view.preset_name.trim().into(),
+        kind: Kind::of(view.target),
+        options: view.options.clone(),
+    };
+    let result = m.preferences.metric_presets.save(preset);
+    let saved = result.is_ok();
+    if let Some(view) = &mut m.areas.performance.metrics {
+        match result {
+            Ok(()) => {
+                view.error = None;
+                view.notice = Some(SAVED.into());
+            }
+            Err(e) => view.error = Some(e),
+        }
+    }
+    if saved {
+        m.save_preferences();
+    }
+}
+
+/// Applies the preset of this name and of the current target's type. A
+/// preset that names sources the target does not advertise changes
+/// nothing and says which.
+pub fn apply(m: &mut Model, name: &str) {
+    let Some(view) = &mut m.areas.performance.metrics else {
+        return;
+    };
+    let Some(preset) = m
+        .preferences
+        .metric_presets
+        .presets
+        .iter()
+        .find(|p| p.kind == Kind::of(view.target) && p.name == name)
+        .cloned()
+    else {
+        return;
+    };
+    if let Err(e) = preset.options.validate() {
+        view.error = Some(e.to_string());
+        return;
+    }
+    if !preset.options.sources.is_empty() {
+        let Some(snapshot) = &view.snapshot else {
+            view.error = Some(WAIT.into());
+            return;
+        };
+        let missing = preset
+            .options
+            .sources
+            .iter()
+            .filter(|name| !snapshot.sources.iter().any(|s| &s.name == *name))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            view.error = Some(format!(
+                "This target does not advertise preset sources: {}. Choose its data sources and save a separate preset.",
+                missing.join(", ")
+            ));
+            return;
+        }
+    }
+    view.options = preset.options;
+    view.preset_name = preset.name;
+    view.show_presets = false;
+    view.error = None;
+    view.notice = Some(APPLIED.into());
+    metrics::restart(m);
+}
+
+/// Removes the preset of this name and of the current target's type.
+pub fn remove(m: &mut Model, name: &str) {
+    let Some(view) = &m.areas.performance.metrics else {
+        return;
+    };
+    let kind = Kind::of(view.target);
+    m.preferences
+        .metric_presets
+        .presets
+        .retain(|p| p.kind != kind || p.name != name);
+    m.save_preferences();
 }
 
 #[cfg(test)]
