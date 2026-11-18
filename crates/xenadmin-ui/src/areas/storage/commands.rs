@@ -57,12 +57,16 @@ pub const ONLY_DETACHED: &str = "Only a detached host attachment can be removed.
 pub fn commands() -> Vec<CommandSpec> {
     const REPOSITORY: &[ObjectKind] = &[ObjectKind::StorageRepository];
     vec![
-        // Not in the local row: that row shows for every scope with a
-        // Storage tab, also a VM's, and the toolbar slot is always there.
+        // On the local row of the Storage tab of a pool and of a server
+        // (the plan's "Repository grid with New, ..."), not of a VM's or a
+        // repository's: the menu and the toolbar show it for every target,
+        // so the row is filtered by scope kind and not by `Hidden`.
         CommandSpec::new(NEW.0, "New Storage", AREA)
             .menu(place::STORAGE_NEW)
             .toolbar(ToolbarSlot::NEW_STORAGE)
             .context(&[ObjectKind::Pool, ObjectKind::Host])
+            .local(TabId::Storage, 10)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host])
             .eligibility(|m, target| Eligibility::enabled_if(new_pool(m, target).is_some(), NO_POOL))
             .invoke(|m, target| {
                 if let Some(pool) = new_pool(m, target) {

@@ -643,9 +643,10 @@ pub fn start_connection(
 /// `on_session_change` hook, while the model still describes the previous
 /// session; then the kernel drops its own. It does not clear
 /// `operation_rows`, `resource_rows`, `resource_operations` or `operations`:
-/// the handles of VM operations belong to their session and stay polled
-/// whichever session the scope is in (`Model::forget_operations_of` drops
-/// them when the session's connection is replaced or removed).
+/// the handles of VM operations and of resource operations belong to their
+/// session and stay polled whichever session the scope is in
+/// (`Model::forget_operations_of` drops them when the session's connection
+/// is replaced or removed).
 pub fn clear_view(m: &mut Model) {
     for area in crate::areas::specs() {
         (area.on_session_change)(m);
@@ -1231,30 +1232,10 @@ pub fn profile_for_pool(m: &Model, pool: PoolId) -> Option<ProfileId> {
         })
 }
 
-/// Whether a transfer between two pools can be rechecked now: both of its
-/// pools connected for writing. The `cross_pool` area gives the rule; until
-/// it lands this is the Rune `cross_pool_vm::can_recheck`.
-fn cross_pool_can_recheck(m: &Model, id: OperationId) -> bool {
-    let writable = |pool: PoolId| {
-        m.workspace.active.values().any(|c| {
-            !c.is_read_only()
-                && c.latest().is_current()
-                && c.latest().inventory().is_some_and(|i| i.pool_id == pool)
-        })
-    };
-    m.resource_rows
-        .iter()
-        .find(|r| r.id == id)
-        .is_some_and(|r| {
-            r.action.spans_pools()
-                && r.batch_parent.is_none()
-                && writable(r.pool)
-                && r.peer_pool().is_some_and(writable)
-        })
-}
-
 /// The connection that can recheck, acknowledge or cancel a resource
 /// operation, which may belong to another pool than the scope session's.
+/// None for a recheck of a transfer between two pools unless both are
+/// connected for writing (`areas::cross_pool::can_recheck` is the rule).
 pub fn resource_control_connection(
     m: &Model,
     id: OperationId,
@@ -1266,7 +1247,7 @@ pub fn resource_control_connection(
     }
     if matches!(control, OperationControl::Recheck)
         && record.action.spans_pools()
-        && !cross_pool_can_recheck(m, id)
+        && !crate::areas::cross_pool::can_recheck(m, id)
     {
         return None;
     }

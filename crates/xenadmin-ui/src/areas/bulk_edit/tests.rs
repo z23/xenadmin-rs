@@ -520,9 +520,8 @@ fn property_batch_picker_and_template_entry_work_with_keyboard_menu_capture() {
     );
     assert!(
         h.model
-            .context_menu()
+            .context_items()
             .iter()
-            .flatten()
             .any(|item| item.id == properties::VM && item.disabled.is_none())
     );
     let other = guests(&h, 5).objects[4].clone();

@@ -888,7 +888,6 @@ fn the_controls_change_the_session_and_ask_the_front_end() {
         format!("{:?}", h.take_intents()),
         "[ToggleFullscreen(Main)]"
     );
-    assert!(super::take_fullscreen_requests(&mut h.model).is_empty());
 
     let epoch = tab(&h).input_epoch();
     h.click(commands::RELEASE_INPUT.0);

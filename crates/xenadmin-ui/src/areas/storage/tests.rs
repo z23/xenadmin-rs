@@ -562,18 +562,41 @@ fn review_permission_notice_is_reachable_without_bypassing_synthetic_target_guar
 
 #[test]
 fn new_storage_is_in_the_menu_the_toolbar_and_the_context_menus_of_pool_and_server() {
-    let a = attached();
-    let h = &a.h;
+    let mut a = attached();
+    let h = &mut a.h;
     let item = h.menu_item("storage.new").expect("Storage > New Storage");
     assert_eq!(item.label, "New Storage");
     assert!(item.disabled.is_none());
     assert!(h.toolbar().iter().any(|item| item.id.0 == "storage.new"));
-    for target in [Target::one(ObjectRef::pool(a.pool)), a.host(0)] {
+    let pool = Target::one(ObjectRef::pool(a.pool));
+    let host = Target::one(ObjectRef::host(a.pool, a.hosts[0]));
+    for target in [pool.clone(), host.clone()] {
         let menu = h.context_menu(&target);
         assert!(menu.iter().any(|item| item.id.0 == "storage.new"));
     }
-    // Not in the local row: that row also shows on a VM's Storage tab.
-    assert!(h.local_row().iter().all(|item| item.id.0 != "storage.new"));
+    // First on the local row of the Storage tab of a pool and of a server
+    // (the plan's "Repository grid with New, ..."), whichever repository
+    // the grid has selected; not on the Storage tab of another kind.
+    let on_row = |h: &Harness| {
+        h.local_row()
+            .iter()
+            .position(|item| item.id.0 == "storage.new")
+    };
+    for scope in [pool, host] {
+        h.select(scope);
+        h.open_tab(TabId::Storage);
+        assert_eq!(on_row(h), Some(0));
+        assert_eq!(h.local_row()[0].disabled, None);
+    }
+    let i = inventory(h);
+    let guest = ObjectRef::vm(a.pool, *i.vms.keys().next().expect("a guest"));
+    let repository = ObjectRef::storage(a.pool, a.repository);
+    for scope in [guest, repository] {
+        h.select(Target::one(scope));
+        h.open_tab(TabId::Storage);
+        assert_eq!(h.model.active_tab(), TabId::Storage);
+        assert_eq!(on_row(h), None);
+    }
     // No pool at all: the slot stays, disabled with its reason.
     let h = Harness::new();
     assert_eq!(

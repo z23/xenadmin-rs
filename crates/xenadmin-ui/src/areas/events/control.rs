@@ -134,48 +134,6 @@ pub fn recheck_eligibility(m: &Model, key: HiddenKey) -> Eligibility {
     }
 }
 
-/// The writable connection that observes a pool: the Rune
-/// `cross_pool_vm::connection_for_pool`.
-fn connection_observing(m: &Model, pool: PoolId) -> Option<Connection> {
-    m.workspace
-        .active
-        .values()
-        .chain(m.connection.iter())
-        .find(|c| {
-            !c.is_read_only()
-                && c.latest()
-                    .observe_resource(ResourceTarget::Pool(pool))
-                    .is_ok()
-        })
-        .cloned()
-}
-
-/// The Rune `cross_pool_vm::recheck`: both pools are read again and the
-/// handle of that check is followed like any resource operation. It belongs
-/// to the `cross_pool` area, which is not ported yet; when it is, this is
-/// the one copy to remove.
-fn recheck_spanning(m: &mut Model, id: OperationId) -> Result<(), Error> {
-    let r = m
-        .resource_rows
-        .iter()
-        .find(|r| r.id == id)
-        .ok_or(Error::OperationConflict)?;
-    let peer = r
-        .peer_pool()
-        .filter(|_| r.action.spans_pools())
-        .ok_or(Error::InvalidMigration)?;
-    let batch = matches!(r.action, ResourceAction::VmWorkflowBatch(_));
-    let source = connection_observing(m, r.pool).ok_or(Error::Closed)?;
-    let dest = connection_observing(m, peer).ok_or(Error::Closed)?;
-    let handle = if batch {
-        source.recheck_cross_pool_batch(id, &dest)?
-    } else {
-        source.recheck_cross_pool_vm(id, &dest)?
-    };
-    m.track_resource(handle);
-    Ok(())
-}
-
 /// Reads the evidence of an unresolved operation again. `Ok` is what to
 /// tell the user; nothing is replayed either way.
 pub fn recheck(m: &mut Model, key: HiddenKey) -> Result<&'static str, String> {
@@ -189,7 +147,7 @@ pub fn recheck(m: &mut Model, key: HiddenKey) -> Result<&'static str, String> {
             .iter()
             .any(|r| r.id == key.id && r.action.spans_pools())
     {
-        return recheck_spanning(m, key.id)
+        return crate::areas::cross_pool::recheck(m, key.id)
             .map(|()| RECHECKING_BOTH)
             .map_err(|e| e.to_string());
     }

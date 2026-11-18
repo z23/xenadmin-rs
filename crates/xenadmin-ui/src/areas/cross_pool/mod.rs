@@ -30,10 +30,9 @@
 //! - [`recheck`], [`can_recheck`], [`connection_for_pool`]: reading a
 //!   transfer between two pools again (the Rune `cross_pool_vm::recheck`,
 //!   `can_recheck` and `connection_for_pool`, unchanged in behaviour). The
-//!   `events` area carries a local copy of the first and the third
-//!   (`events/control.rs`: `recheck_spanning`, `connection_observing`) and
-//!   `session.rs` one of the second (`cross_pool_can_recheck`): these are
-//!   the originals that replace them.
+//!   `events` area's Recheck calls the first and
+//!   `session::resource_control_connection` the second; the copies both
+//!   carried until this area landed are gone.
 //! - [`destination_guest`], [`destination_target`], [`destination_label`],
 //!   [`show_destination`]: the VM a finished single transfer created in its
 //!   destination pool (the Rune buttons "Show destination VM" and "Open

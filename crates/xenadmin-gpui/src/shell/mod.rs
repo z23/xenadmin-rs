@@ -88,6 +88,10 @@ struct OpenMenu {
     request: u64,
     /// What had the keyboard before the menu took it.
     restore: Option<FocusHandle>,
+    /// The keyboard's places inside the submenus of the menu. The Kit
+    /// moves the keyboard into a submenu that is opened, and that place
+    /// does not count as inside the menu that owns it.
+    submenus: Vec<FocusHandle>,
     _dismiss: Subscription,
 }
 
@@ -343,20 +347,15 @@ impl ShellView {
             .unwrap_or_else(|| self.default_menu_position(&key, window, cx));
         let restore = window.focused(cx);
         let store = self.ui.store.clone();
-        let menu = PopupMenu::build(window, cx, move |mut menu, window, _| {
-            // A guest's menu holds every area's commands and can be taller
-            // than a small window: it scrolls inside the window instead.
+        let submenus = menus::SubmenuFocus::default();
+        let inside = submenus.clone();
+        let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
+            // The menu nests as the model says, so its top level is short.
+            // In a small window it can still be taller than the window: it
+            // scrolls inside the window then.
             let room = window.viewport_size().height - px(16.);
-            menu = menu.scrollable(true).max_h(room);
-            for (index, group) in groups.iter().enumerate() {
-                if index > 0 {
-                    menu = menu.separator();
-                }
-                for item in group {
-                    menu = menu.item(menus::context_item(&store, item));
-                }
-            }
-            menu
+            let menu = menu.scrollable(true).max_h(room);
+            menus::context_entries(menu, &store, &groups, &inside, window, cx)
         });
         let dismiss = cx.subscribe_in(&menu, window, |shell, _, _: &DismissEvent, window, cx| {
             shell.menu_dismissed(window, cx);
@@ -368,6 +367,7 @@ impl ShellView {
             key,
             request: self.menu_anchor.requests(),
             restore,
+            submenus: submenus.take(),
             _dismiss: dismiss,
         });
     }
@@ -376,7 +376,11 @@ impl ShellView {
     /// had it, unless a press elsewhere has already moved it on.
     fn end_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<u64> {
         let open = self.menu.take()?;
-        let held = open.menu.focus_handle(cx).contains_focused(window, cx);
+        let held = open.menu.focus_handle(cx).contains_focused(window, cx)
+            || open
+                .submenus
+                .iter()
+                .any(|submenu| submenu.contains_focused(window, cx));
         if held || window.focused(cx).is_none() {
             match &open.restore {
                 Some(handle) => handle.focus(window, cx),

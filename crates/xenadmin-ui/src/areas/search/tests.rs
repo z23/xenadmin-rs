@@ -942,7 +942,7 @@ fn the_context_scene_opens_the_menu_of_the_first_guest() {
     );
     assert_eq!(h.model.target(), Target::one(menu.object.clone()));
     assert!(h.model.context_menu_valid());
-    let items: Vec<_> = h.model.context_menu().into_iter().flatten().collect();
+    let items = h.model.context_items();
     assert!(items.iter().any(|item| item.id.0 == "object.copy-uuid"));
     assert!(items.iter().any(|item| item.id == OPEN_RESULT));
     // The scene tree says which menu is open and what it offers.
@@ -953,11 +953,16 @@ fn the_context_scene_opens_the_menu_of_the_first_guest() {
     assert_eq!(shown["object"], serde_json::json!(menu.object));
     assert_eq!(shown["target"], serde_json::json!([menu.object]));
     assert_eq!(shown["valid"], true);
+    // An entry of a group is an item or a submenu of items, as in `menus`.
     let listed: Vec<&serde_json::Value> = shown["items"]
         .as_array()
         .unwrap()
         .iter()
         .flat_map(|group| group.as_array().unwrap())
+        .flat_map(|entry| match entry.get("item") {
+            Some(item) => vec![item],
+            None => entry["submenu"]["items"].as_array().unwrap().iter().collect(),
+        })
         .collect();
     assert_eq!(listed.len(), items.len());
     for (listed, item) in listed.iter().zip(&items) {

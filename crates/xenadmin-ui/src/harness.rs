@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use crate::command::{self, CommandId, Eligibility, MenuItem, MenuView};
+use crate::command::{self, CommandId, Eligibility, MenuEntry, MenuItem, MenuView};
 use crate::intent::Intent;
 use crate::model::Model;
 use crate::nav::{NavRow, NavView};
@@ -659,12 +659,30 @@ impl Harness {
         }
     }
 
-    /// The context menu of a target, flattened.
+    /// The context menu of a target, flattened: every item, those of its
+    /// submenus included, in order.
     pub fn context_menu(&self, target: &Target) -> Vec<MenuItem> {
+        command::flatten(command::context_menu(&self.model, target))
+    }
+
+    /// The context menu of a target as the user sees it: groups of items
+    /// and submenus. `println!("{}", command::outline(&h.context_entries(..)))`
+    /// prints it.
+    pub fn context_entries(&self, target: &Target) -> Vec<Vec<MenuEntry>> {
         command::context_menu(&self.model, target)
-            .into_iter()
-            .flatten()
-            .collect()
+    }
+
+    /// The top level of the context menu of a target: the label of each
+    /// item and each submenu, in order.
+    pub fn context_top(&self, target: &Target) -> Vec<String> {
+        top_labels(&command::context_menu(&self.model, target))
+    }
+
+    /// The items of the submenu with this label in the context menu of a
+    /// target. Panics, listing the top level, when there is none.
+    #[track_caller]
+    pub fn context_submenu(&self, target: &Target, label: &str) -> Vec<MenuItem> {
+        submenu_of(command::context_menu(&self.model, target), label)
     }
 
     // -- Navigation and context menus --------------------------------------
@@ -712,7 +730,22 @@ impl Harness {
         if !self.model.open_context_menu(object, origin) {
             return Vec::new();
         }
-        self.model.context_menu().into_iter().flatten().collect()
+        command::flatten(self.model.context_menu())
+    }
+
+    /// The open context menu as the user sees it: groups of items and
+    /// submenus. Empty when none is open.
+    pub fn menu_entries(&self) -> Vec<Vec<MenuEntry>> {
+        self.model.context_menu()
+    }
+
+    /// The items of the submenu with this label in the open context menu:
+    /// what pointing at it shows. Panics, listing the top level, when the
+    /// open menu has no such submenu. Choose one of them with
+    /// [`Harness::choose`].
+    #[track_caller]
+    pub fn open_submenu(&self, label: &str) -> Vec<MenuItem> {
+        submenu_of(self.model.context_menu(), label)
     }
 
     /// Chooses an item of the open context menu. `Err` carries the reason
@@ -801,6 +834,29 @@ impl Harness {
     pub fn tree(&self) -> serde_json::Value {
         scene::tree(&self.model)
     }
+}
+
+/// The label of each entry of the top level of a menu, in order.
+fn top_labels(groups: &[Vec<MenuEntry>]) -> Vec<String> {
+    groups
+        .iter()
+        .flatten()
+        .map(|entry| match entry {
+            MenuEntry::Item(item) => item.label.clone(),
+            MenuEntry::Submenu { label, .. } => (*label).to_owned(),
+        })
+        .collect()
+}
+
+#[track_caller]
+fn submenu_of(groups: Vec<Vec<MenuEntry>>, label: &str) -> Vec<MenuItem> {
+    let top = top_labels(&groups);
+    groups
+        .into_iter()
+        .flatten()
+        .find(|entry| entry.submenu() == Some(label))
+        .map(MenuEntry::into_items)
+        .unwrap_or_else(|| panic!("the menu has no submenu `{label}`; its top level is {top:?}"))
 }
 
 /// The button of a command in the toolbar (`base` "toolbar") or the local

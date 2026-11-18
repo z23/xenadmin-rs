@@ -10,7 +10,11 @@
 //! selection. The dialog makes every check again.
 //!
 //! None of the organization commands has a menu path: the plan's Menus
-//! table has no item for them, and Rune reached them from one button.
+//! table has no item for them, and Rune reached them from one button. In a
+//! context menu they are the submenu "Organize"
+//! ([`place::CONTEXT_ORGANIZE`]); where one of them is alone (Create folder
+//! on a folder) it is a plain item, and a tag's or a folder's own Rename and
+//! Delete are the menu of that tag or folder, not a submenu of it.
 
 use xenadmin_core::AppliancePower;
 
@@ -65,19 +69,33 @@ pub fn commands() -> Vec<CommandSpec> {
     const TAG: &[ObjectKind] = &[ObjectKind::Tag];
     const FOLDER: &[ObjectKind] = &[ObjectKind::Folder];
     const VAPP: &[ObjectKind] = &[ObjectKind::Appliance];
+    const ORGANIZE: &str = place::CONTEXT_ORGANIZE;
     vec![
-        organization!(TAG_ADD, Action::AddTag, OBJECTS).multi(),
-        organization!(TAG_REMOVE, Action::RemoveTag, OBJECTS).multi(),
-        organization!(FOLDER_MOVE, Action::MoveFolder, OBJECTS).multi(),
-        organization!(FIELD_SET, Action::SetField, OBJECTS).multi(),
-        organization!(FIELD_CLEAR, Action::RemoveField, OBJECTS).multi(),
+        organization!(TAG_ADD, Action::AddTag, OBJECTS)
+            .multi()
+            .context_submenu(ORGANIZE),
+        organization!(TAG_REMOVE, Action::RemoveTag, OBJECTS)
+            .multi()
+            .context_submenu(ORGANIZE),
+        organization!(FOLDER_MOVE, Action::MoveFolder, OBJECTS)
+            .multi()
+            .context_submenu(ORGANIZE),
+        organization!(FIELD_SET, Action::SetField, OBJECTS)
+            .multi()
+            .context_submenu(ORGANIZE),
+        organization!(FIELD_CLEAR, Action::RemoveField, OBJECTS)
+            .multi()
+            .context_submenu(ORGANIZE),
         organization!(TAG_RENAME, Action::RenameTag, TAG),
         organization!(TAG_DELETE, Action::DeleteTag, TAG),
+        // With the five above in the menu of a pool; alone, and so a plain
+        // item, in the menu of a folder.
         organization!(
             FOLDER_CREATE,
             Action::CreateFolder,
             &[ObjectKind::Folder, ObjectKind::Pool]
-        ),
+        )
+        .context_submenu(ORGANIZE),
         organization!(FOLDER_RENAME, Action::RenameFolder, FOLDER),
         organization!(FOLDER_DELETE, Action::DeleteFolder, FOLDER),
         CommandSpec::new(VAPPS.0, "vApps", AREA)

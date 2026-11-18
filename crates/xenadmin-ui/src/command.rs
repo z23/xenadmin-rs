@@ -286,6 +286,12 @@ pub mod place {
     }
     pub const WINDOW_CLOSE_ALL_CONSOLES: MenuPath = at(Menu::Window, 2, 10);
 
+    /// Submenus of the context menus for commands the menu bar does not
+    /// hold ([`super::CommandSpec::context_submenu`]): tags, folders and
+    /// custom fields of any object; the management interface of a server.
+    pub const CONTEXT_ORGANIZE: &str = "Organize";
+    pub const CONTEXT_MANAGEMENT_INTERFACE: &str = "Management Interface";
+
     pub const HELP_HELP: MenuPath = at(Menu::Help, 1, 10);
     pub const HELP_WEBSITE: MenuPath = at(Menu::Help, 2, 10);
     pub const HELP_ABOUT: MenuPath = at(Menu::Help, 9, 10);
@@ -361,6 +367,9 @@ pub struct CommandSpec {
     pub toolbar: Option<ToolbarSlot>,
     /// The object kinds whose context menu shows the command.
     pub context: &'static [ObjectKind],
+    /// The submenu of the context menus that holds the command, for a
+    /// command whose menu path names none ([`CommandSpec::context_submenu`]).
+    pub context_submenu: Option<&'static str>,
     /// The tab whose local action row shows the command: the first
     /// [`CommandSpec::local`] call. Read [`CommandSpec::local_rows`], which
     /// has every tab.
@@ -368,6 +377,10 @@ pub struct CommandSpec {
     /// The further tabs whose local action row shows the command: the
     /// second and later [`CommandSpec::local`] calls.
     pub local_more: [Option<LocalRow>; LocalRow::MORE],
+    /// The kinds of tree scope whose tabs show the command on their local
+    /// action row ([`CommandSpec::local_scopes`]); `None` for every scope
+    /// that has the tab.
+    pub local_scopes: Option<&'static [ObjectKind]>,
     pub shortcut: Option<&'static str>,
     /// The command accepts several objects. A command that does not is
     /// left out of the context menu of a multi-selection.
@@ -400,8 +413,10 @@ impl CommandSpec {
             menu: None,
             toolbar: None,
             context: &[],
+            context_submenu: None,
             local: None,
             local_more: [None; LocalRow::MORE],
+            local_scopes: None,
             shortcut: None,
             multi: false,
             eligibility: always_enabled,
@@ -427,6 +442,27 @@ impl CommandSpec {
         self
     }
 
+    /// Puts the command into a submenu of the context menus that show it.
+    /// The submenu of the command's menu path is the default: a power
+    /// command is under "Start/Shut Down" in a context menu too. This names
+    /// one for a command that has no menu path, or another one. Commands
+    /// that name the same submenu within a group of the context menu are
+    /// collected into it, placed where the first of them would be; a
+    /// submenu that would hold one item is that item.
+    pub const fn context_submenu(mut self, name: &'static str) -> Self {
+        self.context_submenu = Some(name);
+        self
+    }
+
+    /// The submenu of a context menu that holds the command.
+    pub const fn context_submenu_name(&self) -> Option<&'static str> {
+        match (self.context_submenu, self.menu) {
+            (Some(name), _) => Some(name),
+            (None, Some(path)) => path.submenu,
+            (None, None) => None,
+        }
+    }
+
     /// Puts the command on the local action row of a tab. Call it once per
     /// tab for a command that belongs to several (the export of Alerts and
     /// Events): at most `1 + LocalRow::MORE` tabs; a call beyond that
@@ -446,6 +482,18 @@ impl CommandSpec {
             index += 1;
         }
         panic!("a command is on the local action row of too many tabs");
+    }
+
+    /// Keeps the command off the local action rows unless the tree scope is
+    /// one object of one of these kinds: for a command whose eligibility
+    /// cannot be `Hidden` elsewhere because a menu or the toolbar shows it
+    /// for every target (New Storage belongs on the Storage tab of a pool
+    /// and of a server, not on a VM's). It filters the rows only: menus,
+    /// the toolbar and context menus do not read it. A command whose
+    /// eligibility is `Hidden` for the foreign kinds needs none of this.
+    pub const fn local_scopes(mut self, kinds: &'static [ObjectKind]) -> Self {
+        self.local_scopes = Some(kinds);
+        self
     }
 
     /// Every tab whose local action row shows the command, in the order of
@@ -730,6 +778,95 @@ impl MenuEntry {
             Self::Submenu { items, .. } => items,
         }
     }
+
+    /// The same, to change them.
+    pub fn items_mut(&mut self) -> &mut [MenuItem] {
+        match self {
+            Self::Item(item) => std::slice::from_mut(item),
+            Self::Submenu { items, .. } => items,
+        }
+    }
+
+    /// The items of the entry, owned.
+    pub fn into_items(self) -> Vec<MenuItem> {
+        match self {
+            Self::Item(item) => vec![item],
+            Self::Submenu { items, .. } => items,
+        }
+    }
+
+    /// The label of a submenu; `None` for an item.
+    pub fn submenu(&self) -> Option<&'static str> {
+        match self {
+            Self::Item(_) => None,
+            Self::Submenu { label, .. } => Some(label),
+        }
+    }
+}
+
+/// Every item of a menu in groups, submenus included, in order: what a
+/// front end without submenus would list.
+pub fn flatten(groups: Vec<Vec<MenuEntry>>) -> Vec<MenuItem> {
+    groups
+        .into_iter()
+        .flatten()
+        .flat_map(MenuEntry::into_items)
+        .collect()
+}
+
+/// A menu in groups as text, one line per entry, the items of a submenu
+/// indented under its label, a line of dashes between groups, a disabled
+/// item with its reason. For a test that prints or compares a menu.
+pub fn outline(groups: &[Vec<MenuEntry>]) -> String {
+    fn line(out: &mut String, indent: &str, item: &MenuItem) {
+        out.push_str(indent);
+        out.push_str(&item.label);
+        if let Some(reason) = &item.disabled {
+            out.push_str("  [disabled: ");
+            out.push_str(reason);
+            out.push(']');
+        }
+        out.push('\n');
+    }
+    let mut out = String::new();
+    for (index, group) in groups.iter().enumerate() {
+        if index > 0 {
+            out.push_str("---\n");
+        }
+        for entry in group {
+            match entry {
+                MenuEntry::Item(item) => line(&mut out, "", item),
+                MenuEntry::Submenu { label, items } => {
+                    out.push_str(label);
+                    out.push_str(" >\n");
+                    for item in items {
+                        line(&mut out, "    ", item);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Adds an item to a group: into the submenu it names, which is created
+/// where its first item arrives, or as an item of its own.
+fn place_entry(entries: &mut Vec<MenuEntry>, submenu: Option<&'static str>, item: MenuItem) {
+    let Some(name) = submenu else {
+        entries.push(MenuEntry::Item(item));
+        return;
+    };
+    let existing = entries.iter_mut().find_map(|entry| match entry {
+        MenuEntry::Submenu { label, items } if *label == name => Some(items),
+        _ => None,
+    });
+    match existing {
+        Some(items) => items.push(item),
+        None => entries.push(MenuEntry::Submenu {
+            label: name,
+            items: vec![item],
+        }),
+    }
 }
 
 /// One menu of the menu bar. `groups` are separated by separators. A menu
@@ -788,22 +925,7 @@ fn menu_bar_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<MenuVie
                     groups.push((path.group, Vec::new()));
                 }
                 let entries = &mut groups.last_mut().expect("a group was pushed").1;
-                match path.submenu {
-                    None => entries.push(MenuEntry::Item(item)),
-                    Some(name) => {
-                        let existing = entries.iter_mut().find_map(|entry| match entry {
-                            MenuEntry::Submenu { label, items } if *label == name => Some(items),
-                            _ => None,
-                        });
-                        match existing {
-                            Some(items) => items.push(item),
-                            None => entries.push(MenuEntry::Submenu {
-                                label: name,
-                                items: vec![item],
-                            }),
-                        }
-                    }
-                }
+                place_entry(entries, path.submenu, item);
             }
             MenuView {
                 menu,
@@ -849,7 +971,7 @@ fn in_context(spec: &CommandSpec, target: &Target) -> bool {
     }
 }
 
-fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec<MenuItem>> {
+fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec<MenuEntry>> {
     // Commands with a menu position keep the order of the menu bar; the
     // others follow in registry order as a last group.
     type Group = Option<(Menu, u8)>;
@@ -863,7 +985,7 @@ fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec
         })
         .collect();
     placed.sort_by_key(|(position, _)| *position);
-    let mut groups: Vec<(Group, Vec<MenuItem>)> = Vec::new();
+    let mut groups: Vec<(Group, Vec<MenuEntry>)> = Vec::new();
     for ((_, group, _), spec) in placed {
         let Some(item) = resolve_spec(m, spec, target) else {
             continue;
@@ -871,14 +993,31 @@ fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec
         if groups.last().is_none_or(|(last, _)| *last != group) {
             groups.push((group, Vec::new()));
         }
-        groups.last_mut().expect("a group was pushed").1.push(item);
+        let entries = &mut groups.last_mut().expect("a group was pushed").1;
+        place_entry(entries, spec.context_submenu_name(), item);
     }
-    groups.into_iter().map(|(_, items)| items).collect()
+    groups
+        .into_iter()
+        .map(|(_, entries)| entries.into_iter().map(alone).collect())
+        .collect()
+}
+
+/// A submenu of a context menu that holds one item is that item: a second
+/// step for one choice helps nobody.
+fn alone(entry: MenuEntry) -> MenuEntry {
+    match entry {
+        MenuEntry::Submenu { mut items, .. } if items.len() == 1 => {
+            MenuEntry::Item(items.remove(0))
+        }
+        entry => entry,
+    }
 }
 
 fn local_row_of(specs: &[CommandSpec], m: &Model, tab: TabId, target: &Target) -> Vec<MenuItem> {
+    let scope = m.scope().kind();
     let mut placed: Vec<(u8, &CommandSpec)> = specs
         .iter()
+        .filter(|spec| spec.local_scopes.is_none_or(|kinds| kinds.contains(&scope)))
         .filter_map(|spec| {
             spec.local_rows()
                 .find(|row| row.tab == tab)
@@ -907,8 +1046,10 @@ pub fn toolbar(m: &Model) -> Vec<Vec<MenuItem>> {
 
 /// The context menu of `target`, as groups. For several objects only the
 /// commands marked `multi` whose kinds cover every object are offered.
-/// Submenus are flattened.
-pub fn context_menu(m: &Model, target: &Target) -> Vec<Vec<MenuItem>> {
+/// It nests as the menu bar does: the commands of a group that name the
+/// same submenu ([`CommandSpec::context_submenu_name`]) are one
+/// [`MenuEntry::Submenu`]. [`flatten`] gives the plain list of items.
+pub fn context_menu(m: &Model, target: &Target) -> Vec<Vec<MenuEntry>> {
     context_menu_of(registry(), m, target)
 }
 
@@ -1020,8 +1161,8 @@ mod tests {
         items.iter().map(|item| item.label.as_str()).collect()
     }
 
-    fn flat(groups: Vec<Vec<MenuItem>>) -> Vec<MenuItem> {
-        groups.into_iter().flatten().collect()
+    fn flat(groups: Vec<Vec<MenuEntry>>) -> Vec<MenuItem> {
+        flatten(groups)
     }
 
     #[test]
@@ -1149,6 +1290,73 @@ mod tests {
     }
 
     #[test]
+    fn a_context_menu_nests_like_the_menu_bar_and_a_lone_item_is_no_submenu() {
+        let m = Model::fixture();
+        let one = context_menu_of(&specs(), &m, &Target::one(vm(1)));
+        // The power group is one submenu, named as in the VM menu.
+        assert_eq!(
+            one[0],
+            vec![MenuEntry::Submenu {
+                label: place::VM_POWER_SUBMENU,
+                items: flat(vec![one[0].clone()]),
+            }]
+        );
+        assert_eq!(labels(one[0][0].items()), ["Start", "Force Reboot"]);
+        assert!(
+            one[1..]
+                .iter()
+                .flatten()
+                .all(|entry| entry.submenu().is_none())
+        );
+
+        // A context submenu of its own: for commands without a menu path,
+        // and in place of the submenu of the path. The submenu stands where
+        // its first command is.
+        let more = [
+            CommandSpec::new("t.first", "First", "t").context(VM),
+            CommandSpec::new("org.tag.add", "Add Tag", "t")
+                .context(VM_OR_TEMPLATE)
+                .context_submenu("Organize"),
+            CommandSpec::new("t.between", "Between", "t").context(VM),
+            CommandSpec::new("org.tag.remove", "Remove Tag", "t")
+                .context(VM)
+                .context_submenu("Organize"),
+            CommandSpec::new("vm.pause", "Pause", "t")
+                .menu(place::VM_PAUSE)
+                .context(VM)
+                .context_submenu("Other"),
+            CommandSpec::new("vm.unpause", "Unpause", "t")
+                .menu(place::VM_UNPAUSE)
+                .context(VM)
+                .context_submenu("Other"),
+        ];
+        assert_eq!(more[1].context_submenu_name(), Some("Organize"));
+        assert_eq!(more[4].context_submenu_name(), Some("Other"));
+        assert_eq!(
+            specs()[3].context_submenu_name(),
+            Some(place::VM_POWER_SUBMENU)
+        );
+        assert_eq!(more[0].context_submenu_name(), None);
+        let menu = context_menu_of(&more, &m, &Target::one(vm(1)));
+        assert_eq!(
+            outline(&menu),
+            "Other >\n    Pause\n    Unpause\n---\nFirst\nOrganize >\n    Add Tag\n    Remove Tag\nBetween\n"
+        );
+        // On a template only one command of the submenu is offered: it is
+        // a plain item.
+        let template = ObjectRef::template(pool(), vm(3).vm_id().expect("id"));
+        let alone = context_menu_of(&more, &m, &Target::one(template));
+        assert_eq!(outline(&alone), "Add Tag\n");
+        // The menu bar does not know a context submenu.
+        let bar = menu_bar_of(&more, &m, &Target::one(vm(1)));
+        let vm_menu = bar.iter().find(|menu| menu.menu == Menu::Vm).expect("VM");
+        assert_eq!(
+            vm_menu.groups[0][0].submenu(),
+            Some(place::VM_POWER_SUBMENU)
+        );
+    }
+
+    #[test]
     fn a_local_row_lists_the_commands_of_its_tab_in_order() {
         let m = Model::fixture();
         let on_vm = local_row_of(&specs(), &m, TabId::Storage, &Target::one(vm(1)));
@@ -1158,6 +1366,33 @@ mod tests {
         let networking = local_row_of(&specs(), &m, TabId::Networking, &Target::none());
         assert_eq!(labels(&networking), ["Add Interface"]);
         assert!(local_row_of(&specs(), &m, TabId::General, &Target::none()).is_empty());
+    }
+
+    #[test]
+    fn a_local_row_shows_a_command_only_for_the_scope_kinds_it_names() {
+        // Never hidden by its eligibility (a menu shows it for every
+        // target), on the row for a pool and a server only.
+        let create = CommandSpec::new("t.create", "New", "t")
+            .local(TabId::Storage, 5)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host]);
+        let mut specs = specs();
+        specs.push(create);
+        let mut m = Model::fixture();
+        let row = |m: &Model, target: &Target| {
+            labels(&local_row_of(&specs, m, TabId::Storage, target)).contains(&"New")
+        };
+        m.select(Target::one(vm(1)));
+        assert!(!row(&m, &m.target()), "not on a VM's Storage tab");
+        m.select(Target::one(ObjectRef::pool(pool())));
+        assert!(row(&m, &m.target()));
+        // The scope decides, not the grid selection the command acts on.
+        assert!(row(&m, &Target::one(vm(1))));
+        m.select(Target::none());
+        assert!(!row(&m, &m.target()));
+        // A command without the filter is on the row of every scope.
+        assert!(
+            labels(&local_row_of(&specs, &m, TabId::Storage, &Target::none())).contains(&"Add")
+        );
     }
 
     #[test]

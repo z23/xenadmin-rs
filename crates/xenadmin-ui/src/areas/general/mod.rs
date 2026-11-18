@@ -1,5 +1,7 @@
-//! Area `general`: the General and Memory tabs, and the information-only
-//! Storage, Networking and NICs tabs until their areas provide them.
+//! Area `general`: the General and Memory tabs. Of the Storage, Networking
+//! and NICs tabs (the `vm_devices`, `storage` and `network` areas') it says
+//! only what those areas leave to it: that the pool has no inventory, or
+//! that the object is no longer in it.
 //!
 //! Rune modules: `inventory_information.rs` (the "General information"
 //! dialog), `resource_details.rs` (the fields appended to the details pane
@@ -131,15 +133,9 @@ fn body(m: &Model, view: &View, tab: TabId, object: &ObjectRef) -> Option<Vec<Bl
         (TabId::Memory, K::Vm | K::Template) => information::vm_memory(view, vm?),
         (TabId::Memory, K::Host) => information::host_memory(view, host?),
         (TabId::Memory, K::Pool) => information::pool_memory(view),
-        (TabId::Storage, K::Vm | K::Template) => resources::vm_storage(view, vm?),
-        (TabId::Storage, K::Host) => resources::host_storage(view, host?),
-        (TabId::Storage, K::Pool) => resources::pool_storage(view),
-        (TabId::Storage, K::StorageRepository) => resources::repository_storage(view, object),
-        (TabId::Networking, K::Vm | K::Template) => resources::vm_networking(view, vm?),
-        (TabId::Networking, K::Host) => resources::host_networking(view, host?),
-        (TabId::Networking, K::Pool) => resources::pool_networking(view),
-        (TabId::Networking, K::Network) => resources::network_networking(view, object),
-        (TabId::Nics, K::Host) => resources::host_nics(view, host?),
+        // The owning area was asked first and answers whenever the object
+        // is in the inventory: this is the object that is not.
+        (TabId::Storage | TabId::Networking | TabId::Nics, kind) => resources::gone(kind)?,
         _ => return None,
     })
 }

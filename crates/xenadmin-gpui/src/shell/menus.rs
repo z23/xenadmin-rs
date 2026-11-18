@@ -7,7 +7,7 @@
 //! `AppMenuBar` draws them in the window.
 //!
 //! The context menu of a row is the model's too (`Model::context_menu`):
-//! its items are built here and the shell presents it.
+//! its items and its submenus are built here and the shell presents it.
 //!
 //! Three steps make a change visible (kit-platform.md, 3.3): `cx.set_menus`,
 //! the copy in the Kit's `GlobalState`, and `AppMenuBar::reload`. The reload
@@ -70,6 +70,61 @@ pub fn context_item(store: &Entity<AppStore>, item: &MenuItem) -> PopupMenuItem 
             }
         });
     })
+}
+
+/// Where the keyboard is while a submenu of a context menu has it: one
+/// handle per submenu, collected while the menu is built. The shell asks
+/// them, beside the menu's own handle, whether the menu still holds the
+/// keyboard when it ends.
+#[derive(Clone, Default)]
+pub struct SubmenuFocus(Rc<std::cell::RefCell<Vec<FocusHandle>>>);
+
+impl SubmenuFocus {
+    /// The handles collected so far.
+    pub fn take(&self) -> Vec<FocusHandle> {
+        self.0.take()
+    }
+}
+
+/// Fills a context menu with the model's entries: an item per command, a
+/// separator between groups, and a submenu of the Kit for each submenu of
+/// the model. A submenu opens under the pointer or with the Right arrow or
+/// Enter, and Left goes back; choosing one of its items closes the whole
+/// menu, as choosing an item of the top level does. A submenu scrolls
+/// inside the window too.
+pub fn context_entries(
+    mut menu: PopupMenu,
+    store: &Entity<AppStore>,
+    groups: &[Vec<MenuEntry>],
+    focus: &SubmenuFocus,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    for (index, group) in groups.iter().enumerate() {
+        if index > 0 {
+            menu = menu.separator();
+        }
+        for entry in group {
+            menu = match entry {
+                MenuEntry::Item(item) => menu.item(context_item(store, item)),
+                MenuEntry::Submenu { label, items } => {
+                    let store = store.clone();
+                    let items = items.clone();
+                    let focus = focus.clone();
+                    menu.submenu(*label, window, cx, move |mut submenu, window, cx| {
+                        focus.0.borrow_mut().push(submenu.focus_handle(cx));
+                        let room = window.viewport_size().height - px(16.);
+                        submenu = submenu.scrollable(true).max_h(room);
+                        for item in &items {
+                            submenu = submenu.item(context_item(&store, item));
+                        }
+                        submenu
+                    })
+                }
+            };
+        }
+    }
+    menu
 }
 
 /// What a menu shows when no command of it applies to the selection. The
