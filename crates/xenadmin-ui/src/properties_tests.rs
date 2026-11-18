@@ -819,10 +819,7 @@ fn a_pool_is_synthetic_by_its_own_session() {
 /// lead to (a button that is absent until the command is registered). An
 /// id leaves this list when its area lands; the list must be empty at the
 /// end of the migration.
-const PENDING: &[&str] = &[
-    // migration, the second step of the wizard: cross_pool.
-    "vm.move-to-pool",
-];
+const PENDING: &[&str] = &[];
 
 /// Ids the tests use for a command that does not exist, on purpose.
 const NOT_COMMANDS: &[&str] = &[
