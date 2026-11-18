@@ -13,6 +13,7 @@ pub mod command;
 pub mod demo;
 mod demo_details;
 pub mod diagnostics;
+pub mod files;
 pub mod format;
 pub mod harness;
 pub mod intent;
@@ -29,6 +30,8 @@ pub mod selection;
 pub mod session;
 pub mod surface;
 pub mod tabs;
+#[cfg(test)]
+pub(crate) mod testing;
 mod tree;
 
 pub use areas::{AreaSpec, Areas};

@@ -10250,6 +10250,7 @@ name = "xenadmin-ui"
 version = "0.20.0"
 dependencies = [
  "image",
+ "rustix 1.1.6",
  "serde",
  "serde_json",
  "uuid",

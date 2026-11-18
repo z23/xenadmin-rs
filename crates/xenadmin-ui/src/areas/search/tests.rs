@@ -41,7 +41,7 @@ use xenadmin_core::{
     SearchKind, SearchResult,
 };
 
-use super::files::tests::Scratch;
+use crate::testing::TempDir;
 use super::query::{self, add_source, navigation};
 use super::*;
 use crate::{Harness, MenuOrigin};
@@ -340,7 +340,7 @@ fn native_search_picker_cancellation_and_closed_workspace_callbacks_are_ignored(
     h.answer_file(None);
     assert!(!h.model.areas.search.files.busy);
     h.invoke("file.import-search");
-    let directory = Scratch::new();
+    let directory = TempDir::new("search");
     let path = directory.path().join("scope.json");
     let catalog = SearchCatalog {
         schema_version: 1,
@@ -466,7 +466,7 @@ fn native_report_export_captures_results_and_ignores_cancelled_or_stale_dialogs(
     assert!(!h.model.areas.search.files.busy);
     // A prompt answered after its dialog was closed writes nothing.
     h.click("search-export-results");
-    let d = Scratch::new();
+    let d = TempDir::new("search");
     let ignored = d.path().join("ignored.json");
     h.click("report-close");
     h.invoke("tools.inventory-report");
@@ -870,7 +870,7 @@ fn saved_searches_are_rows_of_their_view_and_can_be_exported_and_deleted() {
     assert_eq!(h.model.preferences.saved_searches.searches.len(), 2);
     h.click("search-save-cancel");
     // Export writes the definitions, privately.
-    let d = Scratch::new();
+    let d = TempDir::new("search");
     let path = d.path().join("searches.json");
     h.click("search.export");
     assert_eq!(file_prompt(&h), FileMode::Save);
