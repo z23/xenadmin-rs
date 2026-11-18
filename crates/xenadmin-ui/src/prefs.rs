@@ -358,13 +358,16 @@ mod tests {
         let written = serde_json::to_value(&read).expect("encoded");
         let original: serde_json::Value = serde_json::from_str(&file).expect("sample");
         assert_eq!(written, original);
-        // The fourteen fields of the Rune struct, no more and no fewer.
-        let names: Vec<_> = written
+        // The fourteen fields of the Rune struct, no more and no fewer. The
+        // order of an object's keys depends on a serde_json feature that
+        // another crate of the workspace may turn on, so it is not compared.
+        let mut names: Vec<_> = written
             .as_object()
             .expect("an object")
             .keys()
             .map(String::as_str)
             .collect();
+        names.sort_unstable();
         assert_eq!(
             names,
             [
