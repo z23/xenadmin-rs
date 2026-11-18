@@ -373,8 +373,16 @@ pub enum Control {
     Text {
         /// The draft. Always empty for a secret field.
         value: String,
-        /// The draft of a secret field. The front end masks it and keeps no
-        /// copy of it after it has handed an edit to `on_edit`.
+        /// The draft of a secret field. The front end keeps no copy of it
+        /// after it has handed an edit to `on_edit`, and empties the buffer
+        /// of its widget before the field goes away (the step changes, the
+        /// surface closes).
+        ///
+        /// A single-line secret is masked ([`secret_input`]: a password).
+        /// A multi-line one is a private text ([`private_textarea`]:
+        /// cloud-init user-data, which can hold passwords and keys): it is
+        /// shown in clear while it is edited, as a text area cannot be
+        /// masked, and is otherwise treated as the secret it may contain.
         secret: Option<SecretText>,
         multiline: bool,
         placeholder: String,
@@ -1249,6 +1257,31 @@ pub fn secret_input(
             value: String::new(),
             secret: Some(value.clone()),
             multiline: false,
+            placeholder: String::new(),
+            on_edit: Rc::new(on_edit),
+            on_submit: None,
+        },
+    )
+}
+
+/// A multi-line field for a text that can hold secrets (cloud-init
+/// user-data and network-config). It is shown in clear while edited; the
+/// description carries it as a [`SecretText`] (zeroized when dropped), and
+/// the front end keeps no copy and empties its widget buffer when the
+/// field goes away. `Control::Text { secret: Some(_), multiline: true }`.
+pub fn private_textarea(
+    key: impl Into<String>,
+    label: impl Into<String>,
+    value: &str,
+    on_edit: impl Fn(&mut Model, &str) + 'static,
+) -> Field {
+    Field::new(
+        key,
+        label,
+        Control::Text {
+            value: String::new(),
+            secret: Some(SecretText::from(value)),
+            multiline: true,
             placeholder: String::new(),
             on_edit: Rc::new(on_edit),
             on_submit: None,
@@ -2144,12 +2177,15 @@ impl Walk {
             Control::Text {
                 value,
                 secret,
+                multiline,
                 placeholder,
                 on_edit,
                 on_submit,
-                ..
             } => {
+                // A masked secret is bullets, as on screen; a private text
+                // area is shown in clear, as on screen.
                 let shown = match secret {
+                    Some(secret) if *multiline => secret.expose().to_owned(),
                     Some(secret) => "•".repeat(secret.len()),
                     None => value.clone(),
                 };

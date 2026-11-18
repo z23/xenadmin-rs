@@ -55,6 +55,7 @@ pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new(VLAN_CREATE_POOL.0, "Create Pool-wide VLANs", AREA)
             .local(TabId::Networking, 110)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(|m, target| match on_network(m, target) {
                 // Nothing a draft can enter helps while no other network
@@ -68,6 +69,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .invoke(|m, target| open_topology(m, target, false)),
         CommandSpec::new(VLAN_RETAG_POOL.0, "Retag Pool-wide VLANs", AREA)
             .local(TabId::Networking, 120)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(|m, target| match on_network(m, target) {
                 Ok((pool, i, id)) => match topology::capture(&i, id, true) {
@@ -80,18 +82,21 @@ pub fn commands() -> Vec<CommandSpec> {
             .invoke(|m, target| open_topology(m, target, true)),
         CommandSpec::new(SERVICE_TLS.0, "Enable NBD with TLS", AREA)
             .local(TabId::Networking, 130)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(|m, t| service_eligibility(m, t, NetworkServicePurpose::NbdTls))
             .dynamic_label(|m, t| service_label(m, t, NetworkServicePurpose::NbdTls))
             .invoke(|m, t| open_service(m, t, NetworkServicePurpose::NbdTls)),
         CommandSpec::new(SERVICE_PLAINTEXT.0, "Enable NBD without TLS", AREA)
             .local(TabId::Networking, 140)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(|m, t| service_eligibility(m, t, NetworkServicePurpose::NbdPlaintext))
             .dynamic_label(|m, t| service_label(m, t, NetworkServicePurpose::NbdPlaintext))
             .invoke(|m, t| open_service(m, t, NetworkServicePurpose::NbdPlaintext)),
         CommandSpec::new(FABRIC_ADD.0, "Add Tunnel or SR-IOV Interface", AREA)
             .local(TabId::Networking, 150)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(writable_network)
             .invoke(|m, target| {
@@ -101,6 +106,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(FABRIC_COMPLETE_POOL.0, "Complete Pool Coverage", AREA)
             .local(TabId::Networking, 160)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(writable_network)
             .invoke(|m, target| {
@@ -115,6 +121,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(FABRIC_REMOVE.0, "Remove Tunnel or SR-IOV Interface", AREA)
             .local(TabId::Networking, 170)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(|m, target| match on_network(m, target) {
                 Ok((pool, i, id)) => {
@@ -145,6 +152,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(FABRIC_REMOVE_POOL.0, "Remove Pool Coverage", AREA)
             .local(TabId::Networking, 180)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(NETWORK)
             .eligibility(|m, target| match on_network(m, target) {
                 // Rune: the button exists only while the core can build

@@ -94,6 +94,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(place::SERVER_CONTROL_DOMAIN_MEMORY)
             .context(SERVER)
             .local(TabId::Memory, 10)
+            .local_scopes(&[ObjectKind::Host])
             .eligibility(|m, target| eligibility(m, target, Kind::Memory))
             .invoke(|m, target| open(m, target, Kind::Memory)),
         CommandSpec::new(DESTROY.0, "Destroy", AREA)

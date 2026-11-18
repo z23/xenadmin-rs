@@ -77,16 +77,19 @@ fn commands() -> Vec<CommandSpec> {
             .toolbar(ToolbarSlot::ADD_SERVER)
             .context(&[ObjectKind::None])
             .local(TabId::Home, 10)
+            .local_scopes(&[ObjectKind::None])
             .invoke(home::add),
         CommandSpec::new("server.connect", "Connect…", AREA)
             .menu(place::SERVER_CONNECT)
             .context(SAVED)
             .local(TabId::Home, 20)
+            .local_scopes(&[ObjectKind::None])
             .eligibility(home::can_connect)
             .invoke(home::connect),
         CommandSpec::new("server.cancel-connect", "Cancel connection attempt", AREA)
             .context(SAVED)
             .local(TabId::Home, 30)
+            .local_scopes(&[ObjectKind::None])
             .multi()
             .eligibility(home::can_cancel_connect)
             .invoke(home::cancel_connect),
@@ -94,6 +97,7 @@ fn commands() -> Vec<CommandSpec> {
             .menu(place::SERVER_DISCONNECT)
             .context(SESSION)
             .local(TabId::Home, 40)
+            .local_scopes(&[ObjectKind::None])
             .multi()
             .eligibility(home::can_disconnect)
             .invoke(home::disconnect),
@@ -106,6 +110,7 @@ fn commands() -> Vec<CommandSpec> {
             .menu(place::SERVER_RECONNECT_AS)
             .context(SESSION)
             .local(TabId::Home, 50)
+            .local_scopes(&[ObjectKind::None])
             .eligibility(home::can_reconnect_as)
             .invoke(home::reconnect_as),
         CommandSpec::new("pool.reconnect-as", "Reconnect As…", AREA)
@@ -119,6 +124,7 @@ fn commands() -> Vec<CommandSpec> {
         )
         .context(SAVED)
         .local(TabId::Home, 60)
+        .local_scopes(&[ObjectKind::None])
         .eligibility(home::can_review_certificate)
         .invoke(home::review_certificate),
         CommandSpec::new("server.forget-password", "Forget Password", AREA)
@@ -129,16 +135,19 @@ fn commands() -> Vec<CommandSpec> {
         CommandSpec::new("server.remove-connection", "Remove connection", AREA)
             .context(SAVED)
             .local(TabId::Home, 70)
+            .local_scopes(&[ObjectKind::None])
             .eligibility(home::can_remove)
             .invoke(home::remove),
         CommandSpec::new("server.connect-all", "Connect All", AREA)
             .menu(place::SERVER_CONNECT_ALL)
             .local(TabId::Home, 80)
+            .local_scopes(&[ObjectKind::None])
             .eligibility(home::can_connect_all)
             .invoke(home::connect_all),
         CommandSpec::new("server.disconnect-all", "Disconnect All", AREA)
             .menu(place::SERVER_DISCONNECT_ALL)
             .local(TabId::Home, 90)
+            .local_scopes(&[ObjectKind::None])
             .eligibility(home::can_disconnect_all)
             .invoke(home::disconnect_all),
     ]

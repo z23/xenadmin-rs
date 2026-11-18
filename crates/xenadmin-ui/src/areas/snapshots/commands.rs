@@ -63,6 +63,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(place::VM_SNAPSHOT)
             .context(&[ObjectKind::Vm])
             .local(TabId::Snapshots, 10)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(take_eligibility)
             .invoke(|m, target| {
                 if let Some((pool, vm)) = subject(m, target) {
@@ -71,22 +72,27 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(REVERT.0, "Revert", "snapshots")
             .local(TabId::Snapshots, 20)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, target| row_eligibility(m, target, RowAction::Revert))
             .invoke(|m, _| edit::begin_restore(m)),
         CommandSpec::new(PROPERTIES.0, "Edit properties", "snapshots")
             .local(TabId::Snapshots, 30)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, target| row_eligibility(m, target, RowAction::Edit))
             .invoke(|m, _| edit::begin_edit(m)),
         CommandSpec::new(NEW_VM.0, "Create VM", "snapshots")
             .local(TabId::Snapshots, 40)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, target| row_eligibility(m, target, RowAction::CloneVm))
             .invoke(|m, _| edit::begin_clone(m, false)),
         CommandSpec::new(NEW_TEMPLATE.0, "Create template", "snapshots")
             .local(TabId::Snapshots, 50)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, target| row_eligibility(m, target, RowAction::CloneTemplate))
             .invoke(|m, _| edit::begin_clone(m, true)),
         CommandSpec::new(DELETE.0, "Delete", "snapshots")
             .local(TabId::Snapshots, 90)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(|m, target| row_eligibility(m, target, RowAction::Delete))
             .invoke(|m, _| edit::begin_delete(m)),
     ]

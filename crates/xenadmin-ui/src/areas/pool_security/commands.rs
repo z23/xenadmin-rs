@@ -41,6 +41,7 @@ pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new(REFRESH.0, "Refresh security status", AREA)
             .local(TabId::Users, 10)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(can_refresh)
             .invoke(|m, target| {
                 if let Some(pool) = pool_of(target) {
@@ -49,22 +50,27 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(DIRECTORY_JOIN.0, "Join Active Directory…", AREA)
             .local(TabId::Users, 20)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| of_pool(m, target, Kind::Join))
             .invoke(|m, target| open(m, target, Kind::Join)),
         CommandSpec::new(DIRECTORY_LEAVE.0, "Leave Active Directory…", AREA)
             .local(TabId::Users, 30)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| of_pool(m, target, Kind::Leave))
             .invoke(|m, target| open(m, target, Kind::Leave)),
         CommandSpec::new(SUBJECT_ADD.0, "Add Directory Subject…", AREA)
             .local(TabId::Users, 40)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| of_pool(m, target, Kind::AddSubject))
             .invoke(|m, target| open(m, target, Kind::AddSubject)),
         CommandSpec::new(SUBJECT_ROLE.0, "Change Subject Roles…", AREA)
             .local(TabId::Users, 50)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| of_pool(m, target, Kind::Role))
             .invoke(|m, target| open(m, target, Kind::Role)),
         CommandSpec::new(SUBJECT_REMOVE.0, "Remove Directory Subject…", AREA)
             .local(TabId::Users, 60)
+            .local_scopes(&[ObjectKind::Pool])
             .eligibility(|m, target| of_pool(m, target, Kind::RemoveSubject))
             .invoke(|m, target| open(m, target, Kind::RemoveSubject)),
         CommandSpec::new(CERTIFICATE_INSTALL.0, "Install TLS Certificate…", AREA)

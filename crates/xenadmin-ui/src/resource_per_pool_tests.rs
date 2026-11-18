@@ -100,7 +100,15 @@ fn a_resource_handle_belongs_to_the_session_of_its_pool_and_stays_through_a_scop
     // The scope moves to the first pool: both handles and both records stay.
     h.select(Target::one(ObjectRef::pool(first)));
     assert_eq!(h.model.workspace.selected, Some(first_profile));
-    assert_eq!(handles(&h.model), [mine, theirs]);
+    // A handle is there until its operation has finished (the fixture
+    // server refuses these operations, so they finish soon).
+    for id in [mine, theirs] {
+        assert!(
+            handles(&h.model).contains(&id)
+                || row(&h.model, id).is_some_and(|record| record.state.terminal()),
+            "an unfinished handle was dropped by the scope change"
+        );
+    }
     h.tick(0.02);
     assert!(row(&h.model, mine).is_some() && row(&h.model, theirs).is_some());
     // The record of the pool that is no longer shown still reaches its end.
@@ -200,7 +208,12 @@ fn a_sessions_resource_handles_go_with_its_connection_and_their_records_stay() {
     assert_eq!(h.model.resource_session(again), Some(first_profile));
     h.model.workspace.active.remove(&first_profile);
     h.tick(0.02);
-    assert_eq!(handles(&h.model), [theirs]);
+    assert!(!handles(&h.model).contains(&again));
+    assert!(
+        handles(&h.model) == [theirs]
+            || row(&h.model, theirs).is_some_and(|record| record.state.terminal()),
+        "the other session's unfinished handle went too"
+    );
     assert!(row(&h.model, again).is_some() && row(&h.model, mine).is_some());
 
     // An area that drops finished handles itself leaves no entry behind.
@@ -264,4 +277,60 @@ fn reconnect_as_forgets_the_handles_of_every_session_of_the_pool_it_closes() {
     assert!(row(&h.model, resource).is_some());
     assert!(h.model.operation_rows.iter().any(|r| r.id == vm));
     session::disconnect_all(&mut h.model);
+}
+
+/// The limits of the areas (64, 128, 32 "operations are active") count
+/// `m.resource_operations`: the kernel drops the handle of a finished
+/// operation when its last record is merged, so the list is the unfinished
+/// operations and not every operation since the client started (which is
+/// what Rune counted, and what made its limits a lifetime budget).
+#[test]
+fn a_finished_resource_handle_is_dropped_once_its_record_is_merged() {
+    let mut live = Live::with_vm();
+    let (pool, profile) = (live.pool, live.profile.id);
+    let server = &live.server;
+    let h = &mut live.h;
+
+    // Unfinished: the handle stays, however often the model polls.
+    server.hold_unserved(true);
+    let held = submit(&mut h.model, pool);
+    poll_until(h, "the host has the operation's first request", |_| {
+        server.count("pool.get_by_uuid") >= 1
+    });
+    for _ in 0..5 {
+        h.tick(0.02);
+    }
+    assert_eq!(handles(&h.model), [held]);
+    assert_eq!(h.model.resource_session(held), Some(profile));
+    assert!(row(&h.model, held).is_some_and(|record| !record.state.terminal()));
+
+    // Finished: the poll that merges the last record drops the handle and
+    // its owner entry; the record stays in the history.
+    server.hold_unserved(false);
+    poll_until(h, "the operation has ended", |h| {
+        row(&h.model, held).is_some_and(|record| record.state.terminal())
+    });
+    assert!(handles(&h.model).is_empty(), "a finished handle is kept");
+    assert_eq!(h.model.resource_session(held), None);
+    assert!(h.model.resource_sessions.is_empty());
+    assert!(row(&h.model, held).is_some(), "the record stays");
+
+    // So finished operations do not add up towards a limit.
+    let mut ended = vec![held];
+    for _ in 0..3 {
+        let id = submit(&mut h.model, pool);
+        poll_until(h, "the next operation has ended", |h| {
+            row(&h.model, id).is_some_and(|record| record.state.terminal())
+        });
+        ended.push(id);
+    }
+    assert!(h.model.resource_operations.is_empty());
+    assert!(ended.iter().all(|id| row(&h.model, *id).is_some()));
+
+    // One unfinished among them is the one that is counted.
+    server.hold_unserved(true);
+    let waiting = submit(&mut h.model, pool);
+    h.tick(0.02);
+    assert_eq!(handles(&h.model), [waiting]);
+    server.hold_unserved(false);
 }

@@ -103,6 +103,7 @@ pub fn commands() -> Vec<CommandSpec> {
         // -- Networking tab -------------------------------------------------
         CommandSpec::new(NEW.0, "Add Network", AREA)
             .local(TabId::Networking, 10)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .eligibility(|m, target| match new_pool(m, target) {
                 Some(pool) => Eligibility::enabled_if(writable(m, pool), NOT_WRITABLE),
                 None => Eligibility::Hidden,
@@ -114,6 +115,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(VLAN_ADD.0, "Add VLAN Interface", AREA)
             .local(TabId::Networking, 20)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(&[ObjectKind::Network])
             .eligibility(|m, target| match network(m, target) {
                 Ok((pool, _, _)) => Eligibility::enabled_if(writable(m, pool), NOT_WRITABLE),
@@ -130,6 +132,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(REMOVE.0, "Remove Network", AREA)
             .local(TabId::Networking, 30)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .context(&[ObjectKind::Network])
             .eligibility(|m, target| match network(m, target) {
                 Ok((_, inventory, id)) if workspace::network_used(&inventory, id) => {
@@ -145,6 +148,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(NIC_IPV4.0, "Configure IPv4", AREA)
             .local(TabId::Networking, 40)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .eligibility(|m, _| {
                 on_interface(m, |i, p| {
                     if p.management != Some(false) {
@@ -160,6 +164,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .invoke(|m, _| open_form(m, |i, p| workspace::ipv4_form(i, p.id))),
         CommandSpec::new(NIC_IPV6.0, "Configure IPv6", AREA)
             .local(TabId::Networking, 50)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .eligibility(|m, _| {
                 on_interface(m, |i, p| {
                     if !workspace::secondary(p) {
@@ -177,6 +182,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .invoke(|m, _| open_form(m, |i, p| workspace::interface_form(i, p.id, false))),
         CommandSpec::new(NIC_PURPOSE.0, "Interface Purpose", AREA)
             .local(TabId::Networking, 60)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::Network])
             .eligibility(|m, _| {
                 on_interface(m, |i, p| {
                     if !workspace::secondary(p) {
@@ -283,6 +289,7 @@ pub fn commands() -> Vec<CommandSpec> {
         // -- NICs tab -------------------------------------------------------
         CommandSpec::new(BOND_CREATE.0, "Create Bond", AREA)
             .local(TabId::Nics, 10)
+            .local_scopes(&[ObjectKind::Host])
             .eligibility(|m, target| match server(m, target) {
                 Some((pool, _)) => Eligibility::enabled_if(writable(m, pool), NOT_WRITABLE),
                 None => Eligibility::Hidden,
@@ -299,6 +306,7 @@ pub fn commands() -> Vec<CommandSpec> {
             }),
         CommandSpec::new(BOND_DELETE.0, "Delete Bond", AREA)
             .local(TabId::Nics, 20)
+            .local_scopes(&[ObjectKind::Host])
             .eligibility(|m, _| {
                 // In the local row of the NICs tab the missing selection is
                 // a missing bond.
@@ -320,6 +328,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .invoke(|m, _| open_staged(m, workspace::delete_bond)),
         CommandSpec::new(NICS_RESCAN.0, "Rescan", AREA)
             .local(TabId::Nics, 30)
+            .local_scopes(&[ObjectKind::Host])
             .eligibility(|m, target| match server(m, target) {
                 Some((pool, _)) => Eligibility::enabled_if(writable(m, pool), NOT_WRITABLE),
                 None => Eligibility::Hidden,
@@ -368,6 +377,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(place::STORAGE_SET_DEFAULT)
             .context(&[ObjectKind::StorageRepository])
             .local(TabId::Storage, 30)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| match repository(m, target) {
                 Ok((pool, inventory, id)) => {
                     // Rune offered only repositories for VM disks.
@@ -406,6 +416,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(MenuPath::new(Menu::Storage, 2, 30))
             .context(&[ObjectKind::StorageRepository])
             .local(TabId::Storage, 35)
+            .local_scopes(&[ObjectKind::Pool, ObjectKind::Host, ObjectKind::StorageRepository])
             .eligibility(|m, target| match repository(m, target) {
                 Ok((pool, _, _)) => Eligibility::enabled_if(writable(m, pool), NOT_WRITABLE),
                 Err(refusal) => refusal,

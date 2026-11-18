@@ -130,6 +130,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(CHECK_AVAILABILITY.0, "Check action availability", AREA)
             .context(VM)
             .local(TabId::General, 10)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(can_check)
             .invoke(check),
     ]

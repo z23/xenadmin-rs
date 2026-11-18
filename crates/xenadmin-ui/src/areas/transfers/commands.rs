@@ -54,6 +54,7 @@ pub fn commands() -> Vec<CommandSpec> {
         CommandSpec::new(EXPORT_DISK.0, "Export Disk Image", AREA)
             .context(&[ObjectKind::VirtualDisk])
             .local(TabId::Storage, 80)
+            .local_scopes(&[ObjectKind::StorageRepository])
             .eligibility(|m, target| match disk(target) {
                 Some((pool, vdi)) => export_disk_eligibility(m, pool, vdi),
                 None => Eligibility::Hidden,

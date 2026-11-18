@@ -41,6 +41,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .menu(place::VM_INSTALL_GUEST_TOOLS)
             .context(VM)
             .local(TabId::Storage, 90)
+            .local_scopes(&[ObjectKind::Vm])
             .eligibility(media_state)
             .invoke(|m, target| {
                 if let Some(object) = media_vm(m, target) {
@@ -56,6 +57,7 @@ pub fn commands() -> Vec<CommandSpec> {
         )
         .context(VM)
         .local(TabId::Console, 200)
+        .local_scopes(&[ObjectKind::Vm])
         .eligibility(connect_state)
         .invoke(|m, target| {
             if let Some(object) = target.single_of(ObjectKind::Vm).cloned() {

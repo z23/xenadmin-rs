@@ -355,11 +355,20 @@ pub fn poll(m: &mut Model) -> bool {
     if e.settled {
         return false;
     }
+    // The handle while the kernel still holds it, else the merged record:
+    // the kernel drops the handle of a finished operation once its last
+    // record is in `resource_rows`, which is before this poll runs.
     let Some(record) = m
         .resource_operations
         .iter()
-        .map(|o| o.latest())
+        .map(|o| o.latest().as_ref().clone())
         .find(|r| Some(r.id) == e.operation)
+        .or_else(|| {
+            m.resource_rows
+                .iter()
+                .find(|r| Some(r.id) == e.operation)
+                .cloned()
+        })
     else {
         return false;
     };

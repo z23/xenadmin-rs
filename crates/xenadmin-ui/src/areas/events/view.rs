@@ -17,7 +17,8 @@
 //! `activity-count`, `activity-row-source`, `activity-outcome`,
 //! `activity-details` (the selected row's detail lines, one preformatted
 //! text), `activity-row-name`, `activity-unresolved`,
-//! `activity-export-note`;
+//! `activity-export-note`, `activity-show-children` (the checkbox that
+//! lists the records of a batch's members; see "Batches" in `mod.rs`);
 //! in the two reviews `activity-change-review` (and so
 //! `activity-change-review-stale`), `activity-review-preview`,
 //! `activity-review-error`, `activity-review-close`; in the acknowledgement
@@ -195,12 +196,21 @@ fn filters(m: &Model, list: Tab) -> Block {
 fn scope_notes(m: &Model, list: Tab) -> Vec<Block> {
     let a = &m.areas.events;
     if list == Tab::History {
-        return blocks![checkbox(
-            "activity-show-hidden",
-            "Include locally hidden completed entries",
-            a.show_hidden,
-            |m| m.areas.events.show_hidden = !m.areas.events.show_hidden,
-        )];
+        return blocks![
+            checkbox(
+                "activity-show-hidden",
+                "Include locally hidden completed entries",
+                a.show_hidden,
+                |m| m.areas.events.show_hidden = !m.areas.events.show_hidden,
+            ),
+            checkbox(
+                "activity-show-children",
+                "Include the records of batch members",
+                a.show_children,
+                |m| m.areas.events.show_children = !m.areas.events.show_children,
+            )
+            .help("A batch is listed as one entry; its members are in its details."),
+        ];
     }
     let class = if list == Tab::Tasks {
         "task"

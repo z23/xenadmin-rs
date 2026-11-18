@@ -19,6 +19,7 @@ pub fn commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new(MEMORY_SETTINGS.0, "Memory Settings", AREA)
             .local(TabId::Memory, 10)
+            .local_scopes(&[ObjectKind::Vm, ObjectKind::Template])
             .eligibility(|m, target| {
                 // The Memory tab of a server or a pool has the row too: not
                 // theirs. Several objects: not this command's.

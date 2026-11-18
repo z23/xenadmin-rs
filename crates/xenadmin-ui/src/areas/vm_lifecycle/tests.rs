@@ -1007,3 +1007,80 @@ fn a_live_session_observes_the_vm_and_the_host_decides_what_is_offered() {
     assert!(live.h.model.resource_operations.is_empty());
     assert!(live.h.model.areas.vm_lifecycle.panel.is_none());
 }
+
+// -- The private drafts ----------------------------------------------------------------
+
+/// The text control of a field of the front surface, by key.
+fn text_control(h: &Harness, key: &str) -> Control {
+    fn find(blocks: &[Block], key: &str) -> Option<Control> {
+        blocks.iter().find_map(|block| match block {
+            Block::Field(field) if field.key == key => Some(field.control.clone()),
+            Block::Group(group) => find(&group.blocks, key),
+            Block::Columns(columns) => columns.iter().find_map(|column| find(column, key)),
+            _ => None,
+        })
+    }
+    find(&h.surface().body, key).unwrap_or_else(|| panic!("no field {key}"))
+}
+
+/// Cloud-init user-data and network-config can hold passwords and keys.
+/// Rune zeroized both drafts when they were dropped and emptied them when
+/// the media preparation took them. The descriptions mark all four fields
+/// as private text areas, so the front end keeps no copy and empties its
+/// widget buffer when the field goes away; ordinary text areas are not.
+#[test]
+fn the_cloud_init_drafts_are_private_text_areas() {
+    let mut h = Harness::scene("creation-cloud");
+    h.type_text("creation-cloud-user-data", "#cloud-config\nprivate-fixture-token: true\n");
+    for key in ["creation-cloud-user-data", "creation-cloud-network"] {
+        let Control::Text { value, secret, multiline, .. } = text_control(&h, key) else {
+            panic!("{key} is a text field")
+        };
+        assert!(multiline, "{key}");
+        assert!(value.is_empty(), "{key}: the plain copy is empty");
+        assert!(secret.is_some(), "{key} is not marked private");
+    }
+    // It is shown in clear, as on screen, and holds what was typed.
+    let Control::Text { secret, .. } = text_control(&h, "creation-cloud-user-data") else {
+        unreachable!()
+    };
+    assert_eq!(
+        secret.as_ref().map(SecretText::expose),
+        Some("#cloud-config\nprivate-fixture-token: true\n")
+    );
+    assert_eq!(
+        h.node("creation-cloud-user-data").value.as_deref(),
+        Some("#cloud-config\nprivate-fixture-token: true\n")
+    );
+    // The hostname is an ordinary field.
+    assert!(matches!(
+        text_control(&h, "creation-cloud-hostname"),
+        Control::Text { secret: None, .. }
+    ));
+    // The review has no such field and no such text.
+    h.type_text("creation-cloud-hostname", "fixture");
+    h.click("review-vm-lifecycle");
+    assert!(editor(&h).review.is_some());
+    assert!(h.find("creation-cloud-user-data").is_none());
+    assert!(!h.dump().contains("private-fixture-token"));
+
+    let mut h = Harness::scene("cloud-init");
+    h.type_text("cloud-init-user-data", "#cloud-config\nprivate-fixture-token: true\n");
+    for key in ["cloud-init-user-data", "cloud-init-network"] {
+        assert!(
+            matches!(
+                text_control(&h, key),
+                Control::Text { secret: Some(_), multiline: true, .. }
+            ),
+            "{key} is not a private text area"
+        );
+    }
+    // Preparing the media takes the drafts: nothing of them is left in the
+    // model or on the surface.
+    h.click("cloud-init-prepare");
+    assert!(panel(&h).user_data.is_empty());
+    assert!(panel(&h).network.is_empty());
+    prepared(&mut h);
+    assert!(h.find("cloud-init-user-data").is_none());
+    assert!(!h.dump().contains("private-fixture-token"));
+}

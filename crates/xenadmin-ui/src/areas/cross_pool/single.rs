@@ -635,14 +635,20 @@ pub(crate) fn blocked(m: &Model, e: &Editor) -> Option<String> {
     (!m.can_mutate_pool(e.pool())).then(|| NOT_WRITABLE.into())
 }
 
-/// Ends the tab's console when it shows one of these guests of this pool:
-/// the console of a guest that moves live closes when its move is
-/// submitted.
+/// Ends every console of these guests of this pool, the Console tab's and
+/// those in detached console windows: the console of a guest that moves
+/// live closes when its move is submitted (the review says so).
 pub(crate) fn release_console(m: &mut Model, pool: PoolId, moving: &[VmId]) {
-    if console::tab_target(m)
-        .is_some_and(|t| t.pool == pool && t.host.is_none() && moving.contains(&t.vm))
-    {
+    let of_moving = |t: &console::ConsoleTarget| {
+        t.pool == pool && t.host.is_none() && moving.contains(&t.vm)
+    };
+    if console::tab_target(m).is_some_and(of_moving) {
         console::close_tab(m);
+    }
+    for window in console::windows::open_windows(m) {
+        if of_moving(&window.target) {
+            console::windows::close(m, window.id);
+        }
     }
 }
 
