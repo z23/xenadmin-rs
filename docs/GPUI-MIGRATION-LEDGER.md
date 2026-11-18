@@ -869,12 +869,261 @@ python3 scripts/gpui_ledger_tables.py tests    # the first three columns and the
 
 ## Mirror fixes
 
-(to be written)
+The plan meant this table for fixes made to the frozen Rune crate and mirrored into the port. There are
+none: after the extraction commit `7446081` no commit of `gpui-migration` changes
+`crates/xenadmin-desktop` (`git log main..gpui-migration -- crates/xenadmin-desktop`). The rows record the
+other direction, as the engineers reported it: behaviour of the Rune client that the port judged a
+defect and did not copy. The Rune client still has each of them. "hazard n" is the number the defect has
+in the engineers' packets. Each correction is implemented and, where a test is named in the area's
+header, fixture-verified; none has been exercised against a host or in a real window.
+
+| area | Rune behaviour | what the port does | Rune commit |
+| --- | --- | --- | --- |
+| `events` | Acknowledge of a resource operation called `control_resource` on the scope connection, while its button was enabled by the connection picked for the control (hazard 47) | The call goes to the picked control connection as well | none (not fixed in Rune) |
+| `events` | The unknown-outcome dialog closed whatever the answer to its acknowledgement was | The acknowledgement is checked again, a refusal stays in the dialog, and the confirmation is disabled in the demo | none |
+| `events` | The reviews of a task cancellation and of a message dismissal did not assess the session's permissions | Both assess them; a known denial disables the confirmation with its reason | none |
+| `events` | In a synthetic pool the confirmation was disabled under the caption of a stale review | It is disabled with the demo reason | none |
+| `storage_maintenance`, `pool` | The submit handlers of repair, read caching and pool policy sent a change the session was known to be denied | They refuse a known permission denial | none |
+| `pool_security` | The password or certificate was consumed before `submit_resource`; after a failed submit the review stayed staged, and a second Confirm of a directory operation would have sent an empty password (hazard 41) | A submit that fails after the secret was consumed returns to the draft | none |
+| `vm_devices` | Applying a device change did not check again that the review was current and the device class available (hazard 1) | The apply checks staleness and availability again | none |
+| `snapshots` | Submit trusted the state of the confirm button | Submit checks the button's whole condition again | none |
+| `migration` | A refused submission or a known permission denial was written to the global error line, which the migration dialog never showed | It is shown in the wizard's own error line | none |
+| `migration` | The batch move opened for a selection with a refused VM and for a pool that is not writable | The command is disabled with the reason (outside the demo for the pool) | none |
+| `cross_pool` | For a suspended or paused VM, and in a synthetic pool, the button did nothing and said nothing | The command is disabled with a reason | none |
+| `management_network` | "Remove management bond…" was shown when the management interface could not be captured, and then did nothing | The command is hidden there | none |
+| `connections` | Reconnect As relied on its button to keep out a blank account | The handler refuses a blank account as well | none |
+| kernel | The handles of VM operations were dropped when the shown pool changed, so a record of a pool the tree no longer showed stopped changing | Handles belong to their session; the one list holds the records of every connected session and keeps following them | none |
+| `connections`, `power`, `snapshots`, `performance`, `vm_tools`, `transfers`, `network`, `bulk_edit`, `bulk_export`, `host_services`, `pool`, `pool_security`, `cross_pool`, `vm_lifecycle` | Buttons were disabled, or hidden, without saying why | A disabled command or button carries a reason, shown as tooltip and in the tree dump. The texts are new, since Rune had none; each area lists its own in its header | none |
 
 ## Deviations
 
-(to be written)
+What differs from the plan ([GPUI-MIGRATION.md](GPUI-MIGRATION.md)) or from what the Rune client shows and
+lets the user do. "where" is the plan's gate, the architecture, or the area. Rows marked "decision n" are
+the decisions taken before the areas were ported; the others are from the engineers' results and the
+headers of the areas. A row describes what is implemented; nothing of it has been seen in a real window
+or tried against a host. Differences that are corrections of a Rune defect are under Mirror fixes.
+
+| where | differs from | what differs | reason |
+| --- | --- | --- | --- |
+| architecture | plan | `xenadmin-ui` does not only hold the model: it describes every surface as plain data (`Surface`, `Block`, with handlers over the model), and `xenadmin-gpui` has one generic renderer for all of them. Hand-written GPUI code exists only for the shell, the tree, the console canvas, the charts and window management. The plan had each view ported as GPUI code by its package | An area port touches one crate, needs no knowledge of the Kit, and its interaction tests run without a window |
+| architecture | plan | A Rune test that drove a `rune::Runtime` is in most cases a model test through the `Harness`, which presses the keys of the described surface; a headless window test exists only where a window is the subject. The plan rewrote every such test as a `#[gpui_kit::test]` | Follows from the described surfaces. What it costs is in "Tests by disposition": positions at a window size are asserted for few surfaces |
+| architecture | plan | The port was done by area (29 directories under `ui:areas/`), not by the plan's packages P1 to P5 and W1 to W6; the ledger's Commands and Scenes tables have the registry's columns and the area, not "Rune source", "model status", "GPUI status" and "package"; the ledger was written once from the repository, not row by row with each merge | One generic renderer left nothing to port per package on the GPUI side; the columns that remain are the ones a script can check |
+| architecture (decision 4) | plan | `xenadmin-ui` depends on `serde_json`, `zeroize` and `image` besides the plan's three crates. It depends on no UI toolkit. The model asks for a timed tick (`request_tick`) | Saved searches and reports, secret drafts, and console and snapshot pictures are model work |
+| architecture (decision 9) | plan | The Properties dialogs are the kernel's (`server.properties`, `pool.properties`, `vm.properties`, `template.properties`, `storage.properties`, `network.properties`, `disk.properties`); an area hands in pages and registers no Properties command or surface. Network and disk Properties have no place in the menu bar; a Properties command without a page is disabled with a kernel text | One dialog per object, with the pages of several areas in the plan's order |
+| architecture | plan | The scene tool knows scenes Rune did not have: the renderer's eight `gallery-*` scenes and the kernel's `host-properties` | To render what no Rune scene shows |
+| G0 (decision 0006) | plan | Gate G0 did not pass as written; the migration continued on the operator's direction of 2026-11-17 with the limits below accepted. Route A (a second `wl_keyboard`) carries physical key codes; route B is not vendored; route C is not adopted | Decision 0006 |
+| G0 (decision 0006) | Rune | Not shown on a real seat: GPUI delivered no pointer motion or button on the Hyprland probe | Accepted limit; open |
+| G0 (decision 0006) | Rune | `CursorStyle` has no hidden value: the local cursor stays visible over the console, and the guest cursor is not drawn (Rune hid the local one and drew the guest's). "Hold right button" is gone: a right-button drag is native | Accepted limit |
+| G0 (decision 0006) | plan | Screencopy never completed: the pixels of fit and actual size were not read back from a real window | Accepted limit; open |
+| G0 (decision 0006) | Rune | Clipboard text was not offered because the probe window never became active; clipboard without focus stays unsupported | Accepted limit; open |
+| G0 (decision 0006) | plan | Fullscreen was reported once and not again; leaving it was not observed. No guest recorded a key, a second host layout was not applied, Ctrl+Alt+F2 was not sent | Accepted limit; open |
+| `console` | plan | Route A is in the client and only compiles there: the listener made from the first real window, its timer, the routing to the canvas that has the keyboard, and stopping GPUI's keystrokes while it is bound have no test, because the headless platform has no seat. Tests reach the canvas through the keystroke fallback | No seat in a headless test |
+| `console` | Rune | Without the Wayland listener (X11, which stays experimental) a key is sent with an evdev code from a US table or as a keysym: Num Lock and the right-hand modifiers cannot be reported. Without QEMU extended keys the keysym sent is the US layout's | The fallback has only GPUI's keystroke |
+| all areas (decision 1) | Rune | A surface is experimental exactly when the Rune code showed the notice for it. Two corrections: a child panel of an experimental area that Rune left without the notice has it; nothing `docs/FEATURES.md` lists as supported gains one | One rule for the notice |
+| `power` (decision 2) | plan | Pause and Unpause stay (VM menu, Start/Shut Down submenu) | The client has them (`PowerAction::ALL`) |
+| `vm_devices` (decision 3) | plan | A template's Storage and Networking tabs show information only; every device command is hidden for a template | The client edits no template devices |
+| kernel, `host_admin` (decision 5) | plan | Menu items of the plan that the client never implemented are left out, not stubbed: Import Server List, Export Server List, New Pool, View Log Files. Power On exists as `server.power-on` (experimental) | The plan says to leave them out; the Rune client has the reviewed power-on |
+| `events` (decision 6) | Rune | The Notifications navigation view replaces the Activity dialog: Alerts (the Rune Messages) and Events (Tasks and History behind one choice) are its tabs. The Activity button, the dialog's Close and its scroll container are gone | A surface that only shows state is a tab |
+| `power` (decision 7) | plan | Start on Server, Resume on Server and the task-aware force review keep the status the Rune code gives them | Decision 1 |
+| `search` (decision 8) | Rune | The import of saved searches (`search-import-dialog`) and the inventory report (`inventory-report`) carry the experimental notice, which Rune did not show. Export Saved Searches opens no surface and so shows no notice | `docs/FEATURES.md` lists search files and reports outside the supported core |
+| all areas (decision 10) | Rune | Review and status texts that name Rune places ("Activity", "Pool administration", "pool history", "Open Connect / edit") are carried over word for word and pinned in tests, to be renamed in one sweep. Until that sweep they name places that no longer exist | One sweep is checkable; a rename per area is not |
+| `pool_security`, `connections` (decision 11) | Rune | Reconnect As cannot close the pool security editor; that area drops its own editor on a session change and when `pool.reconnect-as` is invoked from its surface | An area does not reach into another's state |
+| `storage`, `storage_maintenance`, `network` (decision 12) | plan | `storage` owns Detach, Reattach, Forget, Destroy, Trim and the two attachment commands; `storage_maintenance` owns Repair; `network` owns Set as Default and Rescan, since their code was in the generic editor of `resource_admin.rs` | The commands went where their Rune code was |
+| `vm_properties` (decision 13) | plan | The Properties dialog of a VM has a last page "Review Changes" outside the plan's page table: one draft spans the six pages and is reviewed and submitted once. All seven pages are experimental. A refused submit is shown on the page | `vm_properties.rs` reviewed and submitted one change set, and the port keeps that |
+| `vm_properties` | plan | Changed-block tracking is not on Advanced. `properties-running` opens on CPU and Memory, `secure-boot` on Advanced, `home-host` on the review. New command `vm.memory-settings` on the Memory tab's row opens Properties at CPU and Memory | The client has that setting per virtual disk only (core gaps report, 12) |
+| `pool` | plan | Pool Properties has a page "Advanced" for migration compression, outside the plan's page table (the plan names Network Options) | It is where the reference client has the setting |
+| `network` | plan | The page General (rename) is provided for pool, server, storage and network, not for a network alone. The two Rune MTU changes are one field on Network Settings | The Rune rename served all four |
+| `bulk_edit` | plan | Bulk properties is one page of the kernel's dialog for several VMs or several templates, with draft and review on that page; a selection it cannot edit (over 32 objects, several pools) is refused on the page. The Rune picker, a button and fourteen more, is one drop-down | The plan's "Several VMs: Bulk properties" |
+| kernel | Rune | The connection manager dialog is the Home tab; a session whose inventory is stale (failed, reconnecting) stays a pool node with its status word instead of a bare connection node | A surface that only shows state is a tab |
+| kernel | plan | View > Hidden Objects is left out. The other four View toggles exist and are not persisted | The inventory has no such flag; the preferences file format may not change (core gaps report, 11) |
+| kernel | Rune | The details pane is gone, and with it the compact swap between table and details (`show-details`, `back-to-inventory`), the page header's buttons and the sidebar header with its repository link. Their successors are the tabs, the commands and Help > Project website | The plan's shell |
+| kernel | Rune | The minimum window is 800x600 and the navigation pane gives way to a toggle in a narrow window (plan D3); the Rune compact size 513x652 cannot occur in the main window. The window tests of the areas use 800x600; the detached console window is tested at 513x652 and 480x640 | Plan D3 |
+| kernel | Rune | The list of VM operations is one list for every connected session, with a limit of 64 unresolved operations per session; resource operations still follow the scope session only | Operation handles belong to their session |
+| renderer | Rune | In a table with multi-selection, click, Ctrl+click, Shift+click and the arrow keys work; Shift+arrow does not extend the selection and there is no select-all | The Kit has no hook for it |
+| renderer | Rune | Enter presses the focused button; with the focus elsewhere in a dialog it does nothing (no default action). The Kit never closes a dialog itself: Escape runs the surface's close handler. Dialogs open and close without animation | So that no widget is rebuilt for a closed surface that held a secret |
+| renderer | Rune | The reason of a disabled radio option or row-menu item reaches assistive technology only as a tooltip or not at all; the tree dump has it. Semibold titles were drawn at regular weight on the build machine | The Kit exposes no description for them; fonts of the machine |
+| renderer | Rune | The Menu key and Shift+F10 open the menu of a grid row that stands for an object; on a row that is not an object they open nothing | Unchanged since the shell was written; no reason recorded |
+| shell | Rune | A file prompt that fails is followed by the shell's own typed-path dialog; the request hears of the failure only when that dialog is closed without a path. Rune messages such as "Cannot open save dialog: ..." have no successor where an area sets no failure handler | A portal may be missing |
+| `connections` | Rune | Card buttons that Rune showed by state are commands, hidden when the state does not apply. "View pool" is the activation of the row. `pool.disconnect` and `pool.reconnect-as` duplicate the server commands. The Home tab shows the shared error line | A command has one menu path |
+| `general` | Rune | The information dialog is the General tab, which follows the selection and is always current: the panel that kept its target, "Refresh from client", the "Pool information" button and Close are gone. The Operations section of a VM takes only "Explain outcome…"; the other controls of a record are the power area's | A surface that only shows state is a tab |
+| `search` | Rune | One query sheet, preset by the tree selection (pool, server, type of the Objects view, folder, tag, saved search, several objects, nothing). Saved searches are rows of their navigation view; the "Saved searches" toggle and the per-row Remove are the view, `search.save` and `search.remove`. The grid's row menu is the kernel's context menu | The plan's Search tab |
+| `search` | Rune | A disk result selects the disk, not its repository. Synthetic and stale sources cannot be opened although the tree can select demo objects. A scope of several objects cannot be saved or reported | A disk is an object of the tree now; core gaps report, 5 |
+| `host_admin` | Rune | The chooser dialog is gone: ten commands replace it, each opening its review. One item toggles Enter and Exit Maintenance Mode. Multipathing, Log Destination and Power On are pages of the server's Properties. A command is disabled, with the core's explanation, exactly when no input could make its review pass. No Back from an edit to the chooser | A dialog of buttons that open dialogs is what the plan rejects (R5) |
+| `power` | Rune | The recovery panel's overview is dissolved: each review opens from a command or from a control under an operation record; there is no Back and no Refresh. The confirmation is disabled when stale or denied | No hub |
+| `power` | plan | All seven toolbar slots are used. Force Shut Down and Force Reboot open the task-aware review when the ordinary action is refused and tasks are known, and always when a task is a migration. Commands read the pool of their target, not the scope session | The plan's toolbar; the Rune rule for forced actions (core gaps report, 10) |
+| `events` | Rune | Commands act on the row selected in the tab. Every session's records are listed, not only those of pools once selected. The pool filter matches a record that applies to the pool. Two filters, both emptied when switching between Alerts and Events; their clear buttons are the input's own. The explanation of an outcome no longer returns the focus to its opener | The tab replaces three lists |
+| `events` | Rune | The History list shows every record: the limit of twelve records of the pool history and the hiding of a batch's children are gone, so a batch of 32 shows its parent and 32 children (the children's controls are refused with the batch reason). `resource-operation-notice` is replaced by the status bar's counters | Stated in the header as "as Activity did"; no further reason |
+| `console` | Rune | The console's controls are commands of the tab's local row, and buttons in a detached window. The console opens when its tab is shown and on a scope change while the tab stays active, releases input on leaving the tab and closes when another object is selected; `console.close` is new. The typing review stays an inline group. The canvas takes the keyboard by click only, not by Tab | A Tab stop on the canvas would trap the keyboard |
+| `console` | Rune | The console windows manager dialog is gone: the Window menu lists up to eight windows and has Close All Consoles. There is no paste into the canvas (while it has the keyboard every key is the guest's); clipboard text is sent with the commands | The Window menu of the plan |
+| `snapshots` | plan | Edit and Clone (New VM, New Template) stay dialogs beside the plan's Take, Revert and Delete | Rune had them |
+| `snapshots` | Rune | "Inspect snapshot" is a section of the tab for the one selected snapshot; it reads the inventory as it is now, where the Rune dialog kept the inventory of the moment it was opened. "Load saved preview" stays a button of the section. Back to inventory and the Activity button are gone | A surface that only shows state is a tab |
+| `performance` | plan | The source picker and the presets stay inside the tab, as in Rune, not dialogs; there is no command for the range (a segmented choice). The monitoring catalog is one table, not pages of buttons. Without a current connection the tab shows a waiting line. The stream exists only while the tab is shown | Rune's three bodies of one view |
+| `migration` | plan | The wizard has the three Rune stages, not four steps; the batch has two. There is no separate id for the batch: `vm.migrate` and `vm.move` open it for several VMs. Lists of buttons became choices and drop-downs. Both surfaces close on a scope or session change. After an accepted batch the Events tab is shown where Rune opened the pool history | The Rune stages |
+| `vm_lifecycle` | plan | The New VM wizard's steps are Name, Installation Media, CPU and Memory, Storage, Networking, Cloud-init, Review: no Template step and no Home Server step. `vm.new` and `templates.new` are disabled until one template is the target | Rune has no template picker; the BIOS identity depends on the firmware chosen under CPU and Memory |
+| `vm_lifecycle` | Rune | "Edit template name and description" is the General page of the template's Properties. The "VM changes" history panel is the Events tab. Both surfaces close on a scope or session change | One place for each |
+| `vm_devices` | Rune | The Devices page is the Storage and Networking tabs of a VM; the Virtual disks workspace is the Storage tab of a repository with a search field, without paging. The disk dialog has one mode per command (Resize, Copy, Delete Owned Disk). There is no Move and no Add on a repository. The General page of a disk exists only when a VM attaches it | Tabs for state, commands for actions; the Rune modules had no Move or Add; core gaps report, 7 |
+| `vm_tools` | plan | `vm.install-guest-tools` is disabled with the dialog's empty-state text when the VM has no CD drive or the pool no tools media, and is also on the Storage tab's row. `vm.connect-external` is on the VM context menu and the Console tab's row, with no place in the menu bar. Saving tool declarations is refused in the demo. A failure to open "Installation guide" is no longer reported in the dialog | The open-URL intent has no failure reply |
+| `storage` | Rune | The storage hub is dissolved: wizard New Storage (Type, Name, Location, Review), dialogs for an attachment, a change and the secret cleanup, and the Storage tab (repositories of a pool; one row per attachment on a server). Detach, Reattach and Remove act on one host attachment: the scope server's, else the repository's only one. New Storage has no entry on the tab's row. No Properties page | No hub; these modules never edit an existing repository's name |
+| `storage_maintenance` | plan | Read Caching is a page of the repository's Properties with its review on the page. `storage.multipath-workflow` has no menu place (the Multipathing page of a server runs it), stays enabled for any known server and shows a refusal inside its dialog, because the dialog also holds the history with Restore. The server workflow opens on its review, without Back | The history must stay reachable |
+| `transfers` | plan | Import asks for the type first (the file filter depends on it), then the source. After "Begin transfer" the wizard stays open and shows only the transfer it started; the Rune list of all transfers is the Events tab. A scope change closes only an unsubmitted export; nothing closes a running conversion | The type decides the file filter |
+| `network` | Rune | The host networking hub is dissolved: the Networking tab of a pool, server or network, the NICs tab of a server, a wizard for a new network and review dialogs. Interface commands act on the row selected in the interface grid; bond mode and hash are one command each with a choice. Set as Default acts on the selected repository (the Rune chooser is gone). The scene `pool-administration` shows the pool's Networking tab | No hub |
+| `network_services` | plan | One command and one wizard per Rune fabric module (one host, the pool), with GRE, VXLAN and SR-IOV as the wizard's Type step: eight commands on the row instead of twelve. The Name step is read-only (these workflows never created the network) | The Rune modules |
+| `management_network` | Rune | A review cannot go back to its form: handing the review to the shared `network-change` dialog closes the form. The commands are on the tabs' rows and the server's context menu, not in the row menu of the interface grid; a server as target means its management interface. The handover caption is only in the area's dialog | The shared review dialog has no Back for a review handed to it |
+| `pool` | Rune | The pool hub is dissolved: the HA tab, thirteen commands, the Configure HA wizard, review dialogs, the pages Advanced and Security, the dissolve dialog, the join wizard and the password dialog. Every surface carries the experimental notice, including join and password. The limit of thirty VM buttons is gone (the grid lists every VM), and so is the jump to the pool history after a submission | No hub; join and password are not in `docs/FEATURES.md` |
+| `pool` | plan | Join keeps the Rune direction: the selected standalone server joins another pool (`server.join-pool`, "Add to Pool", at Pool > Add Server). Start order and delays stay with the restart priority in the VM dialog of the HA tab, not on VM Properties. `pool.designate-coordinator` has no row in the plan and sits in the Server menu | The Rune client |
+| `pool_security` | Rune | The "Pool security" dialog is the Users tab of a pool; each change is a dialog with the Rune review. A synthetic pool is never queried. After a submit the dialog closes and the overview is read again when the operation ends. Command labels are new. The certificate commands are in the Server menu only, not in a server's context menu | The plan's Users tab |
+| `host_services` | Rune | The panel's mode row is three commands (`server.backup`, `server.restore-from-backup`, `tools.server-status-report`), and only the status report queries the server. Both reviews gained Back, which drops the chosen file. Dialog titles are the Rune mode names ("Stage recovery", not the menu's "Restore From Backup"). The archive commands are disabled without a connection or a current observation, where Rune opened the panel and showed the error | The action stages a backup for an installer-assisted recovery and restores nothing that runs |
+| `schedules_alarms` | plan | The alarms hub is gone: thresholds are the page Alerts of a VM, server or repository, pool email the page Email Options. "Refresh service" has no row in the plan and is `tools.alarm-service-refresh` (Tools menu, pool context, a button on the Alerts page). The actions on a schedule are buttons of the schedules dialog, not commands | Properties pages for settings |
+| `bulk_edit`, `bulk_export` | plan | Batch deletion and batch export have ids of their own (`vm.delete-several`, `templates.delete-several`, `vm.export-selection`, `templates.export-selection`) at the menu place of the single commands, each hidden when the other applies. After a submitted batch the Events tab is shown | A command id belongs to one area |
+| `organization` | plan | Folder and tag editing are commands with one dialog, not part of the Custom Fields page. The Rune filter and check list are gone: the selection of the Search tab is the target, with the limit of 256 kept. Custom fields are not a heading of the Organization view. A heading shows only when it has rows | There is no object kind for a custom field |
+| `cross_pool` | Rune | One command, `vm.move-to-pool`: one VM opens the single wizard (move or copy), several the batch; a batch of exactly one VM cannot be reached any more. The Rune transfer history is the Events tab. Button lists became choices, acknowledgements checkboxes | One command for the selection |
 
 ## Appendix: Rune controls without a key in the new crates
 
-(to be written)
+Every element key of `crates/xenadmin-desktop/src` that is no string literal of the new crates
+(137 keys; `python3 scripts/gpui_ledger_tables.py keys` lists them while the Rune crate exists). A key is
+how a test or the accessibility driver finds a control, so a missing key is a control that was renamed,
+replaced by a command, or removed. "dissolved" means the control has no successor because what it
+belonged to is gone: a hub (a dialog of buttons that opened other dialogs), the Close or Back button of a
+page that became a tab, a heading that became a title, or a scroll container. A formatted key is written
+with its placeholder. The one row whose successor is "none" is a gap of the port.
+
+| Rune file | key | what it was | successor |
+| --- | --- | --- | --- |
+| `activity.rs` | `activity-close` | Close button of the Activity dialog | dissolved: the dialog is the Alerts and Events tabs of the Notifications view |
+| `activity.rs` | `activity-hide` | button "Hide completed entry" / "Restore entry" | `events.hide` |
+| `activity.rs` | `activity-recheck` | button "Recheck outcome" | `events.recheck` |
+| `activity.rs` | `activity-review` | button "Review cancellation…" | `events.cancel-task` |
+| `activity.rs` | `activity-scroll` | scroll container of the dialog | dissolved: a scroll container; the body of a tab, dialog or wizard scrolls by itself |
+| `alarms_view.rs` | `alarm-resource-{index}` | button "Configure alarms" for one object of the alarms picker | the page Alerts of the object's Properties (`vm.properties`, `server.properties`, `storage.properties`); the picker is gone |
+| `bulk_cross_pool.rs` | `batch-cross-pool-body` | scroll container of the batch dialog | dissolved: a scroll container; the body of a tab, dialog or wizard scrolls by itself |
+| `bulk_cross_pool.rs` | `batch-cross-pool-open` | button "Move selection to another pool…" (selection bar, row menu) | `vm.move-to-pool` on several VMs |
+| `bulk_delete.rs` | `batch-delete-open` | button "Delete selection…" (selection bar, Templates page) | `vm.delete-several`, `templates.delete-several` |
+| `bulk_export.rs` | `batch-export-open` | button "Export selection…" (selection bar) | `vm.export-selection`, `templates.export-selection` |
+| `bulk_move.rs` | `batch-move-body` | scroll container of the batch dialog | dissolved: a scroll container; the body of a tab, dialog or wizard scrolls by itself |
+| `bulk_move.rs` | `batch-move-open` | button "Move selection…" (selection bar, row menu) | `vm.migrate` and `vm.move` on several VMs |
+| `bulk_power.rs` | `batch-power-open` | button "Power actions for selection…" | `vm.power-selection` |
+| `bulk_properties.rs` | `batch-properties-open` | button "Edit selection…" | `vm.properties` / `template.properties` on several objects (page Bulk properties) |
+| `bulk_properties.rs` | `batch-property-picker` | button "Property: …" that opened fourteen buttons | the choice `batch-property`; its options keep the Rune keys `batch-property-<Property>` |
+| `cloud_init_view.rs` | `open-cloud-init` | button "Cloud-init drive…" | `vm.cloud-init-drive` |
+| `console_windows.rs` | `console-windows` | button "Console windows (n)" that opened the windows manager | the Window menu, which lists the windows (`window.console-1` to `window.console-8`) |
+| `console_windows.rs` | `console-windows-close` | button "Done" of the windows manager | dissolved: the manager dialog is the Window menu |
+| `console_windows.rs` | `console-windows-close-all` | button "Close all consoles" | `window.console.close-all` |
+| `console_windows.rs` | `close-console-window-{index}` | button of the manager that closed one window | dissolved with the manager: a window is closed from itself |
+| `console_windows.rs` | `show-console-window-{index}` | button of the manager that raised one window | `window.console-N` |
+| `cross_pool_vm.rs` | `cross-pool-open` | button "Move or copy to another pool…" of the details pane | `vm.move-to-pool` |
+| `cross_pool_vm_view.rs` | `cross-destination-{id}` | button of a finished transfer in the transfer history: show the destination VM or open its console | none. `cross_pool::show_destination` exists and no command or button calls it; no reason beyond "not yet" is recorded |
+| `cross_pool_vm_view.rs` | `cross-recheck-{id}` | button "Recheck" of a transfer in the transfer history | `events.recheck` on the record in the History list of the Events tab |
+| `cross_pool_vm_view.rs` | `cross-stop-{id}` | button to stop a transfer in the transfer history | `events.request-cancel` on the record in the History list |
+| `disk_workspace.rs` | `disk-heading` | heading of the Virtual disks workspace | dissolved: the title of the dialog `virtual-disk` |
+| `disk_workspace.rs` | `disk-list-back` | button back from a disk to the list | dissolved: the list is the Storage tab of a repository |
+| `disk_workspace.rs` | `disks-open` | button "Virtual disks…" | the Storage tab of a repository, with the search field `disk-search` |
+| `disk_workspace.rs` | `disk-manage-{id}` | button of a disk row that opened its workspace | `disk.grow`, `disk.copy`, `disk.cleanup` on the disk (row menu, context menu, Storage tab row) |
+| `disk_workspace.rs` | `disk-mode-{label}` | mode buttons of the workspace (Grow, Copy, Clean up) | the three commands `disk.grow`, `disk.copy`, `disk.cleanup`: one mode of the dialog each |
+| `disk_workspace.rs` | `disk-select-{id}` | button that selected a disk of the list | a row of the disk grid on the Storage tab of a repository |
+| `host_admin.rs` | `host-admin-open` | button "Host administration…" that opened the chooser | dissolved: a hub. The Server menu and a server's context menu list the changes (`server.reboot`, `server.shutdown`, `server.restart-toolstack`, `server.maintenance`, `server.evacuate`, `server.power-on`, `server.control-domain-memory`, `server.destroy`, `pool.vm-autostart`, `server.properties`) |
+| `host_admin.rs` | `host-monitoring-open` | button "Monitoring recording…" of the chooser | `server.monitoring-recording` |
+| `host_console.rs` | `open-host-console` | button that opened the host text console | `server.console`; the Console tab of a server |
+| `host_monitoring_view.rs` | `monitoring-heading` | heading of the monitoring dialog | dissolved: the title of the dialog `host-monitoring` |
+| `host_monitoring_view.rs` | `monitoring-source-{}` | one button per data source, twelve a page | a row of the table `monitoring-sources` |
+| `host_support_view.rs` | `host-support-open` | button "Host backup and support…" | `server.backup`, `server.restore-from-backup`, `tools.server-status-report` (the panel's three modes) |
+| `inventory_information.rs` | `information-close` | Close button of the information dialog | dissolved: the dialog is the General tab |
+| `inventory_information.rs` | `information-dialog` | the information dialog | the General tab of the selected object |
+| `inventory_information.rs` | `information-pool` | button "Pool information" | the General tab of the pool |
+| `inventory_information.rs` | `information-refresh` | button "Refresh from client" | dissolved: a tab shows the current inventory; there is nothing captured to refresh |
+| `local_conversion_view.rs` | `conversion-heading` | heading of the conversion dialog | dissolved: the title of the wizard `local-conversion` |
+| `main.rs` | `activity-open` | Activity button of the sidebar | the Notifications navigation view; the status bar's counters open it |
+| `main.rs` | `add-connection` | button "Add connection" of the page header | `server.add` |
+| `main.rs` | `alarms-open` | button that opened the alarms hub | dissolved: a hub. The pages Alerts and Email Options of the Properties dialogs, and `tools.alarm-service-refresh` |
+| `main.rs` | `archives-open` | button "Archives" (import and export) | `file.import`; export is `vm.export`, `templates.export`, `disk.export-image` |
+| `main.rs` | `back-to-inventory` | button back from the compact details to the table | dissolved: the compact swap between table and details pane is gone with the details pane |
+| `main.rs` | `certificate-review-scroll` | scroll container of the certificate review | dissolved: a scroll container; the body of a tab, dialog or wizard scrolls by itself |
+| `main.rs` | `connect-fields-scroll` | scroll container of the connect form | dissolved: a scroll container; the body of a tab, dialog or wizard scrolls by itself |
+| `main.rs` | `connect-heading` | heading of the connect dialog | dissolved: the title of the dialog `connect-dialog` |
+| `main.rs` | `conversion-open` | button "Convert local disk…" | `tools.convert-disk-image` |
+| `main.rs` | `create-network` | button "New network" | `network.new` |
+| `main.rs` | `create-storage` | button "New storage" | `storage.new` |
+| `main.rs` | `cross-pool-history` | button "Cross-pool transfers" | the History list of the Events tab |
+| `main.rs` | `disconnect` | button "Disconnect" of the page header | `server.disconnect`, `pool.disconnect` |
+| `main.rs` | `help-open` | button "Help" | `help.help` |
+| `main.rs` | `information-open` | button that opened the information dialog | the General tab |
+| `main.rs` | `interface-zoom` | the element that scaled the whole interface | dissolved: the scale is the window's (`view.zoom-in`, `view.zoom-out`, `view.zoom-reset`) |
+| `main.rs` | `inventory-table` | the inventory table | the grid `search-results` of the Search tab, and the navigation tree |
+| `main.rs` | `manage-pool` | button "Pool administration" of the page header | dissolved: a hub. The tabs of the pool (Storage, Networking, HA, Users), the Pool menu and the Events tab for the history |
+| `main.rs` | `open-console` | button "Console" of the details pane | the Console tab; `vm.console` |
+| `main.rs` | `open-guest-tools` | button "Mount guest tools media" | `vm.install-guest-tools` |
+| `main.rs` | `open-properties` | button "Properties" of the details pane | `vm.properties` |
+| `main.rs` | `open-snapshots` | button "Snapshots" of the details pane | the Snapshots tab of a VM |
+| `main.rs` | `open-template-properties` | button "Template properties" of the details pane | `template.properties` |
+| `main.rs` | `organization-open` | button "Organize" | dissolved: a hub. The Organization navigation view and the `org.*` commands |
+| `main.rs` | `repository-link` | link to the project repository in the sidebar header | `help.website`; the button `help-website` of About |
+| `main.rs` | `search-pools-open` | button "Search pools" | the Search tab, which every selection has |
+| `main.rs` | `settings-open` | button "Settings" | `tools.options` |
+| `main.rs` | `show-details` | button that showed the details in a compact window | dissolved: the compact swap is gone; the tabs show the selected object at every size |
+| `main.rs` | `snapshot-schedules-open` | button "Snapshot schedules" | `pool.snapshot-schedules` |
+| `management_bond_ui.rs` | `ipv6-management-bond` | button "Staged IPv6 management bond…" | `server.management.bond.ipv6` |
+| `management_bond_ui.rs` | `management-bond-create` | button "Create management bond…" | `server.management.bond.create` |
+| `management_bond_ui.rs` | `management-bond-remove` | button "Remove management bond…" | `server.management.bond.remove` |
+| `management_network_ui.rs` | `management-ip` | button "Change management IP…" | `server.management.configure` |
+| `management_network_ui.rs` | `management-move` | button "Move management…" | `server.management.move` |
+| `metrics_view.rs` | `close-performance` | button "Back to inventory" | dissolved: the page became a tab, which is left by choosing another tab or object; leaving drops the view and its subscription |
+| `metrics_view.rs` | `metric-presets-open` | button "Graph presets…" | `performance.presets` |
+| `metrics_view.rs` | `metrics-sources` | button "Data sources…" | `performance.data-sources` |
+| `metrics_view.rs` | `open-performance` | button "Performance" of the details pane | the Performance tab of a server or VM; choosing it starts the stream |
+| `network_admin.rs` | `network-administration-open` | button "Host networking…" that opened the hub | dissolved: a hub. The Networking tab of a pool, server or network and the NICs tab of a server |
+| `network_admin.rs` | `network-review-line-{index}` | one line of a network review | a line of the review block `network-change-review` |
+| `network_topology_ui.rs` | `topology-create` | button "Create pool-wide VLANs…" | `network.vlan.create-pool` |
+| `network_topology_ui.rs` | `topology-retag` | button "Retag pool-wide VLANs…" | `network.vlan.retag-pool` |
+| `pool_view.rs` | `pool-dissolve-open` | button that opened the dissolution of the pool | `pool.make-standalone` |
+| `pool_view.rs` | `pool-join-open` | button that opened the join of a server | `server.join-pool` |
+| `pool_view.rs` | `pool-root-password` | button that opened the password change | `pool.change-server-password`, `server.change-password` |
+| `pool_view.rs` | `pool-security-open` | button "Authentication, access and certificates…" | the Users tab of a pool and its commands (`pool.directory.*`, `pool.subject.*`, `server.certificate.*`) |
+| `profiles_view.rs` | `close-connections` | Close button of the connection manager | dissolved: the manager is the Home tab |
+| `profiles_view.rs` | `connect-all` | button "Connect all" | `server.connect-all` |
+| `profiles_view.rs` | `disconnect-all` | button "Disconnect all" | `server.disconnect-all` |
+| `profiles_view.rs` | `inventory-table` | the inventory table, named for the keyboard focus | the grid `search-results` of the Search tab |
+| `profiles_view.rs` | `manage-connections` | button that opened the connection manager | the Home tab (nothing selected) |
+| `profiles_view.rs` | `new-profile` | button for a new saved connection | `server.add` |
+| `profiles_view.rs` | `profiles-dialog` | the connection manager dialog | the Home tab |
+| `profiles_view.rs` | `cancel-profile-{id}` | button that cancelled a connection attempt | `server.cancel-connect` |
+| `profiles_view.rs` | `disconnect-profile-{id}` | button "Disconnect" of a connection card | `server.disconnect` |
+| `profiles_view.rs` | `edit-profile-{id}` | button "Connect / edit" of a connection card | `server.connect` |
+| `profiles_view.rs` | `inspect-failed-{id}` | button that reviewed the certificate of a failed connection | `server.review-certificate` |
+| `profiles_view.rs` | `reconnect-profile-{id}` | button "Reconnect as another account…" | `server.reconnect-as`, `pool.reconnect-as` |
+| `profiles_view.rs` | `remove-profile-{id}` | button that removed a saved connection | `server.remove-connection` |
+| `profiles_view.rs` | `view-profile-{id}` | button "View pool" | activating the row of the Home tab's grid |
+| `resource_admin.rs` | `pool-autostart` | button "Pool VM autostart…" | `pool.vm-autostart` |
+| `resource_admin.rs` | `pool-information` | button "Pool information" | the General tab of the pool |
+| `resource_admin.rs` | `resource-operation-notice` | notice "… · View operation history" | the status bar's counters of operations and unknown outcomes, which open the Events tab |
+| `search_view.rs` | `search-close` | Close button of the search page | dissolved: the page became a tab, which is left by choosing another tab or object |
+| `search_view.rs` | `search-export` | button that exported the saved searches | `search.export` |
+| `search_view.rs` | `search-import` | button "Import…" | `file.import-search` |
+| `search_view.rs` | `search-open-result` | button that opened the selected result in its pool | `search.open-result`; activating the row |
+| `search_view.rs` | `search-saved` | toggle "Saved searches" | the Saved Searches navigation view; `search.save`, `search.remove` |
+| `snapshot_inspection.rs` | `snapshot-inspection-dialog` | the "Inspect snapshot" dialog | the section `snapshot-information` of the Snapshots tab |
+| `storage_view.rs` | `storage-heading` | heading of the storage dialogs | dissolved: the title of each surface |
+| `storage_view.rs` | `storage-manage` | button that opened the storage hub | dissolved: a hub. The Storage tab and the `storage.*` commands |
+| `vm_device_lifecycle.rs` | `device-lifecycle-body` | scroll container of the dialog | dissolved: a scroll container; the body of a tab, dialog or wizard scrolls by itself |
+| `vm_device_lifecycle.rs` | `device-lifecycle-dialog` | the dialog for a new or removed device | the dialog `device-lifecycle` |
+| `vm_device_lifecycle.rs` | `{prefix}-{id}` | one button of a list of repositories, networks or images (the prefix is a variable) | an option of the choice that replaced the list; option keys keep the Rune pattern (for example `lifecycle-sr-<id>`). The script cannot match a key whose prefix is a variable |
+| `vm_device_properties.rs` | `nic-properties-{id}` | button of an interface row that opened its properties | `vm.nic.rate-limit` (and `vm.nic.properties`) on the row of the Networking tab |
+| `vm_devices.rs` | `close-vm-devices` | button "Back to inventory" of the Devices page | dissolved: the page became a tab, which is left by choosing another tab or object |
+| `vm_devices.rs` | `open-guest-tools` | button "Mount guest tools media" | `vm.install-guest-tools` |
+| `vm_lifecycle.rs` | `close-vm-lifecycle-history` | Close button of the "VM changes" panel | dissolved: the panel is the Events tab |
+| `vm_lifecycle.rs` | `vm-lifecycle-body` | scroll container of the dialog | dissolved: a scroll container; the body of a tab, dialog or wizard scrolls by itself |
+| `vm_lifecycle.rs` | `vm-lifecycle-history` | button "VM changes" | the Events tab of the Notifications view |
+| `vm_lifecycle.rs` | `{prefix}-choices` | the container of one list of choice buttons (the prefix is a variable) | dissolved: the list is a choice block of the wizard `vm-lifecycle-dialog` |
+| `vm_lifecycle.rs` | `{prefix}-{id}` | one button of such a list | an option of that choice. The script cannot match a key whose prefix is a variable |
+| `vm_migration.rs` | `open-vm-migration` | button "Migrate / move VM" of the details pane | `vm.migrate`, `vm.move` |
+| `vm_properties.rs` | `properties-dialog` | the VM properties dialog | the kernel's dialogs `vm-properties` and `template-properties` |
+| `vm_recovery_view.rs` | `vm-recovery-open` | button "Recovery controls…" that opened the recovery overview | dissolved: a hub. `vm.recovery-start`, `vm.recovery-restore-boot` and the controls under an operation record |
+| `vm_snapshots.rs` | `back-from-snapshots` | button "Back to inventory" of the Snapshots page | dissolved: the page became a tab, which is left by choosing another tab or object |
+| `vm_snapshots.rs` | `clone-snapshot-template` | button "Create template" | `snapshot.new-template` |
+| `vm_snapshots.rs` | `clone-snapshot-vm` | button "Create VM" | `snapshot.new-vm` |
+| `vm_snapshots.rs` | `create-snapshot` | button that took a snapshot | `vm.snapshot` |
+| `vm_snapshots.rs` | `delete-snapshot` | button "Delete" | `snapshot.delete` |
+| `vm_snapshots.rs` | `edit-snapshot` | button "Edit properties" | `snapshot.properties` |
+| `vm_snapshots.rs` | `inspect-snapshot` | button "Inspect snapshot" | the section `snapshot-information` of the tab, shown for the one selected snapshot |
+| `vm_snapshots.rs` | `restore-snapshot` | button "Restore snapshot" | `snapshot.revert` |
+| `vm_snapshots.rs` | `snapshot-activity` | button "Activity" | the Events tab of the Notifications view |
+| `vm_snapshots.rs` | `snapshot-dialog` | the one dialog of the snapshot actions | the dialogs `snapshot-create`, `snapshot-restore`, `snapshot-edit`, `snapshot-clone`, `snapshot-delete` |
