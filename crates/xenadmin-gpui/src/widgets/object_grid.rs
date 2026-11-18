@@ -129,6 +129,7 @@ impl Shared {
     }
 
     fn reindex(&mut self) {
+        crate::stats::count(|counts| counts.grid_reindexes += 1);
         self.index = self
             .table
             .rows
@@ -521,6 +522,7 @@ impl TableDelegate for GridDelegate {
         let Some(row) = shared.table.rows.get(row_ix) else {
             return div().id(("filler", row_ix));
         };
+        crate::stats::count(|counts| counts.grid_rows += 1);
         let key = s::Table::row_key(&shared.table.key, &row.id);
         let multi = shared.multi();
         let marked = multi && shared.table.selection.contains(&row.id);

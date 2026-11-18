@@ -23,6 +23,7 @@
 //! - [`charts`]: the performance chart element, which leaves a gap where
 //!   data is missing.
 //! - [`assets`]: the icons.
+//! - [`stats`]: counts of the rows built, for the large-inventory test.
 //! - `scenes` (feature `scenes`): the scene tool.
 
 pub mod app;
@@ -38,6 +39,7 @@ pub mod scene_view;
 #[cfg(feature = "scenes")]
 pub mod scenes;
 pub mod shell;
+pub mod stats;
 pub mod store;
 pub mod theme;
 mod wayland_keys;

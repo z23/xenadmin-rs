@@ -330,6 +330,22 @@ fn text_system() -> Arc<dyn PlatformTextSystem> {
     TEXT_SYSTEM.with(Arc::clone)
 }
 
+/// The application context of the scene tool: the Kit's deterministic
+/// platform with the machine's text system and the application's icons.
+/// With `capture` its windows can be drawn by the offscreen renderer, which
+/// needs a graphics adapter; without it no adapter is asked for.
+pub fn headless(capture: bool) -> HeadlessAppContext {
+    if capture {
+        HeadlessAppContext::with_platform(
+            text_system(),
+            Arc::new(AppAssets),
+            current_headless_renderer,
+        )
+    } else {
+        HeadlessAppContext::with_platform(text_system(), Arc::new(AppAssets), || Ok(None))
+    }
+}
+
 /// Renders a scene. With `capture` the frame is drawn by the offscreen
 /// renderer, which needs a graphics adapter (a software one will do);
 /// without it only the tree is made and no adapter is needed.
@@ -360,15 +376,7 @@ pub fn render_scrolled(
     if options.scale != 1. && options.scale != 2. {
         return Err(format!("the scale is 1 or 2, not {}", options.scale));
     }
-    let mut cx = if capture {
-        HeadlessAppContext::with_platform(
-            text_system(),
-            Arc::new(AppAssets),
-            current_headless_renderer,
-        )
-    } else {
-        HeadlessAppContext::with_platform(text_system(), Arc::new(AppAssets), || Ok(None))
-    };
+    let mut cx = headless(capture);
     // The artifact of the console window scene is that window. The views
     // are kept until the frame is captured.
     let detached = (name == CONSOLE_WINDOW_SCENE).then_some(ConsoleWindowId(1));
