@@ -228,7 +228,7 @@ fn cross_pool_results_keep_duplicate_vm_ids_distinct_and_synthetic_navigation_di
     assert!(h.find("search-result").is_some());
     // A query that no longer shows the row drops it: no command can apply
     // to a row that is not shown.
-    h.click("search-kind-Vm");
+    h.click("search-kind-VM");
     assert!(!sheet(&h).query.kinds.contains(&SearchKind::Vm));
     assert!(sheet(&h).shown.iter().all(|row| row.id != key));
     assert!(h.model.selection.grid.is_empty());
