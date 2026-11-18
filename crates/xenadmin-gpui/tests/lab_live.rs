@@ -578,10 +578,7 @@ fn lab_p3_power_and_events() {
         confirm_and_follow(&mut client, &mut evidence, vm, "start", PowerState::Running);
     evidence.note("start_seconds", json!(took));
     evidence.note("guest", json!(name));
-    evidence.note(
-        "power_batch",
-        json!("not run: see the report (two halted guests need the tools guest stopped)"),
-    );
+    evidence.note("power_batch", json!("its own scenario: lab_p3_power_batch"));
     client.close();
     evidence.finish();
 }
@@ -1916,6 +1913,229 @@ fn lab_baseline_tools_guest_on_the_coordinator() {
     assert_eq!(resident_host(&mut client, vm), Some(coordinator.0));
     evidence.note("guest", json!(name));
     evidence.note("ends_on", json!(coordinator.1));
+    client.close();
+    evidence.finish();
+}
+
+/// Selects the two guests in the Search tab of their pool, with the grid
+/// narrowed to VMs by its Filters so that their rows are drawn: a press
+/// on the row of the first, a press with the secondary modifier on the row
+/// of the second.
+fn select_two(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    pool: &ObjectRef,
+    first: &str,
+    second: &str,
+    tag: &str,
+) {
+    client.nav_view(NavView::Infrastructure);
+    client.select(pool);
+    client.tab(TabId::Search);
+    if client.node("search-kind-VM").is_none() {
+        client.press("search-filters");
+    }
+    set_checkbox(client, "search-kind-VM", true);
+    client.press("search-apply-filters");
+    client.wait(
+        "the grid lists both guests",
+        Duration::from_secs(30),
+        |client| {
+            table_row(client, "search-results", first).is_some()
+                && table_row(client, "search-results", second).is_some()
+        },
+    );
+    client.snap(evidence, &format!("{tag}-grid"));
+    let row = table_row(client, "search-results", first).expect("the first row");
+    client.press(&row);
+    let row = table_row(client, "search-results", second).expect("the second row");
+    client.press_adding(&row);
+    client.snap(evidence, tag);
+    let selected = client.model(|m| m.target().objects.len());
+    assert_eq!(selected, 2, "two guests are selected");
+}
+
+/// A power command on the two selected guests: the batch opens on its
+/// review with the action chosen and both guests listed, Run batch, and the
+/// batch followed until the host reports the power state for both. Returns
+/// the record of the batch and the seconds it took.
+fn run_batch(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    command: &str,
+    tag: &str,
+    guests: [(VmId, &str); 2],
+    expected: PowerState,
+) -> (OperationId, f64) {
+    client.menu(Menu::Vm, command);
+    assert_eq!(client.front().as_deref(), Some("power-batch"));
+    assert!(
+        client.element("batch-review").is_some(),
+        "the batch opens on its review"
+    );
+    for (_, name) in guests {
+        assert!(
+            table_row(client, "batch-vms", name).is_some(),
+            "the review lists {name}"
+        );
+    }
+    client.snap(evidence, &format!("{tag}-batch-review"));
+    let before: Vec<OperationId> =
+        client.model(|m| m.resource_rows.iter().map(|record| record.id).collect());
+    client.press("batch-power-submit");
+    client.wait("the batch is recorded", Duration::from_secs(30), |client| {
+        client.front().is_none()
+            && client.model(|m| {
+                m.resource_rows
+                    .iter()
+                    .any(|record| !before.contains(&record.id))
+            })
+    });
+    let batch = client.model(|m| {
+        m.resource_rows
+            .iter()
+            .filter(|record| !before.contains(&record.id) && record.batch_parent.is_none())
+            .min_by_key(|record| record.created_at_ms)
+            .map(|record| record.id)
+            .expect("the record of the batch")
+    });
+    client.snap(evidence, &format!("{tag}-batch-in-progress"));
+    let took = client.wait(
+        "the batch finished and the host reports the power state of both guests",
+        Duration::from_secs(480),
+        |client| {
+            unfinished_resources(client) == 0
+                && guests
+                    .iter()
+                    .all(|(vm, _)| power_state(client, *vm) == expected)
+        },
+    );
+    let records: Vec<String> = client.model(|m| {
+        m.resource_rows
+            .iter()
+            .filter(|record| !before.contains(&record.id))
+            .map(|record| format!("{:?} {:?}: {}", record.action, record.state, record.detail))
+            .collect()
+    });
+    let state = client.model(|m| {
+        m.resource_rows
+            .iter()
+            .find(|record| record.id == batch)
+            .map(|record| record.state.clone())
+            .expect("the record")
+    });
+    client.snap(evidence, &format!("{tag}-batch-done"));
+    evidence.step(
+        "the power batch finished",
+        json!({ "command": command, "seconds": seconds(took), "records": records }),
+    );
+    assert_eq!(state, OperationState::Succeeded, "{records:?}");
+    (batch, seconds(took))
+}
+
+/// P3.1, the batch: Shut Down for the plain guest and the tools guest
+/// selected together, then Start for the two halted guests, each through
+/// the review of the batch; the Events tab has the batches. The tools guest
+/// is stopped for the time of the two batches only, and is moved back when
+/// the host starts it on the other server.
+#[test]
+#[ignore]
+fn lab_p3_power_batch() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-1-power-batch");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (_, plain_vm, plain_name) = guest(&mut client, PLAIN_GUEST);
+    let (tools, tools_vm, tools_name) = guest(&mut client, TOOLS_GUEST);
+    let (coordinator, member) = servers(&mut client);
+    let home = resident_host(&mut client, tools_vm).expect("the tools guest runs");
+    let pool = client.model(|m| ObjectRef::pool(m.inventory.as_ref().expect("inventory").pool_id));
+    for vm in [plain_vm, tools_vm] {
+        assert_eq!(power_state(&mut client, vm), PowerState::Running);
+        wait_guest_ready(&mut client, vm, &mut evidence);
+    }
+    let guests = [
+        (plain_vm, plain_name.as_str()),
+        (tools_vm, tools_name.as_str()),
+    ];
+
+    // Shut Down for both.
+    select_two(
+        &mut client,
+        &mut evidence,
+        &pool,
+        &plain_name,
+        &tools_name,
+        "two-running-guests-selected",
+    );
+    let (shut_down, took) = run_batch(
+        &mut client,
+        &mut evidence,
+        "vm.shutdown",
+        "shut-down",
+        guests,
+        PowerState::Halted,
+    );
+    evidence.note("shut_down_batch_seconds", json!(took));
+
+    // Start for the two halted guests.
+    select_two(
+        &mut client,
+        &mut evidence,
+        &pool,
+        &plain_name,
+        &tools_name,
+        "two-halted-guests-selected",
+    );
+    let (start, took) = run_batch(
+        &mut client,
+        &mut evidence,
+        "vm.start",
+        "start",
+        guests,
+        PowerState::Running,
+    );
+    evidence.note("start_batch_seconds", json!(took));
+
+    // The Events tab of the Notifications view has both batches.
+    client.nav_view(NavView::Notifications);
+    client.tab(TabId::Events);
+    client.press("activity-History");
+    let rows = table_rows(&mut client, "activity-table");
+    let mut found = Vec::new();
+    for batch in [shut_down, start] {
+        let row = history_row(&mut client, batch).expect("the Events tab has the batch");
+        assert!(row.1.iter().any(|cell| cell == "Succeeded"), "{row:?}");
+        found.push(row.1);
+    }
+    client.snap(&mut evidence, "events-history");
+    evidence.step(
+        "the Events tab has the batches",
+        json!({ "batches": found, "rows": rows.into_iter().map(|row| row.1).collect::<Vec<_>>() }),
+    );
+    evidence.note("events_rows", json!(found));
+
+    // The host chooses where a started guest runs: the tools guest is moved
+    // back when it is not where it was.
+    client.nav_view(NavView::Infrastructure);
+    if resident_host(&mut client, tools_vm) != Some(home) {
+        wait_guest_ready(&mut client, tools_vm, &mut evidence);
+        let back = if home == coordinator.0 {
+            &coordinator
+        } else {
+            &member
+        };
+        let took = migrate(
+            &mut client,
+            &mut evidence,
+            &tools,
+            tools_vm,
+            (back.0, &back.1),
+            "tools-back",
+        );
+        evidence.note("tools_guest_moved_back_seconds", json!(took));
+    }
+    assert_eq!(resident_host(&mut client, tools_vm), Some(home));
+    evidence.note("guests", json!([plain_name, tools_name]));
     client.close();
     evidence.finish();
 }

@@ -704,6 +704,23 @@ impl Client {
         }
     }
 
+    /// A press with the secondary modifier held on the element with the
+    /// key: the press that adds a row to the selection of a table.
+    #[track_caller]
+    pub fn press_adding(&mut self, key: &str) {
+        let scope = self.front();
+        let result = self.on(|window, cx| {
+            let element = common::reach(window, cx, scope.as_deref(), key)?;
+            let modifiers = Modifiers::secondary_key(cx);
+            let _ = element;
+            window.click_with_modifiers(ElementId::Name(key.to_owned().into()), modifiers, cx);
+            Ok::<(), String>(())
+        });
+        if let Err(error) = result {
+            panic!("{error}\n{}", self.outline());
+        }
+    }
+
     /// A press on a field, then the text from the keyboard. What the field
     /// held is replaced.
     #[track_caller]
