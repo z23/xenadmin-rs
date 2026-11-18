@@ -34,7 +34,7 @@
 //! `host-support-restore` (the mode row: three commands) and
 //! `host-support-open` (the button of the details pane).
 
-use xenadmin_core::{HostArchiveOperation, HostPowerOperation, TransferAction, TransferFile};
+use xenadmin_core::{HostArchiveOperation, TransferAction, TransferFile};
 
 use super::commands::NOT_WRITABLE;
 use super::power::{self, Editor};
@@ -77,14 +77,12 @@ pub fn busy() -> String {
 /// Back to front: the panel, then the power editor (Rune's ranking).
 pub fn surfaces(m: &Model) -> Vec<Surface> {
     let a = &m.areas.host_services;
-    blocks_of(a.support.as_ref().map(|p| support_surface(m, p)))
+    a.support
+        .as_ref()
+        .map(|p| support_surface(m, p))
         .into_iter()
         .chain(a.power.as_ref().map(|e| power_surface(m, e)))
         .collect()
-}
-
-fn blocks_of(surface: Option<Surface>) -> Vec<Surface> {
-    surface.into_iter().collect()
 }
 
 // -- Power-on settings ------------------------------------------------------
@@ -519,11 +517,13 @@ fn support_footer(m: &Model, p: &Panel, synthetic: bool, stale: Option<String>) 
             support::submit_deletion,
         )
         .danger()
-        .disabled_if(synthetic, DEMO)
-        .disabled_if(!writable, NOT_WRITABLE)
+        // The first reason wins. A synthetic pool behaves like a real one
+        // up to the last step: it asks for the UUID, then says it is a demo.
         .disabled_opt(stale)
+        .disabled_if(!synthetic && !writable, NOT_WRITABLE)
         .disabled_if(m.resource_operations.len() >= 64, busy())
-        .disabled_if(p.confirmation != dump.uuid.to_string(), TYPE_DUMP);
+        .disabled_if(p.confirmation != dump.uuid.to_string(), TYPE_DUMP)
+        .disabled_if(synthetic, DEMO);
         return vec![close, history, back, submit];
     }
     if p.review.is_some() {
@@ -543,10 +543,10 @@ fn support_footer(m: &Model, p: &Panel, synthetic: bool, stale: Option<String>) 
             )
             .primary()
         }
-        .disabled_if(synthetic, DEMO)
         .disabled_opt(stale)
-        .disabled_if(restore && !writable, NOT_WRITABLE)
-        .disabled_if(restore && p.confirmation != p.host.to_string(), TYPE_HOST);
+        .disabled_if(restore && !synthetic && !writable, NOT_WRITABLE)
+        .disabled_if(restore && p.confirmation != p.host.to_string(), TYPE_HOST)
+        .disabled_if(synthetic, DEMO);
         return vec![close, history, back, submit];
     }
     let review = button(
@@ -563,9 +563,4 @@ fn support_footer(m: &Model, p: &Panel, synthetic: bool, stale: Option<String>) 
     .disabled_if(support::action(p).is_none() && p.mode == Mode::Support, NO_CATEGORY)
     .disabled_if(p.file.is_none() || support::action(p).is_none(), NO_FILE);
     vec![close, history, review]
-}
-
-#[allow(dead_code)]
-fn is_cleanup(op: &HostPowerOperation) -> bool {
-    matches!(op, HostPowerOperation::CleanupSecret { .. })
 }
