@@ -1218,6 +1218,227 @@ fn lab_p3_performance() {
     evidence.finish();
 }
 
+/// The rows of a table of what the window describes: the key of each and
+/// the texts of its cells.
+fn table_rows(client: &mut Client, table: &str) -> Vec<(String, Vec<String>)> {
+    let nodes = client.nodes();
+    let prefix = format!("{table}:");
+    nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| {
+            node.role == "row"
+                && node
+                    .key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(&prefix))
+        })
+        .map(|(at, node)| {
+            (
+                node.key.clone().unwrap_or_default(),
+                nodes[at + 1..]
+                    .iter()
+                    .take_while(|cell| cell.role == "cell")
+                    .map(|cell| cell.text.clone().unwrap_or_default())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Every file under a directory.
+fn files_under(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+    found
+}
+
+/// The Home tab: nothing selected, the list of saved connections.
+fn show_home(client: &mut Client) {
+    if client.model(|m| m.active_tab()) != TabId::Home || !client.model(|m| m.scope().is_empty()) {
+        client
+            .try_toolbar("nav.back")
+            .expect("Back leads to the Home tab");
+    }
+    assert!(
+        client.model(|m| m.scope().is_empty()),
+        "nothing is selected"
+    );
+    if client.model(|m| m.active_tab()) != TabId::Home {
+        client.tab(TabId::Home);
+    }
+}
+
+/// Connect… for the one saved connection, from the Home tab: the form
+/// opens on the saved settings and asks for the password, which is not
+/// saved; without it Connect is refused. With it the connection comes up,
+/// and no certificate is reviewed again: the pins were saved.
+fn connect_saved(client: &mut Client, lab: &Lab, evidence: &mut Evidence, tag: &str) -> f64 {
+    show_home(client);
+    let rows = table_rows(client, "connections");
+    assert_eq!(rows.len(), 1, "one saved connection: {rows:?}");
+    client.press(&rows[0].0);
+    client
+        .try_local("server.connect")
+        .expect("Connect… for the saved connection");
+    assert_eq!(client.front().as_deref(), Some("connect-dialog"));
+    let endpoint = client.node("host-endpoint").and_then(|node| node.value);
+    let username = client.node("username").and_then(|node| node.value);
+    assert!(
+        endpoint
+            .as_deref()
+            .is_some_and(|value| value.contains(&lab.hosts[0].ip)),
+        "the form has the saved endpoint: {endpoint:?}"
+    );
+    assert_eq!(username.as_deref(), Some("root"));
+    assert!(
+        client.model(|m| m.workspace.password.is_empty()),
+        "the password is asked for: none was saved"
+    );
+    client.press("connect");
+    let refused = client
+        .node("connect-error")
+        .and_then(|node| node.text)
+        .expect("Connect without a password is refused with a reason");
+    client.snap(evidence, &format!("{tag}-password-asked"));
+    evidence.step("the saved connection asks for the password", json!(refused));
+    lab_support::type_password(client, lab, "password");
+    client.press("connect");
+    let took = client.wait(
+        "the saved connection is current again",
+        Duration::from_secs(120),
+        |client| {
+            client.front().is_none()
+                && client.model(|m| {
+                    m.inventory.is_some() && m.snapshot.as_ref().is_some_and(|s| s.is_current())
+                })
+        },
+    );
+    client.wait(
+        "the Home tab says connected",
+        Duration::from_secs(30),
+        |client| {
+            show_home(client);
+            table_rows(client, "connections")
+                .first()
+                .is_some_and(|row| row.1.iter().any(|cell| cell == "Connected"))
+        },
+    );
+    let said = connection_status(client);
+    assert!(said.contains("Connected"), "the status bar says {said:?}");
+    client.snap(evidence, &format!("{tag}-connected"));
+    evidence.step(
+        "connected again with the saved connection",
+        json!({ "seconds": seconds(took), "status": said }),
+    );
+    seconds(took)
+}
+
+/// P3.8, what the lab's rules allow: Disconnect and Connect again from the
+/// Home tab with the saved connection, and a second start on the same state
+/// directory, which restores the saved connection as not connected and
+/// asks for the password.
+#[test]
+#[ignore]
+fn lab_p3_connection_recovery() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-8-connection-recovery");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let pool = client.model(|m| m.inventory.as_ref().expect("inventory").pool_name.clone());
+
+    // Disconnect, from the Home tab.
+    show_home(&mut client);
+    let rows = table_rows(&mut client, "connections");
+    assert_eq!(rows.len(), 1, "one saved connection: {rows:?}");
+    assert!(rows[0].1.iter().any(|cell| cell == "Connected"), "{rows:?}");
+    client.snap(&mut evidence, "home-connected");
+    client.press(&rows[0].0);
+    client
+        .try_local("server.disconnect")
+        .expect("Disconnect for the connected row");
+    let took = client.wait(
+        "the connection is closed",
+        Duration::from_secs(60),
+        |client| {
+            table_rows(client, "connections")
+                .first()
+                .is_some_and(|row| row.1.iter().any(|cell| cell == "Disconnected"))
+        },
+    );
+    let said = connection_status(&mut client);
+    let labels = client.tree_labels();
+    client.snap(&mut evidence, "home-disconnected");
+    evidence.step(
+        "disconnected from the Home tab",
+        json!({ "seconds": seconds(took), "status": said, "tree": labels }),
+    );
+    assert!(
+        !said.contains("Connected"),
+        "the status bar still says {said:?}"
+    );
+    // The tree keeps the pool as it was last seen, under the status word
+    // of its connection.
+    let word = client.model(|m| {
+        xenadmin_ui::nav::rows(m)
+            .into_iter()
+            .find(|row| row.label == pool)
+            .and_then(|row| row.status)
+    });
+    assert_eq!(word.as_deref(), Some("Disconnected"));
+
+    // Connect again with the saved connection.
+    let again = connect_saved(&mut client, &lab, &mut evidence, "reconnect");
+    evidence.note("reconnect_seconds", json!(again));
+    assert!(client.tree_labels().contains(&pool));
+
+    // A second start on the same state directory.
+    client.close();
+    let leaked: Vec<String> = files_under(&lab_support::state_directory())
+        .into_iter()
+        .filter(|path| lab_support::holds_password(&lab, path))
+        .map(|path| path.display().to_string())
+        .collect();
+    assert!(leaked.is_empty(), "the password is in {leaked:?}");
+    let mut client = Client::start(Platform::Rendered);
+    client.pass(Duration::from_secs(3));
+    let profiles = client.model(|m| m.workspace.profiles().len());
+    assert_eq!(profiles, 1, "the saved connection is restored");
+    assert!(
+        client.model(|m| m.workspace.active.is_empty() && m.workspace.loads.is_empty()),
+        "nothing connects by itself: the connection is not automatic and has no saved password"
+    );
+    show_home(&mut client);
+    let rows = table_rows(&mut client, "connections");
+    assert!(
+        rows[0].1.iter().any(|cell| cell == "Disconnected"),
+        "{rows:?}"
+    );
+    let said = connection_status(&mut client);
+    let labels = client.tree_labels();
+    client.snap(&mut evidence, "second-start");
+    evidence.step(
+        "a second start restores the saved connection as not connected",
+        json!({ "row": rows[0].1, "status": said, "tree": labels }),
+    );
+    assert!(!said.contains("Connected"), "{said:?}");
+    let after = connect_saved(&mut client, &lab, &mut evidence, "second-start");
+    evidence.note("second_start_connect_seconds", json!(after));
+    assert!(client.tree_labels().contains(&pool));
+    evidence.note("password_in_state_directory", json!(false));
+    client.close();
+    evidence.finish();
+}
+
 /// The servers of the pool: the coordinator and the member, with their
 /// names.
 fn servers(client: &mut Client) -> ((HostId, String), (HostId, String)) {
