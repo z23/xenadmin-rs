@@ -367,7 +367,7 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
             _ => None,
         })
         .expect("a file prompt");
-    assert_eq!(prompt.title, "Export activity JSON");
+    assert_eq!(prompt.title, "Export entries as JSON");
     assert_eq!(prompt.mode, FileMode::Save);
     assert_eq!(
         prompt.suggested_name.as_deref(),
@@ -404,7 +404,7 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
     assert!(!h.model.areas.events.export.pending);
     assert_eq!(
         h.model.areas.events.notice,
-        Some(format!("Activity saved to {}", path.display()))
+        Some(format!("Entries saved to {}", path.display()))
     );
     let document: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1044,7 +1044,15 @@ fn texts_name_the_places_of_this_client() {
         view::SOURCE_CACHED,
         "Cached inventory · this pool is not currently selected and connected"
     );
-    assert_eq!(EXPORTING, "Saving the captured activity selection…");
+    // The lists are the Events and Alerts tabs: no text of the export names
+    // the Rune Activity dialog.
+    assert_eq!(EXPORTING, "Saving the captured entries…");
+    assert_eq!(export::PROMPT_TITLE, "Export entries as JSON");
+    assert_eq!(export::WRITER_NOT_STARTED, "Cannot start the export writer.");
+    assert_eq!(
+        export::WRITER_STOPPED,
+        "The export writer stopped without a result."
+    );
     assert!(view::EXPORT_NOTE.starts_with("JSON exports contain the displayed task/message"));
 }
 

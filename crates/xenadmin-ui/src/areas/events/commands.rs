@@ -44,7 +44,7 @@ pub const ALERTS_MENU: [CommandId; 1] = [DISMISS];
 
 /// Why the export command is disabled while one is in flight: the notice
 /// Rune showed during it.
-pub const EXPORTING: &str = "Saving the captured activity selection…";
+pub const EXPORTING: &str = "Saving the captured entries…";
 
 pub fn commands() -> Vec<CommandSpec> {
     vec![

@@ -655,7 +655,7 @@ fn the_activity_export_asks_for_a_path_and_writes_only_a_chosen_one(cx: &mut Tes
     assert_eq!(
         asked_for(cx, &scene),
         [(
-            "Export activity JSON".to_owned(),
+            "Export entries as JSON".to_owned(),
             xenadmin_ui::FileMode::Save,
             Some("xenadmin-activity.json".to_owned())
         )]
