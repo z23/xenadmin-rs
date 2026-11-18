@@ -1286,7 +1286,9 @@ mod tests {
                 .find(|line| line.contains(&key))
                 .unwrap_or_else(|| panic!("no line for{key}in\n{dump}"))
         };
-        assert!(line("probe-name").starts_with("textbox key=probe-name label=\"Name\" value=\"busy\""));
+        assert!(
+            line("probe-name").starts_with("textbox key=probe-name label=\"Name\" value=\"busy\"")
+        );
         let disabled = h
             .nodes()
             .into_iter()

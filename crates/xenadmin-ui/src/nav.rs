@@ -346,6 +346,16 @@ fn pools(m: &Model) -> Vec<(SessionView, std::sync::Arc<Inventory>)> {
         .collect()
 }
 
+/// The label of a session's node: the name, and for a session that was
+/// reconnected under another account than the saved one " · as {user}", as
+/// the Rune sidebar had it and as the Home tab says in its account column.
+fn session_label(m: &Model, id: xenadmin_core::ProfileId, name: &str) -> String {
+    match m.workspace.session_accounts.get(&id) {
+        Some((username, _)) => format!("{name} · as {username}"),
+        None => name.to_owned(),
+    }
+}
+
 fn infrastructure(m: &Model) -> Vec<NavRow> {
     let mut rows = Vec::new();
     for view in session::sessions(m) {
@@ -357,9 +367,13 @@ fn infrastructure(m: &Model) -> Vec<NavRow> {
             // Not connected, connecting, failed, or a second saved
             // connection to a pool that is already shown.
             rows.push(
-                NavRow::new(root, view.name.clone(), ObjectKind::Connection)
-                    .object(ObjectRef::new(None, ObjectKind::Connection, view.profile))
-                    .status(view.status),
+                NavRow::new(
+                    root,
+                    session_label(m, view.profile, &view.name),
+                    ObjectKind::Connection,
+                )
+                .object(ObjectRef::new(None, ObjectKind::Connection, view.profile))
+                .status(view.status),
             );
             continue;
         };
@@ -367,7 +381,8 @@ fn infrastructure(m: &Model) -> Vec<NavRow> {
         let current = view.synthetic
             || view.state == Some(xenadmin_core::ConnectionState::Ready)
             || (view.selected && view.state.is_none());
-        let mut row = NavRow::new(root.clone(), inventory.pool_name.clone(), ObjectKind::Pool)
+        let label = session_label(m, view.profile, &inventory.pool_name);
+        let mut row = NavRow::new(root.clone(), label, ObjectKind::Pool)
             .object(ObjectRef::pool(pool))
             .expanded();
         if view.synthetic || !current {
@@ -798,6 +813,37 @@ mod tests {
         assert_eq!(
             super::rows(&m).len(),
             view_rows(&m, NavView::Infrastructure).len()
+        );
+    }
+
+    #[test]
+    fn a_session_reconnected_under_another_account_says_so_in_its_label() {
+        let mut m = demo();
+        let profile = xenadmin_core::ConnectionProfile::new(
+            "Recovery pool".into(),
+            xenadmin_core::Endpoint::parse("https://recovery.example").unwrap(),
+            "operator".into(),
+        );
+        let id = profile.id;
+        m.workspace.preview_profiles.push(profile);
+        let label = |m: &Model, row: &str| {
+            let rows = view_rows(m, NavView::Infrastructure);
+            rows.iter().find(|r| r.id == row).unwrap().label.clone()
+        };
+        assert_eq!(label(&m, &session_row_id(id)), "Recovery pool");
+        m.workspace
+            .session_accounts
+            .insert(id, ("auditor".into(), true));
+        assert_eq!(label(&m, &session_row_id(id)), "Recovery pool · as auditor");
+        // The node of a session that shows its pool carries it too.
+        let scope = m.workspace.selected.expect("the demo session");
+        assert_eq!(label(&m, &session_row_id(scope)), "Demonstration pool");
+        m.workspace
+            .session_accounts
+            .insert(scope, ("root".into(), false));
+        assert_eq!(
+            label(&m, &session_row_id(scope)),
+            "Demonstration pool · as root"
         );
     }
 

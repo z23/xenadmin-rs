@@ -1618,11 +1618,23 @@ impl Model {
 
     /// Adopts a new snapshot of the scope session: `snapshot` and
     /// `inventory` change together.
-    fn poll_scope_session(&mut self) -> bool {
+    ///
+    /// The snapshot is the one `session::refresh` stored for the session in
+    /// `workspace.seen` earlier in the same poll, so the Home tab and the
+    /// tree (which read `seen`) and everything that reads `snapshot` show
+    /// one state. A second `Connection::latest` here could return a newer
+    /// one. Only a connection the workspace does not hold (a test that sets
+    /// `connection` itself) is asked directly.
+    pub(crate) fn poll_scope_session(&mut self) -> bool {
         let Some(connection) = &self.connection else {
             return false;
         };
-        let snapshot = connection.latest();
+        let stored = self
+            .workspace
+            .selected
+            .filter(|id| self.workspace.active.contains_key(id))
+            .and_then(|id| self.workspace.seen.get(&id).cloned());
+        let snapshot = stored.unwrap_or_else(|| connection.latest());
         if self
             .snapshot
             .as_ref()
