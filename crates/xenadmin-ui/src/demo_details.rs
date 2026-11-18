@@ -2,10 +2,84 @@
 use std::collections::BTreeMap;
 use uuid::Uuid;
 use xenadmin_core::{
-    ClassAvailability, GuestMetrics, GuestMetricsId, Inventory, NetworkDetails, NetworkId,
-    PowerState, SrId, StorageDetails, VbdId, VdiId, VifId, VirtualBlockDevice, VirtualDisk,
-    VirtualInterface, VmDetails,
+    ClassAvailability, GuestMetrics, GuestMetricsId, HostDetails, HostMetrics, HostMetricsId,
+    Inventory, NetworkDetails, NetworkId, PowerState, SrId, StorageDetails, VbdId, VdiId, VifId,
+    VirtualBlockDevice, VirtualDisk, VirtualInterface, VmDetails, VmId,
 };
+
+/// The synthetic metrics record of the demo host at `index`. The first
+/// host's is the one the Rune scene of host administration used.
+pub fn host_metrics_id(index: usize) -> HostMetricsId {
+    HostMetricsId::from(Uuid::from_u128(0x9901 + ((index as u128) << 16)))
+}
+
+/// The synthetic control domain of the demo host at `index`. It has a
+/// detail record and is not a guest of the inventory.
+pub fn control_domain_id(index: usize) -> VmId {
+    VmId::from(Uuid::from_u128(0x9902 + ((index as u128) << 16)))
+}
+
+/// What a server needs for its changes to be reviewable: live metrics with
+/// 64 GiB, a control domain of 2 GiB, the operations it allows, boot and
+/// toolstack start times, no power-on mode, a known log destination and
+/// multipathing off. Every demo host has it, so in the demo the server
+/// commands open their reviews instead of saying that host data is missing.
+fn populate_hosts(inventory: &mut Inventory) {
+    let hosts: Vec<_> = inventory.hosts.keys().copied().collect();
+    for (index, id) in hosts.into_iter().enumerate() {
+        let metrics = host_metrics_id(index);
+        let control = control_domain_id(index);
+        inventory.details.host_metrics.insert(
+            metrics,
+            HostMetrics {
+                id: metrics,
+                live: Some(true),
+                memory_total: Some(64 * 1024 * 1024 * 1024),
+                memory_free: Some(32 * 1024 * 1024 * 1024),
+                last_updated: None,
+            },
+        );
+        inventory.details.hosts.insert(
+            id,
+            HostDetails {
+                allowed_operations: Some(vec![
+                    "enable".into(),
+                    "evacuate".into(),
+                    "shutdown".into(),
+                    "reboot".into(),
+                    "power_on".into(),
+                ]),
+                current_operations: Some(vec![]),
+                maintenance_mode: Some(false),
+                boot_time: Some("100".into()),
+                agent_start_time: Some("110".into()),
+                metrics: Some(metrics),
+                control_domain: Some(control),
+                power_on_mode: Some(String::new()),
+                power_on_config_empty: Some(true),
+                syslog_known: true,
+                multipathing: Some(false),
+                ..Default::default()
+            },
+        );
+        inventory.details.vms.insert(
+            control,
+            VmDetails {
+                memory_static_min: Some(1024 * 1024),
+                memory_static_max: Some(2 * 1024 * 1024 * 1024),
+                memory_dynamic_min: Some(2 * 1024 * 1024 * 1024),
+                memory_dynamic_max: Some(2 * 1024 * 1024 * 1024),
+                ..Default::default()
+            },
+        );
+    }
+    for class in ["task", "pbd"] {
+        inventory
+            .details
+            .classes
+            .insert(class.into(), ClassAvailability::Available);
+    }
+}
 
 pub fn populate(inventory: &mut Inventory) {
     inventory.details.pool = Some(xenadmin_core::PoolDetails {
@@ -123,6 +197,7 @@ pub fn populate(inventory: &mut Inventory) {
         );
         inventory.details.network_uplinks.insert(id, Vec::new());
     }
+    populate_hosts(inventory);
     let Some(vm) = representative else {
         return;
     };

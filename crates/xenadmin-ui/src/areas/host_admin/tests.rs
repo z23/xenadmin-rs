@@ -384,7 +384,11 @@ fn a_command_is_hidden_for_other_objects_and_disabled_with_the_reason_of_its_rev
     }
     // A server whose details the inventory does not hold: every change is
     // refused with the one text; Properties opens, and its pages say it.
+    // (Every demo server has its details, so this one's are taken away.)
     let bare = *inventory.hosts.keys().nth(1).expect("a second server");
+    amend(&mut h, |i| {
+        i.details.hosts.remove(&bare);
+    });
     let bare = Target::one(ObjectRef::host(inventory.pool_id, bare));
     for spec in commands::commands() {
         if spec.id == commands::POOL_AUTOSTART {
