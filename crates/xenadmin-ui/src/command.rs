@@ -1271,6 +1271,73 @@ mod tests {
     }
 
     #[test]
+    fn a_context_menu_nests_like_the_menu_bar_and_a_lone_item_is_no_submenu() {
+        let m = Model::fixture();
+        let one = context_menu_of(&specs(), &m, &Target::one(vm(1)));
+        // The power group is one submenu, named as in the VM menu.
+        assert_eq!(
+            one[0],
+            vec![MenuEntry::Submenu {
+                label: place::VM_POWER_SUBMENU,
+                items: flat(vec![one[0].clone()]),
+            }]
+        );
+        assert_eq!(labels(one[0][0].items()), ["Start", "Force Reboot"]);
+        assert!(
+            one[1..]
+                .iter()
+                .flatten()
+                .all(|entry| entry.submenu().is_none())
+        );
+
+        // A context submenu of its own: for commands without a menu path,
+        // and in place of the submenu of the path. The submenu stands where
+        // its first command is.
+        let more = [
+            CommandSpec::new("t.first", "First", "t").context(VM),
+            CommandSpec::new("org.tag.add", "Add Tag", "t")
+                .context(VM_OR_TEMPLATE)
+                .context_submenu("Organize"),
+            CommandSpec::new("t.between", "Between", "t").context(VM),
+            CommandSpec::new("org.tag.remove", "Remove Tag", "t")
+                .context(VM)
+                .context_submenu("Organize"),
+            CommandSpec::new("vm.pause", "Pause", "t")
+                .menu(place::VM_PAUSE)
+                .context(VM)
+                .context_submenu("Other"),
+            CommandSpec::new("vm.unpause", "Unpause", "t")
+                .menu(place::VM_UNPAUSE)
+                .context(VM)
+                .context_submenu("Other"),
+        ];
+        assert_eq!(more[1].context_submenu_name(), Some("Organize"));
+        assert_eq!(more[4].context_submenu_name(), Some("Other"));
+        assert_eq!(
+            specs()[3].context_submenu_name(),
+            Some(place::VM_POWER_SUBMENU)
+        );
+        assert_eq!(more[0].context_submenu_name(), None);
+        let menu = context_menu_of(&more, &m, &Target::one(vm(1)));
+        assert_eq!(
+            outline(&menu),
+            "Other >\n    Pause\n    Unpause\n---\nFirst\nOrganize >\n    Add Tag\n    Remove Tag\nBetween\n"
+        );
+        // On a template only one command of the submenu is offered: it is
+        // a plain item.
+        let template = ObjectRef::template(pool(), vm(3).vm_id().expect("id"));
+        let alone = context_menu_of(&more, &m, &Target::one(template));
+        assert_eq!(outline(&alone), "Add Tag\n");
+        // The menu bar does not know a context submenu.
+        let bar = menu_bar_of(&more, &m, &Target::one(vm(1)));
+        let vm_menu = bar.iter().find(|menu| menu.menu == Menu::Vm).expect("VM");
+        assert_eq!(
+            vm_menu.groups[0][0].submenu(),
+            Some(place::VM_POWER_SUBMENU)
+        );
+    }
+
+    #[test]
     fn a_local_row_lists_the_commands_of_its_tab_in_order() {
         let m = Model::fixture();
         let on_vm = local_row_of(&specs(), &m, TabId::Storage, &Target::one(vm(1)));

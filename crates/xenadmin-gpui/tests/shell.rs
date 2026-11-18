@@ -2033,7 +2033,10 @@ async fn a_context_menu_nests_and_its_submenu_is_reached_by_pointer_and_by_keybo
     assert_eq!(popup_index(cx, &scene, POWER), 0);
     on(cx, &scene, |window, cx| window.press("down", cx));
     on(cx, &scene, |window, _| {
-        assert!(window.try_find("submenu").is_some(), "the entry is selected");
+        assert!(
+            window.try_find("submenu").is_some(),
+            "the entry is selected"
+        );
     });
     on(cx, &scene, |window, cx| window.press("right", cx));
     // Left goes back to the top level and Right in again: the keys stay
