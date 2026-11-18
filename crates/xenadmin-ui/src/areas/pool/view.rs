@@ -146,7 +146,7 @@ fn vms(m: &Model, inventory: &Inventory, pool: PoolId) -> Vec<Block> {
     let needle = state.filter.to_lowercase();
     let mut guests: Vec<_> = inventory
         .guests()
-        .filter(|vm| vm.name.to_lowercase().contains(&needle) || vm.id.to_string().contains(&needle))
+        .filter(|vm| shown(vm, &needle))
         .collect();
     guests.sort_by(|a, b| natural_cmp(&a.name, &b.name).then_with(|| a.id.cmp(&b.id)));
     let rows: Vec<Row> = guests
@@ -192,6 +192,7 @@ fn vms(m: &Model, inventory: &Inventory, pool: PoolId) -> Vec<Block> {
             &state.filter,
             |m, text| {
                 m.areas.pool.filter = text.to_owned();
+                drop_hidden_row(m);
             }
         ),
         table("ha-vms", columns, rows)
@@ -207,6 +208,29 @@ fn vms(m: &Model, inventory: &Inventory, pool: PoolId) -> Vec<Block> {
             })
             .empty("No virtual machine matches the filter."),
     ]
+}
+
+/// Whether a VM is in the grid under a filter: by name or UUID.
+fn shown(vm: &xenadmin_core::Vm, needle: &str) -> bool {
+    vm.name.to_lowercase().contains(needle) || vm.id.to_string().contains(needle)
+}
+
+/// A chosen row that the filter hides is no target of the local row any
+/// more.
+fn drop_hidden_row(m: &mut Model) {
+    let Some(selected) = m.areas.pool.selected_vm.clone() else {
+        return;
+    };
+    let needle = m.areas.pool.filter.to_lowercase();
+    let pool = m.scope().single_of(ObjectKind::Pool).and_then(|o| o.pool);
+    let visible = pool.and_then(|pool| m.inventory_for(pool)).is_some_and(|i| {
+        i.guests()
+            .any(|vm| vm.id.to_string() == selected && shown(vm, &needle))
+    });
+    if !visible {
+        m.areas.pool.selected_vm = None;
+        m.select_in_grid(Target::none());
+    }
 }
 
 /// A row of the VM grid is chosen: it is the target of the local row.

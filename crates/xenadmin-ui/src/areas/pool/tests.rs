@@ -684,8 +684,16 @@ fn the_filter_narrows_the_grid_by_name_or_uuid() {
     h.type_text("ha-vm-filter", &vm.to_string());
     assert!(rows(&h) < all);
     assert!(rows(&h) >= 1);
+    // A chosen row the filter hides is no target any more.
+    h.select_row("ha-vms", &vm.to_string());
+    assert_eq!(h.eligibility("vm.ha.restart-priority"), Eligibility::Enabled);
     h.type_text("ha-vm-filter", "no such machine");
     assert_eq!(rows(&h), 0);
+    assert!(h.model.areas.pool.selected_vm.is_none());
+    assert_eq!(
+        h.eligibility("vm.ha.restart-priority"),
+        disabled(commands::SELECT_VM)
+    );
     assert!(h.has_text("No virtual machine matches the filter."));
 }
 
