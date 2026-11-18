@@ -3,7 +3,7 @@
 //!
 //! Rune keys kept: `activity-search`, `activity-state-filter`,
 //! `activity-pool` (the button that cycled the pools is a select of them),
-//! `activity-show-hidden`, `activity-show-children`, `activity-table`, `activity-confirm`,
+//! `activity-show-hidden`, `activity-table`, `activity-confirm`,
 //! `activity-Tasks` and `activity-History` (options of the list choice),
 //! `failure-help-dialog` (the dialog's id), `failure-help-outcome`,
 //! `failure-help-code`, `failure-help-close`.
@@ -17,7 +17,8 @@
 //! `activity-count`, `activity-row-source`, `activity-outcome`,
 //! `activity-details` (the selected row's detail lines, one preformatted
 //! text), `activity-row-name`, `activity-unresolved`,
-//! `activity-export-note`;
+//! `activity-export-note`, `activity-show-children` (the checkbox that
+//! lists the records of a batch's members; see "Batches" in `mod.rs`);
 //! in the two reviews `activity-change-review` (and so
 //! `activity-change-review-stale`), `activity-review-preview`,
 //! `activity-review-error`, `activity-review-close`; in the acknowledgement
