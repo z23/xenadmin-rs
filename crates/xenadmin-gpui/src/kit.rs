@@ -24,6 +24,13 @@ pub use gpui_kit::{
     point, px, relative, rems, size,
 };
 
+// What a bespoke element paints with and listens to: the console canvas.
+pub use gpui_kit::{
+    Corners, DispatchPhase, Global, Hitbox, HitboxBehavior, KeyUpEvent, Keystroke,
+    KeystrokeEvent, ModifiersChangedEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
+    ScrollEvent, black, fill, white,
+};
+
 // Pictures: a decoded frame (BGRA) and the element that draws it.
 pub use gpui_kit::{ObjectFit, RenderImage, StyledImage, img};
 

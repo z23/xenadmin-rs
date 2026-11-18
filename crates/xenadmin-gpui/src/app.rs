@@ -36,6 +36,7 @@ use xenadmin_ui::prefs::{Appearance, Preferences};
 use xenadmin_ui::{Model, scene};
 
 use crate::assets::AppAssets;
+use crate::console::ConsoleWindows;
 use crate::intents::{self, Hook, Hooks};
 use crate::kit::*;
 use crate::shell::{self, ShellView};
@@ -270,7 +271,12 @@ fn shut_down(store: &Entity<AppStore>, console: &Hooks, closed: &Cell<bool>, cx:
 /// application. The shutdown runs before the quit because a quit observer
 /// is given 200 ms in all, and `Window::remove_window` asks no one.
 pub fn hooks(store: &Entity<AppStore>) -> (Hooks, Hook) {
-    let console = Hooks::default();
+    hooks_over(store, Hooks::default())
+}
+
+/// [`hooks`] over the console hooks given: `console` provides what opens
+/// and closes the console windows and releases a console's input.
+pub fn hooks_over(store: &Entity<AppStore>, console: Hooks) -> (Hooks, Hook) {
     let closed = Rc::new(Cell::new(false));
     let quit = {
         let (store, console, closed) = (store.clone(), console.clone(), closed.clone());
@@ -301,7 +307,8 @@ pub fn start(
     crate::init(cx);
     let title = model.window_title();
     let store = cx.new(|_| AppStore::new(model));
-    let (hooks, last_resort) = hooks(&store);
+    let consoles = ConsoleWindows::new(&store);
+    let (hooks, last_resort) = hooks_over(&store, consoles.hooks(Hooks::default()));
     intents::install(&store, hooks.clone(), cx);
     // The waker goes to the model, which restores the sessions that ask
     // for it (never in a preview). Console frames have a waker of their
@@ -319,6 +326,7 @@ pub fn start(
         }
     })
     .map_err(|error| format!("The main window did not open: {error}"))?;
+    consoles.install(Some(window), cx);
     // The window went away without being asked to close.
     let quit = Rc::clone(&hooks.quit);
     let main = window.window_id();

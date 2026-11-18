@@ -325,7 +325,9 @@ pub struct SceneView {
 impl SceneView {
     /// A view of `store` with a renderer of its own.
     pub fn new(store: Entity<AppStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_ui(Ui::new(store), window, cx)
+        let ui = Ui::new(store);
+        crate::console::register(&ui);
+        Self::with_ui(ui, window, cx)
     }
 
     /// A view that draws with `ui` (and so with the bespoke elements
