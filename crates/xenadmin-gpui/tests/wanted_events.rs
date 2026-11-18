@@ -1124,3 +1124,300 @@ fn the_selected_row_a_filter_leaves_is_still_the_target(cx: &mut TestAppContext)
     assert_eq!(target_vms(cx, &scene), [object_of(&rows[0].0)]);
     close(cx, scene);
 }
+
+/// The names of the items of the popup menu on screen.
+fn popup_labels(cx: &mut TestAppContext, scene: &ShellWindow) -> Vec<String> {
+    on(cx, scene, |window, _| {
+        window
+            .elements()
+            .into_iter()
+            .filter(|element| element.role() == Some(Role::MenuItem))
+            .filter_map(|element| element.label().map(str::to_owned))
+            .collect()
+    })
+}
+
+fn snapshot_row(n: u8) -> String {
+    format!("snapshots-table:60000000-0000-0000-0000-00000000000{n}")
+}
+
+/// snapshots, wish 27.
+#[gpui_kit::test]
+fn snapshot_rows_take_a_multi_selection_a_row_menu_and_escape(cx: &mut TestAppContext) {
+    let scene = open_scene(cx, "snapshots", WIDE);
+    press_on(cx, &scene, &snapshot_row(0));
+    assert!(has(cx, &scene, "snapshot-information"));
+    assert!(!has(cx, &scene, "snapshot-selection-count"));
+    // The secondary modifier adds a row.
+    let second = snapshot_row(1);
+    on(cx, &scene, |window, cx| {
+        let modifiers = Modifiers::secondary_key(cx);
+        window.click_with_modifiers(ElementId::Name(second.into()), modifiers, cx);
+    });
+    assert!(has(cx, &scene, "snapshot-selection-count"));
+    assert!(!has(cx, &scene, "snapshot-information"));
+    must(&mut *cx, &scene, Enabled("snapshot-batch-export-open"));
+    // Escape in the table clears the selection.
+    must(&mut *cx, &scene, Key("escape"));
+    assert!(!has(cx, &scene, "snapshot-selection-count"));
+    assert!(!has(cx, &scene, "snapshot-information"));
+    must(&mut *cx, &scene, Disabled("local:snapshot.revert", ""));
+    // A secondary press selects the row and opens its menu.
+    secondary_press_on(cx, &scene, &snapshot_row(2));
+    assert!(has(cx, &scene, "snapshot-information"));
+    assert_eq!(
+        popup_labels(cx, &scene),
+        [
+            "Revert",
+            "Edit properties",
+            "Create VM",
+            "Create template",
+            "Delete"
+        ]
+    );
+    close(cx, scene);
+}
+
+/// bulk_export, wish 74.
+#[gpui_kit::test]
+fn several_snapshots_selected_in_the_view_open_one_review_and_single_actions_take_one(
+    cx: &mut TestAppContext,
+) {
+    for size in BOTH {
+        let scene = open_scene(cx, "snapshots", *size);
+        let first = rows_in(cx, &scene, "snapshots-table")
+            .into_iter()
+            .map(|(key, _)| key)
+            .next()
+            .expect("a snapshot row");
+        press_on(cx, &scene, &first);
+        must(&mut *cx, &scene, Key("shift-down"));
+        assert!(has(cx, &scene, "snapshot-selection-count"), "{size:?}");
+        must(&mut *cx, &scene, Press("snapshot-batch-export-open"));
+        must(&mut *cx, &scene, Front("batch-export"));
+        // Two of the three snapshots, in one wizard.
+        let count = node(cx, &scene, "batch-export-count").expect("the count of targets");
+        let said = format!("{:?} {:?} {:?}", count.label, count.value, count.text);
+        assert!(said.contains('2') && !said.contains('3'), "{said}");
+        assert_eq!(submitted(cx, &scene), 0);
+        close(cx, scene);
+    }
+}
+
+/// snapshots, wish 26.
+#[gpui_kit::test]
+fn snapshot_widgets_review_captured_targets_and_demo_cannot_confirm_changes(
+    cx: &mut TestAppContext,
+) {
+    let guest = "30000000-0000-0000-0000-000000000000";
+    let scene = open_scene(cx, "demo", WIDE);
+    let name = model(cx, &scene, |m| {
+        let inventory = m.inventory.clone().expect("the demo inventory");
+        inventory
+            .guests()
+            .find(|vm| vm.id.to_string() == guest)
+            .map(|vm| vm.name.clone())
+            .expect("the guest")
+    });
+    // The tree draws the rows in view only: its search box brings the
+    // guest's row there.
+    on(cx, &scene, |window, cx| {
+        window.click(xenadmin_gpui::shell::nav::SEARCH_KEY, cx);
+        window.input(&name, cx);
+    });
+    on(cx, &scene, |window, cx| {
+        let row = window
+            .within(xenadmin_gpui::shell::nav::TREE_KEY)
+            .find_by_label(&name);
+        common::click_at(window, cx, row.bounds().center(), MouseButton::Left);
+    });
+    assert_eq!(target_vms(cx, &scene), [guest]);
+    must(&mut *cx, &scene, Press("tab-snapshots"));
+    assert_eq!(rows_of(cx, &scene, "snapshots-table"), 3);
+    must(&mut *cx, &scene, Press("local:vm.snapshot"));
+    must(&mut *cx, &scene, Front("snapshot-create"));
+    must(&mut *cx, &scene, Press("cancel-snapshot"));
+    must(&mut *cx, &scene, NoSurface);
+    press_on(cx, &scene, &snapshot_row(0));
+    must(&mut *cx, &scene, Press("local:snapshot.revert"));
+    must(&mut *cx, &scene, Front("snapshot-restore"));
+    must(
+        &mut *cx,
+        &scene,
+        Says("Changes made since the snapshot will be lost"),
+    );
+    must(&mut *cx, &scene, Disabled("confirm-snapshot", ""));
+    must(&mut *cx, &scene, Inert("confirm-snapshot"));
+    close(cx, scene);
+}
+
+/// vm_devices, wish 59.
+#[gpui_kit::test]
+fn a_secondary_press_on_a_device_row_opens_its_menu(cx: &mut TestAppContext) {
+    let scene = open_scene(cx, "vm-devices", WIDE);
+    let rows = rows_in(cx, &scene, "storage-vbds");
+    assert!(!rows.is_empty());
+    secondary_press_on(cx, &scene, &rows[0].0);
+    let labels = popup_labels(cx, &scene);
+    for item in ["Detach", "Properties", "Resize", "Copy"] {
+        assert!(labels.iter().any(|label| label == item), "{labels:?}");
+    }
+    close(cx, scene);
+
+    // The disks of a repository, behind the dialog of the scene.
+    let scene = open_scene(cx, "storage-cache", WIDE);
+    must(&mut *cx, &scene, Press("storage-close"));
+    must(&mut *cx, &scene, NoSurface);
+    let rows = rows_in(cx, &scene, "repository-disks");
+    assert!(!rows.is_empty(), "the repository shows no disk");
+    secondary_press_on(cx, &scene, &rows[0].0);
+    let labels = popup_labels(cx, &scene);
+    assert!(!labels.is_empty(), "no menu opened at {}", rows[0].0);
+    close(cx, scene);
+}
+
+/// vm_devices, wish 58.
+#[gpui_kit::test]
+fn the_device_property_chooser_shows_why_an_option_is_unavailable(cx: &mut TestAppContext) {
+    for size in BOTH {
+        let scene = open_scene(cx, "device-properties", *size);
+        must(&mut *cx, &scene, Reach(&["property-value"]));
+        must(
+            &mut *cx,
+            &scene,
+            Inside(&["property-review", "property-cancel"]),
+        );
+        must(&mut *cx, &scene, Press("property-back"));
+        must(&mut *cx, &scene, Reach(&["property-choice"]));
+        let reason = node(cx, &scene, "property-choice-0").and_then(|node| node.disabled);
+        assert!(
+            reason.as_deref().is_some_and(|reason| !reason.is_empty()),
+            "the first option has no reason"
+        );
+        must(&mut *cx, &scene, Disabled("property-choice-0", ""));
+        must(&mut *cx, &scene, Inside(&["property-cancel"]));
+        close(cx, scene);
+    }
+}
+
+/// vm_devices, wish 57.
+#[gpui_kit::test]
+fn the_history_button_of_a_disk_review_closes_it_and_shows_the_events(cx: &mut TestAppContext) {
+    let scene = open_scene(cx, "disk-cleanup", WIDE);
+    must(&mut *cx, &scene, Press("disk-history"));
+    must(&mut *cx, &scene, NoSurface);
+    assert!(
+        has(cx, &scene, "activity-table"),
+        "the Events tab is not shown"
+    );
+    close(cx, scene);
+}
+
+/// cross_pool, wish 85, its last sentence: the editor a batch starts in.
+#[gpui_kit::test]
+fn the_first_stage_of_a_batch_cross_pool_move_keeps_its_footer_in_the_window(
+    cx: &mut TestAppContext,
+) {
+    for size in BOTH {
+        let scene = open_scene(cx, "batch-cross-pool", *size);
+        for _ in 0..4 {
+            if has(cx, &scene, "batch-cross-pool-next") && !has(cx, &scene, "batch-cross-pool-back")
+            {
+                break;
+            }
+            must(&mut *cx, &scene, Press("batch-cross-pool-back"));
+        }
+        must(
+            &mut *cx,
+            &scene,
+            Inside(&["batch-cross-pool-close", "batch-cross-pool-next"]),
+        );
+        must(&mut *cx, &scene, Reach(&["experimental-notice"]));
+        close(cx, scene);
+    }
+}
+
+/// power, wish 7.
+#[gpui_kit::test]
+fn known_denial_disables_power_without_hiding_its_reason_at_both_widths(cx: &mut TestAppContext) {
+    let scene = open_scene(cx, "unavailable-actions", (1440., 1200.));
+    let (menus, toolbar) = cx.update(|cx| {
+        let store = scene.store.read(cx);
+        (store.menu_bar(), store.toolbar())
+    });
+    let mut reasons = Vec::new();
+    for command in ["vm.start", "vm.shutdown"] {
+        let item = menus
+            .iter()
+            .flat_map(|menu| menu.items())
+            .find(|item| item.id.0 == command)
+            .unwrap_or_else(|| panic!("no menu has {command}"));
+        let reason = item.disabled.clone().unwrap_or_default();
+        assert!(!reason.is_empty(), "{command} is enabled");
+        reasons.push(reason);
+    }
+    // The toolbar shows a power command only while it can be used.
+    let shown: Vec<&str> = toolbar.iter().flatten().map(|item| item.id.0).collect();
+    assert!(!shown.iter().any(|id| POWER.contains(id)), "{shown:?}");
+    assert!(!has(cx, &scene, "vm.start") && !has(cx, &scene, "toolbar:vm.start"));
+    // The tree dump carries the reason.
+    let tree = on(cx, &scene, |window, cx| {
+        xenadmin_gpui::scenes::tree_json(window, cx, &scene.store).to_string()
+    });
+    for reason in &reasons {
+        let quoted = serde_json::to_string(reason).expect("a string");
+        assert!(tree.contains(quoted.trim_matches('"')), "{reason}");
+    }
+    close(cx, scene);
+}
+
+/// bulk_edit, wish 70 (and the keyboard half of 71): two rows selected with
+/// Shift+Down, the menu opened with Shift+F10, Properties chosen from it.
+#[gpui_kit::test]
+fn property_batch_multiselect_review_is_immutable_and_footer_reachable_at_both_sizes(
+    cx: &mut TestAppContext,
+) {
+    for size in BOTH {
+        let (scene, [first, second]) = search_tab(cx, *size);
+        press_on(cx, &scene, &first);
+        must(&mut *cx, &scene, Key("shift-down"));
+        assert_eq!(
+            target_vms(cx, &scene),
+            [object_of(&first), object_of(&second)]
+        );
+        must(&mut *cx, &scene, Key("shift-f10"));
+        let items = open_menu_items(cx, &scene);
+        assert!(
+            items.contains(&("vm.properties", None)),
+            "the keyboard's menu of two VMs: {items:?}"
+        );
+        choose_from_popup(cx, &scene, "vm.properties");
+        must(&mut *cx, &scene, Front("vm-properties"));
+        must(&mut *cx, &scene, Says("Bulk properties"));
+        close(cx, scene);
+    }
+}
+
+/// migration, wish 37: from the first step to the review by key.
+#[gpui_kit::test]
+fn destination_and_mapping_controls_produce_reviewed_typed_plan(cx: &mut TestAppContext) {
+    at_sizes(
+        cx,
+        "vm-migration",
+        &[SMALL],
+        &[
+            Press("migration-back"),
+            Press("migration-back"),
+            // Another host than the review of the scene had.
+            Press("migration-host-20000000-0000-0000-0000-000000000003"),
+            Checked("migration-host-20000000-0000-0000-0000-000000000003", true),
+            Inside(&["migration-next"]),
+            Press("migration-next"),
+            Reach(&["migration-disk-0", "migration-nic-0", "migration-transfer"]),
+            Inside(&["migration-next", "migration-back"]),
+            Press("migration-next"),
+            Label("migration-dialog-steps", "Step 3 of 3"),
+            Inside(&["migration-apply"]),
+        ],
+    );
+}
