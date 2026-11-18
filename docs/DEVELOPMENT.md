@@ -140,6 +140,20 @@ renders detached window 1 instead of the main window, and `console-frame` and
 Wayland seat: the listener's part, the guest's cursor (not drawn) and the wheel's
 direction in a guest are not established by any test here.
 
+### The performance charts
+
+The Performance tab describes one block `metrics-chart` per series, which only names the
+chart; `crates/xenadmin-gpui/src/charts/` draws it and reads its data from the model by
+the block's key at every render (`xenadmin_ui::areas::performance::chart`), so it keeps
+no state and never waits. The element is bespoke because of the gap rule: the Kit's line
+chart joins the neighbours of a missing sample, and here every unbroken run of samples is
+a stroke of its own, a lone sample is a dot, and nothing is drawn where data is missing.
+The card carries the chart as text for the element tree and a screen reader (title,
+summary, the labels of the top and bottom edge, the first and last time; the plot is an
+image named by the series and its summary). `tests/charts.rs` checks what each plot
+painted and, in a captured frame, that the gap has no ink. The scene tool does not
+scroll: render `performance` at a tall size (`--size 1440x1700`) to see all four cards.
+
 ### Tests
 
 ```sh
