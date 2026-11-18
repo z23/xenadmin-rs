@@ -759,10 +759,26 @@ fn choosing_the_console_tab_of_an_object_that_is_not_eligible_opens_nothing() {
 // What the port changed, and the hazards of the map
 // ---------------------------------------------------------------------------
 
+/// The Console tab's local row without what other areas put on it (the
+/// external tools' "Connect with ..." of `vm_tools`): the console's own
+/// controls, in their order.
+fn own_row(h: &Harness) -> Vec<crate::command::MenuItem> {
+    h.local_row()
+        .into_iter()
+        .filter(|item| {
+            item.id.0.starts_with("console.")
+                || matches!(
+                    item.id.0,
+                    "vm.console" | "server.console" | "vm.send-ctrl-alt-del"
+                )
+        })
+        .collect()
+}
+
 #[test]
 fn the_tab_row_is_the_rune_toolbar_and_every_disabled_control_says_why() {
     let h = Harness::scene("console-frame");
-    let row = h.local_row();
+    let row = own_row(&h);
     let ids: Vec<_> = row.iter().map(|item| item.id).collect();
     assert_eq!(
         ids,
@@ -898,7 +914,7 @@ fn the_controls_change_the_session_and_ask_the_front_end() {
         h.node(view::CLOSED).text.as_deref(),
         Some("No console is open for this VM.")
     );
-    let row = h.local_row();
+    let row = own_row(&h);
     assert_eq!(row.len(), 2, "{row:?}");
     assert_eq!(row[0].id, commands::OPEN);
     assert_eq!(row[0].label, "Open Console");
