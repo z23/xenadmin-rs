@@ -1439,6 +1439,139 @@ fn lab_p3_connection_recovery() {
     evidence.finish();
 }
 
+/// A client closed in the middle of an operation: a Shut Down of the plain
+/// guest is started, the whole application is closed while the operation
+/// is in flight, a new one is started on the same state directory and
+/// connected, and the Events tab has the operation's record, reconciled
+/// with the host. Then the guest is started again.
+#[test]
+#[ignore]
+fn lab_client_closed_in_the_middle_of_an_operation() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "closed-in-the-middle-of-an-operation");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    client.tab(TabId::General);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    wait_guest_ready(&mut client, vm, &mut evidence);
+
+    // Shut Down, submitted at once (routine actions are not reviewed by
+    // default), and the application closed while the host works on it.
+    let before = newest_operation(&mut client, vm).map(|(id, _)| id);
+    client.menu(Menu::Vm, "vm.shutdown");
+    assert_eq!(client.front(), None, "no confirmation by default");
+    client.wait(
+        "the operation is in flight",
+        Duration::from_secs(30),
+        |client| {
+            newest_operation(client, vm)
+                .is_some_and(|(id, state)| Some(id) != before && !state.terminal())
+        },
+    );
+    let (operation, state) = newest_operation(&mut client, vm).expect("the record");
+    assert!(
+        !state.terminal(),
+        "the operation ended before the client closed: {state:?}"
+    );
+    client.snap(&mut evidence, "shutdown-in-flight");
+    let guest_state = power_state(&mut client, vm);
+    client.close();
+    evidence.step(
+        "the application was closed while the operation was in flight",
+        json!({ "operation": operation.to_string(), "state_at_close": format!("{state:?}"),
+            "guest_at_close": format!("{guest_state:?}") }),
+    );
+    evidence.note("state_at_close", json!(format!("{state:?}")));
+
+    // The host finishes what it was asked, with no client connected.
+    assert!(
+        outside.settle(Duration::from_secs(300), |inventory| {
+            inventory.vms[&vm].power_state == PowerState::Halted
+        }),
+        "the guest did not halt"
+    );
+
+    // A new application on the same state directory.
+    let mut client = Client::start(Platform::Rendered);
+    connect_saved(&mut client, &lab, &mut evidence, "after-restart");
+    let took = client.wait(
+        "the record of the operation is reconciled",
+        Duration::from_secs(180),
+        |client| {
+            client.model(|m| {
+                m.operation_rows
+                    .iter()
+                    .any(|record| record.id == operation && record.state.terminal())
+            })
+        },
+    );
+    let records: Vec<(String, String, String)> = client.model(|m| {
+        m.operation_rows
+            .iter()
+            .filter(|record| record.vm == vm)
+            .map(|record| {
+                (
+                    record.id.to_string(),
+                    record.action.label().to_owned(),
+                    format!("{:?}", record.state),
+                )
+            })
+            .collect()
+    });
+    client.nav_view(NavView::Notifications);
+    client.tab(TabId::Events);
+    client.press("activity-History");
+    let row = history_row(&mut client, operation).expect("the Events tab has the operation");
+    client.press(&row.0);
+    let outcome = client.node("activity-outcome").expect("the outcome");
+    let details = client.node("activity-details").and_then(|node| node.text);
+    client.snap(&mut evidence, "events-after-restart");
+    evidence.step(
+        "the Events tab has the reconciled record",
+        json!({ "seconds": seconds(took), "row": row.1, "outcome": outcome.label,
+            "details": details, "records_of_the_guest": records }),
+    );
+    // One record of the shutdown, the one that was submitted before the
+    // close, and it says what the host did. A second request would be a
+    // second record, or a failure of this one: the guest was halted.
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(row.1, ["Shut down", "Succeeded"]);
+    assert_eq!(power_state(&mut client, vm), PowerState::Halted);
+    assert_eq!(
+        client.model(|m| m.status().unknown_outcomes),
+        0,
+        "no outcome is left unknown"
+    );
+    evidence.note("reconciled_as", json!(row.1));
+    evidence.note("records_of_the_guest_after_restart", json!(records.len()));
+
+    // Start the guest again, from the toolbar.
+    client.nav_view(NavView::Infrastructure);
+    client.select(&object);
+    client.tab(TabId::General);
+    client
+        .try_toolbar("vm.start")
+        .expect("the toolbar offers Start for a halted guest");
+    let took = client.wait("the guest runs again", Duration::from_secs(360), |client| {
+        power_state(client, vm) == PowerState::Running && unfinished(client, vm) == 0
+    });
+    let states = operation_states(&mut client, vm);
+    client.snap(&mut evidence, "started-again");
+    evidence.step(
+        "the guest was started again",
+        json!({ "seconds": seconds(took), "operations": states }),
+    );
+    assert!(
+        states.iter().all(|state| state.ends_with("Succeeded")),
+        "{states:?}"
+    );
+    evidence.note("guest", json!(name));
+    client.close();
+    evidence.finish();
+}
+
 /// The servers of the pool: the coordinator and the member, with their
 /// names.
 fn servers(client: &mut Client) -> ((HostId, String), (HostId, String)) {
