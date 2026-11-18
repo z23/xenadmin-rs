@@ -417,6 +417,13 @@ fn assert_marker_gone(cx: &mut TestAppContext, scene: &ShellWindow) {
     );
 }
 
+/// Whether the renderer still holds the widget of a text field of a
+/// surface, with what was typed into it.
+fn holds_text(cx: &mut TestAppContext, scene: &ShellWindow, surface: &str, key: &str) -> bool {
+    let scope = xenadmin_gpui::render::surface_scope(surface);
+    cx.update(|cx| scene.view.read(cx).ui().holds_text(&scope, key))
+}
+
 /// vm_lifecycle, wish 50 (plan R11): the review of a creation does not show
 /// the private user-data, and the text area that held it is gone.
 #[gpui_kit::test]
@@ -431,6 +438,8 @@ fn creation_cloud_inputs_are_validated_and_review_omits_the_private_payload(
             Type("creation-cloud-user-data", "\n# zq7-private-marker\n"),
         );
         assert!(says(cx, &scene, MARKER), "the typed text is not on screen");
+        let field = ("vm-lifecycle-dialog", "creation-cloud-user-data");
+        assert!(holds_text(cx, &scene, field.0, field.1));
         for _ in 0..8 {
             if has(cx, &scene, "apply-vm-lifecycle") {
                 break;
@@ -439,6 +448,10 @@ fn creation_cloud_inputs_are_validated_and_review_omits_the_private_payload(
         }
         must(&mut *cx, &scene, Inside(&["apply-vm-lifecycle"]));
         must(&mut *cx, &scene, Absent(&["creation-cloud-user-data"]));
+        assert!(
+            !holds_text(cx, &scene, field.0, field.1),
+            "the text area's state outlived its step"
+        );
         assert_marker_gone(cx, &scene);
         close(cx, scene);
     }
@@ -461,6 +474,10 @@ fn creation_handoff_prepares_private_media_for_the_exact_created_target_and_chos
     poll_until_has(cx, &scene, "cloud-init-review");
     must(&mut *cx, &scene, Reach(&["cloud-init-review"]));
     must(&mut *cx, &scene, Absent(&["cloud-init-user-data"]));
+    assert!(
+        !holds_text(cx, &scene, "cloud-init-dialog", "cloud-init-user-data"),
+        "the text area's state outlived the form"
+    );
     assert_marker_gone(cx, &scene);
     close(cx, scene);
 }
@@ -1543,6 +1560,40 @@ fn the_outcome_explanation_opens_for_a_selected_unknown_operation(cx: &mut TestA
         must(&mut *cx, &scene, Press("failure-help-close"));
         must(&mut *cx, &scene, NoSurface);
         assert_eq!(submitted(cx, &scene), 0);
+        close(cx, scene);
+    }
+}
+
+/// snapshots, wish 28: the preview is drawn with the information, in the
+/// proportions of the picture, and can be brought wholly into view.
+#[gpui_kit::test]
+fn the_snapshot_preview_is_drawn_undistorted_inside_the_information(cx: &mut TestAppContext) {
+    for size in BOTH {
+        let scene = open_scene(cx, "snapshot-information", *size);
+        must(&mut *cx, &scene, Reach(&["snapshot-preview-image"]));
+        let (image, information) = on(cx, &scene, |window, _| {
+            let bounds = |key| {
+                common::locate(window, None, key)
+                    .unwrap_or_else(|error| panic!("{error}"))
+                    .bounds()
+            };
+            (
+                bounds("snapshot-preview-image"),
+                bounds("snapshot-information"),
+            )
+        });
+        let (width, height) = (f32::from(image.size.width), f32::from(image.size.height));
+        assert!(width > 100. && width <= 320.5, "{image:?} at {size:?}");
+        assert!(
+            (width / height - 320. / 180.).abs() < 0.02,
+            "the picture is distorted at {size:?}: {image:?}"
+        );
+        // The element with the key is the line that starts the
+        // information; the picture belongs to what follows it.
+        assert!(
+            image.top() >= information.top() && image.left() >= information.left(),
+            "{image:?} is not part of {information:?}"
+        );
         close(cx, scene);
     }
 }
