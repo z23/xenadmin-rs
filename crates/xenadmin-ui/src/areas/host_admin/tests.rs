@@ -131,6 +131,14 @@ fn server_menu(h: &Harness) -> Vec<MenuItem> {
 /// after the live pool id changes, pressing `host-confirm` submits nothing
 /// and the editor keeps its target and its review. (That the button is on
 /// screen at 1440x900 and at 513x652 is for a GPUI interaction test.)
+/// The Properties dialog of the scope's server on this area's first page.
+/// Other areas have pages before it (General is the rename of the network
+/// area), so the dialog no longer opens on Multipathing by itself.
+fn properties(h: &mut Harness) {
+    let target = h.model.target().clone();
+    assert!(h.model.open_properties(&target, Some("multipathing")));
+}
+
 #[test]
 fn maintenance_review_keeps_host_and_guest_identity() {
     let mut h = Harness::scene("host-administration");
@@ -190,7 +198,7 @@ fn memory_editor_rejects_zero_overflow_and_physical_overcommit() {
 #[test]
 fn logging_review_keeps_exact_old_and_new_destination() {
     let mut h = server();
-    h.invoke("server.properties");
+    properties(&mut h);
     h.pick(PAGES, "log-destination");
     h.type_text("host-setting-value", "logs.example.test");
     h.click("host-review");
@@ -408,7 +416,7 @@ fn a_command_is_hidden_for_other_objects_and_disabled_with_the_reason_of_its_rev
         h.model.eligibility(crate::properties::SERVER, &bare),
         Eligibility::Enabled
     );
-    h.invoke_on("server.properties", &bare);
+    assert!(h.model.open_properties(&bare, Some("multipathing")));
     assert_eq!(h.node("host-unavailable").text.as_deref(), Some(MISSING));
     h.dismiss();
     // The scene's server takes guests: a reboot is refused in the core's
@@ -602,7 +610,7 @@ fn the_settings_of_a_server_are_pages_of_its_properties() {
             .expect("details")
             .syslog_destination = Some("old.example.test".into());
     });
-    h.invoke("server.properties");
+    properties(&mut h);
     let surface = h.surface();
     assert_eq!(
         (surface.id.as_str(), surface.title.as_str()),
@@ -611,7 +619,13 @@ fn the_settings_of_a_server_are_pages_of_its_properties() {
     let SurfaceKind::Properties { pages, current, .. } = &surface.kind else {
         panic!("not a properties dialog");
     };
-    let labels: Vec<_> = pages.iter().map(|page| page.label.as_str()).collect();
+    // Among the pages other areas provide for a server, this area's three
+    // in the plan's order.
+    let labels: Vec<_> = pages
+        .iter()
+        .map(|page| page.label.as_str())
+        .filter(|label| ["Multipathing", "Log Destination", "Power On"].contains(label))
+        .collect();
     assert_eq!(labels, ["Multipathing", "Log Destination", "Power On"]);
     assert_eq!(current, "multipathing");
     assert!(surface.experimental);
@@ -673,7 +687,7 @@ fn the_multipathing_page_reviews_the_toggle_once_the_server_is_ready() {
     const NOT_READY: &str = "Evacuate the host, enter maintenance and detach its storage \
         connections before changing multipathing";
     let mut h = server();
-    h.invoke("server.properties");
+    properties(&mut h);
     assert_eq!(h.node("host-unavailable").text.as_deref(), Some(NOT_READY));
     h.click("host-review");
     assert!(editor(&h).review.is_none());
@@ -686,7 +700,7 @@ fn the_multipathing_page_reviews_the_toggle_once_the_server_is_ready() {
             pbd.currently_attached = Some(false);
         }
     });
-    h.invoke("server.properties");
+    properties(&mut h);
     assert!(h.find("host-unavailable").is_none());
     h.click("host-review");
     assert_eq!(
@@ -708,7 +722,7 @@ fn the_multipathing_page_reviews_the_toggle_once_the_server_is_ready() {
 #[test]
 fn a_link_to_another_area_follows_that_areas_command() {
     let mut h = server();
-    h.invoke("server.properties");
+    properties(&mut h);
     let target = host_target(&h);
     for (page, key, command) in [
         (
@@ -744,7 +758,7 @@ fn a_link_to_another_area_follows_that_areas_command() {
     // A press that comes after the command stopped being possible is
     // refused, and this surface stays.
     h.dismiss();
-    h.invoke("server.properties");
+    properties(&mut h);
     let w = editor(&h);
     let memory = view::link(&h.model, w, "k", "Label", commands::CONTROL_DOMAIN_MEMORY);
     let id = host(&h);
@@ -875,7 +889,7 @@ fn unknown_multipathing_is_not_off() {
     amend(&mut h, |i| {
         i.details.hosts.get_mut(&id).expect("details").multipathing = None;
     });
-    h.invoke("server.properties");
+    properties(&mut h);
     assert_eq!(h.node("host-unavailable").text.as_deref(), Some(MISSING));
     h.click("host-review");
     assert!(editor(&h).review.is_none());

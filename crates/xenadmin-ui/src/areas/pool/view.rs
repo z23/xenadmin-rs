@@ -321,7 +321,15 @@ pub fn pages(m: &Model, target: &Target) -> Vec<PropertyPage> {
     [Kind::Network, Kind::Security]
         .into_iter()
         .filter_map(Kind::page)
-        .map(|id| PropertyPage::planned(PropertiesKind::Pool, id).experimental(true))
+        .map(|id| {
+            if id == super::policy::ADVANCED_PAGE {
+                // Outside the plan's table: it comes last.
+                PropertyPage::new(id, "Advanced", PropertyPage::UNPLANNED)
+            } else {
+                PropertyPage::planned(PropertiesKind::Pool, id)
+            }
+            .experimental(true)
+        })
         .collect()
 }
 

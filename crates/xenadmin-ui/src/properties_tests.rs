@@ -27,6 +27,9 @@ use crate::properties::{self, NO_PAGES};
 pub struct State {
     /// Whether the area provides its pages.
     pub on: bool,
+    /// Whether the kernel collects pages from this area and `host_admin`
+    /// only (`Model::property_pages`): the tests of the dialog itself.
+    pub isolated: bool,
     /// Every event of `on_property_page` and every `on_nav_change`.
     pub log: Vec<String>,
     /// One draft across the pages of the area, the way an area with
@@ -108,6 +111,7 @@ fn server() -> (Harness, Target) {
     h.dismiss();
     assert!(h.surfaces().is_empty());
     h.model.areas.pages.on = true;
+    h.model.areas.pages.isolated = true;
     h.model.areas.pages.log.clear();
     let target = h.model.scope().clone();
     assert_eq!(target.kind(), ObjectKind::Host);
@@ -707,6 +711,7 @@ fn the_pages_of_the_areas_are_pages_of_the_plan() {
     // What the real areas provide for the objects of the demo follows it.
     let (mut h, host) = server();
     h.model.areas.pages.on = false;
+    h.model.areas.pages.isolated = false;
     let pool = host.pool().expect("pool");
     let mut targets = vec![host, Target::one(ObjectRef::pool(pool))];
     targets.extend(vm_targets(&h.model, 1).into_iter().map(Target::one));

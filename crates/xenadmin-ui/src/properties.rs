@@ -307,6 +307,13 @@ impl Model {
     pub fn property_pages(&self, target: &Target) -> Vec<(&'static str, PropertyPage)> {
         let mut pages: Vec<(&'static str, PropertyPage)> = Vec::new();
         for area in areas::specs() {
+            // The kernel's own tests see the pages of their test area and
+            // of one real area only, so that they do not depend on which
+            // areas provide pages for a server.
+            #[cfg(test)]
+            if self.areas.pages.isolated && !matches!(area.id, "pages" | "host_admin") {
+                continue;
+            }
             for page in (area.property_pages)(self, target) {
                 if !pages.iter().any(|(_, other)| other.id == page.id) {
                     pages.push((area.id, page));

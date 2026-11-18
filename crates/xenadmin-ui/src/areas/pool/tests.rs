@@ -479,7 +479,7 @@ fn every_surface_of_the_area_carries_the_experimental_notice() {
     // The tab is information: no notice.
     let mut h = tab();
     assert!(!h.model.experimental_notice());
-    for page in ["network-options", "security"] {
+    for page in ["advanced", "security"] {
         h.invoke("pool.properties");
         h.pick(PAGES, page);
         assert!(h.model.experimental_notice(), "{page}");
@@ -755,7 +755,7 @@ fn the_two_pages_stage_their_operations_inside_the_properties_dialog() {
     assert!(h.find("pool-confirmation").is_some());
     assert_eq!(h.try_click("pool-confirm"), Err(DEMO.into()));
     // Another page: the draft of this one is dropped.
-    h.pick(PAGES, "network-options");
+    h.pick(PAGES, "advanced");
     assert_eq!(editor(&h).kind, Kind::Network);
     assert!(editor(&h).review.is_none());
     h.click("pool-compression");
@@ -1034,7 +1034,7 @@ fn hazard_unknown_values_hide_controls_and_unknown_ha_blocks_membership_changes(
     assert!(h.find("pool-tls").is_none());
     assert!(h.has_text("Pool certificate verification: Unknown / unavailable"));
     assert_eq!(h.try_click("pool-secret"), Err(HA_FIRST.into()));
-    h.pick(PAGES, "network-options");
+    h.pick(PAGES, "advanced");
     assert!(h.find("pool-compression").is_none());
     assert!(h.has_text("Migration compression: Unknown / unavailable"));
     h.dismiss();

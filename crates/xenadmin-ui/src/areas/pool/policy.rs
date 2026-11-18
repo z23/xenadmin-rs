@@ -71,12 +71,18 @@ pub enum Kind {
     Eject,
 }
 
+/// The page of the pool's Properties dialog that holds migration
+/// compression: "Advanced", where the reference client has it. The plan's
+/// Network Options page is IGMP snooping, the network area's; of two pages
+/// with one id the kernel keeps the first.
+pub const ADVANCED_PAGE: &str = "advanced";
+
 impl Kind {
     /// The id of the Properties page the kind is, if it is one.
     pub fn page(self) -> Option<&'static str> {
         match self {
             Self::Security => Some("security"),
-            Self::Network => Some("network-options"),
+            Self::Network => Some(ADVANCED_PAGE),
             _ => None,
         }
     }

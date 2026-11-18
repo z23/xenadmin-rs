@@ -1069,10 +1069,14 @@ async fn a_grid_row_that_stands_for_an_object_has_its_context_menu_at_the_pointe
             menu.left() >= place.left() && menu.left() <= place.right(),
             "{menu:?} {place:?}"
         );
-        assert!(
-            menu.top() >= place.top() - px(2.) && menu.top() <= place.bottom() + px(2.),
-            "{menu:?} {place:?}"
-        );
+        // At the row when the menu fits below it; a menu too tall for that
+        // (a guest's, with every area's commands) is moved up to stay
+        // inside the window, never below the row.
+        assert!(menu.top() <= place.bottom() + px(2.), "{menu:?} {place:?}");
+        assert!(menu.bottom() <= px(900.), "{menu:?}");
+        if place.top() + menu.size.height <= px(900.) {
+            assert!(menu.top() >= place.top() - px(2.), "{menu:?} {place:?}");
+        }
         assert_eq!(
             window.find_by_label("Copy UUID").role(),
             Some(Role::MenuItem)

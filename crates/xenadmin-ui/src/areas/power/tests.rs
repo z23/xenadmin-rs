@@ -531,9 +531,12 @@ fn in_the_demo_one_vm_has_no_power_command_enabled_and_the_toolbar_shows_none() 
             "{action:?}"
         );
     }
-    let toolbar: Vec<_> = h.toolbar().iter().map(|item| item.id.0).collect();
+    // None of the power commands; New VM of another area has its own slot.
+    let toolbar: Vec<_> = h.toolbar().iter().map(|item| item.id).collect();
     assert!(
-        !toolbar.iter().any(|id| id.starts_with("vm.")),
+        !toolbar
+            .iter()
+            .any(|id| POWER.iter().any(|(_, command)| command == id)),
         "{toolbar:?}"
     );
     // Rune hid "Start on host…" and "Check action availability" in the demo.

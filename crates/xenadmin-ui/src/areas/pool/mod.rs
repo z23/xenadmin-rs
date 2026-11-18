@@ -54,11 +54,11 @@
 //! - [`policy::describe`]: the review lines of every `PoolOperation`
 //!   (`pool_security` staged `PoolOperation::Security` through the same
 //!   text in Rune).
-//! - The page ids `network-options` and `security` of the pool's
-//!   Properties dialog are provided here ([`view::pages`]). An area that
-//!   has more for one of them (IGMP snooping is planned on Network Options)
-//!   cannot register the same id: of two pages with one id the kernel
-//!   keeps the first.
+//! - The page ids `security` and `advanced` of the pool's Properties
+//!   dialog are provided here ([`view::pages`]). Migration compression is
+//!   on Advanced, where the reference client has it: Network Options is
+//!   IGMP snooping, the network area's page, and of two pages with one id
+//!   the kernel keeps the first.
 //!
 //! The files, in the order to read them: [`policy`] (pool operations,
 //! Rune `pool_view.rs` and `ha_policy_view.rs`), [`dissolve`], [`join`],
