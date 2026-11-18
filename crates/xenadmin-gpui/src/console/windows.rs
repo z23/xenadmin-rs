@@ -415,17 +415,26 @@ impl ConsoleWindows {
         }
     }
 
-    /// Lets go of what every console holds down in its guest: the
-    /// application is closing, or the main window was left.
+    /// The main window was left: every console of a window that is not
+    /// the active one lets go of what it holds down in its guest. (Each
+    /// canvas also lets go when its own window is left; the window the
+    /// user went to, a console window perhaps, keeps its keyboard.)
     pub fn release_input(&self, cx: &mut App) {
-        for canvas in canvas::all(cx) {
-            canvas.update(cx, |canvas, cx| canvas.release(cx));
+        let active = cx.active_window().map(|window| window.window_id());
+        for (window, canvas) in canvas::live(cx) {
+            if Some(window) != active {
+                canvas.update(cx, |canvas, cx| canvas.release(cx));
+            }
         }
     }
 
     /// Closes every console window: the close path of the application,
-    /// before the sessions are disconnected.
+    /// before the sessions are disconnected. Every console lets go of its
+    /// guest's input first, the Console tab's too.
     pub fn close_all(&self, cx: &mut App) {
+        for canvas in canvas::all(cx) {
+            canvas.update(cx, |canvas, cx| canvas.release(cx));
+        }
         self.store()
             .update(cx, |store, cx| store.run(windows::close_all, cx));
         // The requests this queued are performed later; the windows go now.

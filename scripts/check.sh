@@ -43,6 +43,10 @@ while IFS= read -r gpui_scene; do
     gpui_scenes "$gpui_scene" --snap "artifacts/gpui/${gpui_scene}.png" --tree "artifacts/gpui/${gpui_scene}.json" --theme dark --size 1440x900 --scale 1
 done < artifacts/gpui/scenes.txt
 gpui_scenes demo --snap artifacts/gpui/demo-light.png --tree artifacts/gpui/demo-light.json --theme light --size 1440x900 --scale 1
+# The artifact of console-window is detached console window 1, not the main window: at the
+# size it opens with and at the smallest it can be given.
+gpui_scenes console-window --snap artifacts/gpui/console-window-default.png --tree artifacts/gpui/console-window-default.json --theme dark --size 1100x800 --scale 1
+gpui_scenes console-window --snap artifacts/gpui/console-window-compact.png --tree artifacts/gpui/console-window-compact.json --theme dark --size 480x640 --scale 1
 # 800x600 is the smallest size the main window can be given.
 gpui_scenes demo --snap artifacts/gpui/demo-compact.png --tree artifacts/gpui/demo-compact.json --theme dark --size 800x600 --scale 1
 gpui_scenes gallery-shell --snap artifacts/gpui/gallery-shell-light-compact.png --tree artifacts/gpui/gallery-shell-light-compact.json --theme light --size 800x600 --scale 1

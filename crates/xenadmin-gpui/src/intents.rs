@@ -9,7 +9,8 @@
 //!   the path as text instead (plan risk R9).
 //! - `OpenUrl`, `CopyText`, `ReadClipboard`: the platform's.
 //! - `Quit`: the application's one close path.
-//! - `ConsoleWindow`: SEAM, see [`Hooks`].
+//! - `ConsoleWindow`: the console's, through [`Hooks`]
+//!   (`crate::console::ConsoleWindows`).
 //!
 //! A reply goes back to the model in an update of its own, after the one
 //! that queued the intent has finished.
@@ -26,8 +27,8 @@ use xenadmin_ui::surface::{Block, NoticeKind, Surface, button, input, notice as 
 use crate::kit::*;
 use crate::store::AppStore;
 
-/// What the log says for a console window request until the console is
-/// ported.
+/// What the log says for a console window request where no console windows
+/// were given to the hooks (a test, a scene with performed intents).
 pub const CONSOLE_WINDOWS_NOT_PORTED: &str = "console windows are not ported yet";
 
 /// Something the application does, given the application context.
@@ -37,9 +38,8 @@ pub type ConsoleWindowHook = Rc<dyn Fn(ConsoleWindowRequest, &mut App)>;
 
 /// What the application provides beyond the platform's services.
 ///
-/// SEAM FOR THE CONSOLE ENGINEER: the three console hooks do nothing yet.
-/// Replace them where the application is built (`app::run`); nothing else
-/// in the shell needs to change.
+/// The three console hooks do nothing by default. The application takes
+/// them from `crate::console::ConsoleWindows::hooks` (`app::start`).
 #[derive(Clone)]
 pub struct Hooks {
     /// Runs the close path of the main window and quits. `Intent::Quit`.

@@ -606,7 +606,8 @@ struct Canvases {
 
 impl Global for Canvases {}
 
-fn live(cx: &App) -> Vec<(WindowId, Entity<ConsoleCanvas>)> {
+/// Every canvas of the application with its window.
+pub(crate) fn live(cx: &App) -> Vec<(WindowId, Entity<ConsoleCanvas>)> {
     cx.try_global::<Canvases>()
         .map(|canvases| {
             canvases
