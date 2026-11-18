@@ -200,14 +200,17 @@ pub fn has_tag(inventory: &OrganizationInventory, tag: &str) -> bool {
         .any(|o| o.tags.iter().flatten().any(|t| t == tag))
 }
 
-/// The pool an action on this target changes, the pools the user may
-/// choose from instead, and what the name draft starts as.
+/// The pool an action changes, the pools the user may choose from instead,
+/// and what the name draft starts as.
+type Place = (PoolId, Vec<(PoolId, String)>, String);
+
+/// Where an action on this target takes place.
 fn place(
     m: &Model,
     target: &Target,
     action: Action,
     prefer: Option<PoolId>,
-) -> Option<(PoolId, Vec<(PoolId, String)>, String)> {
+) -> Option<Place> {
     let shown = super::pools(m);
     let among = |holds: &dyn Fn(&OrganizationInventory) -> bool| {
         let pools: Vec<(PoolId, String)> = shown
