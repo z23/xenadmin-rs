@@ -91,7 +91,7 @@ fn decode(data: &s::ImageData) -> Option<(RenderImage, (u32, u32))> {
             decoded.into_raw()
         }
     };
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let buffer = image::RgbaImage::from_raw(width, height, pixels)?;

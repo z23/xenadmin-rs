@@ -576,7 +576,7 @@ fn a_row_that_stands_for_an_object_asks_the_model_for_its_context_menu(cx: &mut 
     let open = menu(cx).expect("the model has a context menu open");
     assert_eq!(open.origin, MenuOrigin::Grid);
     assert_eq!(open.object.id, guests[2]);
-    assert_eq!(open.target.objects, [open.object.clone()]);
+    assert_eq!(open.target.objects, std::slice::from_ref(&open.object));
     cx.update(|cx| assert!(scene.store.read(cx).model().context_menu_valid()));
     on(cx, &scene, |window, _| {
         assert!(
