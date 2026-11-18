@@ -236,6 +236,13 @@ impl Evidence {
         self.files.push(name.to_owned());
     }
 
+    /// Keeps a file the scenario made (a saved screenshot) with the
+    /// evidence.
+    pub fn keep(&mut self, name: &str, bytes: &[u8]) {
+        std::fs::write(self.directory.join(name), bytes).expect("evidence file");
+        self.files.push(name.to_owned());
+    }
+
     fn summary(&self, outcome: &str) -> String {
         let document = json!({
             "scenario": self.scenario,

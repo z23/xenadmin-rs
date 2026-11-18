@@ -794,5 +794,82 @@ fn lab_p3_console() {
     evidence.finish();
 }
 
+/// P3.3, the half that needs a path prompt: Save Screenshot of the guest's
+/// console writes a PNG of the guest's picture to the path the test
+/// platform's prompt gives. No frame of the window is captured here: the
+/// platform that answers prompts has no renderer.
+#[test]
+#[ignore]
+fn lab_p3_console_save_screenshot() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-3-console-save-screenshot");
+    let mut client = connected(&lab, &mut evidence, Platform::Prompts);
+    let (object, _, name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    client.tab(TabId::Console);
+    let took = wait_console_picture(&mut client, "the guest's console shows a picture");
+    let (_, width, height) = console_frame(&mut client).expect("the frame");
+    client.snap(&mut evidence, "console");
+    evidence.step(
+        "the console opened and a frame was drawn",
+        json!({ "seconds": took, "guest": name, "width": width, "height": height }),
+    );
+
+    // Cancelled: nothing is written and the command can be used again.
+    client
+        .try_local("console.save-screenshot")
+        .expect("Save Screenshot");
+    client.wait("the path prompt", Duration::from_secs(5), |client| {
+        client.asked_for_new_path()
+    });
+    client.answer_new_path(None);
+    let scratch = xenadmin_ui::testing::TempDir::new("gpui-lab-screenshot");
+    let path = scratch.path().join("guest-console.png");
+    client.wait(
+        "Save Screenshot can be used again after a cancel",
+        Duration::from_secs(10),
+        |client| client.try_local("console.save-screenshot").is_ok(),
+    );
+    client.wait("the path prompt", Duration::from_secs(5), |client| {
+        client.asked_for_new_path()
+    });
+    client.answer_new_path(Some(path.clone()));
+    let took = client.wait("the PNG is written", Duration::from_secs(20), |_| {
+        std::fs::read(&path).is_ok_and(|bytes| bytes.starts_with(b"\x89PNG"))
+    });
+    let bytes = std::fs::read(&path).expect("the screenshot");
+    let picture = image::load_from_memory(&bytes).expect("a PNG that decodes");
+    assert_eq!(
+        (picture.width(), picture.height()),
+        (u32::from(width), u32::from(height)),
+        "the screenshot has the size of the guest's picture"
+    );
+    let colours: std::collections::BTreeSet<[u8; 4]> = picture
+        .to_rgba8()
+        .pixels()
+        .map(|pixel| pixel.0)
+        .take(400_000)
+        .collect();
+    assert!(colours.len() > 1, "the screenshot is one flat colour");
+    use std::os::unix::fs::PermissionsExt as _;
+    let mode = std::fs::metadata(&path)
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    evidence.keep("guest-console-screenshot.png", &bytes);
+    evidence.step(
+        "Save Screenshot wrote a PNG through the path prompt",
+        json!({ "seconds": seconds(took), "width": picture.width(), "height": picture.height(),
+            "bytes": bytes.len(), "mode": format!("{mode:o}") }),
+    );
+    evidence.note("screenshot", json!([picture.width(), picture.height()]));
+    evidence.note("screenshot_mode", json!(format!("{mode:o}")));
+    client.snap(&mut evidence, "after-save");
+    client.try_local("console.close").expect("Close Console");
+    client.close();
+    evidence.finish();
+}
+
 #[allow(dead_code)]
 const _: &str = TOOLS_GUEST;
