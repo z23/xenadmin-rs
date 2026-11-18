@@ -202,7 +202,7 @@ fn cross_pool_results_keep_duplicate_vm_ids_distinct_and_synthetic_navigation_di
     // The selected result is the target of the commands and shows its
     // details.
     let object = object_of(&sheet(&h).rows[0]);
-    assert_eq!(h.model.target(), Target::one(object));
+    assert_eq!(h.model.target(), Target::one(object.clone()));
     assert!(h.find("search-result").is_some());
     // A synthetic source cannot be opened: the command says why, and
     // activating the row changes nothing but the message.
@@ -222,8 +222,15 @@ fn cross_pool_results_keep_duplicate_vm_ids_distinct_and_synthetic_navigation_di
     h.click("search-filters");
     h.click("search-kind-Host");
     assert!(sheet(&h).query.kinds.contains(&SearchKind::Host));
-    // Changing the filters drops the selection: no command can apply to a
-    // row that may no longer be shown.
+    // A new query keeps a selected row that is still shown (the Rune table
+    // kept its selection under a filter): it is still the target.
+    assert_eq!(h.model.target(), Target::one(object));
+    assert!(h.find("search-result").is_some());
+    // A query that no longer shows the row drops it: no command can apply
+    // to a row that is not shown.
+    h.click("search-kind-Vm");
+    assert!(!sheet(&h).query.kinds.contains(&SearchKind::Vm));
+    assert!(sheet(&h).shown.iter().all(|row| row.id != key));
     assert!(h.model.selection.grid.is_empty());
     h.assert_unique_keys();
 }

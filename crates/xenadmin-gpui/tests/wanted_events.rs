@@ -1137,8 +1137,6 @@ fn batch_uses_only_visible_selection_and_rejects_over_limit_without_silent_subse
 /// power, wish 6, its last sentence: the one row a filter leaves, which was
 /// selected, is the target.
 #[gpui_kit::test]
-#[ignore = "xenadmin-ui, area search: a new search empties the grid selection, so the one \
-            selected row that stays visible is no longer the target (Rune kept it)"]
 fn the_selected_row_a_filter_leaves_is_still_the_target(cx: &mut TestAppContext) {
     let (scene, rows) = all_guests_selected_then_one_left(cx);
     assert_eq!(target_vms(cx, &scene), [object_of(&rows[0].0)]);

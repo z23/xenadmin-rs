@@ -181,21 +181,20 @@ pub fn current(m: &Model) -> Cow<'_, Sheet> {
 }
 
 /// Changes the query and runs it again (the Rune handlers that ended in
-/// `rebuild`). The grid selection is dropped: a command can never apply to
-/// rows that are no longer shown.
+/// `rebuild`). As in the Rune table under a filter, a selected row that is
+/// still shown stays selected and stays the target; a row the new query
+/// no longer shows leaves the selection, so no command can apply to it.
 fn change(m: &mut Model, edit: impl FnOnce(&mut Sheet)) {
     sync(m);
     let mut sheet = std::mem::take(&mut m.areas.search.sheet);
     edit(&mut sheet);
     query::rebuild(m, &mut sheet);
     m.areas.search.sheet = sheet;
-    if m.active_tab() == TabId::Search && !m.selection.grid.is_empty() {
-        m.select_in_grid(Target::none());
-    }
+    prune_grid(m);
 }
 
-/// After an inventory update: rows that are no longer among the results
-/// leave the grid selection; the others keep it.
+/// After a new query or an inventory update: rows that are no longer
+/// among the results leave the grid selection; the others keep it.
 fn prune_grid(m: &mut Model) {
     if m.active_tab() != TabId::Search || m.selection.grid.is_empty() {
         return;
@@ -239,9 +238,7 @@ pub(crate) fn reset(m: &mut Model) {
     };
     state.sheet.sort = sort;
     sync(m);
-    if m.active_tab() == TabId::Search && !m.selection.grid.is_empty() {
-        m.select_in_grid(Target::none());
-    }
+    prune_grid(m);
 }
 
 /// Abandons a file job: its prompt, when it is answered, is ignored.
