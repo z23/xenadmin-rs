@@ -36,7 +36,7 @@ pub const EMPTY_KEY: &str = "console-empty";
 pub const EMPTY_TEXT: &str = "No picture from the console yet";
 /// The canvas never gets less height than this: in a window too small for
 /// the controls and the picture, the body scrolls instead.
-pub const MINIMUM_HEIGHT: f32 = 160.0;
+pub const MINIMUM_HEIGHT: f32 = 112.0;
 
 /// A key the canvas forwarded to the model. Kept only in a build with the
 /// `scenes` feature, for the tests: a scene's console has no stream, so the
@@ -553,7 +553,13 @@ impl Render for ConsoleCanvas {
             .id(VIEW_KEY)
             .test_support()
             .w_full()
-            .flex_1()
+            // Not `flex_1`: its basis is a percentage, which is the height
+            // of the content where the column's own height is not known
+            // yet, and a canvas at Actual size would then never be less
+            // than the guest's desktop.
+            .flex_grow(1.)
+            .flex_shrink(1.)
+            .flex_basis(px(0.))
             .min_h(px(MINIMUM_HEIGHT))
             .border_1()
             .border_color(ring)
