@@ -37,6 +37,7 @@ use xenadmin_core::{
     VmSettingsPatch,
 };
 use xenadmin_gpui::shell::status;
+use xenadmin_ui::areas::console::{self, Seat};
 use xenadmin_ui::command::Menu;
 use xenadmin_ui::nav::NavView;
 use xenadmin_ui::object::ObjectRef;
@@ -80,17 +81,70 @@ fn connection_status(client: &mut Client) -> String {
         .unwrap_or_default()
 }
 
-/// Add Server from the Home tab, to the coordinator: the form, the
-/// certificate inspection and its review, the pin and the connection.
-/// Returns the fingerprint the review showed.
-fn add_server(client: &mut Client, lab: &Lab, evidence: &mut Evidence) -> String {
-    let inspected = lab_support::inspect(&lab.endpoint(0));
-    let fingerprint = inspected.details.fingerprint.to_string();
+/// Inspects the certificate of a host of the manifest from the connect
+/// form, compares what the review shows with what the core inspected, and
+/// trusts it: the endpoint typed again and the confirmation checked.
+/// Returns the fingerprint.
+fn pin_certificate(
+    client: &mut Client,
+    lab: &Lab,
+    evidence: &mut Evidence,
+    index: usize,
+) -> String {
+    let fingerprint = lab_support::inspect(&lab.endpoint(index))
+        .details
+        .fingerprint
+        .to_string();
+    let host = lab.hosts[index].name.clone();
     evidence.step(
-        "inspected the coordinator's certificate through the core",
-        json!({ "sha256": fingerprint }),
+        "inspected a host's certificate through the core",
+        json!({ "host": host, "sha256": fingerprint }),
     );
+    client.type_into("inspect-endpoint", &lab.address(index));
+    client.press("inspect-certificate");
+    let took = client.wait(
+        "the certificate review",
+        Duration::from_secs(30),
+        |client| client.element("certificate-review").is_some(),
+    );
+    assert!(
+        client.describes(&fingerprint),
+        "the review shows the fingerprint the core inspected"
+    );
+    assert!(client.says(&fingerprint), "the fingerprint is in the frame");
+    client.snap(evidence, &format!("certificate-review-{}", index + 1));
+    evidence.step(
+        "the certificate review shows the inspected fingerprint",
+        json!({ "host": host, "seconds": seconds(took) }),
+    );
+    let refused = client
+        .try_press("accept-certificate")
+        .expect_err("the pin needs the endpoint and the confirmation");
+    assert!(refused.contains("exact endpoint"), "{refused}");
+    let endpoint = client.model(|m| {
+        m.workspace
+            .trust
+            .observation
+            .as_ref()
+            .map(|observation| observation.endpoint.to_string())
+            .expect("the observation")
+    });
+    client.type_into("confirm-certificate-endpoint", &endpoint);
+    client.press("certificate-verified");
+    client.press("accept-certificate");
+    assert!(
+        client.element("certificate-review").is_none(),
+        "the form is back"
+    );
+    fingerprint
+}
 
+/// Add Server from the Home tab, to the coordinator: the form, the
+/// certificate of each of the two servers inspected, reviewed and pinned
+/// (consoles and migrations reach the member directly), and the
+/// connection. Returns the coordinator's fingerprint as the review showed
+/// it.
+fn add_server(client: &mut Client, lab: &Lab, evidence: &mut Evidence) -> String {
     assert_eq!(client.model(|m| m.active_tab()), TabId::Home);
     client
         .try_local("server.add")
@@ -109,45 +163,13 @@ fn add_server(client: &mut Client, lab: &Lab, evidence: &mut Evidence) -> String
         "the password field describes its text"
     );
 
-    // The host's certificate is self-signed: it is inspected and reviewed
-    // before anything is sent to the host.
+    // The hosts' certificates are self-signed: each is inspected and
+    // reviewed before anything is sent to a host.
     client.press("certificate-options");
-    client.press("inspect-certificate");
-    let took = client.wait(
-        "the certificate review",
-        Duration::from_secs(30),
-        |client| client.element("certificate-review").is_some(),
-    );
-    assert!(
-        client.describes(&fingerprint),
-        "the review shows the fingerprint the core inspected"
-    );
-    assert!(client.says(&fingerprint), "the fingerprint is in the frame");
-    client.snap(evidence, "certificate-review");
-    evidence.step(
-        "the certificate review shows the inspected fingerprint",
-        json!({ "seconds": seconds(took) }),
-    );
-    let refused = client
-        .try_press("accept-certificate")
-        .expect_err("the pin needs the endpoint and the confirmation");
-    evidence.step("Trust certificate is refused first", json!(refused));
-    let endpoint = client.model(|m| {
-        m.workspace
-            .trust
-            .observation
-            .as_ref()
-            .map(|observation| observation.endpoint.to_string())
-            .expect("the observation")
-    });
-    client.type_into("confirm-certificate-endpoint", &endpoint);
-    client.press("certificate-verified");
-    client.press("accept-certificate");
-    assert!(
-        client.element("certificate-review").is_none(),
-        "the form is back"
-    );
-    client.snap(evidence, "certificate-pinned");
+    let fingerprint = pin_certificate(client, lab, evidence, 0);
+    let member = pin_certificate(client, lab, evidence, 1);
+    assert_ne!(fingerprint, member);
+    client.snap(evidence, "certificates-pinned");
 
     client.press("connect");
     let took = client.wait(
@@ -558,6 +580,216 @@ fn lab_p3_power_and_events() {
         "power_batch",
         json!("not run: see the report (two halted guests need the tools guest stopped)"),
     );
+    client.close();
+    evidence.finish();
+}
+
+/// The share of the pixels of a picture that are clearly red. The guest's
+/// 4:3 picture is letterboxed in a wide canvas, so a screen that is all red
+/// is about half of the canvas.
+fn red_share(picture: &image::RgbaImage) -> f64 {
+    let red = picture
+        .pixels()
+        .filter(|pixel| pixel[0] > 120 && pixel[1] < 60 && pixel[2] < 60)
+        .count();
+    red as f64 / (picture.width() * picture.height()).max(1) as f64
+}
+
+/// How many pixels differ between two pictures of one size.
+fn differing(left: &image::RgbaImage, right: &image::RgbaImage) -> usize {
+    if left.dimensions() != right.dimensions() {
+        return usize::MAX;
+    }
+    left.pixels()
+        .zip(right.pixels())
+        .filter(|(a, b)| a != b)
+        .count()
+}
+
+/// The picture the model holds of the tab's console: its generation and
+/// its size.
+fn console_frame(client: &mut Client) -> Option<(u64, u16, u16)> {
+    client.model(|m| {
+        console::canvas::frame(m, Seat::Tab)
+            .map(|frame| (frame.generation, frame.width, frame.height))
+    })
+}
+
+/// Waits until the Console tab draws a picture of its console.
+fn wait_console_picture(client: &mut Client, what: &str) -> f64 {
+    let window = client.window;
+    let took = client.wait(what, Duration::from_secs(90), |client| {
+        console_frame(client).is_some()
+            && client
+                .canvas(window, Seat::Tab)
+                .is_some_and(|(uploaded, _, _)| uploaded > 0)
+    });
+    seconds(took)
+}
+
+/// P3.3, the rendered half: the Console tab of the plain guest opens its
+/// console, a frame arrives and is drawn, keys typed through the canvas
+/// reach the guest; the host text console of the second server opens.
+#[test]
+#[ignore]
+fn lab_p3_console() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-3-console");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let window = client.window;
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    wait_guest_ready(&mut client, vm, &mut evidence);
+
+    client.tab(TabId::Console);
+    let took = wait_console_picture(&mut client, "the guest's console shows a picture");
+    let (generation, width, height) = console_frame(&mut client).expect("the frame");
+    client.snap(&mut evidence, "console-first-frame");
+    evidence.step(
+        "the console opened and a frame was drawn",
+        json!({ "seconds": took, "guest": name, "width": width, "height": height }),
+    );
+    evidence.note("guest_frame", json!([width, height]));
+    assert!(width >= 320 && height >= 200);
+    let first = client
+        .pixels_of(console::view::CANVAS)
+        .expect("the canvas pixels");
+    // The canvas shows the guest's picture, not an empty box: it has more
+    // than one colour.
+    let colours: std::collections::BTreeSet<[u8; 4]> =
+        first.pixels().map(|pixel| pixel.0).take(200_000).collect();
+    assert!(colours.len() > 1, "the canvas is one flat colour");
+
+    // A press on the canvas gives it the keyboard; Return reaches the guest
+    // and its screen changes.
+    client.press(console::view::CANVAS);
+    let (_, keyboard, sent) = client.canvas(window, Seat::Tab).expect("the canvas");
+    assert!(keyboard, "the canvas has the keyboard after a press");
+    client.key("enter");
+    let took = client.wait(
+        "the guest's screen changed after Return",
+        Duration::from_secs(20),
+        |client| {
+            console_frame(client).is_some_and(|(now, _, _)| now != generation)
+                && client
+                    .pixels_of(console::view::CANVAS)
+                    .is_some_and(|now| differing(&first, &now) > 0)
+        },
+    );
+    let (_, _, forwarded) = client.canvas(window, Seat::Tab).expect("the canvas");
+    assert!(forwarded > sent, "the canvas forwarded the key");
+    client.snap(&mut evidence, "console-after-return");
+    evidence.step(
+        "Return changed the guest's screen",
+        json!({ "seconds": seconds(took) }),
+    );
+
+    // The root shell of the lab guest: no password. A command that paints
+    // the whole screen red shows that every key arrived, in order.
+    // A run that failed may have left the console at a password prompt:
+    // the Return above ends it, and the guest takes a few seconds to offer
+    // the login again.
+    client.pass(Duration::from_secs(5));
+    client.key("enter");
+    client.pass(Duration::from_secs(1));
+    client.type_keys("root");
+    client.key("enter");
+    client.pass(Duration::from_secs(3));
+    client.snap(&mut evidence, "console-logged-in");
+    client.type_keys("printf '\\033[41m'; clear; echo typed through the canvas");
+    client.key("enter");
+    client.pass(Duration::from_secs(2));
+    client.snap(&mut evidence, "console-command-typed");
+    let took = client.wait(
+        "the command painted the guest's screen red",
+        Duration::from_secs(30),
+        |client| {
+            client
+                .pixels_of(console::view::CANVAS)
+                .is_some_and(|now| red_share(&now) > 0.3)
+        },
+    );
+    let red = client
+        .pixels_of(console::view::CANVAS)
+        .map(|now| red_share(&now));
+    client.snap(&mut evidence, "console-command-echo");
+    evidence.step(
+        "a command typed through the canvas ran in the guest",
+        json!({ "seconds": seconds(took), "red_share_of_canvas": red }),
+    );
+    evidence.note("typed_command_red_share", json!(red));
+    // Put the guest's console back: default colours, and logged out.
+    client.type_keys("printf '\\033[0m'; clear; exit");
+    client.key("enter");
+    client.wait(
+        "the guest's screen is back to its colours",
+        Duration::from_secs(30),
+        |client| {
+            client
+                .pixels_of(console::view::CANVAS)
+                .is_some_and(|now| red_share(&now) < 0.02)
+        },
+    );
+    client.pass(Duration::from_secs(2));
+    client.snap(&mut evidence, "console-logged-out");
+
+    // Send Ctrl+Alt+Del is offered and is NOT pressed.
+    let reason = client.disabled_reason(None, "local:vm.send-ctrl-alt-del");
+    evidence.step(
+        "Send Ctrl+Alt+Del is on the row and was not pressed",
+        json!({ "disabled": reason }),
+    );
+    // Release Input lets go of what is held in the guest. Whether the
+    // canvas keeps the keyboard afterwards is recorded, not asserted: see
+    // the report.
+    client
+        .try_local("console.release-input")
+        .expect("Release Input");
+    let (_, keyboard, _) = client.canvas(window, Seat::Tab).expect("the canvas");
+    evidence.note("canvas_has_keyboard_after_release_input", json!(keyboard));
+
+    // The host text console of the second server. Nobody logs in.
+    let host = client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        let host = inventory
+            .hosts
+            .values()
+            .find(|host| Some(host.id) != inventory.coordinator)
+            .expect("a member");
+        (
+            ObjectRef::host(inventory.pool_id, host.id),
+            host.name.clone(),
+        )
+    });
+    client.select(&host.0);
+    client.tab(TabId::Console);
+    let outcome = client.wait_for(Duration::from_secs(60), &mut |client| {
+        console_frame(client).is_some()
+            && client
+                .canvas(window, Seat::Tab)
+                .is_some_and(|(uploaded, _, _)| uploaded > 0)
+    });
+    client.snap(&mut evidence, "host-console");
+    let said: Vec<String> = [
+        console::view::STATUS,
+        console::view::ERROR,
+        console::view::MESSAGE,
+    ]
+    .into_iter()
+    .filter_map(|key| client.node(key).and_then(|node| node.text))
+    .collect();
+    evidence.step(
+        "the host text console",
+        json!({ "host": host.1, "picture_after_seconds": outcome.map(seconds), "says": said }),
+    );
+    assert!(
+        outcome.is_some(),
+        "the host text console showed no picture: {said:?}"
+    );
+    let (_, width, height) = console_frame(&mut client).expect("the frame");
+    evidence.note("host_console_frame", json!([width, height]));
+    client.try_local("console.close").expect("Close Console");
     client.close();
     evidence.finish();
 }

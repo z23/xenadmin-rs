@@ -36,6 +36,7 @@ use xenadmin_gpui::scenes;
 use xenadmin_gpui::shell::{ShellView, nav as pane, toolbar};
 use xenadmin_gpui::store::AppStore;
 use xenadmin_ui::Model;
+use xenadmin_ui::areas::console::Seat;
 use xenadmin_ui::command::{Menu, MenuEntry};
 use xenadmin_ui::launch::{self, Launch};
 use xenadmin_ui::nav::{self, NavView};
@@ -431,6 +432,11 @@ impl Client {
             frame: 0,
             cx,
         };
+        // A desktop gives a new window the keyboard; the test platform
+        // leaves every window inactive until it is told.
+        client
+            .cx
+            .window(window, |window, _| window.activate_window());
         client.cx.park();
         client.settle();
         client
@@ -620,7 +626,7 @@ impl Client {
                     }
                 ));
             }
-            lines.truncate(120);
+            lines.truncate(30);
             lines.join("\n")
         })
     }
@@ -955,6 +961,56 @@ impl Client {
             evidence.write_image(&format!("{base}.png"), &frame);
         }
         evidence.step("captured", json!(base));
+    }
+
+    /// The canvas of a console drawn in a window: how many pictures it
+    /// uploaded, whether it has the keyboard, how many keys it forwarded.
+    pub fn canvas(&mut self, handle: AnyWindowHandle, seat: Seat) -> Option<(u64, bool, usize)> {
+        self.cx.update(|cx| {
+            let canvas = xenadmin_gpui::console::canvas_of(handle.window_id(), seat, cx)?;
+            let canvas = canvas.read(cx);
+            Some((
+                canvas.uploaded(),
+                canvas.has_keyboard(),
+                canvas.sent_keys().len(),
+            ))
+        })
+    }
+
+    /// What the main window draws inside the element with the key: the
+    /// pixels of the captured frame within its bounds.
+    pub fn pixels_of(&mut self, key: &str) -> Option<image::RgbaImage> {
+        let bounds = self.chrome(key)?.bounds();
+        let full = self.frame()?;
+        let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+        let (width, height) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        Some(
+            image::imageops::crop_imm(
+                &full,
+                x.max(0.) as u32,
+                y.max(0.) as u32,
+                width as u32,
+                height as u32,
+            )
+            .to_image(),
+        )
+    }
+
+    /// Keys typed one by one to whatever has the keyboard: the characters
+    /// of a US keyboard that need no Shift.
+    pub fn type_keys(&mut self, text: &str) {
+        for character in text.chars() {
+            let key = match character {
+                ' ' => "space".to_owned(),
+                other => other.to_string(),
+            };
+            // As a person types: one key, a moment, the next; the window
+            // is drawn when the text is done.
+            self.cx
+                .window(self.window, |window, cx| window.press(&key, cx));
+            self.cx.park();
+            self.turn();
+        }
     }
 
     /// The last frame of the main window as pixels, for a comparison.
