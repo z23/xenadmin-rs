@@ -110,7 +110,9 @@ pub struct Sheet {
     pool: Option<PoolId>,
     show_hidden: bool,
     hidden: Vec<HiddenKey>,
-    sources: Vec<usize>,
+    /// The inventories the rows were read from. Held, not only compared by
+    /// address: a dropped inventory's address can be the next one's.
+    sources: Vec<Arc<Inventory>>,
     revisions: Vec<Revision>,
     pub rows: Vec<Row>,
     /// The same rows as the table shows them.
@@ -210,7 +212,17 @@ pub fn known_pools(m: &Model) -> Vec<PoolId> {
     pools
 }
 
-fn revisions(m: &Model) -> impl Iterator<Item = Revision> + '_ {
+type RevisionRef<'a> = (
+    PoolId,
+    OperationId,
+    Family,
+    u64,
+    &'a OperationState,
+    &'a Option<String>,
+);
+
+/// What changes when a record of either list does, without copying it.
+fn revision_refs(m: &Model) -> impl Iterator<Item = RevisionRef<'_>> {
     m.operation_rows
         .iter()
         .map(|r| {
@@ -219,8 +231,8 @@ fn revisions(m: &Model) -> impl Iterator<Item = Revision> + '_ {
                 r.id,
                 Family::Vm,
                 r.revision(),
-                r.state.clone(),
-                r.local_error.clone(),
+                &r.state,
+                &r.local_error,
             )
         })
         .chain(m.resource_rows.iter().map(|r| {
@@ -229,10 +241,26 @@ fn revisions(m: &Model) -> impl Iterator<Item = Revision> + '_ {
                 r.id,
                 Family::Resource,
                 r.revision(),
-                r.state.clone(),
-                r.local_error.clone(),
+                &r.state,
+                &r.local_error,
             )
         }))
+}
+
+fn revisions(m: &Model) -> Vec<Revision> {
+    revision_refs(m)
+        .map(|(pool, id, family, revision, state, error)| {
+            (pool, id, family, revision, state.clone(), error.clone())
+        })
+        .collect()
+}
+
+fn same_revisions(old: &[Revision], m: &Model) -> bool {
+    old.iter()
+        .map(|(pool, id, family, revision, state, error)| {
+            (*pool, *id, *family, *revision, state, error)
+        })
+        .eq(revision_refs(m))
 }
 
 /// Remembers the inventories and notices changed records: the Rune `poll`
@@ -251,7 +279,7 @@ pub fn poll(m: &mut Model) -> bool {
             changed = true;
         }
     }
-    let revisions = revisions(m).collect::<Vec<_>>();
+    let revisions = revisions(m);
     if revisions != m.areas.events.cache.history_revisions {
         m.areas.events.cache.history_revisions = revisions;
         changed = true;
@@ -280,14 +308,15 @@ fn hidden(m: &Model, key: HiddenKey, terminal: bool) -> bool {
     terminal && m.preferences.hidden_history.contains(&key)
 }
 
-fn sources(tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Vec<usize> {
+fn sources(tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Vec<Arc<Inventory>> {
     if tab == Tab::History {
         return Vec::new();
     }
-    pools
-        .values()
-        .map(|inventory| Arc::as_ptr(inventory) as usize)
-        .collect()
+    pools.values().cloned().collect()
+}
+
+fn same_sources(old: &[Arc<Inventory>], new: &[Arc<Inventory>]) -> bool {
+    old.len() == new.len() && old.iter().zip(new).all(|(a, b)| Arc::ptr_eq(a, b))
 }
 
 fn fresh(sheet: &Sheet, m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> bool {
@@ -297,10 +326,10 @@ fn fresh(sheet: &Sheet, m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Invent
         && sheet.status == status_filter(m, tab)
         && sheet.pool == a.pool
         && sheet.show_hidden == a.show_hidden
-        && sheet.sources == sources(tab, pools)
+        && same_sources(&sheet.sources, &sources(tab, pools))
         && (tab != Tab::History
             || sheet.hidden == m.preferences.hidden_history
-                && sheet.revisions.iter().cloned().eq(revisions(m)))
+                && same_revisions(&sheet.revisions, m))
 }
 
 /// The rows of a list as the model stands: the remembered sheet when
@@ -316,13 +345,6 @@ pub fn current(m: &Model, tab: Tab) -> Rc<Sheet> {
     let sheet = Rc::new(build(m, tab, &pools));
     *cache.borrow_mut() = Some(sheet.clone());
     sheet
-}
-
-/// Forgets the remembered sheet. For a test that changes an inventory in
-/// place, which no comparison of the inputs can see.
-#[cfg(test)]
-pub fn invalidate(m: &Model) {
-    *m.areas.events.cache.sheet.borrow_mut() = None;
 }
 
 /// The Rune `rebuild`.
@@ -523,7 +545,7 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
         },
         sources: sources(tab, pools),
         revisions: if tab == Tab::History {
-            revisions(m).collect()
+            revisions(m)
         } else {
             Vec::new()
         },
