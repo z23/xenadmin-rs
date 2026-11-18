@@ -319,9 +319,9 @@ pub(crate) fn review(form: &Editor) -> Vec<String> {
             form.cloud_input.user_data.len(),
             form.cloud_input.network.len()
         ));
-        lines.push("User-data contents are not included in creation history. Configuration is a separately reviewed, tracked operation; neither stage starts the guest.".into());
+        lines.push("User-data contents are not included in the creation's entry on the Events tab of the Notifications view. Configuration is a separately reviewed, tracked operation; neither stage starts the guest.".into());
     }
-    lines.push("The new VM stays halted. Each completed step and created VM/disk/interface UUID remains in VM changes if a later step fails. Uncertain operations are not automatically repeated.".into());
+    lines.push("The new VM stays halted. Each completed step and created VM/disk/interface UUID remains on the Events tab of the Notifications view if a later step fails. Uncertain operations are not automatically repeated.".into());
     lines.push("Other changes in this pool are blocked while creation is active or its outcome is unknown. Resolve or explicitly acknowledge an unknown outcome to release this block.".into());
     lines
 }

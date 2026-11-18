@@ -142,7 +142,7 @@ pub fn lines(i: &Inventory, op: &Operation) -> Vec<String> {
         }
     }
     match op.change {
-        Change::Create => result.push("A newly identified network object and interface UUID will be retained in history. Partial creation is not automatically cleaned up or retried.".into()),
+        Change::Create => result.push("A newly identified network object and interface UUID will be retained on the Events tab of the Notifications view. Partial creation is not automatically cleaned up or retried.".into()),
         Change::Delete(object) => {
             // The Rune code unwrapped here: a captured removal names a member.
             if let Some(p) = r.members.values().find(|m| m.object == object) {

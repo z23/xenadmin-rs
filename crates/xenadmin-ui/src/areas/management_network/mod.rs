@@ -60,6 +60,9 @@
 //!
 //! ## For other areas
 //!
+//! - [`continuation_notes`]: the captions of that panel alone, which the
+//!   `network` area shows on the NICs and Networking tabs of a pool or
+//!   server (the two buttons are commands of the local row there).
 //! - [`continuation`]: the blocks of the Rune continuation panel for a pool
 //!   (the caption of each unfinished IPv6 handover with its two buttons),
 //!   for a tab or a record list that wants to show it;
@@ -103,7 +106,7 @@ pub mod view;
 #[cfg(test)]
 mod tests;
 
-pub use view::continuation;
+pub use view::{continuation, continuation_notes};
 
 /// The state of the area. `m.areas.management_network`.
 #[derive(Default)]

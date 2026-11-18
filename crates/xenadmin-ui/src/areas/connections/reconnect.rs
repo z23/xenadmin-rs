@@ -19,7 +19,7 @@ pub const DIALOG: &str = "reconnect-dialog";
 
 /// What `apply` and the confirm button say when the saved connection or the
 /// pool changed after the dialog opened.
-pub const STALE: &str = "Connection settings or pool identity changed; reopen reconnect-as";
+pub const STALE: &str = "Connection settings or pool identity changed; reopen Reconnect As";
 
 const BLANK_ACCOUNT: &str = "Enter the account for this session.";
 
@@ -238,7 +238,7 @@ pub fn surface(m: &Model) -> Option<Surface> {
         review(
             "reconnect-review",
             [
-                "This closes this pool's sessions and switches the active view. The active console closes; other pool connections remain open. Interrupted operations stay in history.".to_owned(),
+                "This closes this pool's sessions and switches the active view. The active console closes; other pool connections remain open. Interrupted operations stay on the Events tab of the Notifications view.".to_owned(),
                 format!(
                     "Saved account: {}. Saved credentials, startup preferences and certificate trust are unchanged. These credentials are used for this session only.",
                     e.profile.username

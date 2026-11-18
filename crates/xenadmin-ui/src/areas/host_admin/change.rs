@@ -581,13 +581,12 @@ fn submission(m: &Model, w: &Editor) -> Result<ResourceOperation, String> {
 }
 
 /// The closing line of every review.
-// It names "Stop remaining steps", "Activity" and "Pool administration" of
-// the Rune front end. They become the Events tab of the Notifications view;
-// the text is kept word for word until every module's review texts are
-// changed together (reported by the pilot, map hazard 9).
+// "Stop remaining steps" is the control of the record on the Events tab of
+// the Notifications view, which also took over what the Rune text sent the
+// reader to "Activity" and "Pool administration" for (decision 10).
 const CLOSING: &str = "Changes are journaled individually. Stop remaining steps does not cancel \
-    in-flight host work or undo completed changes. Use Activity for retained history and Pool \
-    administration for unknown-outcome recovery.";
+    in-flight host work or undo completed changes. Use the Events tab of the \
+    Notifications view for retained history and for unknown-outcome recovery.";
 
 /// The review text of an operation, word for word from Rune: the pool, the
 /// target, what the operation does and does not do, and the closing line.

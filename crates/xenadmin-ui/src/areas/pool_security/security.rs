@@ -41,13 +41,13 @@ use xenadmin_core::{
 use crate::prelude::*;
 
 /// Rune `poll`, on a connection change.
-pub const INVALIDATED: &str = "Connection changed; close and reopen security before continuing";
+pub const INVALIDATED: &str = "Connection changed; close and reopen this dialog before continuing";
 /// Rune `query`, without a current observation of the pool.
-pub const REOPEN: &str = "Reconnect and reopen security to refresh its pool identity";
+pub const REOPEN: &str = "Reconnect and open the Users tab again to refresh its pool identity";
 /// Rune `query`, without a connection.
 pub const CONNECT: &str = "Connect to inspect pool security";
 /// Rune `apply`: demo, a connection that cannot write, a stale observation.
-pub const CHANGED: &str = "The connection changed; reopen security";
+pub const CHANGED: &str = "The connection changed; reopen this dialog";
 /// Rune `apply`: the typed confirmation is not the pool's UUID.
 pub const CONFIRMATION: &str = "Enter the pool UUID shown in the review";
 /// Rune `directory`.
@@ -698,7 +698,7 @@ pub fn review_lines(e: &Editor, op: &SecurityOp) -> Vec<String> {
                     .unwrap_or("Unknown")
             ),
             format!("Current SHA-256: {expected}\nReplacement SHA-256: {fingerprint}"),
-            "The key and certificate are sent directly to this pool, never saved in operation history. Connections may close. Reconnect and verify trust independently; saved trust is not automatically changed.".into(),
+            "The key and certificate are sent directly to this pool, never saved in the operation's entry on the Events tab of the Notifications view. Connections may close. Reconnect and verify trust independently; saved trust is not automatically changed.".into(),
         ],
         SecurityOp::ResetCertificate { host, expected } => vec![
             format!(

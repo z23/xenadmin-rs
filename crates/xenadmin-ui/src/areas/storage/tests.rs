@@ -659,9 +659,23 @@ fn the_storage_tab_of_a_pool_lists_its_repositories_as_objects() {
     ] {
         assert!(local.contains(&command), "{command} in {local:?}");
     }
+    // The commands of `storage_maintenance` and `network` on a repository
+    // are on the same row, before this area's own, and in the row's menu.
+    let at = |command: &str| {
+        local
+            .iter()
+            .position(|id| *id == command)
+            .unwrap_or_else(|| panic!("{command} in {local:?}"))
+    };
+    assert!(at("storage.repair") < at("storage.set-default"));
+    assert!(at("storage.set-default") < at("storage.rescan"));
+    assert!(at("storage.rescan") < at("storage.trim"));
     // The row is a tree object: the kernel's context menu.
     let menu = h.open_row_menu("storage-repositories-table", &repository.to_string());
     assert!(menu.iter().any(|item| item.id.0 == "storage.destroy"));
+    for command in ["storage.repair", "storage.set-default", "storage.rescan"] {
+        assert!(menu.iter().any(|item| item.id.0 == command), "{command}");
+    }
     h.choose("storage.destroy");
     assert!(matches!(reviewed(h), StorageOperation::Destroy { .. }));
     h.dismiss();
@@ -857,7 +871,7 @@ fn restoring_a_connection_reviews_only_the_detached_attachment_it_was_offered_fo
     assert!(a.h.model.areas.storage.editor.is_none());
     assert_eq!(
         a.h.model.error.as_deref(),
-        Some("The detached attachment changed; reopen its storage view")
+        Some("The detached attachment changed; close and reopen this dialog")
     );
     editor::review_restore(&mut a.h.model, a.pool, sr, a.pbds[1], a.hosts[1]);
     assert_eq!(
@@ -959,11 +973,11 @@ fn the_submission_refuses_what_the_button_refuses() {
     assert!(editor(&h).review_auth_label.is_none());
 }
 
-/// Pins the Rune place name in a text (decision 10: renamed in one sweep).
+/// The Rune text said "in Activity" (decision 10).
 #[test]
-fn the_cleanup_caption_names_activity() {
+fn the_cleanup_caption_names_the_events_tab() {
     let source = include_str!("view.rs");
     assert!(source.contains(
-        "Resolve or acknowledge the uncertain source operation in Activity before separate cleanup."
+        "Resolve or acknowledge the uncertain source operation on the Events tab of the Notifications view before separate cleanup."
     ));
 }

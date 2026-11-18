@@ -503,7 +503,7 @@ fn support_footer(m: &Model, p: &Panel, synthetic: bool, stale: Option<String>) 
     let history = button(
         "host-support-history",
         if p.deletion.is_some() {
-            "Activity history"
+            "Operation history"
         } else {
             "Transfer history"
         },

@@ -56,10 +56,10 @@ pub const ACK_GONE: &str = "The operation is no longer available for this pool";
 pub const ACK_STALE: &str =
     "The connection or resource changed. Close and reopen this review before applying it.";
 
-/// The reason a batch child gives for every control. It names the Rune pool
-/// history (AREAS.md decision 10: renamed in one sweep at the end).
+/// The reason a batch child gives for every control. The Rune text
+/// said "in pool history" (AREAS.md decision 10).
 pub fn batch_reason(parent: OperationId) -> String {
-    format!("Managed by batch {parent}. Use the batch controls in pool history.")
+    format!("Managed by batch {parent}. Use the batch controls on the Events tab of the Notifications view.")
 }
 
 pub fn vm_record(m: &Model, key: HiddenKey) -> Option<&OperationRecord> {

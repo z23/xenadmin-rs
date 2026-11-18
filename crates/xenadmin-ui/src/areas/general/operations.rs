@@ -112,7 +112,7 @@ pub(super) fn vm_operations(m: &Model, pool: PoolId, vm: VmId) -> Group {
             caption(if m.demo {
                 "Demo mode cannot change infrastructure."
             } else {
-                "Actions and property changes are tracked in the operation history, including \
+                "Actions and property changes are tracked on the Events tab of the Notifications view, including \
                  partial and uncertain outcomes."
             })
             .key("general-operations-note"),

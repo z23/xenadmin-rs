@@ -89,6 +89,7 @@
 
 use xenadmin_core::{OperationState, PoolId};
 
+use crate::areas::cross_pool;
 use crate::prelude::*;
 
 pub mod activity;
@@ -274,8 +275,10 @@ pub fn acknowledge(m: &mut Model, key: OperationKey) -> bool {
 /// The buttons Rune put under an operation record in the details pane (VM
 /// family) and in the pool history (resource family): "Explain outcome…";
 /// the cancellation under its name for the record; and for an unknown
-/// outcome "Recheck outcome" and the acknowledgement. A result that is not
-/// a surface goes to the shared error line, as those buttons' did.
+/// outcome "Recheck outcome" and the acknowledgement; and under a finished
+/// cross-pool transfer its destination ([`destination_action`]). A result
+/// that is not a surface goes to the shared error line, as those buttons'
+/// did.
 ///
 /// Keys: `vm-failure-help-{id}` and `resource-failure-help-{id}` are the
 /// Rune ones; `operation-cancel-{id}`, `operation-recheck-{id}` and
@@ -351,5 +354,30 @@ pub fn outcome_actions(m: &Model, key: OperationKey) -> Vec<Button> {
             );
         }
     }
+    buttons.extend(destination_action(m, key));
     buttons
+}
+
+/// The button under a finished single cross-pool transfer: "Show
+/// destination VM" after a halted move or a copy, "Open destination
+/// console" after a live move (the Rune `cross-destination-{id}` of the
+/// transfer history). Disabled, with the Rune notice, until a writable
+/// connection proves the guest in its destination pool. `None` for every
+/// other record.
+pub fn destination_action(m: &Model, key: OperationKey) -> Option<Button> {
+    if key.family != Family::Resource {
+        return None;
+    }
+    let record = control::resource_record(m, key)?;
+    let label = cross_pool::destination_label(record)?;
+    let id = record.id;
+    Some(
+        button(format!("cross-destination-{id}"), label, move |m| {
+            cross_pool::show_destination(m, id);
+        })
+        .disabled_if(
+            cross_pool::destination_target(m, record).is_none(),
+            cross_pool::single::WAIT,
+        ),
+    )
 }

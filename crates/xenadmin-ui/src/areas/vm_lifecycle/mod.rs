@@ -31,7 +31,7 @@
 //!
 //! Eligibility is in `commands.rs`. Every command is for ONE object: all
 //! are hidden for several (deleting several at once is the `bulk_edit`
-//! area's, not ported yet).
+//! area's: `vm.delete-several`, `templates.delete-several`).
 //!
 //! # Surfaces
 //!
@@ -63,8 +63,8 @@
 //! - The "VM changes" history panel and its button (`vm-lifecycle-history`,
 //!   `close-vm-lifecycle-history`): the Events tab of the Notifications view
 //!   lists every operation with its created objects, steps and controls
-//!   (area `events`). The review and status texts that name "VM changes"
-//!   and "Activity" are kept word for word (decision 10 of `AREAS.md`).
+//!   (area `events`). The review and status texts that named "VM changes"
+//!   and "Activity" name that tab (decision 10 of `AREAS.md`).
 //! - The headings "n of 3 · Identity" and so on: the wizard frame shows the
 //!   steps.
 //! - The details-pane section "VM lifecycle" / "Template actions" with its

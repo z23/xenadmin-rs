@@ -410,11 +410,10 @@ fn management_review_refuses_changed_source_pool_ha_and_nonstandard_mtu() {
         });
         assert!(unavailable(&h).is_some(), "{changed}");
         if changed == "pool" {
-            // AREAS.md decision 10: the text names a Rune place and is
-            // renamed in the one sweep at the end; pinned for it.
+            // AREAS.md decision 10: the Rune text said "reopen networking".
             assert_eq!(
                 unavailable(&h).as_deref(),
-                Some("The pool changed. Close and reopen networking.")
+                Some("The pool changed. Close and reopen this dialog.")
             );
         }
     }
@@ -810,6 +809,13 @@ fn ipv6_continuation_commands_show_only_for_an_unfinished_handover_and_need_a_co
         .find(|item| item.id == IPV6_CONTINUE)
         .expect("the continuation in the local row of NICs");
     assert_eq!(item.label, "Review IPv6 Handover Stage 2");
+    // The tab says what is unfinished, beside those commands.
+    let note = h.node(&format!("ipv6-bond-handover-note-{id}"));
+    let note = note.text.as_deref().expect("a caption");
+    assert!(
+        note.starts_with("IPv6 handover: 1/5 stages verified. Pool reserved."),
+        "{note}"
+    );
     // The panel is in the dialog of a management change, with the Rune
     // keys and the same rule.
     h.invoke(BOND_IPV6.0);

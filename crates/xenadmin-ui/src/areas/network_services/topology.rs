@@ -175,7 +175,7 @@ pub fn review(
             editor.tag.trim(),
             i.hosts.len()
         ),
-        "Every pool host must be online. Interfaces are changed one host at a time. A failure can leave a partially changed network; verified identities remain in operation history.".into(),
+        "Every pool host must be online. Interfaces are changed one host at a time. A failure can leave a partially changed network; verified identities remain on the Events tab of the Notifications view.".into(),
     ];
     match &editor.selection {
         Selection::Create(uplinks) => {
@@ -234,7 +234,7 @@ pub fn unavailable_for(
         return Some("Network identity changed".into());
     };
     let Some(i) = m.inventory_for(pool) else {
-        return Some("The pool changed. Close and reopen networking.".into());
+        return Some("The pool changed. Close and reopen this dialog.".into());
     };
     let available = op.availability(&i, network);
     (!available.is_available()).then(|| available.explanation())

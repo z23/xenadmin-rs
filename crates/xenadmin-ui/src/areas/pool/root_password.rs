@@ -27,7 +27,7 @@ pub const CONFIRM: &str = "Enter the pool UUID exactly";
 
 pub const NOT_ROOT: &str = "Reconnect as local root with a writable session first";
 
-pub const SUBMITTED: &str = "Password change submitted. Closing this view does not cancel it; the result remains in operation history.";
+pub const SUBMITTED: &str = "Password change submitted. Closing this view does not cancel it; the result remains on the Events tab of the Notifications view.";
 
 pub struct Editor {
     pub profile: ConnectionProfile,

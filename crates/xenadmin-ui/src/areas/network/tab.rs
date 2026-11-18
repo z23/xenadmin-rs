@@ -221,6 +221,10 @@ fn latest(m: &Model, pool: PoolId) -> Vec<Block> {
             move |m| crate::areas::events::show_history(m, pool)
         )
         .ghost()]),
+        // An unfinished IPv6 management handover of the pool, as the Rune
+        // continuation panel said it; its two buttons are commands of the
+        // `management_network` area on the local row.
+        crate::areas::management_network::continuation_notes(m, pool),
     ]
 }
 
@@ -424,6 +428,10 @@ fn network_networking(m: &Model, i: &Inventory, pool: PoolId, id: NetworkId) -> 
             ]
         )
         .key("networking-vifs"),
+        // The service state (NBD) and the tunnel and SR-IOV coverage of the
+        // network: information of the `network_services` area, whose
+        // commands are on this tab's row.
+        crate::areas::network_services::networking_sections(i, id),
         latest(m, pool),
     ]
 }

@@ -311,7 +311,7 @@ fn users_tab_shows_the_session_and_the_security_state() {
     // A synthetic pool cannot be asked.
     assert_eq!(
         disabled(&h, REFRESH).as_deref(),
-        Some("Reconnect and reopen security to refresh its pool identity")
+        Some("Reconnect and open the Users tab again to refresh its pool identity")
     );
 }
 
@@ -479,7 +479,7 @@ fn the_uuid_typed_into_a_review_is_compared_exactly() {
     );
     assert_eq!(
         h.node("security-review-stale").text.as_deref(),
-        Some("The connection changed; reopen security")
+        Some("The connection changed; reopen this dialog")
     );
     h.model.demo = true;
     let pool = editor(&h).pool.to_string();
@@ -803,11 +803,10 @@ fn the_install_review_keeps_the_key_out_of_the_operation() {
             fingerprint("cd")
         )
     );
-    // AREAS decision 10: "operation history" is a Rune place; pinned for
-    // the sweep.
+    // AREAS decision 10: the Rune text said "in operation history".
     assert_eq!(
         lines[2],
-        "The key and certificate are sent directly to this pool, never saved in operation history. Connections may close. Reconnect and verify trust independently; saved trust is not automatically changed."
+        "The key and certificate are sent directly to this pool, never saved in the operation's entry on the Events tab of the Notifications view. Connections may close. Reconnect and verify trust independently; saved trust is not automatically changed."
     );
 }
 
@@ -892,10 +891,10 @@ fn a_connection_change_invalidates_once_and_drops_the_secrets() {
     assert!(security::poll(&mut h.model));
     let e = editor(&h);
     assert!(e.password.is_empty() && e.file_result.is_none() && e.query.is_none());
-    // AREAS decision 10: the text names the Rune place; pinned for the sweep.
+    // AREAS decision 10: the Rune text said "reopen security".
     assert_eq!(
         e.error.as_deref(),
-        Some("Connection changed; close and reopen security before continuing")
+        Some("Connection changed; close and reopen this dialog before continuing")
     );
     editor_mut(&mut h).error = None;
     assert!(!security::poll(&mut h.model));
@@ -904,7 +903,7 @@ fn a_connection_change_invalidates_once_and_drops_the_secrets() {
     h.click("security-close");
     assert_eq!(
         disabled(&h, REFRESH).as_deref(),
-        Some("Reconnect and reopen security to refresh its pool identity")
+        Some("Reconnect and open the Users tab again to refresh its pool identity")
     );
 }
 

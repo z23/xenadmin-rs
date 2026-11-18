@@ -120,7 +120,7 @@ fn body(m: &Model, e: &Editor, inventory: Option<&Inventory>) -> Vec<Block> {
             ],
             (None, Some(i)) => form(e, i),
             (None, None) => blocks![
-                caption("The connection changed. Close and reopen networking.")
+                caption("The connection changed. Close and reopen this dialog.")
                     .key("network-pool-changed")
             ],
         },

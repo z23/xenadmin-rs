@@ -2,7 +2,10 @@
 //! the local error and, for a resource operation, the evidence the Rune pool
 //! history (`resource_admin::history`) printed under each record: reviewed
 //! consumers of a management bond, IPv6 management stages, recreated VLANs,
-//! created and removed network objects, and the results of a batch.
+//! created and removed network objects, and the results of a batch. A
+//! transfer's record also has the lines the transfer dialog prints while it
+//! is open (`transfers::view`): the bytes and phase of the stream and the
+//! objects it retained.
 //!
 //! The texts are word for word. What the row's own details already say (the
 //! record's detail, its created resource and its steps) is not repeated.
@@ -18,6 +21,29 @@ pub fn vm(record: &OperationRecord) -> Vec<String> {
 
 pub fn resource(record: &ResourceOperationRecord) -> Vec<String> {
     let mut lines: Vec<String> = record.local_error.iter().cloned().collect();
+    if let Some(t) = &record.transfer {
+        lines.push(format!(
+            "{} bytes{} · {}",
+            t.bytes,
+            t.total.map(|n| format!(" of {n}")).unwrap_or_default(),
+            t.phase
+        ));
+    }
+    let created = &record.transfer_created;
+    let ids = |ids: &mut dyn Iterator<Item = String>| ids.collect::<Vec<_>>();
+    for (label, ids) in [
+        ("guest", ids(&mut created.vms.iter().map(|id| id.to_string()))),
+        ("disk", ids(&mut created.disks.iter().map(|id| id.to_string()))),
+        (
+            "guest memory image",
+            ids(&mut created.suspend_images.iter().map(|id| id.to_string())),
+        ),
+        ("network", ids(&mut created.networks.iter().map(|id| id.to_string()))),
+        ("disk attachment", ids(&mut created.vbds.iter().map(|id| id.to_string()))),
+        ("NIC", ids(&mut created.vifs.iter().map(|id| id.to_string()))),
+    ] {
+        lines.extend(ids.into_iter().map(|id| format!("Retained {label} UUID: {id}")));
+    }
     if let ResourceAction::ManagementNetwork(op) = &record.action
         && let ManagementNetworkOperation::Bond {
             consumers: Some(consumers),

@@ -52,8 +52,8 @@ const PREVIEW: &str = "Synthetic preview · no changes can be submitted";
 
 /// What `storage::review_restore` refuses with; here the reason a Restore
 /// button is disabled.
-// It names the "storage view" of the Rune front end (decision 10).
-const RESTORE_CHANGED: &str = "The detached attachment changed; reopen its storage view";
+// The Rune text said "reopen its storage view" (decision 10).
+const RESTORE_CHANGED: &str = "The detached attachment changed; close and reopen this dialog";
 
 /// Back to front: the dialogs of the area. Only one is ever open. The Read
 /// Caching page is no surface of this area: the kernel describes it from
@@ -628,11 +628,11 @@ fn history(m: &Model, e: &graph::Editor, current: bool) -> Vec<Block> {
             }
         }
     }
-    // Rune's Activity dialog is the Events tab of the Notifications view;
-    // the label is kept until every such text is renamed (decision 10).
+    // Rune's Activity dialog is the Events tab of the Notifications view
+    // (Rune label: "Open Activity history"; decision 10).
     out.extend(blocks![button(
         "storage-graph-activity",
-        "Open Activity history",
+        "Operation history",
         |m| {
             super::close(m);
             m.show_notifications(TabId::Events);

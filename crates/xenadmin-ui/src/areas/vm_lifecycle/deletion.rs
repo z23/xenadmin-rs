@@ -195,6 +195,6 @@ pub fn describe(
             ));
         }
     }
-    lines.push("Only the exact reviewed UUIDs are eligible for deletion. New snapshots or disks are not silently added. Selected data deletion cannot be undone. Partial or uncertain results remain in VM changes after the source disappears.".into());
+    lines.push("Only the exact reviewed UUIDs are eligible for deletion. New snapshots or disks are not silently added. Selected data deletion cannot be undone. Partial or uncertain results remain on the Events tab of the Notifications view after the source disappears.".into());
     lines
 }

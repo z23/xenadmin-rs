@@ -57,17 +57,15 @@
 //!   [`open_trim`], [`open_new`]: what this area's commands call.
 //! - [`close`].
 //!
-//! Commands of other areas this area expects on its grid, which it does not
-//! name (the local row and the context menu are generated from the
-//! registry, and an id that is not registered may not be named:
-//! `properties::tests::every_command_id_the_sources_name_is_registered`):
-//! `storage.repair` (`storage_maintenance`; the hub's "Repair missing or
-//! detached host connections…", key `storage-graph-open`),
-//! `storage.set-default` and `storage.rescan` (`network`: the generic
-//! editor of `resource_admin.rs`). They appear when they are registered
-//! with `.local(TabId::Storage, order)` and
-//! `.context(&[ObjectKind::StorageRepository])`; `commands.rs` names the
-//! orders left free for them.
+//! Commands of other areas on this area's grid (the local row and the
+//! context menu are generated from the registry; this area's sources do
+//! not open them): `storage.repair` (`storage_maintenance`; the hub's
+//! "Repair missing or detached host connections…", key
+//! `storage-graph-open`), `storage.set-default` and `storage.rescan`
+//! (`network`: the generic editor of `resource_admin.rs`). They are
+//! registered with `.local(TabId::Storage, order)` and
+//! `.context(&[ObjectKind::StorageRepository])`, at the orders
+//! `commands.rs` left free for them, before this area's own.
 //!
 //! What has no successor here, and where it went:
 //!

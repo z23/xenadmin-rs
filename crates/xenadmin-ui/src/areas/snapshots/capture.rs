@@ -206,7 +206,7 @@ pub fn cancel_dialog(m: &mut Model) {
 
 pub(super) fn creation_result(record: &OperationRecord) -> Result<Option<SnapshotId>, String> {
     if record.cancel_requested {
-        return Err("Snapshot operation was stopped; the optional preview will not be uploaded. Inspect Activity for the snapshot outcome.".into());
+        return Err("Snapshot operation was stopped; the optional preview will not be uploaded. Inspect the Events tab of the Notifications view for the snapshot outcome.".into());
     }
     if record.state == OperationState::Succeeded {
         return record.created_snapshot.map(Some).ok_or_else(|| {
@@ -214,14 +214,14 @@ pub(super) fn creation_result(record: &OperationRecord) -> Result<Option<Snapsho
         });
     }
     if record.state.terminal() || record.state == OperationState::OutcomeUnknown {
-        return Err("Snapshot creation did not finish with a verified success; preview skipped. Inspect its result in Activity.".into());
+        return Err("Snapshot creation did not finish with a verified success; preview skipped. Inspect its result on the Events tab of the Notifications view.".into());
     }
     Ok(None)
 }
 
 fn advance(m: &mut Model, mut p: Pending) -> Result<Option<Pending>, String> {
     if !current(m, p.pool, p.vm, p.id) {
-        return Err("Preview stopped because its original connection changed. Check Activity for any snapshot already submitted.".into());
+        return Err("Preview stopped because its original connection changed. Check the Events tab of the Notifications view for any snapshot already submitted.".into());
     }
     let now = m.clock();
     if matches!(p.stage, Stage::Capture { .. } | Stage::Encode { .. })
@@ -302,7 +302,7 @@ fn advance(m: &mut Model, mut p: Pending) -> Result<Option<Pending>, String> {
                             .map_err(|e| format!("Snapshot created; preview not submitted: {e}"))?;
                         m.track_resource(upload);
                         m.areas.snapshots.capture.message = Some(
-                            "Snapshot created. Preview upload has a separate result in Activity."
+                            "Snapshot created. Preview upload has a separate result on the Events tab of the Notifications view."
                                 .into(),
                         );
                         return Ok(None);
@@ -316,7 +316,7 @@ fn advance(m: &mut Model, mut p: Pending) -> Result<Option<Pending>, String> {
                 }
             }
             if now - p.started > TOTAL_LIMIT {
-                return Err("Preview discarded after waiting 30 minutes. The snapshot operation remains in Activity.".into());
+                return Err("Preview discarded after waiting 30 minutes. The snapshot operation remains on the Events tab of the Notifications view.".into());
             }
             Stage::Create {
                 operation,

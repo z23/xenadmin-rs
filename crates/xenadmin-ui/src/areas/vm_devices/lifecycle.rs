@@ -335,7 +335,7 @@ pub fn review_for(operation: DeviceOperation, inventory: &Inventory) -> Review {
         DeviceOperation::CreateDisk { sr, name, size, device } => {
             let sr_name = inventory.storage.iter().find(|storage| storage.uuid == sr.uuid()).map_or("Storage repository", |storage| storage.name.as_str());
             lines.push(format!("Create “{name}” with {size} bytes ({}) on {sr_name} ({sr}), then attach it in slot {device}.", storage_bytes(Some(*size))));
-            lines.push("If attachment fails after creation, the new disk is retained and identified in the operation history. It is not silently deleted.".into());
+            lines.push("If attachment fails after creation, the new disk is retained and identified on the Events tab of the Notifications view. It is not silently deleted.".into());
         }
         DeviceOperation::AttachDisk { vdi, device, read_only } => lines.push(format!("Attach {} in slot {device} with {} access. Existing disk contents are retained.", disk_name(inventory, *vdi), if *read_only { "read-only" } else { "read/write" })),
         DeviceOperation::DetachDisk { vbd, vdi } => {
@@ -358,7 +358,7 @@ pub fn review_for(operation: DeviceOperation, inventory: &Inventory) -> Review {
             lines.push(format!("Interface: {vif}\nNetwork: {} → {}\nMAC: {expected_mac} → {mac}", network_name(inventory, *expected_network), network_name(inventory, *network)));
             if !expected_mac.eq_ignore_ascii_case(mac) {
                 destructive = true;
-                lines.push("Changing the MAC replaces this interface because XAPI fixes MAC addresses at creation. If replacement fails after removal, the VM may be left without this NIC. Unsupported configuration is refused; completed steps and new device identities remain in the operation history.".into());
+                lines.push("Changing the MAC replaces this interface because XAPI fixes MAC addresses at creation. If replacement fails after removal, the VM may be left without this NIC. Unsupported configuration is refused; completed steps and new device identities remain on the Events tab of the Notifications view.".into());
             } else {
                 lines.push("The interface moves to the selected network. Guest network configuration may need updating.".into());
             }

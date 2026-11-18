@@ -345,7 +345,7 @@ pub(crate) fn review(m: &mut Model) {
                         "Existing storage must support fast cloning; the host verifies this capability."
                             .into()
                     }),
-                "The result stays halted. A failed later step retains the created object and its UUID in VM changes.".into(),
+                "The result stays halted. A failed later step retains the created object and its UUID on the Events tab of the Notifications view.".into(),
                 "Other changes in this pool are blocked while copying is active or its outcome is unknown. Resolve or explicitly acknowledge an unknown outcome to release this block.".into(),
             ],
             Kind::Convert => vec![

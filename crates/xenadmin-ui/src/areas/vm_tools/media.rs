@@ -41,10 +41,10 @@ pub const INTRO: &str = "Mount the host's guest tools ISO, then run the appropri
     inside the guest. Existing guest tools and drivers should be checked before changing versions.";
 
 /// The empty state of the drive list, and the reason the command is
-/// disabled for a VM without a CD drive. (It names the Rune devices page;
-/// renamed with the other Rune places in the sweep of decision 10.)
+/// disabled for a VM without a CD drive. (The Rune text named its devices
+/// page; this names the command of the Storage tab: decision 10.)
 pub const NO_CD: &str = "No CD drive is available. Shut down the VM and add an empty CD drive \
-    from Disks and network interfaces.";
+    with Add CD/DVD Drive on the Storage tab of the VM.";
 
 /// The empty state of the media list, and the reason the command is
 /// disabled in a pool without tools media.
@@ -58,9 +58,9 @@ pub const MOUNTED: &str = "Tools media is mounted. Open the console to run the W
     installer or the Linux installer from the mounted media. Guest tools status will update \
     when its agent reports to the host.";
 
-/// Shown until the record of the submitted operation is known. (It names
-/// the Rune Activity dialog: decision 10.)
-pub const ADMITTED: &str = "Operation admitted; open Activity to inspect its progress.";
+/// Shown until the record of the submitted operation is known. (The Rune
+/// text said "open Activity": decision 10.)
+pub const ADMITTED: &str = "Operation admitted; open the Events tab of the Notifications view to inspect its progress.";
 
 /// New text. Rune disabled "Mount tools media" without a reason when the
 /// connection was not writable and current or the VM was no longer the one

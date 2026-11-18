@@ -998,10 +998,10 @@ fn a_device_change_is_checked_again_when_it_is_applied() {
     assert!(live.h.surfaces().is_empty());
 }
 
-/// Decision 10 of `AREAS.md`: the texts that name Rune places are kept word
-/// for word until the one sweep; this pins them.
+/// Decision 10 of `AREAS.md`: "Operation history" is the button of this
+/// dialog, which leads to the Events tab; a review names that tab.
 #[test]
-fn texts_that_name_rune_places_are_pinned_for_the_sweep() {
+fn texts_name_the_places_of_this_client() {
     let h = Harness::scene("disk-grow");
     assert!(h.has_text(
         "Unknown outcomes reserve the pool. Operation history provides rechecks, stop controls and explicit acknowledgement. Stop remaining steps does not cancel in-flight disk I/O."
@@ -1020,5 +1020,5 @@ fn texts_that_name_rune_places_are_pinned_for_the_sweep() {
         },
         &i,
     );
-    assert!(review.lines[1].contains("identified in the operation history"));
+    assert!(review.lines[1].contains("identified on the Events tab of the Notifications view"));
 }

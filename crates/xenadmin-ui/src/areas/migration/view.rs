@@ -191,9 +191,8 @@ fn networks(f: &wizard::Editor, key: impl Fn(NetworkId) -> String) -> Vec<Option
 
 /// The way to the other pool that the caption above it names: the command
 /// of the `cross_pool` area on the same VM. It follows that command's
-/// eligibility: absent while the command is hidden (or its area has not
-/// registered it), disabled with the command's reason. The wizard gives
-/// way to what the command opens; refused after all, it stays and
+/// eligibility: absent while the command is hidden, disabled with the
+/// command's reason. The wizard gives way to what the command opens; refused after all, it stays and
 /// `m.error` has the reason.
 fn cross_pool(m: &Model, f: &wizard::Editor) -> Option<Button> {
     let target = Target::one(ObjectRef::vm(f.pool, f.source.id));
@@ -205,7 +204,7 @@ fn cross_pool(m: &Model, f: &wizard::Editor) -> Option<Button> {
     Some(
         button(
             "migration-cross-pool",
-            "Move / copy to another pool…",
+            "Move or Copy to Another Pool…",
             move |m| {
                 let mine = m.areas.migration.wizard.take();
                 if !m.invoke(MOVE_TO_POOL, &target) {

@@ -43,8 +43,8 @@ pub const DESTINATION_HELP: &str = "Running VMs migrate live. Halted VMs remain 
 pub const PLACEMENT_HELP: &str = "Keep current placement for a shared-storage host move. To move only disks, choose the current host and change their storage repositories. CD media stays in its current repository and must be accessible to the destination.";
 pub const NO_DISKS: &str = "No data disks in this captured view. Missing device inventory prevents applying a migration.";
 pub const TRANSFER_HELP: &str = "Required for disk/network relocation and halted moves. Choose a network with a configured IP on the destination host. A host-only live move uses XAPI's ordinary migration transport.";
-pub const TRANSPORT_LIMITS: &str = "Storage-transport moves with snapshot chains, shared disks or CBT are not supported yet. Use Move / copy to another pool for cross-pool transfers.";
-pub const CONSEQUENCES: &str = "VM, attachment and interface UUIDs are preserved. Moving disks may replace their UUIDs; verified new disks are recorded in operation history. A failed or interrupted move can leave partial placement. Migration moves the selected disks. Leftover resources are retained for review, and interrupted migrations are never automatically repeated.";
+pub const TRANSPORT_LIMITS: &str = "Storage-transport moves with snapshot chains, shared disks or CBT are not supported yet. Use Move or Copy to Another Pool for cross-pool transfers.";
+pub const CONSEQUENCES: &str = "VM, attachment and interface UUIDs are preserved. Moving disks may replace their UUIDs; verified new disks are recorded on the Events tab of the Notifications view. A failed or interrupted move can leave partial placement. Migration moves the selected disks. Leftover resources are retained for review, and interrupted migrations are never automatically repeated.";
 pub const LIVE: &str = "Live migration; preserve running state";
 pub const HALTED: &str = "Remain halted; change home host after verified move";
 

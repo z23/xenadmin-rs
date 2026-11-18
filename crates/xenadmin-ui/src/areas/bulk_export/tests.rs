@@ -324,8 +324,9 @@ fn batch_history_keeps_parent_reachable_and_children_have_no_independent_control
     assert!(h.surfaces().is_empty());
     assert!(h.has_text("Captured parent export history"));
     assert!(h.has_text("Export selected VMs"));
-    // AREAS.md decision 10: the text names the Rune place until the sweep.
-    let reason = format!("Managed by batch {parent}. Use the batch controls in pool history.");
+    let reason = format!(
+        "Managed by batch {parent}. Use the batch controls on the Events tab of the Notifications view."
+    );
     for child in children {
         let key = resource_key(&h, child);
         assert_eq!(

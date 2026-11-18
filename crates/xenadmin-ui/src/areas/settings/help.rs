@@ -49,7 +49,7 @@ impl Topic {
     pub fn paragraphs(self) -> &'static [&'static str] {
         match self {
             Self::Connect => &[
-                "Connect directly to an XCP-ng host management address. Any reachable member can discover its pool coordinator. Xen Orchestra is not required. The Home tab, shown when nothing is selected, lists the saved connections with their state. Add Server, in the Pool and Server menus and on the toolbar, saves a new one; Reconnect As signs in to a pool as another user.",
+                "Connect directly to an XCP-ng host management address. Any reachable member can discover its pool coordinator. Xen Orchestra is not required. The Home tab, shown when nothing is selected, lists the saved connections with their state. Add Server…, in the Server menu, on the toolbar and on the Home tab, saves a new one; Reconnect As…, in the Pool and Server menus, signs in to a pool as another user.",
                 "Every connected pool is a root of the Infrastructure view of the navigation pane, with its servers, VMs, templates and storage repositories. The other views list the same objects by type, by organization and by saved search; the box above the tree narrows any of them by name or UUID. Selecting an object shows its tabs, and the menus, the toolbar and the context menu act on the selection.",
                 "Use normal certificate verification, a trusted private CA or independently verified endpoint fingerprints. The validation opt-out applies to all destinations for that connection, including coordinator and console endpoints. Its status remains visible in the status bar.",
                 "Passwords are session-only unless you explicitly save them in the desktop keyring. An unavailable or locked keyring leaves manual entry available. Automatic startup connections are configured per saved connection.",
@@ -62,7 +62,7 @@ impl Topic {
             ],
             Self::Console => &[
                 "The Console tab sends input only to the VM whose console it shows; selecting another object never redirects keystrokes to it. The Console tab of a server is a text console on that server's verified control domain.",
-                "The console toolbar offers fit or actual size, deliberate key chords, fullscreen, reconnect and Release input. Focus loss releases held keys and buttons. Clipboard transfer and screenshot saving happen only when requested. A console moved to its own window is listed in the Window menu.",
+                "The row of actions above the console offers fit or actual size, deliberate key chords, fullscreen, reconnect and Release input. Focus loss releases held keys and buttons. Clipboard transfer and screenshot saving happen only when requested. A console moved to its own window is listed in the Window menu.",
                 "Automatic reconnect follows the same VM after a reboot or same-pool host change. It pauses for stale inventory or a stopped guest and stops after five failed attempts. Use Reconnect to restart attempts; cross-pool transfers offer an explicit destination reopen.",
                 "Console defaults in Options apply to newly opened consoles. The current console keeps its own fit and reconnect choices.",
             ],

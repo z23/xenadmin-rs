@@ -37,9 +37,9 @@ pub const STALE: &str =
     "Connection or reviewed host settings changed. Reopen this editor before applying.";
 
 /// The two fixed paragraphs of a configuration review. Decision 10 of
-/// AREAS.md: "Activity" is renamed in one sweep at the end, not here.
+/// AREAS.md: where the Rune text said "Activity" this names the Events tab.
 pub const CONFIGURE_EFFECT: &str = "The host stores the new configuration and removes its previous password Secret. Shared Secret consumers are checked first. IPMI creates a new server Secret; its clear password is never saved in application history. This does not power on the host or verify BMC reachability.";
-pub const CONFIGURE_UNCERTAIN: &str = "Lost replies remain uncertain. No password or configuration write is automatically repeated. Use Activity to recheck evidence and review retained Secret cleanup separately.";
+pub const CONFIGURE_UNCERTAIN: &str = "Lost replies remain uncertain. No password or configuration write is automatically repeated. Use the Events tab of the Notifications view to recheck evidence and review retained Secret cleanup separately.";
 /// The fixed paragraph of a cleanup review.
 pub const CLEANUP_EFFECT: &str = "Cleanup requires the original write to be finished or never dispatched, verified ownership, and no host or storage consumers. It never changes power-on settings. Missing evidence prevents deletion.";
 

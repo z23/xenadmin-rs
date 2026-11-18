@@ -817,7 +817,7 @@ fn another_selection_closes_both_dialogs_and_cancels_the_inspection() {
 }
 
 /// The history button closes the panel and shows the Events tab. Decision
-/// 10 of AREAS.md: its two Rune labels stay until the one sweep.
+/// 10 of AREAS.md: "Activity history" of Rune is "Operation history".
 #[test]
 fn the_history_button_leads_to_the_events_tab() {
     let mut h = Harness::scene("host-support");
@@ -832,19 +832,19 @@ fn the_history_button_leads_to_the_events_tab() {
     let mut h = Harness::scene("host-crashdump-delete");
     assert_eq!(
         h.node("host-support-history").label.as_deref(),
-        Some("Activity history")
+        Some("Operation history")
     );
     h.click("host-support-history");
     assert!(h.model.areas.host_services.support.is_none());
     assert_eq!(h.model.active_tab(), TabId::Events);
 }
 
-/// Decision 10 of AREAS.md and hazard 24: the texts that name Rune places
-/// or describe what the core guarantees, pinned for the sweep.
+/// Decision 10 of AREAS.md and hazard 24: the texts that named Rune places
+/// or describe what the core guarantees.
 #[test]
 fn the_review_texts_are_the_rune_texts() {
     assert!(power::CONFIGURE_UNCERTAIN.contains(
-        "Use Activity to recheck evidence and review retained Secret cleanup separately."
+        "Use the Events tab of the Notifications view to recheck evidence and review retained Secret cleanup separately."
     ));
     let h = Harness::scene("host-power-settings");
     assert!(h.has_text(power::CONFIGURE_EFFECT));

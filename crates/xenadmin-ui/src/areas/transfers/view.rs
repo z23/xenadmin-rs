@@ -43,9 +43,9 @@ const FULL_XVA: &str = "Full XVA export creates one independent guest archive. S
 const OVA: &str = "Create one OVA file containing the descriptor and VHD disks.";
 const OVF: &str = "Create a new private directory containing the OVF descriptor, manifest and VHD disks. Choose a new directory name in the save dialog; existing directories are not reused.";
 const PACKAGE: &str = "OVF/OVA export supports ordinary halted BIOS/UEFI guests with supported disk and NIC settings. Mounted installation media and unsupported configuration must be resolved before export. Package disks contain guest data.";
-const OVF_CLOSING: &str = "Each source disk is copied into a new disk for each imported guest. A failed import may retain the new guest, disks and devices; confirmed UUIDs remain in history. Compatible hosts are checked before completion.";
-const EXPORT_REVIEW: &str = "This review uses the captured source and new destination. Interrupted exports retain their evidence in history. Transfers reserve pool changes until the outcome is resolved.";
-const IMPORT_REVIEW: &str = "This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain in history. Transfers reserve pool changes until the outcome is resolved.";
+const OVF_CLOSING: &str = "Each source disk is copied into a new disk for each imported guest. A failed import may retain the new guest, disks and devices; confirmed UUIDs remain on the Events tab of the Notifications view. Compatible hosts are checked before completion.";
+const EXPORT_REVIEW: &str = "This review uses the captured source and new destination. Interrupted exports retain their evidence on the Events tab of the Notifications view. Transfers reserve pool changes until the outcome is resolved.";
+const IMPORT_REVIEW: &str = "This review uses the selected file identity and destination. An interrupted import may retain partial resources; their confirmed UUIDs remain on the Events tab of the Notifications view. Transfers reserve pool changes until the outcome is resolved.";
 const UNKNOWN: &str = "Stopping the stream does not prove server cleanup. Recheck reads existing evidence and never sends archive bytes again.";
 const RELEASE: &str = "Acknowledge only after inspecting the pool and any retained resources. This releases the local reservation while leaving the transfer outcome unverified; it does not delete resources or cancel server work.";
 
@@ -802,7 +802,7 @@ fn started(m: &Model, p: &Panel, id: OperationId) -> Vec<Block> {
             .map(|id| format!("Retained network UUID: {id}")),
     );
     if let Some(parent) = r.batch_parent {
-        lines.push(format!("Controlled by batch {parent}. Recheck, stop or acknowledge the batch in pool operation history."));
+        lines.push(format!("Controlled by batch {parent}. Recheck, stop or acknowledge the batch on the Events tab of the Notifications view."));
     }
     lines.extend(
         created

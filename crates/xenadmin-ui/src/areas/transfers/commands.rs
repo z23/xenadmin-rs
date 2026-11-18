@@ -6,7 +6,8 @@
 //!   opened and could do nothing); the pool is the target's, else the scope
 //!   session's.
 //! - `vm.export`, `templates.export`: one VM or one template. `Hidden` for
-//!   a selection of several (the `bulk_export` area's), for another kind and
+//!   a selection of several (the `bulk_export` area's `vm.export-selection`
+//!   and `templates.export-selection`), for another kind and
 //!   for a control domain (Rune showed no button). `Disabled` with what the
 //!   core says where Rune disabled the button; a read-only connection may
 //!   export.

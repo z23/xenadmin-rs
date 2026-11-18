@@ -718,7 +718,8 @@ fn the_multipathing_page_reviews_the_toggle_once_the_server_is_ready() {
 
 /// A page leads to the related workflow of another area by that area's
 /// command, and shows the way exactly as that command allows it: absent
-/// while hidden (or not yet registered), disabled with its reason.
+/// while hidden, disabled with its reason. Both commands are registered
+/// (`storage_maintenance`, `host_services`) and shown on this server.
 #[test]
 fn a_link_to_another_area_follows_that_areas_command() {
     let mut h = server();
@@ -734,6 +735,8 @@ fn a_link_to_another_area_follows_that_areas_command() {
     ] {
         h.pick(PAGES, page);
         let node = h.find(key);
+        assert!(crate::command::find(command).is_some(), "{key}");
+        assert!(node.is_some(), "{key} is offered");
         match h.model.eligibility(command, &target) {
             Eligibility::Hidden => assert!(node.is_none(), "{key}"),
             Eligibility::Disabled(reason) => {
@@ -960,11 +963,11 @@ fn the_draft_previews_its_review_and_its_refusal() {
     }
 }
 
-/// Hazard 9: the closing line of every review is the Rune text. It names
-/// "Activity" and "Pool administration", which the new information
-/// architecture renames; it changes with every other module's, not here.
+/// Hazard 9: the closing line of every review is the Rune text, except
+/// that "Activity" and "Pool administration" are the Events tab of the
+/// Notifications view now (decision 10).
 #[test]
-fn the_closing_line_of_a_review_is_still_the_rune_text() {
+fn the_closing_line_of_a_review_names_the_events_tab() {
     let h = Harness::scene("host-administration");
     let closing: Vec<_> = h
         .texts()
@@ -975,8 +978,8 @@ fn the_closing_line_of_a_review_is_still_the_rune_text() {
         closing,
         [
             "Changes are journaled individually. Stop remaining steps does not cancel in-flight \
-             host work or undo completed changes. Use Activity for retained history and Pool \
-             administration for unknown-outcome recovery."
+             host work or undo completed changes. Use the Events tab of the Notifications view \
+             for retained history and for unknown-outcome recovery."
         ]
     );
 }

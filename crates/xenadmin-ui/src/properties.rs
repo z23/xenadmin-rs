@@ -284,7 +284,7 @@ pub struct Open {
 }
 
 /// The reason of a Properties command for an object no area has a page
-/// for: its area is not ported yet, or its pool has no inventory.
+/// for: its kind has none, or its pool has no inventory.
 pub const NO_PAGES: &str = "This object has no properties that can be edited now.";
 
 pub const SERVER: CommandId = CommandId("server.properties");

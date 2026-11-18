@@ -19,7 +19,7 @@ pub const STALE: &str =
     "The captured connection changed. Close and reopen this workspace before reviewing a change.";
 pub const INCOMPLETE: &str = "Complete ordinary disk and attachment data is required";
 pub const NO_OWNERSHIP: &str = "No terminal local creation record proves ownership of this disk. Resolve its originating operation first; arbitrary detached disks cannot be deleted here";
-pub const BUSY: &str = "Too many storage operations are unresolved. Resolve some in the operation history first.";
+pub const BUSY: &str = "Too many storage operations are unresolved. Resolve some on the Events tab of the Notifications view first.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {

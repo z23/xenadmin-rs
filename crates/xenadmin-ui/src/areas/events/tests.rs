@@ -11,7 +11,7 @@
 //! 2. **What the port changed**: two tabs and a list choice, commands that
 //!    follow the selected row, one acknowledgement for both families, the
 //!    functions other areas call.
-//! 3. **The texts** that name Rune places, pinned for the renaming sweep
+//! 3. **The texts** that named Rune places and name this client's now
 //!    (AREAS.md decision 10).
 //!
 //! No test can have a current snapshot, so none submits successfully: the
@@ -1002,11 +1002,35 @@ fn a_resource_record_shows_its_evidence_and_local_error_in_the_outcome() {
     assert!(lines.iter().all(|line| !line.is_empty()));
 }
 
-// -- 3. Texts that name Rune places (AREAS.md decision 10) ----------------------
+/// The evidence of a transfer (the lines of the transfer dialog) is in the
+/// outcome of its record, also when that dialog is closed.
+#[test]
+fn a_transfer_record_shows_its_stream_and_what_it_retained() {
+    let mut h = events();
+    let pool = pool(&h);
+    let disk = uuid::Uuid::from_u128(22);
+    let mut value = resource_json(pool);
+    value["action"] = json!({"Transfer":{"ImportXva":{"sr":uuid::Uuid::from_u128(4)}}});
+    value["state"] = json!("OutcomeUnknown");
+    value["transfer"] =
+        json!({"bytes":1024,"total":2048,"stream_complete":false,"phase":"Stopped"});
+    value["transfer_created"] = json!({"vms":[],"disks":[disk],"networks":[]});
+    let record: ResourceOperationRecord = serde_json::from_value(value).unwrap();
+    let phase = record.transfer.as_ref().expect("a stream").phase.to_string();
+    let key = resource_key(&record);
+    h.model.resource_rows.push(record);
+    super::show_operation(&mut h.model, key);
+    let text = h.node("activity-details").text.expect("the detail lines");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.contains(&format!("1024 bytes of 2048 · {phase}").as_str()), "{lines:?}");
+    assert!(lines.contains(&format!("Retained disk UUID: {disk}").as_str()), "{lines:?}");
+}
+
+// -- 3. Texts that named Rune places (AREAS.md decision 10) ---------------------
 
 #[test]
-fn texts_that_name_the_rune_places_are_carried_over_word_for_word() {
-    assert!(failure_help::NO_CODE.contains("in the operation or Activity entry"));
+fn texts_name_the_places_of_this_client() {
+    assert!(failure_help::NO_CODE.contains("in the operation or its entry on the Events tab of the Notifications view"));
     assert_eq!(
         activity::SUBMITTED,
         "Change submitted. History tracks the host outcome."
@@ -1014,7 +1038,7 @@ fn texts_that_name_the_rune_places_are_carried_over_word_for_word() {
     let parent = OperationId::new();
     assert_eq!(
         control::batch_reason(parent),
-        format!("Managed by batch {parent}. Use the batch controls in pool history.")
+        format!("Managed by batch {parent}. Use the batch controls on the Events tab of the Notifications view.")
     );
     assert_eq!(
         view::SOURCE_CACHED,

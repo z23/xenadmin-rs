@@ -715,6 +715,11 @@ fn dissolve_dialog(m: &Model, e: &dissolve::Editor) -> Surface {
     Surface::dialog(DISSOLVE, "Make into Standalone Server")
         .subtitle(format!("{} ({})", e.operation.expected_name, e.pool))
         .experimental(true)
+        // Wide, so that the review wraps less and the typed confirmation,
+        // the last block, is in view without scrolling for a pool of a few
+        // members (Rune kept it fixed above the footer; a surface has no
+        // fixed block).
+        .large()
         .body(blocks![
             heading("Dissolve pool"),
             review("pool-dissolve-review", dissolve::lines(e))

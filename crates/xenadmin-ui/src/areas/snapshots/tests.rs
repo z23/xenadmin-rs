@@ -563,8 +563,11 @@ fn rune_cancelled_or_uncertain_snapshot_never_authorizes_preview_upload() {
         stopped.is_err(),
         "even a successful snapshot cannot continue a cancelled workflow"
     );
-    // Pinned for the text sweep (decision 10): the Rune place "Activity".
-    assert!(stopped.unwrap_err().contains("Inspect Activity"));
+    assert!(
+        stopped
+            .unwrap_err()
+            .contains("Inspect the Events tab of the Notifications view")
+    );
     record.cancel_requested = false;
     for state in [
         OperationState::OutcomeUnknown,
@@ -574,7 +577,9 @@ fn rune_cancelled_or_uncertain_snapshot_never_authorizes_preview_upload() {
     ] {
         record.state = state;
         let refused = capture::creation_result(&record);
-        assert!(refused.unwrap_err().contains("in Activity"));
+        assert!(refused
+            .unwrap_err()
+            .contains("on the Events tab of the Notifications view"));
     }
 }
 

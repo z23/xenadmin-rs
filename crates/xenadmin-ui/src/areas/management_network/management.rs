@@ -258,7 +258,7 @@ pub fn review(
             lines.push("If the host obtains a different address, this operation remains unresolved. The client does not scan the network or update DNS aliases. Use an independently verified host address to reconnect and inspect it.".into());
         }
     }
-    lines.extend([format!("Recovery address: {} · HTTPS on the current connection port",op.recovery_address().ok_or("Enter a usable recovery address")?),"Management and storage traffic may be interrupted. Have an independent path to the host available. The client checks the new configuration and authenticates the reviewed host at the recovery address.".into(),"Certificate validation follows this connection's existing settings. A new address may need its own trusted certificate; no trust is copied automatically.".into(),"Lost replies remain uncertain. Recheck inspects existing evidence and never repeats the change or rolls it back. Other workspaces are not deliberately disconnected.".into()]);
+    lines.extend([format!("Recovery address: {} · HTTPS on the current connection port",op.recovery_address().ok_or("Enter a usable recovery address")?),"Management and storage traffic may be interrupted. Have an independent path to the host available. The client checks the new configuration and authenticates the reviewed host at the recovery address.".into(),"Certificate validation follows this connection's existing settings. A new address may need its own trusted certificate; no trust is copied automatically.".into(),"Lost replies remain uncertain. Recheck inspects existing evidence and never repeats the change or rolls it back. Other pool connections are not deliberately disconnected.".into()]);
     Ok((op, lines))
 }
 
@@ -270,7 +270,7 @@ pub fn prepare(m: &mut Model) {
             .management_network
             .editor
             .as_ref()
-            .ok_or("Close and reopen networking")?;
+            .ok_or("Close and reopen this dialog")?;
         let i = m
             .inventory_for(e.pool)
             .filter(|i| i.pool_id == e.pool)
@@ -300,7 +300,7 @@ pub fn review_unavailable(m: &Model, w: &Workspace) -> Option<String> {
         return None;
     };
     let Some(i) = m.inventory_for(w.pool).filter(|i| i.pool_id == w.pool) else {
-        return Some("The pool changed. Close and reopen networking.".into());
+        return Some("The pool changed. Close and reopen this dialog.".into());
     };
     let available = op.availability(&i);
     (!available.is_available()).then(|| available.explanation())

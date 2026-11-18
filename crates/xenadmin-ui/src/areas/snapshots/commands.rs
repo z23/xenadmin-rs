@@ -26,8 +26,8 @@ pub const NEW_VM: CommandId = CommandId("snapshot.new-vm");
 pub const NEW_TEMPLATE: CommandId = CommandId("snapshot.new-template");
 pub const DELETE: CommandId = CommandId("snapshot.delete");
 
-/// The export of the selected snapshots: `bulk_export`'s command, which is
-/// not ported yet. The tab's button to it is absent until it is registered.
+/// The export of the selected snapshots: `bulk_export`'s command. The tab's
+/// button to it follows the command's eligibility.
 pub const EXPORT: CommandId = CommandId("snapshot.export");
 
 /// The menu of a snapshot row.

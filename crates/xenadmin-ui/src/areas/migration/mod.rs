@@ -41,10 +41,10 @@
 //! - [`scenes::prepare`], [`scenes::demo_vm`]: the scene fixture.
 //!
 //! What this area uses of another: the command `vm.move-to-pool` of
-//! `cross_pool` (not ported yet; the id its map proposes), as the button
-//! `migration-cross-pool` on the second step of the wizard, under the Rune
-//! caption that sends the user there. It is absent until that command is
-//! registered.
+//! `cross_pool`, as the button `migration-cross-pool` on the second step of
+//! the wizard, under the caption that sends the user there. The button
+//! follows the command: disabled with its reason, absent where the command
+//! is hidden.
 //!
 //! What of the Rune code has no successor here, and where it went:
 //!

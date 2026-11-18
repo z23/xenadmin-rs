@@ -331,7 +331,7 @@ pub fn reviewed(m: &Model, editor: &Editor) -> Result<Review, String> {
             );
         }
         Kind::DeleteNetwork => review.lines.push("The internal network record will be deleted. The host must report no physical or VM interfaces on it.".into()),
-        Kind::ScanStorage => review.lines.push("Ask the storage backend to refresh its disk inventory. The operation will appear in history.".into()),
+        Kind::ScanStorage => review.lines.push("Ask the storage backend to refresh its disk inventory. The operation will appear on the Events tab of the Notifications view.".into()),
     }
     if editor.kind == Kind::CreateNetwork {
         review.mtu = editor

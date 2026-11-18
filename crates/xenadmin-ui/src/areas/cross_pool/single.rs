@@ -44,15 +44,15 @@ pub const NOT_WRITABLE: &str =
 pub const LIVE_ONLY: &str =
     "Live move preserves the running state. Cross-pool copy requires a halted guest.";
 pub const NO_PEERS: &str =
-    "Connect another pool with write access using Connections, then reopen this transfer.";
+    "Connect another pool with write access using Add Server… or Connect… of the Server menu, then reopen this transfer.";
 pub const NO_DESTINATION: &str = "Choose a destination pool and host";
 pub const LIMITS: &str = "This workflow accepts ordinary guests with exclusive owned data disks and empty CD drives. Snapshot chains, shared disks, mounted media, HA protection and vApps require separate preparation.";
 pub const COPY_IDENTITY: &str = "Copy creates new VM, disk and device identities and new MAC addresses. The source stays halted. The destination is not started.";
 pub const MOVE_IDENTITY: &str = "XAPI moves the VM and removes the exclusive source disks. VM/device UUIDs and MAC addresses are retained; destination disk UUIDs may change.";
 pub const TRANSPORT: &str = "Host-to-host transport follows the hosts' migration policy and may use unencrypted HTTP or TLS without certificate verification. Desktop certificate trust does not secure this transfer. Use a trusted migration network. The application does not force TLS or silently retry with a different policy.";
 pub const ACKNOWLEDGE: &str = "I reviewed the host-to-host transport policy";
-pub const RESERVED: &str = "Both pools are reserved until completion or explicit acknowledgement. An interrupted transfer can leave partial source or destination resources. Recheck reads existing evidence; it never repeats a transfer. Verified destination UUIDs remain in history.";
-pub const CONSOLE: &str = "The source console closes when submitted. After verified completion, use Open destination console from transfer history.";
+pub const RESERVED: &str = "Both pools are reserved until completion or explicit acknowledgement. An interrupted transfer can leave partial source or destination resources. Recheck reads existing evidence; it never repeats a transfer. Verified destination UUIDs remain on the Events tab of the Notifications view.";
+pub const CONSOLE: &str = "The source console closes when submitted. After verified completion, use Open destination console in this transfer's entry on the Events tab of the Notifications view.";
 pub const UNAVAILABLE: &str = "The reviewed source or destination is no longer available";
 pub const WAIT: &str = "Wait for current destination inventory to confirm this VM and host.";
 

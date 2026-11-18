@@ -540,14 +540,14 @@ fn the_transfer_network_cannot_be_unset_and_shows_only_for_storage_transport() {
     assert_eq!(editor(&h).transfer, Some(last));
 }
 
-/// The texts that name Rune places or another area's workflow, pinned for
-/// the one sweep that renames them (decision 10 of the area list).
+/// The texts that named Rune places or name another area's workflow
+/// (decision 10 of the area list).
 #[test]
-fn texts_that_name_other_places_are_carried_over_word_for_word() {
+fn texts_name_the_places_of_this_client() {
     let mut h = Harness::scene("vm-migration");
-    assert!(h.has_text("verified new disks are recorded in operation history"));
+    assert!(h.has_text("verified new disks are recorded on the Events tab of the Notifications view"));
     h.click("migration-back");
-    assert!(h.has_text("Use Move / copy to another pool for cross-pool transfers."));
+    assert!(h.has_text("Use Move or Copy to Another Pool for cross-pool transfers."));
     // The button under that caption is the `cross_pool` area's command, as
     // that command allows it: in the demo it is there, disabled with the
     // command's reason.

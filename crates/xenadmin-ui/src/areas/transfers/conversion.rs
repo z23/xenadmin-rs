@@ -41,7 +41,7 @@ const INTRO: &str = "Convert an offline local image. The original is preserved. 
 const FORM_HELP: &str = "Only self-contained images are supported. Inspection first makes a private source copy; allow space for that copy and the converted disk. QEMU and Bubblewrap are optional local dependencies. Missing sandbox support refuses conversion; no software is installed automatically.";
 const REVIEW_HELP: &str = "The private staged source is read-only. Conversion and complete content comparison run in a restricted local sandbox. Existing files will not be overwritten. Internal snapshots, backing chains, external extents and encrypted images are refused. This converts disk content only; guest boot and driver compatibility remain unverified.";
 pub const PREVIEW: &str = "Synthetic preview · local files and tools will not be accessed";
-pub const STOPPED: &str = "Local worker stopped; reopen history to inspect interrupted files. Nothing will resume automatically.";
+pub const STOPPED: &str = "Local worker stopped; reopen Convert Disk Image and inspect interrupted files under Local history. Nothing will resume automatically.";
 /// New texts: Rune disabled these controls without saying why.
 pub const BUSY: &str = "Local work is running.";
 pub const REVIEWING: &str = "Discard the review to change the conversion.";

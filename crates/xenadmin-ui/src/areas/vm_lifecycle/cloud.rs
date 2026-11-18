@@ -16,12 +16,12 @@ use zeroize::Zeroize;
 use super::{Panel, drive, edit};
 use crate::prelude::*;
 
-pub const INTRODUCTION: &str = "The template must already support cloud-init with the NoCloud datasource. This configuration stays in this wizard until the new VM is verified. It is not saved with the connection profile or creation history.";
+pub const INTRODUCTION: &str = "The template must already support cloud-init with the NoCloud datasource. This configuration stays in this wizard until the new VM is verified. It is not saved with the connection profile or the creation's entry on the Events tab of the Notifications view.";
 pub const CONSEQUENCES: &str = "The new VM stays halted. After successful creation, review the exact new VM, storage and unused disk slot before uploading its configuration drive. Closing the wizard discards these unsaved inputs without cancelling host work.";
 pub const ENABLE_HELP: &str = "For templates with cloud-init and NoCloud support installed. After successful VM creation, review a private configuration drive for that exact new VM. The VM stays halted.";
 pub const VERIFIED: &str =
     "The new VM is verified and halted. Review its configuration drive before uploading.";
-pub const PRIVATE: &str = "Configuration is still private and has not been uploaded. Closing discards this draft; it does not cancel creation or delete the retained VM. VM changes keeps the creation outcome, and cloud-init can be opened from the VM later.";
+pub const PRIVATE: &str = "Configuration is still private and has not been uploaded. Closing discards this draft; it does not cancel creation or delete the retained VM. The Events tab of the Notifications view keeps the creation outcome, and cloud-init can be opened from the VM later.";
 
 /// The cloud-init inputs of a creation. User-data and network-config can
 /// hold passwords and keys.
@@ -96,11 +96,11 @@ pub(crate) fn completed_vm(p: &Pending, r: &OperationRecord) -> Result<VmId, Str
         || r.vm != p.source
         || r.action != OperationAction::Lifecycle(p.operation.clone())
     {
-        return Err("Creation identity does not match this wizard. Inspect VM changes.".into());
+        return Err("Creation identity does not match this wizard. Inspect the Events tab of the Notifications view.".into());
     }
     if r.state != OperationState::Succeeded {
         return Err(format!(
-            "Creation is {:?}. Configuration has not been uploaded. Resolve the creation operation in VM changes before configuring the retained VM separately.",
+            "Creation is {:?}. Configuration has not been uploaded. Resolve the creation operation on the Events tab of the Notifications view before configuring the retained VM separately.",
             r.state
         ));
     }

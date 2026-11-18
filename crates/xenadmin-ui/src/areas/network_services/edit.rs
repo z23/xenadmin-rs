@@ -156,7 +156,7 @@ pub fn review(m: &mut Model) {
             .network_services
             .editor
             .as_ref()
-            .ok_or("Close and reopen networking")?;
+            .ok_or("Close and reopen this dialog")?;
         let i = m.inventory_for(e.pool).ok_or("The pool changed")?;
         staged(e, &i)
     })();
