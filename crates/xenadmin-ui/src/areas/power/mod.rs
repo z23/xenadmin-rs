@@ -138,6 +138,8 @@ pub mod single;
 pub mod view;
 
 #[cfg(test)]
+mod live_tests;
+#[cfg(test)]
 mod tests;
 
 pub use recovery::{

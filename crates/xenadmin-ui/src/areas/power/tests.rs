@@ -14,10 +14,10 @@
 //! 3. **The hazards** the maps list for these modules, one test each where
 //!    a fixture can reach it.
 //!
-//! No fixture has a current snapshot, so nothing here submits: an
-//! `ObservedVm` cannot be made without one, which is also why no test opens
-//! the confirmation or the placement dialog. The tests reach every refusal
-//! in front of them.
+//! No fixture here has a current snapshot, so nothing in this file submits:
+//! an `ObservedVm` cannot be made without one. These tests reach every
+//! refusal in front of a submission; `live_tests.rs` opens the confirmation
+//! and the placement dialog and submits, against the fixture server.
 
 use xenadmin_core::{
     ActionAvailability, Error, ForceRecoveryAction, OperationAction, OperationId, OperationRecord,
