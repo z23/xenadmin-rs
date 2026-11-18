@@ -140,7 +140,7 @@ pub(crate) fn facts(m: &Model, g: &Guest, action: PowerAction) -> Facts {
         .and_then(|d| d.handles.iter().find(|(a, _)| *a == action))
         .map(|(_, handle)| handle.latest());
     Facts {
-        permission: snapshot.as_ref().map(|s| s.power_permission(action)),
+        permission: permissions::power_for(m, g.pool, action),
         synthetic: synthetic(m, g.pool),
         read_only: m.connection_for(g.pool).is_some_and(|c| c.is_read_only()),
         can_mutate: m.can_mutate_pool(g.pool),
@@ -169,15 +169,11 @@ pub(crate) fn request(m: &mut Model, object: &ObjectRef, action: PowerAction) {
     let (Some(pool), Some(vm)) = (object.pool, object.vm_id()) else {
         return;
     };
-    let snapshot = m.snapshot_for(pool);
-    if snapshot
-        .as_ref()
-        .is_some_and(|s| s.power_permission(action).is_denied())
-    {
+    if permissions::power_denial(permissions::power_for(m, pool, action)).is_some() {
         m.error = Some(PermissionDecision::Denied.explanation().into());
         return;
     }
-    let Some(target) = snapshot.and_then(|s| s.observe_vm(vm).ok()) else {
+    let Some(target) = m.snapshot_for(pool).and_then(|s| s.observe_vm(vm).ok()) else {
         m.error = Some(Error::Stale.to_string());
         return;
     };
@@ -204,12 +200,10 @@ fn submit(m: &mut Model, pool: PoolId, vm: ObservedVm, action: PowerAction) {
 /// Why the open confirmation cannot be confirmed: its observation is no
 /// longer the current one, or the permission is now known to be denied.
 pub(crate) fn confirm_blocked(m: &Model, c: &Confirm) -> Option<String> {
-    let snapshot = m.snapshot_for(c.pool);
-    if snapshot.as_ref().and_then(|s| s.observe_vm(c.vm).ok()) != Some(c.target) {
+    if m.snapshot_for(c.pool).and_then(|s| s.observe_vm(c.vm).ok()) != Some(c.target) {
         return Some(Error::Stale.to_string());
     }
-    snapshot
-        .filter(|s| s.power_permission(c.action).is_denied())
+    permissions::power_denial(permissions::power_for(m, c.pool, c.action))
         .map(|_| PermissionDecision::Denied.explanation().into())
 }
 
@@ -231,20 +225,15 @@ pub(crate) fn cancel_confirm(m: &mut Model) {
 
 // -- Operation records ---------------------------------------------------------
 
-/// `Model::control_operation` through the connection of the record's pool.
-/// The result is in `m.error`, which a success clears. A recheck is a
-/// control message on the existing operation: it never replays a write.
+/// `Model::control_operation_for` the record's pool (the scope session for
+/// an id without a record). The result is in `m.error`, which a success
+/// clears. A recheck is a control message on the existing operation: it
+/// never replays a write.
 pub fn control(m: &mut Model, id: OperationId, control: OperationControl) {
-    let pool = m.operation_rows.iter().find(|r| r.id == id).map(|r| r.pool);
-    let connection = match pool {
-        Some(pool) => m.connection_for(pool),
-        None => m.connection.clone(),
-    };
-    m.error = connection
-        .ok_or(Error::Closed)
-        .and_then(|connection| connection.control_operation(id, control))
-        .err()
-        .map(|error| error.to_string());
+    match m.operation_rows.iter().find(|r| r.id == id).map(|r| r.pool) {
+        Some(pool) => m.control_operation_for(pool, id, control),
+        None => m.control_operation(id, control),
+    }
 }
 
 /// "Request cancellation" or "Stop remaining steps": asks this client's
@@ -359,9 +348,7 @@ pub fn availability_section(m: &Model, object: &ObjectRef) -> Option<Group> {
     let demo = synthetic(m, g.pool);
     let snapshot = m.snapshot_for(g.pool);
     let current = snapshot.as_ref().is_some_and(|s| s.is_current());
-    let unknown = snapshot
-        .as_ref()
-        .map(|s| s.power_permission(PowerAction::Start))
+    let unknown = permissions::power_for(m, g.pool, PowerAction::Start)
         .filter(|p| matches!(p, PermissionDecision::Unknown(_)));
     let reasons: Vec<Property> = PowerAction::ALL
         .into_iter()

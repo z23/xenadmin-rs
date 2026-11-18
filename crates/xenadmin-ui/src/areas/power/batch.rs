@@ -158,9 +158,7 @@ pub(crate) fn current(m: &Model, e: &Editor) -> bool {
 pub(crate) fn unavailable(m: &Model, e: &Editor, action: PowerAction) -> Vec<String> {
     let inventory = m.inventory_for(e.pool);
     let inventory = inventory.as_deref();
-    let denied = m
-        .snapshot_for(e.pool)
-        .is_some_and(|snapshot| snapshot.power_permission(action).is_denied());
+    let denied = permissions::power_denial(permissions::power_for(m, e.pool, action)).is_some();
     let live = synthetic(m, e.pool) || current(m, e);
     e.vms
         .iter()
