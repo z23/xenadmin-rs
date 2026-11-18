@@ -38,8 +38,8 @@ pub const STROKE: f32 = 1.8;
 /// The diameter of the dot of a sample with a gap on both sides.
 pub const MARK: f32 = 4.0;
 /// The edge kept free inside the plot, so that a line along the top or the
-/// bottom edge (a constant series) is drawn whole.
-const INSET: f32 = 1.0;
+/// bottom edge (a constant series) and a dot at a corner are drawn whole.
+pub const INSET: f32 = MARK / 2.0;
 
 /// The suffixes of the ids of the parts of a card, after the chart's key.
 pub const TITLE: &str = "-title";
@@ -416,16 +416,16 @@ mod tests {
             vec![[0.0, 120.0], [100.0, 60.0], [200.0, 0.0]],
             vec![[600.0, 30.0], [1000.0, 90.0]],
         ]);
-        let g = geometry(&plot, 502.0, 120.0);
+        let g = geometry(&plot, 504.0, 124.0);
         assert_eq!(g.lines.len(), 2);
         assert!(g.marks.is_empty());
         assert_eq!(g.lines[0].len(), 3);
         assert_eq!(g.lines[1].len(), 2);
-        // The box is scaled to the plot, one pixel in from each edge.
-        assert_eq!(g.lines[0][0], [1.0, 119.0]);
-        assert_eq!(g.lines[0][2], [101.0, 1.0]);
-        assert_eq!(g.lines[1][0], [301.0, 30.5]);
-        assert_eq!(g.lines[1][1], [501.0, 89.5]);
+        // The box is scaled to the plot, the inset in from each edge.
+        assert_eq!(g.lines[0][0], [2.0, 122.0]);
+        assert_eq!(g.lines[0][2], [102.0, 2.0]);
+        assert_eq!(g.lines[1][0], [302.0, 32.0]);
+        assert_eq!(g.lines[1][1], [502.0, 92.0]);
         // Nothing is drawn between the end of a run and the start of the
         // next.
         let (end, start) = (g.lines[0][2][0], g.lines[1][0][0]);
@@ -439,15 +439,17 @@ mod tests {
     #[test]
     fn a_run_of_one_sample_is_a_mark() {
         let plot = plot(vec![vec![[0.0, 0.0]], vec![[1000.0, 120.0]]]);
-        let g = geometry(&plot, 202.0, 122.0);
+        let g = geometry(&plot, 204.0, 124.0);
         assert!(g.lines.is_empty());
-        assert_eq!(g.marks, vec![[1.0, 1.0], [201.0, 121.0]]);
+        assert_eq!(g.marks, vec![[2.0, 2.0], [202.0, 122.0]]);
     }
 
     #[test]
     fn the_grid_is_three_whole_rows_inside_the_plot() {
         let g = geometry(&plot(Vec::new()), 300.0, 120.0);
-        assert_eq!(g.grid, vec![1.0, 60.0, 119.0]);
+        // At the height of the top edge's value, the middle and the bottom
+        // edge's value.
+        assert_eq!(g.grid, vec![2.0, 60.0, 118.0]);
         assert!(g.lines.is_empty() && g.marks.is_empty());
         // A plot of no size computes nothing that is not finite.
         let g = geometry(&plot(vec![vec![[500.0, 60.0]]]), 0.0, 0.0);
