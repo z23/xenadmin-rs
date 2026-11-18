@@ -88,6 +88,12 @@ cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes -- \
   `gallery-empty` the window of a first start.
 - `--snap` writes the frame as a PNG and needs a graphics adapter; a software one (Mesa
   lavapipe) is enough. `--tree` alone needs none.
+- `--scroll KEY=PIXELS` and `--reveal KEY` (both repeatable, run in the order given) scroll
+  before the capture, so that what is below the fold is looked at in a frame of the real
+  size instead of a tall one. `--scroll` turns the wheel over the element with that key
+  (`tab-scroll` is the body of a tab, `<surface>-body` of a dialog; a grid and the tree
+  scroll under their own keys); `--reveal` scrolls an element into view. The frame's
+  completeness (`missing`) is judged before the first step.
 - `--tree` writes JSON: `elements` (every element with an id, in reading order, with its
   id path, role, accessible label, value, description, bounds, and focused, checked,
   selected, expanded and disabled state), `missing` (elements the description has and the
