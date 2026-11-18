@@ -25,7 +25,7 @@
 //!   switch between Tasks and History still clears the state filter.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -77,6 +77,10 @@ pub struct Row {
     pub target: Target,
     pub terminal: bool,
     pub hidden: bool,
+    /// The record of one member of a batch whose own record is in the
+    /// history: the list shows the batch as its parent (the Rune pool
+    /// history) unless the records of batch members are asked for.
+    pub child: bool,
     pub export: Entry,
     pub help: Option<FailureHelp>,
 }
@@ -109,6 +113,7 @@ pub struct Sheet {
     status: String,
     pool: Option<PoolId>,
     show_hidden: bool,
+    show_children: bool,
     hidden: Vec<HiddenKey>,
     /// The inventories the rows were read from. Held, not only compared by
     /// address: a dropped inventory's address can be the next one's.
@@ -326,6 +331,7 @@ fn fresh(sheet: &Sheet, m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Invent
         && sheet.status == status_filter(m, tab)
         && sheet.pool == a.pool
         && sheet.show_hidden == a.show_hidden
+        && sheet.show_children == a.show_children
         && same_sources(&sheet.sources, &sources(tab, pools))
         && (tab != Tab::History
             || sheet.hidden == m.preferences.hidden_history
@@ -399,6 +405,7 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
                             "success" | "failure" | "cancelled"
                         ),
                         hidden: false,
+                        child: false,
                         export: Entry::task(pool, task),
                         help: FailureHelp::task(pool, task),
                     });
@@ -432,6 +439,7 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
                         target: Target::Resource(ResourceTarget::Message(message.id)),
                         terminal: false,
                         hidden: false,
+                        child: false,
                         export: Entry::message(pool, message),
                         help: None,
                     });
@@ -439,6 +447,10 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
             }
         }
         Tab::History => {
+            // A member's record is left to its batch only while the batch's
+            // own record is there to stand for it.
+            let parents: BTreeSet<OperationId> = m.resource_rows.iter().map(|r| r.id).collect();
+            let child = |parent: Option<OperationId>| parent.is_some_and(|id| parents.contains(&id));
             for record in &m.operation_rows {
                 let key = history_key(record.pool, record.id, Family::Vm);
                 let is_hidden = hidden(m, key, record.state.terminal());
@@ -466,6 +478,7 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
                     target: Target::History(key),
                     terminal: record.state.terminal(),
                     hidden: is_hidden,
+                    child: child(record.batch_parent),
                     export: Entry::vm(record),
                     help: FailureHelp::vm(record),
                 });
@@ -506,6 +519,7 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
                     target: Target::History(key),
                     terminal: record.state.terminal(),
                     hidden: is_hidden,
+                    child: child(record.batch_parent),
                     export: Entry::resource(record),
                     help: FailureHelp::resource(record),
                 });
@@ -517,6 +531,7 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
     rows.retain(|r| {
         a.pool.is_none_or(|p| p == r.pool || r.peer == Some(p))
             && (!r.hidden || a.show_hidden)
+            && (!r.child || a.show_children)
             && r.status.to_lowercase().contains(&status)
             && (format!("{} {} {}", r.name, r.status, r.details)
                 .to_lowercase()
@@ -538,6 +553,7 @@ fn build(m: &Model, tab: Tab, pools: &BTreeMap<PoolId, Arc<Inventory>>) -> Sheet
         status: status_filter(m, tab).to_owned(),
         pool: a.pool,
         show_hidden: a.show_hidden,
+        show_children: a.show_children,
         hidden: if tab == Tab::History {
             m.preferences.hidden_history.clone()
         } else {

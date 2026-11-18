@@ -1047,3 +1047,77 @@ fn texts_name_the_places_of_this_client() {
     assert_eq!(EXPORTING, "Saving the captured activity selection…");
     assert!(view::EXPORT_NOTE.starts_with("JSON exports contain the displayed task/message"));
 }
+
+/// The Rune pool history showed a batch as one entry (`batch_parent.is_none()`)
+/// with its members as lines; the Rune Activity list had every record.
+#[test]
+fn a_batch_is_one_history_row_and_its_members_are_rows_only_when_asked_for() {
+    let mut h = events();
+    let pool = pool(&h);
+    let batch = resource_record(pool);
+    let batch_key = resource_key(&batch);
+    let mut members = Vec::new();
+    for _ in 0..32 {
+        let mut member = vm_record(pool, OperationState::Succeeded);
+        member.batch_parent = Some(batch.id);
+        members.push(vm_key(&member));
+        h.model.operation_rows.push(member);
+    }
+    let mut resource_member = resource_json(pool);
+    resource_member["batch_parent"] = json!(batch.id);
+    let resource_member: ResourceOperationRecord =
+        serde_json::from_value(resource_member).unwrap();
+    let resource_member_key = resource_key(&resource_member);
+    // A member whose batch record is not in the history stands for itself.
+    let mut orphan = vm_record(pool, OperationState::Succeeded);
+    orphan.batch_parent = Some(OperationId::new());
+    let orphan_key = vm_key(&orphan);
+    h.model.operation_rows.push(orphan);
+    h.model.resource_rows.push(batch);
+    h.model.resource_rows.push(resource_member);
+    super::show_history(&mut h.model, pool);
+
+    let keys = |h: &Harness| -> Vec<String> {
+        rows(h, Tab::History).into_iter().map(|row| row.key).collect()
+    };
+    let shown = keys(&h);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert!(shown.contains(&activity::key_of(batch_key)));
+    assert!(shown.contains(&activity::key_of(orphan_key)));
+    let table_rows = h
+        .nodes()
+        .into_iter()
+        .filter(|node| node.role == "row")
+        .filter(|node| node.key.as_deref().is_some_and(|key| key.starts_with("activity-table:")))
+        .count();
+    assert_eq!(table_rows, 2);
+    assert!(!export::scope_label(&h.model, Tab::History).ends_with("batch members true"));
+
+    // The members are rows when they are asked for, as in Activity.
+    assert_eq!(h.node("activity-show-children").checked, Some(false));
+    h.toggle("activity-show-children");
+    assert_eq!(keys(&h).len(), 2 + 32 + 1);
+    assert!(export::scope_label(&h.model, Tab::History).ends_with("batch members true"));
+    h.toggle("activity-show-children");
+    assert_eq!(keys(&h).len(), 2);
+
+    // Another area that shows a member by its key gets it listed and
+    // selected.
+    super::show_operation(&mut h.model, members[7]);
+    assert!(h.model.areas.events.show_children);
+    assert_eq!(
+        activity::selected(&h.model, Tab::History).map(|row| row.key),
+        Some(activity::key_of(members[7]))
+    );
+    h.model.areas.events.show_children = false;
+    super::show_operation(&mut h.model, resource_member_key);
+    assert!(h.model.areas.events.show_children);
+    // The batch itself does not ask for its members.
+    h.model.areas.events.show_children = false;
+    super::show_operation(&mut h.model, batch_key);
+    assert!(!h.model.areas.events.show_children);
+    assert_eq!(
+        activity::selected(&h.model, Tab::History).map(|row| row.key),
+        Some(activity::key_of(batch_key))
+    );
+}

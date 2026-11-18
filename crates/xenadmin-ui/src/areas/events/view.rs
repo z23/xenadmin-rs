@@ -3,7 +3,7 @@
 //!
 //! Rune keys kept: `activity-search`, `activity-state-filter`,
 //! `activity-pool` (the button that cycled the pools is a select of them),
-//! `activity-show-hidden`, `activity-table`, `activity-confirm`,
+//! `activity-show-hidden`, `activity-show-children`, `activity-table`, `activity-confirm`,
 //! `activity-Tasks` and `activity-History` (options of the list choice),
 //! `failure-help-dialog` (the dialog's id), `failure-help-outcome`,
 //! `failure-help-code`, `failure-help-close`.
@@ -195,12 +195,21 @@ fn filters(m: &Model, list: Tab) -> Block {
 fn scope_notes(m: &Model, list: Tab) -> Vec<Block> {
     let a = &m.areas.events;
     if list == Tab::History {
-        return blocks![checkbox(
-            "activity-show-hidden",
-            "Include locally hidden completed entries",
-            a.show_hidden,
-            |m| m.areas.events.show_hidden = !m.areas.events.show_hidden,
-        )];
+        return blocks![
+            checkbox(
+                "activity-show-hidden",
+                "Include locally hidden completed entries",
+                a.show_hidden,
+                |m| m.areas.events.show_hidden = !m.areas.events.show_hidden,
+            ),
+            checkbox(
+                "activity-show-children",
+                "Include the records of batch members",
+                a.show_children,
+                |m| m.areas.events.show_children = !m.areas.events.show_children,
+            )
+            .help("A batch is listed as one entry; its members are in its details."),
+        ];
     }
     let class = if list == Tab::Tasks {
         "task"

@@ -327,14 +327,15 @@ struct CapturedEntry {
 pub fn scope_label(m: &Model, tab: Tab) -> String {
     let a = &m.areas.events;
     format!(
-        "{}; pool {}; search {:?}; state/priority {:?}; hidden {}",
+        "{}; pool {}; search {:?}; state/priority {:?}; hidden {}; batch members {}",
         tab.title(),
         a.pool
             .map(|id| id.to_string())
             .unwrap_or_else(|| "all observed pools".into()),
         a.search,
         activity::status_filter(m, tab),
-        a.show_hidden
+        a.show_hidden,
+        a.show_children
     )
 }
 
