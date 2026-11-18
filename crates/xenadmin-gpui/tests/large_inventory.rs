@@ -39,9 +39,9 @@ const GUESTS: usize = 2000;
 /// More rows than a grid or the tree shows at 1440x900 (12 and 22 when this
 /// was written), and far fewer than the inventory has.
 const ROWS_IN_VIEW: u64 = 100;
-/// What an event may build: the rows in view a few times over (an event is
-/// followed by more than one pass over the rows: 154 tree rows were counted
-/// for a press), never the inventory.
+/// What an event may build: the rows in view a few times over (a frame goes
+/// over the rows it shows more than once: 44 tree rows were counted for a
+/// turn of the wheel and its frame), never the inventory.
 const ROWS_FOR_AN_EVENT: u64 = GUESTS as u64 / 4;
 
 struct Bench {
@@ -211,6 +211,16 @@ fn keys(rows: &[ElementSnapshot]) -> Vec<String> {
         .collect()
 }
 
+/// The centre of the row with a key, which must be in view.
+#[track_caller]
+fn centre_of(rows: &[ElementSnapshot], key: &str) -> Point<Pixels> {
+    rows.iter()
+        .find(|row| key_of(row) == Some(key))
+        .unwrap_or_else(|| panic!("the row `{key}` is not in view"))
+        .bounds()
+        .center()
+}
+
 /// A turn of the wheel at a point: `down` pixels down. No frame.
 fn wheel(window: &mut Window, cx: &mut App, at: Point<Pixels>, down: f32) {
     let event = ScrollEvent {
@@ -221,10 +231,25 @@ fn wheel(window: &mut Window, cx: &mut App, at: Point<Pixels>, down: f32) {
     window.dispatch_event(gpui_kit::InputEvent::to_platform_input(event), cx);
 }
 
-/// A press and a release of the primary button. No frame.
+/// A press and a release of the primary button. No frame: the Kit's
+/// `pointer_down` and `pointer_up` draw two each, which is not what a
+/// press costs.
 fn click(window: &mut Window, cx: &mut App, at: Point<Pixels>) {
-    window.pointer_down(at, MouseButton::Left, cx);
-    window.pointer_up(at, MouseButton::Left, cx);
+    let down = MouseDownEvent {
+        button: MouseButton::Left,
+        position: at,
+        modifiers: window.modifiers(),
+        click_count: 1,
+        first_mouse: false,
+    };
+    window.dispatch_event(gpui_kit::InputEvent::to_platform_input(down), cx);
+    let up = MouseUpEvent {
+        button: MouseButton::Left,
+        position: at,
+        modifiers: window.modifiers(),
+        click_count: 1,
+    };
+    window.dispatch_event(gpui_kit::InputEvent::to_platform_input(up), cx);
 }
 
 /// The inventory again, with one guest named otherwise: what a refresh
@@ -435,12 +460,7 @@ fn measure_large_inventory() {
     let mut samples = Vec::new();
     for turn in 0..FRAMES {
         let key = pair[turn % 2].clone();
-        let at = bench.on(|window, _| {
-            locate(window, Some(TREE_KEY), &key)
-                .unwrap_or_else(|error| panic!("{error}"))
-                .bounds()
-                .center()
-        });
+        let at = centre_of(&bench.tree_rows(), &key);
         bench.point(at);
         let before = bench.selected();
         samples.push(bench.step(|window, cx| click(window, cx, at)));
@@ -484,17 +504,14 @@ fn measure_large_inventory() {
     }
     report("scroll the Search grid, wheel event to frame", samples);
 
+    // The first two rows: a selected row puts its details under the grid,
+    // which then shows fewer rows.
     let rows = keys(&bench.grid_rows());
-    let pair = [rows[1].clone(), rows[3].clone()];
+    let pair = [rows[0].clone(), rows[1].clone()];
     let mut samples = Vec::new();
     for turn in 0..FRAMES {
         let key = pair[turn % 2].clone();
-        let at = bench.on(|window, _| {
-            locate(window, Some(SEARCH), &key)
-                .unwrap_or_else(|error| panic!("{error}"))
-                .bounds()
-                .center()
-        });
+        let at = centre_of(&bench.grid_rows(), &key);
         bench.point(at);
         let before = bench.selected();
         samples.push(bench.step(|window, cx| click(window, cx, at)));
@@ -505,6 +522,34 @@ fn measure_large_inventory() {
         "select another row of the Search grid, press to frame",
         samples,
     );
+
+    // What the model's share of an update is: the descriptions the front
+    // end asks for again after every change (the Search tab is shown, a
+    // row of it is selected).
+    let store = bench.scene.store.clone();
+    let mut parts: [Vec<f64>; 4] = Default::default();
+    for _ in 0..50 {
+        bench.cx.update(|cx| {
+            let store = store.read(cx);
+            let start = Instant::now();
+            let rows = nav::rows(store.model());
+            parts[0].push(ms(start));
+            let start = Instant::now();
+            drop(nav::selected_ids(store.model(), &rows));
+            parts[1].push(ms(start));
+            let start = Instant::now();
+            drop((store.menu_bar(), store.toolbar()));
+            parts[2].push(ms(start));
+            let start = Instant::now();
+            drop(store.tab_body(TabId::Search));
+            parts[3].push(ms(start));
+        });
+    }
+    let [rows, scope, menus, tab] = parts;
+    report("  the model lists the rows of the tree (nav::rows)", rows);
+    report("  the model finds the rows of the scope", scope);
+    report("  the model resolves the menu bar and the toolbar", menus);
+    report("  the model describes the Search tab", tab);
 
     // The inventory is replaced by one in which a guest has another name.
     let mut samples = Vec::new();
