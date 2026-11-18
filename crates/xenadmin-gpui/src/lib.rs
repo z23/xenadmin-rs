@@ -20,12 +20,15 @@
 //!   close path.
 //! - [`console`]: the console canvas, its keys and pointer, and the
 //!   detached console windows.
+//! - [`charts`]: the performance chart element, which leaves a gap where
+//!   data is missing.
 //! - [`assets`]: the icons.
 //! - `scenes` (feature `scenes`): the scene tool.
 
 pub mod app;
 pub mod assets;
 pub mod bridge;
+pub mod charts;
 pub mod console;
 pub mod intents;
 pub mod kit;

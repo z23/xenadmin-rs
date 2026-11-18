@@ -31,6 +31,9 @@ pub use gpui_kit::{
     white,
 };
 
+// What the chart element strokes its lines with.
+pub use gpui_kit::PathBuilder;
+
 // Pictures: a decoded frame (BGRA) and the element that draws it.
 pub use gpui_kit::{ObjectFit, RenderImage, StyledImage, img};
 
