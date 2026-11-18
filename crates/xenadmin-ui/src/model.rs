@@ -104,9 +104,16 @@ pub struct Model {
     pub(crate) operation_sessions: std::collections::BTreeMap<OperationId, ProfileId>,
     /// The merged history of VM operations, oldest first.
     pub operation_rows: Vec<OperationRecord>,
-    /// The handles of resource operations, of every pool.
+    /// The handles of the resource operations given to
+    /// [`Model::track_resource`], of every session. A handle belongs to the
+    /// session that showed its record's pool when it was tracked and stays
+    /// here, polled, whichever pool the tree shows, until its session's
+    /// connection is replaced or removed.
     pub resource_operations: Vec<ResourceOperation>,
-    /// The merged history of resource operations, oldest first.
+    /// The session each handle in `resource_operations` belongs to.
+    pub(crate) resource_sessions: std::collections::BTreeMap<OperationId, ProfileId>,
+    /// The merged history of resource operations of every connected
+    /// session, oldest first.
     pub resource_rows: Vec<ResourceOperationRecord>,
     /// The power availability checks of one VM. The `power` area starts
     /// and shows them; the model drops them when they are no longer current.
@@ -264,6 +271,7 @@ impl Model {
             operation_sessions: std::collections::BTreeMap::new(),
             operation_rows: Vec::new(),
             resource_operations: Vec::new(),
+            resource_sessions: std::collections::BTreeMap::new(),
             resource_rows: Vec::new(),
             diagnostics: None,
             diagnostic_results: Vec::new(),
@@ -320,6 +328,7 @@ impl Model {
         self.operations.clear();
         self.operation_sessions.clear();
         self.resource_operations.clear();
+        self.resource_sessions.clear();
         self.resource_rows.clear();
         self.operation_rows.clear();
         self.connection = None;
@@ -640,13 +649,15 @@ impl Model {
         self.operation_sessions.retain(|id, _| kept.contains(id));
     }
 
-    /// Forgets the handles of the VM operations of one session: its
-    /// connection is being replaced or removed, so they will not change
-    /// again. Their records stay in `operation_rows`, and what the journal
-    /// knows of them comes back through the history of the session's next
-    /// connection. (`session::start_connection` and
-    /// `session::remove_record` call it.)
+    /// Forgets the handles of the VM operations and of the resource
+    /// operations of one session: its connection is being replaced or
+    /// removed, so they will not change again. Their records stay in
+    /// `operation_rows` and `resource_rows`, and what the journal knows of
+    /// them comes back through the history of the session's next
+    /// connection. (`session::start_connection`, `session::remove_record`
+    /// and the `connections` area's Reconnect As call it.)
     pub fn forget_operations_of(&mut self, profile: ProfileId) {
+        self.forget_resources_where(|owner| owner == profile);
         let gone: Vec<OperationId> = self
             .operations
             .iter()
@@ -664,13 +675,64 @@ impl Model {
     /// Keeps the handle of a resource operation a module has just
     /// submitted: it wakes the model when it changes, and its record
     /// reaches `resource_rows` at the next poll. Returns the operation's id.
+    ///
+    /// The handle belongs to the session that shows the pool of its record
+    /// now (the pool it was submitted in; the source of an operation that
+    /// spans two pools), else to the scope session. It stays polled
+    /// whichever pool the tree shows and is forgotten with its session
+    /// ([`Model::forget_operations_of`]).
     pub fn track_resource(&mut self, operation: ResourceOperation) -> OperationId {
         if let Some(waker) = &self.waker {
             operation.notify_on_change(waker.clone());
         }
-        let id = operation.latest().id;
+        let record = operation.latest();
+        let id = record.id;
+        let owner = session::session_for_pool(self, record.pool).or(self.workspace.selected);
+        if let Some(owner) = owner {
+            self.resource_sessions.insert(id, owner);
+        }
         self.resource_operations.push(operation);
         id
+    }
+
+    /// The session a resource handle belongs to
+    /// ([`Model::track_resource`]). `None` for a handle tracked while no
+    /// session showed its pool and none was the scope session.
+    pub fn resource_session(&self, id: OperationId) -> Option<ProfileId> {
+        self.resource_sessions.get(&id).copied()
+    }
+
+    /// Drops the resource handles whose session `gone` names, after their
+    /// last record has reached `resource_rows`; then the owner entries of
+    /// handles an area dropped itself (several retain only the unfinished
+    /// ones before a submission).
+    fn forget_resources_where(&mut self, gone: impl Fn(ProfileId) -> bool) {
+        let ids: Vec<OperationId> = self
+            .resource_sessions
+            .iter()
+            .filter(|(_, owner)| gone(**owner))
+            .map(|(id, _)| *id)
+            .collect();
+        if !ids.is_empty() {
+            let last: Vec<ResourceOperationRecord> = self
+                .resource_operations
+                .iter()
+                .map(|operation| operation.latest())
+                .filter(|record| ids.contains(&record.id))
+                .map(|record| record.as_ref().clone())
+                .collect();
+            self.resource_rows = merge_resource_rows(&self.resource_rows, last);
+            self.resource_operations
+                .retain(|operation| !ids.contains(&operation.latest().id));
+        }
+        if !self.resource_sessions.is_empty() {
+            let kept: std::collections::BTreeSet<OperationId> = self
+                .resource_operations
+                .iter()
+                .map(|operation| operation.latest().id)
+                .collect();
+            self.resource_sessions.retain(|id, _| kept.contains(id));
+        }
     }
 
     /// Writes the preferences, when this process owns the state directory.
@@ -1859,7 +1921,7 @@ impl Model {
     ///    `snapshot` and `inventory` together; `diagnostics` that are no
     ///    longer current are dropped; the selection is reconciled with the
     ///    inventories;
-    /// 4. `resource_rows` is merged from the scope session's history and
+    /// 4. `resource_rows` is merged from the history of every session and
     ///    the handles in `resource_operations`;
     /// 5. every area's `poll`, in the order of [`areas::AREAS`];
     /// 6. the developer inspection socket gets the live connections;
@@ -1985,28 +2047,43 @@ impl Model {
         }
     }
 
-    /// Merges the scope session's resource history and the handles in
+    /// Merges the resource history of every session and the handles in
     /// `resource_operations` into `resource_rows` (the Rune
-    /// `resource_admin::poll`): keyed by operation id, a record replaces
-    /// the stored one only when it supersedes it; every unfinished record
-    /// and the newest 100 finished ones are kept, oldest first. Rows of
-    /// earlier sessions stay.
+    /// `resource_admin::poll`, which read the scope session alone): the
+    /// scope session's connection and every other connection the workspace
+    /// holds, so a record of a pool the tree does not show keeps changing
+    /// and one known only to another session's journal is listed. Keyed by
+    /// operation id, a record replaces the stored one only when it
+    /// supersedes it; every unfinished record and the newest 100 finished
+    /// ones are kept, oldest first. Rows of earlier sessions stay. A handle
+    /// whose session is gone from the workspace is forgotten after its
+    /// record was merged.
     fn poll_resource_rows(&mut self) -> bool {
-        let mut incoming: Vec<ResourceOperationRecord> = self
-            .connection
-            .as_ref()
-            .map(|connection| connection.resource_history().iter().cloned().collect())
-            .unwrap_or_default();
+        let scope = self.workspace.selected;
+        let mut incoming: Vec<ResourceOperationRecord> = Vec::new();
+        let others = self
+            .workspace
+            .active
+            .iter()
+            .filter(|(id, _)| Some(**id) != scope)
+            .map(|(_, connection)| connection);
+        for connection in self.connection.iter().chain(others) {
+            incoming.extend(connection.resource_history().iter().cloned());
+        }
         for operation in &self.resource_operations {
             incoming.push(operation.latest().as_ref().clone());
         }
         let rows = merge_resource_rows(&self.resource_rows, incoming);
-        if rows == self.resource_rows {
-            false
-        } else {
+        let changed = rows != self.resource_rows;
+        if changed {
             self.resource_rows = rows;
-            true
         }
+        if !self.resource_sessions.is_empty() {
+            let active: std::collections::BTreeSet<ProfileId> =
+                self.workspace.active.keys().copied().chain(scope).collect();
+            self.forget_resources_where(|owner| !active.contains(&owner));
+        }
+        changed
     }
 }
 
@@ -2143,6 +2220,10 @@ mod tests;
 #[cfg(test)]
 #[path = "per_pool_tests.rs"]
 mod per_pool_tests;
+
+#[cfg(test)]
+#[path = "resource_per_pool_tests.rs"]
+mod resource_per_pool_tests;
 
 #[cfg(test)]
 #[path = "context_menu_tests.rs"]

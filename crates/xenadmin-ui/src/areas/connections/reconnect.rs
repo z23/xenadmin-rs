@@ -196,6 +196,8 @@ pub fn apply(m: &mut Model) {
             c.disconnect();
         }
         for (id, _) in affected {
+            // The handles of a session that is removed will not change again.
+            m.forget_operations_of(id);
             m.workspace.active.remove(&id);
             m.workspace.seen.remove(&id);
             m.workspace.session_accounts.remove(&id);

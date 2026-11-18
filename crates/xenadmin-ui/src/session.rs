@@ -643,9 +643,10 @@ pub fn start_connection(
 /// `on_session_change` hook, while the model still describes the previous
 /// session; then the kernel drops its own. It does not clear
 /// `operation_rows`, `resource_rows`, `resource_operations` or `operations`:
-/// the handles of VM operations belong to their session and stay polled
-/// whichever session the scope is in (`Model::forget_operations_of` drops
-/// them when the session's connection is replaced or removed).
+/// the handles of VM operations and of resource operations belong to their
+/// session and stay polled whichever session the scope is in
+/// (`Model::forget_operations_of` drops them when the session's connection
+/// is replaced or removed).
 pub fn clear_view(m: &mut Model) {
     for area in crate::areas::specs() {
         (area.on_session_change)(m);
