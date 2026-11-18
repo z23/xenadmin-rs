@@ -69,7 +69,7 @@ pub const NOT_WRITABLE: &str = "This connection is read-only, disconnected or st
 
 const TOO_MANY: &str = "Only the first 100 disk UUIDs are shown. Review a smaller repository before removing it here.";
 const RESOLVE: &str =
-    "Resolve or acknowledge the uncertain source operation in Activity before separate cleanup.";
+    "Resolve or acknowledge the uncertain source operation on the Events tab of the Notifications view before separate cleanup.";
 const NO_DISCOVERY: &str = "Synthetic preview · discovery is not available.";
 const DISCOVERING: &str = "Reading storage discovery…";
 

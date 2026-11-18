@@ -623,6 +623,6 @@ fn delete(m: &Model, dialog: &Dialog) -> Vec<Block> {
             caption("Shared disks, CD/DVD media, disks without snapshot ownership, and disks with incomplete ownership data are retained."),
             disk_lines(retained),
         ]),
-        caption("Deletion runs in tracked steps. If a later step fails, the operation history identifies completed work and remaining disks. An interrupted response may leave the outcome unknown; recheck it before retrying."),
+        caption("Deletion runs in tracked steps. If a later step fails, the Events tab of the Notifications view identifies completed work and remaining disks. An interrupted response may leave the outcome unknown; recheck it before retrying."),
     ]
 }

@@ -30,9 +30,9 @@ use crate::prelude::*;
 /// writable current connection to the pool of the selection.
 pub const NOT_WRITABLE: &str = single::NOT_WRITABLE;
 pub const NO_PEERS: &str =
-    "Connect another pool with write access using Connections, then reopen this review.";
+    "Connect another pool with write access using Add Server… or Connect… of the Server menu, then reopen this review.";
 pub const NO_DESTINATION: &str = "Choose a destination pool and host";
-pub const SELECTION_HELP: &str = "One destination pool and host take the whole selection. A running guest moves live and keeps running; a halted guest stays halted; both may be in one batch. A suspended or paused guest, a template or a guest the single cross-pool move would refuse makes the whole selection unavailable: none is left out. Copies are made one VM at a time from the VM's own cross-pool form.";
+pub const SELECTION_HELP: &str = "One destination pool and host take the whole selection. A running guest moves live and keeps running; a halted guest stays halted; both may be in one batch. A suspended or paused guest, a template or a guest the single cross-pool move would refuse makes the whole selection unavailable: none is left out. Copies are made one VM at a time with Move or Copy to Another Pool on that VM.";
 pub const MAPPING_HELP: &str = "One destination repository takes every disk of the selection, and each source network maps to one destination network for every NIC on it. The review lists the mapping this gives each VM. To map one VM differently, move it by itself.";
 pub const MAPPING_LIMITS: &str = "Each VM must be an ordinary guest with exclusive owned data disks and empty CD drives. Snapshot chains, shared disks, mounted media, HA protection and vApps need separate preparation, as for a single cross-pool move.";
 pub const MOVES: &str = "XAPI moves each VM and removes its exclusive source disks. VM and device UUIDs and MAC addresses are kept; destination disk UUIDs may change.";

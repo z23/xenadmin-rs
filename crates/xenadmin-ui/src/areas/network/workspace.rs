@@ -723,7 +723,7 @@ pub fn form_review(m: &mut Model) {
             .network
             .workspace
             .as_ref()
-            .ok_or("Close and reopen networking")?;
+            .ok_or("Close and reopen this dialog")?;
         let i = m.inventory_for(w.pool).ok_or("The pool changed")?;
         let i = &*i;
         let network_op = |(target, operation, lines): Staged| {

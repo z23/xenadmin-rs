@@ -30,7 +30,7 @@ pub const REVIEW_CHANGED: &str =
     "Reviewed values changed. Nothing will be sent; go Back or reopen the selection.";
 /// Decision 10 of `AREAS.md`: "Operation history" is renamed in the one
 /// sweep at the end, not here.
-pub const SEQUENCE: &str = "Targets and setters run serially. A failure or uncertain response stops the remainder; completed changes remain. There is no automatic rollback. Operation history retains per-target steps, and recheck never sends pending changes.";
+pub const SEQUENCE: &str = "Targets and setters run serially. A failure or uncertain response stops the remainder; completed changes remain. There is no automatic rollback. The Events tab of the Notifications view retains per-target steps, and recheck never sends pending changes.";
 pub const NOT_WRITABLE: &str = "This connection is read-only, disconnected or stale. Review is available; submission is disabled.";
 /// Why "Apply changes" is disabled in a synthetic pool. (New text: Rune
 /// disabled the button without saying why.)

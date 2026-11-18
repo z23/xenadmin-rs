@@ -471,15 +471,15 @@ pub fn section(m: &Model, i: &Inventory, pool: PoolId, vm: VmId, snapshot: &Snap
             property("Description", snapshot.description.clone()),
         ]),
         caption(format!(
-            "Captured pool {} · revision {} · {}",
+            "Pool {} · revision {} · {}",
             i.pool_id,
             i.revision,
             if synthetic {
                 "Synthetic inventory"
             } else if current {
-                "Current at capture"
+                "Current"
             } else {
-                "Stale at capture"
+                "Stale"
             }
         ))
         .key("snapshot-information-source"),

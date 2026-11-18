@@ -121,7 +121,7 @@ pub(super) fn detail_code(detail: &str) -> Option<&str> {
 
 /// The text shown when no exact host error code is known. It names the Rune
 /// "Activity" entry (AREAS.md decision 10: renamed in one sweep at the end).
-pub const NO_CODE: &str = "No exact host error code is available here. Read the original detail and per-step messages in the operation or Activity entry. Private diagnostics can provide additional method and receipt evidence.";
+pub const NO_CODE: &str = "No exact host error code is available here. Read the original detail and per-step messages in the operation or its entry on the Events tab of the Notifications view. Private diagnostics can provide additional method and receipt evidence.";
 
 /// The line under the source: the explanation is a capture.
 pub const CAPTURED: &str = "Captured explanation · inspect current state before acting";

@@ -27,12 +27,12 @@ pub const READ_ONLY: &str =
 /// that is not halted (Rune relabelled its button "Cloud-init drive (shut
 /// down first)").
 pub const INTRODUCTION: &str = "For a halted VM with cloud-init and the NoCloud datasource already installed. Enter UTF-8 user-data; guest-side configuration validation happens in the guest.";
-pub const PRIVACY: &str = "Inputs stay in private local media and are never included in operation history or exports. Only the reviewed VM receives the new drive.";
+pub const PRIVACY: &str = "Inputs stay in private local media and are never included in the operation's entry on the Events tab of the Notifications view or in exports. Only the reviewed VM receives the new drive.";
 pub const PREPARING: &str = "Preparing private local media…";
 pub const NO_STORAGE: &str = "Choose storage for the new drive";
 pub const WHAT_HAPPENS: &str = "Create a new data disk, upload the prepared media, then attach it read-only. The drive contains your user-data and stays attached. Review its removal separately after provisioning.";
 pub const GUEST_LIMITS: &str = "The VM stays halted. Its guest must already support cloud-init with the NoCloud datasource. Preparing this drive does not prove the guest accepted or ran the configuration. A new instance ID may cause an existing cloud-init guest to run first-boot configuration again. External seed media can affect which configuration the guest selects.";
-pub const POOL_BLOCK: &str = "Other changes in this pool wait while this operation is active or unresolved. Interrupted uploads or attachments are never retried automatically. Retained disk and attachment UUIDs appear in Activity; uncertain operations may retain a private local artifact.";
+pub const POOL_BLOCK: &str = "Other changes in this pool wait while this operation is active or unresolved. Interrupted uploads or attachments are never retried automatically. Retained disk and attachment UUIDs appear on the Events tab of the Notifications view; uncertain operations may retain a private local artifact.";
 const DEFAULT_USER_DATA: &str = "#cloud-config\n";
 
 pub struct Panel {

@@ -25,7 +25,7 @@ pub const CHECKING: &str = "Checking with the host…";
 /// A VM without a details record (the text of the Rune power batch).
 pub const UNKNOWN: &str = "Action availability is unknown";
 /// The caption `power-actions-unavailable` of the Rune details pane.
-pub const NO_ACTIONS: &str = "No power actions are available in the received VM data. Check action availability below for the host's current reason. This check does not remove restrictions.";
+pub const NO_ACTIONS: &str = "No power actions are available in the received VM data. Use Check action availability on the General tab of the VM for the host's current reason. This check does not remove restrictions.";
 /// The consequence line of a force confirmation.
 pub const FORCE: &str = "This interrupts the guest immediately and can lose unsaved data. A clean shutdown is safer when the guest responds.";
 /// The consequence line of a routine confirmation.

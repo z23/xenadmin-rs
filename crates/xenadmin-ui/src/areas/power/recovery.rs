@@ -29,20 +29,20 @@ pub const ACCEPT_FIRST: &str =
 pub const ACCEPT_MIGRATION: &str =
     "Force anyway: I accept that the migration may be left unfinished on the hosts";
 pub const STALE: &str =
-    "The captured connection changed. Close this panel and reopen it from current inventory.";
-pub const CANCEL_CHANGED: &str = "The operation or connection changed. Go Back and review its current state before requesting cancellation.";
+    "The captured connection changed. Close this dialog and reopen it from current inventory.";
+pub const CANCEL_CHANGED: &str = "The operation or connection changed. Close this dialog and review its current state before requesting cancellation.";
 pub const CANCEL: &str = "Request cancellation through this client's operation journal. Some workflows only stop their remaining steps; an in-flight host task may still finish normally. This does not cancel another client's tasks, reset VM state, or submit a force action. Wait for the recorded outcome, then refresh and review any force action separately.";
 pub const FORCE: &str = "This can interrupt guest writes and lose data. The host will freshly validate the force action even when it is missing from the host’s usual action list. Administrative blocks and session permissions still apply. No task listed here will be cancelled by this action.";
 pub const BOOT: &str = "The VM starts once using CD/network boot. Its original boot order is restored only after verified startup and only while the temporary value is unchanged. Firmware, Secure Boot policy and mounted media are preserved. This does not verify that a guest recovery environment actually started. A lost reply stops later writes and can leave the temporary order in place.";
 pub const RESTORE: &str = "Restore only the exact temporary order set by this completed or acknowledged recovery operation. The backend requires a saved setter completion receipt and unchanged firmware/settings. This changes next-boot configuration only; it does not start, stop or cancel anything.";
-pub const TASKS_NOTE: &str = "These are the task identities captured when this panel opened. They may belong to any client. Refresh before reviewing a changed VM.";
+pub const TASKS_NOTE: &str = "These are the task identities captured when this dialog opened. They may belong to any client. Close and reopen it before reviewing a changed VM.";
 /// Why a force action is not offered as a recovery action.
 pub const FORCE_UNAVAILABLE: &str = "Task-aware force recovery requires a running VM with known current task identities. For an idle VM, use its normal power actions.";
 /// Why a boot from recovery media is not offered.
 pub const BOOT_UNAVAILABLE: &str = "Recovery boot requires a halted, idle HVM guest. PV guests and changing installed BIOS/UEFI firmware are unsupported.";
 /// The note of the Rune overview on unresolved operations, for whoever
 /// lists them.
-pub const RESERVATIONS: &str = "Unresolved local operations retain their reservations. Inspect unknown outcomes in Activity before acknowledging them; cancellation requests do not release reservations or prove host cancellation.";
+pub const RESERVATIONS: &str = "Unresolved local operations retain their reservations. Inspect unknown outcomes on the Events tab of the Notifications view before acknowledging them; cancellation requests do not release reservations or prove host cancellation.";
 
 #[derive(Clone)]
 pub enum Review {

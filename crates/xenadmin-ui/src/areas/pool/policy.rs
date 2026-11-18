@@ -21,13 +21,13 @@ use crate::prelude::*;
 
 /// The refusal of a review that was made against another state of the
 /// connection (Rune `apply`).
-pub const STALE: &str = "The connection changed; reopen pool administration";
+pub const STALE: &str = "The connection changed; reopen this dialog";
 
 /// The refusal of a confirmation that is not the requested UUID.
 pub const CONFIRM: &str = "Enter the exact requested UUID";
 
 /// The closing line of every review.
-pub const CLOSING: &str = "Fresh host checks run again before submission. Interrupted operations stay in history for recheck; no mutation is replayed automatically.";
+pub const CLOSING: &str = "Fresh host checks run again before submission. Interrupted operations stay on the Events tab of the Notifications view for recheck; no mutation is replayed automatically.";
 
 /// The three settings of [`PoolOperation::SetVmStartup`], in the order of
 /// the three drafts.
@@ -313,7 +313,7 @@ pub fn review_failures(m: &mut Model) {
             .pool
             .editor
             .as_ref()
-            .ok_or("Pool administration is closed")?;
+            .ok_or("The dialog of this pool change is closed")?;
         let expected = editor
             .administration()
             .ha_failures_to_tolerate
@@ -588,7 +588,7 @@ pub fn startup(m: &mut Model, index: usize) {
             .pool
             .editor
             .as_ref()
-            .ok_or("Pool administration is closed")?;
+            .ok_or("The dialog of this pool change is closed")?;
         let vm = e.vm.ok_or("Select a VM")?;
         let d = e
             .inventory
@@ -646,7 +646,7 @@ pub fn timeout(m: &mut Model, reset: bool) {
             .pool
             .editor
             .as_ref()
-            .ok_or("Pool administration is closed")?;
+            .ok_or("The dialog of this pool change is closed")?;
         let a = &e
             .inventory
             .details

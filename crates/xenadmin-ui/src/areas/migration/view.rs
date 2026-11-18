@@ -205,7 +205,7 @@ fn cross_pool(m: &Model, f: &wizard::Editor) -> Option<Button> {
     Some(
         button(
             "migration-cross-pool",
-            "Move / copy to another pool…",
+            "Move or Copy to Another Pool…",
             move |m| {
                 let mine = m.areas.migration.wizard.take();
                 if !m.invoke(MOVE_TO_POOL, &target) {

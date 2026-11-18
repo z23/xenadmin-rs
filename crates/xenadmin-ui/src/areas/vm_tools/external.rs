@@ -63,9 +63,9 @@ pub const CONFIGURE: &str = "external-tools";
 
 pub const NO_LAUNCH_IN_DEMO: &str = "Demo mode cannot launch external programs";
 /// (These two name the Rune launcher "Guest tools": decision 10.)
-pub const CONNECTION_CHANGED: &str = "Connection changed. Close and reopen Guest tools.";
+pub const CONNECTION_CHANGED: &str = "Connection changed. Close and reopen this dialog.";
 pub const STALE_INVENTORY: &str =
-    "Connection changed or inventory is stale. Close and reopen Guest tools.";
+    "Connection changed or inventory is stale. Close and reopen this dialog.";
 pub const REVIEW_FIRST: &str = "Review the command first";
 pub const INSPECTING: &str = "Inspecting the configured local executable…";
 pub const LAUNCHING: &str = "Launching the reviewed local program…";

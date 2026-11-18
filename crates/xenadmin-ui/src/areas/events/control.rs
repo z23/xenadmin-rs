@@ -59,7 +59,7 @@ pub const ACK_STALE: &str =
 /// The reason a batch child gives for every control. It names the Rune pool
 /// history (AREAS.md decision 10: renamed in one sweep at the end).
 pub fn batch_reason(parent: OperationId) -> String {
-    format!("Managed by batch {parent}. Use the batch controls in pool history.")
+    format!("Managed by batch {parent}. Use the batch controls on the Events tab of the Notifications view.")
 }
 
 pub fn vm_record(m: &Model, key: HiddenKey) -> Option<&OperationRecord> {

@@ -31,7 +31,7 @@ use crate::prelude::*;
 /// What `stage` says when the connection the editor was opened on is not
 /// the current one any more. Also the reason a stale review cannot be
 /// confirmed.
-pub const STALE: &str = "The connection changed; reopen storage before reviewing.";
+pub const STALE: &str = "The connection changed; reopen this dialog before reviewing.";
 
 /// The seven backends, by the number the Rune editor gave them.
 pub const KINDS: [(u8, &str); 7] = [
@@ -307,7 +307,7 @@ pub(super) fn query(m: &mut Model, step: u8) {
             .ok_or("Storage view is closed")?;
         let snapshot = m.snapshot_for(e.pool).ok_or("Connect to discover storage")?;
         if snapshot.inventory().is_none_or(|i| i.pool_id != e.pool) {
-            return Err("Connection changed; reopen storage".into());
+            return Err("Connection changed; reopen this dialog".into());
         }
         let observed = snapshot
             .observe_resource(ResourceTarget::Pool(e.pool))
@@ -1219,7 +1219,7 @@ pub fn review_restore(m: &mut Model, pool: PoolId, sr: SrId, pbd: PbdId, host: H
             p.sr == Some(sr) && p.host == Some(host) && p.currently_attached == Some(false)
         })
     {
-        m.error = Some("The detached attachment changed; reopen its storage view".into());
+        m.error = Some("The detached attachment changed; close and reopen this dialog".into());
         return;
     }
     if !open(m, pool, Some(sr)) {

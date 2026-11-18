@@ -60,7 +60,7 @@ pub fn surfaces(m: &Model) -> Vec<Surface> {
         match &inventory {
             Some(i) => form(e, i),
             None => blocks![
-                caption("The connection changed. Close and reopen networking.")
+                caption("The connection changed. Close and reopen this dialog.")
                     .key("management-pool-changed")
             ],
         },

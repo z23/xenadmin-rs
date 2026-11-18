@@ -306,7 +306,7 @@ fn workspace_body(m: &Model, w: &Workspace) -> Vec<Block> {
             ],
             (None, Some(i)) => form(m, w, i),
             (None, None) => blocks![
-                caption("The connection changed. Close and reopen networking.")
+                caption("The connection changed. Close and reopen this dialog.")
                     .key("network-pool-changed")
             ],
         },

@@ -39,10 +39,10 @@ pub const PAGE: &str = "read-caching";
 /// current one any more. Also the reason its Confirm button is disabled.
 // It names "storage administration" of the Rune front end; kept word for
 // word until every module's review texts are changed together (decision 10).
-pub const STALE_REVIEW: &str = "The captured connection changed; close and reopen storage administration before submitting.";
+pub const STALE_REVIEW: &str = "The captured connection changed; close and reopen this dialog before submitting.";
 
 /// What `stage` refuses with for the same reason.
-pub const STALE_STAGE: &str = "The captured connection changed; reopen storage administration";
+pub const STALE_STAGE: &str = "The captured connection changed; reopen this dialog";
 
 /// What `stage` refuses with when the reviewed operation is not available:
 /// nothing selected, a selected attachment that is attached now, a cache
@@ -353,7 +353,7 @@ pub fn query(m: &mut Model) {
             .ok_or("Storage view is closed")?;
         let snapshot = m.snapshot_for(e.pool).ok_or("Connect to discover storage")?;
         if snapshot.inventory().is_none_or(|i| i.pool_id != e.pool) {
-            return Err("Connection changed; reopen storage".to_owned());
+            return Err("Connection changed; reopen this dialog".to_owned());
         }
         let observed = snapshot
             .observe_resource(ResourceTarget::Pool(e.pool))
