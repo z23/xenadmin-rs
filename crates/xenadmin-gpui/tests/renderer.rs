@@ -1329,11 +1329,16 @@ fn every_scene_renders_with_the_keys_of_its_description() {
                 "{name} at {width}x{height} lacks {missing:?}"
             );
             let elements = output.tree["elements"].as_array().expect("elements");
+            // The artifact of one scene is a detached console window, which
+            // has no header: every other scene is the main window.
+            let root = if name == scenes::CONSOLE_WINDOW_SCENE {
+                "console-window"
+            } else {
+                "object-header"
+            };
             assert!(
-                elements
-                    .iter()
-                    .any(|element| element["id"] == "object-header"),
-                "{name}: the header is in the tree"
+                elements.iter().any(|element| element["id"] == root),
+                "{name}: {root} is in the tree"
             );
         }
     }

@@ -30,6 +30,8 @@ pub const LABEL: &str = "VM console. Click to send keyboard and pointer input";
 /// The id of the frame around the canvas: the element that takes the
 /// remaining height, and in Actual size the view that scrolls on both axes.
 pub const VIEW_KEY: &str = "console-view";
+/// The id of the view that pans at Actual size, inside the frame.
+pub const PAN_KEY: &str = "console-pan";
 /// The id of the line shown while there is no picture.
 pub const EMPTY_KEY: &str = "console-empty";
 /// What that line says.
@@ -55,7 +57,6 @@ pub struct ConsoleCanvas {
     seat: Seat,
     input: CanvasInput,
     focus: FocusHandle,
-    scroll: ScrollHandle,
     /// The uploaded picture and the generation it is the picture of.
     image: Option<Arc<RenderImage>>,
     uploaded: u64,
@@ -117,7 +118,6 @@ impl ConsoleCanvas {
             seat,
             input: CanvasInput::new(),
             focus,
-            scroll: ScrollHandle::new(),
             image: None,
             uploaded: 0,
             uploads: 0,
@@ -382,8 +382,8 @@ fn render_image(frame: &model::Frame) -> Option<RenderImage> {
     let length = width as usize * height as usize * 4;
     let rgba = frame.rgba.get(..length)?;
     let mut bgra = Vec::with_capacity(length);
-    for pixel in rgba.chunks_exact(4) {
-        bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
+    for [red, green, blue, _] in rgba.as_chunks::<4>().0 {
+        bgra.extend_from_slice(&[*blue, *green, *red, 255]);
     }
     let buffer = image::RgbaImage::from_raw(width, height, bgra)?;
     Some(RenderImage::new([image::Frame::new(buffer)]))
@@ -562,11 +562,26 @@ impl Render for ConsoleCanvas {
             .border_color(ring)
             .bg(black());
         match content {
-            None => frame.child(surface.w_full().flex_1().min_h_0()),
+            None => frame
+                .child(surface.w_full().flex_1().min_h_0())
+                .into_any_element(),
+            // The view that pans, with scrollbars: Shift with the wheel
+            // pans (the canvas leaves that event alone), and a wheel has
+            // one axis. The Kit's scroll area takes the id of what it
+            // wraps, so the keyed frame stays around it.
             Some([width, height]) => frame
-                .overflow_scroll()
-                .track_scroll(&self.scroll)
-                .child(surface.flex_none().w(px(width)).h(px(height))),
+                .child(
+                    div()
+                        .id(PAN_KEY)
+                        .w_full()
+                        .flex_grow(1.)
+                        .flex_shrink(1.)
+                        .flex_basis(px(0.))
+                        .min_h_0()
+                        .child(surface.flex_none().w(px(width)).h(px(height)))
+                        .overflow_scrollbar(),
+                )
+                .into_any_element(),
         }
     }
 }
