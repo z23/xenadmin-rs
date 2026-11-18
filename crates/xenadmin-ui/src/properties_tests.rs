@@ -819,8 +819,6 @@ const PENDING: &[&str] = &[
     "server.power-on-settings",
     // host_admin, page Multipathing: storage_maintenance.
     "storage.multipath-workflow",
-    // settings, Options: vm_tools.
-    "tools.external-tools",
     // snapshots, the Snapshots tab: bulk_export.
     "snapshot.export",
 ];
