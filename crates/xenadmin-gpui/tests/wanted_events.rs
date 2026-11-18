@@ -13,7 +13,7 @@ mod common;
 
 use common::Step::*;
 use common::{
-    BOTH, DEMO, SMALL, Step, close, described, front, model, node, on, open_scene, run_step,
+    BOTH, DEMO, SMALL, Step, WIDE, close, described, front, model, node, on, open_scene, run_step,
     run_steps, says, submitted, surfaces,
 };
 use xenadmin_gpui::kit::testing::{TestAppContext, TestQueryExt as _, TestWindowExt as _};
@@ -32,8 +32,17 @@ fn must(cx: &mut TestAppContext, scene: &ShellWindow, step: Step) {
 /// Polls the model, as the window's timer does, until the surface in front
 /// has the key: for what a worker thread of the model brings.
 fn poll_until_has(cx: &mut TestAppContext, scene: &ShellWindow, key: &str) {
+    poll_until(cx, scene, |cx, scene| has(cx, scene, key));
+}
+
+/// Polls the model until `done`, or for twenty seconds.
+fn poll_until(
+    cx: &mut TestAppContext,
+    scene: &ShellWindow,
+    done: impl Fn(&mut TestAppContext, &ShellWindow) -> bool,
+) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while !has(cx, scene, key) && std::time::Instant::now() < deadline {
+    while !done(cx, scene) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
         cx.update(|cx| scene.store.update(cx, |store, cx| store.poll(cx)));
         cx.run_until_parked();
@@ -532,4 +541,280 @@ fn local_path_focus_preserves_probe_but_text_edit_invalidates_it(cx: &mut TestAp
             Absent(&["storage-local-probe"]),
         ],
     );
+}
+
+// -- a checkbox ---------------------------------------------------------------
+
+/// power, wish 2: a forced shutdown over a running migration. No registered
+/// scene has one: the task of the scene is made a `migrate_send` and the
+/// review is asked for again.
+#[gpui_kit::test]
+fn a_forced_action_over_a_migration_warns_and_waits_for_the_operator_to_accept_it(
+    cx: &mut TestAppContext,
+) {
+    let scene = common::open_scene_with(cx, "vm-recovery-force", SMALL, |m| {
+        let target = m.target();
+        m.areas.power.recovery = None;
+        if let Some(inventory) = m.inventory.take() {
+            let mut inventory = inventory.as_ref().clone();
+            for details in inventory.details.vms.values_mut() {
+                for running in &mut details.current_operations {
+                    running.operation = "migrate_send".into();
+                }
+            }
+            m.inventory = Some(std::sync::Arc::new(inventory));
+        }
+        m.invoke(xenadmin_ui::CommandId("vm.force-shutdown"), &target);
+    });
+    for step in [
+        Front("vm-recovery"),
+        Reach(&["recovery-migration-caution"]),
+        Checked("recovery-accept-migration", false),
+        Press("recovery-accept-migration"),
+        Checked("recovery-accept-migration", true),
+        // Accepted, and still nothing can be submitted in the demo.
+        Inside(&["recovery-confirm", "recovery-close"]),
+        Disabled("recovery-confirm", DEMO),
+        Inert("recovery-confirm"),
+        Press("recovery-accept-migration"),
+        Checked("recovery-accept-migration", false),
+    ] {
+        must(&mut *cx, &scene, step);
+    }
+    assert_eq!(submitted(cx, &scene), 0);
+    close(cx, scene);
+}
+
+// -- file prompts -------------------------------------------------------------
+
+/// The file a control asks the desktop for: its title, whether it is a
+/// save, and the name it suggests. The scene records its intents.
+fn asked_for(
+    cx: &mut TestAppContext,
+    scene: &ShellWindow,
+) -> Vec<(String, xenadmin_ui::FileMode, Option<String>)> {
+    cx.update(|cx| {
+        scene
+            .store
+            .read(cx)
+            .recorded_intents()
+            .iter()
+            .filter_map(|intent| match intent {
+                xenadmin_ui::Intent::ChooseFile(request) => Some((
+                    request.title.clone(),
+                    request.mode,
+                    request.suggested_name.clone(),
+                )),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// A scene whose file prompts are the platform's, as in the client.
+fn open_with_prompts(cx: &mut TestAppContext, name: &str, size: (f32, f32)) -> ShellWindow {
+    let scene = open_scene(cx, name, size);
+    cx.update(|cx| {
+        xenadmin_gpui::intents::install(&scene.store, xenadmin_gpui::intents::Hooks::default(), cx)
+    });
+    scene
+}
+
+/// A directory of this test's own, emptied.
+fn scratch(test: &str) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("xenadmin-gpui-{test}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("scratch directory");
+    directory
+}
+
+/// events, wish 10.
+#[gpui_kit::test]
+fn the_activity_export_asks_for_a_path_and_writes_only_a_chosen_one(cx: &mut TestAppContext) {
+    // What is asked for.
+    let scene = open_scene(cx, "activity", WIDE);
+    must(&mut *cx, &scene, Press("local:events.export"));
+    assert_eq!(
+        asked_for(cx, &scene),
+        [(
+            "Export activity JSON".to_owned(),
+            xenadmin_ui::FileMode::Save,
+            Some("xenadmin-activity.json".to_owned())
+        )]
+    );
+    close(cx, scene);
+
+    // Cancelled: no file, and the button can be used again.
+    let directory = scratch("activity-export");
+    let path = directory.join("activity.json");
+    let scene = open_with_prompts(cx, "activity", WIDE);
+    must(&mut *cx, &scene, Press("local:events.export"));
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| None);
+    cx.run_until_parked();
+    common::settle(cx, &scene);
+    assert!(!path.exists());
+    must(&mut *cx, &scene, Enabled("local:events.export"));
+
+    // Chosen: the file is written.
+    must(&mut *cx, &scene, Press("local:events.export"));
+    assert!(cx.did_prompt_for_new_path());
+    let chosen = path.clone();
+    cx.simulate_new_path_selection(move |_| Some(chosen));
+    cx.run_until_parked();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        cx.update(|cx| scene.store.update(cx, |store, cx| store.poll(cx)));
+        cx.run_until_parked();
+    }
+    let written = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        written.contains("Synthetic task"),
+        "no export at {}: {written:.80}",
+        path.display()
+    );
+    close(cx, scene);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// transfers, wish 53: an export asks for a save named after the guest, an
+/// import for an existing file.
+#[gpui_kit::test]
+fn native_save_captures_source_and_an_import_uses_the_open_dialog(cx: &mut TestAppContext) {
+    let scene = open_scene(cx, "archive-export", SMALL);
+    must(&mut *cx, &scene, Press("transfer-next"));
+    must(&mut *cx, &scene, Press("transfer-choose"));
+    let asked = asked_for(cx, &scene);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].1, xenadmin_ui::FileMode::Save, "{asked:?}");
+    assert_eq!(asked[0].2.as_deref(), Some("guest.xva"), "{asked:?}");
+    close(cx, scene);
+
+    let scene = open_scene(cx, "ovf-import", SMALL);
+    for _ in 0..6 {
+        if has(cx, &scene, "transfer-choose") {
+            break;
+        }
+        must(&mut *cx, &scene, Press("transfer-back"));
+    }
+    must(&mut *cx, &scene, Press("transfer-choose"));
+    let asked = asked_for(cx, &scene);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].1, xenadmin_ui::FileMode::Open, "{asked:?}");
+    close(cx, scene);
+}
+
+/// bulk_export, wish 73.
+#[gpui_kit::test]
+fn native_output_selection_is_bound_to_editor_identity_and_format(cx: &mut TestAppContext) {
+    let directory = scratch("batch-export");
+    let path = directory.join("first.xva");
+    let scene = open_with_prompts(cx, "batch-export", WIDE);
+    must(&mut *cx, &scene, Press("batch-export-back"));
+    must(&mut *cx, &scene, Press("batch-export-choose-0"));
+    assert!(cx.did_prompt_for_new_path());
+    let chosen = path.clone();
+    cx.simulate_new_path_selection(move |_| Some(chosen));
+    cx.run_until_parked();
+    // The path is inspected off the interface thread.
+    let line = format!("Output: {}", path.display());
+    poll_until(cx, &scene, |cx, scene| says(cx, scene, &line));
+    assert!(says(cx, &scene, &line), "nothing says \"{line}\"");
+    assert!(!path.exists(), "choosing an output wrote a file");
+    close(cx, scene);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// host_services, wish 77.
+#[gpui_kit::test]
+fn host_archive_review_captures_target_and_keeps_compact_footer_visible(cx: &mut TestAppContext) {
+    for size in BOTH {
+        let directory = scratch("host-support");
+        let path = directory.join("host-support.tar");
+        let scene = open_with_prompts(cx, "host-support", *size);
+        must(&mut *cx, &scene, Press("host-support-file"));
+        assert!(cx.did_prompt_for_new_path());
+        let chosen = path.clone();
+        cx.simulate_new_path_selection(move |_| Some(chosen));
+        cx.run_until_parked();
+        // The path is inspected off the interface thread.
+        poll_until(cx, &scene, |cx, scene| {
+            run_step(cx, scene, Enabled("host-support-review")).is_ok()
+        });
+        must(&mut *cx, &scene, Press("host-support-review"));
+        must(
+            &mut *cx,
+            &scene,
+            Inside(&["host-support-submit", "host-support-close"]),
+        );
+        must(&mut *cx, &scene, Inert("host-support-submit"));
+        assert_eq!(submitted(cx, &scene), 0);
+        assert!(!path.exists(), "the demo created {}", path.display());
+        close(cx, scene);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+}
+
+// -- a filter -----------------------------------------------------------------
+
+/// The rows a table of the tab shows.
+fn rows_of(cx: &mut TestAppContext, scene: &ShellWindow, table: &str) -> usize {
+    on(cx, scene, |window, _| {
+        window
+            .elements()
+            .into_iter()
+            .filter(|element| element.role() == Some(Role::Row) && common::under(element, table))
+            .count()
+    })
+}
+
+/// Presses the Kit's own clear button of a field of the tab.
+#[track_caller]
+fn clear_field(cx: &mut TestAppContext, scene: &ShellWindow, key: &str) {
+    on(cx, scene, |window, cx| {
+        let button = window
+            .elements()
+            .into_iter()
+            .find(|element| common::key_of(element) == Some("clean") && common::under(element, key))
+            .unwrap_or_else(|| panic!("`{key}` has no clear button"));
+        common::inside(window, &button).expect("the clear button is on screen");
+        common::click_at(window, cx, button.bounds().center(), MouseButton::Left);
+    });
+}
+
+/// events, wish 9.
+#[gpui_kit::test]
+fn clear_buttons_empty_the_activity_filters_and_restore_the_rows(cx: &mut TestAppContext) {
+    let scene = open_scene(cx, "activity", WIDE);
+    assert_eq!(rows_of(cx, &scene, "activity-table"), 2);
+    must(
+        &mut *cx,
+        &scene,
+        Type("activity-search", "Synthetic task 1"),
+    );
+    assert_eq!(rows_of(cx, &scene, "activity-table"), 1);
+    must(&mut *cx, &scene, Says("1 matching"));
+    must(&mut *cx, &scene, Type("activity-state-filter", "success"));
+    assert_eq!(rows_of(cx, &scene, "activity-table"), 0);
+    // Each button empties its own field only.
+    clear_field(cx, &scene, "activity-search");
+    let filters = model(cx, &scene, |m| {
+        (
+            m.areas.events.search.clone(),
+            m.areas.events.state_filter.clone(),
+        )
+    });
+    assert_eq!(filters, (String::new(), "success".to_owned()));
+    assert_eq!(rows_of(cx, &scene, "activity-table"), 1);
+    clear_field(cx, &scene, "activity-state-filter");
+    assert!(model(cx, &scene, |m| m
+        .areas
+        .events
+        .state_filter
+        .is_empty()));
+    assert_eq!(rows_of(cx, &scene, "activity-table"), 2);
+    must(&mut *cx, &scene, Says("2 matching entries"));
+    close(cx, scene);
 }
