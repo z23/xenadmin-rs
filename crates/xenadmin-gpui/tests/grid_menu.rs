@@ -7,6 +7,8 @@
 //!   row, also in a table whose rows are no tree objects (the snapshots):
 //!   there the menu is the table's own commands.
 
+#![cfg(feature = "scenes")]
+
 mod common;
 
 use common::Step::*;

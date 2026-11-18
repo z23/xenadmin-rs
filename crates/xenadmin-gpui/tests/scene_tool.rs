@@ -2,6 +2,8 @@
 //! dialog is brought into a frame of the real size before the capture.
 //! (Only the tree is made here: no graphics adapter is needed.)
 
+#![cfg(feature = "scenes")]
+
 use serde_json::Value;
 use xenadmin_gpui::scenes::{self, Options, Scroll};
 

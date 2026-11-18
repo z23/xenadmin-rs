@@ -128,7 +128,7 @@ pub fn geometry(plot: &Plot, width: f32, height: f32) -> Geometry {
                 .filter(|point| point[0].is_finite() && point[1].is_finite())
                 .map(|point| [x(point[0]), y(point[1])]);
             let first = points.next()?;
-            Some((first, points.last().unwrap_or(first)))
+            Some((first, points.next_back().unwrap_or(first)))
         })
         .collect();
     let mut gaps: Vec<(f32, f32, Vec<f32>)> = Vec::new();

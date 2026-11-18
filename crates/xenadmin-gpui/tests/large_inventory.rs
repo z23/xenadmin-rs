@@ -16,6 +16,8 @@
 //! that changed. The adapter's share (drawing the scene and reading it back)
 //! is timed apart, because the test window has no surface to present to.
 
+#![cfg(feature = "scenes")]
+
 mod common;
 
 use std::collections::HashSet;

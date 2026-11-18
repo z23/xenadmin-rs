@@ -4,6 +4,8 @@
 //! tab at the smallest window, with the filters open as well, and does not
 //! move when a row is selected.
 
+#![cfg(feature = "scenes")]
+
 mod common;
 
 use common::Step::*;
