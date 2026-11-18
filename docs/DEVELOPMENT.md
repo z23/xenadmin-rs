@@ -118,6 +118,28 @@ of the machine that made it: it is something to look at, and assertions belong o
 tree and in the tests. As with Rune, a headless render does not establish Wayland
 behaviour, the clipboard, keyboard input or a screen reader.
 
+### The console view
+
+The console is the one view that is not a description. The model
+(`crates/xenadmin-ui/src/areas/console/`) owns every console and describes its tab and
+its detached windows as ordinary blocks, one of which is the element `console-canvas`;
+`crates/xenadmin-gpui/src/console/` draws that element and performs the windows.
+`canvas.rs` uploads the session's frame once per frame generation (it looks after every
+poll of the model, since a new frame alone redraws nothing else), paints it letterboxed
+(Fit) or one to one inside a view that scrolls on both axes (Actual size), and sends the
+pointer and the keys to the guest through the functions of the model's `canvas` module.
+While the canvas has the keyboard every key is the guest's: no command shortcut, focus
+traversal or Escape of the application happens. `keys.rs` takes the keys by evdev code
+from a second keyboard listener on the Wayland display
+([decision 0006](decisions/0006-console-key-codes.md)); where there is no listener (X11,
+the headless test platform) it forwards GPUI's keystroke with a code looked up by the
+key's name on the US layout, which stays experimental. `windows.rs` opens one OS window
+per detached console and tells the model when one is gone. The scene `console-window`
+renders detached window 1 instead of the main window, and `console-frame` and
+`console-actual-size` carry a synthetic frame. `tests/console.rs` drives all of it on the test platform, which has no
+Wayland seat: the listener's part, the guest's cursor (not drawn) and the wheel's
+direction in a guest are not established by any test here.
+
 ### Tests
 
 ```sh

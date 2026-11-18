@@ -18,12 +18,15 @@
 //! - [`intents`]: the services the model asks the application for.
 //! - [`app`]: the application: command line, start, the main window, the
 //!   close path.
+//! - [`console`]: the console canvas, its keys and pointer, and the
+//!   detached console windows.
 //! - [`assets`]: the icons.
 //! - `scenes` (feature `scenes`): the scene tool.
 
 pub mod app;
 pub mod assets;
 pub mod bridge;
+pub mod console;
 pub mod intents;
 pub mod kit;
 pub mod render;

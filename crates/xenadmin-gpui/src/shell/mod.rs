@@ -126,6 +126,8 @@ impl ShellView {
         // What `Intent::ToggleFullscreen(WindowRef::Main)` toggles.
         hooks.main_window.set(Some(window.window_handle()));
         let ui = Ui::new(store.clone());
+        // The one bespoke element of a tab body so far: the console canvas.
+        crate::console::register(&ui);
         // Every table keeps the widths the user gave its columns, by the
         // table's key and the column's id.
         ui.persist_column_widths(ColumnWidths {

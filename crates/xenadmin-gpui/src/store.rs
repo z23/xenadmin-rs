@@ -87,6 +87,13 @@ enum IntentSink {
     Handler(IntentHandler),
 }
 
+/// Emitted by the store after every [`AppStore::poll`], also one that
+/// changed nothing the model shows.
+#[derive(Clone, Copy, Debug)]
+pub struct Polled;
+
+impl EventEmitter<Polled> for AppStore {}
+
 pub struct AppStore {
     model: Model,
     describe: Describe,
@@ -143,13 +150,35 @@ impl AppStore {
 
     /// Lets the model read its core handles. Called on every wake and timed
     /// tick. Notifies when something the model shows changed.
+    ///
+    /// [`Polled`] is emitted after every poll, whatever it returned: a new
+    /// console frame alone does not change what the model shows, and each
+    /// console canvas looks for one then.
     pub fn poll(&mut self, cx: &mut Context<Self>) {
         let clock = self.clock();
         let changed = self.model.poll(clock);
         self.after_update(cx);
+        cx.emit(Polled);
         if changed {
             cx.notify();
         }
+    }
+
+    /// Applies a handler to the model and does what follows every update
+    /// (the outbox, the tick), without drawing anything again. For what
+    /// changes nothing the descriptions show: the pointer and the keys of a
+    /// console, which arrive at the rate of the hardware.
+    pub fn run_quiet<R>(&mut self, act: impl FnOnce(&mut Model) -> R, cx: &mut Context<Self>) -> R {
+        let result = act(&mut self.model);
+        self.after_update(cx);
+        result
+    }
+
+    /// Takes out of the model something no description shows (a list of
+    /// requests the front end performs): nothing is drained, scheduled or
+    /// drawn, and the revision stays.
+    pub fn take<R>(&mut self, take: impl FnOnce(&mut Model) -> R) -> R {
+        take(&mut self.model)
     }
 
     /// Monotonic seconds, the clock `Model::poll` is given.

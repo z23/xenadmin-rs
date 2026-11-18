@@ -8,7 +8,9 @@
 //!
 //! A scene is rendered as the whole window: the shell (title and menu bar,
 //! toolbar, navigation pane, status bar) around the content of the scene.
-//! [`open`] opens the content alone, for the renderer tests.
+//! [`open`] opens the content alone, for the renderer tests. The scene
+//! `console-window` is the exception: its artifact is detached console
+//! window 1, so that window is rendered ([`open_console_window`]).
 //!
 //! The window is a test window: the Kit's deterministic platform with the
 //! machine's real text system and, for a PNG, an offscreen renderer. What a
@@ -23,10 +25,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use xenadmin_ui::areas::console::view as console_view;
+use xenadmin_ui::intent::ConsoleWindowId;
 use xenadmin_ui::surface::{self, Node};
 use xenadmin_ui::{Model, scene};
 
 use crate::assets::AppAssets;
+use crate::console::windows::{self as console_windows, ConsoleWindowView};
 use crate::intents::Hooks;
 use crate::kit::testing::{
     ElementSnapshot, HeadlessAppContext, PlatformTextSystem, TestQueryExt, TestWindowExt,
@@ -251,6 +256,59 @@ pub fn open_shell_with(
     })
 }
 
+/// The scene whose artifact is a detached console window and not the main
+/// window: the scene tool renders window 1 for it.
+pub const CONSOLE_WINDOW_SCENE: &str = "console-window";
+
+/// What the window of a detached console is made of in a scene.
+pub struct ConsoleSceneWindow {
+    pub window: AnyWindowHandle,
+    pub view: Entity<ConsoleWindowView>,
+    pub store: Entity<AppStore>,
+    pub id: ConsoleWindowId,
+}
+
+/// Opens the detached console window `id` of a scene as a window of its
+/// own, as the application does for the model's Open request. The scene's
+/// own requests stay recorded in the store: no OS window is opened for
+/// them.
+pub fn open_console_window(
+    cx: &mut App,
+    setup: Setup,
+    options: &Options,
+    id: ConsoleWindowId,
+) -> Result<ConsoleSceneWindow, String> {
+    let (store, _) = prepare(cx, setup, options);
+    let (window, view) = gpui_kit::open_window(window_options(options), cx, {
+        let store = store.clone();
+        move |window, cx| cx.new(|cx| ConsoleWindowView::new(store, id, |_, _| {}, window, cx))
+    })
+    .map_err(|error| format!("the console window did not open: {error}"))?;
+    Ok(ConsoleSceneWindow {
+        window,
+        view,
+        store,
+        id,
+    })
+}
+
+/// The element tree of a console window: [`tree_json`] with the window's
+/// description in the place of the tab body.
+pub fn console_window_tree_json(
+    window: &Window,
+    cx: &App,
+    store: &Entity<AppStore>,
+    id: ConsoleWindowId,
+) -> Value {
+    let blocks = console_view::window(store.read(cx).model(), id).blocks;
+    let mut scopes = BTreeMap::new();
+    scopes.insert(
+        console_windows::BASE.to_owned(),
+        surface::flatten_blocks(console_windows::BASE, &blocks),
+    );
+    tree_json_scoped(window, cx, store, &scopes, console_windows::BASE)
+}
+
 /// A rendered scene.
 pub struct Output {
     /// The frame, when a capture was asked for.
@@ -294,13 +352,26 @@ pub fn render_setup(
     } else {
         HeadlessAppContext::with_platform(text_system(), Arc::new(AppAssets), || Ok(None))
     };
-    let scene = cx.update(|cx| open_shell(cx, setup, options))?;
+    // The artifact of the console window scene is that window. The views
+    // are kept until the frame is captured.
+    let detached = (name == CONSOLE_WINDOW_SCENE).then_some(ConsoleWindowId(1));
+    let (window, store, _views) = cx.update(|cx| match detached {
+        Some(id) => open_console_window(cx, setup, options, id)
+            .map(|scene| (scene.window, scene.store, (None, Some(scene.view)))),
+        None => open_shell(cx, setup, options).map(|scene| {
+            (
+                scene.window,
+                scene.store,
+                (Some((scene.view, scene.lab)), None),
+            )
+        }),
+    })?;
     cx.run_until_parked();
     // The dialog host presents the surfaces after the first update, and
     // widgets created in a frame are corrected in the next: draw until the
     // frame is settled.
     for _ in 0..3 {
-        cx.update_window(scene.window, |_, window, cx| {
+        cx.update_window(window, |_, window, cx| {
             if options.scale == 1. {
                 window.set_scale_factor(1.);
             }
@@ -310,8 +381,11 @@ pub fn render_setup(
         cx.run_until_parked();
     }
     let tree = cx
-        .update_window(scene.window, |_, window, cx| {
-            let mut tree = tree_json(window, cx, &scene.store);
+        .update_window(window, |_, window, cx| {
+            let mut tree = match detached {
+                Some(id) => console_window_tree_json(window, cx, &store, id),
+                None => tree_json(window, cx, &store),
+            };
             tree["scene"] = json!(name);
             tree["theme"] = json!(if options.mode.is_dark() {
                 "dark"
@@ -324,7 +398,7 @@ pub fn render_setup(
         .map_err(|error| format!("the scene did not draw: {error}"))?;
     let image = if capture {
         let full = cx
-            .capture_screenshot(scene.window)
+            .capture_screenshot(window)
             .map_err(|error| format!("the frame was not captured: {error}"))?;
         Some(if options.scale == 1. {
             // The offscreen target has the size of the 2x test window; the
@@ -457,8 +531,21 @@ fn bounds_json(bounds: Bounds<Pixels>) -> Value {
 /// `missing` lists the nodes that must be in the frame and are not.
 /// `model` is the model's own account of the scene.
 pub fn tree_json(window: &Window, cx: &App, store: &Entity<AppStore>) -> Value {
+    let scopes = described(store.read(cx));
+    tree_json_scoped(window, cx, store, &scopes, TAB_BASE)
+}
+
+/// [`tree_json`] of a window that shows other descriptions than the main
+/// window's: `scopes` are the nodes of each, by scope, and an element that
+/// is in none of them by its id path belongs to `fallback`.
+pub fn tree_json_scoped(
+    window: &Window,
+    cx: &App,
+    store: &Entity<AppStore>,
+    scopes: &BTreeMap<String, Vec<Node>>,
+    fallback: &str,
+) -> Value {
     let store = store.read(cx);
-    let scopes = described(store);
     let mut found: BTreeSet<(String, String)> = BTreeSet::new();
     let elements: Vec<Value> = window
         .elements()
@@ -470,9 +557,9 @@ pub fn tree_json(window: &Window, cx: &App, store: &Entity<AppStore>) -> Value {
             let scope = path
                 .iter()
                 .rev()
-                .find(|segment| segment.as_str() != TAB_BASE && scopes.contains_key(*segment))
+                .find(|segment| segment.as_str() != fallback && scopes.contains_key(*segment))
                 .cloned()
-                .unwrap_or_else(|| TAB_BASE.to_owned());
+                .unwrap_or_else(|| fallback.to_owned());
             let node = scopes.get(&scope).and_then(|nodes| {
                 nodes
                     .iter()
@@ -501,7 +588,7 @@ pub fn tree_json(window: &Window, cx: &App, store: &Entity<AppStore>) -> Value {
         })
         .collect();
     let mut missing = Vec::new();
-    for (scope, nodes) in &scopes {
+    for (scope, nodes) in scopes {
         let required: BTreeSet<String> = required_keys(nodes).into_iter().collect();
         for node in nodes {
             let needed = node.key.as_ref().is_some_and(|key| required.contains(key));
