@@ -167,6 +167,22 @@ pub struct Status {
     pub error: Option<String>,
 }
 
+/// The table whose column widths the preferences keep by column id alone,
+/// as the Rune inventory grid stored them: the result grid of the Search
+/// tab, which took its place.
+pub const INVENTORY_TABLE: &str = "search-results";
+
+/// The id a column width is kept under in `Preferences::columns`: the
+/// column id for [`INVENTORY_TABLE`] (the ids a Rune preferences file
+/// has), `<table>/<column>` for every other table.
+fn column_width_id(table: &str, column: &str) -> String {
+    if table == INVENTORY_TABLE {
+        column.to_owned()
+    } else {
+        format!("{table}/{column}")
+    }
+}
+
 impl Model {
     // -- Constructors -------------------------------------------------------
 
@@ -501,26 +517,31 @@ impl Model {
         }
     }
 
-    /// The front end reports the width the user gave a column of the
-    /// inventory grid, by column id. `None`: the column is back at its
-    /// declared width and is forgotten.
-    pub fn set_column_width(&mut self, column: &str, width: Option<f32>) {
+    /// The front end reports the width the user gave a column of a table,
+    /// by the table's key and the column's id. `None`: the column is back
+    /// at its declared width and is forgotten. Widths are kept in the
+    /// preferences and written once they rest.
+    pub fn set_column_width(&mut self, table: &str, column: &str, width: Option<f32>) {
+        let id = column_width_id(table, column);
         let changed = match width {
             Some(width) if width.is_finite() && (32.0..=2000.0).contains(&width) => {
-                self.preferences.columns.insert(column.to_owned(), width) != Some(width)
+                self.preferences.columns.insert(id, width) != Some(width)
             }
             Some(_) => false,
             // A double press on the divider puts a column back to its declared width.
-            None => self.preferences.columns.remove(column).is_some(),
+            None => self.preferences.columns.remove(&id).is_some(),
         };
         if changed {
             self.layout_changed();
         }
     }
 
-    /// The width the user gave a column, when they gave one.
-    pub fn column_width(&self, column: &str) -> Option<f32> {
-        self.preferences.columns.get(column).copied()
+    /// The width the user gave a column of a table, when they gave one.
+    pub fn column_width(&self, table: &str, column: &str) -> Option<f32> {
+        self.preferences
+            .columns
+            .get(&column_width_id(table, column))
+            .copied()
     }
 
     fn layout_changed(&mut self) {
@@ -1618,11 +1639,23 @@ impl Model {
 
     /// Adopts a new snapshot of the scope session: `snapshot` and
     /// `inventory` change together.
-    fn poll_scope_session(&mut self) -> bool {
+    ///
+    /// The snapshot is the one `session::refresh` stored for the session in
+    /// `workspace.seen` earlier in the same poll, so the Home tab and the
+    /// tree (which read `seen`) and everything that reads `snapshot` show
+    /// one state. A second `Connection::latest` here could return a newer
+    /// one. Only a connection the workspace does not hold (a test that sets
+    /// `connection` itself) is asked directly.
+    pub(crate) fn poll_scope_session(&mut self) -> bool {
         let Some(connection) = &self.connection else {
             return false;
         };
-        let snapshot = connection.latest();
+        let stored = self
+            .workspace
+            .selected
+            .filter(|id| self.workspace.active.contains_key(id))
+            .and_then(|id| self.workspace.seen.get(&id).cloned());
+        let snapshot = stored.unwrap_or_else(|| connection.latest());
         if self
             .snapshot
             .as_ref()

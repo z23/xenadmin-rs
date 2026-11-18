@@ -10,9 +10,11 @@
 
 pub mod areas;
 pub mod command;
+pub mod command_list;
 pub mod demo;
 mod demo_details;
 pub mod diagnostics;
+pub mod files;
 pub mod format;
 pub mod harness;
 pub mod intent;
@@ -29,6 +31,8 @@ pub mod selection;
 pub mod session;
 pub mod surface;
 pub mod tabs;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 mod tree;
 
 pub use areas::{AreaSpec, Areas};
@@ -81,12 +85,12 @@ pub mod prelude {
     pub use crate::secret::SecretText;
     pub use crate::surface::{
         Act, ActRows, ActSort, ActText, Align, Block, Button, ButtonStyle, Choice, ChoiceStyle,
-        Column, Control, Custom, Field, Group, Notice, NoticeKind, OptionItem, Outcome,
-        OutcomeState, Property, Review, Row, Surface, SurfaceKind, SurfaceSize, Table,
+        Column, Control, Custom, Field, Group, Image, ImageData, Notice, NoticeKind, OptionItem,
+        Outcome, OutcomeState, Property, Review, Row, Surface, SurfaceKind, SurfaceSize, Table,
         TableSelection, TableSort, Text, Tone, act, act_text, actions, alert, button, caption,
-        checkbox, choice, column, columns, custom, divider, group, heading, input, no_op, notice,
-        option, outcome, properties, property, review, row, secret_input, select, table, text,
-        textarea,
+        checkbox, choice, column, columns, custom, divider, group, heading, image, input, no_op,
+        notice, option, outcome, properties, property, review, row, secret_input, select, table,
+        text, textarea,
     };
     pub use crate::tabs::{TabBody, TabId};
 }

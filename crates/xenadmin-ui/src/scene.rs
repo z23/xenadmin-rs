@@ -15,6 +15,7 @@ use serde_json::json;
 
 use crate::command;
 use crate::model::Model;
+use crate::selection::MenuOrigin;
 use crate::surface;
 
 /// One scene.
@@ -227,8 +228,9 @@ pub fn unported() -> Vec<&'static str> {
 /// The element tree of a model as JSON: what the scene tool writes next to
 /// the PNG. It holds the window title, the navigation view with its rows,
 /// the selection, the object header, the tabs, the resolved menus, toolbar
-/// and local action row, the flattened tab body, the status bar and every
-/// open surface, back to front.
+/// and local action row, the flattened tab body, the open context menu
+/// (`context_menu`, `null` when none is open), the status bar and every open
+/// surface, back to front.
 pub fn tree(m: &Model) -> serde_json::Value {
     let tab = m.active_tab();
     let body = m
@@ -249,6 +251,23 @@ pub fn tree(m: &Model) -> serde_json::Value {
         .collect();
     let rows = crate::nav::rows(m);
     let selected = crate::nav::selected_ids(m, &rows);
+    // The open context menu: where it was opened, on which row, what its
+    // commands act on, whether it still stands, and its resolved items in
+    // groups, each with the reason when it is disabled. `null` when none
+    // is open.
+    let context_menu = m.selection.menu.as_ref().map(|menu| {
+        json!({
+            "origin": match menu.origin {
+                MenuOrigin::Tree => "tree",
+                MenuOrigin::Grid => "grid",
+            },
+            "object": menu.object,
+            "name": m.name_of(&menu.object),
+            "target": menu.target.objects,
+            "valid": m.context_menu_valid(),
+            "items": m.context_menu(),
+        })
+    });
     json!({
         "title": m.window_title(),
         "demo": m.demo,
@@ -271,6 +290,7 @@ pub fn tree(m: &Model) -> serde_json::Value {
         "toolbar": command::toolbar(m),
         "local": command::local_row(m, tab),
         "tab": body,
+        "context_menu": context_menu,
         "surfaces": surfaces,
     })
 }

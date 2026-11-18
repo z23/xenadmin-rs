@@ -1541,30 +1541,9 @@ pub fn trust_draft_proxy_matches(m: &Model, profile: &ConnectionProfile) -> bool
 pub(crate) mod tests {
     use super::*;
 
-    /// A model that owns a private, empty state directory: the Rune
-    /// `profiles_view::tests::Fixture`. Tests of the `connections` area
-    /// use it too.
-    pub(crate) struct Fixture {
-        pub(crate) model: Model,
-        pub(crate) directory: std::path::PathBuf,
-    }
-    impl Fixture {
-        pub(crate) fn new() -> Self {
-            let directory =
-                std::env::temp_dir().join(format!("xenadmin-profiles-ui-{}", uuid::Uuid::new_v4()));
-            let mut model = Model::fixture();
-            model.workspace = Workspace::load(None, false);
-            model.workspace.writable = true;
-            model.workspace.store = Ok(ProfileStore::open(directory.clone()).unwrap());
-            begin_new(&mut model);
-            Self { model, directory }
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.directory);
-        }
-    }
+    /// The model with a private, empty state directory; shared with every
+    /// area through `crate::testing`.
+    pub(crate) use crate::testing::Fixture;
 
     pub(crate) fn save_profile(
         m: &mut Model,

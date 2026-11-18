@@ -198,6 +198,45 @@ mod tests {
     use crate::scene::apply;
     use crate::tabs::TabId;
 
+    // Every demo server has the records its changes need, so the server
+    // commands are live in the demo: none says that host data is missing.
+    #[test]
+    fn every_demo_host_has_its_details_and_its_commands_are_live() {
+        use crate::command::{CommandId, Eligibility};
+        use crate::object::{ObjectRef, Target};
+        for (hosts, guests) in [(3, 48), (16, 200)] {
+            let m = Model::demo(hosts, guests);
+            let inventory = m.inventory.clone().expect("the demo inventory");
+            assert_eq!(inventory.details.hosts.len(), hosts);
+            assert_eq!(inventory.details.host_metrics.len(), hosts);
+            for (index, id) in inventory.hosts.keys().enumerate() {
+                let details = &inventory.details.hosts[id];
+                assert_eq!(
+                    details.metrics,
+                    Some(crate::demo_details::host_metrics_id(index))
+                );
+                let control = crate::demo_details::control_domain_id(index);
+                assert_eq!(details.control_domain, Some(control));
+                assert!(inventory.details.vms.contains_key(&control));
+                assert!(
+                    !inventory.vms.contains_key(&control),
+                    "a control domain is not a guest of the inventory"
+                );
+                let target = Target::one(ObjectRef::host(inventory.pool_id, *id));
+                for command in ["server.maintenance", "server.control-domain-memory"] {
+                    let eligibility = m.eligibility(CommandId(command), &target);
+                    assert_ne!(eligibility, Eligibility::Hidden, "{command}");
+                    assert!(
+                        !eligibility
+                            .reason()
+                            .is_some_and(|reason| reason.contains("host data is unavailable")),
+                        "{command} on host {index}: {eligibility:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn the_kernel_scenes_set_up_the_demo_inventory() {
         let mut m = Model::fixture();

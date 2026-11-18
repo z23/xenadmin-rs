@@ -120,11 +120,18 @@ impl Harness {
         let tab = self.model.active_tab();
         let mut elements = Vec::new();
         let toolbar = command::toolbar(&self.model);
+        let local = command::local_row(&self.model, tab);
+        // A command that is in the toolbar and in the local row is two
+        // buttons: each is keyed by its place, so no key occurs twice.
+        let twice = |id: CommandId| {
+            toolbar.iter().flatten().any(|item| item.id == id)
+                && local.iter().any(|item| item.id == id)
+        };
         for item in toolbar.iter().flatten() {
-            elements.push(command_element("toolbar", item));
+            elements.push(command_element("toolbar", item, twice(item.id)));
         }
-        for item in &command::local_row(&self.model, tab) {
-            elements.push(command_element("local", item));
+        for item in &local {
+            elements.push(command_element("local", item, twice(item.id)));
         }
         if let Some(body) = self.model.tab_body(tab) {
             elements.extend(surface::block_elements("tab", &body.blocks()));
@@ -146,11 +153,11 @@ impl Harness {
         self.reachable().into_iter().map(|e| e.node).collect()
     }
 
-    /// The node with this key among [`Harness::nodes`].
+    /// The node with this key among [`Harness::nodes`]. A command that is
+    /// in the toolbar and in the local row is found by its id too: that is
+    /// its button of the local row (`toolbar:<id>` is the other one).
     pub fn find(&self, key: &str) -> Option<Node> {
-        self.nodes()
-            .into_iter()
-            .find(|node| node.key.as_deref() == Some(key))
+        self.element(key).ok().map(|element| element.node)
     }
 
     /// The node with this key. Panics when it is not there.
@@ -198,12 +205,55 @@ impl Harness {
         );
     }
 
+    /// One line per reachable node, in reading order, to look at a surface
+    /// or a tab while writing a test (`println!("{}", h.dump())`): the role,
+    /// then the key (the path where the node has none), and whichever of
+    /// label, value, text, checked and the reason it is disabled the node
+    /// has. The first line says what is reachable.
+    pub fn dump(&self) -> String {
+        let mut out = format!("{}:\n", self.place());
+        for node in self.nodes() {
+            out.push_str(node.role);
+            match &node.key {
+                Some(key) => out.push_str(&format!(" key={key}")),
+                None => out.push_str(&format!(" path={}", node.path)),
+            }
+            for (name, value) in [
+                ("label", &node.label),
+                ("value", &node.value),
+                ("text", &node.text),
+            ] {
+                if let Some(value) = value {
+                    out.push_str(&format!(" {name}={value:?}"));
+                }
+            }
+            if let Some(checked) = node.checked {
+                out.push_str(&format!(" checked={checked}"));
+            }
+            if let Some(reason) = &node.disabled {
+                out.push_str(&format!(" disabled={reason:?}"));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     fn element(&self, key: &str) -> Result<Element, String> {
         let elements = self.reachable();
-        match elements
+        // A command shown twice is keyed by place (`local:<id>`,
+        // `toolbar:<id>`); its bare id finds the one of the local row.
+        let by_place = [format!("local:{key}"), format!("toolbar:{key}")];
+        let found = elements
             .iter()
             .find(|element| element.node.key.as_deref() == Some(key))
-        {
+            .or_else(|| {
+                by_place.iter().find_map(|placed| {
+                    elements
+                        .iter()
+                        .find(|element| element.node.key.as_deref() == Some(placed))
+                })
+            });
+        match found {
             Some(element) => Ok(element.clone()),
             None => {
                 let keys: Vec<_> = elements
@@ -554,6 +604,61 @@ impl Harness {
         }
     }
 
+    /// A secondary press (or the Menu key) on a row of the table `key`, as
+    /// the front end does it: a row outside the selection is selected
+    /// first; then a row that stands for an object ([`surface::Row::object`])
+    /// opens the kernel's context menu of that object, which stays open
+    /// (choose with [`Harness::choose`]), and any other row gives the
+    /// table's `row_menu` resolved on the model's target. Returns the
+    /// items, flattened; hidden commands are omitted.
+    #[track_caller]
+    pub fn open_row_menu(&mut self, key: &str, row: &str) -> Vec<MenuItem> {
+        let (object, selected) = match (
+            self.row(key, row),
+            self.node(&surface::Table::row_key(key, row)),
+        ) {
+            (Handle::Row { object, .. }, node) => (object, node.checked == Some(true)),
+            _ => unreachable!("`row` returns a row"),
+        };
+        if !selected {
+            match self.row(key, row) {
+                Handle::Row {
+                    multi: false,
+                    on_select: Some(on_select),
+                    ..
+                } => on_select(&mut self.model, row),
+                Handle::Row {
+                    multi: true,
+                    on_select_many: Some(on_select_many),
+                    ..
+                } => on_select_many(&mut self.model, &[row.to_owned()]),
+                _ => {}
+            }
+        }
+        match object {
+            Some(object) => self.open_menu(object, MenuOrigin::Grid),
+            None => self.row_menu(key),
+        }
+    }
+
+    /// Escape while the table `key` has the keyboard. With a surface open
+    /// it closes the surface in front; in a tab it runs the table's
+    /// `on_clear`, and does nothing when the table has none. Panics when
+    /// the table is missing.
+    #[track_caller]
+    pub fn escape_in_table(&mut self, key: &str) {
+        match self.enabled(key).handle {
+            Some(Handle::Table { on_clear, .. }) => {
+                if let Some(surface) = self.model.front_surface() {
+                    (surface.on_close)(&mut self.model);
+                } else if let Some(on_clear) = on_clear {
+                    on_clear(&mut self.model);
+                }
+            }
+            _ => panic!("`{key}` is not a table"),
+        }
+    }
+
     /// The context menu of a target, flattened.
     pub fn context_menu(&self, target: &Target) -> Vec<MenuItem> {
         command::context_menu(&self.model, target)
@@ -680,10 +785,17 @@ impl Harness {
     }
 }
 
-fn command_element(base: &str, item: &MenuItem) -> Element {
+/// The button of a command in the toolbar (`base` "toolbar") or the local
+/// row ("local"). Its key is the command id, or `<base>:<id>` when the
+/// command is shown in both places.
+fn command_element(base: &str, item: &MenuItem, by_place: bool) -> Element {
+    let key = match by_place {
+        true => format!("{base}:{}", item.id),
+        false => item.id.0.to_owned(),
+    };
     let node = Node {
         path: format!("{base}/{}", item.id),
-        key: Some(item.id.0.to_owned()),
+        key: Some(key),
         role: "button",
         label: Some(item.label.clone()),
         disabled: item.disabled.clone(),
@@ -722,6 +834,9 @@ pub(crate) mod probe {
         pub submits: u32,
         pub polls: u32,
         pub tool_runs: u32,
+        /// Shows `probe.both`, a command in the toolbar and in the local row.
+        pub both: bool,
+        pub both_runs: u32,
         /// The scope and session hooks the kernel called, in order.
         pub hooks: Vec<&'static str>,
     }
@@ -758,6 +873,14 @@ pub(crate) mod probe {
                 .toolbar(ToolbarSlot::new(ToolbarGroup::New, 200))
                 .eligibility(when_active)
                 .invoke(|m, _| m.areas.probe.tool_runs += 1),
+            CommandSpec::new("probe.both", "Probe Both", "probe")
+                .toolbar(ToolbarSlot::new(ToolbarGroup::New, 210))
+                .local(TabId::Home, 20)
+                .eligibility(|m, _| match m.areas.probe.both {
+                    true => Eligibility::Enabled,
+                    false => Eligibility::Hidden,
+                })
+                .invoke(|m, _| m.areas.probe.both_runs += 1),
         ]
     }
 
@@ -1180,6 +1303,63 @@ mod tests {
         h.dismiss();
         h.click("probe-tab-button");
         assert!(h.model.areas.probe.open);
+    }
+
+    #[test]
+    fn a_command_in_the_toolbar_and_the_local_row_is_keyed_by_place() {
+        let mut h = Harness::new();
+        h.model.areas.probe.active = true;
+        h.model.areas.probe.both = true;
+        h.assert_unique_keys();
+        let keys = h.keys();
+        assert!(keys.contains(&"toolbar:probe.both".to_owned()), "{keys:?}");
+        assert!(keys.contains(&"local:probe.both".to_owned()), "{keys:?}");
+        assert!(!keys.contains(&"probe.both".to_owned()));
+        // A command shown once keeps its id as the key.
+        assert!(keys.contains(&"probe.tool".to_owned()));
+        // The id alone is the button of the local row.
+        assert_eq!(h.node("probe.both").path, "local/probe.both");
+        assert_eq!(h.node("toolbar:probe.both").path, "toolbar/probe.both");
+        h.click("probe.both");
+        h.click("toolbar:probe.both");
+        h.click("local:probe.both");
+        assert_eq!(h.model.areas.probe.both_runs, 3);
+    }
+
+    #[test]
+    fn dump_has_one_line_for_every_reachable_node() {
+        let mut h = open_probe();
+        h.type_text("probe-name", "busy");
+        let dump = h.dump();
+        let lines: Vec<&str> = dump.lines().collect();
+        assert_eq!(lines[0], "the surface `probe`:");
+        assert_eq!(lines.len(), h.nodes().len() + 1);
+        let line = |key: &str| {
+            let key = format!(" key={key} ");
+            *lines
+                .iter()
+                .find(|line| line.contains(&key))
+                .unwrap_or_else(|| panic!("no line for{key}in\n{dump}"))
+        };
+        assert!(
+            line("probe-name").starts_with("textbox key=probe-name label=\"Name\" value=\"busy\"")
+        );
+        let disabled = h
+            .nodes()
+            .into_iter()
+            .find(|node| node.key.is_some() && node.disabled.is_some())
+            .expect("the probe has a disabled control");
+        let key = disabled.key.clone().unwrap();
+        assert!(
+            line(&key).ends_with(&format!(" disabled={:?}", disabled.disabled.unwrap())),
+            "{}",
+            line(&key)
+        );
+        // A node without a key is named by its path.
+        assert!(lines.iter().any(|line| line.contains(" path=probe/")));
+        // With no surface open the dump is of the tab.
+        let h = Harness::new();
+        assert!(h.dump().starts_with("the Home tab:\n"));
     }
 
     #[test]

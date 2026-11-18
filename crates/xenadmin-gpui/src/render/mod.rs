@@ -55,6 +55,10 @@ pub struct ColumnWidths {
     pub set: SetColumnWidth,
 }
 
+/// Told where the context menu the renderer is about to ask the model for
+/// was asked: the position of the pointer, or of the row for the keyboard.
+pub type MenuRequest = Rc<dyn Fn(Point<Pixels>)>;
+
 /// What every render function needs. Cheap to clone.
 #[derive(Clone)]
 pub struct Ui {
@@ -62,6 +66,7 @@ pub struct Ui {
     pub(crate) cache: Rc<RefCell<WidgetCache>>,
     customs: Rc<RefCell<HashMap<String, CustomRender>>>,
     column_widths: Rc<RefCell<Option<ColumnWidths>>>,
+    menu_request: Rc<RefCell<Option<MenuRequest>>>,
 }
 
 impl Ui {
@@ -71,6 +76,7 @@ impl Ui {
             cache: Rc::new(RefCell::new(WidgetCache::default())),
             customs: Rc::new(RefCell::new(HashMap::new())),
             column_widths: Rc::new(RefCell::new(None)),
+            menu_request: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -101,6 +107,17 @@ impl Ui {
 
     pub(crate) fn column_widths(&self) -> Option<ColumnWidths> {
         self.column_widths.borrow().clone()
+    }
+
+    /// Whoever presents the context menu the model has open (the shell)
+    /// asks to be told where a row of a table asked for it. A table whose
+    /// rows are objects calls it just before `Model::open_context_menu`.
+    pub fn on_menu_request(&self, request: impl Fn(Point<Pixels>) + 'static) {
+        *self.menu_request.borrow_mut() = Some(Rc::new(request));
+    }
+
+    pub(crate) fn menu_request(&self) -> Option<MenuRequest> {
+        self.menu_request.borrow().clone()
     }
 
     /// The focus handle of a pressable element the renderer draws itself,

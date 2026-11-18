@@ -8,13 +8,13 @@
 //! changed meanwhile. The report is encoded before the prompt opens, so the
 //! file holds the results as they were when the button was pressed.
 
-use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::mpsc;
 
 use xenadmin_core::SearchCatalog;
 
 use super::{Dialog, Import, report};
+use crate::files::{ReadError, read_regular, write_private};
 use crate::prelude::*;
 
 /// Why a file command or button is disabled while a job runs.
@@ -150,99 +150,20 @@ pub fn export_results(m: &mut Model) {
     );
 }
 
-/// The identity of a file: device and inode.
-fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
-    use std::os::unix::fs::MetadataExt;
-    (metadata.dev(), metadata.ino())
-}
-
-/// `O_NOFOLLOW | O_NONBLOCK` where this crate knows their values. The crate
-/// has no `libc`; the check of the file's identity in [`read`] holds on
-/// every target, and these flags add what the Rune reader had on the
-/// targets the client is built for.
-fn no_follow_flags() -> i32 {
-    const O_NONBLOCK: i32 = 0o4000;
-    if cfg!(all(
-        target_os = "linux",
-        any(
-            target_arch = "x86_64",
-            target_arch = "x86",
-            target_arch = "riscv64"
-        )
-    )) {
-        0o400000 | O_NONBLOCK
-    } else if cfg!(all(
-        target_os = "linux",
-        any(target_arch = "aarch64", target_arch = "arm")
-    )) {
-        0o100000 | O_NONBLOCK
-    } else {
-        0
-    }
-}
-
 /// Reads saved-search definitions: a regular file only, never through a
-/// symbolic link, at most `SearchCatalog::MAX_BYTES`.
+/// symbolic link, at most `SearchCatalog::MAX_BYTES`
+/// ([`crate::files::read_regular`]), in the words of the Rune reader.
 pub(super) fn read(path: &Path) -> Result<SearchCatalog, String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    // The path itself must name a regular file: not a link, a directory or
-    // a device. The opened file must then be that same file.
-    let named = path
-        .symlink_metadata()
-        .map_err(|_| "Cannot open search file")?;
-    if !named.is_file() {
-        return Err("Choose a regular JSON file".into());
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(no_follow_flags())
-        .open(path)
-        .map_err(|_| "Cannot open search file")?;
-    let opened = file.metadata().map_err(|_| "Cannot inspect search file")?;
-    if !opened.is_file() || identity(&opened) != identity(&named) {
-        return Err("Choose a regular JSON file".into());
-    }
-    let mut bytes = Vec::new();
-    file.take((SearchCatalog::MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Cannot read search file")?;
+    let bytes =
+        read_regular(path, SearchCatalog::MAX_BYTES).map_err(|error| match error {
+            ReadError::NotRegular => "Choose a regular JSON file",
+            ReadError::Open => "Cannot open search file",
+            ReadError::Inspect => "Cannot inspect search file",
+            ReadError::Read => "Cannot read search file",
+            // What `SearchCatalog::decode` says of more bytes than it takes.
+            ReadError::TooLarge => "Saved searches exceed 1 MiB",
+        })?;
     SearchCatalog::decode(&bytes)
-}
-
-/// Writes an export: a private temporary file (mode 0600) renamed over the
-/// destination. The Rune `activity_export::write_private`, which the search
-/// files shared.
-pub(super) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    if bytes.len() > 32 * 1024 * 1024 {
-        return Err("Export exceeds 32 MiB; narrow the selection.".into());
-    }
-    if path.symlink_metadata().is_ok_and(|m| !m.is_file()) {
-        return Err("Choose a regular file destination.".into());
-    }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let temp = parent.join(format!(".xenadmin-search-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
-        file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, path).map_err(|e| e.to_string())?;
-        std::fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
 }
 
 fn worker(m: &mut Model, work: impl FnOnce() -> Result<Outcome, String> + Send + 'static) {
@@ -329,58 +250,35 @@ pub fn poll(m: &mut Model) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
+    use crate::testing::TempDir;
 
-    /// A private directory under the system's temporary directory, removed
-    /// on drop (the crate has no `tempfile`).
-    pub(crate) struct Scratch(pub std::path::PathBuf);
-    impl Scratch {
-        pub(crate) fn new() -> Self {
-            let path =
-                std::env::temp_dir().join(format!("xenadmin-search-ui-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-        pub(crate) fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    // Rune: search_files.rs, moved.
+    // Rune: search_files.rs, moved. What is about the file alone is tested
+    // in `crate::files`; this is the reader's own wording and its limit.
     #[test]
     fn local_search_reader_is_bounded_and_refuses_symlinks_and_special_files() {
-        let d = Scratch::new();
+        let d = TempDir::new("search");
         let file = d.path().join("scope.json");
         std::fs::write(&file, SearchCatalog::default().encode().unwrap()).unwrap();
         assert!(read(&file).is_ok());
         let link = d.path().join("link.json");
         std::os::unix::fs::symlink(&file, &link).unwrap();
-        assert!(read(&link).is_err());
-        assert!(read(d.path()).is_err());
-        assert!(read(Path::new("/dev/null")).is_err());
-        std::fs::write(&file, vec![b' '; SearchCatalog::MAX_BYTES + 1]).unwrap();
-        assert!(read(&file).is_err());
-    }
-
-    #[test]
-    fn exports_are_private_files_and_refuse_a_destination_that_is_not_a_regular_file() {
-        use std::os::unix::fs::PermissionsExt;
-        let d = Scratch::new();
-        let file = d.path().join("out.json");
-        write_private(&file, b"{}").unwrap();
-        assert_eq!(std::fs::read(&file).unwrap(), b"{}");
+        assert_eq!(read(&link).unwrap_err(), "Choose a regular JSON file");
+        assert_eq!(read(d.path()).unwrap_err(), "Choose a regular JSON file");
         assert_eq!(
-            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-            0o600
+            read(Path::new("/dev/null")).unwrap_err(),
+            "Choose a regular JSON file"
         );
-        assert!(write_private(d.path(), b"{}").is_err());
-        // Nothing temporary is left behind.
-        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+        assert_eq!(
+            read(&d.path().join("missing.json")).unwrap_err(),
+            "Cannot open search file"
+        );
+        std::fs::write(&file, vec![b' '; SearchCatalog::MAX_BYTES + 1]).unwrap();
+        assert_eq!(read(&file).unwrap_err(), "Saved searches exceed 1 MiB");
+        assert_eq!(
+            SearchCatalog::decode(&vec![b' '; SearchCatalog::MAX_BYTES + 1]).unwrap_err(),
+            "Saved searches exceed 1 MiB"
+        );
     }
 }

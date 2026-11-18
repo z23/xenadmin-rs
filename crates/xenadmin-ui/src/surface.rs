@@ -18,11 +18,13 @@
 
 use std::fmt;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use serde::Serialize;
 
 use crate::command::CommandId;
 use crate::model::Model;
+use crate::object::ObjectRef;
 use crate::secret::SecretText;
 
 /// A handler without an argument: a button press, a checkbox toggle, close.
@@ -254,6 +256,8 @@ pub enum Block {
     /// A bespoke element the front end provides.
     Custom(Custom),
     Divider,
+    /// A picture the model holds.
+    Image(Image),
 }
 
 /// The colour role of a text, a property value or a table row.
@@ -630,9 +634,23 @@ pub struct Row {
     pub id: String,
     pub cells: Vec<String>,
     pub tone: Tone,
+    /// The object the row stands for, when it stands for one. A secondary
+    /// press or the Menu key on such a row opens the kernel's context menu
+    /// of the object (`Model::open_context_menu(object, MenuOrigin::Grid)`)
+    /// instead of [`Table::row_menu`].
+    pub object: Option<ObjectRef>,
 }
 
 impl Row {
+    /// The row stands for this object: its context menu is the object's.
+    /// Keep the model's grid selection (`Model::select_in_grid`) equal to
+    /// the selected rows in the table's selection handler, because the
+    /// menu's commands act on that selection.
+    pub fn object(mut self, object: ObjectRef) -> Self {
+        self.object = Some(object);
+        self
+    }
+
     pub fn tone(mut self, tone: Tone) -> Self {
         self.tone = tone;
         self
@@ -693,6 +711,10 @@ pub struct Table {
     pub on_sort: Option<ActSort>,
     /// Shown instead of rows when there are none.
     pub empty: String,
+    /// Escape while the table of a tab has the keyboard: clear the
+    /// selection. In a surface Escape closes the surface and this is not
+    /// called.
+    pub on_clear: Option<Act>,
 }
 
 impl Table {
@@ -753,6 +775,26 @@ impl Table {
         self
     }
 
+    /// The user can order the rows by the columns marked
+    /// [`Column::sortable`], and no column is the order yet (the rows are in
+    /// the order the model gives them, a grouping for instance). The first
+    /// press on a header calls `on_sort` with that column, ascending; from
+    /// then on describe the table with [`Table::sorted`].
+    pub fn sortable_by(mut self, on_sort: impl Fn(&mut Model, &str, bool) + 'static) -> Self {
+        self.sort = None;
+        self.on_sort = Some(Rc::new(on_sort));
+        self
+    }
+
+    /// Escape in the table clears the selection: `handler` empties the
+    /// selection the table is described with (and the model's grid
+    /// selection, where the table sets it). Only for a table of a tab: in a
+    /// surface Escape closes the surface.
+    pub fn on_clear(mut self, handler: impl Fn(&mut Model) + 'static) -> Self {
+        self.on_clear = Some(Rc::new(handler));
+        self
+    }
+
     /// The key of a row in the flattened description: `<table key>:<row id>`.
     pub fn row_key(table: &str, row: &str) -> String {
         format!("{table}:{row}")
@@ -762,6 +804,113 @@ impl Table {
     /// description: `<table key>#<column id>`.
     pub fn column_key(table: &str, column: &str) -> String {
         format!("{table}#{column}")
+    }
+}
+
+/// The pixels of an [`Image`]. Cloning shares the bytes.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ImageData {
+    /// Decoded pixels, row by row from the top left, four bytes each in the
+    /// order red, green, blue, alpha (straight alpha):
+    /// `width * height * 4` bytes.
+    Rgba {
+        width: u32,
+        height: u32,
+        pixels: Arc<[u8]>,
+    },
+    /// An encoded PNG file. The front end decodes it.
+    Png(Arc<[u8]>),
+}
+
+impl ImageData {
+    /// Decoded pixels. `None` when `pixels` is not `width * height * 4`
+    /// bytes or a side is zero.
+    pub fn rgba(width: u32, height: u32, pixels: impl Into<Arc<[u8]>>) -> Option<Self> {
+        let pixels = pixels.into();
+        let wanted = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
+        (wanted > 0 && pixels.len() == wanted).then_some(Self::Rgba {
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    /// An encoded PNG file.
+    pub fn png(bytes: impl Into<Arc<[u8]>>) -> Self {
+        Self::Png(bytes.into())
+    }
+
+    /// Width and height in pixels. For a PNG they are read from its header
+    /// without decoding; `None` when the bytes do not start as a PNG does.
+    pub fn size(&self) -> Option<(u32, u32)> {
+        match self {
+            Self::Rgba { width, height, .. } => Some((*width, *height)),
+            Self::Png(bytes) => {
+                const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+                let header = bytes.get(..24)?;
+                if &header[..8] != SIGNATURE || &header[12..16] != b"IHDR" {
+                    return None;
+                }
+                let side = |at: usize| {
+                    u32::from_be_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]])
+                };
+                Some((side(16), side(20))).filter(|(width, height)| *width > 0 && *height > 0)
+            }
+        }
+    }
+
+    /// Whether two values share the same bytes (no comparison of content).
+    pub fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Rgba {
+                    width,
+                    height,
+                    pixels,
+                },
+                Self::Rgba {
+                    width: other_width,
+                    height: other_height,
+                    pixels: other_pixels,
+                },
+            ) => {
+                width == other_width && height == other_height && Arc::ptr_eq(pixels, other_pixels)
+            }
+            (Self::Png(bytes), Self::Png(other_bytes)) => Arc::ptr_eq(bytes, other_bytes),
+            _ => false,
+        }
+    }
+}
+
+impl fmt::Debug for ImageData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Rgba { width, height, .. } => write!(f, "Rgba({width}x{height})"),
+            Self::Png(bytes) => write!(f, "Png({} bytes)", bytes.len()),
+        }
+    }
+}
+
+/// A picture the model holds: a snapshot preview, for instance. It is drawn
+/// scaled to fit the width it has and `max_size`, never enlarged and never
+/// distorted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Image {
+    pub key: String,
+    /// What the picture shows, for assistive technology and for tests.
+    pub alt: String,
+    pub data: ImageData,
+    /// The largest width and height it is drawn at, in pixels of the
+    /// interface. Without one: its own size, or the width there is.
+    pub max_size: Option<(u32, u32)>,
+}
+
+impl Image {
+    pub fn max_size(mut self, width: u32, height: u32) -> Self {
+        self.max_size = Some((width, height));
+        self
     }
 }
 
@@ -1209,6 +1358,7 @@ pub fn row(id: impl ToString, cells: impl IntoIterator<Item = impl Into<String>>
         id: id.to_string(),
         cells: cells.into_iter().map(Into::into).collect(),
         tone: Tone::Normal,
+        object: None,
     }
 }
 
@@ -1231,6 +1381,7 @@ pub fn table(
         sort: None,
         on_sort: None,
         empty: String::new(),
+        on_clear: None,
     }
 }
 
@@ -1287,6 +1438,19 @@ pub fn custom(name: impl Into<String>, params: serde_json::Value) -> Custom {
 /// A horizontal rule.
 pub fn divider() -> Block {
     Block::Divider
+}
+
+/// A picture: `data` is `ImageData::rgba(width, height, pixels)` or
+/// `ImageData::png(bytes)`, `alt` says what it shows. Keep the data in your
+/// state as shared bytes and clone it here: the front end keeps the texture
+/// for as long as the description hands it the same bytes.
+pub fn image(key: impl Into<String>, alt: impl Into<String>, data: ImageData) -> Image {
+    Image {
+        key: key.into(),
+        alt: alt.into(),
+        data,
+        max_size: None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,6 +1510,7 @@ block_from!(
     Outcome => Outcome,
     Group => Group,
     Custom => Custom,
+    Image => Image,
 );
 
 /// A lone button is a row of one.
@@ -1398,7 +1563,8 @@ macro_rules! blocks {
 /// - `role` is one of: `dialog`, `step`, `tablist`, `tab`, `heading`, `text`,
 ///   `alert`, `status`, `textbox`, `placeholder`, `checkbox`, `combobox`,
 ///   `option`, `radiogroup`, `radio`, `property`, `table`, `columnheader`,
-///   `row`, `cell`, `group`, `columns`, `button`, `custom`, `separator`.
+///   `row`, `cell`, `group`, `columns`, `button`, `custom`, `separator`,
+///   `image`.
 /// - `label` is the accessible name: a field label, a button label, a title.
 /// - `value` is the current value: the text of a field (bullets for a
 ///   secret), the label of the selected option, a property value, the state
@@ -1524,6 +1690,8 @@ pub enum Handle {
         multi: bool,
         on_select_many: Option<ActRows>,
         row_menu: Vec<CommandId>,
+        /// Escape in the table of a tab.
+        on_clear: Option<Act>,
     },
     /// One row of the table with key `table`.
     Row {
@@ -1533,6 +1701,8 @@ pub enum Handle {
         on_select: Option<ActText>,
         on_select_many: Option<ActRows>,
         on_activate: Option<ActText>,
+        /// The object the row stands for.
+        object: Option<ObjectRef>,
     },
     /// The header of a sortable column of the table with key `table`. A
     /// press calls `on_sort` with `column` and `descending`, the order the
@@ -1848,6 +2018,15 @@ impl Walk {
                 self.push(node);
             }
             Block::Divider => self.push(Node::new(anonymous, "separator")),
+            Block::Image(image) => {
+                let mut node = Node::new(join(base, &image.key), "image")
+                    .key(&image.key)
+                    .label(&image.alt);
+                if let Some((width, height)) = image.data.size() {
+                    node = node.value(format!("{width}x{height}"));
+                }
+                self.push(node);
+            }
         }
     }
 
@@ -2009,6 +2188,7 @@ impl Walk {
                 multi,
                 on_select_many: table.on_select_many.clone(),
                 row_menu: table.row_menu.clone(),
+                on_clear: table.on_clear.clone(),
             },
         );
         let header = join(&path, "columns");
@@ -2069,6 +2249,7 @@ impl Walk {
                     on_select: table.on_select.clone(),
                     on_select_many: table.on_select_many.clone(),
                     on_activate: table.on_activate.clone(),
+                    object: row.object.clone(),
                 },
             );
             for (index, cell) in row.cells.iter().enumerate() {
@@ -2130,6 +2311,92 @@ impl fmt::Debug for Button {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_image_is_a_node_with_its_alt_text_and_its_size() {
+        let pixels: Vec<u8> = vec![255; 3 * 2 * 4];
+        let data = ImageData::rgba(3, 2, pixels).expect("3 x 2 pixels");
+        assert_eq!(data.size(), Some((3, 2)));
+        assert!(data.same(&data.clone()), "a clone shares the bytes");
+        assert!(!data.same(&ImageData::rgba(3, 2, vec![255; 24]).unwrap()));
+        assert_eq!(format!("{data:?}"), "Rgba(3x2)");
+        // The wrong number of bytes, or no pixels, is no image.
+        assert!(ImageData::rgba(3, 2, vec![0; 23]).is_none());
+        assert!(ImageData::rgba(0, 2, Vec::new()).is_none());
+        // The size of a PNG comes from its header.
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend([0, 0, 1, 64, 0, 0, 0, 200, 8, 6, 0, 0, 0]);
+        let png = ImageData::png(png);
+        assert_eq!(png.size(), Some((320, 200)));
+        assert_eq!(ImageData::png(*b"not a png").size(), None);
+
+        let body = blocks![
+            image("preview", "Console of web-01", data.clone()).max_size(320, 200),
+            image("broken", "Preview", ImageData::png(*b"not a png")),
+        ];
+        let Block::Image(first) = &body[0] else {
+            panic!("an image block");
+        };
+        assert_eq!(first.max_size, Some((320, 200)));
+        let nodes = flatten_blocks("tab", &body);
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].role, "image");
+        assert_eq!(nodes[0].path, "tab/preview");
+        assert_eq!(nodes[0].key.as_deref(), Some("preview"));
+        assert_eq!(nodes[0].label.as_deref(), Some("Console of web-01"));
+        assert_eq!(nodes[0].value.as_deref(), Some("3x2"));
+        assert_eq!(nodes[1].value, None);
+        // The alt text is a string a test can find.
+        assert!(nodes[0].strings().any(|text| text == "Console of web-01"));
+    }
+
+    #[test]
+    fn a_table_can_be_sortable_before_any_column_is_the_order() {
+        let pool = xenadmin_core::PoolId::from(uuid::Uuid::from_u128(1));
+        let vm = ObjectRef::vm(pool, xenadmin_core::VmId::from(uuid::Uuid::from_u128(2)));
+        let table = table(
+            "guests",
+            [column("name", "Name").sortable(), column("state", "State")],
+            [
+                row("a", ["web", "Running"]).object(vm.clone()),
+                row("b", ["db", "Halted"]),
+            ],
+        )
+        .sortable_by(|_, _, _| {})
+        .on_clear(|_| {});
+        assert!(table.sort.is_none() && table.on_sort.is_some());
+        assert_eq!(table.rows[0].object, Some(vm.clone()));
+        assert_eq!(table.rows[1].object, None);
+        let elements = block_elements("tab", &[table.into()]);
+        let header = elements
+            .iter()
+            .find(|e| e.node.key.as_deref() == Some("guests#name"))
+            .expect("a sortable header has a key");
+        // Not sorted yet: no order shown, and the first press is ascending.
+        assert_eq!(header.node.value, None);
+        assert!(matches!(
+            &header.handle,
+            Some(Handle::Sort {
+                descending: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            &elements[0].handle,
+            Some(Handle::Table {
+                on_clear: Some(_),
+                ..
+            })
+        ));
+        let objects: Vec<Option<ObjectRef>> = elements
+            .iter()
+            .filter_map(|e| match &e.handle {
+                Some(Handle::Row { object, .. }) => Some(object.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(objects, [Some(vm), None]);
+    }
 
     fn sample() -> Surface {
         let error: Option<String> = Some("Enter a name".into());

@@ -41,7 +41,7 @@ use xenadmin_core::{
     SearchKind, SearchResult,
 };
 
-use super::files::tests::Scratch;
+use crate::testing::TempDir;
 use super::query::{self, add_source, navigation};
 use super::*;
 use crate::{Harness, MenuOrigin};
@@ -340,7 +340,7 @@ fn native_search_picker_cancellation_and_closed_workspace_callbacks_are_ignored(
     h.answer_file(None);
     assert!(!h.model.areas.search.files.busy);
     h.invoke("file.import-search");
-    let directory = Scratch::new();
+    let directory = TempDir::new("search");
     let path = directory.path().join("scope.json");
     let catalog = SearchCatalog {
         schema_version: 1,
@@ -466,7 +466,7 @@ fn native_report_export_captures_results_and_ignores_cancelled_or_stale_dialogs(
     assert!(!h.model.areas.search.files.busy);
     // A prompt answered after its dialog was closed writes nothing.
     h.click("search-export-results");
-    let d = Scratch::new();
+    let d = TempDir::new("search");
     let ignored = d.path().join("ignored.json");
     h.click("report-close");
     h.invoke("tools.inventory-report");
@@ -740,12 +740,34 @@ fn the_selected_rows_are_the_target_of_the_commands() {
     // Opening belongs to one row.
     assert!(h.find("search.open-result").is_none());
     assert!(h.find("search-result").is_none());
-    // The row menu offers the commands of the objects' context menu.
-    h.select_row("search-results", &keys[0]);
-    let menu = h.row_menu("search-results");
-    assert_eq!(menu[0].id, OPEN_RESULT);
-    assert_eq!(menu[0].disabled.as_deref(), Some(query::SYNTHETIC));
+    // A row stands for its object: a secondary press selects it and opens
+    // the kernel's context menu of the object, in the grid.
+    let first = object_of(sheet(&h).result(&keys[0]).unwrap());
+    h.select_row("search-results", &keys[1]);
+    let menu = h.open_row_menu("search-results", &keys[0]);
+    assert_eq!(h.model.target(), Target::one(first.clone()));
+    let open = h.model.selection.menu.clone().expect("the menu is open");
+    assert_eq!((open.origin, open.object), (MenuOrigin::Grid, first));
+    assert!(h.row_menu("search-results").is_empty(), "no menu of the table's own");
+    let item = menu.iter().find(|item| item.id == OPEN_RESULT).unwrap();
+    assert_eq!(item.disabled.as_deref(), Some(query::SYNTHETIC));
     assert!(menu.iter().any(|item| item.id.0 == "object.copy-uuid"));
+    // A secondary press on a row of a larger selection keeps the selection.
+    h.select_rows("search-results", &rows);
+    h.open_row_menu("search-results", rows[1]);
+    assert_eq!(h.model.target().len(), 3);
+    assert_eq!(h.model.selection.menu.as_ref().unwrap().target.len(), 3);
+    h.model.close_context_menu();
+    // Escape in the grid clears the selection.
+    h.escape_in_table("search-results");
+    assert!(h.model.selection.grid.is_empty());
+    assert_eq!(&h.model.target(), h.model.scope());
+    assert!(
+        h.nodes()
+            .iter()
+            .filter(|node| node.role == "row")
+            .all(|node| node.checked == Some(false))
+    );
     // A row that leaves the results leaves the selection; one that stays
     // keeps it.
     h.select_rows("search-results", &rows);
@@ -848,7 +870,7 @@ fn saved_searches_are_rows_of_their_view_and_can_be_exported_and_deleted() {
     assert_eq!(h.model.preferences.saved_searches.searches.len(), 2);
     h.click("search-save-cancel");
     // Export writes the definitions, privately.
-    let d = Scratch::new();
+    let d = TempDir::new("search");
     let path = d.path().join("searches.json");
     h.click("search.export");
     assert_eq!(file_prompt(&h), FileMode::Save);
@@ -893,6 +915,32 @@ fn the_context_scene_opens_the_menu_of_the_first_guest() {
     let items: Vec<_> = h.model.context_menu().into_iter().flatten().collect();
     assert!(items.iter().any(|item| item.id.0 == "object.copy-uuid"));
     assert!(items.iter().any(|item| item.id == OPEN_RESULT));
+    // The scene tree says which menu is open and what it offers.
+    let tree = h.tree();
+    let shown = &tree["context_menu"];
+    assert_eq!(shown["origin"], "grid");
+    assert_eq!(shown["name"], "Application");
+    assert_eq!(shown["object"], serde_json::json!(menu.object));
+    assert_eq!(shown["target"], serde_json::json!([menu.object]));
+    assert_eq!(shown["valid"], true);
+    let listed: Vec<&serde_json::Value> = shown["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|group| group.as_array().unwrap())
+        .collect();
+    assert_eq!(listed.len(), items.len());
+    for (listed, item) in listed.iter().zip(&items) {
+        assert_eq!(listed["id"], item.id.0);
+        assert_eq!(listed["label"], item.label.as_str());
+        assert_eq!(
+            listed.get("disabled").and_then(|reason| reason.as_str()),
+            item.disabled.as_deref()
+        );
+    }
+    assert!(items.iter().any(|item| item.disabled.is_some()));
+    // No menu: the entry is null.
+    assert!(Harness::scene("search-pools").tree()["context_menu"].is_null());
 }
 
 #[test]

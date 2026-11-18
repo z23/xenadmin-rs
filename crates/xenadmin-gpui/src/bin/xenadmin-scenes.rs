@@ -3,9 +3,14 @@
 //!
 //! ```text
 //! xenadmin-scenes --list
+//! xenadmin-scenes --commands
 //! xenadmin-scenes NAME [--size WxH] [--theme dark|light] [--scale 1|2]
 //!                      [--snap FILE.png] [--tree FILE.json]
 //! ```
+//!
+//! `--commands` prints the command registry, one line per command with
+//! eight fields separated by a tab: id, label, menu path, toolbar slot,
+//! context kinds, local row, shortcut, area (`xenadmin_ui::command_list`).
 //!
 //! `--snap` needs a graphics adapter (a software one will do); `--tree`
 //! alone does not. The exit status is 0 when everything asked for was
@@ -18,6 +23,7 @@ use xenadmin_gpui::gpui_kit::component::ThemeMode;
 use xenadmin_gpui::scenes::{self, Options};
 
 const USAGE: &str = "usage: xenadmin-scenes --list
+       xenadmin-scenes --commands
        xenadmin-scenes NAME [--size WxH] [--theme dark|light] [--scale 1|2] [--snap FILE.png] [--tree FILE.json]";
 
 struct Request {
@@ -29,12 +35,16 @@ struct Request {
 
 enum Command {
     List,
+    Commands,
     Render(Request),
 }
 
 fn parse(args: &[String]) -> Result<Command, String> {
     if args.iter().any(|arg| arg == "--list") {
         return Ok(Command::List);
+    }
+    if args.iter().any(|arg| arg == "--commands") {
+        return Ok(Command::Commands);
     }
     let mut name = None;
     let mut options = Options::default();
@@ -109,6 +119,10 @@ fn main() -> ExitCode {
             for name in scenes::names() {
                 println!("{name}");
             }
+            ExitCode::SUCCESS
+        }
+        Ok(Command::Commands) => {
+            print!("{}", xenadmin_ui::command_list::listing());
             ExitCode::SUCCESS
         }
         Ok(Command::Render(request)) => match run(&request) {

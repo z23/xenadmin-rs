@@ -63,11 +63,10 @@ pub const CONTENT_KEY: &str = "main-column";
 /// hidden behind its toggle.
 pub const NARROW_WIDTH: f32 = 1100.0;
 
-/// The table whose column widths are kept in the preferences: the
-/// inventory grid of the Search tab. `Preferences::columns` is keyed by
-/// column id alone, so one table owns it; a width given to a column of any
-/// other table lasts as long as the table is shown.
-pub const INVENTORY_GRID: &str = "search-results";
+/// The inventory grid of the Search tab: the table whose column widths the
+/// preferences keep under the column ids of a Rune preferences file. Every
+/// other table keeps its widths too (`Model::set_column_width`).
+pub const INVENTORY_GRID: &str = xenadmin_ui::model::INVENTORY_TABLE;
 
 /// The title of the window: the model's title, and the application's name
 /// after it when the title is something else.
@@ -125,20 +124,22 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> Self {
         let ui = Ui::new(store.clone());
+        // Every table keeps the widths the user gave its columns, by the
+        // table's key and the column's id.
         ui.persist_column_widths(ColumnWidths {
-            get: Rc::new(|model, table, column| {
-                (table == INVENTORY_GRID)
-                    .then(|| model.column_width(column))
-                    .flatten()
-            }),
+            get: Rc::new(|model, table, column| model.column_width(table, column)),
             set: Rc::new(|model, table, column, width| {
-                if table == INVENTORY_GRID {
-                    model.set_column_width(column, Some(width));
-                }
+                model.set_column_width(table, column, Some(width));
             }),
         });
         let dialogs = cx.new(|cx| DialogHost::new(ui.clone(), window, cx));
         let menu_anchor = MenuAnchor::default();
+        // A row of a table that stands for an object says where its
+        // context menu was asked for, as a row of the tree does.
+        ui.on_menu_request({
+            let anchor = menu_anchor.clone();
+            move |position| anchor.request(position)
+        });
         let nav = cx.new(|cx| NavPane::new(ui.clone(), menu_anchor.clone(), window, cx));
         let installed = store.read(cx).menu_bar();
         menus::install(&installed, cx);

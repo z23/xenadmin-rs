@@ -10,11 +10,19 @@ publish = false
 [dependencies]
 # Snapshot previews and console screenshots; the version the Rune front end uses.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Opening a file without following a link (files.rs); the version the core pins.
+rustix = { version = "=1.1.6", features = ["fs"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 xenadmin-core = { path = "../xenadmin-core" }
 zeroize.workspace = true
+
+[features]
+# `xenadmin_ui::testing` for the tests of another crate: the temporary
+# directory guard, the model fixture and the local JSON-RPC fixture server.
+# Only a dev-dependency turns it on.
+test-support = []
 
 [lints]
 workspace = true

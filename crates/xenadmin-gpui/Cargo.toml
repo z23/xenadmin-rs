@@ -19,6 +19,8 @@ xenadmin-ui = { path = "../xenadmin-ui" }
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+# The model fixture and the local fixture server, for tests of a live session.
+xenadmin-ui = { path = "../xenadmin-ui", features = ["test-support"] }
 serde_json.workspace = true
 wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 
