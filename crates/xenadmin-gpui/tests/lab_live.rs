@@ -1748,6 +1748,7 @@ fn lab_p3_host_maintenance() {
     let mut client = connected(&lab, &mut evidence, Platform::Rendered);
     let (coordinator, member) = servers(&mut client);
     let (tools, tools_vm, tools_name) = guest(&mut client, TOOLS_GUEST);
+    let tools_home = resident_host(&mut client, tools_vm);
     let residents: Vec<String> = client.model(|m| {
         let inventory = m.inventory.as_ref().expect("inventory");
         inventory
@@ -1877,7 +1878,44 @@ fn lab_p3_host_maintenance() {
         );
         evidence.note("tools_guest_moved_back_seconds", json!(took));
     }
-    assert_eq!(resident_host(&mut client, tools_vm), Some(member.0));
+    assert_eq!(
+        resident_host(&mut client, tools_vm),
+        tools_home,
+        "the tools guest ends where it was"
+    );
+    client.close();
+    evidence.finish();
+}
+
+/// The baseline of the lab has the tools guest on the coordinator. When it
+/// is found on the member (an earlier run left it there), this moves it
+/// with the application's own Migrate to Server wizard; otherwise it only
+/// records where the guest is.
+#[test]
+#[ignore]
+fn lab_baseline_tools_guest_on_the_coordinator() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "baseline-tools-guest-on-the-coordinator");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, vm, name) = guest(&mut client, TOOLS_GUEST);
+    let (coordinator, _) = servers(&mut client);
+    if resident_host(&mut client, vm) == Some(coordinator.0) {
+        evidence.note("moved", json!(false));
+    } else {
+        let took = migrate(
+            &mut client,
+            &mut evidence,
+            &object,
+            vm,
+            (coordinator.0, &coordinator.1),
+            "to-the-coordinator",
+        );
+        evidence.note("moved", json!(true));
+        evidence.note("seconds", json!(took));
+    }
+    assert_eq!(resident_host(&mut client, vm), Some(coordinator.0));
+    evidence.note("guest", json!(name));
+    evidence.note("ends_on", json!(coordinator.1));
     client.close();
     evidence.finish();
 }
@@ -1907,7 +1945,10 @@ fn lab_state() {
             .host
             .and_then(|id| inventory.hosts.get(&id))
             .map_or("-", |host| host.name.as_str());
-        println!("guest {} {:?} on {on} ({:?})", vm.name, vm.power_state, vm.description);
+        println!(
+            "guest {} {:?} on {on} ({:?})",
+            vm.name, vm.power_state, vm.description
+        );
     }
     for snapshot in inventory.snapshots.iter() {
         let of = snapshot
