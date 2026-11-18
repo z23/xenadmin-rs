@@ -95,6 +95,9 @@ pub mod edit;
 pub mod scenes;
 pub mod view;
 
+#[cfg(test)]
+mod tests;
+
 pub use drive::open_created;
 pub use edit::disk_label;
 
