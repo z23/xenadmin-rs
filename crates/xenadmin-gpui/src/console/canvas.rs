@@ -36,9 +36,17 @@ pub const PAN_KEY: &str = "console-pan";
 pub const EMPTY_KEY: &str = "console-empty";
 /// What that line says.
 pub const EMPTY_TEXT: &str = "No picture from the console yet";
-/// The canvas never gets less height than this: in a window too small for
-/// the controls and the picture, the body scrolls instead.
-pub const MINIMUM_HEIGHT: f32 = 112.0;
+/// The canvas never gets less height than this; in a window too small for
+/// the controls and the picture, the body scrolls instead. A detached
+/// window at its smallest (480 by 640) still shows every control and the
+/// help line with the picture; in the Console tab the picture comes before
+/// the help line.
+pub fn minimum_height(seat: Seat) -> f32 {
+    match seat {
+        Seat::Tab => 240.0,
+        Seat::Window(_) => 112.0,
+    }
+}
 
 /// A key the canvas forwarded to the model. Kept only in a build with the
 /// `scenes` feature, for the tests: a scene's console has no stream, so the
@@ -557,7 +565,7 @@ impl Render for ConsoleCanvas {
             .flex_grow(1.)
             .flex_shrink(1.)
             .flex_basis(px(0.))
-            .min_h(px(MINIMUM_HEIGHT))
+            .min_h(px(minimum_height(self.seat)))
             .border_1()
             .border_color(ring)
             .bg(black());
