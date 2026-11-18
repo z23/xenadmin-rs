@@ -124,6 +124,18 @@ pub fn described(cx: &mut TestAppContext, scene: &ShellWindow) -> Vec<Node> {
     })
 }
 
+/// What the surface in front describes under a key.
+pub fn node(cx: &mut TestAppContext, scene: &ShellWindow, key: &str) -> Option<Node> {
+    described(cx, scene)
+        .into_iter()
+        .find(|node| node.key.as_deref() == Some(key))
+}
+
+/// Whether any element of the window says the text, in its name or value.
+pub fn says(cx: &mut TestAppContext, scene: &ShellWindow, text: &str) -> bool {
+    on(cx, scene, |window, _| with_text(window, None, text).is_ok())
+}
+
 /// The operations the model has handed to a connection.
 pub fn submitted(cx: &mut TestAppContext, scene: &ShellWindow) -> usize {
     model(cx, scene, |m| {
@@ -143,7 +155,7 @@ pub fn key_of(element: &ElementSnapshot) -> Option<&str> {
     element.path().last().and_then(name)
 }
 
-fn under(element: &ElementSnapshot, scope: &str) -> bool {
+pub fn under(element: &ElementSnapshot, scope: &str) -> bool {
     let path = element.path();
     path[..path.len().saturating_sub(1)]
         .iter()
@@ -420,6 +432,8 @@ pub enum Step {
     /// The model is changed as a handler would change it: for a state no
     /// registered scene starts in.
     Set(fn(&mut Model)),
+    /// A keystroke ("escape", "shift-down") to whatever has the keyboard.
+    Key(&'static str),
 }
 
 pub fn run_step(cx: &mut TestAppContext, scene: &ShellWindow, step: Step) -> Result<(), String> {
@@ -592,6 +606,10 @@ pub fn run_step(cx: &mut TestAppContext, scene: &ShellWindow, step: Step) -> Res
         }
         Step::Set(change) => {
             run(cx, scene, change);
+            Ok(())
+        }
+        Step::Key(key) => {
+            on(cx, scene, |window, cx| window.press(key, cx));
             Ok(())
         }
     }
