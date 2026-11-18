@@ -772,11 +772,14 @@ fn the_draft_of_the_bulk_page_follows_the_property() {
     h.assert_unique_keys();
 }
 
-/// Decision 10 of `AREAS.md`: the texts that name Rune places are kept
-/// word for word until the one sweep at the end renames them.
+/// Decision 10 of `AREAS.md`: the text that named a Rune place names the
+/// Events tab.
 #[test]
-fn texts_that_name_rune_places_are_kept_for_the_sweep() {
-    assert!(edit::SEQUENCE.contains("Operation history retains per-target steps"));
+fn texts_name_the_places_of_this_client() {
+    assert!(
+        edit::SEQUENCE
+            .contains("The Events tab of the Notifications view retains per-target steps")
+    );
     assert!(Harness::scene("batch-properties").has_text(edit::SEQUENCE));
 }
 

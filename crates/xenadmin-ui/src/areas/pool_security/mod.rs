@@ -48,7 +48,8 @@
 //!   operation is followed in the Events tab, and the tab reads the overview
 //!   again when it has ended.
 //! - "close and reopen": Refresh captures the pool again. The Rune texts
-//!   that say "reopen security" are kept for the sweep (AREAS decision 10).
+//!   that said "reopen security" name this dialog or the Users tab now
+//!   (AREAS decision 10).
 //!
 //! Scenes: `pool-security` (the Users tab), `pool-security-review` (the
 //! review of joining a directory).

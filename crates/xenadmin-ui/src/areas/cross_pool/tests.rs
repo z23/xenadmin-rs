@@ -1003,7 +1003,7 @@ fn the_migration_wizard_has_its_button_to_this_command() {
     let mut h = Harness::scene("vm-migration");
     migration::wizard::back(&mut h.model);
     let node = h.node("migration-cross-pool");
-    assert_eq!(node.label.as_deref(), Some("Move / copy to another pool…"));
+    assert_eq!(node.label.as_deref(), Some("Move or Copy to Another Pool…"));
     assert_eq!(node.disabled.as_deref(), Some(single::DEMO));
 }
 
@@ -1093,15 +1093,15 @@ fn a_destination_outside_the_captured_pools_is_not_chosen() {
     assert!(several(&h).review.is_some());
 }
 
-/// AREAS.md decision 10: the texts that name Rune places are carried over
-/// word for word, for the one sweep that renames them.
+/// AREAS.md decision 10: the texts that named Rune places name the
+/// commands and the tab this client has.
 #[test]
-fn texts_that_name_other_places_are_carried_over_word_for_word() {
-    assert!(single::NO_PEERS.contains("using Connections, then reopen this transfer"));
-    assert!(batch::NO_PEERS.contains("using Connections, then reopen this review"));
+fn texts_name_the_places_of_this_client() {
+    assert!(single::NO_PEERS.contains("using Add Server… or Connect… of the Server menu, then reopen this transfer"));
+    assert!(batch::NO_PEERS.contains("using Add Server… or Connect… of the Server menu, then reopen this review"));
     assert!(single::CONSOLE.contains("use Open destination console from transfer history"));
-    assert!(single::RESERVED.contains("Verified destination UUIDs remain in history"));
-    assert!(batch::SELECTION_HELP.contains("from the VM's own cross-pool form"));
+    assert!(single::RESERVED.contains("Verified destination UUIDs remain on the Events tab of the Notifications view"));
+    assert!(batch::SELECTION_HELP.contains("with Move or Copy to Another Pool on that VM"));
     assert!(batch::INTERRUPTION.contains("Reconnect both pools and use Recheck"));
     assert!(batch::CONSOLE.contains("open it from the destination pool"));
 }

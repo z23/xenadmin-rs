@@ -435,7 +435,7 @@ fn restore_of_a_changed_attachment_is_disabled_with_the_reason() {
     let reason = disabled(&h, &format!("storage-restore-{}", p.pbd));
     assert_eq!(
         reason.as_deref(),
-        Some("The detached attachment changed; reopen its storage view")
+        Some("The detached attachment changed; close and reopen this dialog")
     );
 }
 
@@ -766,10 +766,10 @@ fn a_repair_is_reviewed_coordinator_first() {
 }
 
 /// Every surface of the area carries the experimental notice, every scene
-/// has unique keys, and the reviews keep the Rune words that name Rune
-/// places (they are renamed in one sweep, decision 10).
+/// has unique keys, and the reviews name this client's places where Rune
+/// named its own (decision 10).
 #[test]
-fn scenes_are_experimental_and_the_rune_texts_are_kept() {
+fn scenes_are_experimental_and_the_texts_name_this_client() {
     for scene in [
         "storage-maintenance",
         "storage-repair",
@@ -784,12 +784,11 @@ fn scenes_are_experimental_and_the_rune_texts_are_kept() {
     }
     assert_eq!(
         maintenance::STALE_REVIEW,
-        "The captured connection changed; close and reopen storage administration before \
-         submitting."
+        "The captured connection changed; close and reopen this dialog before submitting."
     );
     assert_eq!(
         maintenance::STALE_STAGE,
-        "The captured connection changed; reopen storage administration"
+        "The captured connection changed; reopen this dialog"
     );
     let h = Harness::scene("storage-repair");
     assert!(h.has_text("Stop remaining steps does not cancel an in-flight host task."));
@@ -804,7 +803,7 @@ fn scenes_are_experimental_and_the_rune_texts_are_kept() {
     assert!(h.has_text("Synthetic preview · no changes can be submitted"));
     assert_eq!(
         h.node("storage-graph-activity").label.as_deref(),
-        Some("Open Activity history")
+        Some("Operation history")
     );
     // Rune's Activity is the Events tab of the Notifications view.
     h.click("storage-graph-activity");

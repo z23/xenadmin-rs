@@ -990,8 +990,7 @@ fn scheduling_default_storage_and_rescan_open_on_their_review() {
     });
     assert_eq!(h.model.eligibility(SET_DEFAULT, &target), Eligibility::Hidden);
 
-    // Rescan. The text names the Rune place of the history (decision 10 of
-    // AREAS.md: renamed in one sweep, pinned here).
+    // Rescan. The Rune text said "in history" (decision 10 of AREAS.md).
     assert_eq!(
         h.model.eligibility(STORAGE_RESCAN, &target),
         Eligibility::Enabled
@@ -1000,7 +999,7 @@ fn scheduling_default_storage_and_rescan_open_on_their_review() {
     assert_eq!(h.surface().id, "storage-rescan");
     assert_eq!(ed(&h).target, ResourceTarget::Storage(repository));
     assert!(h.has_text(
-        "Ask the storage backend to refresh its disk inventory. The operation will appear in history."
+        "Ask the storage backend to refresh its disk inventory. The operation will appear on the Events tab of the Notifications view."
     ));
     assert_eq!(h.try_click("resource-confirm"), Err(DEMO.into()));
 }

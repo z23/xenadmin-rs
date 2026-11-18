@@ -940,15 +940,15 @@ fn another_scope_closes_both_surfaces() {
     assert!(h.model.areas.vm_lifecycle.drive.is_none());
 }
 
-/// Decision 10 of `AREAS.md`: the texts that name Rune places are kept
-/// word for word until the one sweep at the end renames them.
+/// Decision 10 of `AREAS.md`: the texts that named "VM changes" and
+/// "Activity" of Rune name the Events tab.
 #[test]
-fn texts_that_name_rune_places_are_kept_for_the_sweep() {
+fn texts_name_the_places_of_this_client() {
     let h = Harness::scene("lifecycle-permissions");
-    assert!(h.has_text("remains in VM changes if a later step fails"));
+    assert!(h.has_text("remains on the Events tab of the Notifications view if a later step fails"));
     let h = Harness::scene("creation-cloud-pending");
-    assert!(h.has_text("VM changes keeps the creation outcome"));
-    assert!(drive::POOL_BLOCK.contains("appear in Activity"));
+    assert!(h.has_text("The Events tab of the Notifications view keeps the creation outcome"));
+    assert!(drive::POOL_BLOCK.contains("appear on the Events tab of the Notifications view"));
     assert!(deletion::describe(
         inventory(&h),
         &inventory(&h).vms[&source_id()],
@@ -958,11 +958,11 @@ fn texts_that_name_rune_places_are_kept_for_the_sweep() {
     )
     .last()
     .unwrap()
-    .contains("remain in VM changes"));
+    .contains("remain on the Events tab of the Notifications view"));
     let (mut h, _) = fixture(false);
     h.invoke(COPY.0);
     h.click("review-vm-lifecycle");
-    assert!(h.has_text("its UUID in VM changes"));
+    assert!(h.has_text("its UUID on the Events tab of the Notifications view"));
 }
 
 // -- Against the fixture server -----------------------------------------------------

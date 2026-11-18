@@ -520,7 +520,7 @@ fn install_guest_tools_is_in_the_vm_menu_and_says_what_is_missing() {
         h.model.eligibility(INSTALL_GUEST_TOOLS, &vm),
         Eligibility::disabled(media::NO_CD)
     );
-    assert!(media::NO_CD.contains("Disks and network interfaces"));
+    assert!(media::NO_CD.contains("Add CD/DVD Drive on the Storage tab of the VM"));
     assert!(h.try_invoke_on(INSTALL_GUEST_TOOLS.0, &vm).is_err());
     assert!(h.model.areas.vm_tools.media.is_none());
     // Not a VM: the command does not apply.
@@ -694,26 +694,25 @@ fn a_scope_change_closes_what_belongs_to_the_object_and_keeps_the_declarations()
     assert!(h.surfaces().is_empty());
 }
 
-/// Decision 10: the texts that name Rune places are carried over word for
-/// word; the sweep finds them here.
+/// Decision 10: the texts that named Rune places name this client's.
 #[test]
-fn texts_that_name_rune_places_are_pinned() {
+fn texts_name_the_places_of_this_client() {
     assert_eq!(
         media::ADMITTED,
-        "Operation admitted; open Activity to inspect its progress."
+        "Operation admitted; open the Events tab of the Notifications view to inspect its progress."
     );
     assert_eq!(
         media::NO_CD,
-        "No CD drive is available. Shut down the VM and add an empty CD drive from Disks and \
-         network interfaces."
+        "No CD drive is available. Shut down the VM and add an empty CD drive with Add CD/DVD \
+         Drive on the Storage tab of the VM."
     );
     assert_eq!(
         external::CONNECTION_CHANGED,
-        "Connection changed. Close and reopen Guest tools."
+        "Connection changed. Close and reopen this dialog."
     );
     assert_eq!(
         external::STALE_INVENTORY,
-        "Connection changed or inventory is stale. Close and reopen Guest tools."
+        "Connection changed or inventory is stale. Close and reopen this dialog."
     );
 }
 

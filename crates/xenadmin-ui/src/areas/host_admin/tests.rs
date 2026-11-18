@@ -960,11 +960,11 @@ fn the_draft_previews_its_review_and_its_refusal() {
     }
 }
 
-/// Hazard 9: the closing line of every review is the Rune text. It names
-/// "Activity" and "Pool administration", which the new information
-/// architecture renames; it changes with every other module's, not here.
+/// Hazard 9: the closing line of every review is the Rune text, except
+/// that "Activity" and "Pool administration" are the Events tab of the
+/// Notifications view now (decision 10).
 #[test]
-fn the_closing_line_of_a_review_is_still_the_rune_text() {
+fn the_closing_line_of_a_review_names_the_events_tab() {
     let h = Harness::scene("host-administration");
     let closing: Vec<_> = h
         .texts()
@@ -975,8 +975,8 @@ fn the_closing_line_of_a_review_is_still_the_rune_text() {
         closing,
         [
             "Changes are journaled individually. Stop remaining steps does not cancel in-flight \
-             host work or undo completed changes. Use Activity for retained history and Pool \
-             administration for unknown-outcome recovery."
+             host work or undo completed changes. Use the Events tab of the Notifications view \
+             for retained history and for unknown-outcome recovery."
         ]
     );
 }

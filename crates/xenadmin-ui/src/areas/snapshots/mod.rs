@@ -63,8 +63,8 @@
 //!   (`snapshot-inspection-close`): the information is the section
 //!   `snapshot-information` of the tab, shown for the one selected snapshot.
 //!   It reads the inventory as it is now, where the Rune dialog kept the
-//!   inventory of the moment it was opened; its caption keeps the Rune
-//!   wording ("Captured pool … at capture") for the text sweep.
+//!   inventory of the moment it was opened; so its caption no longer says
+//!   "Captured pool … at capture" (decision 10).
 //! - "Activity" (`snapshot-activity`): the Events tab of the Notifications
 //!   view (decision 6).
 //! - "Export…" (`export-xva`) and "Export selection…": one button into

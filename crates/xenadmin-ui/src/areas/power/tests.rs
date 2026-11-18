@@ -1189,16 +1189,18 @@ fn a_cancellation_review_refuses_a_record_that_moved_on() {
     assert!(h.model.areas.power.recovery.is_none());
 }
 
-/// Texts that name Rune places are carried over word for word and renamed
-/// in one sweep at the end (decision 10): pinned here so the sweep finds
-/// them. "Go Back" and "Refresh" name controls the review no longer has.
+/// Decision 10: the texts that named Rune places ("Activity", "this
+/// panel", "below") or controls the review no longer has ("Go Back",
+/// "Refresh") name what this client has.
 #[test]
-fn texts_awaiting_the_final_rename_sweep_are_pinned() {
-    assert!(recovery::RESERVATIONS.contains("Inspect unknown outcomes in Activity"));
-    assert!(recovery::CANCEL_CHANGED.contains("Go Back and review its current state"));
-    assert!(recovery::STALE.contains("Close this panel and reopen it from current inventory"));
-    assert!(recovery::TASKS_NOTE.contains("Refresh before reviewing a changed VM"));
+fn texts_name_the_places_of_this_client() {
+    assert!(recovery::RESERVATIONS
+        .contains("Inspect unknown outcomes on the Events tab of the Notifications view"));
+    assert!(recovery::CANCEL_CHANGED.contains("Close this dialog and review its current state"));
+    assert!(recovery::STALE.contains("Close this dialog and reopen it from current inventory"));
+    assert!(recovery::TASKS_NOTE.contains("Close and reopen it before reviewing a changed VM"));
     assert!(recovery::CANCEL.contains("then refresh and review any force action separately"));
-    assert!(single::NO_ACTIONS.contains("Check action availability below"));
+    assert!(single::NO_ACTIONS
+        .contains("Use Check action availability on the General tab of the VM"));
     assert!(batch::LIMIT.contains("visible VMs"));
 }

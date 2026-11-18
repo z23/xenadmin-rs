@@ -274,7 +274,7 @@ fn automatic_reconnect_toggle_and_pinned_identity_render_at_both_window_sizes() 
     assert_eq!(h.node(view::AUTO_RECONNECT).checked, Some(false));
     assert_eq!(tab(&h).target.vm, id);
     assert!(!tab(&h).input_ready());
-    // Pinned for the sweep of decision 10 to find.
+    // "Reconnect" is the command of the Console tab (decision 10: kept).
     assert_eq!(
         h.node(view::RECOVERY_STATUS).text.as_deref(),
         Some("Automatic reconnect is off. Use Reconnect when the guest or host is available.")
@@ -976,7 +976,6 @@ fn opening_needs_a_guest_or_a_server_with_a_running_control_domain() {
     // Opening without a connection is refused by the model as well.
     assert!(super::open(&mut h.model, &targets[0].object()).is_err());
     assert!(super::tab_target(&h.model).is_none());
-    // Pinned for the sweep of decision 10.
     assert_eq!(
         commands::READ_ONLY,
         "Read-only connection: changes and interactive consoles are disabled."

@@ -410,11 +410,10 @@ fn management_review_refuses_changed_source_pool_ha_and_nonstandard_mtu() {
         });
         assert!(unavailable(&h).is_some(), "{changed}");
         if changed == "pool" {
-            // AREAS.md decision 10: the text names a Rune place and is
-            // renamed in the one sweep at the end; pinned for it.
+            // AREAS.md decision 10: the Rune text said "reopen networking".
             assert_eq!(
                 unavailable(&h).as_deref(),
-                Some("The pool changed. Close and reopen networking.")
+                Some("The pool changed. Close and reopen this dialog.")
             );
         }
     }

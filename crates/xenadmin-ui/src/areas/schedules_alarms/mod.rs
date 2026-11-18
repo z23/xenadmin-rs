@@ -45,7 +45,7 @@
 //! - The three tab buttons of the alarms dialog.
 //! - "Operation history" (`policy-history`) no longer opens the Activity
 //!   dialog: it closes the dialog and shows the Events tab of the
-//!   Notifications view. Its label is kept for the one sweep of decision 10.
+//!   Notifications view. The label stays: it says what the button shows.
 //!
 //! ## What other areas may use
 //!

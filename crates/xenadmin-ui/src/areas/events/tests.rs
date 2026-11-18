@@ -11,7 +11,7 @@
 //! 2. **What the port changed**: two tabs and a list choice, commands that
 //!    follow the selected row, one acknowledgement for both families, the
 //!    functions other areas call.
-//! 3. **The texts** that name Rune places, pinned for the renaming sweep
+//! 3. **The texts** that named Rune places and name this client's now
 //!    (AREAS.md decision 10).
 //!
 //! No test can have a current snapshot, so none submits successfully: the
@@ -1002,11 +1002,11 @@ fn a_resource_record_shows_its_evidence_and_local_error_in_the_outcome() {
     assert!(lines.iter().all(|line| !line.is_empty()));
 }
 
-// -- 3. Texts that name Rune places (AREAS.md decision 10) ----------------------
+// -- 3. Texts that named Rune places (AREAS.md decision 10) ---------------------
 
 #[test]
-fn texts_that_name_the_rune_places_are_carried_over_word_for_word() {
-    assert!(failure_help::NO_CODE.contains("in the operation or Activity entry"));
+fn texts_name_the_places_of_this_client() {
+    assert!(failure_help::NO_CODE.contains("in the operation or its entry on the Events tab of the Notifications view"));
     assert_eq!(
         activity::SUBMITTED,
         "Change submitted. History tracks the host outcome."
@@ -1014,7 +1014,7 @@ fn texts_that_name_the_rune_places_are_carried_over_word_for_word() {
     let parent = OperationId::new();
     assert_eq!(
         control::batch_reason(parent),
-        format!("Managed by batch {parent}. Use the batch controls in pool history.")
+        format!("Managed by batch {parent}. Use the batch controls on the Events tab of the Notifications view.")
     );
     assert_eq!(
         view::SOURCE_CACHED,

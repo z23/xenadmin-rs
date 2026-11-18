@@ -873,7 +873,7 @@ fn the_clock_line_says_what_is_known() {
     assert_eq!(schedules::clock_label("not a clock"), "not a clock");
 }
 
-/// Decision 10: the label names the Rune place and is renamed in the sweep.
+/// The label says what the button shows; it leads to the Events tab.
 #[test]
 fn operation_history_closes_the_dialog_and_shows_the_events() {
     let mut s = Schedules::open();

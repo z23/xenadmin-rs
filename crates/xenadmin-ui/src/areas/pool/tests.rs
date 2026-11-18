@@ -924,16 +924,16 @@ fn a_scope_change_closes_what_belonged_to_the_pool_and_keeps_the_password_change
     assert!(h.model.areas.pool.join.is_none());
 }
 
-/// Decision 10 of the port: texts that name Rune places are carried over
-/// word for word and renamed in one sweep. These are this area's.
+/// Decision 10 of the port: the texts that named Rune places ("pool
+/// administration", "operation history") name this client's.
 #[test]
-fn texts_that_name_rune_places_are_pinned_for_the_sweep() {
+fn texts_name_the_places_of_this_client() {
     assert_eq!(
         policy::STALE,
-        "The connection changed; reopen pool administration"
+        "The connection changed; reopen this dialog"
     );
-    assert!(policy::CLOSING.contains("Interrupted operations stay in history for recheck"));
-    assert!(root_password::SUBMITTED.contains("the result remains in operation history"));
+    assert!(policy::CLOSING.contains("Interrupted operations stay on the Events tab of the Notifications view for recheck"));
+    assert!(root_password::SUBMITTED.contains("the result remains on the Events tab of the Notifications view"));
     assert_eq!(dissolve::STALE, "Connection changed; reopen pool dissolution");
     assert_eq!(
         join::STALE,
@@ -945,7 +945,7 @@ fn texts_that_name_rune_places_are_pinned_for_the_sweep() {
     h.model.areas.pool.editor = None;
     policy::review_failures(&mut h.model);
     policy::startup(&mut h.model, 0);
-    // "Pool administration is closed" goes nowhere when nothing is open.
+    // "The dialog of this pool change is closed" goes nowhere when nothing is open.
     assert!(h.model.areas.pool.editor.is_none());
 }
 
