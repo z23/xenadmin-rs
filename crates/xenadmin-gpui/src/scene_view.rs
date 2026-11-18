@@ -280,33 +280,26 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
             div().size_full().p_4().child(element).into_any_element()
         }
         Some(TabBody::Blocks(items)) => {
-            let fills = crate::render::filling_table(&pass, &items).is_some();
             let children = blocks(&pass, TAB_BASE, &items, window, cx);
-            if fills {
-                v_flex()
-                    .size_full()
-                    .p_4()
-                    .gap_3()
-                    .children(children)
-                    .into_any_element()
-            } else {
-                // The element with the id is what a scrolling body is
-                // seen through.
-                div()
-                    .id(TAB_SCROLL_KEY)
-                    .test_support()
-                    .size_full()
-                    .overflow_hidden()
-                    .child(
-                        v_flex()
-                            .size_full()
-                            .overflow_y_scrollbar()
-                            .p_4()
-                            .gap_3()
-                            .children(children),
-                    )
-                    .into_any_element()
-            }
+            // The element with the id is what a scrolling body is seen
+            // through. A body whose last table fills the height scrolls as
+            // well: where the window is too short for what stands above the
+            // table and the table's least height, the table would otherwise
+            // be drawn below the window, out of reach.
+            div()
+                .id(TAB_SCROLL_KEY)
+                .test_support()
+                .size_full()
+                .overflow_hidden()
+                .child(
+                    v_flex()
+                        .size_full()
+                        .overflow_y_scrollbar()
+                        .p_4()
+                        .gap_3()
+                        .children(children),
+                )
+                .into_any_element()
         }
     };
     ui.cache.borrow_mut().end(&scope, window, cx);

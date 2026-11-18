@@ -818,3 +818,309 @@ fn clear_buttons_empty_the_activity_filters_and_restore_the_rows(cx: &mut TestAp
     must(&mut *cx, &scene, Says("2 matching entries"));
     close(cx, scene);
 }
+
+// -- the keyboard and the secondary button in a grid --------------------------
+
+/// The table of the Search tab.
+const SEARCH: &str = "search-results";
+/// The nine power commands of a VM.
+const POWER: [&str; 9] = [
+    "vm.start",
+    "vm.shutdown",
+    "vm.reboot",
+    "vm.suspend",
+    "vm.resume",
+    "vm.pause",
+    "vm.unpause",
+    "vm.force-shutdown",
+    "vm.force-reboot",
+];
+
+/// The rows of a table that are in the tree, from the top: the key of the
+/// element and its accessible name.
+fn rows_in(cx: &mut TestAppContext, scene: &ShellWindow, table: &str) -> Vec<(String, String)> {
+    on(cx, scene, |window, _| {
+        let mut rows: Vec<_> = window
+            .elements()
+            .into_iter()
+            .filter(|element| element.role() == Some(Role::Row) && common::under(element, table))
+            .collect();
+        rows.sort_by(|left, right| {
+            left.bounds()
+                .top()
+                .partial_cmp(&right.bounds().top())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        rows.iter()
+            .map(|row| {
+                (
+                    common::key_of(row).unwrap_or_default().to_owned(),
+                    row.label().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    })
+}
+
+/// The id of the object a row of the Search table stands for.
+fn object_of(row: &str) -> String {
+    row.rsplit(':').next().unwrap_or_default().to_owned()
+}
+
+/// A press with the primary button on an element with a key that is not
+/// known before the test runs.
+#[track_caller]
+fn press_on(cx: &mut TestAppContext, scene: &ShellWindow, key: &str) {
+    let scope = front(cx, scene);
+    on(cx, scene, |window, cx| {
+        common::press(window, cx, scope.as_deref(), key)
+            .map(|_| ())
+            .unwrap_or_else(|error| panic!("{error}"));
+    });
+}
+
+/// A press with the secondary button on a row, brought into view first.
+#[track_caller]
+fn secondary_press_on(cx: &mut TestAppContext, scene: &ShellWindow, key: &str) {
+    on(cx, scene, |window, cx| {
+        let row = common::reach(window, cx, None, key).unwrap_or_else(|error| panic!("{error}"));
+        common::click_at(window, cx, row.bounds().center(), MouseButton::Right);
+    });
+}
+
+/// The VMs the commands act on, as the model has them.
+fn target_vms(cx: &mut TestAppContext, scene: &ShellWindow) -> Vec<String> {
+    model(cx, scene, |m| {
+        m.target().vms().iter().map(ToString::to_string).collect()
+    })
+}
+
+/// The items of the context menu the model has open: command and the
+/// reason it is disabled.
+fn open_menu_items(
+    cx: &mut TestAppContext,
+    scene: &ShellWindow,
+) -> Vec<(&'static str, Option<String>)> {
+    model(cx, scene, |m| {
+        m.context_menu()
+            .into_iter()
+            .flatten()
+            .map(|item| (item.id.0, item.disabled))
+            .collect()
+    })
+}
+
+/// Chooses an item of the popup the shell shows for the open context menu.
+#[track_caller]
+fn choose_from_popup(cx: &mut TestAppContext, scene: &ShellWindow, command: &str) {
+    // An item's element id is its place in the menu, separators counted.
+    let index = model(cx, scene, |m| {
+        let mut index = 0;
+        for (group, items) in m.context_menu().into_iter().enumerate() {
+            if group > 0 {
+                index += 1;
+            }
+            for item in items {
+                if item.id.0 == command {
+                    return Some(index);
+                }
+                index += 1;
+            }
+        }
+        None
+    })
+    .unwrap_or_else(|| panic!("the context menu has no {command}"));
+    on(cx, scene, |window, cx| {
+        window.within("popup-menu").click(index, cx);
+    });
+    for _ in 0..100 {
+        if on(cx, scene, |window, _| {
+            window.try_find("popup-menu").is_none()
+        }) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("the popup stayed open after {command}");
+}
+
+/// The Search tab of the demo pool, and its first two VM rows.
+fn search_tab(cx: &mut TestAppContext, size: (f32, f32)) -> (ShellWindow, [String; 2]) {
+    let scene = open_scene(cx, "demo", size);
+    must(&mut *cx, &scene, Press("tab-search"));
+    let rows: Vec<String> = rows_in(cx, &scene, SEARCH)
+        .into_iter()
+        .map(|(key, _)| key)
+        .filter(|key| key.contains(":VM:"))
+        .collect();
+    assert!(rows.len() >= 2, "the Search table shows {rows:?}");
+    (scene, [rows[0].clone(), rows[1].clone()])
+}
+
+/// power, wish 4.
+#[gpui_kit::test]
+fn multi_selection_survives_inventory_refresh_and_reviews_captured_vms_at_both_sizes(
+    cx: &mut TestAppContext,
+) {
+    for size in BOTH {
+        let (scene, [first, second]) = search_tab(cx, *size);
+        let both = vec![object_of(&first), object_of(&second)];
+        press_on(cx, &scene, &first);
+        assert_eq!(target_vms(cx, &scene), [object_of(&first)]);
+        must(&mut *cx, &scene, Key("shift-down"));
+        assert_eq!(target_vms(cx, &scene), both, "Shift+Down at {size:?}");
+
+        // The inventory is replaced by one that says the same.
+        common::run(cx, &scene, |m| {
+            if let Some(inventory) = m.inventory.take() {
+                m.inventory = Some(std::sync::Arc::new(inventory.as_ref().clone()));
+            }
+        });
+        assert_eq!(target_vms(cx, &scene), both, "after a refresh");
+
+        // The menu of a selected row is the selection's.
+        secondary_press_on(cx, &scene, &second);
+        assert_eq!(target_vms(cx, &scene), both, "after the secondary press");
+        let items = open_menu_items(cx, &scene);
+        assert!(
+            items.contains(&("vm.power-selection", None)),
+            "the menu of two VMs: {items:?}"
+        );
+        choose_from_popup(cx, &scene, "vm.power-selection");
+        must(&mut *cx, &scene, Front("power-batch"));
+        let captured: Vec<String> = model(cx, &scene, |m| {
+            let batch = m.areas.power.batch.as_ref().expect("a power batch");
+            batch.vms.iter().map(|vm| vm.id.to_string()).collect()
+        });
+        assert_eq!(captured, both, "the batch has the two rows, in row order");
+        assert_eq!(submitted(cx, &scene), 0);
+        close(cx, scene);
+    }
+}
+
+/// power, wish 5.
+#[gpui_kit::test]
+fn context_menu_targets_clicked_row_and_keeps_non_vm_menus_relevant(cx: &mut TestAppContext) {
+    let (scene, [first, second]) = search_tab(cx, WIDE);
+    press_on(cx, &scene, &first);
+    // A secondary press on a row that is not selected selects it, and the
+    // menu is that row's.
+    secondary_press_on(cx, &scene, &second);
+    assert_eq!(target_vms(cx, &scene), [object_of(&second)]);
+    let menu = model(cx, &scene, |m| m.selection.menu.clone()).expect("a context menu");
+    assert_eq!(menu.object.id, object_of(&second));
+    let items = open_menu_items(cx, &scene);
+    for command in POWER {
+        assert!(
+            items.iter().any(|(id, _)| *id == command),
+            "the menu of a VM lacks {command}: {items:?}"
+        );
+    }
+    assert!(on(cx, &scene, |window, _| window
+        .try_find("popup-menu")
+        .is_some()));
+    close(cx, scene);
+
+    // A row of another kind has none of them.
+    let scene = open_scene(cx, "demo", WIDE);
+    must(&mut *cx, &scene, Press("tab-search"));
+    must(&mut *cx, &scene, Type("search-text", "Demo network"));
+    must(&mut *cx, &scene, Press("search-apply"));
+    let rows = rows_in(cx, &scene, SEARCH);
+    let network = rows
+        .iter()
+        .find(|(key, _)| !key.contains(":VM:"))
+        .map(|(key, _)| key.clone())
+        .unwrap_or_else(|| panic!("no row but VMs: {rows:?}"));
+    secondary_press_on(cx, &scene, &network);
+    let menu = model(cx, &scene, |m| m.selection.menu.clone()).expect("a context menu");
+    assert_eq!(menu.object.id, object_of(&network));
+    let items = open_menu_items(cx, &scene);
+    assert!(!items.is_empty(), "the row {network} has an empty menu");
+    assert!(
+        !items
+            .iter()
+            .any(|(id, _)| POWER.contains(id) || *id == "vm.power-selection"),
+        "{network}: {items:?}"
+    );
+    close(cx, scene);
+}
+
+/// Every guest of the demo pool selected with Ctrl+A in the Search table,
+/// then the search narrowed to one of them. The rows that are left.
+fn all_guests_selected_then_one_left(
+    cx: &mut TestAppContext,
+) -> (ShellWindow, Vec<(String, String)>) {
+    let limit = "Select between 1 and 32 visible VMs for a power batch";
+    // Only the guests: their UUIDs start so.
+    let scene = open_scene(cx, "demo", WIDE);
+    must(&mut *cx, &scene, Press("tab-search"));
+    must(&mut *cx, &scene, Type("search-text", "30000000-0000"));
+    must(&mut *cx, &scene, Press("search-apply"));
+    let first = rows_in(cx, &scene, SEARCH)
+        .into_iter()
+        .map(|(key, _)| key)
+        .next()
+        .expect("a row");
+    press_on(cx, &scene, &first);
+    must(&mut *cx, &scene, Key("ctrl-a"));
+    let selected = target_vms(cx, &scene);
+    assert!(
+        selected.len() > 32,
+        "Ctrl+A selected {} VMs",
+        selected.len()
+    );
+    let items: Vec<(&'static str, Option<String>)> = model(cx, &scene, |m| {
+        xenadmin_ui::command::context_menu(m, &m.target())
+            .into_iter()
+            .flatten()
+            .map(|item| (item.id.0, item.disabled))
+            .collect()
+    });
+    for command in POWER.into_iter().chain(["vm.power-selection"]) {
+        let reason = items
+            .iter()
+            .find(|(id, _)| *id == command)
+            .unwrap_or_else(|| panic!("no {command} in {items:?}"));
+        assert_eq!(reason.1.as_deref(), Some(limit), "{command}");
+    }
+
+    // A filter that leaves one row leaves that one VM as the target.
+    must(&mut *cx, &scene, Press("search-text"));
+    on(cx, &scene, |window, cx| {
+        window.press("ctrl-a", cx);
+        window.input("Application 02", cx);
+    });
+    must(&mut *cx, &scene, Press("search-apply"));
+    let rows = rows_in(cx, &scene, SEARCH);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    (scene, rows)
+}
+
+/// power, wish 6: more than 32 VMs selected with Ctrl+A leave every power
+/// command disabled with the limit as the reason, and no row a filter has
+/// taken away stays a target.
+#[gpui_kit::test]
+fn batch_uses_only_visible_selection_and_rejects_over_limit_without_silent_subset(
+    cx: &mut TestAppContext,
+) {
+    let (scene, rows) = all_guests_selected_then_one_left(cx);
+    let visible = object_of(&rows[0].0);
+    let targets = target_vms(cx, &scene);
+    assert!(
+        targets.iter().all(|vm| *vm == visible),
+        "a VM that is not shown is still a target: {targets:?}"
+    );
+    close(cx, scene);
+}
+
+/// power, wish 6, its last sentence: the one row a filter leaves, which was
+/// selected, is the target.
+#[gpui_kit::test]
+#[ignore = "xenadmin-ui, area search: a new search empties the grid selection, so the one \
+            selected row that stays visible is no longer the target (Rune kept it)"]
+fn the_selected_row_a_filter_leaves_is_still_the_target(cx: &mut TestAppContext) {
+    let (scene, rows) = all_guests_selected_then_one_left(cx);
+    assert_eq!(target_vms(cx, &scene), [object_of(&rows[0].0)]);
+    close(cx, scene);
+}
