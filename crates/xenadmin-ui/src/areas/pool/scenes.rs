@@ -74,7 +74,12 @@ fn ha_policy(m: &mut Model) {
             a.ha_timeout_override = Some("60".into());
             a.ha_allow_overcommit = Some(false);
         }
-        vm = i.guests().next().map(|vm| vm.id);
+        // The first row of the HA tab's grid (Rune: the first button of
+        // its list).
+        vm = i
+            .guests()
+            .min_by(|a, b| natural_cmp(&a.name, &b.name).then_with(|| a.id.cmp(&b.id)))
+            .map(|vm| vm.id);
         if let Some(d) = vm.and_then(|vm| i.details.vms.get_mut(&vm)) {
             d.appliance_known = true;
             d.appliance = None;
