@@ -117,7 +117,7 @@ fn body(m: &Model, w: &Workspace) -> Vec<Block> {
 
 /// The option of a metric: the policy it belongs to and its place in
 /// [`AlarmMetric::ALL`].
-fn metric_id(index: usize, metric: AlarmMetric) -> String {
+pub(super) fn metric_id(index: usize, metric: AlarmMetric) -> String {
     let place = AlarmMetric::ALL.iter().position(|m| *m == metric);
     format!("{index}:{}", place.unwrap_or_default())
 }
