@@ -36,8 +36,10 @@ use xenadmin_core::{
     OperationId, OperationState, PowerAction, PowerState, VmCommand, VmId, VmSettingEdit,
     VmSettingsPatch,
 };
+use xenadmin_gpui::charts;
 use xenadmin_gpui::shell::status;
 use xenadmin_ui::areas::console::{self, Seat};
+use xenadmin_ui::areas::performance;
 use xenadmin_ui::command::Menu;
 use xenadmin_ui::nav::NavView;
 use xenadmin_ui::object::ObjectRef;
@@ -1112,6 +1114,106 @@ fn lab_p3_snapshots() {
     evidence.note("delete_seconds", json!(seconds(took)));
     evidence.note("guest", json!(guest_name));
     evidence.note("snapshots_left_of_this_run", json!(0));
+    client.close();
+    evidence.finish();
+}
+
+/// The Performance tab of the selected object: waits for charts with real
+/// samples, and checks what the chart element computed and drew of them.
+fn performance_of(client: &mut Client, evidence: &mut Evidence, what: &str) -> serde_json::Value {
+    client.tab(TabId::Performance);
+    client.snap(evidence, &format!("performance-{what}-opened"));
+    let took = client.wait(
+        "the Performance tab has a chart with samples",
+        Duration::from_secs(180),
+        |client| {
+            client.model(|m| {
+                performance::charts(m).iter().any(|chart| {
+                    chart
+                        .plot
+                        .as_ref()
+                        .is_some_and(|plot| plot.segments.iter().map(Vec::len).sum::<usize>() >= 2)
+                })
+            })
+        },
+    );
+    let charts = client.model(performance::charts);
+    let with_samples: Vec<_> = charts.iter().filter(|chart| chart.plot.is_some()).collect();
+    // The first chart with samples: what the element painted is the
+    // geometry of the model's plot, at the size of the element in the frame.
+    let chart = with_samples[0];
+    let plot = chart.plot.as_ref().expect("a plot");
+    let samples: usize = plot.segments.iter().map(Vec::len).sum();
+    let key = format!("{}{}", chart.key, charts::PLOT);
+    client
+        .on(|window, cx| common::reach(window, cx, None, &key).map(|_| ()))
+        .unwrap_or_else(|error| panic!("the plot cannot be brought into view: {error}"));
+    let painted = client
+        .painted_chart(&chart.key)
+        .expect("the chart element painted its plot");
+    let drawn: usize =
+        painted.geometry.lines.iter().map(Vec::len).sum::<usize>() + painted.geometry.marks.len();
+    assert_eq!(
+        drawn, samples,
+        "every sample of the plot is a point of the painted geometry"
+    );
+    assert_eq!(
+        painted.geometry,
+        charts::geometry(plot, painted.geometry.width, painted.geometry.height)
+    );
+    assert!(painted.geometry.width > 100. && painted.geometry.height == charts::PLOT_HEIGHT);
+    let summary = client
+        .chrome(&format!("{}{}", chart.key, charts::SUMMARY))
+        .and_then(|element| element.label().map(str::to_owned))
+        .expect("the summary line of the card");
+    assert_eq!(summary, chart.summary);
+    assert!(summary.starts_with("Latest:"), "{summary}");
+    assert_ne!(plot.first, plot.last, "the samples span time");
+    client.snap(evidence, &format!("performance-{what}"));
+    let result = json!({
+        "seconds_to_first_samples": seconds(took),
+        "charts": charts.len(),
+        "charts_with_samples": with_samples.len(),
+        "first_chart": chart.title,
+        "summary": summary,
+        "samples": samples,
+        "strokes": painted.geometry.lines.len(),
+        "first_sample": plot.first,
+        "last_sample": plot.last,
+        "high": plot.high,
+        "low": plot.low,
+    });
+    evidence.step(
+        "the Performance tab shows charts with real samples",
+        result.clone(),
+    );
+    result
+}
+
+/// P3.5: the Performance tab of the plain guest and of the coordinator
+/// shows charts with real samples.
+#[test]
+#[ignore]
+fn lab_p3_performance() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-5-performance");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, _, name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    let result = performance_of(&mut client, &mut evidence, "guest");
+    evidence.note("guest", json!({ "name": name, "performance": result }));
+
+    let host = client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        let id = inventory.coordinator.expect("a coordinator");
+        (
+            ObjectRef::host(inventory.pool_id, id),
+            inventory.hosts[&id].name.clone(),
+        )
+    });
+    client.select(&host.0);
+    let result = performance_of(&mut client, &mut evidence, "server");
+    evidence.note("server", json!({ "name": host.1, "performance": result }));
     client.close();
     evidence.finish();
 }

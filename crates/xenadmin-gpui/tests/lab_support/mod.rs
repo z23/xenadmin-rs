@@ -984,6 +984,14 @@ impl Client {
         })
     }
 
+    /// What the plot of a chart painted in the last frame of the main
+    /// window: the geometry the element computed from the chart's data.
+    pub fn painted_chart(&mut self, key: &str) -> Option<xenadmin_gpui::charts::Painted> {
+        let window = self.window.window_id();
+        self.cx
+            .update(|cx| xenadmin_gpui::charts::painted(window, key, cx))
+    }
+
     /// What the main window draws inside the element with the key: the
     /// pixels of the captured frame within its bounds.
     pub fn pixels_of(&mut self, key: &str) -> Option<image::RgbaImage> {
