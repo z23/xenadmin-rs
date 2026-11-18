@@ -7,10 +7,26 @@
 //!   directory, removed on drop (the crate has no `tempfile`).
 //! - [`Fixture`]: a model with a writable, empty profile store in a private
 //!   directory (the Rune `profiles_view::tests::Fixture`).
-//! - [`Server`]: a local JSON-RPC server that answers a login, the first
-//!   event batch with one pool, and a logout. With [`connected`] a fixture
-//!   gets a real `Backend` and a live, current session against it, so a
-//!   test can have a current snapshot without a host:
+//! - [`Server`]: a local JSON-RPC server. [`Server::new`] serves one pool;
+//!   [`Server::with_vm`] a pool, a host and a halted VM that can be started
+//!   once, with the task of that start. With [`connected`] (read-only) or
+//!   [`connected_as`] a fixture gets a real `Backend` and a live, current
+//!   session against it, so a test can have a current snapshot, an
+//!   `ObservedVm` and a submission that succeeds, without a host.
+//! - [`Live`]: all of it in one value, for a test of a surface that needs
+//!   an observed VM:
+//!
+//! ```ignore
+//! let mut live = Live::with_vm();                 // writable, current, the scope session
+//! live.h.select(Target::one(live.vm()));
+//! live.h.invoke("vm.start");
+//! poll_until(&mut live.h, "the start succeeded", |h| {
+//!     h.model.operation_rows.iter().any(|r| r.state == OperationState::Succeeded)
+//! });
+//! assert_eq!(live.server.count("Async.VM.start"), 1);
+//! ```
+//!
+//! The parts, for a test that wants a read-only session or several pools:
 //!
 //! ```ignore
 //! let pool = PoolId::from(uuid::Uuid::new_v4());
@@ -20,11 +36,17 @@
 //! let mut h = Harness::with(std::mem::take(&mut fixture.model));
 //! poll_until(&mut h, "the pool is shown", |h| h.model.inventory.is_some());
 //! // keep `fixture` and `server` alive until the end of the test
+//! // a second pool: connect(&mut h.model, &other_server, other_pool, "Other", false)
 //! ```
 //!
-//! The server knows three calls; any other request panics in its thread
-//! and the client sees a closed connection. A test that needs more of the
-//! API extends `serve` here.
+//! What the server answers: `session.login_with_password`,
+//! `session.get_record` (a local superuser unless [`Server::session`] says
+//! otherwise), `event.from` (the inventory first, then what changed),
+//! `session.logout`; with a VM also `host.get_all_records`,
+//! `Async.VM.start`, `task.get_record` and `task.destroy`. Any other
+//! request panics in its thread and the client sees a closed connection
+//! ([`Server::calls`] still lists it). A test that needs more of the API
+//! extends `respond` here.
 
 use std::{
     io::{BufRead, Read, Write},
@@ -36,13 +58,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde_json::{Value, json};
 use xenadmin_core::{
-    Backend, Connection, ConnectionProfile, CredentialMode, Credentials, Endpoint, PoolId,
-    ProfileStore,
+    Backend, Connection, ConnectionProfile, CredentialMode, Credentials, Endpoint, HostId, PoolId,
+    ProfileStore, VmId,
 };
 
 use crate::Harness;
 use crate::model::Model;
+use crate::object::ObjectRef;
 use crate::session::{self, Workspace};
 
 /// A private directory under the system's temporary directory, removed
@@ -99,17 +123,96 @@ impl Drop for Fixture {
     }
 }
 
-/// A local JSON-RPC server that answers a login, the first event batch
-/// with one pool, and a logout (the Rune fixture).
+/// What a [`Server`] serves and what it was asked.
+struct World {
+    pool: PoolId,
+    /// The host and the VM of [`Server::with_vm`].
+    guest: Option<(HostId, VmId)>,
+    /// The answer to `session.get_record`.
+    session: Value,
+    /// Every method asked, in order.
+    calls: Vec<String>,
+    /// The VM was started and its task has been read as a success.
+    running: bool,
+    /// `Async.VM.start` is received and not answered.
+    lose_replies: bool,
+    /// `task.get_record` says the task is pending.
+    hold_tasks: bool,
+    /// Events for the next `event.from`.
+    pending: Vec<Value>,
+}
+
+impl World {
+    fn vm_record(&self, vm: VmId) -> Value {
+        let (state, allowed) = if self.running {
+            (
+                "Running",
+                json!([
+                    "clean_shutdown",
+                    "hard_shutdown",
+                    "clean_reboot",
+                    "hard_reboot"
+                ]),
+            )
+        } else {
+            ("Halted", json!(["start", "start_on"]))
+        };
+        json!({
+            "uuid": vm.to_string(), "name_label": "Fixture guest", "power_state": state,
+            "is_a_snapshot": false, "is_a_template": false, "is_control_domain": false,
+            "VCPUs_at_startup": "2", "memory_static_max": "2147483648",
+            "allowed_operations": allowed,
+        })
+    }
+
+    fn host_record(host: HostId) -> Value {
+        json!({
+            "uuid": host.to_string(), "name_label": "Fixture host",
+            "address": "192.0.2.10", "enabled": true,
+        })
+    }
+
+    fn inventory(&self) -> Vec<Value> {
+        let event = |class: &str, reference: &str, record: Value| json!({"class": class, "operation": "add", "ref": reference, "snapshot": record});
+        let mut pool = json!({"uuid": self.pool.to_string(), "name_label": "Fixture pool"});
+        let mut events = Vec::new();
+        if let Some((host, vm)) = self.guest {
+            pool["master"] = json!("OpaqueRef:host");
+            events.push(event("host", "OpaqueRef:host", Self::host_record(host)));
+            events.push(event("VM", "OpaqueRef:vm", self.vm_record(vm)));
+        }
+        events.insert(0, event("pool", "OpaqueRef:pool", pool));
+        events
+    }
+}
+
+/// A local JSON-RPC server that answers a login, the session's record, the
+/// event stream of one pool and a logout (the Rune fixture); with
+/// [`Server::with_vm`] also one start of its VM.
 pub struct Server {
     pub address: std::net::SocketAddr,
     pub endpoint: Endpoint,
     stop: Arc<AtomicBool>,
     logins: Arc<Mutex<Vec<(String, String)>>>,
+    world: Arc<Mutex<World>>,
 }
 impl Server {
+    /// A pool without hosts or VMs.
     pub fn new(pool: PoolId) -> Self {
         Self::on(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), pool)
+    }
+
+    /// A pool "Fixture pool" with one enabled host "Fixture host" (its
+    /// coordinator) and one halted VM "Fixture guest" that allows `start`:
+    /// [`Server::host`], [`Server::vm`]. `Async.VM.start` is accepted, its
+    /// task succeeds, and the event stream then says the VM is running.
+    pub fn with_vm(pool: PoolId) -> Self {
+        let server = Self::new(pool);
+        server.world.lock().unwrap().guest = Some((
+            HostId::from(uuid::Uuid::new_v4()),
+            VmId::from(uuid::Uuid::new_v4()),
+        ));
+        server
     }
 
     /// A server on the address another one had: the host is back. The
@@ -134,14 +237,25 @@ impl Server {
         let endpoint = Endpoint::parse(&format!("http://{address}")).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let logins = Arc::new(Mutex::new(Vec::new()));
+        let world = Arc::new(Mutex::new(World {
+            pool,
+            guest: None,
+            session: json!({"is_local_superuser": true}),
+            calls: Vec::new(),
+            running: false,
+            lose_replies: false,
+            hold_tasks: false,
+            pending: Vec::new(),
+        }));
         let signal = stop.clone();
         let seen = logins.clone();
+        let shared = world.clone();
         std::thread::spawn(move || {
             while !signal.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let logins = seen.clone();
-                        std::thread::spawn(move || serve(stream, pool, &logins));
+                        let (logins, world) = (seen.clone(), shared.clone());
+                        std::thread::spawn(move || serve(stream, &world, &logins));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2))
@@ -155,11 +269,55 @@ impl Server {
             endpoint,
             stop,
             logins,
+            world,
         }
     }
 
     pub fn logins(&self) -> Vec<(String, String)> {
         self.logins.lock().unwrap().clone()
+    }
+
+    /// The VM of [`Server::with_vm`].
+    pub fn vm(&self) -> VmId {
+        self.world.lock().unwrap().guest.expect("Server::with_vm").1
+    }
+
+    /// The host of [`Server::with_vm`].
+    pub fn host(&self) -> HostId {
+        self.world.lock().unwrap().guest.expect("Server::with_vm").0
+    }
+
+    /// Every method the server was asked, in order, also one it refused.
+    pub fn calls(&self) -> Vec<String> {
+        self.world.lock().unwrap().calls.clone()
+    }
+
+    /// How often a method was asked: `server.count("Async.VM.start")`.
+    pub fn count(&self, method: &str) -> usize {
+        let world = self.world.lock().unwrap();
+        world.calls.iter().filter(|call| *call == method).count()
+    }
+
+    /// What `session.get_record` answers at the next login: the default is
+    /// `{"is_local_superuser": true}` (everything granted). A session that
+    /// may not start a VM: `{"is_local_superuser": false, "rbac_permissions":
+    /// ["session.logout"]}`. Call it before the session connects.
+    pub fn session(&self, record: Value) {
+        self.world.lock().unwrap().session = record;
+    }
+
+    /// While set, `Async.VM.start` is received and never answered: the
+    /// client cannot know whether the VM started, and its operation ends as
+    /// an unknown outcome.
+    pub fn lose_replies(&self, lose: bool) {
+        self.world.lock().unwrap().lose_replies = lose;
+    }
+
+    /// While set, the task of a start stays pending, so its operation stays
+    /// unfinished with a host task; cleared, the next read of the task is a
+    /// success.
+    pub fn hold_tasks(&self, hold: bool) {
+        self.world.lock().unwrap().hold_tasks = hold;
     }
 }
 impl Drop for Server {
@@ -169,7 +327,7 @@ impl Drop for Server {
 }
 
 /// Answers one request of one connection.
-fn serve(stream: std::net::TcpStream, pool: PoolId, logins: &Mutex<Vec<(String, String)>>) {
+fn serve(stream: std::net::TcpStream, world: &Mutex<World>, logins: &Mutex<Vec<(String, String)>>) {
     // The listener is non-blocking; the accepted stream must not be.
     stream.set_nonblocking(false).unwrap();
     stream
@@ -196,36 +354,22 @@ fn serve(stream: std::net::TcpStream, pool: PoolId, logins: &Mutex<Vec<(String, 
     if input.read_exact(&mut bytes).is_err() {
         return;
     }
-    let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let request: Value = serde_json::from_slice(&bytes).unwrap();
     let method = request["method"].as_str().unwrap();
-    let result = match method {
-        "session.login_with_password" => {
-            logins.lock().unwrap().push((
-                request["params"][0].as_str().unwrap().into(),
-                request["params"][1].as_str().unwrap().into(),
-            ));
-            serde_json::json!("OpaqueRef:fixture-session")
-        }
-        "event.from" => {
-            if request["params"][2] != "" {
-                std::thread::sleep(Duration::from_millis(100));
-                serde_json::json!({"token": "fixture", "events": []})
-            } else {
-                serde_json::json!({"token": "fixture", "events": [{
-                    "class": "pool",
-                    "operation": "add",
-                    "ref": "OpaqueRef:pool",
-                    "snapshot": {"uuid": pool.to_string(), "name_label": "Fixture pool"}
-                }]})
-            }
-        }
-        "session.logout" => serde_json::Value::Null,
-        _ => panic!("Unexpected fixture request: {method}"),
+    world.lock().unwrap().calls.push(method.to_owned());
+    if method == "session.login_with_password" {
+        logins.lock().unwrap().push((
+            request["params"][0].as_str().unwrap().into(),
+            request["params"][1].as_str().unwrap().into(),
+        ));
+    }
+    let Some(result) = respond(world, method, &request["params"]) else {
+        // The reply is lost: the connection closes without one.
+        return;
     };
-    let body = serde_json::to_vec(
-        &serde_json::json!({"jsonrpc": "2.0", "id": request["id"], "result": result}),
-    )
-    .unwrap();
+    let body =
+        serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+            .unwrap();
     let mut stream = input.into_inner();
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -234,6 +378,68 @@ fn serve(stream: std::net::TcpStream, pool: PoolId, logins: &Mutex<Vec<(String, 
     let _ = stream.write_all(header.as_bytes());
     let _ = stream.write_all(&body);
 }
+
+/// The result of one call; `None` when the reply is to be lost.
+fn respond(world: &Mutex<World>, method: &str, params: &Value) -> Option<Value> {
+    let has_vm = world.lock().unwrap().guest.is_some();
+    Some(match method {
+        "session.login_with_password" => json!("OpaqueRef:fixture-session"),
+        "session.get_record" => world.lock().unwrap().session.clone(),
+        "session.logout" => Value::Null,
+        "event.from" if params[2] == "" => {
+            let mut world = world.lock().unwrap();
+            world.pending.clear();
+            json!({"token": "fixture", "events": world.inventory()})
+        }
+        "event.from" => {
+            // The long poll: what changed, as soon as something has.
+            let start = Instant::now();
+            let events = loop {
+                let events = std::mem::take(&mut world.lock().unwrap().pending);
+                if !events.is_empty() || start.elapsed() >= Duration::from_millis(100) {
+                    break events;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            json!({"token": "fixture", "events": events})
+        }
+        "host.get_all_records" if has_vm => {
+            let host = world.lock().unwrap().guest.unwrap().0;
+            json!({"OpaqueRef:host": World::host_record(host)})
+        }
+        "Async.VM.start" if has_vm => {
+            assert_eq!(params[1], "OpaqueRef:vm", "the VM of the fixture");
+            if world.lock().unwrap().lose_replies {
+                return None;
+            }
+            json!("OpaqueRef:task")
+        }
+        "task.get_record" if has_vm => {
+            let mut world = world.lock().unwrap();
+            if world.hold_tasks {
+                json!({"uuid": TASK, "status": "pending", "progress": 0.5,
+                    "allowed_operations": []})
+            } else {
+                if !world.running {
+                    world.running = true;
+                    let vm = world.guest.unwrap().1;
+                    let record = world.vm_record(vm);
+                    world.pending.push(json!({
+                        "class": "VM", "operation": "mod", "ref": "OpaqueRef:vm",
+                        "snapshot": record,
+                    }));
+                }
+                json!({"uuid": TASK, "status": "success", "progress": 1.0,
+                    "allowed_operations": []})
+            }
+        }
+        "task.destroy" if has_vm => Value::Null,
+        _ => panic!("Unexpected fixture request: {method}"),
+    })
+}
+
+/// The UUID of the one task the server knows.
+const TASK: &str = "44444444-4444-4444-4444-444444444444";
 
 /// Polls the model, as its window does on every wake, until the
 /// condition holds.
@@ -268,17 +474,47 @@ pub fn ready(c: &Connection) {
 /// snapshot is current, so `can_mutate` holds what a read-only session
 /// allows. Returns the saved profile.
 pub fn connected(f: &mut Fixture, server: &Server, pool: PoolId) -> ConnectionProfile {
+    connected_as(f, server, pool, "Fixture", true)
+}
+
+/// [`connected`] under a name and writable or not. A writable session can
+/// submit: its journal is in the fixture's private directory. The backend
+/// is started once; a second call adds a second session to it (and makes
+/// that one the scope session).
+pub fn connected_as(
+    f: &mut Fixture,
+    server: &Server,
+    pool: PoolId,
+    name: &str,
+    read_only: bool,
+) -> ConnectionProfile {
     let m = &mut f.model;
     // `Fixture::new` leaves the connect form open, in front.
     session::cancel_editor(m);
     m.workspace.show_connect = false;
     m.workspace.password.clear();
     m.workspace.restore_started = true;
-    m.backend = Ok(Backend::with_state_directory(f.directory.clone()).unwrap());
+    if m.backend.is_err() {
+        m.backend = Ok(Backend::with_state_directory(f.directory.clone()).unwrap());
+    }
+    connect(m, server, pool, name, read_only)
+}
+
+/// Adds a saved connection to a model that has a backend and a writable
+/// profile store (a fixture after [`connected`], [`Live`]): connected to
+/// the server, current, and the scope session, with the tree selection on
+/// its pool. For a test of several pools; select the object you want next.
+pub fn connect(
+    m: &mut Model,
+    server: &Server,
+    pool: PoolId,
+    name: &str,
+    read_only: bool,
+) -> ConnectionProfile {
     let mut profile =
-        ConnectionProfile::new("Fixture".into(), server.endpoint.clone(), "operator".into());
+        ConnectionProfile::new(name.into(), server.endpoint.clone(), "operator".into());
     profile.pool = Some(pool);
-    profile.read_only = true;
+    profile.read_only = read_only;
     profile.credential_mode = CredentialMode::SecretService;
     profile.auto_connect = true;
     m.workspace
@@ -299,9 +535,60 @@ pub fn connected(f: &mut Fixture, server: &Server, pool: PoolId) -> ConnectionPr
     m.workspace.profile(profile.id).unwrap().clone()
 }
 
+/// A harness over one writable, current session against a [`Server`] with
+/// a VM: what a test of a surface that captures an `ObservedVm`, or of a
+/// submission that succeeds, starts from. The pool is the scope and
+/// `h.model.can_mutate()` holds.
+pub struct Live {
+    pub h: Harness,
+    pub server: Server,
+    pub pool: PoolId,
+    pub profile: ConnectionProfile,
+    // After the harness: the model's backend writes into its directory.
+    _fixture: Fixture,
+}
+
+impl Live {
+    #[allow(clippy::new_without_default)]
+    pub fn with_vm() -> Self {
+        let pool = PoolId::from(uuid::Uuid::new_v4());
+        Self::over(Server::with_vm(pool), pool, false)
+    }
+
+    /// Over a server the test prepared ([`Server::session`], a pool
+    /// without a VM), writable or read-only.
+    pub fn over(server: Server, pool: PoolId, read_only: bool) -> Self {
+        let mut fixture = Fixture::new();
+        let profile = connected_as(&mut fixture, &server, pool, "Fixture", read_only);
+        let mut h = Harness::with(std::mem::take(&mut fixture.model));
+        poll_until(&mut h, "the fixture pool is shown and current", |h| {
+            h.model.inventory.is_some() && h.model.can_mutate_pool(pool) == !read_only
+        });
+        Self {
+            h,
+            server,
+            pool,
+            profile,
+            _fixture: fixture,
+        }
+    }
+
+    /// The server's VM as an object of the tree.
+    pub fn vm(&self) -> ObjectRef {
+        ObjectRef::vm(self.pool, self.server.vm())
+    }
+
+    /// The server's host as an object of the tree.
+    pub fn host(&self) -> ObjectRef {
+        ObjectRef::host(self.pool, self.server.host())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object::Target;
+    use xenadmin_core::{OperationState, PermissionDecision, PowerAction, PowerState, VmCommand};
 
     #[test]
     fn a_temporary_directory_is_private_to_its_guard_and_goes_with_it() {
@@ -332,6 +619,16 @@ mod tests {
         assert!(Arc::ptr_eq(&listed, &adopted));
         assert!(adopted.is_current());
         assert_eq!(server.logins().len(), 1);
+        // The session's record is answered: nothing was refused.
+        assert_eq!(server.count("session.get_record"), 1);
+        assert!(
+            server.calls().iter().all(|call| matches!(
+                call.as_str(),
+                "session.login_with_password" | "session.get_record" | "event.from"
+            )),
+            "{:?}",
+            server.calls()
+        );
         // The list holds an older snapshot than the connection has now (as
         // when the connection moved on between the two readings of one
         // poll): the model adopts the listed one.
@@ -345,5 +642,66 @@ mod tests {
         let listed = h.model.workspace.seen[&profile.id].clone();
         assert!(Arc::ptr_eq(&listed, h.model.snapshot.as_ref().unwrap()));
         assert!(!Arc::ptr_eq(&listed, &older));
+    }
+
+    // The server with a VM gives the core what it needs to observe the VM,
+    // accepts one start, and says afterwards that the VM runs.
+    #[test]
+    fn the_server_with_a_vm_serves_an_observed_vm_and_one_start_that_succeeds() {
+        let mut live = Live::with_vm();
+        let (pool, vm, host) = (live.pool, live.server.vm(), live.server.host());
+        let inventory = live.h.model.inventory.clone().expect("an inventory");
+        assert_eq!(inventory.pool_id, pool);
+        assert_eq!(inventory.pool_name, "Fixture pool");
+        assert!(inventory.hosts[&host].enabled);
+        let guest = &inventory.vms[&vm];
+        assert_eq!(
+            (guest.name.as_str(), &guest.power_state),
+            ("Fixture guest", &PowerState::Halted)
+        );
+        assert!(guest.allowed_actions.contains(&PowerAction::Start));
+        assert!(live.h.model.can_mutate() && live.h.model.can_mutate_pool(pool));
+        assert_eq!(
+            live.h.model.scope(),
+            &Target::one(ObjectRef::pool(pool)),
+            "the session's pool is the scope"
+        );
+        // A local superuser: the permission is known and granted.
+        assert_eq!(
+            crate::permissions::power_for(&live.h.model, pool, PowerAction::Start),
+            Some(PermissionDecision::Granted)
+        );
+
+        let observed = live
+            .h
+            .model
+            .snapshot_for(pool)
+            .and_then(|snapshot| snapshot.observe_vm(vm).ok())
+            .expect("an observed VM");
+        let id = live
+            .h
+            .model
+            .submit_tracked_command_for(
+                pool,
+                VmCommand::Power {
+                    vm: observed,
+                    action: PowerAction::Start,
+                },
+            )
+            .expect("the start is submitted");
+        poll_until(&mut live.h, "the start succeeded", |h| {
+            h.model
+                .operation_rows
+                .iter()
+                .any(|r| r.id == id && r.state == OperationState::Succeeded)
+        });
+        assert_eq!(live.server.count("Async.VM.start"), 1);
+        assert_eq!(live.server.count("task.destroy"), 1);
+        poll_until(&mut live.h, "the VM is shown running", |h| {
+            h.model
+                .inventory_for(pool)
+                .is_some_and(|i| i.vms[&vm].power_state == PowerState::Running)
+        });
+        assert_eq!(live.server.logins().len(), 1);
     }
 }
