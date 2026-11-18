@@ -203,7 +203,10 @@ impl PropertyPage {
     /// plan does not have gets itself as its label and comes last
     /// ([`Self::UNPLANNED`]); prefer [`Self::new`] for such a page.
     pub fn planned(kind: PropertiesKind, id: &'static str) -> Self {
-        let position = kind.planned().iter().position(|(planned, _)| *planned == id);
+        let position = kind
+            .planned()
+            .iter()
+            .position(|(planned, _)| *planned == id);
         match position {
             Some(index) => Self::new(id, kind.planned()[index].1, (index as u16 + 1) * 10),
             None => Self::new(id, id, Self::UNPLANNED),

@@ -791,7 +791,9 @@ impl Model {
         let mut surfaces = Vec::new();
         for area in areas::specs() {
             surfaces.extend((area.surfaces)(self));
-            if properties.as_ref().is_some_and(|(owner, _)| *owner == area.id)
+            if properties
+                .as_ref()
+                .is_some_and(|(owner, _)| *owner == area.id)
                 && let Some((_, surface)) = properties.take()
             {
                 surfaces.push(surface);

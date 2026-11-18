@@ -116,7 +116,12 @@ fn server_menu(h: &Harness) -> Vec<MenuItem> {
         .into_iter()
         .filter(|menu| menu.menu == Menu::Server)
         .flat_map(|menu| menu.items().cloned().collect::<Vec<_>>())
-        .filter(|item| command::find(item.id).is_some_and(|spec| spec.area == "host_admin"))
+        // This area's commands, and the kernel's Properties command, which
+        // opens the dialog with this area's pages.
+        .filter(|item| {
+            item.id == crate::properties::SERVER
+                || command::find(item.id).is_some_and(|spec| spec.area == "host_admin")
+        })
         .collect()
 }
 

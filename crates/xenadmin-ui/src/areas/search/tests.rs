@@ -602,10 +602,11 @@ fn the_objects_view_presets_the_type_and_a_description_is_never_stale() {
     h.open_tab(TabId::Search);
     assert_eq!(sheet(&h).query.host, host.to_string());
     assert_eq!(headers(&h, "search-results")[1], "Type");
-    // Switching the navigation view runs no hook: the stored sheet is
-    // behind, and the description is right all the same.
+    // Switching the navigation view tells the area (`on_nav_change`): the
+    // stored sheet is brought up to date at once.
     h.open_view(NavView::Objects);
-    assert_eq!(sheet(&h).query.host, host.to_string());
+    assert_eq!(sheet(&h).query.kinds, [SearchKind::Host].into());
+    assert!(sheet(&h).query.host.is_empty());
     assert_eq!(
         headers(&h, "search-results"),
         ["Name", "State", "Address", "Pool", "Inventory"]
@@ -615,16 +616,18 @@ fn the_objects_view_presets_the_type_and_a_description_is_never_stale() {
         h.node("search-scope").text.as_deref(),
         Some("Scope: Every Host of every connected pool")
     );
-    // A poll brings the stored sheet up to date.
-    assert!(h.tick(0.1));
-    assert_eq!(sheet(&h).query.kinds, [SearchKind::Host].into());
-    assert!(sheet(&h).query.host.is_empty());
     assert!(!h.tick(0.1), "nothing changed since");
-    // Leaving the Objects view takes the type back.
-    h.open_view(NavView::Infrastructure);
-    h.tick(0.1);
+    // When no hook ran (the view is set behind the area's back), the
+    // stored sheet is behind and the description is right all the same.
+    h.model.nav.view = NavView::Infrastructure;
+    assert_eq!(sheet(&h).query.kinds, [SearchKind::Host].into());
+    assert_eq!(headers(&h, "search-results")[1], "Type");
+    // A poll brings the stored sheet up to date: leaving the Objects view
+    // takes the type back.
+    assert!(h.tick(0.1));
     assert!(sheet(&h).query.kinds.is_empty());
     assert_eq!(sheet(&h).query.host, host.to_string());
+    assert!(!h.tick(0.1), "nothing changed since");
 }
 
 #[test]
