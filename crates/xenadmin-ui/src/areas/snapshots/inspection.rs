@@ -458,74 +458,76 @@ pub fn section(m: &Model, i: &Inventory, pool: PoolId, vm: VmId, snapshot: &Snap
                 .filter(|p| p.pending())
                 .map(|p| p.message.clone()),
         );
-    group(
-        "Snapshot information",
-        blocks![
-            properties([
-                property("Name", snapshot.name.clone()),
-                property("UUID", snapshot.id.to_string()).copyable(),
-                property(
-                    "Created (host time)",
-                    snapshot.created_at.as_deref().unwrap_or("Unknown date"),
+    // What is known of the snapshot, and beside it (under it when narrow)
+    // its saved preview.
+    let known: Vec<Block> = blocks![
+        properties([
+            property("Name", snapshot.name.clone()),
+            property("UUID", snapshot.id.to_string()).copyable(),
+            property(
+                "Created (host time)",
+                snapshot.created_at.as_deref().unwrap_or("Unknown date"),
+            ),
+            property("Description", snapshot.description.clone()),
+        ]),
+        caption(format!(
+            "Captured pool {} · revision {} · {}",
+            i.pool_id,
+            i.revision,
+            if synthetic {
+                "Synthetic inventory"
+            } else if current {
+                "Current at capture"
+            } else {
+                "Stale at capture"
+            }
+        ))
+        .key("snapshot-information-source"),
+        properties([
+            property(
+                "VM",
+                format!(
+                    "{} ({vm})",
+                    i.vms
+                        .get(&vm)
+                        .map(|vm| vm.name.as_str())
+                        .unwrap_or("Unavailable"),
                 ),
-                property("Description", snapshot.description.clone()),
-            ]),
-            caption(format!(
-                "Captured pool {} · revision {} · {}",
-                i.pool_id,
-                i.revision,
-                if synthetic {
-                    "Synthetic inventory"
-                } else if current {
-                    "Current at capture"
-                } else {
-                    "Stale at capture"
-                }
-            ))
-            .key("snapshot-information-source"),
-            properties([
-                property(
-                    "VM",
-                    format!(
-                        "{} ({vm})",
-                        i.vms
-                            .get(&vm)
-                            .map(|vm| vm.name.as_str())
-                            .unwrap_or("Unavailable"),
-                    ),
-                ),
-                property("Parent snapshot", parent),
-            ]),
-            ancestry
-                .as_ref()
-                .filter(|row| row.current_parent)
-                .map(|_| caption("The VM currently descends from this snapshot.")),
-            ancestry.as_ref().and_then(|row| row.issue).map(caption),
-            heading("Virtual disks"),
-            (!complete).then(|| caption(
-                "Disk inventory is incomplete; sizes and attachments may be missing."
-            )),
-            ids.iter().map(|id| disk(i, *id)).collect::<Vec<_>>(),
-            ids.is_empty()
-                .then(|| caption("No resolved attached disks in this captured inventory.")),
-            (unresolved > 0).then(|| caption(format!(
-                "{unresolved} attachment(s) could not be resolved."
-            ))),
-            properties([property(
-                "Sum of reported disk allocations",
-                if complete && unresolved == 0 {
-                    size(total)
-                } else {
-                    "Incomplete inventory".into()
-                },
-            )]),
-            caption("Allocations are reported by the storage backend. Shared blocks and snapshot chains mean this is not exclusive usage or the space deletion would reclaim."),
-            memory,
-            heading("Saved preview"),
-            caption(message).key("snapshot-preview-message"),
-            picture,
-            actions([load]),
-        ],
-    )
-    .key("snapshot-information")
+            ),
+            property("Parent snapshot", parent),
+        ]),
+        ancestry
+            .as_ref()
+            .filter(|row| row.current_parent)
+            .map(|_| caption("The VM currently descends from this snapshot.")),
+        ancestry.as_ref().and_then(|row| row.issue).map(caption),
+        heading("Virtual disks"),
+        (!complete).then(|| caption(
+            "Disk inventory is incomplete; sizes and attachments may be missing."
+        )),
+        ids.iter().map(|id| disk(i, *id)).collect::<Vec<_>>(),
+        ids.is_empty()
+            .then(|| caption("No resolved attached disks in this captured inventory.")),
+        (unresolved > 0).then(|| caption(format!(
+            "{unresolved} attachment(s) could not be resolved."
+        ))),
+        properties([property(
+            "Sum of reported disk allocations",
+            if complete && unresolved == 0 {
+                size(total)
+            } else {
+                "Incomplete inventory".into()
+            },
+        )]),
+        caption("Allocations are reported by the storage backend. Shared blocks and snapshot chains mean this is not exclusive usage or the space deletion would reclaim."),
+        memory,
+    ];
+    let preview: Vec<Block> = blocks![
+        heading("Saved preview"),
+        caption(message).key("snapshot-preview-message"),
+        picture,
+        actions([load]),
+    ];
+    group("Snapshot information", vec![columns([known, preview])])
+        .key("snapshot-information")
 }
