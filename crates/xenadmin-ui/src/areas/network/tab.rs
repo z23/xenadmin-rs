@@ -424,6 +424,10 @@ fn network_networking(m: &Model, i: &Inventory, pool: PoolId, id: NetworkId) -> 
             ]
         )
         .key("networking-vifs"),
+        // The service state (NBD) and the tunnel and SR-IOV coverage of the
+        // network: information of the `network_services` area, whose
+        // commands are on this tab's row.
+        crate::areas::network_services::networking_sections(i, id),
         latest(m, pool),
     ]
 }

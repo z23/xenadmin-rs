@@ -1179,3 +1179,96 @@ fn one_surface_of_the_area_at_a_time() {
         Eligibility::disabled(SELECT_NETWORK)
     );
 }
+
+// -- 5. With the `network_services` area ----------------------------------------------
+
+/// The Type step of New Network lists the fabric wizards of
+/// `network_services` under the labels of their commands. Without a
+/// network as the target they say what is missing; with one, choosing a
+/// type closes this wizard and opens that area's on the same network.
+#[test]
+fn the_type_step_hands_over_to_the_fabric_wizards() {
+    use crate::areas::network_services::commands::{FABRIC_ADD, FABRIC_COMPLETE_POOL};
+    let mut h = Harness::scene("pool-administration");
+    let i = inventory(&h);
+    let network = NetworkId::from(i.networks[0].uuid);
+    // Opened on the pool: the fabric types need a network.
+    h.invoke(NEW.0);
+    assert_eq!(h.surface().id, WIZARD);
+    assert_eq!(
+        h.node("network-new-type-fabric").label.as_deref(),
+        Some("Add Tunnel or SR-IOV Interface")
+    );
+    assert_eq!(
+        h.node("network-new-type-fabric-pool").label.as_deref(),
+        Some("Complete Pool Coverage")
+    );
+    // The reason is the command's own for the pool the wizard is open on.
+    let on_pool = h.model.target();
+    for (key, command) in [
+        ("network-new-type-fabric", FABRIC_ADD),
+        ("network-new-type-fabric-pool", FABRIC_COMPLETE_POOL),
+    ] {
+        let reason = match h.model.eligibility(command, &on_pool) {
+            Eligibility::Disabled(reason) => reason,
+            Eligibility::Hidden => super::view::NEEDS_NETWORK.to_owned(),
+            Eligibility::Enabled => panic!("a fabric command runs on a pool"),
+        };
+        assert_eq!(h.node(key).disabled, Some(reason));
+    }
+    // A refused hand-over leaves the wizard as it was.
+    assert!(h.try_click("network-new-type-fabric").is_err());
+    assert_eq!(h.surface().id, WIZARD);
+    h.click("resource-close");
+
+    // Opened on a network of the grid: each type opens its wizard there.
+    for (option, command, surface) in [
+        ("fabric", FABRIC_ADD, "network-fabric"),
+        ("fabric-pool", FABRIC_COMPLETE_POOL, "network-fabric-pool"),
+    ] {
+        let target = Target::one(ObjectRef::network(i.pool_id, i.networks[0].uuid));
+        h.model.select_in_grid(target.clone());
+        h.invoke(NEW.0);
+        assert_eq!(h.surface().id, WIZARD);
+        let key = format!("network-new-type-{option}");
+        match h.model.eligibility(command, &target) {
+            Eligibility::Enabled => {
+                assert_eq!(h.node(&key).disabled, None);
+                h.pick("network-new-type", option);
+                assert!(h.model.areas.network.editor.is_none());
+                assert_eq!(h.surfaces().len(), 1);
+                assert_eq!(h.surface().id, surface);
+                let theirs = h.model.areas.network_services.editor.as_ref().expect("open");
+                assert_eq!((theirs.pool, theirs.network), (i.pool_id, network));
+                crate::areas::network_services::close(&mut h.model);
+            }
+            Eligibility::Disabled(reason) => {
+                panic!("the demo offers {option}, but the command refuses: {reason}")
+            }
+            Eligibility::Hidden => panic!("{option} is hidden on a network"),
+        }
+    }
+}
+
+/// The Networking tab of a network shows the service state and the tunnel
+/// and SR-IOV coverage that `network_services` describes.
+#[test]
+fn the_networking_tab_of_a_network_shows_services_and_coverage() {
+    let mut h = Harness::scene("pool-administration");
+    let i = inventory(&h);
+    let network = NetworkId::from(i.networks[0].uuid);
+    h.select(Target::one(ObjectRef::network(i.pool_id, i.networks[0].uuid)));
+    h.open_tab(TabId::Networking);
+    assert!(h.has_text("Network services"));
+    assert!(h.has_text("Tunnel and SR-IOV coverage"));
+    let theirs = crate::areas::network_services::networking_sections(&i, network);
+    assert!(!theirs.is_empty());
+    let blocks = h.tab().blocks();
+    let nodes = crate::surface::flatten_blocks("tab", &blocks);
+    assert_eq!(crate::surface::duplicate_keys(&nodes), Vec::<String>::new());
+    for node in crate::surface::flatten_blocks("theirs", &theirs) {
+        if let Some(text) = &node.text {
+            assert!(h.has_text(text), "{text}");
+        }
+    }
+}

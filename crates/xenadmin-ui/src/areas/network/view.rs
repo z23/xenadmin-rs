@@ -39,6 +39,7 @@ use xenadmin_core::{
 };
 
 use super::commands::{self, NOT_WRITABLE};
+use crate::areas::network_services::commands::{FABRIC_ADD, FABRIC_COMPLETE_POOL};
 use super::editor::{self, Editor, Kind};
 use super::workspace::{self, Form, InterfaceEditor, Page, Workspace};
 use crate::prelude::*;
@@ -127,7 +128,7 @@ fn editor_body(m: &Model, e: &Editor) -> Vec<Block> {
                     .stale(editor::stale(m, e)),
             ],
             None => blocks![
-                draft(e),
+                draft(m, e),
                 editor::stale(m, e)
                     .map(|reason| caption(reason).tone(Tone::Warning).key("resource-stale")),
             ],
@@ -164,19 +165,81 @@ fn name_fields(e: &Editor) -> Vec<Block> {
     ]
 }
 
-fn draft(e: &Editor) -> Vec<Block> {
+/// The types of the Type step that are another area's: the fabric wizards
+/// of `network_services`, which have the same four steps. Choosing one hands
+/// over to its command on the network the wizard was opened on.
+pub const HANDOVERS: [(&str, CommandId, &str); 2] = [
+    (
+        "fabric",
+        FABRIC_ADD,
+        "A GRE or VXLAN tunnel or SR-IOV on one server, added to the selected network.",
+    ),
+    (
+        "fabric-pool",
+        FABRIC_COMPLETE_POOL,
+        "The same on every server of the pool that lacks it.",
+    ),
+];
+
+/// Why a fabric type cannot be chosen while no network is the target: the
+/// core adds a tunnel or SR-IOV interface to a network that exists.
+pub const NEEDS_NETWORK: &str = "Select the network in the grid of the Networking tab first: a tunnel or SR-IOV interface is added to a network that exists.";
+
+/// The option of a handed-over type: the label of its command, disabled
+/// with the command's own reason.
+fn handover_option(m: &Model, id: &'static str, command: CommandId, detail: &str) -> OptionItem {
+    let label = crate::command::find(command).map_or(command.0, |spec| spec.label);
+    let reason = match m.eligibility(command, &m.target()) {
+        Eligibility::Enabled => None,
+        Eligibility::Disabled(reason) => Some(reason),
+        Eligibility::Hidden => Some(NEEDS_NETWORK.to_owned()),
+    };
+    option(id, label)
+        .detail(detail)
+        .key(format!("network-new-type-{id}"))
+        .disabled_if(reason.is_some(), reason.unwrap_or_default())
+}
+
+/// A type of another area was chosen: its command opens its wizard on the
+/// target the wizard New Network was opened on, and this one closes. When
+/// the command refuses, this wizard stays and says why.
+fn hand_over(m: &mut Model, id: &str) {
+    let Some((_, command, _)) = HANDOVERS.iter().find(|(option, ..)| *option == id) else {
+        return;
+    };
+    let target = m.target();
+    let mine = m.areas.network.editor.take();
+    if !m.invoke(*command, &target) {
+        m.areas.network.editor = mine;
+        let refusal = m.error.take();
+        if let Some(e) = &mut m.areas.network.editor {
+            e.error = refusal;
+        }
+    }
+}
+
+fn draft(m: &Model, e: &Editor) -> Vec<Block> {
     match (e.kind, e.step) {
         (Kind::Rename, _) => name_fields(e),
-        // These modules create one type of network. A VLAN interface, a
-        // bond and the pool-wide and tunnel networks are added to a network
-        // that exists, from its Networking tab and the NICs tab.
+        // These modules create one type of network. A tunnel or SR-IOV
+        // interface is the `network_services` area's: its two wizards are
+        // the other types. A VLAN interface and a bond are added to a
+        // network that exists, from its Networking tab and the NICs tab.
         (Kind::CreateNetwork, 0) => blocks![
             choice(
                 "network-new-type",
-                [option("internal", "Internal network")
-                    .detail("A network without a physical interface, for traffic between VMs on one server.")],
+                std::iter::once(
+                    option("internal", "Internal network")
+                        .detail("A network without a physical interface, for traffic between VMs on one server.")
+                )
+                .chain(
+                    HANDOVERS
+                        .iter()
+                        .map(|(id, command, detail)| handover_option(m, id, *command, detail))
+                )
+                .collect::<Vec<_>>(),
                 Some("internal"),
-                |_, _| {}
+                hand_over
             )
             .label("Network type"),
             caption("To put an existing network on a VLAN or a bond, add the interface from the network's Networking tab or from the NICs tab of a server."),
