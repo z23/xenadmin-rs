@@ -132,25 +132,26 @@ impl Render for ConsoleWindowView {
         self.ui.cache.borrow_mut().end(&scope, window, cx);
         // Where the compositor leaves the decoration to the client, the
         // Kit's bar draws the window controls and moves the window.
-        let title_bar = matches!(window.window_decorations(), Decorations::Client { .. }).then(|| {
-            let on_close = Rc::clone(&self.on_close);
-            let muted = cx.theme().muted_foreground;
-            TitleBar::new()
-                .h(rems(2.125))
-                .on_close_window(move |_, window, cx| {
-                    on_close(window, cx);
-                    window.remove_window();
-                })
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .px_3()
-                        .text_sm()
-                        .text_color(muted)
-                        .child(SharedString::from(self.title.clone())),
-                )
-        });
+        let title_bar =
+            matches!(window.window_decorations(), Decorations::Client { .. }).then(|| {
+                let on_close = Rc::clone(&self.on_close);
+                let muted = cx.theme().muted_foreground;
+                TitleBar::new()
+                    .h(rems(2.125))
+                    .on_close_window(move |_, window, cx| {
+                        on_close(window, cx);
+                        window.remove_window();
+                    })
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .px_3()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(SharedString::from(self.title.clone())),
+                    )
+            });
         let theme = cx.theme();
         v_flex()
             .id(ROOT_KEY)
@@ -307,9 +308,8 @@ impl ConsoleWindows {
     pub fn perform(&self, request: ConsoleWindowRequest, cx: &mut App) {
         match request {
             ConsoleWindowRequest::Open { id, payload } => {
-                let payload = payload.and_then(|payload| {
-                    payload.downcast::<windows::WindowPayload>().ok()
-                });
+                let payload =
+                    payload.and_then(|payload| payload.downcast::<windows::WindowPayload>().ok());
                 match payload {
                     Some(payload) => self.open(id, payload.lease, &payload.title, cx),
                     None => eprintln!("A console window request carried no payload: {id:?}"),

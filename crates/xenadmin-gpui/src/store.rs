@@ -168,11 +168,7 @@ impl AppStore {
     /// (the outbox, the tick), without drawing anything again. For what
     /// changes nothing the descriptions show: the pointer and the keys of a
     /// console, which arrive at the rate of the hardware.
-    pub fn run_quiet<R>(
-        &mut self,
-        act: impl FnOnce(&mut Model) -> R,
-        cx: &mut Context<Self>,
-    ) -> R {
+    pub fn run_quiet<R>(&mut self, act: impl FnOnce(&mut Model) -> R, cx: &mut Context<Self>) -> R {
         let result = act(&mut self.model);
         self.after_update(cx);
         result

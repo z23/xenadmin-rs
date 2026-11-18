@@ -412,10 +412,7 @@ fn paint(
         let canvas = canvas.read(cx);
         (canvas.store.clone(), canvas.seat)
     };
-    let extent = [
-        f32::from(bounds.size.width),
-        f32::from(bounds.size.height),
-    ];
+    let extent = [f32::from(bounds.size.width), f32::from(bounds.size.height)];
     let geometry = model::geometry(store.read(cx).model(), seat, extent);
     if let (Some(image), Some(geometry)) = (image, geometry) {
         let [width, height] = geometry.painted();

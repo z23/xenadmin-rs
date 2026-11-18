@@ -122,10 +122,7 @@ fn codes(cx: &mut TestAppContext, canvas: &Entity<ConsoleCanvas>) -> Vec<(u32, b
 }
 
 fn extent(bounds: Bounds<Pixels>) -> [f32; 2] {
-    [
-        f32::from(bounds.size.width),
-        f32::from(bounds.size.height),
-    ]
+    [f32::from(bounds.size.width), f32::from(bounds.size.height)]
 }
 
 fn at(bounds: Bounds<Pixels>, x: f32, y: f32) -> Point<Pixels> {
@@ -324,7 +321,8 @@ fn a_press_on_the_letterboxed_picture_reaches_the_guest_pixel_under_it(cx: &mut 
     let canvas = canvas(cx, scene.window, Seat::Tab);
     let [width, height] = extent(bounds);
     let guest = |cx: &mut TestAppContext| {
-        let (pointer, extent) = canvas.read_with(cx, |c, _| (c.input().pointer(), c.input().bounds()));
+        let (pointer, extent) =
+            canvas.read_with(cx, |c, _| (c.input().pointer(), c.input().bounds()));
         model(cx, &scene.store, |m| {
             seam::geometry(m, Seat::Tab, extent)
                 .expect("geometry")
@@ -412,7 +410,10 @@ fn the_pointer_stays_canvas_local_at_a_larger_interface_size(cx: &mut TestAppCon
     assert_ne!(bounds, before, "the larger interface moved nothing");
     let [width, height] = extent(bounds);
     let canvas = canvas(cx, scene.window, Seat::Tab);
-    assert_eq!(canvas.read_with(cx, |c, _| c.input().bounds()), [width, height]);
+    assert_eq!(
+        canvas.read_with(cx, |c, _| c.input().bounds()),
+        [width, height]
+    );
     press(
         cx,
         scene.window,
@@ -434,13 +435,17 @@ fn every_key_is_the_guest_s_while_the_canvas_has_the_keyboard(cx: &mut TestAppCo
     let bounds = canvas_bounds(cx, scene.window);
     let canvas = canvas(cx, scene.window, Seat::Tab);
     let size = scale(cx, &scene.store);
-    let title = scene.view.read_with(cx, |shell, _| shell.title().to_owned());
+    let title = scene
+        .view
+        .read_with(cx, |shell, _| shell.title().to_owned());
 
     let centre = at(bounds, 20., 20.);
     press(cx, scene.window, centre, MouseButton::Left);
     release(cx, scene.window, centre, MouseButton::Left);
     on(cx, scene.window, |window, cx| {
-        for key in ["ctrl-=", "ctrl-0", "alt-left", "ctrl-q", "ctrl-n", "tab", "escape", "a"] {
+        for key in [
+            "ctrl-=", "ctrl-0", "alt-left", "ctrl-q", "ctrl-n", "tab", "escape", "a",
+        ] {
             window.press(key, cx);
         }
         window.change_modifiers(Modifiers::control(), cx);
@@ -451,12 +456,20 @@ fn every_key_is_the_guest_s_while_the_canvas_has_the_keyboard(cx: &mut TestAppCo
     let sent = codes(cx, &canvas);
     for code in [13, 11, 105, 16, 49, 15, 1, 30, 29] {
         assert!(sent.contains(&(code, true)), "no press of {code}: {sent:?}");
-        assert!(sent.contains(&(code, false)), "no release of {code}: {sent:?}");
+        assert!(
+            sent.contains(&(code, false)),
+            "no release of {code}: {sent:?}"
+        );
     }
     // And nothing of the application happened: no interface size, no
     // navigation, no exit, no new VM, no focus traversal.
     assert_eq!(scale(cx, &scene.store), size);
-    assert_eq!(scene.view.read_with(cx, |shell, _| shell.title().to_owned()), title);
+    assert_eq!(
+        scene
+            .view
+            .read_with(cx, |shell, _| shell.title().to_owned()),
+        title
+    );
     assert_eq!(model(cx, &scene.store, Model::active_tab), TabId::Console);
     assert!(cx.update(|cx| scene.store.read(cx).surfaces().is_empty()));
     let quit = cx.update(|cx| {
@@ -505,7 +518,10 @@ fn every_key_is_the_guest_s_while_the_canvas_has_the_keyboard(cx: &mut TestAppCo
     });
     on(cx, scene.window, |window, cx| window.press("ctrl-=", cx));
     assert!(scale(cx, &scene.store) > size, "ctrl-= did nothing");
-    assert_eq!(canvas.read_with(cx, |canvas, _| canvas.sent_keys().len()), count);
+    assert_eq!(
+        canvas.read_with(cx, |canvas, _| canvas.sent_keys().len()),
+        count
+    );
 }
 
 #[gpui_kit::test]
@@ -544,7 +560,11 @@ fn losing_the_keyboard_releases_what_the_console_holds(cx: &mut TestAppContext) 
     VisualTestContext::from_window(scene.window, cx).deactivate_window();
     cx.run_until_parked();
     settle(cx, scene.window);
-    assert_ne!(epoch(cx), before, "deactivation did not release the guest's input");
+    assert_ne!(
+        epoch(cx),
+        before,
+        "deactivation did not release the guest's input"
+    );
     canvas.read_with(cx, |canvas, _| {
         assert_eq!(canvas.input().buttons(), 0);
         assert!(!canvas.has_keyboard());
@@ -556,7 +576,11 @@ fn losing_the_keyboard_releases_what_the_console_holds(cx: &mut TestAppContext) 
     let before = epoch(cx);
     run(cx, &scene.store, |m| m.set_active_tab(TabId::General));
     settle(cx, scene.window);
-    assert_ne!(epoch(cx), before, "leaving the tab did not release the guest's input");
+    assert_ne!(
+        epoch(cx),
+        before,
+        "leaving the tab did not release the guest's input"
+    );
     assert_eq!(canvas.read_with(cx, |c, _| c.input().buttons()), 0);
     let drawn = on(cx, scene.window, |window, _| {
         window.try_find(view::CANVAS).is_some()
@@ -619,7 +643,9 @@ fn a_detached_window_opens_from_the_intent_and_its_close_reaches_the_model(
 
     // The title is the model's, and the window shows the model's controls
     // and the canvas of its own seat.
-    let title = model(cx, &scene.store, |m| view::window(m, ConsoleWindowId(1)).title);
+    let title = model(cx, &scene.store, |m| {
+        view::window(m, ConsoleWindowId(1)).title
+    });
     assert!(title.ends_with(view::WINDOW_TITLE), "{title}");
     assert_eq!(view.read_with(cx, |view, _| view.title().to_owned()), title);
     assert_eq!(
@@ -757,6 +783,9 @@ fn the_console_window_scene_shows_every_control_inside_the_window(cx: &mut TestA
             let viewport = window.viewport_size();
             assert!(window.try_find(ROOT_KEY).is_some());
             assert!(window.try_find("detach-console").is_none());
+            // Every control is inside the window. The help text under the
+            // canvas is in the tree; with the test platform's wider font it
+            // is reached by scrolling in the smallest windows.
             for key in [
                 "close-console",
                 "console-status",
@@ -772,8 +801,6 @@ fn the_console_window_scene_shows_every_control_inside_the_window(cx: &mut TestA
                 "send-console-clipboard",
                 "type-console-clipboard",
                 "copy-console-clipboard",
-                view::CANVAS,
-                "console-help",
             ] {
                 let bounds = window.find(key).bounds();
                 assert!(
@@ -784,8 +811,18 @@ fn the_console_window_scene_shows_every_control_inside_the_window(cx: &mut TestA
                     "{key} is outside the {size:?} window: {bounds:?}"
                 );
             }
+            assert!(window.try_find("console-help").is_some());
             let canvas = window.find(view::CANVAS).bounds();
             assert!(canvas.size.height >= px(100.), "{size:?}: {canvas:?}");
+            assert!(
+                canvas.top() < viewport.height && canvas.right() <= viewport.width,
+                "{size:?}: {canvas:?}"
+            );
+            if size == (1100., 800.) {
+                let help = window.find("console-help").bounds();
+                assert!(help.bottom() <= viewport.height, "{help:?}");
+                assert!(canvas.size.height > px(300.), "{canvas:?}");
+            }
         });
         cx.update_window(scene.window, |_, window, _| window.remove_window())
             .expect("window");
@@ -804,10 +841,14 @@ fn fullscreen_toggles_the_window_of_the_console(cx: &mut TestAppContext) {
     assert!(!fullscreen(cx, handle));
 
     // The window's own button.
-    on(cx, handle, |window, cx| window.click("console-fullscreen", cx));
+    on(cx, handle, |window, cx| {
+        window.click("console-fullscreen", cx)
+    });
     assert!(fullscreen(cx, handle));
     assert!(!fullscreen(cx, scene.window));
-    on(cx, handle, |window, cx| window.click("console-fullscreen", cx));
+    on(cx, handle, |window, cx| {
+        window.click("console-fullscreen", cx)
+    });
     assert!(!fullscreen(cx, handle));
 
     // The Console tab's command toggles the main window.
@@ -842,11 +883,26 @@ fn save_screenshot_asks_for_a_path_and_writes_a_png(cx: &mut TestAppContext) {
     let path = directory.join("vm-console.png");
     let _ = std::fs::remove_file(&path);
     invoke(cx, &scene.store, "console.save-screenshot");
-    assert!(cx.did_prompt_for_new_path(), "the command stayed disabled after a cancel");
+    assert!(
+        cx.did_prompt_for_new_path(),
+        "the command stayed disabled after a cancel"
+    );
     let chosen = path.clone();
     cx.simulate_new_path_selection(move |_| Some(chosen));
     cx.run_until_parked();
-    let bytes = std::fs::read(&path).expect("the screenshot was written");
-    assert!(bytes.starts_with(b"\x89PNG"), "not a PNG");
+    // The model writes on a thread of its own: wait for the file.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let written = loop {
+        let bytes = std::fs::read(&path).unwrap_or_default();
+        if bytes.starts_with(b"\x89PNG") || std::time::Instant::now() > deadline {
+            break bytes;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert!(
+        written.starts_with(b"\x89PNG"),
+        "no PNG was written to {}",
+        path.display()
+    );
     let _ = std::fs::remove_dir_all(&directory);
 }

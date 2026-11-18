@@ -26,9 +26,9 @@ pub use gpui_kit::{
 
 // What a bespoke element paints with and listens to: the console canvas.
 pub use gpui_kit::{
-    Corners, DispatchPhase, Global, Hitbox, HitboxBehavior, KeyUpEvent, Keystroke,
-    KeystrokeEvent, ModifiersChangedEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
-    ScrollEvent, black, fill, white,
+    Corners, DispatchPhase, Global, Hitbox, HitboxBehavior, KeyUpEvent, Keystroke, KeystrokeEvent,
+    ModifiersChangedEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollEvent, black, fill,
+    white,
 };
 
 // Pictures: a decoded frame (BGRA) and the element that draws it.

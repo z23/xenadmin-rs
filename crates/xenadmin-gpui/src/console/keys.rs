@@ -280,7 +280,9 @@ fn drain(cx: &mut App) -> bool {
             SeatEvent::Key { evdev, down } => {
                 let modifiers = cx.global::<SeatKeys>().modifiers;
                 if let Some(target) = canvas::with_keyboard(cx) {
-                    target.update(cx, |canvas, cx| canvas.send_code(evdev, down, modifiers, cx));
+                    target.update(cx, |canvas, cx| {
+                        canvas.send_code(evdev, down, modifiers, cx)
+                    });
                 }
             }
             SeatEvent::Modifiers {
