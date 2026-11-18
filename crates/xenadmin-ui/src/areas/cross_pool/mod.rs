@@ -37,8 +37,10 @@
 //! - [`destination_guest`], [`destination_target`], [`destination_label`],
 //!   [`show_destination`]: the VM a finished single transfer created in its
 //!   destination pool (the Rune buttons "Show destination VM" and "Open
-//!   destination console" of the transfer history). No surface calls them
-//!   yet: they are for the History list of the Events tab.
+//!   destination console" of the transfer history). The `events` area
+//!   offers them as the button `cross-destination-<id>` of the record's
+//!   outcome (`events::destination_action`, part of
+//!   `events::outcome_actions`).
 //! - [`Peer`], [`peers`]: a writable connected pool as a review captures
 //!   it.
 //!
@@ -62,7 +64,7 @@
 //!   History list of the Events tab, which already lists these records
 //!   with both pools, each VM of a batch and what was created, and has
 //!   Recheck, Request cancellation and Acknowledge for them (`events`).
-//!   What Events does not have yet is the destination button: see
+//!   The destination button is in the outcome of the record there: see
 //!   [`show_destination`] above.
 //! - `Panel::notice` (the result line of a control or a refused apply): a
 //!   refused apply is the wizard's error line; the controls are Events'.

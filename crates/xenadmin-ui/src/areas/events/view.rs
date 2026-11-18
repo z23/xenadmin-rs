@@ -270,7 +270,11 @@ fn details(m: &Model, row: &Row) -> Vec<Block> {
             }
             .unwrap_or((OutcomeState::Unknown, Vec::new()));
             blocks![
-                outcome("activity-outcome", state, title),
+                // The controls of a record are the commands of the row
+                // above; the destination of a finished cross-pool transfer
+                // is not a command of every record, so it is here.
+                outcome("activity-outcome", state, title)
+                    .actions(super::destination_action(m, key)),
                 detail_text(lines.chain(more)),
                 (!row.terminal).then(|| caption(activity::UNRESOLVED).key("activity-unresolved")),
             ]

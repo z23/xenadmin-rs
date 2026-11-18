@@ -52,7 +52,7 @@ pub const MOVE_IDENTITY: &str = "XAPI moves the VM and removes the exclusive sou
 pub const TRANSPORT: &str = "Host-to-host transport follows the hosts' migration policy and may use unencrypted HTTP or TLS without certificate verification. Desktop certificate trust does not secure this transfer. Use a trusted migration network. The application does not force TLS or silently retry with a different policy.";
 pub const ACKNOWLEDGE: &str = "I reviewed the host-to-host transport policy";
 pub const RESERVED: &str = "Both pools are reserved until completion or explicit acknowledgement. An interrupted transfer can leave partial source or destination resources. Recheck reads existing evidence; it never repeats a transfer. Verified destination UUIDs remain on the Events tab of the Notifications view.";
-pub const CONSOLE: &str = "The source console closes when submitted. After verified completion, use Open destination console from transfer history.";
+pub const CONSOLE: &str = "The source console closes when submitted. After verified completion, use Open destination console in this transfer's entry on the Events tab of the Notifications view.";
 pub const UNAVAILABLE: &str = "The reviewed source or destination is no longer available";
 pub const WAIT: &str = "Wait for current destination inventory to confirm this VM and host.";
 
