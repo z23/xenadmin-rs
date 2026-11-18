@@ -193,12 +193,16 @@ pub mod place {
     pub const POOL_VAPPS: MenuPath = at(Menu::Pool, 2, 10);
     pub const POOL_HIGH_AVAILABILITY: MenuPath = at(Menu::Pool, 2, 20);
     pub const POOL_SNAPSHOT_SCHEDULES: MenuPath = at(Menu::Pool, 2, 30);
+    /// Client-only: the plan's Pool menu does not list it.
+    pub const POOL_VM_AUTOSTART: MenuPath = at(Menu::Pool, 2, 40);
     pub const POOL_CHANGE_SERVER_PASSWORD: MenuPath = at(Menu::Pool, 3, 10);
     pub const POOL_MAKE_STANDALONE: MenuPath = at(Menu::Pool, 3, 20);
     pub const POOL_PROPERTIES: MenuPath = at(Menu::Pool, 9, 10);
 
     pub const SERVER_ADD: MenuPath = at(Menu::Server, 1, 10);
     pub const SERVER_REBOOT: MenuPath = at(Menu::Server, 2, 10);
+    /// The plan lists Power On between Reboot and Shut Down.
+    pub const SERVER_POWER_ON: MenuPath = at(Menu::Server, 2, 15);
     pub const SERVER_SHUT_DOWN: MenuPath = at(Menu::Server, 2, 20);
     pub const SERVER_RESTART_TOOLSTACK: MenuPath = at(Menu::Server, 2, 30);
     pub const SERVER_CONNECT: MenuPath = at(Menu::Server, 3, 10);
@@ -209,6 +213,8 @@ pub mod place {
     pub const SERVER_BACK_UP: MenuPath = at(Menu::Server, 4, 10);
     pub const SERVER_RESTORE_FROM_BACKUP: MenuPath = at(Menu::Server, 4, 20);
     pub const SERVER_MAINTENANCE: MenuPath = at(Menu::Server, 5, 10);
+    /// Client-only: beside the maintenance item it is a part of.
+    pub const SERVER_EVACUATE: MenuPath = at(Menu::Server, 5, 15);
     pub const SERVER_CONTROL_DOMAIN_MEMORY: MenuPath = at(Menu::Server, 5, 20);
     pub const SERVER_PASSWORD_CHANGE: MenuPath = at(Menu::Server, 5, 30).submenu("Password");
     pub const SERVER_PASSWORD_FORGET: MenuPath = at(Menu::Server, 5, 40).submenu("Password");
@@ -529,13 +535,20 @@ fn copy_uuid(m: &mut Model, target: &Target) {
 }
 
 /// The commands the kernel owns: Back and Forward, the View toggles, the
-/// interface size, Copy UUID and Exit.
+/// interface size, Copy UUID, Exit, and the Properties commands
+/// ([`crate::properties`]).
 ///
 /// The interface size commands are the Rune `app_key`: Ctrl with plus (or
 /// equals), minus and 0. A command has one shortcut, so the shell binds
 /// `ctrl-+` to `view.zoom-in` as well, and delivers none of the three while
 /// a console has the keyboard.
 fn kernel_commands() -> Vec<CommandSpec> {
+    let mut commands = shell_commands();
+    commands.extend(crate::properties::commands());
+    commands
+}
+
+fn shell_commands() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("nav.back", "Back", KERNEL)
             .toolbar(ToolbarSlot::BACK)

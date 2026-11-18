@@ -390,13 +390,15 @@ fn a_command_is_hidden_for_other_objects_and_disabled_with_the_reason_of_its_rev
         if spec.id == commands::POOL_AUTOSTART {
             continue;
         }
-        let expected = if spec.id == commands::PROPERTIES {
-            Eligibility::Enabled
-        } else {
-            Eligibility::disabled(MISSING)
-        };
+        let expected = Eligibility::disabled(MISSING);
         assert_eq!(h.model.eligibility(spec.id, &bare), expected, "{}", spec.id);
     }
+    // The Properties command is the kernel's now; this area's pages are
+    // what makes it available for the server.
+    assert_eq!(
+        h.model.eligibility(crate::properties::SERVER, &bare),
+        Eligibility::Enabled
+    );
     h.invoke_on("server.properties", &bare);
     assert_eq!(h.node("host-unavailable").text.as_deref(), Some(MISSING));
     h.dismiss();
