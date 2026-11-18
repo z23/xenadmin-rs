@@ -48,6 +48,17 @@
 //!   written (hazard 21).
 //! - The crashdump list stays a paged list of lines with a button each, with
 //!   the Rune keys; it is not a table.
+//! - A disabled button says why, and Rune's had no reasons. The order of the
+//!   reasons of the two submit buttons: stale, not writable, (64 handles),
+//!   the typed UUID, and the demo last, so a synthetic pool asks for the
+//!   UUID as a real one does and then says it is a demo. New texts:
+//!   `view::NO_FILE`, `NO_CATEGORY`, `INSPECTING`, "This is the first/last
+//!   page."; `commands::NOT_WRITABLE` is the wording `host_admin` uses.
+//! - The capability toggles (`host-support-cap-<key>`, buttons "✓ key" / "○
+//!   key" in Rune) are checkboxes with the same keys; the three mode buttons
+//!   of the power-on editor (`host-power-mode-<n>`) are the options of one
+//!   segmented choice, and choosing the mode that is set changes nothing
+//!   (Rune disabled that button).
 //!
 //! ## What has no successor
 //!
@@ -66,11 +77,11 @@
 //!
 //! | Rune test | Here |
 //! | --- | --- |
-//! | power `review_has_private_password_and_captured_target_at_both_widths` | ported (Harness); the two window sizes are a GPUI test (`gpui-tests-wanted.md`) |
+//! | power `review_has_private_password_and_captured_target_at_both_widths` | ported (Harness) as `review_has_private_password_and_captured_target`; the two window sizes are a GPUI test (`gpui-tests-wanted.md`) |
 //! | power `configuration_review_refuses_invalid_inputs_and_unknown_configuration` | moved |
 //! | power `switching_mode_discards_pending_password_and_review` | moved |
-//! | support `host_archive_review_captures_target_and_keeps_compact_footer_visible` | ported (Harness); the footer at 513x652 is a GPUI test |
-//! | support `crashdump_delete_review_captures_exact_dump_and_keeps_footer_visible` | ported (Harness); the footer at 513x652 is a GPUI test |
+//! | support `host_archive_review_captures_target_and_keeps_compact_footer_visible` | ported (Harness) as `host_archive_review_captures_target`; the footer at 513x652 is a GPUI test |
+//! | support `crashdump_delete_review_captures_exact_dump_and_keeps_footer_visible` | ported (Harness) as `crashdump_delete_review_captures_exact_dump`; the footer at 513x652 is a GPUI test |
 //! | support `crashdump_catalogue_pages_make_every_captured_candidate_reachable` | ported (Harness) |
 //! | support `crashdump_delete_refuses_unadvertised_review_or_changed_host` | ported (Harness) |
 //! | support `stale_native_file_callback_cannot_set_a_reopened_host_review` | ported (Harness) |
@@ -79,6 +90,16 @@
 //! | support `restore_rejects_wrong_host_and_cancels_obsolete_inspections` | ported (Harness) |
 //! | `main.rs` `dialogs_outside_the_supported_core_carry_the_experimental_notice` | this area's share ported |
 //! | `session_permissions_view.rs` `review_permission_notice_is_reachable_without_bypassing_synthetic_target_guard` | this area's share (`host-power-settings`) ported |
+//!
+//! Thirteen Rune tests: two moved, nine ported to the Harness, two shares of
+//! tests of other files ported; none retired. Twenty more tests are new: what
+//! the port changed, the hazards 10 to 24 of the map, and four against the
+//! fixture server (a read-only session; a download, a crashdump deletion and
+//! a power-on configuration that are submitted). Not tested: the answer of
+//! the status report query (the fixture server does not serve it), so
+//! neither the default categories (hazard 19) nor the identity check of the
+//! answer (hazard 18) in `support::poll`; a staging submission; a known
+//! permission denial of the power-on review.
 
 use crate::prelude::*;
 
