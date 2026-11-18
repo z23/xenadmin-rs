@@ -871,5 +871,250 @@ fn lab_p3_console_save_screenshot() {
     evidence.finish();
 }
 
+/// The key of the row of a table that has a cell with the text.
+fn table_row(client: &mut Client, table: &str, text: &str) -> Option<String> {
+    let nodes = client.nodes();
+    let prefix = format!("{table}:");
+    nodes.iter().enumerate().find_map(|(at, node)| {
+        let key = node.key.as_deref().filter(|key| key.starts_with(&prefix))?;
+        (node.role == "row"
+            && nodes[at + 1..]
+                .iter()
+                .take_while(|cell| cell.role == "cell")
+                .any(|cell| cell.text.as_deref().is_some_and(|cell| cell.contains(text))))
+        .then(|| key.to_owned())
+    })
+}
+
+/// Brings a checkbox of the surface in front to the state wanted.
+fn set_checkbox(client: &mut Client, key: &str, wanted: bool) {
+    let checked = client
+        .node(key)
+        .unwrap_or_else(|| panic!("no checkbox {key}"))
+        .checked;
+    if checked != Some(wanted) {
+        client.press(key);
+    }
+    assert_eq!(client.node(key).and_then(|node| node.checked), Some(wanted));
+}
+
+/// The operations of a guest that are not finished.
+fn unfinished(client: &mut Client, vm: VmId) -> usize {
+    client.model(|m| {
+        m.operation_rows
+            .iter()
+            .filter(|record| record.vm == vm && !record.state.terminal())
+            .count()
+    })
+}
+
+/// The states of the operations of a guest, oldest first.
+fn operation_states(client: &mut Client, vm: VmId) -> Vec<String> {
+    client.model(|m| {
+        let mut records: Vec<_> = m
+            .operation_rows
+            .iter()
+            .filter(|record| record.vm == vm)
+            .collect();
+        records.sort_by_key(|record| record.created_at_ms);
+        records
+            .iter()
+            .map(|record| format!("{} {:?}", record.action.label(), record.state))
+            .collect()
+    })
+}
+
+/// Sets the description of a guest from outside the client and waits until
+/// the outside connection reads it back.
+fn describe_from_outside(outside: &Outside, vm: VmId, value: &str) {
+    let snapshot = outside.connection.latest();
+    let previous = snapshot.inventory().expect("inventory").vms[&vm]
+        .description
+        .clone();
+    let patch = VmSettingsPatch::new(vec![VmSettingEdit::Description {
+        previous,
+        value: value.to_owned(),
+    }])
+    .expect("patch");
+    let observed = snapshot.observe_vm(vm).expect("observed guest");
+    let operation = outside
+        .connection
+        .submit(
+            OperationId::new(),
+            VmCommand::Configure {
+                vm: observed,
+                patch,
+            },
+        )
+        .expect("the outside edit is accepted");
+    assert!(
+        outside.settle(Duration::from_secs(60), |inventory| {
+            inventory.vms[&vm].description == value
+        }),
+        "the outside connection read its own change"
+    );
+    drop(operation);
+}
+
+/// P3.4: Take a Snapshot, see it in the Snapshots tab, Revert to it through
+/// its review (the guest ends with what the snapshot had, and running),
+/// Delete it.
+#[test]
+#[ignore]
+fn lab_p3_snapshots() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-4-snapshots");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (object, vm, guest_name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    wait_guest_ready(&mut client, vm, &mut evidence);
+    client.tab(TabId::Snapshots);
+    let before = outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .snapshots
+        .for_vm(vm)
+        .count();
+    let original = outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .vms[&vm]
+        .description
+        .clone();
+    client.snap(&mut evidence, "snapshots-before");
+
+    // Take a Snapshot, from the VM menu.
+    let name = format!("gpui-live-{}", stamp());
+    client.menu(Menu::Vm, "vm.snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-create"));
+    client.type_into("snapshot-name", &name);
+    set_checkbox(&mut client, "snapshot-memory", false);
+    client.snap(&mut evidence, "snapshot-create");
+    client.press("confirm-snapshot");
+    let took = client.wait(
+        "the snapshot is in the Snapshots tab",
+        Duration::from_secs(180),
+        |client| {
+            client.front().is_none()
+                && table_row(client, "snapshots-table", &name).is_some()
+                && unfinished(client, vm) == 0
+        },
+    );
+    let row = table_row(&mut client, "snapshots-table", &name).expect("the row");
+    assert!(client.says(&name), "the snapshot's name is in the frame");
+    client.snap(&mut evidence, "snapshot-taken");
+    evidence.step(
+        "the snapshot was taken and is listed",
+        json!({ "seconds": seconds(took), "name": name, "operations": operation_states(&mut client, vm) }),
+    );
+    evidence.note("take_seconds", json!(seconds(took)));
+
+    // Something the snapshot does not have: a description set afterwards.
+    let later = format!("Set after the snapshot {name}");
+    describe_from_outside(&outside, vm, &later);
+    client.wait(
+        "the client read the description set after the snapshot",
+        Duration::from_secs(60),
+        |client| {
+            client.model(|m| m.inventory.as_ref().expect("inventory").vms[&vm].description == later)
+        },
+    );
+
+    // Revert, through its review: shut down first, start afterwards.
+    client.press(&row);
+    client
+        .try_local("snapshot.revert")
+        .expect("Revert for the selected snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-restore"));
+    assert!(client.element("snapshot-review").is_some());
+    set_checkbox(&mut client, "restore-shutdown", true);
+    set_checkbox(&mut client, "restore-start", true);
+    client.snap(&mut evidence, "snapshot-revert-review");
+    client.press("confirm-snapshot");
+    client.wait("the revert started", Duration::from_secs(30), |client| {
+        client.front().is_none() && unfinished(client, vm) > 0
+    });
+    client.snap(&mut evidence, "snapshot-revert-in-progress");
+    let took = client.wait(
+        "the revert finished and the guest runs again",
+        Duration::from_secs(420),
+        |client| unfinished(client, vm) == 0 && power_state(client, vm) == PowerState::Running,
+    );
+    let states = operation_states(&mut client, vm);
+    let restored = client.model(|m| {
+        m.inventory.as_ref().expect("inventory").vms[&vm]
+            .description
+            .clone()
+    });
+    client.snap(&mut evidence, "snapshot-reverted");
+    evidence.step(
+        "the revert finished",
+        json!({ "seconds": seconds(took), "operations": states, "description": restored }),
+    );
+    assert!(
+        states.iter().all(|state| state.ends_with("Succeeded")),
+        "an operation did not succeed: {states:?}"
+    );
+    assert_eq!(
+        restored, original,
+        "the guest has the description the snapshot had, not the one set afterwards"
+    );
+    evidence.note("revert_seconds", json!(seconds(took)));
+    evidence.note("reverted_to_snapshot_state", json!(true));
+
+    // Delete the snapshot, with the disks only it owns.
+    let row = table_row(&mut client, "snapshots-table", &name).expect("the row after the revert");
+    client.press(&row);
+    client
+        .try_local("snapshot.delete")
+        .expect("Delete for the selected snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-delete"));
+    if client.node("snapshot-delete-disks").is_some() {
+        set_checkbox(&mut client, "snapshot-delete-disks", true);
+    }
+    client.snap(&mut evidence, "snapshot-delete-review");
+    client.press("confirm-snapshot");
+    let took = client.wait(
+        "the snapshot is gone from the Snapshots tab",
+        Duration::from_secs(240),
+        |client| {
+            client.front().is_none()
+                && table_row(client, "snapshots-table", &name).is_none()
+                && unfinished(client, vm) == 0
+        },
+    );
+    client.snap(&mut evidence, "snapshot-deleted");
+    let states = operation_states(&mut client, vm);
+    evidence.step(
+        "the snapshot was deleted",
+        json!({ "seconds": seconds(took), "operations": states }),
+    );
+    assert!(
+        outside.settle(Duration::from_secs(60), |inventory| {
+            inventory.snapshots.for_vm(vm).count() == before
+                && !inventory
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.name == name)
+        }),
+        "the host still has the snapshot"
+    );
+    assert!(
+        states.iter().all(|state| state.ends_with("Succeeded")),
+        "{states:?}"
+    );
+    evidence.note("delete_seconds", json!(seconds(took)));
+    evidence.note("guest", json!(guest_name));
+    evidence.note("snapshots_left_of_this_run", json!(0));
+    client.close();
+    evidence.finish();
+}
+
 #[allow(dead_code)]
 const _: &str = TOOLS_GUEST;
