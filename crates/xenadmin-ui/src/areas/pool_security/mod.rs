@@ -75,6 +75,9 @@ pub mod scenes;
 pub mod security;
 pub mod view;
 
+#[cfg(test)]
+mod tests;
+
 /// The reason a synthetic pool gives a disabled confirm button (the text
 /// every area uses).
 pub const DEMO: &str = "Demo mode cannot change infrastructure.";
