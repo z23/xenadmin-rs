@@ -696,7 +696,12 @@ mod tests {
                 .any(|r| r.id == id && r.state == OperationState::Succeeded)
         });
         assert_eq!(live.server.count("Async.VM.start"), 1);
-        assert_eq!(live.server.count("task.destroy"), 1);
+        // The core destroys its task after it has recorded the outcome, so
+        // the request can arrive a moment after the record says Succeeded
+        // (it did on a slow runner).
+        poll_until(&mut live.h, "the finished task is destroyed", |_| {
+            live.server.count("task.destroy") == 1
+        });
         poll_until(&mut live.h, "the VM is shown running", |h| {
             h.model
                 .inventory_for(pool)
