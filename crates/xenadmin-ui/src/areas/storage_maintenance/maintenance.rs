@@ -17,8 +17,9 @@
 //!   place that shows them. The fence is the Rune one: a result is accepted
 //!   only while the pool observation it was asked under is still current.
 //! - Rune pruned finished handles from `resource_operations` before it
-//!   counted to 64. The list is the kernel's here: the cap counts the
-//!   unfinished handles and removes nothing.
+//!   counted to 64. The list is the kernel's here, and the kernel drops a
+//!   finished handle at its next poll: the cap counts the unfinished
+//!   handles and removes nothing.
 //! - Rune's submit did not look at the permission again (only its button
 //!   did); the port refuses a known denial in the handler too.
 

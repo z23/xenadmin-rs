@@ -107,8 +107,12 @@ pub struct Model {
     /// The handles of the resource operations given to
     /// [`Model::track_resource`], of every session. A handle belongs to the
     /// session that showed its record's pool when it was tracked and stays
-    /// here, polled, whichever pool the tree shows, until its session's
-    /// connection is replaced or removed.
+    /// here, polled, whichever pool the tree shows, until its operation is
+    /// finished and its last record is in `resource_rows`
+    /// (`poll_resource_rows`), or its session's connection is replaced or
+    /// removed. So the list holds the UNFINISHED resource operations (an
+    /// unknown outcome is unfinished), plus those that finished since the
+    /// last poll: read a record from `resource_rows`, not from here.
     pub resource_operations: Vec<ResourceOperation>,
     /// The session each handle in `resource_operations` belongs to.
     pub(crate) resource_sessions: std::collections::BTreeMap<OperationId, ProfileId>,
@@ -679,8 +683,9 @@ impl Model {
     /// The handle belongs to the session that shows the pool of its record
     /// now (the pool it was submitted in; the source of an operation that
     /// spans two pools), else to the scope session. It stays polled
-    /// whichever pool the tree shows and is forgotten with its session
-    /// ([`Model::forget_operations_of`]).
+    /// whichever pool the tree shows, and is dropped at the poll that
+    /// merges the last record of the finished operation, or forgotten with
+    /// its session ([`Model::forget_operations_of`]).
     pub fn track_resource(&mut self, operation: ResourceOperation) -> OperationId {
         if let Some(waker) = &self.waker {
             operation.notify_on_change(waker.clone());
@@ -2056,8 +2061,9 @@ impl Model {
     /// operation id, a record replaces the stored one only when it
     /// supersedes it; every unfinished record and the newest 100 finished
     /// ones are kept, oldest first. Rows of earlier sessions stay. A handle
-    /// whose session is gone from the workspace is forgotten after its
-    /// record was merged.
+    /// whose record is terminal is dropped once that record is merged, and
+    /// a handle whose session is gone from the workspace is forgotten after
+    /// its record was merged.
     fn poll_resource_rows(&mut self) -> bool {
         let scope = self.workspace.selected;
         let mut incoming: Vec<ResourceOperationRecord> = Vec::new();
@@ -2070,13 +2076,36 @@ impl Model {
         for connection in self.connection.iter().chain(others) {
             incoming.extend(connection.resource_history().iter().cloned());
         }
-        for operation in &self.resource_operations {
-            incoming.push(operation.latest().as_ref().clone());
-        }
+        // One look at each handle: what is merged is what decides below.
+        let latest: Vec<_> = self
+            .resource_operations
+            .iter()
+            .map(|operation| operation.latest())
+            .collect();
+        incoming.extend(latest.iter().map(|record| record.as_ref().clone()));
         let rows = merge_resource_rows(&self.resource_rows, incoming);
-        let changed = rows != self.resource_rows;
+        let mut changed = rows != self.resource_rows;
         if changed {
             self.resource_rows = rows;
+        }
+        // A finished operation needs no handle: its last record has just
+        // been merged (or is older than the finished records the history
+        // keeps). Dropping it here is what makes `resource_operations` the
+        // list of UNFINISHED operations that the areas' limits count (64,
+        // 128, 32: "too many operations are active"). Rune never dropped
+        // one, so its limits counted every operation since the start.
+        if latest.iter().any(|record| record.state.terminal()) {
+            let mut finished = latest.iter().map(|record| record.state.terminal());
+            self.resource_operations
+                .retain(|_| !finished.next().unwrap_or(false));
+            let kept: std::collections::BTreeSet<OperationId> = latest
+                .iter()
+                .filter(|record| !record.state.terminal())
+                .map(|record| record.id)
+                .collect();
+            self.resource_sessions.retain(|id, _| kept.contains(id));
+            // The limits are on screen as disabled controls.
+            changed = true;
         }
         if !self.resource_sessions.is_empty() {
             let active: std::collections::BTreeSet<ProfileId> =

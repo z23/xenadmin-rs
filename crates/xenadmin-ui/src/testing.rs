@@ -48,7 +48,8 @@
 //! `session.logout`; with a VM also `host.get_all_records`,
 //! `Async.VM.start`, `task.get_record` and `task.destroy`. Any other
 //! request panics in its thread and the client sees a closed connection
-//! ([`Server::calls`] still lists it). A test that needs more of the API
+//! ([`Server::calls`] still lists it); with [`Server::hold_unserved`] it
+//! waits instead, which keeps a resource operation unfinished. A test that needs more of the API
 //! extends `respond` here.
 
 use std::{
@@ -184,6 +185,8 @@ struct World {
     lose_replies: bool,
     /// `task.get_record` says the task is pending.
     hold_tasks: bool,
+    /// A request the server does not serve waits instead of failing.
+    hold_unserved: bool,
     /// Events for the next `event.from`.
     pending: Vec<Value>,
 }
@@ -291,6 +294,7 @@ impl Server {
             running: false,
             lose_replies: false,
             hold_tasks: false,
+            hold_unserved: false,
             pending: Vec::new(),
         }));
         let signal = stop.clone();
@@ -364,6 +368,17 @@ impl Server {
     /// success.
     pub fn hold_tasks(&self, hold: bool) {
         self.world.lock().unwrap().hold_tasks = hold;
+    }
+
+    /// While set, a request the server does not serve (the first call of a
+    /// resource operation, `pool.get_by_uuid` for one on the pool) is kept
+    /// waiting, so the operation stays unfinished; cleared, the request is
+    /// dropped without a reply and the operation ends as the core ends one
+    /// whose host cannot be reached (`Rejected`). Held for ten seconds at
+    /// most. Without it such a request panics in its thread, with the same
+    /// end for the operation.
+    pub fn hold_unserved(&self, hold: bool) {
+        self.world.lock().unwrap().hold_unserved = hold;
     }
 }
 impl Drop for Server {
@@ -480,6 +495,13 @@ fn respond(world: &Mutex<World>, method: &str, params: &Value) -> Option<Value> 
             }
         }
         "task.destroy" if has_vm => Value::Null,
+        _ if world.lock().unwrap().hold_unserved => {
+            let start = Instant::now();
+            while world.lock().unwrap().hold_unserved && start.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            return None;
+        }
         _ => panic!("Unexpected fixture request: {method}"),
     })
 }
