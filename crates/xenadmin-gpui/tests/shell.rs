@@ -1016,9 +1016,11 @@ async fn the_shell_shows_whatever_context_menu_the_model_has_open(cx: &mut TestA
         model(cx, &scene, |m| m.scope().single().cloned()),
         host.object
     );
-    // A press outside the menu closes it, in the model too.
+    // A press outside the menu closes it, in the model too. The far end of
+    // the status bar: a server's menu, with every area's commands, covers
+    // the tab strip beside the tree.
     on(cx, &scene, |window, cx| {
-        window.click(TabId::General.key(), cx)
+        window.click(status::SELECTION_KEY, cx)
     });
     cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
         window.try_find("popup-menu").is_none()

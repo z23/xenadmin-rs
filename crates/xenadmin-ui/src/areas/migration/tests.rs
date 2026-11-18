@@ -548,14 +548,17 @@ fn texts_that_name_other_places_are_carried_over_word_for_word() {
     assert!(h.has_text("verified new disks are recorded in operation history"));
     h.click("migration-back");
     assert!(h.has_text("Use Move / copy to another pool for cross-pool transfers."));
-    // The button under that caption is the `cross_pool` area's command: it
-    // is absent until that area registers it.
+    // The button under that caption is the `cross_pool` area's command, as
+    // that command allows it: in the demo it is there, disabled with the
+    // command's reason.
     let target = h.model.target();
+    let Eligibility::Disabled(reason) = h.model.eligibility(MOVE_TO_POOL, &target) else {
+        panic!("the demo cannot move a VM to another pool");
+    };
     assert_eq!(
-        h.model.eligibility(MOVE_TO_POOL, &target),
-        Eligibility::Hidden
+        h.node("migration-cross-pool").disabled.as_deref(),
+        Some(reason.as_str())
     );
-    assert!(h.find("migration-cross-pool").is_none());
     let h = Harness::scene("batch-move");
     assert!(h.has_text("This review covers this pool only."));
 }

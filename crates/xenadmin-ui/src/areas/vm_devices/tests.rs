@@ -894,11 +894,13 @@ fn the_properties_dialog_of_a_disk_edits_its_name_one_review_at_a_time() {
         ObjectKind::VirtualDisk,
         disk,
     ));
+    // This area's two pages, among those other areas provide for a disk.
     let pages: Vec<_> = h
         .model
         .property_pages(&target)
         .into_iter()
         .map(|(area, page)| (area, page.id))
+        .filter(|(area, _)| *area == "vm_devices")
         .collect();
     assert_eq!(
         pages,
@@ -940,6 +942,7 @@ fn the_properties_dialog_of_a_disk_edits_its_name_one_review_at_a_time() {
         .model
         .property_pages(&target)
         .into_iter()
+        .filter(|(area, _)| *area == "vm_devices")
         .map(|(_, page)| page.id)
         .collect();
     assert_eq!(pages, ["size-location"]);

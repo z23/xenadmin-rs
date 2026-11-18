@@ -343,7 +343,11 @@ impl ShellView {
             .unwrap_or_else(|| self.default_menu_position(&key, window, cx));
         let restore = window.focused(cx);
         let store = self.ui.store.clone();
-        let menu = PopupMenu::build(window, cx, move |mut menu, _, _| {
+        let menu = PopupMenu::build(window, cx, move |mut menu, window, _| {
+            // A guest's menu holds every area's commands and can be taller
+            // than a small window: it scrolls inside the window instead.
+            let room = window.viewport_size().height - px(16.);
+            menu = menu.scrollable(true).max_h(room);
             for (index, group) in groups.iter().enumerate() {
                 if index > 0 {
                     menu = menu.separator();

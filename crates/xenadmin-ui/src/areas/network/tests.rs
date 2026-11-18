@@ -756,10 +756,13 @@ fn the_mtu_field_reviews_the_change_that_fits_the_network() {
     // A network with interfaces: the change of the networking dialog.
     h.select(Target::one(ObjectRef::network(pool, used.uuid())));
     h.invoke("network.properties");
+    // This area's two pages, among those other areas provide for a network.
     let labels: Vec<String> = match &h.surface().kind {
-        SurfaceKind::Properties { pages, .. } => {
-            pages.iter().map(|page| page.label.clone()).collect()
-        }
+        SurfaceKind::Properties { pages, .. } => pages
+            .iter()
+            .map(|page| page.label.clone())
+            .filter(|label| label == "General" || label == "Network Settings")
+            .collect(),
         _ => panic!("not a properties dialog"),
     };
     assert_eq!(labels, ["General", "Network Settings"]);
