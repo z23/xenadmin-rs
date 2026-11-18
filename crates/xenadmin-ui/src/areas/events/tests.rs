@@ -766,19 +766,36 @@ fn an_unknown_vm_outcome_is_rechecked_and_acknowledged_only_through_its_pool() {
     assert_eq!(h.eligibility("events.recheck"), Eligibility::disabled(DEMO));
     assert_eq!(control::recheck(&mut h.model, key), Err(DEMO.into()));
     h.click("events.acknowledge");
-    assert_eq!(h.surface_id().as_deref(), Some("acknowledge-unknown"));
-    assert!(h.has_text("VM: "));
-    assert!(h.has_text(control::ACK_VM));
-    assert_eq!(h.try_click("acknowledge-confirm"), Err(DEMO.into()));
+    // The one acknowledgement of a VM operation: the Rune dialog of
+    // `main.rs`, by its key, its title and its texts.
+    assert_eq!(h.surface_id().as_deref(), Some("unknown-outcome"));
+    assert_eq!(h.surface().title, "Acknowledge unknown outcome");
+    assert!(h.has_text("Acknowledge unknown outcome?"));
+    assert!(
+        h.node("unknown-target")
+            .text
+            .is_some_and(|text| text.starts_with("VM: "))
+    );
+    assert_eq!(
+        h.node("unknown-consequence").text.as_deref(),
+        Some(control::ACK_VM)
+    );
+    assert_eq!(h.node("unknown-acknowledge").tone, Some(Tone::Warning));
+    assert!(h.find("unknown-preview").is_some());
+    assert_eq!(h.try_click("unknown-acknowledge"), Err(DEMO.into()));
     control::confirm_acknowledge(&mut h.model);
-    assert!(h.find("acknowledge-error").is_some());
+    assert!(h.find("unknown-error").is_some());
     assert!(h.model.areas.events.acknowledge.is_some());
     // The record resolves under the open review: it cannot be confirmed.
     h.model.demo = false;
     h.model.operation_rows[0].state = OperationState::Succeeded;
     assert_eq!(
-        h.try_click("acknowledge-confirm"),
+        h.try_click("unknown-acknowledge"),
         Err(control::ACK_STALE.into())
+    );
+    assert_eq!(
+        h.node("unknown-stale").text.as_deref(),
+        Some(control::ACK_STALE)
     );
     h.dismiss();
     assert!(h.model.areas.events.acknowledge.is_none());

@@ -10,8 +10,6 @@
 //!
 //! - confirmation: `power-confirm-target`, `power-confirm-consequence`,
 //!   `power-confirm-cancel`, `power-confirm-submit`;
-//! - unknown outcome: `unknown-target`, `unknown-consequence`,
-//!   `unknown-cancel`, `unknown-acknowledge`;
 //! - placement: `placement-target`, `placement-hosts` with
 //!   `placement-host-<id>`, `placement-review` (and so
 //!   `placement-review-stale`), `placement-error`, `placement-cancel`,
@@ -27,17 +25,15 @@ use xenadmin_core::{PowerAction, VmRecoveryOperation};
 use super::batch::{self, Editor};
 use super::placement::{self, Placement};
 use super::recovery::{self, Panel, Review};
-use super::single::{self, Confirm, Unknown};
+use super::single::{self, Confirm};
 use super::synthetic;
 use crate::prelude::*;
 
 /// Back to front, in the precedence of the Rune dialog chain: the
-/// acknowledgement, the confirmation, placement, recovery; the batch was a
-/// layer over the chain.
+/// confirmation, placement, recovery; the batch was a layer over the chain.
 pub fn surfaces(m: &Model) -> Vec<Surface> {
     let state = &m.areas.power;
     let mut surfaces = Vec::new();
-    surfaces.extend(state.unknown.as_ref().map(unknown));
     surfaces.extend(state.confirm.as_ref().map(|c| confirm(m, c)));
     surfaces.extend(state.placement.as_ref().map(|p| placement(m, p)));
     surfaces.extend(state.recovery.as_deref().map(|p| recovery(m, p)));
@@ -81,26 +77,6 @@ fn confirm(m: &Model, c: &Confirm) -> Surface {
         submit.disabled_opt(single::confirm_blocked(m, c)),
     ])
     .on_close(single::cancel_confirm)
-}
-
-fn unknown(u: &Unknown) -> Surface {
-    Surface::dialog("unknown-outcome", "Acknowledge unknown outcome")
-        .small()
-        .body(blocks![
-            heading("Acknowledge unknown outcome?"),
-            caption(format!("VM: {}", u.name)).key("unknown-target"),
-            caption(single::ACKNOWLEDGE).key("unknown-consequence"),
-        ])
-        .footer([
-            button("unknown-cancel", "Cancel", single::cancel_unknown),
-            button(
-                "unknown-acknowledge",
-                "Acknowledge outcome",
-                single::acknowledge,
-            )
-            .danger(),
-        ])
-        .on_close(single::cancel_unknown)
 }
 
 fn placement(m: &Model, p: &Placement) -> Surface {

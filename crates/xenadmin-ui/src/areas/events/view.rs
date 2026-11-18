@@ -391,10 +391,15 @@ fn close_acknowledge(m: &mut Model) {
 }
 
 /// "Acknowledge unknown outcome?": what is released and what is not
-/// established, for a VM operation and for a resource operation alike.
+/// established. One review, two dialogs by family, because what they say
+/// differs in substance: a VM operation releases this client's block on one
+/// VM, a resource operation the write guard of a pool (or of two).
 fn acknowledge_surface(m: &Model, ack: &Acknowledge) -> Surface {
     let synthetic = control::acknowledge_synthetic(m, ack);
     let stale = control::acknowledge_stale(m, ack);
+    if ack.key.family == Family::Vm {
+        return unknown_outcome(ack, synthetic, stale);
+    }
     Surface::dialog("acknowledge-unknown", "Acknowledge unknown outcome?")
         .small()
         .body(blocks![
@@ -412,6 +417,54 @@ fn acknowledge_surface(m: &Model, ack: &Acknowledge) -> Surface {
                 control::confirm_acknowledge,
             )
             .danger()
+            .disabled_opt(stale)
+            .disabled_if(synthetic, DEMO),
+        ])
+        .on_close(close_acknowledge)
+}
+
+/// The acknowledgement of a VM operation: the Rune `unknown_review` dialog
+/// of `main.rs`, with its key (`unknown-outcome`), its title, its heading,
+/// its two captions and its Warning button. It is reached from the Events
+/// tab (`events.acknowledge`), from a record of a VM's General tab and from
+/// the power area's "Review unknown outcome" alike.
+///
+/// Beyond Rune: the reason it cannot be confirmed any more
+/// (`unknown-stale`), the synthetic-data notice (`unknown-preview`) and a
+/// refusal of the host (`unknown-error`), which keeps the dialog open.
+fn unknown_outcome(ack: &Acknowledge, synthetic: bool, stale: Option<&'static str>) -> Surface {
+    let mut lines = ack.lines.iter();
+    let target = lines.next().cloned().unwrap_or_default();
+    let consequence: Vec<Text> = lines
+        .enumerate()
+        .map(|(index, line)| {
+            caption(line.clone()).key(if index == 0 {
+                "unknown-consequence".to_owned()
+            } else {
+                format!("unknown-consequence-{index}")
+            })
+        })
+        .collect();
+    Surface::dialog("unknown-outcome", "Acknowledge unknown outcome")
+        .small()
+        .body(blocks![
+            heading("Acknowledge unknown outcome?"),
+            caption(target).key("unknown-target"),
+            consequence,
+            stale.map(|reason| alert(reason).key("unknown-stale")),
+            synthetic.then(|| notice(NoticeKind::Preview, ACK_PREVIEW).key("unknown-preview")),
+            ack.error
+                .clone()
+                .map(|error| alert(error).key("unknown-error")),
+        ])
+        .footer([
+            button("unknown-cancel", "Cancel", close_acknowledge),
+            button(
+                "unknown-acknowledge",
+                "Acknowledge outcome",
+                control::confirm_acknowledge,
+            )
+            .warning()
             .disabled_opt(stale)
             .disabled_if(synthetic, DEMO),
         ])

@@ -1,12 +1,13 @@
 //! Power for one VM: why an action is or is not available, the request,
-//! the confirmation, the acknowledgement of an unknown outcome, and the
-//! controls of an operation record.
+//! the confirmation, and the controls of an operation record.
 //!
 //! Carried over from the Rune `main.rs`: `State::request_power`,
 //! `State::submit_power`, the reason under each power button of `details`,
 //! the controls under each recent operation, and what the `force_action`
-//! and `unknown_review` dialogs did. Read against the pool of the VM
-//! instead of the scope session.
+//! dialog did. Read against the pool of the VM instead of the scope
+//! session. The Rune `unknown_review` dialog is the `events` area's
+//! acknowledgement (`unknown-outcome`), the one dialog for it:
+//! [`review_unknown`] opens it.
 
 use xenadmin_core::{
     ActionAvailability, Error, ObservedVm, OperationAction, OperationControl, OperationId,
@@ -29,8 +30,6 @@ pub const NO_ACTIONS: &str = "No power actions are available in the received VM 
 pub const FORCE: &str = "This interrupts the guest immediately and can lose unsaved data. A clean shutdown is safer when the guest responds.";
 /// The consequence line of a routine confirmation.
 pub const ROUTINE: &str = "The selected power action will be sent to this VM. Current host permissions and power state are checked again before submission.";
-/// The text of the unknown-outcome acknowledgement.
-pub const ACKNOWLEDGE: &str = "The earlier operation may still be running. Inspect the host and stop other client instances handling it before continuing. Acknowledging releases this client's VM block; it does not cancel the host task or establish its result.";
 
 /// The pending confirmation of one power action: the observation captured
 /// when it was asked for, which is what is submitted (Rune `force_action`).
@@ -39,13 +38,6 @@ pub struct Confirm {
     pub vm: VmId,
     pub target: ObservedVm,
     pub action: PowerAction,
-    pub name: String,
-}
-
-/// The pending acknowledgement of an unknown outcome (Rune
-/// `unknown_review`).
-pub struct Unknown {
-    pub id: OperationId,
     pub name: String,
 }
 
@@ -259,29 +251,23 @@ pub fn recheck(m: &mut Model, id: OperationId) {
     control(m, id, OperationControl::Recheck);
 }
 
-/// "Review unknown outcome": opens the acknowledgement for the operation.
-/// It names the VM as the inventory does, or by UUID when it is gone.
+/// "Review unknown outcome": opens the acknowledgement for the operation,
+/// the dialog `unknown-outcome` of the `events` area (the Rune
+/// `unknown_review`). It names the VM as the inventory does, or by UUID
+/// when it is gone. A record that cannot be acknowledged (a child of a
+/// batch, an outcome that is known by now) leaves the reason in `m.error`.
 pub fn review_unknown(m: &mut Model, id: OperationId) {
-    let Some(record) = m.operation_rows.iter().find(|r| r.id == id) else {
+    let Some(pool) = m.operation_rows.iter().find(|r| r.id == id).map(|r| r.pool) else {
         return;
     };
-    let name = m
-        .inventory_for(record.pool)
-        .and_then(|i| i.vms.get(&record.vm).map(|vm| vm.name.clone()))
-        .unwrap_or_else(|| record.vm.to_string());
-    m.areas.power.unknown = Some(Unknown { id, name });
-}
-
-/// The confirm button of the acknowledgement: no check is made again, and
-/// the review closes whatever the connection answers (as in Rune).
-pub(crate) fn acknowledge(m: &mut Model) {
-    if let Some(unknown) = m.areas.power.unknown.take() {
-        control(m, unknown.id, OperationControl::AcknowledgeUnknown);
-    }
-}
-
-pub(crate) fn cancel_unknown(m: &mut Model) {
-    m.areas.power.unknown = None;
+    crate::areas::events::acknowledge(
+        m,
+        crate::areas::events::OperationKey {
+            pool,
+            id,
+            family: crate::areas::events::Family::Vm,
+        },
+    );
 }
 
 /// Whether cancelling stops the remaining steps of a workflow, which is how
@@ -327,11 +313,14 @@ pub fn operation_controls(m: &Model, record: &OperationRecord) -> Vec<Button> {
                 move |m| recheck(m, id),
             ));
         }
-        controls.push(button(
-            format!("operation-unknown-{id}"),
-            "Review unknown outcome",
-            move |m| review_unknown(m, id),
-        ));
+        controls.push(
+            button(
+                format!("operation-unknown-{id}"),
+                "Review unknown outcome",
+                move |m| review_unknown(m, id),
+            )
+            .warning(),
+        );
     }
     controls.extend(super::recovery::restore_button(m, record));
     controls

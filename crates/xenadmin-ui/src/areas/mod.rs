@@ -199,8 +199,9 @@ macro_rules! areas {
 // the chain in reverse rank (back to front), each area at the rank of its
 // backmost dialog, then the independent layers back to front:
 //
-//   chain:  power (unknown outcome 30, force review 29, placement 26,
-//           recovery 23), snapshots (28), vm_properties (27), vm_lifecycle
+//   chain:  power (force review 29, placement 26, recovery 23; the
+//           unknown outcome review 30 is the events area's dialog now, in
+//           front), snapshots (28), vm_properties (27), vm_lifecycle
 //           (25, cloud-init 20), migration (24), cross_pool (22), transfers
 //           (21, local conversion 7), network (generic resource editor 19,
 //           network workspace 10) with its children network_services and
@@ -372,8 +373,8 @@ mod tests {
         }
         // "Explain outcome" opens from the surfaces of every other area.
         assert_eq!(AREA_IDS.last(), Some(&"events"));
-        // The power confirmation and the unknown-outcome acknowledgement are
-        // behind every other dialog, as in Rune.
+        // The power confirmation is behind every other dialog, as in Rune.
+        // (The unknown-outcome acknowledgement is one dialog of `events`.)
         assert_eq!(AREA_IDS.first(), Some(&"power"));
     }
 

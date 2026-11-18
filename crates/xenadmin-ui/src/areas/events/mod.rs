@@ -17,7 +17,8 @@
 //! | pool history of `resource_admin.rs` (rows, evidence lines) | the History list: both families in one list; the evidence lines are in the selected row's outcome |
 //! | "Pool: … · change" (`activity-pool`) | a select with the same key |
 //! | review mode of the dialog | the dialogs `task-cancellation` and `message-dismissal` |
-//! | "Acknowledge unknown outcome?" (`main.rs`), `Kind::Acknowledge` (`resource_admin.rs`) | the dialog `acknowledge-unknown`, one for both families |
+//! | "Acknowledge unknown outcome?" (`main.rs`, `unknown_review`) | the dialog `unknown-outcome`, with the Rune title and texts: the one acknowledgement of a VM operation, also what the power area's "Review unknown outcome" opens |
+//! | `Kind::Acknowledge` (`resource_admin.rs`) | the dialog `acknowledge-unknown`: the same review for a resource operation, whose lines differ in substance (a pool's write guard, both pools of a transfer, a batch) |
 //! | "Outcome explanation" | the dialog `failure-help-dialog` |
 //!
 //! Commands (none has a menu path: the plan's Menus table lists none; all
@@ -36,8 +37,9 @@
 //! | `alerts.dismiss` | Review dismissal… | Alerts | `activity-review` |
 //! | `alerts.export` | Export filtered entries… | Alerts | `activity-export` |
 //!
-//! Surfaces: `task-cancellation`, `message-dismissal`, `acknowledge-unknown`
-//! (small), `failure-help-dialog`; all dialogs, none experimental.
+//! Surfaces: `task-cancellation`, `message-dismissal`, `unknown-outcome`
+//! and `acknowledge-unknown` (small), `failure-help-dialog`; all dialogs,
+//! none experimental.
 //! Scenes: `activity`, `failure-help`.
 //!
 //! # For other areas
@@ -323,6 +325,11 @@ pub fn outcome_actions(m: &Model, key: OperationKey) -> Vec<Button> {
                         acknowledge(m, key);
                     },
                 )
+                // Rune drew the VM family's with its Warning variant.
+                .style(match key.family {
+                    Family::Vm => ButtonStyle::Warning,
+                    Family::Resource => ButtonStyle::Secondary,
+                })
                 .disabled_opt(disabled),
             );
         }

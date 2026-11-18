@@ -918,31 +918,63 @@ fn acknowledging_an_unknown_outcome_is_two_steps_and_marks_nothing_locally() {
     let id = record(&mut h, vm, "OutcomeUnknown", serde_json::json!({}));
     let name = h.model.inventory.as_ref().unwrap().vms[&vm].name.clone();
     super::review_unknown(&mut h.model, id);
+    // The Rune dialog, by its key and its texts; it is the one dialog the
+    // Events tab opens too (the `events` area draws it).
+    assert_eq!(h.surface().id, "unknown-outcome");
     assert_eq!(h.surface().title, "Acknowledge unknown outcome");
-    assert!(h.has_text(&format!("VM: {name}")));
+    assert!(h.has_text("Acknowledge unknown outcome?"));
+    assert_eq!(
+        h.node("unknown-target").text,
+        Some(format!("VM: {name}"))
+    );
     assert!(h.has_text("it does not cancel the host task or establish its result"));
+    assert_eq!(h.node("unknown-acknowledge").tone, Some(Tone::Warning));
+    assert_eq!(
+        h.node("unknown-acknowledge").label.as_deref(),
+        Some("Acknowledge outcome")
+    );
     h.click("unknown-cancel");
     assert!(h.surfaces().is_empty());
     assert_eq!(h.model.error, None);
+    assert!(h.model.areas.events.acknowledge.is_none());
     super::review_unknown(&mut h.model, id);
+    // The demo cannot acknowledge: the button says so.
+    assert_eq!(h.try_click("unknown-acknowledge"), Err(super::DEMO.into()));
+    // Outside the demo and without a connection the request is refused.
+    // The review stays open with the refusal (Rune closed it and left the
+    // refusal on the error line), and the record is as it was.
+    h.model.demo = false;
     h.click("unknown-acknowledge");
-    // No connection in the demo: the request is refused, the review closes
-    // all the same (as in Rune), and the record is as it was.
-    assert!(h.surfaces().is_empty());
-    assert_eq!(h.model.error, Some(Error::Closed.to_string()));
+    assert_eq!(h.surface().id, "unknown-outcome");
+    assert_eq!(
+        h.node("unknown-error").text,
+        Some(Error::Closed.to_string())
+    );
     assert_eq!(
         format!("{:?}", h.model.operation_rows[0].state),
         "OutcomeUnknown"
     );
+    // Once the outcome is known the open review cannot be confirmed.
+    let known: OperationRecord = {
+        let mut value = serde_json::to_value(&h.model.operation_rows[0]).expect("a record");
+        value["state"] = "Succeeded".into();
+        serde_json::from_value(value).expect("a record")
+    };
+    let unknown = std::mem::replace(&mut h.model.operation_rows[0], known);
+    assert!(h.try_click("unknown-acknowledge").is_err());
+    assert!(h.find("unknown-stale").is_some());
+    h.dismiss();
+    assert!(h.surfaces().is_empty());
+    // A record whose outcome is known opens no review at all.
+    super::review_unknown(&mut h.model, id);
+    assert!(h.surfaces().is_empty());
+    h.model.operation_rows[0] = unknown;
     // A VM the inventory lost is named by its UUID.
     amend(&mut h.model, |i| {
         i.vms.remove(&vm);
     });
     super::review_unknown(&mut h.model, id);
-    assert_eq!(
-        h.model.areas.power.unknown.as_ref().unwrap().name,
-        vm.to_string()
-    );
+    assert_eq!(h.node("unknown-target").text, Some(format!("VM: {vm}")));
 }
 
 // -- 3. Hazards -----------------------------------------------------------------
