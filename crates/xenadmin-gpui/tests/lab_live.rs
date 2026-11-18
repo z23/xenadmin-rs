@@ -1881,3 +1881,40 @@ fn lab_p3_host_maintenance() {
     client.close();
     evidence.finish();
 }
+
+/// Read-only: what the lab holds now, through a core connection of the
+/// test's own (no window). Run before and after the scenarios to see the
+/// baseline: both servers enabled, the guests running and where, and no
+/// snapshot of a scenario left.
+#[test]
+#[ignore]
+fn lab_state() {
+    let lab = Lab::load();
+    let outside = Outside::connect(&lab);
+    let snapshot = outside.connection.latest();
+    let inventory = snapshot.inventory().expect("inventory");
+    println!("pool {}", inventory.pool_name);
+    for host in inventory.hosts.values() {
+        println!(
+            "server {} enabled={} coordinator={}",
+            host.name,
+            host.enabled,
+            inventory.coordinator == Some(host.id)
+        );
+    }
+    for vm in inventory.guests() {
+        let on = vm
+            .host
+            .and_then(|id| inventory.hosts.get(&id))
+            .map_or("-", |host| host.name.as_str());
+        println!("guest {} {:?} on {on} ({:?})", vm.name, vm.power_state, vm.description);
+    }
+    for snapshot in inventory.snapshots.iter() {
+        let of = snapshot
+            .vm
+            .and_then(|id| inventory.vms.get(&id))
+            .map_or("-", |vm| vm.name.as_str());
+        println!("snapshot {:?} of {of}", snapshot.name);
+    }
+    println!("snapshots {}", inventory.snapshots.len());
+}
