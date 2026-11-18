@@ -8,8 +8,8 @@
 //!   or NICs tab): the management interface of that server;
 //! - the target is a pool or a network (the scope of a Networking tab, or a
 //!   network selected in its grid): the interface selected in the interface
-//!   grid (`network::selected_pif`); without one, the management interface
-//!   of the server in scope if the scope is a server, else the command asks
+//!   grid (`network::selected_pif`); without one, a network selected on
+//!   the tab of a server stands for that server, and anything else asks
 //!   for the selection.
 //!
 //! **Eligibility.** `Hidden` where Rune showed no button: another kind of
@@ -177,9 +177,11 @@ pub fn subject(m: &Model, target: &Target) -> Found {
                     Err(Eligibility::Hidden)
                 };
             }
+            // A network selected in the grid of a server's Networking
+            // tab: the tab is still the server's.
             m.scope()
                 .single_of(ObjectKind::Host)
-                .filter(|scope| scope.pool == Some(pool))
+                .filter(|scope| object.kind == ObjectKind::Network && scope.pool == Some(pool))
                 .and_then(|scope| scope.host_id())
         }
         _ => return Err(Eligibility::Hidden),

@@ -100,6 +100,9 @@ pub mod management;
 pub mod scenes;
 pub mod view;
 
+#[cfg(test)]
+mod tests;
+
 pub use view::continuation;
 
 /// The state of the area. `m.areas.management_network`.
