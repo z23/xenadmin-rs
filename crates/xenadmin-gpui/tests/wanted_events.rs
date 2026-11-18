@@ -919,9 +919,8 @@ fn open_menu_items(
     scene: &ShellWindow,
 ) -> Vec<(&'static str, Option<String>)> {
     model(cx, scene, |m| {
-        m.context_menu()
+        m.context_items()
             .into_iter()
-            .flatten()
             .map(|item| (item.id.0, item.disabled))
             .collect()
     })
@@ -930,15 +929,18 @@ fn open_menu_items(
 /// Chooses an item of the popup the shell shows for the open context menu.
 #[track_caller]
 fn choose_from_popup(cx: &mut TestAppContext, scene: &ShellWindow, command: &str) {
-    // An item's element id is its place in the menu, separators counted.
+    // An entry's element id is its place at the top level of the menu,
+    // separators counted; a submenu is one entry.
     let index = model(cx, scene, |m| {
         let mut index = 0;
-        for (group, items) in m.context_menu().into_iter().enumerate() {
+        for (group, entries) in m.context_menu().into_iter().enumerate() {
             if group > 0 {
                 index += 1;
             }
-            for item in items {
-                if item.id.0 == command {
+            for entry in entries {
+                if let xenadmin_ui::command::MenuEntry::Item(item) = &entry
+                    && item.id.0 == command
+                {
                     return Some(index);
                 }
                 index += 1;
@@ -946,7 +948,7 @@ fn choose_from_popup(cx: &mut TestAppContext, scene: &ShellWindow, command: &str
         }
         None
     })
-    .unwrap_or_else(|| panic!("the context menu has no {command}"));
+    .unwrap_or_else(|| panic!("the top level of the context menu has no {command}"));
     on(cx, scene, |window, cx| {
         window.within("popup-menu").click(index, cx);
     });
@@ -1091,6 +1093,7 @@ fn all_guests_selected_then_one_left(
         xenadmin_ui::command::context_menu(m, &m.target())
             .into_iter()
             .flatten()
+            .flat_map(xenadmin_ui::command::MenuEntry::into_items)
             .map(|item| (item.id.0, item.disabled))
             .collect()
     });
