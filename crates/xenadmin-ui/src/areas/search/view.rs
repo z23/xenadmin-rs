@@ -1,7 +1,5 @@
 //! What the area shows: the body of the Search tab and its three dialogs.
 
-use std::rc::Rc;
-
 use xenadmin_core::{PowerState, SavedSearch, SearchGroup, SearchKind};
 
 use super::query::{self, Sheet};
@@ -243,7 +241,8 @@ fn grouping(sheet: &Sheet) -> Choice {
 }
 
 /// The result grid: multi-selection, sortable columns, activation opens
-/// the result, and the context menu of the objects.
+/// the result. Every row stands for its object (`query::project`), so its
+/// context menu is the kernel's menu of that object.
 fn results(m: &Model, sheet: &Sheet) -> Table {
     let columns = sheet
         .layout()
@@ -266,13 +265,13 @@ fn results(m: &Model, sheet: &Sheet) -> Table {
         .iter()
         .filter_map(query::key_of)
         .collect();
-    let mut results = Table {
+    let results = Table {
         rows: sheet.shown.clone(),
         ..table("search-results", columns, [])
     }
     .multi(selected, select_rows)
     .on_activate(super::navigate)
-    .row_menu(row_menu(sheet))
+    .on_clear(|m| m.select_in_grid(Target::none()))
     .empty(if sheet.sources.is_empty() {
         "No connected pool has an inventory to search."
     } else {
@@ -280,11 +279,8 @@ fn results(m: &Model, sheet: &Sheet) -> Table {
     });
     match &sheet.sort {
         Some((column, descending)) => results.sorted(column.clone(), *descending, sort),
-        None => {
-            // No column is the sort order yet; the headers still sort.
-            results.on_sort = Some(Rc::new(sort));
-            results
-        }
+        // No column is the sort order yet; the headers still sort.
+        None => results.sortable_by(sort),
     }
 }
 
@@ -309,29 +305,6 @@ fn sort(m: &mut Model, column: &str, descending: bool) {
     let sheet = &mut m.areas.search.sheet;
     sheet.sort = Some((column.to_owned(), descending));
     query::project(sheet);
-}
-
-/// The commands of the row context menu: opening the result, then every
-/// command that has one of the result types in its context menu. The
-/// commands hide themselves for a row they do not belong to.
-fn row_menu(sheet: &Sheet) -> Vec<CommandId> {
-    let kinds: Vec<ObjectKind> = if sheet.query.kinds.is_empty() {
-        SearchKind::ALL.to_vec()
-    } else {
-        sheet.query.kinds.iter().copied().collect()
-    }
-    .into_iter()
-    .map(query::object_kind)
-    .collect();
-    std::iter::once(super::OPEN_RESULT)
-        .chain(
-            crate::command::registry()
-                .iter()
-                .filter(|spec| spec.id != super::OPEN_RESULT)
-                .filter(|spec| spec.context.iter().any(|kind| kinds.contains(kind)))
-                .map(|spec| spec.id),
-        )
-        .collect()
 }
 
 /// What the Rune dialog showed under the table for the selected result.

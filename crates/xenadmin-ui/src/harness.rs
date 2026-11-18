@@ -604,6 +604,61 @@ impl Harness {
         }
     }
 
+    /// A secondary press (or the Menu key) on a row of the table `key`, as
+    /// the front end does it: a row outside the selection is selected
+    /// first; then a row that stands for an object ([`surface::Row::object`])
+    /// opens the kernel's context menu of that object, which stays open
+    /// (choose with [`Harness::choose`]), and any other row gives the
+    /// table's `row_menu` resolved on the model's target. Returns the
+    /// items, flattened; hidden commands are omitted.
+    #[track_caller]
+    pub fn open_row_menu(&mut self, key: &str, row: &str) -> Vec<MenuItem> {
+        let (object, selected) = match (
+            self.row(key, row),
+            self.node(&surface::Table::row_key(key, row)),
+        ) {
+            (Handle::Row { object, .. }, node) => (object, node.checked == Some(true)),
+            _ => unreachable!("`row` returns a row"),
+        };
+        if !selected {
+            match self.row(key, row) {
+                Handle::Row {
+                    multi: false,
+                    on_select: Some(on_select),
+                    ..
+                } => on_select(&mut self.model, row),
+                Handle::Row {
+                    multi: true,
+                    on_select_many: Some(on_select_many),
+                    ..
+                } => on_select_many(&mut self.model, &[row.to_owned()]),
+                _ => {}
+            }
+        }
+        match object {
+            Some(object) => self.open_menu(object, MenuOrigin::Grid),
+            None => self.row_menu(key),
+        }
+    }
+
+    /// Escape while the table `key` has the keyboard. With a surface open
+    /// it closes the surface in front; in a tab it runs the table's
+    /// `on_clear`, and does nothing when the table has none. Panics when
+    /// the table is missing.
+    #[track_caller]
+    pub fn escape_in_table(&mut self, key: &str) {
+        match self.enabled(key).handle {
+            Some(Handle::Table { on_clear, .. }) => {
+                if let Some(surface) = self.model.front_surface() {
+                    (surface.on_close)(&mut self.model);
+                } else if let Some(on_clear) = on_clear {
+                    on_clear(&mut self.model);
+                }
+            }
+            _ => panic!("`{key}` is not a table"),
+        }
+    }
+
     /// The context menu of a target, flattened.
     pub fn context_menu(&self, target: &Target) -> Vec<MenuItem> {
         command::context_menu(&self.model, target)

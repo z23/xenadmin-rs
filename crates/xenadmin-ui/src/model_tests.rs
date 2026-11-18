@@ -341,11 +341,11 @@ fn widths_are_kept_in_the_preferences_and_saved_once_they_rest() {
     let mut m = Model::demo(3, 48);
     m.poll(0.0);
     assert!(!m.layout_pending(), "nothing set yet");
-    m.set_column_width("name", Some(321.0));
-    assert_eq!(m.column_width("name"), Some(321.0));
+    m.set_column_width(INVENTORY_TABLE, "name", Some(321.0));
+    assert_eq!(m.column_width(INVENTORY_TABLE, "name"), Some(321.0));
     assert!(m.layout_pending(), "a change starts the delay");
     assert_eq!(m.take_tick_request(), Some(LAYOUT_SAVE_DELAY));
-    m.set_column_width("name", Some(321.0));
+    m.set_column_width(INVENTORY_TABLE, "name", Some(321.0));
     assert_eq!(
         m.take_tick_request(),
         None,
@@ -353,24 +353,35 @@ fn widths_are_kept_in_the_preferences_and_saved_once_they_rest() {
     );
     // A drag keeps deferring.
     m.poll(0.3);
-    m.set_column_width("name", Some(340.0));
+    m.set_column_width(INVENTORY_TABLE, "name", Some(340.0));
     m.poll(0.5);
     assert!(m.layout_pending());
     m.poll(0.95);
     assert!(!m.layout_pending(), "saved once it rests");
     assert_eq!(m.preferences.columns.get("name"), Some(&340.0));
     // A scope session change keeps the widths.
-    m.set_column_width("state", Some(150.0));
+    m.set_column_width(INVENTORY_TABLE, "state", Some(150.0));
     session::clear_view(&mut m);
-    assert_eq!(m.column_width("state"), Some(150.0));
+    assert_eq!(m.column_width(INVENTORY_TABLE, "state"), Some(150.0));
     // A column put back to its declared width is forgotten.
-    m.set_column_width("name", None);
+    m.set_column_width(INVENTORY_TABLE, "name", None);
     assert!(!m.preferences.columns.contains_key("name"));
     assert!(m.layout_pending());
     // Widths outside what the client accepts are ignored.
-    m.set_column_width("cpu", Some(4.0));
-    m.set_column_width("cpu", Some(f32::NAN));
-    assert_eq!(m.column_width("cpu"), None);
+    m.set_column_width(INVENTORY_TABLE, "cpu", Some(4.0));
+    m.set_column_width(INVENTORY_TABLE, "cpu", Some(f32::NAN));
+    assert_eq!(m.column_width(INVENTORY_TABLE, "cpu"), None);
+    // Another table keeps its own widths, under `<table>/<column>`; the
+    // inventory grid keeps the ids a Rune preferences file has.
+    m.set_column_width("event-log", "state", Some(210.0));
+    assert_eq!(m.column_width("event-log", "state"), Some(210.0));
+    assert_eq!(m.column_width(INVENTORY_TABLE, "state"), Some(150.0));
+    assert_eq!(m.column_width("event-log", "name"), None);
+    assert_eq!(m.preferences.columns.get("event-log/state"), Some(&210.0));
+    assert_eq!(m.preferences.columns.get("state"), Some(&150.0));
+    m.set_column_width("event-log", "state", None);
+    assert_eq!(m.column_width("event-log", "state"), None);
+    assert_eq!(m.column_width(INVENTORY_TABLE, "state"), Some(150.0));
     m.set_sidebar_width(9000.0);
     assert_eq!(m.preferences.sidebar_width, 420.0);
     m.set_sidebar_width(f32::INFINITY);

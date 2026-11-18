@@ -627,7 +627,7 @@ pub fn project(sheet: &mut Sheet) {
                 // A cell the inventory cannot fill says so.
                 cell.unwrap_or_else(|| "Unknown".to_owned())
             });
-            row(result.key(), cells)
+            row(result.key(), cells).object(object_of(result))
         })
         .collect();
     let sorted = sheet.sort.as_ref().and_then(|(column, descending)| {

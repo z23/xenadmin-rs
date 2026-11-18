@@ -81,12 +81,12 @@ pub mod prelude {
     pub use crate::secret::SecretText;
     pub use crate::surface::{
         Act, ActRows, ActSort, ActText, Align, Block, Button, ButtonStyle, Choice, ChoiceStyle,
-        Column, Control, Custom, Field, Group, Notice, NoticeKind, OptionItem, Outcome,
-        OutcomeState, Property, Review, Row, Surface, SurfaceKind, SurfaceSize, Table,
+        Column, Control, Custom, Field, Group, Image, ImageData, Notice, NoticeKind, OptionItem,
+        Outcome, OutcomeState, Property, Review, Row, Surface, SurfaceKind, SurfaceSize, Table,
         TableSelection, TableSort, Text, Tone, act, act_text, actions, alert, button, caption,
-        checkbox, choice, column, columns, custom, divider, group, heading, input, no_op, notice,
-        option, outcome, properties, property, review, row, secret_input, select, table, text,
-        textarea,
+        checkbox, choice, column, columns, custom, divider, group, heading, image, input, no_op,
+        notice, option, outcome, properties, property, review, row, secret_input, select, table,
+        text, textarea,
     };
     pub use crate::tabs::{TabBody, TabId};
 }
