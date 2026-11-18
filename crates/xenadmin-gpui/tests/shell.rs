@@ -839,6 +839,26 @@ fn the_toolbar_shows_a_power_command_only_while_it_applies(cx: &mut TestAppConte
     );
 }
 
+/// Where an item of the model's open context menu is in the popup the shell
+/// builds from it: the items in order, with one separator between groups.
+fn popup_index(cx: &mut TestAppContext, scene: &ShellWindow, label: &str) -> usize {
+    model(cx, scene, |m| {
+        let mut index = 0;
+        for (group, items) in m.context_menu().into_iter().enumerate() {
+            if group > 0 {
+                index += 1;
+            }
+            for item in items {
+                if item.label == label {
+                    return index;
+                }
+                index += 1;
+            }
+        }
+        panic!("the context menu has no item {label}")
+    })
+}
+
 #[gpui_kit::test]
 async fn a_tree_row_has_the_context_menu_of_its_object(cx: &mut TestAppContext) {
     let scene = open(cx);
@@ -862,7 +882,10 @@ async fn a_tree_row_has_the_context_menu_of_its_object(cx: &mut TestAppContext) 
             .map(|item| item.label)
             .collect()
     });
-    assert_eq!(items, ["Copy UUID"]);
+    // The areas' commands for a guest are in it too; this test follows the
+    // kernel's Copy UUID.
+    assert!(items.iter().any(|label| label == "Copy UUID"), "{items:?}");
+    let copy = popup_index(cx, &scene, "Copy UUID");
     on(cx, &scene, |window, cx| {
         let menu = window.find("popup-menu");
         assert_eq!(menu.role(), Some(Role::Menu));
@@ -870,7 +893,7 @@ async fn a_tree_row_has_the_context_menu_of_its_object(cx: &mut TestAppContext) 
             window.find_by_label("Copy UUID").role(),
             Some(Role::MenuItem)
         );
-        window.within("popup-menu").click(0usize, cx);
+        window.within("popup-menu").click(copy, cx);
     });
     cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
         window.try_find("popup-menu").is_none()
@@ -1058,8 +1081,9 @@ async fn a_grid_row_that_stands_for_an_object_has_its_context_menu_at_the_pointe
     assert!(cx.update(|cx| scene.view.read(cx).menu_open()));
     // Choosing an item runs the command on the row's object and ends the
     // menu.
+    let copy = popup_index(cx, &scene, "Copy UUID");
     on(cx, &scene, |window, cx| {
-        window.within("popup-menu").click(0usize, cx);
+        window.within("popup-menu").click(copy, cx);
     });
     cx.wait_for(scene.window, Duration::from_secs(2), |window, _| {
         window.try_find("popup-menu").is_none()
