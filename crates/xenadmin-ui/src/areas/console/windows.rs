@@ -193,8 +193,8 @@ pub fn close(m: &mut Model, id: ConsoleWindowId) {
     m.send(Intent::ConsoleWindow(ConsoleWindowRequest::Close(id)));
 }
 
-/// Closes every window's console (the Rune `close_all`). The front end runs
-/// it when the main window closes, before `Model::close`.
+/// Closes every window's console (the Rune `close_all`). `Model::close`
+/// runs it when the main window closes, before the sessions disconnect.
 pub fn close_all(m: &mut Model) {
     for id in ids() {
         close(m, id);

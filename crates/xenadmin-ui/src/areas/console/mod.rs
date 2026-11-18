@@ -21,7 +21,7 @@
 //! | [`session`], [`Seat`] | reading a session (the front end) |
 //! | [`canvas`]: everything `pub` | the `console-canvas` element |
 //! | [`view::window`], [`windows::closed`], [`windows::close_all`], [`windows::WindowPayload`] | the detached windows |
-//! | [`take_fullscreen_requests`] | fullscreen, until there is an intent for it |
+//! | `Intent::ToggleFullscreen` | fullscreen: the area asks, the front end toggles the window ([`take_fullscreen_requests`] is the retired stopgap) |
 //!
 //! # Where the Rune console went
 //!
@@ -31,8 +31,8 @@
 //!
 //! | Rune | Now |
 //! | --- | --- |
-//! | "Open console" in the VM details | command `vm.console`: the tab's local row and the VM's context menu |
-//! | "Open host text console" in the host details | command `server.console`: the same for a server |
+//! | "Open console" in the VM details | selecting the Console tab of the VM (the hook `on_tab_change`), when the VM is eligible; also command `vm.console`: the tab's local row and the VM's context menu |
+//! | "Open host text console" in the host details | the same for a server; command `server.console` |
 //! | "Back to inventory" (`close-console`) | command `console.close`; selecting another object also ends the tab's console (`on_scope_change`) |
 //! | the toolbar's buttons | commands on the tab's local row, see [`commands`] |
 //! | checkbox "Reconnect automatically" | the same checkbox, in the tab body |
@@ -130,8 +130,9 @@ pub struct State {
     /// the tree scope.
     pub(crate) tab: Option<Session>,
     pub(crate) windows: windows::Registry,
-    /// Fullscreen was asked for these seats. `intent.rs` has no request for
-    /// it, so the front end drains this with [`take_fullscreen_requests`].
+    /// Always empty: fullscreen is asked for with
+    /// `Intent::ToggleFullscreen`. Kept for [`take_fullscreen_requests`]
+    /// until its last caller is gone.
     pub(crate) fullscreen: Vec<Seat>,
 }
 
@@ -142,6 +143,7 @@ pub fn spec() -> AreaSpec {
         tab: view::tab,
         poll,
         on_scope_change: scope_changed,
+        on_tab_change: tab_changed,
         on_session_change: close_tab,
         ..AreaSpec::new("console")
     }
@@ -178,7 +180,8 @@ pub fn close_tab(m: &mut Model) {
 }
 
 /// The tree scope changed: the tab's console belonged to the object that
-/// was selected.
+/// was selected. When the Console tab is the one shown for the new object
+/// too, its console is opened, as it is when the tab is chosen.
 fn scope_changed(m: &mut Model) {
     let stays = m
         .areas
@@ -188,6 +191,48 @@ fn scope_changed(m: &mut Model) {
         .is_some_and(|s| m.scope().single() == Some(&s.target.object()));
     if !stays {
         close_tab(m);
+    }
+    show_scope_console(m);
+}
+
+/// The active tab changed. Leaving the Console tab lets go of what the
+/// console holds down in its guest; the console itself stays until the
+/// scope changes or it is closed, so coming back does not reconnect.
+/// Choosing the Console tab opens the console of the scope object: what
+/// pressing the Rune "Open console" button did.
+fn tab_changed(m: &mut Model, from: TabId, to: TabId) {
+    if from == TabId::Console
+        && let Some(s) = &mut m.areas.console.tab
+    {
+        s.release();
+    }
+    if to == TabId::Console {
+        show_scope_console(m);
+    }
+}
+
+/// Opens the console of the scope object when the Console tab is shown and
+/// the object is eligible: the command `vm.console` or `server.console`
+/// would be enabled for it (one guest or one server, a current connection
+/// with write access, a console that is not the one shown already). An
+/// object that is not eligible opens nothing and says nothing: the tab's
+/// row has the command with the reason. A failed open is on the shared
+/// error line, as the command's is.
+fn show_scope_console(m: &mut Model) {
+    if m.active_tab() != TabId::Console {
+        return;
+    }
+    let scope = m.scope().clone();
+    let Some(object) = scope.single() else {
+        return;
+    };
+    let command = match object.kind {
+        ObjectKind::Vm => commands::OPEN,
+        ObjectKind::Host => commands::OPEN_HOST,
+        _ => return,
+    };
+    if m.eligibility(command, &scope) == Eligibility::Enabled {
+        m.error = open(m, object).err().map(|error| error.to_string());
     }
 }
 
@@ -265,9 +310,13 @@ pub(crate) fn open_synthetic(m: &mut Model, target: ConsoleTarget) {
     m.areas.console.tab = Some(session);
 }
 
-/// The seats for which Fullscreen was pressed since the last call. The
-/// front end toggles the fullscreen state of the window of each: the main
-/// window for [`Seat::Tab`]. (`intent.rs` has no fullscreen request.)
+/// DEPRECATED, always empty: Fullscreen is asked for with
+/// `Intent::ToggleFullscreen(WindowRef::Main)` for [`Seat::Tab`] and
+/// `Intent::ToggleFullscreen(WindowRef::Console(id))` for a window
+/// ([`commands::run`]), which the shell performs for the main window and
+/// hands to `Hooks::console_fullscreen` for a console window. The function
+/// stays only until the console's front end no longer calls it; remove it
+/// and `State::fullscreen` then.
 pub fn take_fullscreen_requests(m: &mut Model) -> Vec<Seat> {
     std::mem::take(&mut m.areas.console.fullscreen)
 }

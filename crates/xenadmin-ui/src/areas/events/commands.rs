@@ -29,7 +29,6 @@ pub const ACKNOWLEDGE: CommandId = CommandId("events.acknowledge");
 pub const REQUEST_CANCEL: CommandId = CommandId("events.request-cancel");
 pub const EXPORT: CommandId = CommandId("events.export");
 pub const DISMISS: CommandId = CommandId("alerts.dismiss");
-pub const ALERTS_EXPORT: CommandId = CommandId("alerts.export");
 
 /// The row menu of the Events table.
 pub const EVENTS_MENU: [CommandId; 6] = [
@@ -109,11 +108,14 @@ pub fn commands() -> Vec<CommandSpec> {
                     m.areas.events.notice = control::cancel(m, key).err();
                 }
             }),
+        // One command on both tabs: it exports the list that is shown, the
+        // messages on Alerts and otherwise the list of the Events tab.
         CommandSpec::new(EXPORT.0, "Export filtered entries…", AREA)
             .local(TabId::Events, 90)
+            .local(TabId::Alerts, 90)
             .eligibility(|m, _| export_eligibility(m))
             .invoke(|m, _| {
-                let list = m.areas.events.list;
+                let list = activity::shown(m).unwrap_or(m.areas.events.list);
                 super::export::choose(m, list);
             }),
         CommandSpec::new(DISMISS.0, "Review dismissal…", AREA)
@@ -122,10 +124,6 @@ pub fn commands() -> Vec<CommandSpec> {
                 review_eligibility(m, activity::selected(m, Tab::Messages), false)
             })
             .invoke(|m, _| activity::begin_review(m, Tab::Messages)),
-        CommandSpec::new(ALERTS_EXPORT.0, "Export filtered entries…", AREA)
-            .local(TabId::Alerts, 90)
-            .eligibility(|m, _| export_eligibility(m))
-            .invoke(|m, _| super::export::choose(m, Tab::Messages)),
     ]
 }
 

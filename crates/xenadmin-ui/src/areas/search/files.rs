@@ -76,6 +76,7 @@ pub fn import(m: &mut Model) {
                 None => m.areas.search.files = Pending::default(),
             }
         })
+        .on_failure(move |m, _| prompt_failed(m, token, "Cannot open search file picker"))
         .filter("XenAdmin RS search JSON", ["json"]),
     );
 }
@@ -107,6 +108,7 @@ pub fn export(m: &mut Model) {
                 }
             },
         )
+        .on_failure(move |m, _| prompt_failed(m, token, "Cannot open search save picker"))
         .filter("JSON", ["json"]),
     );
 }
@@ -146,6 +148,9 @@ pub fn export_results(m: &mut Model) {
                 }
             },
         )
+        .on_failure(move |m, _| {
+            prompt_failed(m, token, "Cannot open resource report save picker")
+        })
         .filter("JSON", ["json"]),
     );
 }
@@ -187,6 +192,20 @@ fn worker(m: &mut Model, work: impl FnOnce() -> Result<Outcome, String> + Send +
         m.areas.search.files.receiver = Some(rx);
         // A fixture has no waker: ask for a poll.
         m.request_tick(0.05);
+    }
+}
+
+/// A file prompt could not be shown: the job ends, and its failure is shown
+/// where the job was started, in the words of the Rune `search_files.rs`
+/// (which did not repeat what the desktop said).
+fn prompt_failed(m: &mut Model, token: uuid::Uuid, text: &str) {
+    if !current(m, token) {
+        return;
+    }
+    let job = m.areas.search.files.job;
+    m.areas.search.files = Pending::default();
+    if let Some(job) = job {
+        fail(m, job, text.to_owned());
     }
 }
 

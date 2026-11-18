@@ -2,20 +2,16 @@
 //! messages and operation records, the save prompt, the writer thread and
 //! the owner-only atomic write.
 //!
-//! The Rune `activity_export.rs`. `Entry`, `Step`, `Created`, the document,
-//! `encode_bounded` and `write_private` are as they were. `choose` asks for
-//! the file with `Model::choose_file` in place of the Rune `tx.save_file`;
-//! the reply of a prompt is a `Fn`, so the captured document waits in
-//! [`Export`] until the reply takes it.
-//!
-//! What has no successor: the notice "Cannot open save dialog: {error}". A
-//! file reply is `None` for a cancelled prompt and for one that could not be
-//! opened alike, so both end the export silently.
-//!
-//! `write_private` is also in `areas/search/files.rs` (the Rune search files
-//! called this one); a shared module is to replace both copies.
+//! The Rune `activity_export.rs`. `Entry`, `Step`, `Created`, the document
+//! and `encode_bounded` are as they were; its `write_private` is
+//! [`crate::files::write_private`], shared with the search files. `choose`
+//! asks for the file with `Model::choose_file` in place of the Rune
+//! `tx.save_file`; the reply of a prompt is a `Fn`, so the captured
+//! document waits in [`Export`] until the reply takes it. A prompt that
+//! could not be shown ends the export with the Rune notice "Cannot open
+//! save dialog: {error}".
 
-use std::{io::Write, path::Path, sync::mpsc};
+use std::{io::Write, sync::mpsc};
 
 use serde::Serialize;
 use xenadmin_core::{
@@ -23,6 +19,7 @@ use xenadmin_core::{
 };
 
 use super::activity::{self, Tab};
+use crate::files::write_private;
 use crate::prelude::*;
 
 #[derive(Clone, Serialize)]
@@ -370,8 +367,19 @@ pub fn choose(m: &mut Model, tab: Tab) {
     m.areas.events.export.captured = Some(document);
     m.choose_file(
         FileRequest::save("Export activity JSON", "xenadmin-activity.json", reply)
+            .on_failure(prompt_failed)
             .filter("JSON", ["json"]),
     );
+}
+
+/// The save prompt could not be shown: nothing is written, and the notice
+/// says why, in the Rune words.
+fn prompt_failed(m: &mut Model, error: &str) {
+    if m.areas.events.export.captured.take().is_none() {
+        return;
+    }
+    m.areas.events.export.pending = false;
+    m.areas.events.notice = Some(format!("Cannot open save dialog: {error}"));
 }
 
 /// The answer of the save prompt. It runs in a later update: the export may
@@ -440,36 +448,4 @@ fn encode_bounded(document: &impl Serialize) -> Result<Vec<u8>, String> {
     let mut writer = Limited(Vec::new());
     serde_json::to_writer_pretty(&mut writer, document).map_err(|e| e.to_string())?;
     Ok(writer.0)
-}
-pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
-    if bytes.len() > 32 * 1024 * 1024 {
-        return Err("Export exceeds 32 MiB; narrow the selection.".into());
-    }
-    if path.symlink_metadata().is_ok_and(|m| !m.is_file()) {
-        return Err("Choose a regular file destination.".into());
-    }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let temp = parent.join(format!(".xenadmin-activity-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
-        file.write_all(bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, path).map_err(|e| e.to_string())?;
-        std::fs::File::open(parent)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
 }

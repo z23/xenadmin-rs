@@ -261,7 +261,10 @@ pub fn run(m: &mut Model, seat: Seat, control: Control) {
         }
         Control::Fullscreen => {
             s.release();
-            m.areas.console.fullscreen.push(seat);
+            m.toggle_fullscreen(match seat {
+                Seat::Tab => WindowRef::Main,
+                Seat::Window(id) => WindowRef::Console(id),
+            });
         }
         Control::ReleaseInput => s.release(),
         Control::SendClipboard | Control::TypeClipboard => {
@@ -415,9 +418,13 @@ fn open(m: &mut Model, target: &Target) {
     };
     m.select(Target::one(object.clone()));
     m.set_active_tab(TabId::Console);
-    m.error = super::open(m, &object)
-        .err()
-        .map(|error| error.to_string());
+    // Showing the Console tab opens the console of an eligible object
+    // already (`on_tab_change`); a failure of that is on the error line.
+    if !shows(m, target) {
+        m.error = super::open(m, &object)
+            .err()
+            .map(|error| error.to_string());
+    }
 }
 
 fn ctrl_alt_del_state(m: &Model, target: &Target) -> Eligibility {

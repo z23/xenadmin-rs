@@ -409,7 +409,7 @@ fn save_dialog_exports_captured_selection_even_after_switch_and_cancel_writes_no
     let link = dir.0.join("symlink.json");
     std::os::unix::fs::symlink(&path, &link).unwrap();
     let before = std::fs::read(&path).unwrap();
-    assert!(export::write_private(&link, b"{} ").is_err());
+    assert!(crate::files::write_private(&link, b"{} ").is_err());
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
 
@@ -644,11 +644,11 @@ fn the_alerts_tab_lists_messages_by_priority() {
     assert!(h.find("activity-list").is_none());
     assert!(h.has_text("2 matching entries"));
     // The selection is one for all lists: the task is not a row here.
-    assert_eq!(local(&h), ["alerts.export"]);
+    assert_eq!(local(&h), ["events.export"]);
     let messages = rows(&h, Tab::Messages);
     assert_eq!(messages[0].status, "1");
     h.select_row(TABLE, &messages[1].key);
-    assert_eq!(local(&h), ["alerts.dismiss", "alerts.export"]);
+    assert_eq!(local(&h), ["alerts.dismiss", "events.export"]);
     assert!(h.has_text("Synthetic alert text 2. No host data is used."));
     assert!(h.has_text("Object: VM Unknown"));
     assert_eq!(
@@ -673,13 +673,40 @@ fn switching_between_tasks_and_history_clears_the_state_filter_and_keeps_the_sea
     assert_eq!(h.model.areas.events.search, "synthetic");
     assert!(h.find("activity-show-hidden").is_some());
     assert!(h.find("activity-lists-note").is_none());
-    // The priority filter of Alerts is its own.
+    // A switch between Alerts and Events empties the filter too, as the
+    // tab switch of the Rune dialog did, and keeps the search.
+    h.type_text("activity-state-filter", "succeeded");
     h.open_tab(TabId::Alerts);
-    h.type_text("activity-state-filter", "2");
-    h.open_tab(TabId::Events);
+    assert_eq!(h.node("activity-state-filter").value.as_deref(), Some(""));
     assert!(h.model.areas.events.state_filter.is_empty());
-    h.open_tab(TabId::Alerts);
+    h.type_text("activity-state-filter", "2");
     assert_eq!(h.model.areas.events.priority_filter, "2");
+    h.open_tab(TabId::Events);
+    assert_eq!(h.node("activity-state-filter").value.as_deref(), Some(""));
+    h.open_tab(TabId::Alerts);
+    assert!(h.model.areas.events.priority_filter.is_empty());
+    assert_eq!(h.model.areas.events.search, "synthetic");
+    // Choosing the tab that is shown is no switch: the filter stays.
+    h.type_text("activity-state-filter", "3");
+    h.open_tab(TabId::Alerts);
+    assert_eq!(h.model.areas.events.priority_filter, "3");
+    // A priority typed on Alerts never filters states, also when the
+    // Notifications view was left in between (no switch between its two
+    // tabs is reported then: this is why there are two filters).
+    h.model.set_nav_view(NavView::Infrastructure);
+    super::show(&mut h.model);
+    assert_eq!(h.model.active_tab(), TabId::Events);
+    assert_eq!(h.node("activity-state-filter").value.as_deref(), Some(""));
+    // The counters of the status bar set their filter after the switch.
+    h.open_tab(TabId::Alerts);
+    h.model.show_unknown_outcomes();
+    assert_eq!(h.model.active_tab(), TabId::Events);
+    assert_eq!(h.model.areas.events.list, Tab::History);
+    assert_eq!(h.model.areas.events.state_filter, "OutcomeUnknown");
+    assert_eq!(h.model.areas.events.pool, None);
+    h.model.show_operations();
+    assert!(h.model.areas.events.state_filter.is_empty());
+    assert_eq!(h.model.areas.events.list, Tab::History);
 }
 
 #[test]

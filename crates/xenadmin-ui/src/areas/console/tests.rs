@@ -803,8 +803,15 @@ fn the_controls_change_the_session_and_ask_the_front_end() {
     h.click(commands::ACTUAL_SIZE.0);
     assert!(!tab(&h).actual_size);
 
+    // Fullscreen is the front end's: the tab's console asks for the main
+    // window, once, and input is released first.
+    let epoch = tab(&h).input_epoch();
     h.click(commands::FULLSCREEN.0);
-    assert_eq!(super::take_fullscreen_requests(&mut h.model), [Seat::Tab]);
+    assert_ne!(tab(&h).input_epoch(), epoch);
+    assert_eq!(
+        format!("{:?}", h.take_intents()),
+        "[ToggleFullscreen(Main)]"
+    );
     assert!(super::take_fullscreen_requests(&mut h.model).is_empty());
 
     let epoch = tab(&h).input_epoch();
@@ -1164,10 +1171,11 @@ fn the_window_scenes_describe_windows_with_their_own_controls() {
         label(&window_nodes(&h, id), "console-actual-size"),
         Some("Fit to panel".into())
     );
+    h.take_intents();
     commands::run(&mut h.model, Seat::Window(id), Control::Fullscreen);
     assert_eq!(
-        super::take_fullscreen_requests(&mut h.model),
-        [Seat::Window(id)]
+        format!("{:?}", h.take_intents()),
+        format!("[ToggleFullscreen(Console({id:?}))]")
     );
 
     let mut h = Harness::scene("multiple-consoles");
