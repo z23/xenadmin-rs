@@ -1077,3 +1077,84 @@ fn outside_the_demo_a_review_needs_a_connection_and_the_form_stays() {
     );
     assert!(!reviewed(&h));
 }
+
+// -- Back from a handed-over review ------------------------------------------------------
+
+/// Rune: "Back" of the review cleared the review and showed the form again.
+#[test]
+fn back_from_a_handed_over_review_shows_the_form_with_what_was_entered() {
+    let mut h = Harness::scene("management-network");
+    assert_eq!(h.surface().id, CHANGE);
+    assert_eq!(h.surfaces().len(), 1, "the form is not on screen");
+    assert!(h.model.areas.management_network.editor.is_none());
+    assert!(h.model.areas.management_network.reviewed.is_some());
+    let operation = review(&h).operation.clone();
+
+    h.click("network-back");
+    assert_eq!(h.surface().id, SURFACE);
+    assert_eq!(h.surfaces().len(), 1);
+    assert!(h.model.areas.network.workspace.is_none());
+    assert!(h.model.areas.management_network.reviewed.is_none());
+    assert_eq!(h.node("management-address").value.as_deref(), Some("192.0.2.20"));
+    assert_eq!(h.node("management-gateway").value.as_deref(), Some("192.0.2.1"));
+    assert!(error(&h).is_none());
+
+    // The same entries give the same review; a changed entry a changed one.
+    h.click("network-review");
+    assert_eq!(h.surface().id, CHANGE);
+    assert_eq!(review(&h).operation, operation);
+    h.click("network-back");
+    h.type_text("management-address", "192.0.2.21");
+    h.click("network-review");
+    assert!(line(&h, "192.0.2.21"));
+    assert_ne!(review(&h).operation, operation);
+
+    // Closing the review drops the form that was kept for its Back.
+    h.click("network-close");
+    assert!(h.surfaces().is_empty());
+    assert!(!h.tick(0.1), "nothing shown changed");
+    assert!(h.model.areas.management_network.reviewed.is_none());
+    assert!(h.model.areas.management_network.editor.is_none());
+}
+
+/// A bond review comes after the guest-impact query: Back still leads to
+/// the form, without the finished query.
+#[test]
+fn back_from_a_bond_review_shows_the_bond_form() {
+    let mut h = Harness::scene("management-bond");
+    assert_eq!(h.surface().id, CHANGE);
+    h.click("network-back");
+    assert_eq!(h.surface().id, SURFACE);
+    assert_eq!(h.surface().title, "Create management bond");
+    let editor = h.model.areas.management_network.editor.as_ref().unwrap();
+    assert!(editor.pending.is_none());
+    assert!(matches!(editor.form, super::Form::Bond(_)));
+    assert!(h.find("management-pending").is_none());
+}
+
+/// The removal of a bond has nothing to enter: its review has no Back, as
+/// a review that `network` opens from a command.
+#[test]
+fn a_review_without_a_form_has_no_back() {
+    let (mut h, f) = bond_form();
+    let members = [f.source, f.second];
+    h.dismiss();
+    amend(&mut h, |i| {
+        add_bond(i, f.source, pif(0xb004), 0xb005, &members, f.source, f.target);
+        for m in &members {
+            let p = i.details.pifs.get_mut(m).unwrap();
+            p.management = Some(false);
+            p.ip_configuration_mode = "None".into();
+            p.ip.clear();
+            p.netmask.clear();
+            p.gateway.clear();
+            p.dns.clear();
+        }
+    });
+    h.invoke(BOND_REMOVE.0);
+    assert!(reviewed(&h));
+    assert_eq!(h.surface().id, CHANGE);
+    assert!(h.find("network-back").is_none());
+    assert!(h.model.areas.management_network.reviewed.is_none());
+    assert_eq!(crate::areas::network::handed_over_by(&h.model), None);
+}

@@ -83,6 +83,9 @@
 //!   `network-change` for a complete `ResourceAction` (network, management
 //!   network, management IPv6 bond, network topology), with the Rune
 //!   staleness rule of the child as the check, and the shared `submit`;
+//!   [`review_back`] with a [`Back`] gives that review the Back button
+//!   (`network-back`) to the form the staging area kept, and
+//!   [`handed_over_by`] says whose form is behind the open review;
 //! - [`open_staged`]: the same for a `NetworkOperation` with nothing more
 //!   to check (the Rune `review_button`);
 //! - [`name`], [`pif_name`], [`writable`] (the Rune `enabled`), [`close`];
@@ -131,7 +134,10 @@ pub mod workspace;
 mod tests;
 
 pub use commands::{selected_pif, writable};
-pub use workspace::{Check, Staged, Workspace, name, open_review, open_staged, pif_name};
+pub use workspace::{
+    Back, Check, Staged, Workspace, handed_over_by, name, open_review, open_staged, pif_name,
+    review_back,
+};
 
 /// The state of the area. `m.areas.network`.
 #[derive(Default)]
