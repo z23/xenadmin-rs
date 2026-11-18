@@ -59,9 +59,9 @@ impl Page {
 
 /// The label of the review page in the page list.
 pub const REVIEW_LABEL: &str = "Review Changes";
-/// The place of the review page: after Advanced (80), before the pages the
-/// plan does not list.
-pub const REVIEW_ORDER: u16 = 90;
+/// The place of the review page: last, where the kernel puts every page the
+/// plan does not list (after Advanced, which is 80).
+pub const REVIEW_ORDER: u16 = PropertyPage::UNPLANNED;
 
 /// Rune caption of an editor whose target is not the one it captured.
 pub const NOT_CURRENT: &str = "Connection or target changed; reopen properties to refresh.";
