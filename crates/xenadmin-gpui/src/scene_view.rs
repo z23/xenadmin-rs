@@ -331,6 +331,7 @@ impl SceneView {
     pub fn new(store: Entity<AppStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let ui = Ui::new(store);
         crate::console::register(&ui);
+        crate::charts::register(&ui);
         Self::with_ui(ui, window, cx)
     }
 
