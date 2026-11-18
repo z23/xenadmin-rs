@@ -64,6 +64,19 @@
 //!   submitted: the Events tab of the Notifications view is shown
 //!   (`Model::show_operations`).
 //!
+//! # Tests (`tests.rs`)
+//!
+//! All ten Rune tests are ported to the `Harness` under their names: the
+//! four of `bulk_delete_tests.rs` and the six of `bulk_properties_tests.rs`
+//! (two of them were pure and moved with the logic). Retired with the Rune
+//! layout: the two window sizes and "the footer is inside the window";
+//! their GPUI halves are listed in `gpui-tests-wanted.md`. The shares of
+//! the experimental-notice test of `main.rs` and of the permission-line
+//! test of `session_permissions_view.rs` are there too, and seven new
+//! tests for the commands, the page, the hooks and a live observation.
+//! Not tested: a submission that succeeds (the fixture server serves no
+//! `VmWorkflowBatch` or `PropertiesBatch`).
+//!
 //! # For other areas
 //!
 //! - [`delete_several`]: opens the batch deletion for a target of several
