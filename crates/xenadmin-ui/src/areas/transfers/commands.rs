@@ -72,8 +72,8 @@ pub fn commands() -> Vec<CommandSpec> {
 fn import_pool(m: &Model, target: &Target) -> Option<xenadmin_core::PoolId> {
     target
         .pool()
-        .or_else(|| m.inventory.as_ref().map(|i| i.pool_id))
         .filter(|pool| m.inventory_for(*pool).is_some())
+        .or_else(|| m.inventory.as_ref().map(|i| i.pool_id))
 }
 
 fn export(m: &Model, target: &Target, kind: ObjectKind) -> Eligibility {
