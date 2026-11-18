@@ -33,7 +33,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use lab_support::{Client, Evidence, Lab, Outside, Platform};
 use serde_json::json;
 use xenadmin_core::{
-    OperationId, OperationState, PowerAction, PowerState, VmCommand, VmId, VmSettingEdit,
+    HostId, OperationId, OperationState, PowerAction, PowerState, VmCommand, VmId, VmSettingEdit,
     VmSettingsPatch,
 };
 use xenadmin_gpui::charts;
@@ -1218,5 +1218,312 @@ fn lab_p3_performance() {
     evidence.finish();
 }
 
-#[allow(dead_code)]
-const _: &str = TOOLS_GUEST;
+/// The servers of the pool: the coordinator and the member, with their
+/// names.
+fn servers(client: &mut Client) -> ((HostId, String), (HostId, String)) {
+    client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        let coordinator = inventory.coordinator.expect("a coordinator");
+        let member = inventory
+            .hosts
+            .keys()
+            .copied()
+            .find(|id| *id != coordinator)
+            .expect("a member");
+        (
+            (coordinator, inventory.hosts[&coordinator].name.clone()),
+            (member, inventory.hosts[&member].name.clone()),
+        )
+    })
+}
+
+fn resident_host(client: &mut Client, vm: VmId) -> Option<HostId> {
+    client.model(|m| m.inventory.as_ref().expect("inventory").vms[&vm].host)
+}
+
+/// The resource operations of the session that are not finished.
+fn unfinished_resources(client: &mut Client) -> usize {
+    client.model(|m| {
+        m.resource_rows
+            .iter()
+            .filter(|record| !record.state.terminal())
+            .count()
+    })
+}
+
+fn resource_states(client: &mut Client) -> Vec<String> {
+    client.model(|m| {
+        m.resource_rows
+            .iter()
+            .map(|record| format!("{:?}", record.state))
+            .collect()
+    })
+}
+
+/// Migrate to Server from the VM menu: the wizard's three steps with the
+/// destination chosen and the storage and networks as offered, its review,
+/// and the move followed until the host reports the guest on the
+/// destination. Returns the seconds the move took.
+fn migrate(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    object: &ObjectRef,
+    vm: VmId,
+    destination: (HostId, &str),
+    tag: &str,
+) -> f64 {
+    client.select(object);
+    client.tab(TabId::General);
+    assert_eq!(power_state(client, vm), PowerState::Running);
+    assert_ne!(resident_host(client, vm), Some(destination.0));
+    client.menu(Menu::Vm, "vm.migrate");
+    assert_eq!(client.front().as_deref(), Some("migration-dialog"));
+    client.press(&format!("migration-host-{}", destination.0));
+    client.snap(evidence, &format!("{tag}-destination"));
+    client.press("migration-next");
+    client.snap(evidence, &format!("{tag}-storage-and-networks"));
+    client.press("migration-next");
+    assert!(
+        client.element("migration-review").is_some(),
+        "the third step is the review"
+    );
+    let review = client
+        .node("migration-review")
+        .and_then(|node| node.text)
+        .unwrap_or_default();
+    client.snap(evidence, &format!("{tag}-review"));
+    let before = newest_operation(client, vm).map(|(id, _)| id);
+    client.press("migration-apply");
+    client.wait(
+        "the migration is recorded",
+        Duration::from_secs(30),
+        |client| newest_operation(client, vm).is_some_and(|(id, _)| Some(id) != before),
+    );
+    client.snap(evidence, &format!("{tag}-in-progress"));
+    let took = client.wait(
+        "the guest runs on the destination",
+        Duration::from_secs(420),
+        |client| {
+            unfinished(client, vm) == 0
+                && resident_host(client, vm) == Some(destination.0)
+                && power_state(client, vm) == PowerState::Running
+        },
+    );
+    let (_, state) = newest_operation(client, vm).expect("the record");
+    assert_eq!(state, OperationState::Succeeded);
+    if client.front().is_some() {
+        // The wizard stays open on its outcome: close it as a user does.
+        client.snap(evidence, &format!("{tag}-outcome"));
+        client.key("escape");
+    }
+    client.wait("the wizard closed", Duration::from_secs(10), |client| {
+        client.front().is_none()
+    });
+    assert!(
+        client.says(destination.1),
+        "the General tab names the destination server"
+    );
+    client.snap(evidence, &format!("{tag}-done"));
+    evidence.step(
+        "migrated through the wizard",
+        json!({ "to": destination.1, "seconds": seconds(took), "review": review }),
+    );
+    seconds(took)
+}
+
+/// P3.7: Migrate to Server for the tools guest through the wizard and its
+/// review, to the other server and back.
+#[test]
+#[ignore]
+fn lab_p3_migration() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-7-migration");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, vm, name) = guest(&mut client, TOOLS_GUEST);
+    let (coordinator, member) = servers(&mut client);
+    let home = resident_host(&mut client, vm).expect("the tools guest runs");
+    let (away, back) = if home == member.0 {
+        (coordinator.clone(), member.clone())
+    } else {
+        (member.clone(), coordinator.clone())
+    };
+    evidence.step(
+        "the tools guest before",
+        json!({ "guest": name, "on": back.1, "moves_to": away.1 }),
+    );
+    let there = migrate(
+        &mut client,
+        &mut evidence,
+        &object,
+        vm,
+        (away.0, &away.1),
+        "there",
+    );
+    evidence.note("first_move", json!({ "to": away.1, "seconds": there }));
+    let home_again = migrate(
+        &mut client,
+        &mut evidence,
+        &object,
+        vm,
+        (back.0, &back.1),
+        "back",
+    );
+    evidence.note(
+        "second_move",
+        json!({ "to": back.1, "seconds": home_again }),
+    );
+    assert_eq!(resident_host(&mut client, vm), Some(home));
+    evidence.note("guest", json!(name));
+    evidence.note("ends_on", json!(back.1));
+    client.close();
+    evidence.finish();
+}
+
+/// P3.6: Enter Maintenance Mode on the member from the Server menu through
+/// its evacuation review, see it in maintenance, Exit Maintenance Mode, see
+/// it enabled; the guest the evacuation moved is migrated back.
+///
+/// Before: the Xen Orchestra appliance is on the coordinator (the core
+/// scenario `lab_move_xo_appliance`); the lab's rules do not let a member
+/// in maintenance host it.
+#[test]
+#[ignore]
+fn lab_p3_host_maintenance() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-6-host-maintenance");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (coordinator, member) = servers(&mut client);
+    let (tools, tools_vm, tools_name) = guest(&mut client, TOOLS_GUEST);
+    let residents: Vec<String> = client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        inventory
+            .guests()
+            .filter(|vm| vm.host == Some(member.0) && !vm.is_template)
+            .map(|vm| vm.name.clone())
+            .collect()
+    });
+    assert!(
+        !residents.iter().any(|name| name == "XOA"),
+        "XOA is on the member: move it to the coordinator first (core scenario lab_move_xo_appliance)"
+    );
+    evidence.step(
+        "the member before",
+        json!({ "server": member.1, "guests": residents }),
+    );
+    let host = client
+        .model(|m| ObjectRef::host(m.inventory.as_ref().expect("inventory").pool_id, member.0));
+    let enabled = |client: &mut Client| {
+        client.model(|m| m.inventory.as_ref().expect("inventory").hosts[&member.0].enabled)
+    };
+    client.select(&host);
+    client.tab(TabId::General);
+    assert!(enabled(&mut client));
+    assert_eq!(
+        client
+            .menu_label(Menu::Server, "server.maintenance")
+            .as_deref(),
+        Some("Enter Maintenance Mode")
+    );
+
+    // Enter, through the evacuation review.
+    client.menu(Menu::Server, "server.maintenance");
+    assert_eq!(client.front().as_deref(), Some("host-enter-maintenance"));
+    for name in &residents {
+        assert!(
+            client.describes(&format!("Move guest: {name}")),
+            "the review does not name the guest {name}"
+        );
+    }
+    client.snap(&mut evidence, "enter-maintenance-review");
+    client.press("host-confirm");
+    client.wait(
+        "the operation is recorded",
+        Duration::from_secs(30),
+        |client| client.front().is_none() && !resource_states(client).is_empty(),
+    );
+    client.snap(&mut evidence, "enter-maintenance-in-progress");
+    let took = client.wait(
+        "the member is in maintenance and its guests moved",
+        Duration::from_secs(480),
+        |client| {
+            unfinished_resources(client) == 0
+                && !enabled(client)
+                && client.model(|m| {
+                    !m.inventory
+                        .as_ref()
+                        .expect("inventory")
+                        .guests()
+                        .any(|vm| vm.host == Some(member.0) && !vm.is_template)
+                })
+        },
+    );
+    let states = resource_states(&mut client);
+    let row = client.tree_row(&host).expect("the member's row");
+    let header = client
+        .chrome(xenadmin_gpui::scene_view::HEADER_KEY)
+        .and_then(|element| element.label().map(str::to_owned));
+    client.snap(&mut evidence, "in-maintenance");
+    evidence.step(
+        "the member is in maintenance",
+        json!({ "seconds": seconds(took), "operations": states, "tree_row": row.status, "header": header,
+            "tools_guest_on": if resident_host(&mut client, tools_vm) == Some(coordinator.0) { &coordinator.1 } else { &member.1 } }),
+    );
+    assert!(
+        states.iter().all(|state| state == "Succeeded"),
+        "{states:?}"
+    );
+    assert!(
+        row.status
+            .as_deref()
+            .is_some_and(|status| !status.is_empty()),
+        "the tree does not mark the member"
+    );
+    assert_eq!(
+        client
+            .menu_label(Menu::Server, "server.maintenance")
+            .as_deref(),
+        Some("Exit Maintenance Mode")
+    );
+    evidence.note("enter_seconds", json!(seconds(took)));
+    evidence.note("tree_row_in_maintenance", json!(row.status));
+
+    // Exit.
+    client.menu(Menu::Server, "server.maintenance");
+    assert_eq!(client.front().as_deref(), Some("host-exit-maintenance"));
+    client.snap(&mut evidence, "exit-maintenance-review");
+    client.press("host-confirm");
+    let took = client.wait(
+        "the member is enabled again",
+        Duration::from_secs(240),
+        |client| client.front().is_none() && unfinished_resources(client) == 0 && enabled(client),
+    );
+    let states = resource_states(&mut client);
+    let row = client.tree_row(&host).expect("the member's row");
+    client.snap(&mut evidence, "enabled-again");
+    evidence.step(
+        "the member is enabled again",
+        json!({ "seconds": seconds(took), "operations": states, "tree_row": row.status }),
+    );
+    assert!(
+        states.iter().all(|state| state == "Succeeded"),
+        "{states:?}"
+    );
+    evidence.note("exit_seconds", json!(seconds(took)));
+
+    // No evacuated guest is moved back automatically: this run moves back
+    // what it moved.
+    if residents.contains(&tools_name) && resident_host(&mut client, tools_vm) != Some(member.0) {
+        let took = migrate(
+            &mut client,
+            &mut evidence,
+            &tools,
+            tools_vm,
+            (member.0, &member.1),
+            "tools-back",
+        );
+        evidence.note("tools_guest_moved_back_seconds", json!(took));
+    }
+    assert_eq!(resident_host(&mut client, tools_vm), Some(member.0));
+    client.close();
+    evidence.finish();
+}

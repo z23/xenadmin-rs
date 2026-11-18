@@ -884,6 +884,21 @@ impl Client {
         self.choose(&groups, command)
     }
 
+    /// The label a menu of the menu bar gives a command now.
+    pub fn menu_label(&mut self, menu: Menu, command: &str) -> Option<String> {
+        let store = self.store.clone();
+        self.cx.update(|cx| {
+            store
+                .read(cx)
+                .menu_bar()
+                .into_iter()
+                .find(|view| view.menu == menu)?
+                .items()
+                .find(|item| item.id.0 == command)
+                .map(|item| item.label.clone())
+        })
+    }
+
     #[track_caller]
     pub fn menu(&mut self, menu: Menu, command: &str) {
         if let Err(error) = self.try_menu(menu, command) {
