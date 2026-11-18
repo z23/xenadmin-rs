@@ -361,6 +361,9 @@ pub struct CommandSpec {
     pub toolbar: Option<ToolbarSlot>,
     /// The object kinds whose context menu shows the command.
     pub context: &'static [ObjectKind],
+    /// The submenu of the context menus that holds the command, for a
+    /// command whose menu path names none ([`CommandSpec::context_submenu`]).
+    pub context_submenu: Option<&'static str>,
     /// The tab whose local action row shows the command: the first
     /// [`CommandSpec::local`] call. Read [`CommandSpec::local_rows`], which
     /// has every tab.
@@ -400,6 +403,7 @@ impl CommandSpec {
             menu: None,
             toolbar: None,
             context: &[],
+            context_submenu: None,
             local: None,
             local_more: [None; LocalRow::MORE],
             shortcut: None,
@@ -425,6 +429,27 @@ impl CommandSpec {
     pub const fn context(mut self, kinds: &'static [ObjectKind]) -> Self {
         self.context = kinds;
         self
+    }
+
+    /// Puts the command into a submenu of the context menus that show it.
+    /// The submenu of the command's menu path is the default: a power
+    /// command is under "Start/Shut Down" in a context menu too. This names
+    /// one for a command that has no menu path, or another one. Commands
+    /// that name the same submenu within a group of the context menu are
+    /// collected into it, placed where the first of them would be; a
+    /// submenu that would hold one item is that item.
+    pub const fn context_submenu(mut self, name: &'static str) -> Self {
+        self.context_submenu = Some(name);
+        self
+    }
+
+    /// The submenu of a context menu that holds the command.
+    pub const fn context_submenu_name(&self) -> Option<&'static str> {
+        match (self.context_submenu, self.menu) {
+            (Some(name), _) => Some(name),
+            (None, Some(path)) => path.submenu,
+            (None, None) => None,
+        }
     }
 
     /// Puts the command on the local action row of a tab. Call it once per
@@ -730,6 +755,95 @@ impl MenuEntry {
             Self::Submenu { items, .. } => items,
         }
     }
+
+    /// The same, to change them.
+    pub fn items_mut(&mut self) -> &mut [MenuItem] {
+        match self {
+            Self::Item(item) => std::slice::from_mut(item),
+            Self::Submenu { items, .. } => items,
+        }
+    }
+
+    /// The items of the entry, owned.
+    pub fn into_items(self) -> Vec<MenuItem> {
+        match self {
+            Self::Item(item) => vec![item],
+            Self::Submenu { items, .. } => items,
+        }
+    }
+
+    /// The label of a submenu; `None` for an item.
+    pub fn submenu(&self) -> Option<&'static str> {
+        match self {
+            Self::Item(_) => None,
+            Self::Submenu { label, .. } => Some(label),
+        }
+    }
+}
+
+/// Every item of a menu in groups, submenus included, in order: what a
+/// front end without submenus would list.
+pub fn flatten(groups: Vec<Vec<MenuEntry>>) -> Vec<MenuItem> {
+    groups
+        .into_iter()
+        .flatten()
+        .flat_map(MenuEntry::into_items)
+        .collect()
+}
+
+/// A menu in groups as text, one line per entry, the items of a submenu
+/// indented under its label, a line of dashes between groups, a disabled
+/// item with its reason. For a test that prints or compares a menu.
+pub fn outline(groups: &[Vec<MenuEntry>]) -> String {
+    fn line(out: &mut String, indent: &str, item: &MenuItem) {
+        out.push_str(indent);
+        out.push_str(&item.label);
+        if let Some(reason) = &item.disabled {
+            out.push_str("  [disabled: ");
+            out.push_str(reason);
+            out.push(']');
+        }
+        out.push('\n');
+    }
+    let mut out = String::new();
+    for (index, group) in groups.iter().enumerate() {
+        if index > 0 {
+            out.push_str("---\n");
+        }
+        for entry in group {
+            match entry {
+                MenuEntry::Item(item) => line(&mut out, "", item),
+                MenuEntry::Submenu { label, items } => {
+                    out.push_str(label);
+                    out.push_str(" >\n");
+                    for item in items {
+                        line(&mut out, "    ", item);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Adds an item to a group: into the submenu it names, which is created
+/// where its first item arrives, or as an item of its own.
+fn place_entry(entries: &mut Vec<MenuEntry>, submenu: Option<&'static str>, item: MenuItem) {
+    let Some(name) = submenu else {
+        entries.push(MenuEntry::Item(item));
+        return;
+    };
+    let existing = entries.iter_mut().find_map(|entry| match entry {
+        MenuEntry::Submenu { label, items } if *label == name => Some(items),
+        _ => None,
+    });
+    match existing {
+        Some(items) => items.push(item),
+        None => entries.push(MenuEntry::Submenu {
+            label: name,
+            items: vec![item],
+        }),
+    }
 }
 
 /// One menu of the menu bar. `groups` are separated by separators. A menu
@@ -788,22 +902,7 @@ fn menu_bar_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<MenuVie
                     groups.push((path.group, Vec::new()));
                 }
                 let entries = &mut groups.last_mut().expect("a group was pushed").1;
-                match path.submenu {
-                    None => entries.push(MenuEntry::Item(item)),
-                    Some(name) => {
-                        let existing = entries.iter_mut().find_map(|entry| match entry {
-                            MenuEntry::Submenu { label, items } if *label == name => Some(items),
-                            _ => None,
-                        });
-                        match existing {
-                            Some(items) => items.push(item),
-                            None => entries.push(MenuEntry::Submenu {
-                                label: name,
-                                items: vec![item],
-                            }),
-                        }
-                    }
-                }
+                place_entry(entries, path.submenu, item);
             }
             MenuView {
                 menu,
@@ -849,7 +948,7 @@ fn in_context(spec: &CommandSpec, target: &Target) -> bool {
     }
 }
 
-fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec<MenuItem>> {
+fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec<MenuEntry>> {
     // Commands with a menu position keep the order of the menu bar; the
     // others follow in registry order as a last group.
     type Group = Option<(Menu, u8)>;
@@ -863,7 +962,7 @@ fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec
         })
         .collect();
     placed.sort_by_key(|(position, _)| *position);
-    let mut groups: Vec<(Group, Vec<MenuItem>)> = Vec::new();
+    let mut groups: Vec<(Group, Vec<MenuEntry>)> = Vec::new();
     for ((_, group, _), spec) in placed {
         let Some(item) = resolve_spec(m, spec, target) else {
             continue;
@@ -871,9 +970,24 @@ fn context_menu_of(specs: &[CommandSpec], m: &Model, target: &Target) -> Vec<Vec
         if groups.last().is_none_or(|(last, _)| *last != group) {
             groups.push((group, Vec::new()));
         }
-        groups.last_mut().expect("a group was pushed").1.push(item);
+        let entries = &mut groups.last_mut().expect("a group was pushed").1;
+        place_entry(entries, spec.context_submenu_name(), item);
     }
-    groups.into_iter().map(|(_, items)| items).collect()
+    groups
+        .into_iter()
+        .map(|(_, entries)| entries.into_iter().map(alone).collect())
+        .collect()
+}
+
+/// A submenu of a context menu that holds one item is that item: a second
+/// step for one choice helps nobody.
+fn alone(entry: MenuEntry) -> MenuEntry {
+    match entry {
+        MenuEntry::Submenu { mut items, .. } if items.len() == 1 => {
+            MenuEntry::Item(items.remove(0))
+        }
+        entry => entry,
+    }
 }
 
 fn local_row_of(specs: &[CommandSpec], m: &Model, tab: TabId, target: &Target) -> Vec<MenuItem> {
@@ -907,8 +1021,10 @@ pub fn toolbar(m: &Model) -> Vec<Vec<MenuItem>> {
 
 /// The context menu of `target`, as groups. For several objects only the
 /// commands marked `multi` whose kinds cover every object are offered.
-/// Submenus are flattened.
-pub fn context_menu(m: &Model, target: &Target) -> Vec<Vec<MenuItem>> {
+/// It nests as the menu bar does: the commands of a group that name the
+/// same submenu ([`CommandSpec::context_submenu_name`]) are one
+/// [`MenuEntry::Submenu`]. [`flatten`] gives the plain list of items.
+pub fn context_menu(m: &Model, target: &Target) -> Vec<Vec<MenuEntry>> {
     context_menu_of(registry(), m, target)
 }
 
@@ -1020,8 +1136,8 @@ mod tests {
         items.iter().map(|item| item.label.as_str()).collect()
     }
 
-    fn flat(groups: Vec<Vec<MenuItem>>) -> Vec<MenuItem> {
-        groups.into_iter().flatten().collect()
+    fn flat(groups: Vec<Vec<MenuEntry>>) -> Vec<MenuItem> {
+        flatten(groups)
     }
 
     #[test]

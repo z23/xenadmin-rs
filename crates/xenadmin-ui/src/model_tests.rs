@@ -883,9 +883,8 @@ fn stale_menu_cannot_apply_to_a_removed_row_or_changed_pool() {
     let (first, second) = (vm_ref(pool, 1), vm_ref(pool, 2));
     assert!(m.open_context_menu(first.clone(), MenuOrigin::Grid));
     assert!(
-        m.context_menu()
+        m.context_items()
             .iter()
-            .flatten()
             .any(|item| item.id == crate::areas::example_tests::RENAME && item.disabled.is_none())
     );
     change_inventory(&mut m, |inventory| {
@@ -894,9 +893,8 @@ fn stale_menu_cannot_apply_to_a_removed_row_or_changed_pool() {
     assert!(!m.context_menu_valid());
     // A stale menu shows its items disabled, with the reason.
     assert!(
-        m.context_menu()
+        m.context_items()
             .iter()
-            .flatten()
             .all(|item| item.disabled.as_deref() == Some(STALE_MENU))
     );
     assert_eq!(
@@ -1182,9 +1180,8 @@ fn copy_uuid_is_in_the_context_menu_of_an_object_with_a_uuid() {
     let vm = vm_ref(pool, 1);
     assert!(m.open_context_menu(vm.clone(), MenuOrigin::Grid));
     assert!(
-        m.context_menu()
+        m.context_items()
             .iter()
-            .flatten()
             .any(|item| item.id.0 == "object.copy-uuid" && item.label == "Copy UUID")
     );
     assert_eq!(m.invoke_context(CommandId("object.copy-uuid")), Ok(()));

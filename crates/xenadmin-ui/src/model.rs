@@ -36,7 +36,7 @@ use xenadmin_core::{
 };
 
 use crate::areas::{self, Areas};
-use crate::command::{self, CommandId, Eligibility, MenuItem, Refused};
+use crate::command::{self, CommandId, Eligibility, MenuEntry, MenuItem, Refused};
 use crate::diagnostics::{ActionDiagnosticContext, ActionDiagnostics};
 use crate::intent::{FileRequest, Intent};
 use crate::nav::{NavView, Navigation};
@@ -1487,22 +1487,32 @@ impl Model {
             }
     }
 
-    /// The items of the open context menu, in groups. A menu that no longer
-    /// stands shows its items disabled with the reason.
-    pub fn context_menu(&self) -> Vec<Vec<MenuItem>> {
+    /// The entries of the open context menu, in groups: items and submenus
+    /// of items. A menu that no longer stands shows its items disabled with
+    /// the reason.
+    pub fn context_menu(&self) -> Vec<Vec<MenuEntry>> {
         let Some(context) = &self.selection.menu else {
             return Vec::new();
         };
         let mut groups = command::context_menu(self, &context.target);
         if !self.menu_valid(context) {
-            for item in groups.iter_mut().flatten() {
-                item.disabled = Some(STALE_MENU.into());
+            for entry in groups.iter_mut().flatten() {
+                for item in entry.items_mut() {
+                    item.disabled = Some(STALE_MENU.into());
+                }
             }
         }
         groups
     }
 
-    /// Chooses an item of the open context menu. The menu closes whatever
+    /// Every item of the open context menu, those of its submenus
+    /// included, in order.
+    pub fn context_items(&self) -> Vec<MenuItem> {
+        command::flatten(self.context_menu())
+    }
+
+    /// Chooses an item of the open context menu, at its top level or in a
+    /// submenu. The menu closes whatever
     /// happens; the command runs on the captured selection only when the
     /// menu still stands and the command is enabled for it.
     pub fn invoke_context(&mut self, id: CommandId) -> Result<(), Refused> {
