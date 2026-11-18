@@ -817,8 +817,6 @@ fn a_pool_is_synthetic_by_its_own_session() {
 const PENDING: &[&str] = &[
     // host_admin, page Power On: host_services.
     "server.power-on-settings",
-    // host_admin, page Multipathing: storage_maintenance.
-    "storage.multipath-workflow",
     // snapshots, the Snapshots tab: bulk_export.
     "snapshot.export",
     // migration, the second step of the wizard: cross_pool.
