@@ -281,6 +281,12 @@ fn cloning_reviews_the_captured_snapshot_in_both_modes_and_stays_safe_in_demo(
 fn a_typed_address_reaches_the_model_and_drops_the_shown_review(cx: &mut TestAppContext) {
     for size in BOTH {
         let scene = open_scene(cx, "guest-connections", *size);
+        // The preset's terminal launcher is not on every machine (it was
+        // not on the CI runner): review a program every Linux has, as the
+        // model's own tests of this dialog do.
+        common::run(cx, &scene, |m| {
+            m.preferences.external_tools.tools[0].executable = "/usr/bin/true".into();
+        });
         must(&mut *cx, &scene, Press("review-guest-tool"));
         // The local executable is inspected off the interface thread.
         poll_until_has(cx, &scene, "guest-tool-command");
