@@ -105,6 +105,8 @@ pub mod scenes;
 pub mod view;
 
 #[cfg(test)]
+mod live_tests;
+#[cfg(test)]
 mod tests;
 
 pub use failure_help::FailureHelp;
