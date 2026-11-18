@@ -84,8 +84,9 @@ fn a_fixture_model_shows_home_and_has_nothing_open() {
     assert_eq!(m.tabs(), [TabId::Home, TabId::Search]);
     assert_eq!(m.active_tab(), TabId::Home);
     assert!(m.target().is_empty());
-    // No area is ported yet, so no tab has a body.
-    assert!(m.tab_body(TabId::Home).is_none());
+    // The connections area provides Home and the search area Search.
+    assert!(m.tab_body(TabId::Home).is_some());
+    assert!(m.tab_body(TabId::Search).is_some());
     // Nothing of the real process: no ownership, no backend, no session.
     assert!(!m.owns_state());
     assert!(m.backend.is_err());

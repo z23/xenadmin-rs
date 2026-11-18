@@ -335,7 +335,12 @@ fn the_changes_of_the_chooser_are_commands_of_the_server_menu() {
             .iter()
             .any(|item| item.id == commands::POOL_AUTOSTART)
     );
-    assert!(!context.iter().any(|item| item.id.0.starts_with("server.")));
+    // None of the server's changes is offered for the pool. (The pool's menu
+    // does hold `server.` commands of the connections area: Disconnect and
+    // the like act on the pool's connection.)
+    for (id, _) in expected {
+        assert!(!context.iter().any(|item| item.id.0 == id), "{id}");
+    }
     // The entry to memory settings on a server's Memory tab.
     h.open_tab(TabId::Memory);
     assert!(

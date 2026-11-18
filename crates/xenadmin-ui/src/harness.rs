@@ -1137,9 +1137,16 @@ mod tests {
     fn without_a_surface_the_toolbar_the_local_row_and_the_tab_body_are_reachable() {
         let mut h = Harness::new();
         h.model.areas.probe.active = true;
-        // The kernel's Back and Forward lead the toolbar.
+        // The kernel's Back and Forward lead the toolbar. The commands of
+        // the ported areas are there too (Add Server and the action row of
+        // the Home tab); this test follows the kernel's and the probe's.
+        let keys: Vec<String> = h
+            .keys()
+            .into_iter()
+            .filter(|key| key.starts_with("nav.") || key.starts_with("probe"))
+            .collect();
         assert_eq!(
-            h.keys(),
+            keys,
             [
                 "nav.back",
                 "nav.forward",
@@ -1157,8 +1164,14 @@ mod tests {
         assert_eq!(h.node("probe.tool").path, "toolbar/probe.tool");
         h.click("probe.tool");
         assert_eq!(h.model.areas.probe.tool_runs, 1);
-        assert_eq!(h.local_row().len(), 1);
-        assert_eq!(h.toolbar().len(), 3);
+        let probes = |items: Vec<MenuItem>| {
+            items
+                .iter()
+                .filter(|item| item.id.0.starts_with("probe."))
+                .count()
+        };
+        assert_eq!(probes(h.local_row()), 1);
+        assert_eq!(probes(h.toolbar()), 1);
         // A local-row command is a button like any other.
         h.click("probe.open");
         assert_eq!(h.surface().id, "probe");
@@ -1304,9 +1317,29 @@ mod tests {
         Harness::scene("no-such-scene");
     }
 
+    // Whichever tab of the demo pool no area provides yet. Once every tab
+    // has a provider the panic cannot be reached, and there is nothing left
+    // to test.
     #[test]
-    #[should_panic(expected = "no area provides the Home tab for None")]
     fn a_tab_without_a_provider_panics() {
-        Harness::new().tab();
+        let mut h = Harness::scene("demo");
+        let Some(tab) = h
+            .model
+            .tabs()
+            .iter()
+            .copied()
+            .find(|tab| h.model.tab_body(*tab).is_none())
+        else {
+            return;
+        };
+        h.open_tab(tab);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h.tab()))
+            .map(|_| ())
+            .expect_err("a tab without a provider must panic");
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert_eq!(
+            message,
+            format!("no area provides the {} tab for Pool", tab.title())
+        );
     }
 }

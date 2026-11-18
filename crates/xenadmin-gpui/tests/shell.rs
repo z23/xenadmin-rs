@@ -827,6 +827,10 @@ fn the_toolbar_shows_a_power_command_only_while_it_applies(cx: &mut TestAppConte
             .into_iter()
             .flatten()
             .map(|item| item.id.0.to_owned())
+            // The ported areas put their own commands in the toolbar (Add
+            // Server of the connections area, and more as areas land); this
+            // test follows the kernel's and its own.
+            .filter(|id| id.starts_with("nav.") || id.starts_with("lab."))
             .collect()
     });
     assert_eq!(
