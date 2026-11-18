@@ -129,7 +129,8 @@ fn editor(m: &Model, form: &Editor) -> Surface {
         } else {
             form.step.index()
         };
-        Surface::wizard(DIALOG, title, creation::Step::LABELS, current)
+        // Seven step labels need the width.
+        Surface::wizard(DIALOG, title, creation::Step::LABELS, current).large()
     } else {
         Surface::dialog(DIALOG, title)
     };
