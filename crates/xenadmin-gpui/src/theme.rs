@@ -68,6 +68,17 @@ pub fn apply(mode: ThemeMode, zoom: f32, cx: &mut App) {
         theme.table_active = accent(emphasis).opacity(if dark { 0.30 } else { 0.16 });
         theme.table_active_border = accent(emphasis).opacity(0.0);
         theme.list_active = accent(emphasis).opacity(if dark { 0.26 } else { 0.14 });
+        // The warning button ("Review unknown outcome", "Acknowledge
+        // outcome"). The Kit writes its label in the status yellow, which
+        // cannot be read on the light surface: a quiet amber fill with a
+        // label of 7 to one or more on it, in both themes.
+        let amber = |lightness: f32, chroma: f32| oklch(lightness, chroma, 80.0);
+        let (fill, label) = if dark { (0.38, 0.92) } else { (0.90, 0.33) };
+        let step = if dark { 0.04 } else { -0.04 };
+        theme.button_warning = amber(fill, 0.08);
+        theme.button_warning_hover = amber(fill + step, 0.09);
+        theme.button_warning_active = amber(fill + step * 2.0, 0.10);
+        theme.button_warning_foreground = amber(label, 0.07);
         // What is behind a dialog is dimmed enough to read as out of reach.
         theme.overlay = gpui_kit::hsla(0.0, 0.0, 0.0, if dark { 0.55 } else { 0.32 });
         theme.ring = accent(if dark { 0.68 } else { 0.55 });
