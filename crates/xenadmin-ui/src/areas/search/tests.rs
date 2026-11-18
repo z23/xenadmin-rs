@@ -893,6 +893,32 @@ fn the_context_scene_opens_the_menu_of_the_first_guest() {
     let items: Vec<_> = h.model.context_menu().into_iter().flatten().collect();
     assert!(items.iter().any(|item| item.id.0 == "object.copy-uuid"));
     assert!(items.iter().any(|item| item.id == OPEN_RESULT));
+    // The scene tree says which menu is open and what it offers.
+    let tree = h.tree();
+    let shown = &tree["context_menu"];
+    assert_eq!(shown["origin"], "grid");
+    assert_eq!(shown["name"], "Application");
+    assert_eq!(shown["object"], serde_json::json!(menu.object));
+    assert_eq!(shown["target"], serde_json::json!([menu.object]));
+    assert_eq!(shown["valid"], true);
+    let listed: Vec<&serde_json::Value> = shown["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|group| group.as_array().unwrap())
+        .collect();
+    assert_eq!(listed.len(), items.len());
+    for (listed, item) in listed.iter().zip(&items) {
+        assert_eq!(listed["id"], item.id.0);
+        assert_eq!(listed["label"], item.label.as_str());
+        assert_eq!(
+            listed.get("disabled").and_then(|reason| reason.as_str()),
+            item.disabled.as_deref()
+        );
+    }
+    assert!(items.iter().any(|item| item.disabled.is_some()));
+    // No menu: the entry is null.
+    assert!(Harness::scene("search-pools").tree()["context_menu"].is_null());
 }
 
 #[test]
