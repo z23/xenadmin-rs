@@ -922,7 +922,14 @@ pub fn page_event(m: &mut Model, target: &Target, event: PageEvent) {
                 m.areas.network.workspace = Some(w);
             }
         }
-        PageEvent::Left(_) | PageEvent::Closed => drop_pages(m),
+        // Only a page of this area: another area's page that is left says
+        // nothing about a page of this one that was just entered.
+        PageEvent::Left(id) => {
+            if [GENERAL, Page::NetworkSettings.id(), Page::NetworkOptions.id()].contains(&id) {
+                drop_pages(m);
+            }
+        }
+        PageEvent::Closed => drop_pages(m),
     }
 }
 

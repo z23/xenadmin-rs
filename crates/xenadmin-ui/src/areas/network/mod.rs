@@ -46,6 +46,26 @@
 //! Every surface and page of the area is experimental, as the two Rune
 //! editors were (`experimental_dialog_open`).
 //!
+//! The General page is offered for all four kinds because the Rune rename
+//! had all four. For a server this is the first real General page of the
+//! dialog: tests of `host_admin` that expect Multipathing to be the first
+//! page, and tests of the kernel whose test area claims the id `general`
+//! for a server, do not hold with it (`view::pages` decides, one line).
+//!
+//! ## Surfaces
+//!
+//! | Id | Kind | What |
+//! | --- | --- | --- |
+//! | `network-new` | wizard: Type, Name, Settings, Review | create an internal network |
+//! | `network-change` | dialog | the form or the review of a network change |
+//! | `network-remove` | dialog, on the review | delete an internal network |
+//! | `server-scheduling` | dialog, on the review | enable or disable host scheduling |
+//! | `storage-set-default` | dialog, on the review | choose default storage |
+//! | `storage-rescan` | dialog, on the review | rescan a storage repository |
+//!
+//! Scenes: `network-interfaces`, `network-ipv6`, `network-create`,
+//! `pool-administration` (`scenes.rs`). Tests: the header of `tests.rs`.
+//!
 //! ## For the areas whose Rune modules were children of the workspace
 //!
 //! `network_services` (service, topology, fabric) and `management_network`
