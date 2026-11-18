@@ -17,9 +17,9 @@
 //! | Power on host | `server.power-on` | dialog | experimental |
 //! | Change dom0 memory | `server.control-domain-memory` | dialog | experimental |
 //! | Forget dead host | `server.destroy` | dialog | experimental |
-//! | Change multipathing | `server.properties` | page Multipathing | experimental |
-//! | Remote logging | `server.properties` | page Log Destination | experimental |
-//! | Configure Wake-on-LAN, Disable remote power-on | `server.properties` | page Power On | experimental |
+//! | Change multipathing | `server.properties` (kernel) | page Multipathing | experimental |
+//! | Remote logging | `server.properties` (kernel) | page Log Destination | experimental |
+//! | Configure Wake-on-LAN, Disable remote power-on | `server.properties` (kernel) | page Power On | experimental |
 //! | Pool VM autostart | `pool.vm-autostart` | dialog | experimental |
 //!
 //! Every one of them is the same editor underneath, as in Rune: a captured
@@ -53,10 +53,11 @@
 //! - `tests`: the Rune tests, what the port changed, and one test for each
 //!   hazard the map lists for the module.
 //!
-//! The server's Properties dialog has only this area's three pages. The
-//! plan gives it more (General, Custom Fields, Alerts), from other areas;
-//! a surface belongs to one area, so until the kernel can collect pages
-//! from several, those areas' settings are their own surfaces.
+//! The server's Properties dialog is the kernel's ([`crate::properties`]):
+//! it collects the pages of every area that has some for a server. This
+//! area hands in its three through the hooks `property_pages`,
+//! `property_page` and `on_property_page`; a page is the same editor as a
+//! dialog, created when the page is entered and dropped when it is left.
 
 use crate::prelude::*;
 
@@ -83,13 +84,26 @@ pub fn spec() -> AreaSpec {
         surfaces: view::surfaces,
         on_scope_change: close,
         on_session_change: close,
+        property_pages: view::pages,
+        property_page: view::page,
+        on_property_page: change::page_event,
         ..AreaSpec::new("host_admin")
     }
 }
 
 /// Close, Escape, another object selected in the tree, another pool shown:
 /// the editor belongs to the one server or pool it was opened for, so
-/// nothing of it is kept.
+/// nothing of it is kept. An editor that is a page takes the Properties
+/// dialog with it: the dialog is closed, never left on a page without its
+/// editor.
 pub(crate) fn close(m: &mut Model) {
-    m.areas.host_admin.editor = None;
+    let page = m
+        .areas
+        .host_admin
+        .editor
+        .take()
+        .is_some_and(|w| w.kind.page().is_some());
+    if page {
+        m.close_properties();
+    }
 }

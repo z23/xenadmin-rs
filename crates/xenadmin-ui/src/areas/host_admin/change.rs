@@ -29,9 +29,7 @@ use xenadmin_core::{
     PoolId, ResourceCommand, ResourceOperation, ResourceTarget,
 };
 
-use crate::model::resource_target;
 use crate::prelude::*;
-use crate::session;
 
 /// One change of a server or, for [`Kind::Autostart`], of a pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,6 +147,16 @@ impl Page {
 
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|page| page.id() == id)
+    }
+
+    /// A change the page edits (the Power On page has two; either says
+    /// whether the page is outside the supported part).
+    pub fn kind(self) -> Kind {
+        match self {
+            Self::Multipathing => Kind::Multipath,
+            Self::LogDestination => Kind::Logging,
+            Self::PowerOn => Kind::WakeOnLan,
+        }
     }
 }
 
@@ -450,7 +458,8 @@ pub fn back(m: &mut Model) {
     }
 }
 
-/// Turns the open editor to another change of its target (the page list).
+/// Turns the open editor to another change of its target (the two modes
+/// of the Power On page).
 pub fn select(m: &mut Model, kind: Kind) {
     if let Some(w) = &mut m.areas.host_admin.editor {
         w.select(kind);
@@ -460,10 +469,44 @@ pub fn select(m: &mut Model, kind: Kind) {
 /// Whether the editor's pool is a synthetic one, in which nothing can be
 /// submitted. For the scope session this is `m.demo`.
 pub fn synthetic(m: &Model, w: &Editor) -> bool {
-    match session::session_for_pool(m, w.pool()) {
-        Some(id) if m.workspace.selected == Some(id) => m.demo,
-        Some(id) => m.workspace.synthetic.contains_key(&id),
-        None => false,
+    m.is_synthetic_pool(w.pool())
+}
+
+/// The Properties dialog tells the area about its pages. Entering a page
+/// creates the editor of that page's change afresh, as choosing the change
+/// in the Rune chooser did; leaving it drops that editor, as closing the
+/// Rune dialog did. `Closed` has nothing left to drop: the editor belongs
+/// to one page.
+pub fn page_event(m: &mut Model, target: &Target, event: PageEvent) {
+    match event {
+        PageEvent::Entered(id) => {
+            let Some(page) = Page::from_id(id) else {
+                return;
+            };
+            let editor = target
+                .single()
+                .and_then(|object| Editor::capture(m, object, Kind::Multipath))
+                .map(|mut w| {
+                    let kind = match page {
+                        Page::Multipathing => Kind::Multipath,
+                        Page::LogDestination => Kind::Logging,
+                        Page::PowerOn => w.power_on_kind(),
+                    };
+                    w.select(kind);
+                    w
+                });
+            m.areas.host_admin.editor = editor;
+        }
+        PageEvent::Left(id) => {
+            let editor = &mut m.areas.host_admin.editor;
+            if editor
+                .as_ref()
+                .is_some_and(|w| w.kind.page().is_some_and(|page| page.id() == id))
+            {
+                *editor = None;
+            }
+        }
+        PageEvent::Closed => {}
     }
 }
 
@@ -500,7 +543,7 @@ pub fn submit(m: &mut Model) {
     match submission(m, w) {
         Ok(operation) => {
             m.track_resource(operation);
-            m.areas.host_admin.editor = None;
+            super::close(m);
         }
         Err(e) => {
             if let Some(w) = &mut m.areas.host_admin.editor {

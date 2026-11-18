@@ -24,6 +24,7 @@ pub mod nav;
 pub mod object;
 pub mod permissions;
 pub mod prefs;
+pub mod properties;
 mod rows;
 pub mod scene;
 pub mod secret;
@@ -51,6 +52,7 @@ pub use model::{Header, Model, Status, Waker};
 pub use nav::{NavRow, NavView};
 pub use object::{ObjectKind, ObjectRef, Target};
 pub use prefs::{Appearance, Options, Preferences};
+pub use properties::{PageEvent, PageView, PropertiesKind, PropertyPage};
 pub use rows::{DisplayRow, InventoryPage, compare_rows, project_rows};
 pub use scene::SceneSpec;
 pub use secret::SecretText;
@@ -77,20 +79,21 @@ pub mod prelude {
     pub use crate::intent::{
         ConsoleWindowId, ConsoleWindowRequest, FileFilter, FileMode, FileRequest, Intent,
     };
-    pub use crate::model::Model;
+    pub use crate::model::{Model, resource_target};
     pub use crate::nav::{NavRow, NavView};
     pub use crate::object::{ObjectKind, ObjectRef, Target};
     pub use crate::permissions;
+    pub use crate::properties::{PageEvent, PageView, PropertiesKind, PropertyPage};
     pub use crate::scene::SceneSpec;
     pub use crate::secret::SecretText;
     pub use crate::surface::{
         Act, ActRows, ActSort, ActText, Align, Block, Button, ButtonStyle, Choice, ChoiceStyle,
-        Column, Control, Custom, Field, Group, Image, ImageData, Notice, NoticeKind, OptionItem,
-        Outcome, OutcomeState, Property, Review, Row, Surface, SurfaceKind, SurfaceSize, Table,
-        TableSelection, TableSort, Text, Tone, act, act_text, actions, alert, button, caption,
-        checkbox, choice, column, columns, custom, divider, group, heading, image, input, no_op,
-        notice, option, outcome, properties, property, review, row, secret_input, select, table,
-        text, textarea,
+        Column, Control, Custom, EXPERIMENTAL_NOTICE, EXPERIMENTAL_NOTICE_KEY, Field, Group, Image,
+        ImageData, Notice, NoticeKind, OptionItem, Outcome, OutcomeState, Property, Review, Row,
+        Surface, SurfaceKind, SurfaceSize, Table, TableSelection, TableSort, Text, Tone, act,
+        act_text, actions, alert, button, caption, checkbox, choice, column, columns, custom,
+        divider, group, heading, image, input, no_op, notice, option, outcome, properties,
+        property, review, row, secret_input, select, table, text, textarea,
     };
     pub use crate::tabs::{TabBody, TabId};
 }

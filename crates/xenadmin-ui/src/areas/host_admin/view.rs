@@ -3,7 +3,9 @@
 //!
 //! One editor, two shapes: a change with a dialog of its own is a `Dialog`
 //! titled with the change; a change that is a setting of the server is the
-//! current page of the `Properties` dialog. Inside, both read the same way,
+//! current page of the server's Properties dialog, which the kernel owns:
+//! this area names its pages ([`pages`]) and describes the one that is
+//! showing ([`page`]). Inside, both read the same way,
 //! in the Rune order: the draft and a preview of what it would do, or the
 //! review; the preview notice in a synthetic pool; the error; and a footer
 //! of Close, Back, and Review or Confirm.
@@ -22,8 +24,8 @@ use super::change::{self, Editor, Kind, Page};
 use super::commands::{MULTIPATH_WORKFLOW, POWER_ON_SETTINGS};
 use crate::prelude::*;
 
-/// The id of the server's Properties dialog.
-pub const PROPERTIES: &str = "host-properties";
+/// The id of the server's Properties dialog, which is the kernel's.
+pub const PROPERTIES: &str = PropertiesKind::Host.surface_id();
 
 /// The key of the review, so `host-change-review-stale` is its stale line.
 pub const REVIEW: &str = "host-change-review";
@@ -34,27 +36,18 @@ const PREVIEW: &str = "Synthetic preview · no host changes can be submitted";
 /// every area uses, MODEL-API 4).
 const DEMO: &str = "Demo mode cannot change infrastructure.";
 
+/// The dialog of the open change. A change that is a setting of the server
+/// is no surface of this area: it is the current page of the Properties
+/// dialog, which the kernel describes from [`page`].
 pub fn surfaces(m: &Model) -> Vec<Surface> {
     let Some(w) = &m.areas.host_admin.editor else {
         return Vec::new();
     };
-    let surface = match w.kind.page() {
-        Some(page) => Surface::properties(
-            PROPERTIES,
-            "Properties",
-            Page::ALL.map(|page| (page.id(), page.label())),
-            page.id(),
-            show_page,
-        ),
-        None => Surface::dialog(dialog_id(w.kind), w.kind.title()),
-    };
-    // The permission line belongs to the review: before it there is no
-    // operation to assess.
-    let permission = w
-        .review
-        .as_ref()
-        .map(|op| permissions::assess_for(m, w.pool(), &op.permission_requirements()));
-    let surface = surface
+    if w.kind.page().is_some() {
+        return Vec::new();
+    }
+    let permission = permission(m, w);
+    let surface = Surface::dialog(dialog_id(w.kind), w.kind.title())
         .subtitle(format!("{} ({})", w.label(), w.target.uuid()))
         .experimental(w.kind.experimental())
         .body(body(m, w))
@@ -64,6 +57,53 @@ pub fn surfaces(m: &Model) -> Vec<Surface> {
         Some(permission) => surface.footer_note(permissions::footer_note(permission)),
         None => surface,
     }]
+}
+
+/// The permission line belongs to the review: before it there is no
+/// operation to assess.
+fn permission(m: &Model, w: &Editor) -> Option<PermissionAssessment> {
+    w.review
+        .as_ref()
+        .map(|op| permissions::assess_for(m, w.pool(), &op.permission_requirements()))
+}
+
+/// The pages this area has for the Properties dialog of a target: the three
+/// settings, for one server the inventory of its pool has. Each page says
+/// for itself what it cannot change, so the pages are there also for a
+/// server whose details are missing. All three are outside the supported
+/// part ([`Kind::experimental`]).
+pub fn pages(m: &Model, target: &Target) -> Vec<PropertyPage> {
+    let known = target.single_of(ObjectKind::Host).is_some_and(|object| {
+        object
+            .pool
+            .and_then(|pool| m.inventory_for(pool))
+            .zip(object.host_id())
+            .is_some_and(|(inventory, host)| inventory.hosts.contains_key(&host))
+    });
+    if !known {
+        return Vec::new();
+    }
+    Page::ALL
+        .map(|page| {
+            PropertyPage::planned(PropertiesKind::Host, page.id())
+                .experimental(page.kind().experimental())
+        })
+        .to_vec()
+}
+
+/// The page that is showing: the editor `change::page_event` created when
+/// the page was entered, described exactly as a dialog of this area is.
+pub fn page(m: &Model, _target: &Target, id: &str) -> PageView {
+    let editor = m.areas.host_admin.editor.as_ref();
+    let Some(w) = editor.filter(|w| w.kind.page().is_some_and(|page| page.id() == id)) else {
+        return PageView::default();
+    };
+    let permission = permission(m, w);
+    PageView {
+        body: body(m, w),
+        footer: footer(m, w, permission.as_ref()),
+        footer_note: permission.as_ref().map(permissions::footer_note),
+    }
 }
 
 /// The id of the dialog of a change that is not a Properties page.
@@ -83,21 +123,6 @@ fn dialog_id(kind: Kind) -> &'static str {
         Kind::Autostart => "pool-vm-autostart",
         Kind::WakeOnLan | Kind::DisablePowerOn | Kind::Logging | Kind::Multipath => PROPERTIES,
     }
-}
-
-/// The page list: turning the page starts that page's change afresh, as
-/// choosing another change in the Rune chooser did.
-fn show_page(m: &mut Model, id: &str) {
-    let Some(w) = &mut m.areas.host_admin.editor else {
-        return;
-    };
-    let kind = match Page::from_id(id) {
-        Some(Page::Multipathing) => Kind::Multipath,
-        Some(Page::LogDestination) => Kind::Logging,
-        Some(Page::PowerOn) => w.power_on_kind(),
-        None => return,
-    };
-    w.select(kind);
 }
 
 fn body(m: &Model, w: &Editor) -> Vec<Block> {
@@ -222,10 +247,11 @@ fn links(m: &Model, w: &Editor) -> Vec<Block> {
 
 /// A button that runs another area's command on this server. It follows
 /// that command's eligibility: absent while the command is hidden (or its
-/// area has not registered it), disabled with the command's reason. This
-/// surface gives way to the one the command opens, as it did in Rune (the
-/// `open` of each of those modules cleared `host_workspace`); when the
-/// command is refused after all, it stays and `m.error` has the reason.
+/// area has not registered it), disabled with the command's reason. The
+/// Properties dialog gives way to the surface the command opens, as it did
+/// in Rune (the `open` of each of those modules cleared `host_workspace`);
+/// when the command is refused after all, the dialog stays and `m.error`
+/// has the reason.
 pub(super) fn link(
     m: &Model,
     w: &Editor,
@@ -244,10 +270,7 @@ pub(super) fn link(
     };
     Some(
         button(key, label, move |m| {
-            let this = m.areas.host_admin.editor.take();
-            if !m.invoke(command, &target) {
-                m.areas.host_admin.editor = this;
-            }
+            m.invoke_from_properties(command, &target);
         })
         .disabled_opt(reason),
     )

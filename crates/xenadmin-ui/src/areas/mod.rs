@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 use crate::command::CommandSpec;
 use crate::model::Model;
 use crate::object::Target;
+use crate::properties::{PageEvent, PageView, PropertyPage};
 use crate::scene::SceneSpec;
 use crate::surface::Surface;
 use crate::tabs::{TabBody, TabId};
@@ -57,6 +58,23 @@ pub struct AreaSpec {
     /// from `organization`, Saved Searches from `search`. Parents before
     /// children, ids unique within the view.
     pub nav_rows: fn(&Model, crate::nav::NavView) -> Vec<crate::nav::NavRow>,
+    /// The navigation view changed ([`Model::set_nav_view`]): `m.nav.view`
+    /// is the new one. The scope did not change. An area whose cached rows
+    /// depend on the view brings them up to date here.
+    pub on_nav_change: fn(&mut Model),
+    /// The pages the area provides for the Properties dialog of this
+    /// target ([`crate::properties`]). Asked for every target a Properties
+    /// command is resolved on and on every render of the open dialog: pure
+    /// and cheap. None for a target that is not the area's.
+    pub property_pages: fn(&Model, &Target) -> Vec<PropertyPage>,
+    /// The body, footer buttons and footer note of the area's page with
+    /// this id, which is the current page of the open Properties dialog of
+    /// this target. Only the current page is asked for.
+    pub property_page: fn(&Model, &Target, &str) -> PageView,
+    /// A page of the area was entered or left, or the Properties dialog
+    /// closed ([`PageEvent`]). The area creates the draft of its page when
+    /// it is entered and drops it when it is left.
+    pub on_property_page: fn(&mut Model, &Target, PageEvent),
 }
 
 fn no_commands() -> Vec<CommandSpec> {
@@ -85,6 +103,16 @@ fn no_nav_rows(_: &Model, _: crate::nav::NavView) -> Vec<crate::nav::NavRow> {
     Vec::new()
 }
 
+fn no_property_pages(_: &Model, _: &Target) -> Vec<PropertyPage> {
+    Vec::new()
+}
+
+fn no_property_page(_: &Model, _: &Target, _: &str) -> PageView {
+    PageView::default()
+}
+
+fn no_property_event(_: &mut Model, _: &Target, _: PageEvent) {}
+
 impl AreaSpec {
     /// An area that provides nothing yet.
     pub const fn new(id: &'static str) -> Self {
@@ -98,6 +126,10 @@ impl AreaSpec {
             on_scope_change: no_scope_change,
             on_session_change: no_scope_change,
             nav_rows: no_nav_rows,
+            on_nav_change: no_scope_change,
+            property_pages: no_property_pages,
+            property_page: no_property_page,
+            on_property_page: no_property_event,
         }
     }
 }
@@ -118,6 +150,9 @@ macro_rules! areas {
             /// The area the harness tests drive. Tests only.
             #[cfg(test)]
             pub probe: crate::harness::probe::State,
+            /// The area the tests of the Properties dialog drive. Tests only.
+            #[cfg(test)]
+            pub pages: crate::properties::tests::State,
         }
 
         /// The `spec` function of every area, in layering order.
@@ -127,9 +162,11 @@ macro_rules! areas {
             example_tests::spec,
             #[cfg(test)]
             crate::harness::probe::spec,
+            #[cfg(test)]
+            crate::properties::tests::spec,
         ];
 
-        /// The area ids, in the same order (without the two test-only areas).
+        /// The area ids, in the same order (without the test-only areas).
         pub const AREA_IDS: &[&str] = &[$(stringify!($id),)*];
     };
 }
@@ -219,10 +256,19 @@ areas!(
     events,
 );
 
-/// The spec of every area, in layering order. Built once.
+/// The spec of every area, in layering order, and after them the kernel's
+/// own entry (`crate::properties::spec`, id `kernel`): the kernel hears of
+/// a scope change and a session change through the same two hooks, after
+/// every area. Built once.
 pub fn specs() -> &'static [AreaSpec] {
     static SPECS: OnceLock<Vec<AreaSpec>> = OnceLock::new();
-    SPECS.get_or_init(|| AREAS.iter().map(|spec| spec()).collect())
+    SPECS.get_or_init(|| {
+        AREAS
+            .iter()
+            .map(|spec| spec())
+            .chain([crate::properties::spec()])
+            .collect()
+    })
 }
 
 /// The spec of the area with this id.

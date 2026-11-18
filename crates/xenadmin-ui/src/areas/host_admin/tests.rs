@@ -116,7 +116,12 @@ fn server_menu(h: &Harness) -> Vec<MenuItem> {
         .into_iter()
         .filter(|menu| menu.menu == Menu::Server)
         .flat_map(|menu| menu.items().cloned().collect::<Vec<_>>())
-        .filter(|item| command::find(item.id).is_some_and(|spec| spec.area == "host_admin"))
+        // This area's commands, and the kernel's Properties command, which
+        // opens the dialog with this area's pages.
+        .filter(|item| {
+            item.id == crate::properties::SERVER
+                || command::find(item.id).is_some_and(|spec| spec.area == "host_admin")
+        })
         .collect()
 }
 
@@ -394,13 +399,15 @@ fn a_command_is_hidden_for_other_objects_and_disabled_with_the_reason_of_its_rev
         if spec.id == commands::POOL_AUTOSTART {
             continue;
         }
-        let expected = if spec.id == commands::PROPERTIES {
-            Eligibility::Enabled
-        } else {
-            Eligibility::disabled(MISSING)
-        };
+        let expected = Eligibility::disabled(MISSING);
         assert_eq!(h.model.eligibility(spec.id, &bare), expected, "{}", spec.id);
     }
+    // The Properties command is the kernel's now; this area's pages are
+    // what makes it available for the server.
+    assert_eq!(
+        h.model.eligibility(crate::properties::SERVER, &bare),
+        Eligibility::Enabled
+    );
     h.invoke_on("server.properties", &bare);
     assert_eq!(h.node("host-unavailable").text.as_deref(), Some(MISSING));
     h.dismiss();

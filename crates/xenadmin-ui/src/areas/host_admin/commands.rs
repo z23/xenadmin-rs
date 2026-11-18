@@ -17,12 +17,13 @@
 //! while it is open.
 //!
 //! A command of a change without a draft opens its dialog on the review. One
-//! with a draft (memory, forgetting a server, the Properties pages) opens on
-//! the draft.
+//! with a draft (memory, forgetting a server) opens on the draft.
+//!
+//! The three settings of a server (multipathing, log destination, power-on
+//! mode) have no command here: they are pages of the server's Properties
+//! dialog, which the kernel's `server.properties` opens (`view::pages`).
 
-use xenadmin_core::ResourceTarget;
-
-use super::change::{self, Editor, Kind, MISSING};
+use super::change::{self, Editor, Kind};
 use crate::prelude::*;
 
 const AREA: &str = "host_admin";
@@ -35,7 +36,6 @@ pub const MAINTENANCE: CommandId = CommandId("server.maintenance");
 pub const EVACUATE: CommandId = CommandId("server.evacuate");
 pub const CONTROL_DOMAIN_MEMORY: CommandId = CommandId("server.control-domain-memory");
 pub const DESTROY: CommandId = CommandId("server.destroy");
-pub const PROPERTIES: CommandId = CommandId("server.properties");
 pub const POOL_AUTOSTART: CommandId = CommandId("pool.vm-autostart");
 
 /// Commands of other areas that pages of the Properties dialog lead to. In
@@ -51,7 +51,8 @@ pub const POWER_ON_SETTINGS: CommandId = CommandId("server.power-on-settings");
 pub const NOT_WRITABLE: &str = "This connection is read-only, disconnected or stale.";
 
 /// In menu order. Labels are the plan's (Menus table) where it lists the
-/// item; "Evacuate Guests" and "VM Autostart" exist only in this client.
+/// item; "Evacuate Guests" and "VM Autostart" exist only in this client
+/// (`place::SERVER_EVACUATE`, `place::POOL_VM_AUTOSTART`).
 pub fn commands() -> Vec<CommandSpec> {
     const SERVER: &[ObjectKind] = &[ObjectKind::Host];
     vec![
@@ -60,10 +61,8 @@ pub fn commands() -> Vec<CommandSpec> {
             .context(SERVER)
             .eligibility(|m, target| eligibility(m, target, Kind::Reboot))
             .invoke(|m, target| open(m, target, Kind::Reboot)),
-        // The plan lists Power On between Reboot and Shut Down; `place` has
-        // no constant for it.
         CommandSpec::new(POWER_ON.0, "Power On", AREA)
-            .menu(MenuPath::new(Menu::Server, 2, 15))
+            .menu(place::SERVER_POWER_ON)
             .context(SERVER)
             .eligibility(|m, target| eligibility(m, target, Kind::PowerOn))
             .invoke(|m, target| open(m, target, Kind::PowerOn)),
@@ -86,7 +85,7 @@ pub fn commands() -> Vec<CommandSpec> {
             .eligibility(|m, target| eligibility(m, target, maintenance(m, target)))
             .invoke(|m, target| open(m, target, maintenance(m, target))),
         CommandSpec::new(EVACUATE.0, "Evacuate Guests", AREA)
-            .menu(MenuPath::new(Menu::Server, 5, 15))
+            .menu(place::SERVER_EVACUATE)
             .context(SERVER)
             .eligibility(|m, target| eligibility(m, target, Kind::Evacuate))
             .invoke(|m, target| open(m, target, Kind::Evacuate)),
@@ -102,13 +101,8 @@ pub fn commands() -> Vec<CommandSpec> {
             .context(SERVER)
             .eligibility(|m, target| eligibility(m, target, Kind::Forget))
             .invoke(|m, target| open(m, target, Kind::Forget)),
-        CommandSpec::new(PROPERTIES.0, "Properties", AREA)
-            .menu(place::SERVER_PROPERTIES)
-            .context(SERVER)
-            .eligibility(can_open_properties)
-            .invoke(|m, target| open(m, target, Kind::Multipath)),
         CommandSpec::new(POOL_AUTOSTART.0, "VM Autostart", AREA)
-            .menu(MenuPath::new(Menu::Pool, 2, 40))
+            .menu(place::POOL_VM_AUTOSTART)
             .context(&[ObjectKind::Pool])
             .eligibility(can_change_autostart)
             .invoke(|m, target| open(m, target, Kind::Autostart)),
@@ -134,6 +128,8 @@ fn open(m: &mut Model, target: &Target, kind: Kind) {
     let Some(editor) = capture(m, target, kind) else {
         return;
     };
+    // One editor: a page of the Properties dialog that is open gives way.
+    super::close(m);
     m.areas.host_admin.editor = Some(editor);
     if kind.opens_on_review() {
         change::review(m);
@@ -161,18 +157,6 @@ fn maintenance(m: &Model, target: &Target) -> Kind {
 
 fn maintenance_label(m: &Model, target: &Target) -> Option<String> {
     (maintenance(m, target) == Kind::Exit).then(|| "Exit Maintenance Mode".to_owned())
-}
-
-/// The Properties dialog opens for any server the inventory has; each page
-/// says for itself what it cannot change.
-fn can_open_properties(m: &Model, target: &Target) -> Eligibility {
-    let Some(editor) = capture(m, target, Kind::Multipath) else {
-        return Eligibility::Hidden;
-    };
-    Eligibility::enabled_if(
-        matches!(editor.target, ResourceTarget::Host(id) if editor.initial.hosts.contains_key(&id)),
-        MISSING,
-    )
 }
 
 /// Rune disabled "Pool VM autostart…" without a writable current connection

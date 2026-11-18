@@ -89,6 +89,8 @@ pub fn spec() -> AreaSpec {
         tab: view::tab,
         poll,
         on_scope_change,
+        // The Objects view presets the query by the kind of the selection.
+        on_nav_change: on_scope_change,
         nav_rows,
         ..AreaSpec::new("search")
     }

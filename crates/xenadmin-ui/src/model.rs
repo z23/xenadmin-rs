@@ -116,6 +116,10 @@ pub struct Model {
     pub nav: Navigation,
     /// A notice for the status bar: why the selection moved by itself.
     pub notice: Option<String>,
+    /// The open Properties dialog ([`crate::properties`]). Changed only by
+    /// [`Model::open_properties`], [`Model::show_properties_page`] and
+    /// [`Model::close_properties`].
+    pub properties: Option<crate::properties::Open>,
 
     /// The lock on the state directory (the Rune `_instance`). `Some` only
     /// in the one owning process; it gates every write to disk.
@@ -252,6 +256,7 @@ impl Model {
             selection: Selection::default(),
             nav: Navigation::default(),
             notice: None,
+            properties: None,
             instance,
             layout_changed_at: None,
             clock: 0.0,
@@ -355,6 +360,17 @@ impl Model {
                         .is_some_and(|c| !c.is_read_only())
                     && self.workspace.snapshot(id).is_some_and(|s| s.is_current())
             }
+            None => false,
+        }
+    }
+
+    /// Whether a pool is a synthetic one, in which nothing can be
+    /// submitted: `demo` for the pool of the scope session, a synthetic
+    /// session for another. False for a pool no session shows.
+    pub fn is_synthetic_pool(&self, pool: PoolId) -> bool {
+        match session::session_for_pool(self, pool) {
+            Some(id) if self.workspace.selected == Some(id) => self.demo,
+            Some(id) => self.workspace.synthetic.contains_key(&id),
             None => false,
         }
     }
@@ -788,12 +804,23 @@ impl Model {
 
     /// Every open surface in layering order: the last is in front and is the
     /// one that takes input. The order across areas is that of
-    /// [`areas::AREAS`].
+    /// [`areas::AREAS`]. The Properties dialog, which the kernel describes
+    /// from the pages of the areas, stands with the surfaces of the area of
+    /// its current page, in front of them.
     pub fn surfaces(&self) -> Vec<Surface> {
-        areas::specs()
-            .iter()
-            .flat_map(|area| (area.surfaces)(self))
-            .collect()
+        let mut properties = crate::properties::surface(self);
+        let mut surfaces = Vec::new();
+        for area in areas::specs() {
+            surfaces.extend((area.surfaces)(self));
+            if properties
+                .as_ref()
+                .is_some_and(|(owner, _)| *owner == area.id)
+                && let Some((_, surface)) = properties.take()
+            {
+                surfaces.push(surface);
+            }
+        }
+        surfaces
     }
 
     /// The surface in front, when one is open.
@@ -1033,12 +1060,17 @@ impl Model {
             .find_map(|area| (area.tab)(self, tab, scope))
     }
 
-    /// Switches the navigation view. The selection stays.
+    /// Switches the navigation view. The selection stays; the grid
+    /// selection and an open context menu are dropped, and every area hears
+    /// about it (`on_nav_change`).
     pub fn set_nav_view(&mut self, view: NavView) {
         if self.nav.view != view {
             self.nav.view = view;
             self.selection.grid = Target::none();
             self.selection.menu = None;
+            for area in areas::specs() {
+                (area.on_nav_change)(self);
+            }
         }
     }
 
@@ -1594,6 +1626,7 @@ impl Model {
         let mut changed = session::refresh(self);
         changed |= self.poll_scope_session();
         changed |= self.reconcile_selection();
+        changed |= crate::properties::poll(self);
         changed |= self.poll_resource_rows();
         for area in areas::specs() {
             changed |= (area.poll)(self, clock);
