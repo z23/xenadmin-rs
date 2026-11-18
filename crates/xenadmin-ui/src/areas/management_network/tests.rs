@@ -45,9 +45,15 @@
 //! | `ipv6_review_refuses_changed_temporary_or_member_identity` | same name (moved) |
 //! | `ipv6_continuation_retains_original_review_and_targets_exact_predecessor` | same name (ported: through `handovers` and `resume`) |
 //!
-//! Twenty Rune tests: 9 moved, 11 ported, none retired. New, for what the
-//! port added: the commands and their places, the forms driven through the
-//! harness, the experimental notice of every scene, closing.
+//! Twenty Rune tests: 8 moved, 12 ported, none retired. New (9), for what
+//! the port added: the commands and their places, the forms driven through
+//! the harness, the refusals without a connection, the experimental notice
+//! of every scene, closing.
+//!
+//! Not tested: an answer of the guest-impact query. The query needs a live
+//! connection, and the fixture server of `crate::testing` serves neither
+//! `review_management_bond` nor `review_management_ipv6_bond`; the fence of
+//! the answer (`inputs_current`) and the refusals are tested.
 
 use std::sync::Arc;
 
@@ -1028,4 +1034,40 @@ fn a_quiet_model_has_nothing_to_poll() {
     let (mut h, _) = bond_form();
     assert!(!bond::poll(&mut h.model));
     assert!(!ipv6::poll(&mut h.model));
+}
+
+#[test]
+fn outside_the_demo_a_review_needs_a_connection_and_the_form_stays() {
+    // Bond: the guest impact cannot be asked for.
+    let (mut h, f) = bond_form();
+    h.model.demo = false;
+    assert_eq!(h.try_click("network-review"), Err(NOT_WRITABLE.into()));
+    bond::prepare(&mut h.model);
+    assert_eq!(
+        error(&h).as_deref(),
+        Some("Connect before reviewing guest interfaces")
+    );
+    let e = h.model.areas.management_network.editor.as_ref().unwrap();
+    assert!(e.pending.is_none());
+    assert!(!reviewed(&h));
+    // IP settings: the review is complete, but its target cannot be
+    // observed (the Rune `prepare_action`): the error is on the form.
+    management::open(&mut h.model, f.pool, f.source, false);
+    management::editor(&mut h.model).unwrap().address = "192.0.2.20".into();
+    management::prepare(&mut h.model);
+    assert_eq!(
+        error(&h),
+        Some(xenadmin_core::Error::Stale.to_string())
+    );
+    assert_eq!(h.surface().id, SURFACE);
+    assert!(!reviewed(&h));
+    // The staged IPv6 bond likewise.
+    let (mut h, _) = fixture(|m| scenes::open_ipv6(m).unwrap());
+    h.model.demo = false;
+    ipv6::prepare(&mut h.model);
+    assert_eq!(
+        error(&h),
+        Some(xenadmin_core::Error::Stale.to_string())
+    );
+    assert!(!reviewed(&h));
 }
