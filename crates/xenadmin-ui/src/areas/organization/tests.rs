@@ -863,3 +863,22 @@ fn one_surface_of_the_area_at_a_time() {
     assert!(h.has_text("Start in ascending order; VMs at the same order start together. Running VMs are skipped. Suspended/paused VMs need a separate recovery action first."));
     assert!(h.find("appliance-confirmation").is_none());
 }
+
+/// On a current writable connection the reviewed vApp operation is
+/// submitted once on the connection of its pool and the dialog closes.
+/// (The fixture server does not serve the operation itself: only the
+/// submission is tested.)
+#[test]
+fn a_reviewed_vapp_change_is_submitted_on_the_connection_of_its_pool() {
+    let mut live = crate::testing::Live::with_vm();
+    let whole = Target::one(ObjectRef::pool(live.pool));
+    live.h.invoke_on("pool.vapps", &whole);
+    assert!(live.h.find("appliance-preview").is_none());
+    assert!(live.h.find("appliance-not-current").is_none());
+    live.h.type_text("appliance-name", "Batch");
+    live.h.click("appliance-create-review");
+    assert!(live.h.find("appliance-change-review-stale").is_none());
+    live.h.click("appliance-apply");
+    assert!(live.h.model.areas.organization.appliances.is_none());
+    assert_eq!(live.h.model.resource_operations.len(), 1);
+}
