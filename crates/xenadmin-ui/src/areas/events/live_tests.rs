@@ -115,17 +115,17 @@ fn an_unknown_outcome_is_acknowledged_over_its_connection_and_releases_the_vm() 
     let surface = live.h.surface();
     assert_eq!(
         (surface.id.as_str(), surface.title.as_str()),
-        ("acknowledge-unknown", "Acknowledge unknown outcome?")
+        ("unknown-outcome", "Acknowledge unknown outcome")
     );
     assert!(live.h.has_text("VM: Fixture guest"));
     assert!(live.h.has_text(control::ACK_VM));
-    assert_eq!(live.h.node("acknowledge-confirm").disabled, None);
+    assert_eq!(live.h.node("unknown-acknowledge").disabled, None);
     let open = live.h.model.areas.events.acknowledge.as_ref().unwrap();
     assert_eq!(control::acknowledge_stale(&live.h.model, open), None);
 
     // Confirmed: the connection takes it, the dialog closes, the record
     // says the outcome was acknowledged, never that it is known.
-    live.h.click("acknowledge-confirm");
+    live.h.click("unknown-acknowledge");
     assert!(live.h.model.areas.events.acknowledge.is_none());
     assert!(live.h.surfaces().is_empty());
     poll_until(&mut live.h, "the unknown outcome is acknowledged", |h| {

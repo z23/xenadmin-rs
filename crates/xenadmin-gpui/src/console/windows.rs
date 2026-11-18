@@ -12,11 +12,11 @@
 //! seat. Appearance and interface size are the theme's, which is the
 //! application's: there is one model and nothing to forward.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use xenadmin_ui::areas::console::{self, Seat, view, windows};
+use xenadmin_ui::areas::console::{view, windows};
 use xenadmin_ui::command::CommandId;
 use xenadmin_ui::intent::{ConsoleWindowId, ConsoleWindowRequest};
 
@@ -215,8 +215,9 @@ struct Open {
 
 struct Inner {
     store: Entity<AppStore>,
-    /// The main window: where Fullscreen of the Console tab applies.
-    main: Option<AnyWindowHandle>,
+    /// The intents' cell for the main window, where Fullscreen of the
+    /// Console tab applies.
+    main: Option<Rc<Cell<Option<AnyWindowHandle>>>>,
     open: BTreeMap<u32, Open>,
     _subscriptions: Vec<Subscription>,
 }
@@ -242,29 +243,33 @@ impl ConsoleWindows {
     /// `base` with the three console hooks: the windows' requests, the
     /// release of every console's input, and the close of every window.
     pub fn hooks(&self, base: Hooks) -> Hooks {
-        let (perform, release, close) = (self.clone(), self.clone(), self.clone());
+        let (perform, release, close, fullscreen) =
+            (self.clone(), self.clone(), self.clone(), self.clone());
+        // Fullscreen of the Console tab toggles the main window, which the
+        // intents find in this cell: the shell fills it, and `install` does
+        // where the window was opened before the hooks existed.
+        self.inner.borrow_mut().main = Some(Rc::clone(&base.main_window));
         Hooks {
             console_window: Rc::new(move |request, cx| perform.perform(request, cx)),
             release_console_input: Rc::new(move |cx| release.release_input(cx)),
             close_console_windows: Rc::new(move |cx| close.close_all(cx)),
+            console_fullscreen: Rc::new(move |id, cx| fullscreen.toggle_fullscreen(id, cx)),
             ..base
         }
     }
 
-    /// Starts what follows the model without a request: Fullscreen, and a
-    /// window that went away without being asked. `main` is the main
-    /// window, which Fullscreen of the Console tab toggles.
+    /// Starts what follows the model without a request: a window that went
+    /// away without being asked. `main` is the main window, which
+    /// Fullscreen of the Console tab toggles (`Intent::ToggleFullscreen`).
     pub fn install(&self, main: Option<AnyWindowHandle>, cx: &mut App) {
-        let store = self.inner.borrow().store.clone();
-        let (fullscreen, gone) = (self.clone(), self.clone());
-        let subscriptions = vec![
-            // TO BE REPLACED: `intent.rs` has no fullscreen request yet, so
-            // the model keeps a list that is drained after every update.
-            cx.observe(&store, move |_, cx| fullscreen.drain_fullscreen(cx)),
-            cx.on_window_closed(move |cx, id| gone.window_gone(id, cx)),
-        ];
+        let gone = self.clone();
+        let subscriptions = vec![cx.on_window_closed(move |cx, id| gone.window_gone(id, cx))];
         let mut inner = self.inner.borrow_mut();
-        inner.main = main;
+        if let Some(cell) = &inner.main
+            && cell.get().is_none()
+        {
+            cell.set(main);
+        }
         inner._subscriptions = subscriptions;
     }
 
@@ -443,24 +448,11 @@ impl ConsoleWindows {
         }
     }
 
-    /// TO BE REPLACED by an intent: toggles fullscreen of the window of
-    /// each seat the model lists.
-    fn drain_fullscreen(&self, cx: &mut App) {
-        let seats = self
-            .store()
-            .update(cx, |store, _| store.take(console::take_fullscreen_requests));
-        for seat in seats {
-            let handle = match seat {
-                Seat::Tab => self.inner.borrow().main,
-                Seat::Window(id) => self.window(id).map(|(handle, _)| handle),
-            };
-            if let Some(handle) = handle {
-                // After the update that asked: the window may be the one
-                // being updated now.
-                cx.defer(move |cx| {
-                    let _ = handle.update(cx, |_, window, _| window.toggle_fullscreen());
-                });
-            }
+    /// `Intent::ToggleFullscreen` for a detached console window. The
+    /// intents call it after the update that asked.
+    fn toggle_fullscreen(&self, id: ConsoleWindowId, cx: &mut App) {
+        if let Some((handle, _)) = self.window(id) {
+            let _ = handle.update(cx, |_, window, _| window.toggle_fullscreen());
         }
     }
 }

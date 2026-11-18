@@ -646,7 +646,14 @@ fn several_vms_get_the_dialog_of_a_vm_with_the_pages_for_the_selection() {
     h.dismiss();
     let one = Target::one(vms.objects[0].clone());
     h.invoke_on("vm.properties", &one);
-    assert_eq!(page_labels(&h.surface()), ["General"]);
+    // One VM has the pages for one VM (this area's and those of the real
+    // areas), never the page of a multi-selection.
+    let labels = page_labels(&h.surface());
+    assert!(labels.iter().any(|label| label == "General"), "{labels:?}");
+    assert!(
+        !labels.iter().any(|label| label == "Bulk properties"),
+        "{labels:?}"
+    );
 }
 
 #[test]
@@ -706,6 +713,12 @@ fn the_pages_of_the_areas_are_pages_of_the_plan() {
     for target in targets {
         let kind = PropertiesKind::of(&target).expect("kind");
         for (area, page) in h.model.property_pages(&target) {
+            // A page the plan does not have (the one review of a VM's
+            // settings, kept as the last page of its dialog) comes last.
+            if !kind.planned().iter().any(|(id, _)| *id == page.id) {
+                assert_eq!(page.order, PropertyPage::UNPLANNED, "{area}: {}", page.id);
+                continue;
+            }
             let planned = PropertyPage::planned(kind, page.id);
             assert_eq!(
                 (page.label, page.order),
