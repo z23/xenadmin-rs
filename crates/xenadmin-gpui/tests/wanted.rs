@@ -104,7 +104,7 @@ const WISHES: &[Wish] = &[
                 "properties-cancel",
                 "review-properties",
             ]),
-            Reach(&["property-name"]),
+            Reach(&["property-live-cpus"]),
         ],
     ),
     row(
@@ -238,7 +238,7 @@ const WISHES: &[Wish] = &[
             Press("storage-result-0"),
             Press("storage-review"),
             Reach(&["storage-confirm-lun"]),
-            Label("storage-confirm-lun", "onfirm formatting"),
+            Described("storage-confirm-lun", "confirm formatting"),
             Inside(&["storage-confirm"]),
         ],
     ),
@@ -277,7 +277,7 @@ const WISHES: &[Wish] = &[
             Label("metrics-range", "3600 second samples"),
             Says("Synthetic performance preview"),
             Press("local:performance.data-sources"),
-            Inside(&["apply-metric-sources"]),
+            Reach(&["apply-metric-sources"]),
         ],
     ),
     row(
@@ -291,6 +291,7 @@ const WISHES: &[Wish] = &[
             Press("metric-preset-save"),
             Reach(&["metric-preset-night", "metric-preset-remove-night"]),
             Press("metric-preset-night"),
+            Press("local:performance.presets"),
             Press("metric-preset-remove-night"),
             Absent(&["metric-preset-night"]),
         ],
@@ -593,6 +594,9 @@ const WISHES: &[Wish] = &[
         &[
             Inside(&["resource-confirm", "resource-back"]),
             Press("resource-back"),
+            Press("resource-next"),
+            Press("resource-next"),
+            Label("network-new-steps", "Settings"),
             Inside(&["resource-review"]),
         ],
     ),
@@ -613,6 +617,27 @@ const WISHES: &[Wish] = &[
                 "local:server.management.configure",
                 "local:server.management.move",
             ]),
+        ],
+    ),
+    row(
+        "network",
+        "compact_and_wide_network_reviews_remain_visible_and_preview_cannot_submit",
+        "network-interfaces",
+        BOTH,
+        &[
+            Front("network-change"),
+            Set(|m| {
+                xenadmin_ui::areas::network::workspace::set_form(
+                    m,
+                    xenadmin_ui::areas::network::workspace::Form::Mtu {
+                        value: "9000".into(),
+                    },
+                );
+            }),
+            Inside(&["network-review"]),
+            Press("network-review"),
+            Inside(&["network-confirm"]),
+            Disabled("network-confirm", DEMO),
         ],
     ),
     // -- bulk_edit ------------------------------------------------------------

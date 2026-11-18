@@ -277,28 +277,11 @@ fn the_confirm_button_of_host_administration_is_on_screen_and_submits_nothing_in
     }
 }
 
-// -- Scenes of areas that are still being ported ---------------------------------
+// -- From the list the area engineers keep (`gpui-tests-wanted.md`) ---------------
 //
-// The tests below are from the list the area engineers keep
-// (`gpui-tests-wanted.md`). Each needs a scene of its area. Where that area
-// is not in the registry yet, the test says so and passes: it starts to
-// check as soon as the area lands.
-
-/// The window of a registered scene, or `None` (said on stderr) while its
-/// area has not registered it.
-fn open_scene_if_registered(
-    cx: &mut TestAppContext,
-    name: &str,
-    size: (f32, f32),
-) -> Option<ShellWindow> {
-    match scenes::setup(name) {
-        Some(setup) => Some(open(cx, setup, size)),
-        None => {
-            eprintln!("skipped: the scene `{name}` is not registered yet");
-            None
-        }
-    }
-}
+// The first four that were written, before their scenes existed. The rest of
+// the list is in `wanted.rs` (presence and reachability, as a table) and in
+// `wanted_events.rs` (what a press, a key or a file prompt does).
 
 /// The ids of the surfaces the store describes, back to front.
 fn surfaces(cx: &mut TestAppContext, scene: &ShellWindow) -> Vec<String> {
@@ -336,9 +319,7 @@ fn the_controls_of_vm_recovery_are_inside_the_window_under_the_experimental_noti
     cx: &mut TestAppContext,
 ) {
     for size in SIZES {
-        let Some(scene) = open_scene_if_registered(cx, "vm-recovery", size) else {
-            return;
-        };
+        let scene = open_scene(cx, "vm-recovery", size);
         on(cx, &scene, |window, _| {
             let notice = window.find(xenadmin_ui::surface::EXPERIMENTAL_NOTICE_KEY);
             assert_on_screen(window, &notice, "the experimental notice");
@@ -360,9 +341,7 @@ fn the_batch_power_review_cannot_run_in_the_demo_and_goes_back_to_its_nine_actio
     cx: &mut TestAppContext,
 ) {
     for size in SIZES {
-        let Some(scene) = open_scene_if_registered(cx, "batch-power", size) else {
-            return;
-        };
+        let scene = open_scene(cx, "batch-power", size);
         on(cx, &scene, |window, cx| {
             let submit = window.find("batch-power-submit");
             assert_on_screen(window, &submit, "batch-power-submit");
@@ -393,9 +372,7 @@ fn the_task_cancellation_review_opens_from_the_local_row_and_submits_nothing_in_
     cx: &mut TestAppContext,
 ) {
     for size in SIZES {
-        let Some(scene) = open_scene_if_registered(cx, "activity", size) else {
-            return;
-        };
+        let scene = open_scene(cx, "activity", size);
         assert!(surfaces(cx, &scene).is_empty());
         on(cx, &scene, |window, cx| {
             let open = window
@@ -429,9 +406,7 @@ fn the_task_cancellation_review_opens_from_the_local_row_and_submits_nothing_in_
 #[gpui_kit::test]
 fn the_close_button_of_failure_help_is_inside_the_window_and_closes_it(cx: &mut TestAppContext) {
     for size in SIZES {
-        let Some(scene) = open_scene_if_registered(cx, "failure-help", size) else {
-            return;
-        };
+        let scene = open_scene(cx, "failure-help", size);
         assert_eq!(surfaces(cx, &scene).len(), 1);
         on(cx, &scene, |window, cx| {
             let close = window.find("failure-help-close");

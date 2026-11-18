@@ -195,7 +195,12 @@ pub fn locate(window: &Window, scope: Option<&str>, key: &str) -> Result<Element
             scope.unwrap_or("the window")
         ));
     }
-    Ok(found.remove(0))
+    // Of several that start so, the first that can be used.
+    let usable = found
+        .iter()
+        .position(|element| element.disabled() != Some(true))
+        .unwrap_or(0);
+    Ok(found.remove(usable))
 }
 
 /// What an element is seen through, innermost last: the bodies that scroll
@@ -257,6 +262,35 @@ pub fn inside(window: &Window, element: &ElementSnapshot) -> Result<(), String> 
     Ok(())
 }
 
+/// What [`reach`] asks: [`inside`], except that an element taller than the
+/// body it is seen through (a long review, a summary) cannot be inside it.
+/// Such an element is reached when its start is at the top of the body.
+fn reached(window: &Window, element: &ElementSnapshot) -> Result<(), String> {
+    let bounds = element.bounds();
+    match clips(window, element).pop() {
+        Some(clip) if bounds.size.height > clip.bounds().size.height - px(8.) => {
+            let seen = clip.bounds();
+            let viewport = Bounds::new(Default::default(), window.viewport_size());
+            if element.visible()
+                && contains(viewport, seen)
+                && bounds.top() >= seen.top() - px(0.5)
+                && bounds.top() < seen.top() + seen.size.height / 2.
+                && bounds.left() >= seen.left() - px(0.5)
+                && bounds.right() <= seen.right() + px(0.5)
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the start of `{}` is not in `{}`: {bounds:?} in {seen:?}",
+                    key_of(element).unwrap_or("?"),
+                    key_of(&clip).unwrap_or("?")
+                ))
+            }
+        }
+        _ => inside(window, element),
+    }
+}
+
 /// Brings an element into view by turning the wheel over the body it is in,
 /// and says whether all of it is inside the window then.
 pub fn reach(
@@ -288,7 +322,7 @@ pub fn reach(
         window.render_frame(cx);
     }
     let element = locate(window, scope, key)?;
-    inside(window, &element)?;
+    reached(window, &element)?;
     Ok(element)
 }
 
@@ -372,6 +406,10 @@ pub enum Step {
     Says(&'static str),
     /// The accessible name of the element contains the text.
     Label(&'static str, &'static str),
+    /// What the model describes under the key (its label, value or text)
+    /// contains the text: for a control whose element the Kit gives no
+    /// accessible name.
+    Described(&'static str, &'static str),
     /// The checkbox is, or is not, checked.
     Checked(&'static str, bool),
     /// The first is drawn above the second.
@@ -473,6 +511,22 @@ pub fn run_step(cx: &mut TestAppContext, scene: &ShellWindow, step: Step) -> Res
                 other => Err(format!("`{key}` is named {other:?}, without \"{text}\"")),
             }
         }),
+        Step::Described(key, text) => {
+            let nodes = described(cx, scene);
+            let node = nodes
+                .iter()
+                .find(|node| node.key.as_deref() == Some(key))
+                .ok_or_else(|| format!("the surface describes no `{key}`"))?;
+            let said = [&node.label, &node.value, &node.text];
+            if said.iter().any(|part| {
+                part.as_ref()
+                    .is_some_and(|part| part.to_lowercase().contains(&text.to_lowercase()))
+            }) {
+                Ok(())
+            } else {
+                Err(format!("`{key}` is described without \"{text}\": {node:?}"))
+            }
+        }
         Step::Checked(key, checked) => on(cx, scene, |window, _| {
             let element = locate(window, scope, key)?;
             if element.checked() == Some(checked) {
@@ -485,11 +539,14 @@ pub fn run_step(cx: &mut TestAppContext, scene: &ShellWindow, step: Step) -> Res
             }
         }),
         Step::Above(upper, lower) => on(cx, scene, |window, _| {
-            let (upper_at, lower_at) = (
-                locate(window, scope, upper)?.bounds(),
-                locate(window, scope, lower)?.bounds(),
-            );
-            if upper_at.bottom() <= lower_at.top() + px(0.5) {
+            let above = locate(window, scope, upper)?;
+            // What is seen of the upper one: a body that scrolls ends
+            // above the footer, whatever the length of what is in it.
+            let upper_at = clips(window, &above)
+                .iter()
+                .fold(above.bounds(), |seen, clip| seen.intersect(&clip.bounds()));
+            let lower_at = locate(window, scope, lower)?.bounds();
+            if above.visible() && upper_at.bottom() <= lower_at.top() + px(0.5) {
                 Ok(())
             } else {
                 Err(format!(
