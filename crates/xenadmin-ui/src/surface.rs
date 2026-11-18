@@ -2384,6 +2384,51 @@ mod tests {
     }
 
     #[test]
+    fn a_preformatted_text_and_a_warning_button_say_what_they_are() {
+        let uuids = "6f1c0a52-8d3e-4b71-9c5a-2e7d0f4b9a13\n0b7d7f0e-1a2b-4c3d-8e9f-a1b2c3d4e5f6";
+        let blocks = crate::blocks![
+            preformatted(uuids).key("uuids"),
+            caption("plain").key("plain"),
+            alert("host said:\n  SR_FULL").preformatted().key("error"),
+            button("ack", "Acknowledge outcome", |_| {}).warning(),
+            button("force", "Force Shut Down", |_| {}).danger(),
+            button("close", "Close", |_| {}),
+        ];
+        let nodes = flatten_blocks("tab", &blocks);
+        let node = |key: &str| {
+            nodes
+                .iter()
+                .find(|node| node.key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("no node {key}"))
+        };
+        // The whole text, line breaks included, in one node of its own role.
+        assert_eq!(node("uuids").role, "preformatted");
+        assert_eq!(node("uuids").text.as_deref(), Some(uuids));
+        assert_eq!(node("uuids").tone, None, "the normal tone is not written");
+        assert_eq!(node("plain").role, "text");
+        // An alert stays an alert, whatever its face.
+        assert_eq!(node("error").role, "alert");
+        assert_eq!(node("error").tone, Some(Tone::Danger));
+        let Block::Text(error) = &blocks[2] else {
+            panic!("a text block");
+        };
+        assert!(error.preformatted && error.alert);
+        // The three weights of a button are three tones in the tree.
+        assert_eq!(node("ack").tone, Some(Tone::Warning));
+        assert_eq!(node("force").tone, Some(Tone::Danger));
+        assert_eq!(node("close").tone, None);
+        let Block::Actions(buttons) = &blocks[3..][0] else {
+            // `blocks!` keeps each button as its own action row.
+            panic!("an action row");
+        };
+        assert_eq!(buttons[0].style, ButtonStyle::Warning);
+        assert_eq!(
+            serde_json::to_value(ButtonStyle::Warning).unwrap(),
+            serde_json::json!("warning")
+        );
+    }
+
+    #[test]
     fn a_table_can_be_sortable_before_any_column_is_the_order() {
         let pool = xenadmin_core::PoolId::from(uuid::Uuid::from_u128(1));
         let vm = ObjectRef::vm(pool, xenadmin_core::VmId::from(uuid::Uuid::from_u128(2)));

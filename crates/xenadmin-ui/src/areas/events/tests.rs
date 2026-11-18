@@ -990,6 +990,16 @@ fn a_resource_record_shows_its_evidence_and_local_error_in_the_outcome() {
         h.node("activity-outcome").value.as_deref(),
         Some(OutcomeState::Partial.name())
     );
+    // The detail lines are one preformatted text, one line each, so that
+    // an identifier or a host's error can be selected and copied whole.
+    let details = h.node("activity-details");
+    assert_eq!(details.role, "preformatted");
+    let text = details.text.expect("the detail lines");
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() >= 3, "{lines:?}");
+    assert!(lines.contains(&"Scan: Failed — Host task failed: SR_FULL"));
+    assert!(lines.contains(&"Journal write failed"));
+    assert!(lines.iter().all(|line| !line.is_empty()));
 }
 
 // -- 3. Texts that name Rune places (AREAS.md decision 10) ----------------------

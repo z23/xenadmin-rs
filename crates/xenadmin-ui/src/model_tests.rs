@@ -1275,7 +1275,11 @@ fn a_tab_change_is_reported_once_after_the_change_is_complete() {
     m.set_active_tab(TabId::Console);
     assert_eq!(
         tab_log(&mut m),
-        [(TabId::General, TabId::Console, "Console on Vm after 0".into())]
+        [(
+            TabId::General,
+            TabId::Console,
+            "Console on Vm after 0".into()
+        )]
     );
     // Choosing the tab that is shown is no change.
     m.set_active_tab(TabId::Console);
@@ -1323,7 +1327,9 @@ fn a_tab_change_is_reported_once_after_the_change_is_complete() {
     m.set_nav_view(NavView::Infrastructure);
     let log = tab_log(&mut m);
     assert_eq!(
-        log.iter().map(|(from, to, _)| (*from, *to)).collect::<Vec<_>>(),
+        log.iter()
+            .map(|(from, to, _)| (*from, *to))
+            .collect::<Vec<_>>(),
         [
             (TabId::Console, first),
             (first, other),

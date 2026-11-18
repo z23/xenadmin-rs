@@ -1161,6 +1161,60 @@ mod tests {
     }
 
     #[test]
+    fn a_command_can_be_on_the_local_row_of_several_tabs() {
+        const EXPORT: CommandSpec = CommandSpec::new("t.export", "Export", "t")
+            .local(TabId::Events, 90)
+            .local(TabId::Alerts, 80);
+        // The first tab is still the field older code reads.
+        assert_eq!(EXPORT.local, Some(LocalRow::new(TabId::Events, 90)));
+        assert_eq!(
+            EXPORT.local_rows().collect::<Vec<_>>(),
+            [
+                LocalRow::new(TabId::Events, 90),
+                LocalRow::new(TabId::Alerts, 80)
+            ]
+        );
+        let other = CommandSpec::new("t.dismiss", "Dismiss", "t").local(TabId::Alerts, 10);
+        assert_eq!(other.local_rows().count(), 1);
+        assert_eq!(
+            CommandSpec::new("t.none", "None", "t").local_rows().count(),
+            0
+        );
+        let m = Model::fixture();
+        let specs = [EXPORT, other];
+        // Each row has it once, at the order given for that tab.
+        let row = |tab| {
+            local_row_of(&specs, &m, tab, &Target::none())
+                .into_iter()
+                .map(|item| item.id.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(row(TabId::Events), ["t.export"]);
+        assert_eq!(row(TabId::Alerts), ["t.dismiss", "t.export"]);
+        assert!(row(TabId::General).is_empty());
+        // The listing names every tab.
+        assert_eq!(
+            crate::command_list::fields(&EXPORT)[5],
+            "Events.90, Alerts.80"
+        );
+        // The registry's own: one export command on both notification tabs.
+        let export = find(CommandId("events.export")).expect("events.export");
+        assert_eq!(
+            export.local_rows().map(|row| row.tab).collect::<Vec<_>>(),
+            [TabId::Events, TabId::Alerts]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "too many tabs")]
+    fn a_command_on_more_local_rows_than_there_is_room_for_is_refused() {
+        let mut spec = CommandSpec::new("t.everywhere", "Everywhere", "t");
+        for tab in TabId::ALL.into_iter().take(LocalRow::MORE + 2) {
+            spec = spec.local(tab, 10);
+        }
+    }
+
+    #[test]
     fn registry_ids_are_unique_and_every_command_names_its_area() {
         let mut ids: Vec<_> = registry().iter().map(|spec| spec.id.0).collect();
         let count = ids.len();
