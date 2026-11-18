@@ -108,20 +108,28 @@ pub fn properties_frame(
                     )
                 })
         }));
+    // `height` is what the frame asks for. A header with a notice and a
+    // footer with a note leave less in a small window: the frame gives way,
+    // so that the footer buttons stay inside the window, and the list and
+    // the page scroll in what is left.
     h_flex()
         .w_full()
         .h(height)
+        .min_h_0()
+        .flex_shrink(1.)
         .items_start()
         .gap_4()
         .child(list)
         .child(
+            // The element with the id is what the page is seen through.
             div()
                 .id(SharedString::from(format!("{list_key}-page")))
+                .test_support()
                 .flex_1()
                 .min_w_0()
                 .h_full()
-                .overflow_y_scrollbar()
-                .child(page),
+                .overflow_hidden()
+                .child(div().size_full().overflow_y_scrollbar().child(page)),
         )
         .into_any_element()
 }

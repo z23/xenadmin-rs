@@ -24,6 +24,9 @@ pub const TABS_KEY: &str = "object-tabs";
 pub const LOCAL_ROW_KEY: &str = "local-actions";
 /// The id of the tab body.
 pub const TAB_BODY_KEY: &str = "tab-body";
+/// The element a tab body that scrolls is seen through. A body that ends in
+/// a table has none: the table scrolls its own rows.
+pub const TAB_SCROLL_KEY: &str = "tab-scroll";
 /// The id of the text shown when nothing provides the active tab.
 pub const TAB_EMPTY_KEY: &str = "tab-empty";
 /// The path prefix of the tab body in the flattened description.
@@ -287,12 +290,15 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
                     .children(children)
                     .into_any_element()
             } else {
+                // The element with the id is what a scrolling body is
+                // seen through.
                 div()
+                    .id(TAB_SCROLL_KEY)
+                    .test_support()
                     .size_full()
                     .overflow_hidden()
                     .child(
                         v_flex()
-                            .id("tab-scroll")
                             .size_full()
                             .overflow_y_scrollbar()
                             .p_4()
