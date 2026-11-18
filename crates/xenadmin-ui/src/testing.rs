@@ -26,6 +26,9 @@
 //! assert_eq!(live.server.count("Async.VM.start"), 1);
 //! ```
 //!
+//! - [`custom_templates`]: the demo inventory has no custom template; this
+//!   makes some of a model's guests into them.
+//!
 //! The parts, for a test that wants a read-only session or several pools:
 //!
 //! ```ignore
@@ -68,6 +71,49 @@ use crate::Harness;
 use crate::model::Model;
 use crate::object::ObjectRef;
 use crate::session::{self, Workspace};
+
+/// Gives a fixture custom templates, which the demo inventory lacks: the
+/// last `count` guests of the scope session's inventory become halted
+/// custom templates (`is_default_template == Some(false)`, no current or
+/// blocked operation), named "Custom template 1", "Custom template 2", …
+/// Returns them as tree objects, in that order. The first guests, which
+/// most tests use, stay guests.
+///
+/// For a model a test owns (`Harness::with`, the GPUI tests'
+/// `open_scene_with`): the plain demo keeps its object counts, which
+/// kernel tests rely on.
+pub fn custom_templates(m: &mut Model, count: usize) -> Vec<ObjectRef> {
+    let Some(inventory) = m.inventory.take() else {
+        return Vec::new();
+    };
+    let mut inventory = inventory.as_ref().clone();
+    let pool = inventory.pool_id;
+    let mut ids: Vec<VmId> = inventory
+        .vms
+        .values()
+        .filter(|vm| !vm.is_template && !vm.is_control_domain)
+        .map(|vm| vm.id)
+        .collect();
+    let first = ids.len().saturating_sub(count);
+    let ids = ids.split_off(first);
+    for (index, id) in ids.iter().enumerate() {
+        if let Some(vm) = inventory.vms.get_mut(id) {
+            vm.is_template = true;
+            vm.power_state = xenadmin_core::PowerState::Halted;
+            vm.name = format!("Custom template {}", index + 1);
+        }
+        if let Some(details) = inventory.details.vms.get_mut(id) {
+            details.is_default_template = Some(false);
+            details.current_operations.clear();
+            details.blocked_operations.clear();
+        }
+    }
+    inventory.revision += 1;
+    m.inventory = Some(Arc::new(inventory));
+    ids.into_iter()
+        .map(|id| ObjectRef::template(pool, id))
+        .collect()
+}
 
 /// A private directory under the system's temporary directory, removed
 /// with everything in it on drop.

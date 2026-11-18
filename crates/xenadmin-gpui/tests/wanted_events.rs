@@ -926,12 +926,12 @@ fn open_menu_items(
     })
 }
 
-/// Chooses an item of the popup the shell shows for the open context menu.
+/// The place of a command in the popup of the open context menu.
 #[track_caller]
-fn choose_from_popup(cx: &mut TestAppContext, scene: &ShellWindow, command: &str) {
+fn popup_index(cx: &mut TestAppContext, scene: &ShellWindow, command: &str) -> usize {
     // An entry's element id is its place at the top level of the menu,
     // separators counted; a submenu is one entry.
-    let index = model(cx, scene, |m| {
+    model(cx, scene, |m| {
         let mut index = 0;
         for (group, entries) in m.context_menu().into_iter().enumerate() {
             if group > 0 {
@@ -948,7 +948,13 @@ fn choose_from_popup(cx: &mut TestAppContext, scene: &ShellWindow, command: &str
         }
         None
     })
-    .unwrap_or_else(|| panic!("the top level of the context menu has no {command}"));
+    .unwrap_or_else(|| panic!("the top level of the context menu has no {command}"))
+}
+
+/// Chooses an item of the popup the shell shows for the open context menu.
+#[track_caller]
+fn choose_from_popup(cx: &mut TestAppContext, scene: &ShellWindow, command: &str) {
+    let index = popup_index(cx, scene, command);
     on(cx, scene, |window, cx| {
         window.within("popup-menu").click(index, cx);
     });
@@ -1414,6 +1420,101 @@ fn property_batch_multiselect_review_is_immutable_and_footer_reachable_at_both_s
         must(&mut *cx, &scene, Says("Bulk properties"));
         close(cx, scene);
     }
+}
+
+/// bulk_edit, wish 71: the Menu key on a grid selection of two custom
+/// templates opens the context menu with Properties, which opens the
+/// Properties dialog of templates on "Bulk properties"; an item pressed
+/// after the selection changed does nothing. The demo has no custom
+/// template: `xenadmin_ui::testing::custom_templates` gives it two.
+#[gpui_kit::test]
+fn property_batch_picker_and_template_entry_work_with_keyboard_menu_capture(
+    cx: &mut TestAppContext,
+) {
+    const PROPERTIES: &str = "template.properties";
+    let mut templates = Vec::new();
+    let scene = common::open_scene_with(cx, "demo", WIDE, |m| {
+        templates = xenadmin_ui::testing::custom_templates(m, 2);
+    });
+    assert_eq!(templates.len(), 2);
+    let ids: Vec<String> = templates.iter().map(|object| object.id.clone()).collect();
+    // Only the two templates are listed.
+    must(&mut *cx, &scene, Press("tab-search"));
+    must(&mut *cx, &scene, Type("search-text", "Custom template"));
+    must(&mut *cx, &scene, Press("search-apply"));
+    let rows: Vec<String> = rows_in(cx, &scene, SEARCH)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let listed: Vec<String> = rows.iter().map(|row| object_of(row)).collect();
+    assert!(ids.iter().all(|id| listed.contains(id)), "{rows:?}");
+    let selected = |cx: &mut TestAppContext| -> Vec<String> {
+        model(cx, &scene, |m| {
+            let target = m.target();
+            assert!(
+                target.all_of(xenadmin_ui::ObjectKind::Template),
+                "{target:?}"
+            );
+            target
+                .objects
+                .iter()
+                .map(|object| object.id.clone())
+                .collect()
+        })
+    };
+
+    // Both rows selected with the keyboard, the menu opened with the Menu
+    // key, Properties chosen from it.
+    press_on(cx, &scene, &rows[0]);
+    must(&mut *cx, &scene, Key("shift-down"));
+    assert_eq!(selected(cx), listed);
+    must(&mut *cx, &scene, Key("menu"));
+    let items = open_menu_items(cx, &scene);
+    assert!(
+        items.contains(&(PROPERTIES, None)),
+        "the Menu key's menu of two custom templates: {items:?}"
+    );
+    assert!(popup_labels(cx, &scene).contains(&"Properties".to_owned()));
+    choose_from_popup(cx, &scene, PROPERTIES);
+    must(&mut *cx, &scene, Front("template-properties"));
+    must(&mut *cx, &scene, Says("Bulk properties"));
+    must(&mut *cx, &scene, Press("batch-properties-close"));
+    assert_eq!(front(cx, &scene), None);
+
+    // The menu is open on both templates; the selection becomes one of
+    // them. The shell takes the stale menu off the screen, so no item of
+    // it can be pressed, and the model refuses the item as well.
+    press_on(cx, &scene, &rows[0]);
+    must(&mut *cx, &scene, Key("shift-down"));
+    assert_eq!(selected(cx), listed);
+    must(&mut *cx, &scene, Key("menu"));
+    assert!(open_menu_items(cx, &scene).contains(&(PROPERTIES, None)));
+    assert!(on(cx, &scene, |window, _| window
+        .try_find("popup-menu")
+        .is_some()));
+    let one = templates[1].clone();
+    common::run(cx, &scene, move |m| {
+        m.select_in_grid(xenadmin_ui::Target::one(one));
+    });
+    cx.run_until_parked();
+    assert!(
+        on(cx, &scene, |window, _| window
+            .try_find("popup-menu")
+            .is_none()),
+        "the menu of a selection that changed is still on screen"
+    );
+    let mut refused = false;
+    common::run(cx, &scene, |m| {
+        refused = m
+            .invoke_context(xenadmin_ui::CommandId(PROPERTIES))
+            .is_err();
+    });
+    assert!(refused, "the stale menu's item ran");
+    assert_eq!(front(cx, &scene), None, "a stale menu item opened a dialog");
+    assert!(model(cx, &scene, |m| m.properties.is_none()));
+    assert_eq!(selected(cx), [listed[1].clone()]);
+    close(cx, scene);
 }
 
 /// migration, wish 37: from the first step to the review by key.
