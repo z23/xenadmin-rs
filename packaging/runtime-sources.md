@@ -20,6 +20,12 @@ uses Alpine 3.21 and its development packages. See the pinned upstream source an
 `inputs.json` for the originating repositories. The application's Rust dependencies
 and font notices are in the parent `third-party` directory.
 
+The image holds the application's two executables and no desktop or graphics library. The
+client is linked against libxcb, libxkbcommon and libxkbcommon-x11 and does not start without
+them, in a Wayland session either; in a Wayland session it loads libwayland-client; it draws
+through a Vulkan loader (libvulkan) and a Vulkan driver, a hardware one or Mesa's software
+one. All of these are the host's: none is in this image, and the image replaces none.
+
 The runtime source and libfuse sources are supplied to permit modification and relinking
 under the included LGPL terms; application state and host credentials are unrelated to
 the packaging runtime and are never stored in this image.

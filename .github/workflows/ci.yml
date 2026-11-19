@@ -13,9 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Linux build and render dependencies
+        # To build: the client links libxcb, libxkbcommon and libxkbcommon-x11, and its font
+        # crates ask pkg-config for fontconfig and freetype. To render scenes without a
+        # display: a Vulkan loader and Mesa's software driver. desktop-file-utils is for the
+        # AppImage's desktop entry check.
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libxkbcommon-x11-0 libfontconfig1-dev libxcb1-dev libxcb-xfixes0-dev libxcb-shape0-dev libxcb-xkb-dev libvulkan1 mesa-vulkan-drivers desktop-file-utils
+          sudo apt-get install -y build-essential pkg-config libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libfontconfig1-dev libvulkan1 mesa-vulkan-drivers desktop-file-utils
       - name: Install the repository toolchain
         run: rustup show
       - name: Check, test, and render
