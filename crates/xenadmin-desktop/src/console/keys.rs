@@ -31,10 +31,12 @@
 //! modifier state ([`modifier_changes`], always as the left key), and a
 //! character the table does not know goes as a keysym ([`keysym`]).
 //!
-//! NOT VERIFIED: nothing here ran on a Wayland seat. The listener itself was
-//! shown on Hyprland 0.56.2 by the spike; its use by a console canvas (the
-//! pump, the routing to the focused canvas, the stop of GPUI's keystrokes)
-//! compiles and its pure parts are unit tested, no more.
+//! VERIFIED ONCE, in a virtual machine with injected input (sway 1.12, a
+//! virtual seat, 2026-11-19, `docs/reports/2026-11-19-gpui-vm-session.md`):
+//! the pump, the routing to the focused canvas, the release when the
+//! keyboard leaves and the repeats, by what a lab guest recorded. Not on a
+//! person's seat, and on no other compositor; the listener itself was shown
+//! on Hyprland 0.56.2 by the spike.
 
 use std::time::{Duration, Instant};
 
