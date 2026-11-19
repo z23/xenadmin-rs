@@ -19,7 +19,11 @@ What `check` compares, and what it needs:
                              it names; a row without one is retired or open; the "Tests by
                              disposition" table counts the Tests table. A Rune test that a file
                              of crates/xenadmin-desktop/tests names, while its row has no successor
-                             there, is printed "to review" (a window half that landed later)
+                             there, is printed "to review" (a window half that landed later);
+                             a Rune test whose name begins a row of tests/wanted.rs has that
+                             row's area test among its successors. Test functions written by
+                             the macros `areas!` and `submits_nothing!` of the window tests
+                             count as test functions
   with --commands FILE       the Commands table is what scripts/gpui_commands_table.py prints
                              from FILE (the output of `xenadmin-scenes --commands`)
   with the Rune sources      the Tests table has exactly the tests of the Rune crate with their
@@ -85,12 +89,49 @@ def new_sources():
         yield from sorted(root.rglob("*.rs"))
 
 
+# Two macros of the window tests write test functions the pattern above cannot see:
+# `areas!(a, b, ..)` of tests/wanted.rs makes one test per area, named as the area, and
+# `submits_nothing! { name: "scene", "key"; .. }` of tests/wanted_events.rs one per entry.
+AREAS_MACRO = re.compile(r"^areas!\((.*?)\);", re.S | re.M)
+SUBMITS_MACRO = re.compile(r"^submits_nothing! \{(.*?)^\}", re.S | re.M)
+
+
+def macro_tests(path, text):
+    """The names of the test functions the two macros make in the window tests."""
+    names = []
+    if path.parent != GPUI / "tests":
+        return names
+    for body in AREAS_MACRO.findall(text):
+        names += re.findall(r"\b([a-z][a-z0-9_]*)\b", body)
+    for body in SUBMITS_MACRO.findall(text):
+        names += re.findall(r"^\s*([a-z][a-z0-9_]*):\s*\"", body, re.M)
+    return names
+
+
 def new_tests():
     """Test function name -> places, over the new crates."""
     found = collections.defaultdict(list)
     for path in new_sources():
-        for name in TEST.findall(path.read_text(encoding="utf-8")):
+        text = path.read_text(encoding="utf-8")
+        for name in TEST.findall(text) + macro_tests(path, text):
             found[name].append(place(path))
+    return found
+
+
+def wanted_rows():
+    """Rune test name -> the area tests of tests/wanted.rs whose rows are its window half.
+
+    A row of that table is `row("area", "about", "scene", ..)`; where `about` begins with the
+    name of a Rune test, the test of the row's area is a successor of that Rune test.
+    """
+    path = GPUI / "tests/wanted.rs"
+    found = collections.defaultdict(list)
+    if path.is_file():
+        for area, about in re.findall(r'row\(\s*"([a-z_]+)",\s*"([^"]+)"', path.read_text(encoding="utf-8")):
+            name = re.match(r"[a-z0-9_]+", about)
+            successor = f"{place(path)}::{area}"
+            if name and successor not in found[name.group(0)]:
+                found[name.group(0)].append(successor)
     return found
 
 
@@ -339,7 +380,12 @@ def check(ledger, commands):
     window_tests = "".join(
         path.read_text(encoding="utf-8") for path in sorted((GPUI / "tests").rglob("*.rs"))
     )
+    wanted = wanted_rows()
     for row in rows:
+        named = {f"{where}::{function}" for where, function in successors(row[4])}
+        for successor in wanted.get(bare(row[1]), []):
+            if successor not in named:
+                problems.append(f"Tests: {row[1]}: `{successor}` runs its row of tests/wanted.rs and is not a successor")
         cited = re.search(r"\b" + re.escape(bare(row[1])) + r"\b", window_tests)
         if cited and not any(where.startswith("gpui:tests") for where, _ in successors(row[4])):
             notes.append(f"to review: {row[1]} is named in crates/xenadmin-desktop/tests and its row has no successor there")
