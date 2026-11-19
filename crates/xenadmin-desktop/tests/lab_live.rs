@@ -4086,3 +4086,312 @@ fn lab_p3_snapshot_with_memory() {
     client.close();
     evidence.finish();
 }
+
+/// A text as the octal escapes of `printf`: typed with keys that need no
+/// Shift.
+fn octal(text: &str) -> String {
+    text.bytes().map(|byte| format!("\\{byte:03o}")).collect()
+}
+
+/// The share of a colour in what a console window draws on its canvas.
+fn window_colour(
+    client: &mut Client,
+    handle: xenadmin_desktop::kit::AnyWindowHandle,
+    colour: &str,
+) -> f64 {
+    client
+        .pixels_in(handle, console::view::CANVAS)
+        .map(|now| colour_share(&now, colour))
+        .unwrap_or(0.)
+}
+
+/// P3.3, what the first console scenario left out. Type Clipboard as Keys
+/// with a text of capitals and punctuation, checked by a comparison the
+/// guest's shell makes; Open in Separate Window (frames in the second
+/// window, keys typed there reach the guest), Fullscreen of that window
+/// and of the main one (the headless platform's window state only), the
+/// window closed and the console opened in the tab again; Send
+/// Ctrl+Alt+Del, after which the guest reboots in place.
+#[test]
+#[ignore]
+fn lab_p3_console_window_and_typing() {
+    const WANTED: &str = "Hi, World! (A+B)*C? <D> {E} ~F #G @H %I ^J &K _L |M :N";
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-3-console-window-and-typing");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let main = client.window;
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    wait_guest_ready(&mut client, vm, &mut evidence);
+    console_root_shell(&mut client, &mut evidence, "tab");
+
+    // The text the comparison expects is given to the shell by keys that
+    // need no Shift (octal escapes), through the canvas: a path the first
+    // console scenario showed.
+    client.type_keys(&format!("x=`printf '{}'`", octal(WANTED)));
+    client.key("enter");
+    client.pass(Duration::from_secs(2));
+
+    // Type Clipboard as Keys: the clipboard holds a command with capitals
+    // and shifted punctuation and a line break. The screen turns green
+    // only if the shell read exactly the text.
+    let typed = format!("[ \"$x\" = \"{WANTED}\" ] && printf '\\033[42m' && clear\n");
+    client.copy_to_clipboard(&typed);
+    client
+        .try_local("console.type-clipboard")
+        .expect("Type Clipboard as Keys on the Console tab's row");
+    client.wait(
+        "the review of the typing is shown",
+        Duration::from_secs(15),
+        |client| client.node(console::view::TYPING_PROMPT).is_some(),
+    );
+    let prompt = client
+        .node(console::view::TYPING_PROMPT)
+        .and_then(|node| node.text.or(node.label))
+        .unwrap_or_default();
+    client.snap(&mut evidence, "typing-review");
+    assert!(
+        !prompt.contains("World") && !client.says("World"),
+        "the review shows the text: {prompt}"
+    );
+    assert!(
+        prompt.contains("1 line break sent as Enter") && prompt.contains("US keyboard"),
+        "{prompt}"
+    );
+    client.press(console::view::CONFIRM_TYPING);
+    let took = client.wait_for(Duration::from_secs(120), &mut |client| {
+        client
+            .pixels_of(console::view::CANVAS)
+            .is_some_and(|now| colour_share(&now, "green") > 0.3)
+    });
+    let green = client
+        .pixels_of(console::view::CANVAS)
+        .map(|now| colour_share(&now, "green"));
+    client.snap(&mut evidence, "typed-clipboard-effect");
+    evidence.step(
+        "Type Clipboard as Keys",
+        json!({ "characters": typed.chars().count(), "prompt": prompt,
+            "screen_green_after_seconds": took.map(seconds), "green_share": green }),
+    );
+    evidence.note(
+        "typed_clipboard_matched_in_the_guest",
+        json!(took.is_some()),
+    );
+    assert!(
+        took.is_some(),
+        "the shell did not read the typed text as written: the screen did not turn green"
+    );
+    client.press(console::view::CANVAS);
+    client.type_keys("printf '\\033[0m'; clear");
+    client.key("enter");
+    client.pass(Duration::from_secs(2));
+
+    // Open in Separate Window.
+    assert!(client.other_windows().is_empty());
+    client
+        .try_local("console.undock")
+        .expect("Open in Separate Window on the Console tab's row");
+    client.wait(
+        "a second window opened",
+        Duration::from_secs(15),
+        |client| client.other_windows().len() == 1,
+    );
+    let handle = client.other_windows()[0];
+    let entry = client.model(|m| {
+        console::windows::open_windows(m)
+            .first()
+            .map(|entry| (entry.id, entry.target.window_title()))
+    });
+    let (id, title) = entry.expect("the model has the console in a window");
+    let seat = Seat::Window(id);
+    let took = client.wait(
+        "the second window draws the guest's picture",
+        Duration::from_secs(60),
+        |client| {
+            client.model(|m| console::canvas::frame(m, seat).is_some())
+                && client
+                    .canvas(handle, seat)
+                    .is_some_and(|(uploaded, _, _)| uploaded > 0)
+        },
+    );
+    let tab_says = client
+        .node(console::view::CLOSED)
+        .and_then(|node| node.text.or(node.label));
+    client.snap_window(&mut evidence, handle, "window-first-frame");
+    client.snap(&mut evidence, "tab-while-in-a-window");
+    evidence.step(
+        "the console moved to a window of its own",
+        json!({ "title": title, "picture_after_seconds": seconds(took), "tab_says": tab_says,
+            "tab_has_a_console": client.model(|m| console::canvas::frame(m, Seat::Tab).is_some()) }),
+    );
+    assert!(title.contains(&name), "{title}");
+
+    // Keys typed in the second window reach the guest.
+    client
+        .try_press_in(handle, console::view::CANVAS)
+        .expect("the canvas of the window");
+    let (uploaded_before, keyboard, sent) = client.canvas(handle, seat).expect("the canvas");
+    assert!(
+        keyboard,
+        "the window's canvas has the keyboard after a press"
+    );
+    client.type_keys_in(handle, "printf '\\033[45m'; clear");
+    client.key_in(handle, "enter");
+    let took = client.wait_for(Duration::from_secs(40), &mut |client| {
+        window_colour(client, handle, "magenta") > 0.3
+    });
+    let (uploaded, _, forwarded) = client.canvas(handle, seat).expect("the canvas");
+    client.snap_window(&mut evidence, handle, "window-command-typed");
+    evidence.step(
+        "a command typed in the second window ran in the guest",
+        json!({ "seconds": took.map(seconds), "magenta_share": window_colour(&mut client, handle, "magenta"),
+            "keys_forwarded": forwarded - sent, "pictures_uploaded": uploaded - uploaded_before }),
+    );
+    assert!(took.is_some(), "the window's screen did not turn magenta");
+    assert!(forwarded > sent && uploaded > uploaded_before);
+
+    // Fullscreen of the console window, and back.
+    let before = client.is_fullscreen(handle);
+    client
+        .try_press_in(handle, "console-fullscreen")
+        .expect("Fullscreen in the console window");
+    client.pass(Duration::from_millis(500));
+    let during = client.is_fullscreen(handle);
+    client.snap_window(&mut evidence, handle, "window-fullscreen");
+    client
+        .try_press_in(handle, "console-fullscreen")
+        .expect("Fullscreen in the console window, again");
+    client.pass(Duration::from_millis(500));
+    let after = client.is_fullscreen(handle);
+    evidence.step(
+        "Fullscreen in the console window",
+        json!({ "before": before, "after_the_first_press": during, "after_the_second": after }),
+    );
+    evidence.note("window_fullscreen", json!([before, during, after]));
+
+    // The guest's colours back, typed in the window; then the window is
+    // closed with its Close console button.
+    client
+        .try_press_in(handle, console::view::CANVAS)
+        .expect("the canvas of the window");
+    client.type_keys_in(handle, "printf '\\033[0m'; clear");
+    client.key_in(handle, "enter");
+    client.pass(Duration::from_secs(2));
+    client
+        .try_press_in(handle, "close-console")
+        .expect("Close console in the window");
+    client.wait(
+        "the second window closed",
+        Duration::from_secs(15),
+        |client| {
+            client.other_windows().is_empty()
+                && client.model(|m| console::windows::open_windows(m).is_empty())
+        },
+    );
+    let tab_says = client
+        .node(console::view::CLOSED)
+        .and_then(|node| node.text.or(node.label));
+    client.snap(&mut evidence, "tab-after-the-window-closed");
+
+    // The console is the tab's to open again.
+    let reopened = client.try_local("vm.console");
+    let took = wait_console_picture(&mut client, "the tab shows the console again");
+    client.press(console::view::CANVAS);
+    client.type_keys("printf '\\033[42m'; clear");
+    client.key("enter");
+    let painted = client.wait_for(Duration::from_secs(40), &mut |client| {
+        client
+            .pixels_of(console::view::CANVAS)
+            .is_some_and(|now| colour_share(&now, "green") > 0.3)
+    });
+    client.snap(&mut evidence, "tab-console-again");
+    evidence.step(
+        "the window closed and the tab opened the console again",
+        json!({ "tab_said": tab_says, "open_console": format!("{reopened:?}"),
+            "picture_after_seconds": took, "typed_in_the_tab_after_seconds": painted.map(seconds) }),
+    );
+    assert!(
+        painted.is_some(),
+        "keys typed in the tab did not reach the guest after the window closed"
+    );
+    client.type_keys("printf '\\033[0m'; clear");
+    client.key("enter");
+    client.pass(Duration::from_secs(2));
+
+    // Fullscreen from the tab's row is the main window's.
+    let before = client.is_fullscreen(main);
+    client
+        .try_local("console.fullscreen")
+        .expect("Fullscreen on the Console tab's row");
+    client.pass(Duration::from_millis(500));
+    let during = client.is_fullscreen(main);
+    client.snap(&mut evidence, "main-window-fullscreen");
+    client
+        .try_local("console.fullscreen")
+        .expect("Fullscreen on the Console tab's row, again");
+    client.pass(Duration::from_millis(500));
+    let after = client.is_fullscreen(main);
+    evidence.step(
+        "Fullscreen from the Console tab",
+        json!({ "before": before, "after_the_first_press": during, "after_the_second": after }),
+    );
+    evidence.note("main_window_fullscreen", json!([before, during, after]));
+
+    // Send Ctrl+Alt+Del: the guest reboots in place.
+    let start_before = started_at(&mut client, vm);
+    let records_before = operation_states(&mut client, vm).len();
+    client
+        .try_local("vm.send-ctrl-alt-del")
+        .expect("Send Ctrl+Alt+Del on the Console tab's row");
+    let rebooted = client.wait_for(Duration::from_secs(300), &mut |client| {
+        let now = started_at(client, vm);
+        now.is_some() && now != start_before
+    });
+    client.snap(&mut evidence, "after-ctrl-alt-del");
+    let said: Vec<String> = [
+        console::view::STATUS,
+        console::view::RECOVERY_STATUS,
+        console::view::ERROR,
+        console::view::MESSAGE,
+    ]
+    .into_iter()
+    .filter_map(|key| client.node(key).and_then(|node| node.text))
+    .collect();
+    evidence.step(
+        "Send Ctrl+Alt+Del",
+        json!({ "start_time_before": start_before, "start_time_after": started_at(&mut client, vm),
+            "restarted_after_seconds": rebooted.map(seconds), "console_says": said,
+            "power_records_added": operation_states(&mut client, vm).len() - records_before }),
+    );
+    assert!(
+        rebooted.is_some(),
+        "the guest's start time did not change after Ctrl+Alt+Del"
+    );
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    assert_eq!(
+        resident_host(&mut client, vm),
+        client.model(|m| m.inventory.as_ref().expect("inventory").coordinator),
+        "the guest rebooted in place"
+    );
+    // The console after the reboot: whether the tab shows the new boot
+    // without being asked is recorded.
+    let picture = client.wait_for(Duration::from_secs(120), &mut |client| {
+        let generation = console_frame(client).map(|frame| frame.0);
+        client.pass(Duration::from_secs(2));
+        console_frame(client).map(|frame| frame.0) != generation && generation.is_some()
+    });
+    client.snap(&mut evidence, "console-after-the-reboot");
+    evidence.note(
+        "console_follows_the_reboot_after_seconds",
+        json!(picture.map(seconds)),
+    );
+    wait_guest_ready(&mut client, vm, &mut evidence);
+    evidence.note("guest", json!(name));
+    evidence.note(
+        "rebooted_in_place_after_seconds",
+        json!(rebooted.map(seconds)),
+    );
+    client.close();
+    evidence.finish();
+}
