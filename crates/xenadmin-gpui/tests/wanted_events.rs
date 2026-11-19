@@ -438,10 +438,19 @@ fn creation_cloud_inputs_are_validated_and_review_omits_the_private_payload(
 ) {
     for size in BOTH {
         let scene = open_scene(cx, "creation-cloud", *size);
+        // A plain field's edit is an ordinary copy; the private text area's
+        // is one that is zeroized, as a password's is.
+        xenadmin_gpui::stats::take();
+        must(&mut *cx, &scene, Type("creation-cloud-hostname", "h"));
+        assert_eq!(xenadmin_gpui::stats::take().secret_edits, 0, "{size:?}");
         must(
             &mut *cx,
             &scene,
             Type("creation-cloud-user-data", "\n# zq7-private-marker\n"),
+        );
+        assert!(
+            xenadmin_gpui::stats::take().secret_edits > 0,
+            "the private text area handed its edit over in a plain copy at {size:?}"
         );
         assert!(says(cx, &scene, MARKER), "the typed text is not on screen");
         let field = ("vm-lifecycle-dialog", "creation-cloud-user-data");
@@ -1208,6 +1217,52 @@ fn snapshot_rows_take_a_multi_selection_a_row_menu_and_escape(cx: &mut TestAppCo
     close(cx, scene);
 }
 
+/// A click puts the keyboard on the clicked row: Down goes to the row under
+/// it and Up comes back, each selecting that one row.
+#[gpui_kit::test]
+fn down_after_a_click_in_the_snapshots_table_selects_the_row_under_it(cx: &mut TestAppContext) {
+    for size in BOTH {
+        let scene = open_scene(cx, "snapshots", *size);
+        let rows: Vec<String> = rows_in(cx, &scene, "snapshots-table")
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        let selected = |cx: &mut TestAppContext| {
+            model(cx, &scene, |m| {
+                m.areas
+                    .snapshots
+                    .selected
+                    .iter()
+                    .map(|id| format!("snapshots-table:{id}"))
+                    .collect::<Vec<_>>()
+            })
+        };
+        for (clicked, under) in [(0, 1), (1, 2)] {
+            press_on(cx, &scene, &rows[clicked]);
+            assert_eq!(selected(cx), [rows[clicked].clone()], "{size:?}");
+            must(&mut *cx, &scene, Key("down"));
+            assert_eq!(
+                selected(cx),
+                [rows[under].clone()],
+                "Down after a click on row {clicked} at {size:?}"
+            );
+            must(&mut *cx, &scene, Key("up"));
+            assert_eq!(
+                selected(cx),
+                [rows[clicked].clone()],
+                "Up after that at {size:?}"
+            );
+        }
+        // A row clicked while another has the keyboard's row.
+        press_on(cx, &scene, &rows[2]);
+        press_on(cx, &scene, &rows[0]);
+        must(&mut *cx, &scene, Key("down"));
+        assert_eq!(selected(cx), [rows[1].clone()], "{size:?}");
+        close(cx, scene);
+    }
+}
+
 /// bulk_export, wish 74.
 #[gpui_kit::test]
 fn several_snapshots_selected_in_the_view_open_one_review_and_single_actions_take_one(
@@ -1696,11 +1751,14 @@ fn the_snapshot_preview_is_drawn_undistorted_inside_the_information(cx: &mut Tes
             (width / height - 320. / 180.).abs() < 0.02,
             "the picture is distorted at {size:?}: {image:?}"
         );
-        // The element with the key is the line that starts the
-        // information; the picture belongs to what follows it.
+        // The element with the key is the whole information: the picture
+        // is inside it.
         assert!(
-            image.top() >= information.top() && image.left() >= information.left(),
-            "{image:?} is not part of {information:?}"
+            image.top() >= information.top()
+                && image.left() >= information.left()
+                && image.bottom() <= information.bottom()
+                && image.right() <= information.right(),
+            "{image:?} is not inside {information:?}"
         );
         close(cx, scene);
     }

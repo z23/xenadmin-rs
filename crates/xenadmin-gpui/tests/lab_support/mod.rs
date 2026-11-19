@@ -710,9 +710,8 @@ impl Client {
     pub fn press_adding(&mut self, key: &str) {
         let scope = self.front();
         let result = self.on(|window, cx| {
-            let element = common::reach(window, cx, scope.as_deref(), key)?;
+            common::reach(window, cx, scope.as_deref(), key)?;
             let modifiers = Modifiers::secondary_key(cx);
-            let _ = element;
             window.click_with_modifiers(ElementId::Name(key.to_owned().into()), modifiers, cx);
             Ok::<(), String>(())
         });

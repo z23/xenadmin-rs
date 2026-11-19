@@ -96,6 +96,11 @@ struct Shared {
     /// Selections the grid made itself: their events are not the user's.
     echo_select: Vec<usize>,
     echo_clear: usize,
+    /// The Kit's selected row as the grid last heard of it: from an event
+    /// of the Kit's table, or because the grid put it there. While the
+    /// Kit's row differs, the event that tells the model is still on its
+    /// way.
+    kit_row: Option<usize>,
     /// The Kit's header must re-read the columns.
     columns_dirty: bool,
     on_cancel: Option<OnCancel>,
@@ -705,6 +710,7 @@ impl ObjectGrid {
             cursor: None,
             echo_select: Vec::new(),
             echo_clear: 0,
+            kit_row: None,
             columns_dirty: true,
             on_cancel: None,
             column_widths: None,
@@ -999,11 +1005,19 @@ impl ObjectGrid {
                     .as_ref()
                     .and_then(|id| shared.index.get(id).copied()),
                 // The cursor stays where it is while its row is selected.
-                Selection::Multi(_) => state.read(cx).selected_row().filter(|ix| {
-                    shared
-                        .row_id(*ix)
-                        .is_some_and(|id| table.selection.contains(&id))
-                }),
+                // A row the Kit has just moved to (a click, an arrow key)
+                // is not judged before its event has reached the model:
+                // a pass drawn in between would take the keyboard's row
+                // away, and the next arrow key would start from the top.
+                Selection::Multi(_) => {
+                    let kit = state.read(cx).selected_row();
+                    kit.filter(|ix| {
+                        kit != shared.kit_row
+                            || shared
+                                .row_id(*ix)
+                                .is_some_and(|id| table.selection.contains(&id))
+                    })
+                }
             };
             (wanted, shared.multi())
         };
@@ -1021,7 +1035,11 @@ impl ObjectGrid {
             if selection_changed {
                 match wanted {
                     Some(ix) => {
-                        shared.borrow_mut().echo_select.push(ix);
+                        {
+                            let mut shared = shared.borrow_mut();
+                            shared.echo_select.push(ix);
+                            shared.kit_row = Some(ix);
+                        }
                         state.set_selected_row(ix, cx);
                         // `set_selected_row` drops the mark the menu of a
                         // right-clicked row needs.
@@ -1030,7 +1048,11 @@ impl ObjectGrid {
                         }
                     }
                     None => {
-                        shared.borrow_mut().echo_clear += 1;
+                        {
+                            let mut shared = shared.borrow_mut();
+                            shared.echo_clear += 1;
+                            shared.kit_row = None;
+                        }
                         state.clear_selection(cx);
                     }
                 }
@@ -1055,6 +1077,11 @@ fn on_event(
     event: &TableEvent,
     cx: &mut App,
 ) {
+    if matches!(event, TableEvent::SelectRow(_) | TableEvent::ClearSelection) {
+        // The Kit's row is known from here on: the next pass judges it by
+        // the model's selection.
+        shared.borrow_mut().kit_row = table.read(cx).selected_row();
+    }
     match event {
         TableEvent::SelectRow(ix) => {
             let request = {

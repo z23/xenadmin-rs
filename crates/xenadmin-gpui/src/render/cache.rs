@@ -421,7 +421,7 @@ impl WidgetCache {
                     move |state, event: &InputEvent, cx| {
                         if matches!(event, InputEvent::Change) {
                             let value = state.read(cx).value();
-                            edited(&store, &handlers, &value, false, cx);
+                            edited(&store, &handlers, &value, secret, cx);
                         }
                     }
                 });
@@ -647,6 +647,7 @@ fn edited(
         handlers.on_edit.clone()
     };
     if secret {
+        crate::stats::count(|counts| counts.secret_edits += 1);
         let value = SecretText::from(value.as_ref());
         dispatch(store, cx, move |m| on_edit(m, value.expose()));
     } else {

@@ -271,18 +271,30 @@ pub fn inside(window: &Window, element: &ElementSnapshot) -> Result<(), String> 
     Ok(())
 }
 
-/// What [`reach`] asks: [`inside`], except that an element taller than the
-/// body it is seen through (a long review, a summary) cannot be inside it.
-/// Such an element is reached when its start is at the top of the body.
+/// What [`reach`] asks: [`inside`], except that an element taller than a
+/// body it is seen through (a long review, a summary, a whole section)
+/// cannot be inside it. Such an element is reached when its start is at
+/// the top of that body and no other body cuts the start.
 fn reached(window: &Window, element: &ElementSnapshot) -> Result<(), String> {
     let bounds = element.bounds();
-    match clips(window, element).pop() {
+    let bodies = clips(window, element);
+    let start = bodies
+        .iter()
+        .map(|body| body.bounds().top())
+        .fold(px(0.), |low, top| low.max(top));
+    // The lowest body is the one the element is seen in: a body that grows
+    // with what it holds is no window on it.
+    let tight = bodies.into_iter().min_by(|left, right| {
+        let height = |body: &ElementSnapshot| f32::from(body.bounds().size.height);
+        height(left).total_cmp(&height(right))
+    });
+    match tight {
         Some(clip) if bounds.size.height > clip.bounds().size.height - px(8.) => {
             let seen = clip.bounds();
             let viewport = Bounds::new(Default::default(), window.viewport_size());
             if element.visible()
                 && contains(viewport, seen)
-                && bounds.top() >= seen.top() - px(0.5)
+                && bounds.top() >= start - px(0.5)
                 && bounds.top() < seen.top() + seen.size.height / 2.
                 && bounds.left() >= seen.left() - px(0.5)
                 && bounds.right() <= seen.right() + px(0.5)
@@ -313,15 +325,23 @@ pub fn reach(
     for level in (0..depth).rev() {
         for _ in 0..8 {
             let element = locate(window, scope, key)?;
-            let Some(clip) = clips(window, &element).into_iter().nth(level) else {
+            let bodies = clips(window, &element);
+            let Some(clip) = bodies.get(level).cloned() else {
                 break;
             };
             let (bounds, seen) = (element.bounds(), clip.bounds());
             let down = bounds.bottom() - seen.bottom();
             let up = seen.top() - bounds.top();
-            let delta = if down > px(0.5) && up < px(0.) {
+            // The start is cut by the lowest top edge of the bodies the
+            // element is seen through, which need not be this one's.
+            let start = bodies
+                .iter()
+                .map(|body| body.bounds().top())
+                .fold(seen.top(), |low, top| low.max(top));
+            let room = bounds.top() - start;
+            let delta = if down > px(0.5) && room > px(0.) {
                 // Not further than its top: a tall element shows its start.
-                -(down + px(4.)).min(-up)
+                -(down + px(4.)).min(room)
             } else if up > px(0.5) {
                 up + px(4.)
             } else {

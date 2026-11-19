@@ -171,13 +171,31 @@ fn group(
                 .child(SharedString::from(group.title.clone())),
         );
     let label = SharedString::from(group.title.clone());
-    let header = if group.collapsible {
+    let content = (!folded).then(|| {
+        v_flex()
+            .w_full()
+            .gap_3()
+            .pl_3()
+            .border_l_2()
+            .border_color(border)
+            .children(blocks(
+                &pass.nested(pass.width - px(14.)),
+                path,
+                &group.blocks,
+                window,
+                cx,
+            ))
+    });
+    let section = v_flex().w_full().gap_2();
+    if group.collapsible {
         let focus = pass.ui.focus_handle(pass.scope, path, cx);
         let ui = pass.ui.clone();
         let scope = pass.scope.to_owned();
         let toggled = path.to_owned();
         let ring = cx.theme().ring;
-        pressable(
+        // The title is what is pressed: it has the key, and what it folds
+        // follows it.
+        let header = pressable(
             SharedString::from(id.to_owned()),
             &focus,
             move |window, _| {
@@ -192,39 +210,20 @@ fn group(
         .border_1()
         .border_color(gpui_kit::transparent_black())
         .focus_visible(move |style| style.border_color(ring))
-        .child(title)
-        .into_any_element()
+        .child(title);
+        section.child(header).children(content).into_any_element()
     } else {
-        div()
+        // Nothing to press: the key is the section's, so that what the
+        // group holds is inside the element that has its name.
+        section
             .id(SharedString::from(id.to_owned()))
             .test_support()
             .role(Role::Group)
             .aria_label(label)
             .child(title)
+            .children(content)
             .into_any_element()
-    };
-    v_flex()
-        .w_full()
-        .gap_2()
-        .child(header)
-        .when(!folded, |section| {
-            section.child(
-                v_flex()
-                    .w_full()
-                    .gap_3()
-                    .pl_3()
-                    .border_l_2()
-                    .border_color(border)
-                    .children(blocks(
-                        &pass.nested(pass.width - px(14.)),
-                        path,
-                        &group.blocks,
-                        window,
-                        cx,
-                    )),
-            )
-        })
-        .into_any_element()
+    }
 }
 
 /// Side by side when there is room, stacked when there is not.

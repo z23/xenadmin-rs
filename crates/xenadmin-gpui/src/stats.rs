@@ -7,6 +7,9 @@
 //! (`tests/large_inventory.rs`) reads these counts to hold that: a selection
 //! change or a turn of the wheel must not build two thousand rows. The
 //! counts are per thread (the interface has one) and cost an addition.
+//!
+//! One count is not about size: the edits of a private field that reached
+//! the model in a zeroizing copy, which is nothing a test can see otherwise.
 
 use std::cell::Cell;
 
@@ -21,6 +24,9 @@ pub struct Counts {
     pub grid_rows: u64,
     /// Times a grid indexed every row again, because its rows changed.
     pub grid_reindexes: u64,
+    /// Edits of a private field handed to the model in a copy that is
+    /// zeroized when it is dropped.
+    pub secret_edits: u64,
 }
 
 thread_local! {
@@ -30,6 +36,7 @@ thread_local! {
             tree_rebuilds: 0,
             grid_rows: 0,
             grid_reindexes: 0,
+            secret_edits: 0,
         })
     };
 }
