@@ -4624,7 +4624,7 @@ fn host_change(
     let before = resource_ids(client);
     client.menu(Menu::Server, command);
     assert_eq!(client.front().as_deref(), Some(dialog));
-    let review = review_lines(client, "host-review");
+    let review = review_lines(client, "host-change-review");
     client.snap(evidence, &format!("{tag}-review"));
     client.press("host-confirm");
     client.wait(
@@ -4715,6 +4715,15 @@ fn lab_p3_member_toolstack_restart() {
     })
     .flatten();
 
+    // Without a console the Server menu offers the restart: its review is
+    // opened and closed.
+    client
+        .try_menu(Menu::Server, "server.restart-toolstack")
+        .expect("Restart Toolstack is offered while no console is open");
+    assert_eq!(client.front().as_deref(), Some("host-restart-toolstack"));
+    client.press("host-close");
+    assert_eq!(client.front(), None);
+
     // With a console open.
     client.tab(TabId::Console);
     let picture = client.wait_for(Duration::from_secs(90), &mut |client| {
@@ -4780,8 +4789,8 @@ fn lab_p3_member_toolstack_restart() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        reason.contains("console") || reason.contains("pending"),
-        "the refusal names the pending task: {refused}"
+        reason.contains("console") || reason.contains("pending") || reason.contains("pool tasks"),
+        "the refusal names the pool's tasks: {refused}"
     );
 
     // The console closed: the restart goes through.
