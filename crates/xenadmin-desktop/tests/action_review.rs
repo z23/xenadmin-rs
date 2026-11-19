@@ -49,7 +49,7 @@ use xenadmin_ui::areas::console::view as console_view;
 use xenadmin_ui::command::CommandId;
 use xenadmin_ui::intent::ConsoleWindowId;
 use xenadmin_ui::nav::{self, NavView};
-use xenadmin_ui::object::{ObjectKind, Target};
+use xenadmin_ui::object::Target;
 use xenadmin_ui::scene;
 use xenadmin_ui::surface::{self, Block, Handle};
 
@@ -71,31 +71,391 @@ use Class::{Action, View};
 
 /// One reviewed control: where it is (the key of a tab, `console-window`,
 /// `shell`, or `*` for a part the renderer gives every tab), its key (a
-/// `*` stands for any run of characters), its class and what it does. For
-/// an action the text ends with the reason it stays.
+/// `*` stands for any run of characters; the first row that matches is the
+/// control's), its class, what it does and, for an action, why it stays
+/// where it is.
 struct Reviewed {
     place: &'static str,
     key: &'static str,
     class: Class,
     what: &'static str,
+    stays: &'static str,
 }
 
-const fn reviewed(
+const fn view(place: &'static str, key: &'static str, what: &'static str) -> Reviewed {
+    Reviewed {
+        place,
+        key,
+        class: View,
+        what,
+        stays: "",
+    }
+}
+
+const fn action(
     place: &'static str,
     key: &'static str,
-    class: Class,
     what: &'static str,
+    stays: &'static str,
 ) -> Reviewed {
     Reviewed {
         place,
         key,
-        class,
+        class: Action,
         what,
+        stays,
     }
 }
 
-/// The review. Keep it sorted by place.
-const REVIEWED: &[Reviewed] = &[];
+/// Why a button of the detached console window is not a command.
+const WINDOW: &str = "The detached console window has no menu bar, toolbar or row of commands, and a command \
+    acts on the selection of the main window, while this acts on the console of its own \
+    window. In the main window the same control is a command of the Console tab's row.";
+
+/// Why a control under an operation record is not a command.
+const RECORD: &str = "Its target is one operation record, shown as a line of the tab. A record is not an \
+    object of the selection, which is what a command acts on: it is the row's own action.";
+
+/// Why the two buttons of the saved graph presets are not commands.
+const PRESET: &str = "It acts on the preset named in the field beside it or on the preset of its own row, \
+    inside the body that replaces the graphs (opened by the command performance.presets); \
+    the presets stay inside the tab as they were. It writes only the client's own \
+    preferences.";
+
+/// The review. Keep it sorted by place; within a place a narrower key
+/// comes before the wider one that would also match.
+const REVIEWED: &[Reviewed] = &[
+    // What the renderer and the Kit give every tab.
+    view(
+        "*",
+        "property/copy",
+        "copies the value of a property line to the clipboard",
+    ),
+    // The detached console window.
+    view(
+        "console-window",
+        "close-console",
+        "closes the window and the console connection it shows",
+    ),
+    view(
+        "console-window",
+        "console-actual-size",
+        "draws the console at its own size instead of fitted to the window",
+    ),
+    action(
+        "console-window",
+        "console-alt-tab",
+        "sends Alt+Tab to the guest",
+        WINDOW,
+    ),
+    view(
+        "console-window",
+        "console-auto-reconnect",
+        "whether this console view connects again by itself when its connection ends",
+    ),
+    action(
+        "console-window",
+        "console-ctrl-alt-delete",
+        "sends Ctrl+Alt+Delete to the guest",
+        WINDOW,
+    ),
+    action(
+        "console-window",
+        "console-ctrl-alt-f1",
+        "sends Ctrl+Alt+F1 to the guest",
+        WINDOW,
+    ),
+    view(
+        "console-window",
+        "console-fullscreen",
+        "shows the window fullscreen",
+    ),
+    view(
+        "console-window",
+        "console-release-input",
+        "gives the keyboard and the pointer back to the client",
+    ),
+    view(
+        "console-window",
+        "copy-console-clipboard",
+        "copies the text the guest offered to the local clipboard",
+    ),
+    action(
+        "console-window",
+        "reconnect-console",
+        "opens the console connection again",
+        WINDOW,
+    ),
+    action(
+        "console-window",
+        "save-console-screenshot",
+        "asks for a file and writes the console picture to it",
+        WINDOW,
+    ),
+    action(
+        "console-window",
+        "send-console-clipboard",
+        "sends the local clipboard text to the guest's clipboard",
+        WINDOW,
+    ),
+    action(
+        "console-window",
+        "type-console-clipboard",
+        "opens the review of the clipboard text that would be typed into the guest",
+        WINDOW,
+    ),
+    // The shell.
+    view(
+        "shell",
+        "sidebar-toggle",
+        "shows or hides the navigation pane in a narrow window",
+    ),
+    // Notifications: Alerts.
+    view(
+        "tab-alerts",
+        "activity-pool*",
+        "the pool whose alerts are listed",
+    ),
+    view(
+        "tab-alerts",
+        "activity-search",
+        "the text filter of the list",
+    ),
+    view(
+        "tab-alerts",
+        "activity-state-filter",
+        "the priority filter of the list",
+    ),
+    // Console.
+    view(
+        "tab-console",
+        "cancel-console-typing",
+        "drops the review of the text to type; nothing is sent",
+    ),
+    action(
+        "tab-console",
+        "confirm-console-typing",
+        "types the reviewed text into the guest as key presses",
+        "It confirms the text shown in the group it is in. The review is an inline group of the \
+         tab, as it was, opened by the command console.type-clipboard; the confirmation \
+         belongs beside the text it confirms.",
+    ),
+    view(
+        "tab-console",
+        "console-auto-reconnect",
+        "whether this console view connects again by itself when its connection ends",
+    ),
+    // Notifications: Events.
+    view(
+        "tab-events",
+        "activity-History",
+        "lists the history of operations",
+    ),
+    view(
+        "tab-events",
+        "activity-Tasks",
+        "lists the tasks of the pools",
+    ),
+    view(
+        "tab-events",
+        "activity-pool*",
+        "the pool whose records are listed",
+    ),
+    view(
+        "tab-events",
+        "activity-search",
+        "the text filter of the list",
+    ),
+    view(
+        "tab-events",
+        "activity-state-filter",
+        "the state filter of the list",
+    ),
+    // General: the operation records of a VM.
+    action(
+        "tab-general",
+        "operation-cancel-*",
+        "asks the server to cancel the operation of the record, or stops the remaining steps \
+         of a batch",
+        RECORD,
+    ),
+    action(
+        "tab-general",
+        "operation-recheck-*",
+        "asks the server again for the outcome of an operation whose response was lost",
+        RECORD,
+    ),
+    action(
+        "tab-general",
+        "operation-unknown-*",
+        "opens the review of an unknown outcome",
+        RECORD,
+    ),
+    action(
+        "tab-general",
+        "recovery-cancel-*",
+        "opens the review of a cancellation request",
+        RECORD,
+    ),
+    action(
+        "tab-general",
+        "vm-failure-help-*",
+        "opens the explanation of the record's outcome",
+        RECORD,
+    ),
+    // HA.
+    view("tab-ha", "ha-vm-filter", "the text filter of the VM grid"),
+    action(
+        "tab-ha",
+        "ha-vms/activate",
+        "a double click or Enter on a VM's row selects the VM and invokes the command \
+         vm.ha.restart-priority, which opens its dialog",
+        "No control is drawn for it: it is the command of the tab's row, invoked through the \
+         command table with the command's own eligibility, for the row it is pressed on.",
+    ),
+    // Home.
+    action(
+        "tab-home",
+        "connections/activate",
+        "a double click or Enter on a connection shows the pool of a connected one, and opens \
+         the settings dialog of one that is not connected",
+        "No control is drawn for it: it is the row's own default action, what the old \
+         interface's \"View pool\" and edit buttons of a connection did; the commands of the \
+         row are in the tab's row and the row's menu.",
+    ),
+    // Networking and NICs.
+    view(
+        "tab-networking",
+        "network-operation-history",
+        "shows the Events tab with the history of the pool",
+    ),
+    view(
+        "tab-networking",
+        "networking-networks-table/activate",
+        "a double click or Enter on a network selects it in the tree",
+    ),
+    view(
+        "tab-nics",
+        "network-operation-history",
+        "shows the Events tab with the history of the pool",
+    ),
+    // Performance.
+    view(
+        "tab-performance",
+        "apply-metric-sources",
+        "draws the graphs of the chosen data sources",
+    ),
+    view(
+        "tab-performance",
+        "metric-preset-name",
+        "the name a preset would be saved under",
+    ),
+    view(
+        "tab-performance",
+        "metric-preset-name/clear",
+        "empties the name field",
+    ),
+    action(
+        "tab-performance",
+        "metric-preset-remove-*",
+        "removes a saved graph preset from the client's preferences",
+        PRESET,
+    ),
+    action(
+        "tab-performance",
+        "metric-preset-save",
+        "saves the range and the sources of the graph as a preset in the client's preferences",
+        PRESET,
+    ),
+    view(
+        "tab-performance",
+        "metric-preset-*",
+        "draws the graphs with the range and the sources of a saved preset",
+    ),
+    view(
+        "tab-performance",
+        "metric-presets-close",
+        "goes back from the presets to the graphs",
+    ),
+    view(
+        "tab-performance",
+        "metrics-source-filter",
+        "the text filter of the list of data sources",
+    ),
+    view(
+        "tab-performance",
+        "metrics-source-*",
+        "whether a data source is among those to draw",
+    ),
+    view(
+        "tab-performance",
+        "metrics-sources-cancel",
+        "goes back to the graphs without changing the sources",
+    ),
+    view(
+        "tab-performance",
+        "metrics-sources-common",
+        "draws the graphs of the common data sources",
+    ),
+    view(
+        "tab-performance",
+        "metrics-window-*",
+        "the time range of the graphs",
+    ),
+    // Search.
+    view(
+        "tab-search",
+        "search-apply",
+        "runs the query over the inventory the client holds",
+    ),
+    view("tab-search", "search-filters", "shows or hides the filters"),
+    view(
+        "tab-search",
+        "search-group-*",
+        "how the results are grouped",
+    ),
+    view("tab-search", "search-reset", "empties the filters"),
+    view(
+        "tab-search",
+        "search-results/activate",
+        "a double click or Enter on a result selects the object in the tree",
+    ),
+    view("tab-search", "search-results/sort", "sorts the results"),
+    view("tab-search", "search-text", "the text of the query"),
+    // Snapshots.
+    action(
+        "tab-snapshots",
+        "snapshot-preview-load",
+        "asks the host for the saved picture of the selected snapshot and shows it; it changes \
+         nothing on the host",
+        "It fills the section it is in, \"Inspect snapshot\", for the snapshot that section \
+         shows, and reports a refusal there; it is a read. It stays a button of the section, \
+         as it was a button of the old dialog.",
+    ),
+    view(
+        "tab-snapshots",
+        "snapshot-tree-toggle",
+        "shows the snapshots as a tree or as a list",
+    ),
+    // Storage.
+    view("tab-storage", "disk-search", "the text filter of the disks"),
+    view(
+        "tab-storage",
+        "storage-pbds/activate",
+        "a double click or Enter on an attachment selects its repository in the tree",
+    ),
+    view(
+        "tab-storage",
+        "storage-repositories-table/activate",
+        "a double click or Enter on a repository selects it in the tree",
+    ),
+    // Users.
+    view(
+        "tab-users",
+        "security-subject-filter",
+        "the text filter of the grid of directory users and groups",
+    ),
+];
 
 /// The path segments under which a control is in an allowed place.
 const ALLOWED: &[&str] = &[
@@ -345,7 +705,12 @@ fn further_states(cx: &mut TestAppContext, findings: &mut Findings) {
     let state = "snapshots, with operation records";
     let shell = open_scene(cx, "snapshots", WIDE);
     run(cx, &shell, |m| {
-        let scope = m.scope().objects.first().cloned().expect("the VM of the scene");
+        let scope = m
+            .scope()
+            .objects
+            .first()
+            .cloned()
+            .expect("the VM of the scene");
         let pool = scope.pool.expect("the pool of the VM");
         let record = |state: OperationState| -> OperationRecord {
             serde_json::from_value(serde_json::json!({
@@ -474,7 +839,8 @@ fn every_control_outside_the_allowed_places_is_reviewed(cx: &mut TestAppContext)
             )),
         }
     }
-    if std::env::var_os("XENADMIN_ACTION_REVIEW_PRINT").is_some() {
+    let print = std::env::var_os("XENADMIN_ACTION_REVIEW_PRINT").is_some();
+    if print {
         for (found, (label, scene)) in &findings.seen {
             let class = entry(found).map(|index| REVIEWED[index].class);
             println!(
@@ -501,9 +867,29 @@ fn every_control_outside_the_allowed_places_is_reviewed(cx: &mut TestAppContext)
         "rows of the review that no scene shows any more:\n{}",
         stale.join("\n")
     );
-    // Every action that stays says why.
+    // Every action that stays says why, and only an action does.
     for row in REVIEWED {
         assert!(!row.what.is_empty(), "{} | {}", row.place, row.key);
+        assert_eq!(
+            row.stays.is_empty(),
+            row.class == View,
+            "{} | {}",
+            row.place,
+            row.key
+        );
     }
-    let _ = (View, Action, ObjectKind::Vm);
+    if print {
+        let count = |class: Class| REVIEWED.iter().filter(|row| row.class == class).count();
+        println!(
+            "rows of the review: {} of the view, {} actions that stay",
+            count(View),
+            count(Action)
+        );
+        for row in REVIEWED.iter().filter(|row| row.class == Action) {
+            println!(
+                "stays: {} | {} | {} | {}",
+                row.place, row.key, row.what, row.stays
+            );
+        }
+    }
 }
