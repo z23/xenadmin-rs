@@ -5224,9 +5224,7 @@ fn lab_p3_recovery_coordinator_toolstack_restart() {
     let asked = std::time::Instant::now();
     let mut last = before;
     let mut changes = Vec::new();
-    let mut away_at = None;
-    let mut snapped = false;
-    let returned = client.wait_for(Duration::from_secs(900), &mut |client| {
+    let mut record = |client: &mut Client, changes: &mut Vec<serde_json::Value>| {
         let shown = connection_shown(client, &pool, &object);
         if shown != last {
             if changes.len() < 60 {
@@ -5236,17 +5234,39 @@ fn lab_p3_recovery_coordinator_toolstack_restart() {
             }
             last = shown.clone();
         }
-        if shown["current"] != json!(true) && away_at.is_none() {
-            away_at = Some(seconds(asked.elapsed()));
-        }
-        if away_at.is_some() && !snapped && asked.elapsed().as_secs_f64() > away_at.unwrap() + 1.5 {
-            snapped = true;
-            return false;
-        }
+        shown
+    };
+    // Until the window shows the host away.
+    let away = client.wait_for(Duration::from_secs(180), &mut |client| {
+        record(client, &mut changes)["current"] != json!(true)
+    });
+    let away_at = away.map(|_| seconds(asked.elapsed()));
+    // While it is away: the frame, and what the window lets the user do.
+    let mut while_away = serde_json::Value::Null;
+    if away.is_some() {
+        let toolbar = xenadmin_desktop::shell::toolbar::TOOLBAR_KEY;
+        let refused: Vec<serde_json::Value> = ["vm.shutdown", "vm.reboot", "vm.suspend"]
+            .into_iter()
+            .map(|command| json!([command, client.disabled_reason(Some(toolbar), command)]))
+            .collect();
+        while_away = json!({
+            "toolbar": refused,
+            "header": client
+                .chrome(xenadmin_desktop::scene_view::HEADER_KEY)
+                .and_then(|element| element.label().map(str::to_owned)),
+            "general_tab_names_the_guest": client.says(&name),
+            "shown": connection_shown(&mut client, &pool, &object),
+        });
+        client.snap(&mut evidence, "while-away");
+        evidence.step("while the host is away", while_away.clone());
+    }
+    let returned = client.wait_for(Duration::from_secs(900), &mut |client| {
+        let shown = record(client, &mut changes);
         away_at.is_some()
             && shown["current"] == json!(true)
             && shown["has_inventory"] == json!(true)
     });
+    evidence.note("while_away", while_away.clone());
     evidence.step(
         "what the window showed from the restart until the connection was current again",
         json!({ "away_after_seconds": away_at, "current_again_after_seconds": returned.map(|_| seconds(asked.elapsed())), "changes": changes }),
@@ -5275,6 +5295,10 @@ fn lab_p3_recovery_coordinator_toolstack_restart() {
     assert!(
         returned.is_some(),
         "the connection did not become current again"
+    );
+    assert!(
+        while_away["toolbar"][0][1].is_string(),
+        "Shut Down is refused while the inventory is stale: {while_away}"
     );
     assert_eq!(
         after["guest_selected"],
