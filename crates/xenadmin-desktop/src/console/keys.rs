@@ -17,6 +17,13 @@
 //! - While the listener has its keyboard ([`seat_bound`]) the keystrokes
 //!   GPUI makes of the same keys are stopped and not forwarded: one physical
 //!   event never takes both paths.
+//! - `wl_keyboard` reports a held key once, and the console of a guest does
+//!   not repeat keys by itself (QEMU's keyboard has no typematic repeat: the
+//!   viewer sends the repeats). So the pump repeats the key held last
+//!   ([`Repeater`]), at the rate and after the delay the compositor's
+//!   `repeat_info` gives. In the driven session of 2026-11-19 a key held for
+//!   two seconds arrived in the guest once, before this was added
+//!   (`docs/reports/2026-11-19-gpui-vm-session.md`).
 //!
 //! Without a listener the canvas forwards GPUI's keystroke (the path the
 //! seam calls experimental, plan decision D7): the key's name gives an evdev
@@ -29,7 +36,7 @@
 //! pump, the routing to the focused canvas, the stop of GPUI's keystrokes)
 //! compiles and its pure parts are unit tested, no more.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use xenadmin_ui::areas::console::canvas as model;
 
@@ -167,12 +174,89 @@ pub fn seat_modifiers(depressed: u32, latched: u32, locked: u32) -> model::Modif
     }
 }
 
+/// The repeats of a held key, for the listener's path.
+///
+/// One key repeats: the one that went down last. A modifier or a lock key
+/// neither repeats nor stops the repeat of another key. Everything stops
+/// when the key goes up, when another key goes down, and when the keyboard
+/// leaves ([`Repeater::clear`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repeater {
+    /// Repeats a second. 0: the compositor asks for none.
+    rate: u32,
+    /// How long a key is held before its first repeat.
+    delay: Duration,
+    /// The key that repeats and when its next repeat is due.
+    held: Option<(u32, Instant)>,
+}
+
+impl Default for Repeater {
+    /// What compositors commonly announce, until this one has spoken.
+    fn default() -> Self {
+        Self {
+            rate: 25,
+            delay: Duration::from_millis(600),
+            held: None,
+        }
+    }
+}
+
+impl Repeater {
+    /// `wl_keyboard.repeat_info`. A negative value is taken as none.
+    pub fn set_info(&mut self, rate: i32, delay: i32) {
+        self.rate = u32::try_from(rate).unwrap_or(0);
+        self.delay = Duration::from_millis(u64::try_from(delay).unwrap_or(0));
+        if self.rate == 0 {
+            self.held = None;
+        }
+    }
+
+    /// A key of the seat went down or up at `now`.
+    pub fn key(&mut self, code: u32, down: bool, now: Instant) {
+        if !repeats(code) {
+            return;
+        }
+        if down {
+            self.held = (self.rate > 0).then(|| (code, now + self.delay));
+        } else if self.held.is_some_and(|(held, _)| held == code) {
+            self.held = None;
+        }
+    }
+
+    /// Nothing is held any more.
+    pub fn clear(&mut self) {
+        self.held = None;
+    }
+
+    /// The key to press again, if a repeat is due at `now`. At most one a
+    /// call: a late call does not make up for the repeats it missed.
+    pub fn due(&mut self, now: Instant) -> Option<u32> {
+        let (code, next) = self.held?;
+        if now < next || self.rate == 0 {
+            return None;
+        }
+        let period = Duration::from_secs(1) / self.rate;
+        self.held = Some((code, (next + period).max(now)));
+        Some(code)
+    }
+}
+
+/// Whether a held key repeats: every key but the modifiers and the locks.
+fn repeats(code: u32) -> bool {
+    !matches!(
+        code,
+        29 | 42 | 54 | 56 | 58 | 69 | 70 | 97 | 100 | 125 | 126
+    )
+}
+
 /// The listener of the application.
 struct SeatKeys {
     /// `None`: there is no listener (see the module).
     keyboard: Option<ForeignKeyboard>,
     /// What the last modifiers event said.
     modifiers: model::Modifiers,
+    /// The repeats of the key held in a console.
+    repeater: Repeater,
     _pump: Option<Task<()>>,
 }
 
@@ -191,6 +275,7 @@ pub(crate) fn attach(window: &Window, cx: &mut App) {
     cx.set_global(SeatKeys {
         keyboard,
         modifiers: model::Modifiers::default(),
+        repeater: Repeater::default(),
         _pump: None,
     });
     if listening {
@@ -218,16 +303,22 @@ pub(crate) fn focus_gained(cx: &mut App) {
         return;
     }
     for event in take_events(cx) {
-        if let SeatEvent::Modifiers {
-            depressed,
-            latched,
-            locked,
-            ..
-        } = event
-        {
-            cx.global_mut::<SeatKeys>().modifiers = seat_modifiers(depressed, latched, locked);
+        match event {
+            SeatEvent::Modifiers {
+                depressed,
+                latched,
+                locked,
+                ..
+            } => {
+                cx.global_mut::<SeatKeys>().modifiers = seat_modifiers(depressed, latched, locked);
+            }
+            SeatEvent::RepeatInfo { rate, delay } => {
+                cx.global_mut::<SeatKeys>().repeater.set_info(rate, delay);
+            }
+            _ => {}
         }
     }
+    cx.global_mut::<SeatKeys>().repeater.clear();
     pump(cx);
 }
 
@@ -273,6 +364,7 @@ fn drain(cx: &mut App) -> bool {
             SeatEvent::Enter { .. } => {}
             // The compositor took the keyboard away: nothing stays down.
             SeatEvent::Leave { .. } => {
+                cx.global_mut::<SeatKeys>().repeater.clear();
                 if let Some(target) = canvas::with_keyboard(cx) {
                     target.update(cx, |canvas, cx| canvas.release(cx));
                 }
@@ -280,10 +372,16 @@ fn drain(cx: &mut App) -> bool {
             SeatEvent::Key { evdev, down } => {
                 let modifiers = cx.global::<SeatKeys>().modifiers;
                 if let Some(target) = canvas::with_keyboard(cx) {
+                    cx.global_mut::<SeatKeys>()
+                        .repeater
+                        .key(evdev, down, Instant::now());
                     target.update(cx, |canvas, cx| {
                         canvas.send_code(evdev, down, modifiers, cx)
                     });
                 }
+            }
+            SeatEvent::RepeatInfo { rate, delay } => {
+                cx.global_mut::<SeatKeys>().repeater.set_info(rate, delay);
             }
             SeatEvent::Modifiers {
                 depressed,
@@ -295,7 +393,17 @@ fn drain(cx: &mut App) -> bool {
             }
         }
     }
-    canvas::with_keyboard(cx).is_some()
+    // The key held in the console repeats; no console, no repeat.
+    let Some(target) = canvas::with_keyboard(cx) else {
+        cx.global_mut::<SeatKeys>().repeater.clear();
+        return false;
+    };
+    let seat = cx.global_mut::<SeatKeys>();
+    let modifiers = seat.modifiers;
+    if let Some(code) = seat.repeater.due(Instant::now()) {
+        target.update(cx, |canvas, cx| canvas.send_code(code, true, modifiers, cx));
+    }
+    true
 }
 
 #[cfg(test)]
@@ -372,6 +480,57 @@ mod tests {
             vec![(LEFT_SHIFT, false)]
         );
         assert!(modifier_changes(ctrl_shift, ctrl_shift).is_empty());
+    }
+
+    #[test]
+    fn a_held_key_repeats_after_the_delay_at_the_rate() {
+        let start = Instant::now();
+        let ms = |n: u64| start + Duration::from_millis(n);
+        let mut repeater = Repeater::default();
+        repeater.set_info(20, 500);
+        repeater.key(30, true, ms(0));
+        assert_eq!(repeater.due(ms(499)), None, "not before the delay");
+        assert_eq!(repeater.due(ms(500)), Some(30));
+        assert_eq!(repeater.due(ms(520)), None, "one period is 50 ms");
+        assert_eq!(repeater.due(ms(550)), Some(30));
+        // A late call gives one repeat and does not make up for the rest.
+        assert_eq!(repeater.due(ms(1000)), Some(30));
+        assert_eq!(repeater.due(ms(1001)), None);
+        repeater.key(30, false, ms(1010));
+        assert_eq!(repeater.due(ms(2000)), None, "released");
+    }
+
+    #[test]
+    fn only_the_key_pressed_last_repeats_and_modifiers_never() {
+        let start = Instant::now();
+        let ms = |n: u64| start + Duration::from_millis(n);
+        let mut repeater = Repeater::default();
+        repeater.set_info(25, 600);
+        repeater.key(LEFT_SHIFT, true, ms(0));
+        assert_eq!(repeater.due(ms(5000)), None, "a modifier does not repeat");
+        repeater.key(30, true, ms(5000));
+        repeater.key(48, true, ms(5100));
+        assert_eq!(repeater.due(ms(5650)), None, "the delay starts again");
+        assert_eq!(repeater.due(ms(5700)), Some(48));
+        // The first key going up, or a modifier, leaves the repeat alone.
+        repeater.key(30, false, ms(5710));
+        repeater.key(LEFT_SHIFT, false, ms(5720));
+        assert_eq!(repeater.due(ms(5740)), Some(48));
+        repeater.clear();
+        assert_eq!(repeater.due(ms(9000)), None, "the keyboard left");
+    }
+
+    #[test]
+    fn a_compositor_can_ask_for_no_repeat() {
+        let start = Instant::now();
+        let mut repeater = Repeater::default();
+        repeater.key(30, true, start);
+        repeater.set_info(0, 600);
+        assert_eq!(repeater.due(start + Duration::from_secs(5)), None);
+        repeater.key(31, true, start);
+        assert_eq!(repeater.due(start + Duration::from_secs(5)), None);
+        repeater.set_info(-1, -1);
+        assert_eq!(repeater.due(start + Duration::from_secs(9)), None);
     }
 
     #[test]

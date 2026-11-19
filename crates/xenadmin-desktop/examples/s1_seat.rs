@@ -184,6 +184,11 @@ impl Probe {
                     "seat target={target} modifiers depressed={depressed:#x} latched={latched:#x} locked={locked:#x} group={group}"
                 ));
             }
+            SeatEvent::RepeatInfo { rate, delay } => {
+                self.shared.push(format!(
+                    "seat target={target} repeat_info rate={rate} delay={delay}"
+                ));
+            }
         }
     }
 
