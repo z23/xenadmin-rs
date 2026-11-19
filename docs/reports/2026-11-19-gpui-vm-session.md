@@ -167,4 +167,26 @@ where the CI package in the same case did nothing. Not shown: any other composit
 
 ## What this does not show
 
-TODO
+- **No person.** Nobody looked at a screen or pressed a key. Every key and pointer event was
+  injected at the machine's devices by a script, at a script's pace, and every picture was a
+  capture of the machine's display read afterwards. Nothing here says how the client feels to
+  use, whether text is comfortable to read, or whether an animation stutters.
+- **No hardware GPU.** The client drew with Mesa's software Vulkan driver (llvmpipe) and sway
+  drew with its software renderer. No GPU driver, no direct scan-out, no fractional or 2x
+  scale, one output of 1440x900 at one refresh rate. Times measured here are of a software
+  renderer in a virtual machine.
+- **One compositor.** sway 1.12 (wlroots), tiling, with server-side decorations. Nothing was
+  run on GNOME (Mutter, client-side decorations), on KDE (KWin) or on Hyprland, which is the
+  operator's compositor and the one the spike of 2026-11-14 used.
+- **A virtual seat.** One USB keyboard and one absolute pointer of QEMU, on a logind seat. No
+  real keyboard with its own quirks, no touchpad, no touch, no tablet, no second keyboard, no
+  input method (IME), no compose key, no key repeat by a person's hand.
+- **X11 not at all.** The session has no X server and no Xwayland. The client's X11 path was
+  not started once.
+- **One distribution.** Arch Linux as updated on the day. The package was not run on Ubuntu
+  here (its cloud kernel has no graphics driver for a display of the machine's own); that
+  the package installs and starts there is the business of the clean-install run.
+- **No keyring and no sound.** No Secret Service ran, so remembering a password was not
+  tried. Orca's speech was read from its log, not heard.
+- **The accessibility bus was on throughout**, because the driver finds controls through it.
+  A session with the bus off was only used for the first start and the first frames.
