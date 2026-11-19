@@ -736,6 +736,19 @@ impl Client {
         self.on(|window, cx| window.press(key, cx));
     }
 
+    /// Opens a drop-down of the window with the pointer and picks from its
+    /// list with the keyboard: Down as many times as asked, then Return.
+    pub fn pick_with_keys(&mut self, key: &str, downs: usize) {
+        let select = id(key);
+        self.on(move |window, cx| window.within(select).click("input", cx));
+        self.on(|window, cx| {
+            for _ in 0..downs {
+                window.press("down", cx);
+            }
+            window.press("enter", cx);
+        });
+    }
+
     /// The reason the element with the key is disabled, `None` when it can
     /// be used.
     #[track_caller]

@@ -33,7 +33,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use lab_support::{Client, Evidence, Lab, Outside, Platform};
 use serde_json::json;
 use xenadmin_core::{
-    HostId, OperationId, OperationState, PowerAction, PowerState, VmCommand, VmId, VmSettingEdit,
+    DiskPlacement, HostId, NetworkId, NicPlacement, OperationId, OperationState, PowerAction,
+    PowerState, SnapshotId, SnapshotName, SrId, VmCommand, VmId, VmMigration, VmSettingEdit,
     VmSettingsPatch,
 };
 use xenadmin_desktop::charts;
@@ -2224,7 +2225,12 @@ fn started_at(client: &mut Client, vm: VmId) -> Option<String> {
     client.model(|m| {
         let inventory = m.inventory.as_ref()?;
         let metrics = inventory.details.vms.get(&vm)?.metrics?;
-        inventory.details.vm_metrics.get(&metrics)?.start_time.clone()
+        inventory
+            .details
+            .vm_metrics
+            .get(&metrics)?
+            .start_time
+            .clone()
     })
 }
 
@@ -2315,7 +2321,11 @@ fn power_through_confirmation(
             |client| started_at(client, vm) != before,
         );
     } else {
-        assert_eq!(started_at(client, vm), before, "the guest was not restarted");
+        assert_eq!(
+            started_at(client, vm),
+            before,
+            "the guest was not restarted"
+        );
     }
     evidence.step(
         "power action through its confirmation",
@@ -2349,7 +2359,13 @@ fn lab_p3_power_paths() {
         client
             .try_toolbar("vm.start")
             .expect("the toolbar offers Start for a halted guest");
-        confirm_and_follow(&mut client, &mut evidence, vm, "start-first", PowerState::Running);
+        confirm_and_follow(
+            &mut client,
+            &mut evidence,
+            vm,
+            "start-first",
+            PowerState::Running,
+        );
     }
     assert_eq!(power_state(&mut client, vm), PowerState::Running);
     assert_eq!(resident_host(&mut client, vm), Some(coordinator.0));
@@ -2414,7 +2430,10 @@ fn lab_p3_power_paths() {
         client.press("settings-close");
     }
     assert!(client.model(|m| !m.preferences.options.review_power));
-    evidence.step("Options: routine power actions are not reviewed", json!(true));
+    evidence.step(
+        "Options: routine power actions are not reviewed",
+        json!(true),
+    );
     power_through_confirmation(
         &mut client,
         &mut evidence,
@@ -2442,22 +2461,24 @@ fn lab_p3_power_paths() {
 
     // Start on Server, the member: its review, and the host's refusal (the
     // guest's disks are on the coordinator's local repository).
-    let place = |client: &mut Client, evidence: &mut Evidence, host: &(HostId, String), tag: &str| {
-        let before = newest_operation(client, vm).map(|(id, _)| id);
-        client.menu(Menu::Vm, "vm.start-on-server");
-        assert_eq!(client.front().as_deref(), Some("vm-placement"));
-        client.snap(evidence, &format!("{tag}-servers"));
-        client.press(&format!("placement-host-{}", host.0));
-        assert!(
-            client.describes(&format!("Destination: {}", host.1)),
-            "the review names the server"
-        );
-        client.snap(evidence, &format!("{tag}-review"));
-        client.press("placement-confirm");
-        let (operation, took) = follow_new_operation(client, vm, before, Duration::from_secs(360));
-        assert_eq!(client.front(), None, "the dialog closed");
-        (operation, took)
-    };
+    let place =
+        |client: &mut Client, evidence: &mut Evidence, host: &(HostId, String), tag: &str| {
+            let before = newest_operation(client, vm).map(|(id, _)| id);
+            client.menu(Menu::Vm, "vm.start-on-server");
+            assert_eq!(client.front().as_deref(), Some("vm-placement"));
+            client.snap(evidence, &format!("{tag}-servers"));
+            client.press(&format!("placement-host-{}", host.0));
+            assert!(
+                client.describes(&format!("Destination: {}", host.1)),
+                "the review names the server"
+            );
+            client.snap(evidence, &format!("{tag}-review"));
+            client.press("placement-confirm");
+            let (operation, took) =
+                follow_new_operation(client, vm, before, Duration::from_secs(360));
+            assert_eq!(client.front(), None, "the dialog closed");
+            (operation, took)
+        };
     let (refused, took) = place(&mut client, &mut evidence, &member, "start-on-member");
     let (state, detail) = operation_record(&mut client, refused);
     assert_eq!(state, OperationState::Rejected, "{detail}");
@@ -2466,7 +2487,12 @@ fn lab_p3_power_paths() {
         .node(&format!("vm-operation-{refused}"))
         .expect("the General tab shows the operation");
     client.snap(&mut evidence, "start-on-member-refused");
-    let (row, outcome) = events_outcome(&mut client, &mut evidence, refused, "start-on-member-refused-events");
+    let (row, outcome) = events_outcome(
+        &mut client,
+        &mut evidence,
+        refused,
+        "start-on-member-refused-events",
+    );
     evidence.step(
         "Start on Server was refused by the host",
         json!({ "server": member.1, "seconds": took, "record": detail,
@@ -2489,7 +2515,12 @@ fn lab_p3_power_paths() {
     client.nav_view(NavView::Infrastructure);
     client.select(&object);
     client.tab(TabId::General);
-    let (accepted, took) = place(&mut client, &mut evidence, &coordinator, "start-on-coordinator");
+    let (accepted, took) = place(
+        &mut client,
+        &mut evidence,
+        &coordinator,
+        "start-on-coordinator",
+    );
     let (state, detail) = operation_record(&mut client, accepted);
     assert_eq!(state, OperationState::Succeeded, "{detail}");
     client.wait(
@@ -2507,6 +2538,1258 @@ fn lab_p3_power_paths() {
     );
     evidence.note("start_on_coordinator_seconds", json!(took));
     evidence.note("operations", json!(operation_states(&mut client, vm)));
+    evidence.note("guest", json!(name));
+    client.close();
+    evidence.finish();
+}
+
+// -- Changes made from outside, as another client makes them ---------------
+
+/// The end of an operation of the outside connection.
+fn outside_outcome(
+    operation: &xenadmin_core::Operation,
+    limit: Duration,
+) -> (OperationState, String) {
+    let start = std::time::Instant::now();
+    loop {
+        let row = operation.latest();
+        if row.state.terminal() || row.state == OperationState::OutcomeUnknown {
+            return (row.state.clone(), row.detail.clone());
+        }
+        assert!(
+            start.elapsed() < limit,
+            "the outside operation did not end: {:?} {}",
+            row.state,
+            row.detail
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// A disk snapshot of a guest, taken by the outside connection.
+fn snapshot_from_outside(outside: &Outside, vm: VmId, name: &str) -> SnapshotId {
+    let operation = outside
+        .connection
+        .submit(
+            OperationId::new(),
+            VmCommand::CreateSnapshot {
+                vm: outside.connection.latest().observe_vm(vm).expect("guest"),
+                name: SnapshotName::new(name).expect("name"),
+            },
+        )
+        .expect("the outside snapshot is accepted");
+    let (state, detail) = outside_outcome(&operation, Duration::from_secs(300));
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    assert!(
+        outside.settle(Duration::from_secs(60), |inventory| {
+            inventory.snapshots.for_vm(vm).any(|s| s.name == name)
+        }),
+        "the outside connection lists its snapshot"
+    );
+    outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .snapshots
+        .for_vm(vm)
+        .find(|s| s.name == name)
+        .map(|s| s.id)
+        .expect("the snapshot")
+}
+
+/// Deletes a snapshot with its disks through the outside connection.
+fn delete_snapshot_from_outside(outside: &Outside, vm: VmId, snapshot: SnapshotId) {
+    let latest = outside.connection.latest();
+    let disks = latest
+        .inventory()
+        .expect("inventory")
+        .details
+        .vbds
+        .values()
+        .filter(|vbd| vbd.snapshot == Some(snapshot) && vbd.kind == "Disk")
+        .filter_map(|vbd| vbd.vdi)
+        .collect::<Vec<_>>();
+    let operation = outside
+        .connection
+        .submit(
+            OperationId::new(),
+            VmCommand::DeleteSnapshot {
+                snapshot: latest.observe_snapshot(vm, snapshot).expect("snapshot"),
+                disks,
+            },
+        )
+        .expect("the outside deletion is accepted");
+    let (state, detail) = outside_outcome(&operation, Duration::from_secs(300));
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    assert!(
+        outside.settle(Duration::from_secs(60), |inventory| {
+            inventory.snapshots.for_vm(vm).all(|s| s.id != snapshot)
+        }),
+        "the snapshot is gone"
+    );
+}
+
+/// A live move of a running guest to another server, its disks and
+/// networks where they are, by the outside connection.
+fn migrate_from_outside(outside: &Outside, vm: VmId, destination: HostId) {
+    let latest = outside.connection.latest();
+    let inventory = latest.inventory().expect("inventory");
+    let disks = inventory
+        .details
+        .vm_disks
+        .get(&vm)
+        .into_iter()
+        .flatten()
+        .filter_map(|vbd| inventory.details.vbds.get(vbd))
+        .filter(|vbd| vbd.kind == "Disk")
+        .filter_map(|vbd| {
+            let vdi = vbd.vdi?;
+            let sr = inventory.details.vdis.get(&vdi)?.sr?;
+            Some(DiskPlacement {
+                vdi,
+                expected_sr: sr,
+                destination_sr: sr,
+            })
+        })
+        .collect();
+    let networks = inventory
+        .details
+        .vifs
+        .values()
+        .filter(|vif| vif.vm == Some(vm))
+        .filter_map(|vif| {
+            let network = vif.network?;
+            Some(NicPlacement {
+                vif: vif.id,
+                expected_network: network,
+                destination_network: network,
+            })
+        })
+        .collect();
+    let operation = VmMigration {
+        destination,
+        expected_host: inventory.vms[&vm].host,
+        expected_affinity: inventory.details.vms.get(&vm).and_then(|v| v.affinity),
+        live: true,
+        disks,
+        networks,
+        transfer_network: None,
+    };
+    let handle = outside
+        .connection
+        .submit(
+            OperationId::new(),
+            VmCommand::Migrate {
+                vm: latest.observe_vm(vm).expect("guest"),
+                operation,
+            },
+        )
+        .expect("the outside migration is accepted");
+    let (state, detail) = outside_outcome(&handle, Duration::from_secs(420));
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    assert!(
+        outside.settle(Duration::from_secs(60), |inventory| {
+            inventory.vms[&vm].host == Some(destination)
+        }),
+        "the guest runs on the destination"
+    );
+}
+
+// -- What the wizard needs of the inventory ---------------------------------
+
+/// The local repository of a server: the one of kind `ext` that is not
+/// shared and is plugged there.
+fn local_repository(client: &mut Client, host: HostId) -> (SrId, String) {
+    client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        inventory
+            .details
+            .pbds
+            .values()
+            .find_map(|pbd| {
+                let sr = pbd.sr?;
+                if pbd.host != Some(host)
+                    || inventory.details.storage.get(&sr).and_then(|s| s.shared) != Some(false)
+                {
+                    return None;
+                }
+                inventory
+                    .storage
+                    .iter()
+                    .find(|s| SrId::from(s.uuid) == sr && s.kind == "ext")
+                    .map(|s| (sr, s.name.clone()))
+            })
+            .expect("a local repository")
+    })
+}
+
+/// The network of the management interface of a server.
+fn management_network(client: &mut Client, host: HostId) -> NetworkId {
+    client.model(|m| {
+        m.inventory
+            .as_ref()
+            .expect("inventory")
+            .details
+            .pifs
+            .values()
+            .find(|pif| pif.host == Some(host) && pif.management == Some(true))
+            .and_then(|pif| pif.network)
+            .expect("the management network")
+    })
+}
+
+/// The repositories the disks of a guest are on, one per disk.
+fn disk_repositories(client: &mut Client, vm: VmId) -> Vec<SrId> {
+    client.model(|m| {
+        let inventory = m.inventory.as_ref().expect("inventory");
+        let mut disks: Vec<_> = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|vbd| vbd.vm == Some(vm) && vbd.kind == "Disk")
+            .filter_map(|vbd| vbd.vdi)
+            .collect();
+        disks.sort();
+        disks.dedup();
+        disks
+            .into_iter()
+            .filter_map(|vdi| inventory.details.vdis.get(&vdi).and_then(|d| d.sr))
+            .collect()
+    })
+}
+
+/// Picks an option of a drop-down of the surface in front: the list is
+/// opened with the pointer and the option is reached with the Down key, as
+/// many times as it takes until `chosen` holds (the drop-down shows the
+/// name of its option, and two repositories can have one name).
+#[track_caller]
+fn pick(client: &mut Client, key: &str, chosen: impl Fn(&mut Client) -> bool) {
+    // Down moves on from the option the list has now: one step a time
+    // comes by every option. Should the list start from its top instead,
+    // the second round reaches further each time.
+    for downs in std::iter::repeat_n(1, 40).chain(2..=20) {
+        if chosen(client) {
+            return;
+        }
+        client.pick_with_keys(key, downs);
+        client.pass(Duration::from_millis(200));
+    }
+    let shows = client.node(key).and_then(|node| node.value);
+    panic!("the drop-down {key} never held the option wanted: it shows {shows:?}");
+}
+
+/// Migrate to Server from the VM menu, brought to its review: the
+/// destination, and with a repository every disk placed on it and the
+/// transfer over the destination's management network. `Err` with what the
+/// wizard says when it does not reach the review. The lines of the review.
+fn migration_to_review(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    object: &ObjectRef,
+    vm: VmId,
+    destination: HostId,
+    repository: Option<SrId>,
+    tag: &str,
+) -> Result<String, String> {
+    client.select(object);
+    client.tab(TabId::General);
+    client.menu(Menu::Vm, "vm.migrate");
+    assert_eq!(client.front().as_deref(), Some("migration-dialog"));
+    client.press(&format!("migration-host-{destination}"));
+    client.press("migration-next");
+    if let Some(repository) = repository {
+        for index in 0..disk_repositories(client, vm).len() {
+            pick(client, &format!("migration-disk-{index}"), |client| {
+                client.model(|m| {
+                    m.areas.migration.wizard.as_ref().is_some_and(|wizard| {
+                        wizard.disks.get(index).map(|disk| disk.destination_sr) == Some(repository)
+                    })
+                })
+            });
+        }
+        let transfer = management_network(client, destination);
+        pick(client, "migration-transfer", |client| {
+            client.model(|m| {
+                m.areas
+                    .migration
+                    .wizard
+                    .as_ref()
+                    .is_some_and(|wizard| wizard.transfer == Some(transfer))
+            })
+        });
+    }
+    client.snap(evidence, &format!("{tag}-storage-and-networks"));
+    client.press("migration-next");
+    if client.element("migration-review").is_none() {
+        let said = client
+            .node("migration-error")
+            .and_then(|node| node.text.or(node.label))
+            .unwrap_or_default();
+        client.snap(evidence, &format!("{tag}-not-reviewed"));
+        return Err(said);
+    }
+    let review = client
+        .node("migration-review")
+        .and_then(|node| node.text)
+        .unwrap_or_default();
+    client.snap(evidence, &format!("{tag}-review"));
+    Ok(review)
+}
+
+/// Each refused review that needs no migration to be running: a move of a
+/// guest's disks while a snapshot exists; a revert whose review is not
+/// complete, and one whose snapshot was deleted by another client while the
+/// review was open; the maintenance review after the set of the server's
+/// guests changed; Reboot and Shut Down of a server that is enabled.
+/// Nothing is confirmed: every step ends with the refusal, and the lab is
+/// left as it was found.
+#[test]
+#[ignore]
+fn lab_p3_refused_reviews() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-refused-reviews");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    let (_, tools_vm, tools_name) = guest(&mut client, TOOLS_GUEST);
+    let (coordinator, member) = servers(&mut client);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    assert_eq!(resident_host(&mut client, vm), Some(coordinator.0));
+    assert_eq!(resident_host(&mut client, tools_vm), Some(coordinator.0));
+    let repositories_before = disk_repositories(&mut client, vm);
+    let (member_repository, member_repository_name) = local_repository(&mut client, member.0);
+
+    // What an earlier run that failed left behind goes first.
+    let leftovers: Vec<SnapshotId> = outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .snapshots
+        .for_vm(vm)
+        .filter(|s| s.name.starts_with("gpui-refusal-"))
+        .map(|s| s.id)
+        .collect();
+    for leftover in leftovers {
+        delete_snapshot_from_outside(&outside, vm, leftover);
+    }
+
+    // 1. A move of the guest's disks while a snapshot exists.
+    let snapshot_name = format!("gpui-refusal-{}", stamp());
+    let snapshot = snapshot_from_outside(&outside, vm, &snapshot_name);
+    client.wait(
+        "the client lists the snapshot taken outside",
+        Duration::from_secs(60),
+        |client| {
+            client.model(|m| {
+                m.inventory
+                    .as_ref()
+                    .expect("inventory")
+                    .snapshots
+                    .for_vm(vm)
+                    .any(|s| s.id == snapshot)
+            })
+        },
+    );
+    let reviewed = migration_to_review(
+        &mut client,
+        &mut evidence,
+        &object,
+        vm,
+        member.0,
+        Some(member_repository),
+        "storage-move-with-a-snapshot",
+    );
+    let refusal = match reviewed {
+        Err(said) => json!({ "where": "the wizard's second step", "reason": said }),
+        Ok(review) => {
+            match client.disabled_reason(Some("migration-dialog"), "migration-apply") {
+                Some(reason) => {
+                    json!({ "where": "the review: Apply migration is disabled", "reason": reason, "review": review })
+                }
+                None => {
+                    // The review lets it through: the core or the host
+                    // refuses it.
+                    let before = newest_operation(&mut client, vm).map(|(id, _)| id);
+                    client.press("migration-apply");
+                    let (operation, took) =
+                        follow_new_operation(&mut client, vm, before, Duration::from_secs(300));
+                    let (state, detail) = operation_record(&mut client, operation);
+                    assert_ne!(state, OperationState::Succeeded, "{detail}");
+                    client.snap(&mut evidence, "storage-move-with-a-snapshot-refused");
+                    json!({ "where": "after Apply", "state": format!("{state:?}"), "reason": detail, "seconds": took, "review": review })
+                }
+            }
+        }
+    };
+    assert!(
+        refusal["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "the refusal gives a reason: {refusal}"
+    );
+    if client.front().is_some() {
+        client.press("migration-cancel");
+    }
+    assert_eq!(client.front(), None);
+    assert_eq!(resident_host(&mut client, vm), Some(coordinator.0));
+    assert_eq!(disk_repositories(&mut client, vm), repositories_before);
+    evidence.step(
+        "a move of the disks is refused while a snapshot exists",
+        refusal.clone(),
+    );
+    evidence.note("storage_move_with_a_snapshot", refusal);
+    evidence.note("storage_move_destination", json!(member_repository_name));
+
+    // 2. A revert that is refused: first by its own review, then because
+    // another client deleted the snapshot while the review was open.
+    client.select(&object);
+    client.tab(TabId::Snapshots);
+    let row = table_row(&mut client, "snapshots-table", &snapshot_name).expect("the row");
+    client.press(&row);
+    client
+        .try_local("snapshot.revert")
+        .expect("Revert for the selected snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-restore"));
+    set_checkbox(&mut client, "restore-shutdown", false);
+    let incomplete = client
+        .try_press("confirm-snapshot")
+        .expect_err("a running guest is not reverted without its shutdown chosen");
+    client.snap(&mut evidence, "revert-refused-without-shutdown");
+    set_checkbox(&mut client, "restore-shutdown", true);
+    assert_eq!(
+        client.disabled_reason(Some("snapshot-restore"), "confirm-snapshot"),
+        None,
+        "with the shutdown chosen the review can be confirmed"
+    );
+    delete_snapshot_from_outside(&outside, vm, snapshot);
+    client.wait(
+        "the client reads that the snapshot is gone",
+        Duration::from_secs(60),
+        |client| {
+            client.model(|m| {
+                m.inventory
+                    .as_ref()
+                    .expect("inventory")
+                    .snapshots
+                    .for_vm(vm)
+                    .all(|s| s.id != snapshot)
+            })
+        },
+    );
+    let stale = client
+        .try_press("confirm-snapshot")
+        .expect_err("a revert to a snapshot that is gone is refused");
+    // The review itself says that what it shows is no longer current.
+    let notice = "The connection is not ready or the selected object is no longer current";
+    assert!(
+        client.describes(notice) && client.says(notice),
+        "the review says that the snapshot is no longer current"
+    );
+    client.snap(&mut evidence, "revert-refused-snapshot-gone");
+    client.press("cancel-snapshot");
+    assert_eq!(client.front(), None);
+    assert_eq!(unfinished(&mut client, vm), 0);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    evidence.step(
+        "a revert is refused",
+        json!({ "without_shutdown_chosen": incomplete, "snapshot_deleted_outside": stale, "notice": notice }),
+    );
+    evidence.note("revert_refused_without_shutdown", json!(incomplete));
+    evidence.note("revert_refused_snapshot_gone", json!(stale));
+
+    // 3. Reboot and Shut Down of a server that is enabled.
+    let host = client
+        .model(|m| ObjectRef::host(m.inventory.as_ref().expect("inventory").pool_id, member.0));
+    client.select(&host);
+    client.tab(TabId::General);
+    let reboot = client
+        .try_menu(Menu::Server, "server.reboot")
+        .expect_err("Reboot is refused for an enabled server");
+    let shut_down = client
+        .try_menu(Menu::Server, "server.shutdown")
+        .expect_err("Shut Down is refused for an enabled server");
+    assert_eq!(client.front(), None);
+    evidence.step(
+        "Reboot and Shut Down are refused for an enabled server",
+        json!({ "server": member.1, "reboot": reboot, "shut_down": shut_down }),
+    );
+    evidence.note("reboot_refused_for_an_enabled_server", json!(reboot));
+    evidence.note("shut_down_refused_for_an_enabled_server", json!(shut_down));
+
+    // 4. The maintenance review after the server's guests changed: the
+    // review is opened, another client moves a guest onto the server, and
+    // the confirmation is refused.
+    client.menu(Menu::Server, "server.maintenance");
+    assert_eq!(client.front().as_deref(), Some("host-enter-maintenance"));
+    assert!(
+        !client.describes(&format!("Move guest: {tools_name}")),
+        "the tools guest is not on the member when the review opens"
+    );
+    assert_eq!(
+        client.disabled_reason(Some("host-enter-maintenance"), "host-confirm"),
+        None,
+        "the review can be confirmed as it opens"
+    );
+    client.snap(&mut evidence, "maintenance-review");
+    migrate_from_outside(&outside, tools_vm, member.0);
+    client.wait(
+        "the client reads that the tools guest is on the member",
+        Duration::from_secs(60),
+        |client| resident_host(client, tools_vm) == Some(member.0),
+    );
+    let stale = client
+        .try_press("host-confirm")
+        .expect_err("the review of another set of guests is refused");
+    client.snap(&mut evidence, "maintenance-review-stale");
+    client.press("host-close");
+    assert_eq!(client.front(), None);
+    assert!(
+        client.model(|m| m.inventory.as_ref().expect("inventory").hosts[&member.0].enabled),
+        "the member stays enabled"
+    );
+    assert!(
+        resource_states(&mut client).is_empty(),
+        "nothing was submitted"
+    );
+    evidence.step(
+        "the maintenance review is refused after the server's guests changed",
+        json!({ "server": member.1, "moved_onto_it": tools_name, "reason": stale }),
+    );
+    evidence.note("maintenance_review_refused_when_stale", json!(stale));
+    migrate_from_outside(&outside, tools_vm, coordinator.0);
+    client.wait(
+        "the tools guest is back on the coordinator",
+        Duration::from_secs(60),
+        |client| resident_host(client, tools_vm) == Some(coordinator.0),
+    );
+    evidence.note("guest", json!(name));
+    evidence.note(
+        "operations_of_this_client",
+        json!(operation_states(&mut client, vm)),
+    );
+    client.close();
+    evidence.finish();
+}
+
+/// The record of a resource operation of the session.
+fn resource_record(
+    client: &mut Client,
+    operation: OperationId,
+) -> (OperationState, String, Vec<String>) {
+    client.model(|m| {
+        m.resource_rows
+            .iter()
+            .find(|record| record.id == operation)
+            .map(|record| {
+                (
+                    record.state.clone(),
+                    record.detail.clone(),
+                    record
+                        .steps
+                        .iter()
+                        .map(|step| format!("{}: {:?} {}", step.label, step.state, step.detail))
+                        .collect(),
+                )
+            })
+            .expect("the record")
+    })
+}
+
+/// P3.1: a batch that stops on a failure. Shut Down for the two guests as
+/// a batch; while the host works on the first, another administrator
+/// forces that guest off, which ends the batch's task for it without
+/// success. The batch stops, the second guest is not asked to shut down,
+/// and the window says so; the unknown outcome is acknowledged through the
+/// Events tab and the first guest is started again.
+#[test]
+#[ignore]
+fn lab_p3_power_batch_stops_on_a_failure() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-1-power-batch-stops-on-a-failure");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (plain, plain_vm, plain_name) = guest(&mut client, PLAIN_GUEST);
+    let (tools, tools_vm, tools_name) = guest(&mut client, TOOLS_GUEST);
+    let pool = client.model(|m| ObjectRef::pool(m.inventory.as_ref().expect("inventory").pool_id));
+    for vm in [plain_vm, tools_vm] {
+        assert_eq!(power_state(&mut client, vm), PowerState::Running);
+        wait_guest_ready(&mut client, vm, &mut evidence);
+    }
+    let homes = [
+        resident_host(&mut client, plain_vm),
+        resident_host(&mut client, tools_vm),
+    ];
+    select_two(
+        &mut client,
+        &mut evidence,
+        &pool,
+        &plain_name,
+        &tools_name,
+        "two-running-guests-selected",
+    );
+    client.menu(Menu::Vm, "vm.shutdown");
+    assert_eq!(client.front().as_deref(), Some("power-batch"));
+    assert!(client.element("batch-review").is_some());
+    let order: Vec<String> = table_rows(&mut client, "batch-vms")
+        .into_iter()
+        .map(|row| row.1.first().cloned().unwrap_or_default())
+        .collect();
+    assert_eq!(order.len(), 2, "{order:?}");
+    let ((first, first_vm, first_name), (second, second_vm, second_name)) =
+        if order[0] == plain_name {
+            (
+                (&plain, plain_vm, &plain_name),
+                (&tools, tools_vm, &tools_name),
+            )
+        } else {
+            (
+                (&tools, tools_vm, &tools_name),
+                (&plain, plain_vm, &plain_name),
+            )
+        };
+    client.snap(&mut evidence, "batch-review");
+    let before: Vec<OperationId> =
+        client.model(|m| m.resource_rows.iter().map(|record| record.id).collect());
+    client.press("batch-power-submit");
+    client.wait("the batch is recorded", Duration::from_secs(30), |client| {
+        client.front().is_none()
+            && client.model(|m| {
+                m.resource_rows
+                    .iter()
+                    .any(|record| !before.contains(&record.id))
+            })
+    });
+    let batch = client.model(|m| {
+        m.resource_rows
+            .iter()
+            .filter(|record| !before.contains(&record.id) && record.batch_parent.is_none())
+            .min_by_key(|record| record.created_at_ms)
+            .map(|record| record.id)
+            .expect("the record of the batch")
+    });
+
+    // Another administrator forces the first guest off.
+    let forced = outside
+        .connection
+        .submit(
+            OperationId::new(),
+            VmCommand::Power {
+                vm: outside
+                    .connection
+                    .latest()
+                    .observe_vm(first_vm)
+                    .expect("guest"),
+                action: PowerAction::HardShutdown,
+            },
+        )
+        .expect("the outside forced shutdown is accepted");
+    let forced = outside_outcome(&forced, Duration::from_secs(120));
+    evidence.step(
+        "another administrator forced the first guest off",
+        json!({ "guest": first_name, "state": format!("{:?}", forced.0), "detail": forced.1 }),
+    );
+    client.snap(&mut evidence, "batch-in-progress");
+    let took = client.wait("the batch stopped", Duration::from_secs(480), |client| {
+        let (state, _, _) = resource_record(client, batch);
+        state.terminal() || state == OperationState::OutcomeUnknown
+    });
+    let (state, detail, steps) = resource_record(&mut client, batch);
+    client.snap(&mut evidence, "batch-stopped");
+    evidence.step(
+        "the batch stopped",
+        json!({ "seconds": seconds(took), "state": format!("{state:?}"), "detail": detail, "steps": steps,
+            "status_bar": client.chrome(status::OPERATIONS_KEY).and_then(|e| e.label().map(str::to_owned)) }),
+    );
+    assert_ne!(state, OperationState::Succeeded, "{detail} {steps:?}");
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    // The second guest was not asked: it runs, and no task of it was made.
+    assert!(
+        outside.settle(Duration::from_secs(5), |inventory| {
+            inventory.vms[&second_vm].power_state == PowerState::Running
+        }),
+        "the second guest still runs"
+    );
+    assert_eq!(power_state(&mut client, second_vm), PowerState::Running);
+    assert_eq!(power_state(&mut client, first_vm), PowerState::Halted);
+
+    // What the Events tab says of it.
+    client.nav_view(NavView::Notifications);
+    client.tab(TabId::Events);
+    client.press("activity-History");
+    let row = history_row(&mut client, batch).expect("the Events tab has the batch");
+    client.press(&row.0);
+    let outcome = client.node("activity-outcome").expect("the outcome");
+    let details = client
+        .node("activity-details")
+        .and_then(|node| node.text)
+        .unwrap_or_default();
+    let unresolved = client
+        .node("activity-unresolved")
+        .and_then(|node| node.text.or(node.label));
+    client.snap(&mut evidence, "events-batch-stopped");
+    evidence.step(
+        "the Events tab shows the stopped batch",
+        json!({ "row": row.1, "outcome": [outcome.label, outcome.value, outcome.text], "details": details, "unresolved": unresolved }),
+    );
+    let said = format!("{detail}\n{details}\n{}", steps.join("\n"));
+    assert!(
+        client.says("not submitted")
+            || details.contains("not submitted")
+            || client.describes("not submitted"),
+        "the window says that the remaining guest was not submitted: {said}"
+    );
+    evidence.note("batch_state", json!(format!("{state:?}")));
+    evidence.note("batch_detail", json!(detail));
+    evidence.note("batch_steps", json!(steps));
+    evidence.note("events_row", json!(row.1));
+
+    // An unknown outcome keeps the pool reserved until it is acknowledged.
+    if state == OperationState::OutcomeUnknown {
+        client
+            .try_local("events.acknowledge")
+            .expect("Acknowledge for the selected unknown outcome");
+        assert_eq!(client.front().as_deref(), Some("acknowledge-unknown"));
+        client.snap(&mut evidence, "acknowledge-review");
+        client.press("acknowledge-confirm");
+        client.wait(
+            "the batch is acknowledged",
+            Duration::from_secs(60),
+            |client| client.front().is_none() && resource_record(client, batch).0.terminal(),
+        );
+        let (state, detail, _) = resource_record(&mut client, batch);
+        client.snap(&mut evidence, "acknowledged");
+        evidence.step(
+            "the unknown outcome was acknowledged",
+            json!({ "state": format!("{state:?}"), "detail": detail }),
+        );
+        evidence.note("acknowledged_state", json!(format!("{state:?}")));
+    }
+
+    // The first guest is started again.
+    client.nav_view(NavView::Infrastructure);
+    client.select(first);
+    client.tab(TabId::General);
+    let before = newest_operation(&mut client, first_vm).map(|(id, _)| id);
+    client
+        .try_toolbar("vm.start")
+        .expect("the toolbar offers Start for the halted guest");
+    let (start, took) =
+        follow_new_operation(&mut client, first_vm, before, Duration::from_secs(360));
+    let (state, detail) = operation_record(&mut client, start);
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    client.wait("the guest runs", Duration::from_secs(120), |client| {
+        power_state(client, first_vm) == PowerState::Running
+    });
+    evidence.step(
+        "the first guest was started again",
+        json!({ "seconds": took }),
+    );
+    // The host chooses where a started guest runs: back to where it was.
+    for ((object, vm, home), name) in [(&plain, plain_vm, homes[0]), (&tools, tools_vm, homes[1])]
+        .into_iter()
+        .zip([&plain_name, &tools_name])
+    {
+        if resident_host(&mut client, vm) != home {
+            wait_guest_ready(&mut client, vm, &mut evidence);
+            let (coordinator, member) = servers(&mut client);
+            let back = if home == Some(coordinator.0) {
+                coordinator
+            } else {
+                member
+            };
+            let took = migrate(
+                &mut client,
+                &mut evidence,
+                object,
+                vm,
+                (back.0, &back.1),
+                "back",
+            );
+            evidence.note("moved_back", json!({ "guest": name, "seconds": took }));
+        }
+    }
+    let _ = (second, second_name);
+    evidence.note("guests", json!([first_name, second_name]));
+    client.close();
+    evidence.finish();
+}
+
+/// Presses Apply on the migration review and waits for the record of the
+/// move. The operation.
+fn apply_migration(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    vm: VmId,
+    tag: &str,
+) -> OperationId {
+    let before = newest_operation(client, vm).map(|(id, _)| id);
+    client.press("migration-apply");
+    client.wait(
+        "the migration is recorded",
+        Duration::from_secs(60),
+        |client| newest_operation(client, vm).is_some_and(|(id, _)| Some(id) != before),
+    );
+    assert_eq!(client.front(), None, "the wizard closed on Apply");
+    client.snap(evidence, &format!("{tag}-in-progress"));
+    newest_operation(client, vm).expect("the record").0
+}
+
+/// Whether the guest and every disk of it are where they are expected.
+fn placed(client: &mut Client, vm: VmId, host: Option<HostId>, repository: SrId) -> bool {
+    resident_host(client, vm) == host
+        && disk_repositories(client, vm)
+            .iter()
+            .all(|sr| *sr == repository)
+}
+
+/// The same as another client reads it.
+fn placed_outside(outside: &Outside, vm: VmId, host: Option<HostId>, repository: SrId) -> bool {
+    outside.settle(Duration::from_secs(60), |inventory| {
+        let disks: Vec<_> = inventory
+            .details
+            .vbds
+            .values()
+            .filter(|vbd| vbd.vm == Some(vm) && vbd.kind == "Disk")
+            .filter_map(|vbd| vbd.vdi)
+            .filter_map(|vdi| inventory.details.vdis.get(&vdi).and_then(|d| d.sr))
+            .collect();
+        inventory.vms[&vm].host == host
+            && !disks.is_empty()
+            && disks.iter().all(|sr| *sr == repository)
+    })
+}
+
+/// How many disks a repository holds, as another client reads it.
+fn disks_on(outside: &Outside, repository: SrId) -> usize {
+    outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .details
+        .vdis
+        .values()
+        .filter(|vdi| vdi.sr == Some(repository))
+        .count()
+}
+
+/// While a migration of the guest runs: Force Shut Down from the VM menu.
+/// The review that opens warns of the migration and its confirmation is
+/// refused until the consequence is accepted. ONLY the refusal is taken:
+/// the acceptance is never ticked and nothing is confirmed (the accepted
+/// path wedged this lab twice). What the window showed, or `None` when the
+/// migration ended before the review could be opened.
+fn forced_shutdown_refused_during_migration(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    vm: VmId,
+) -> Option<serde_json::Value> {
+    let start = std::time::Instant::now();
+    let mut seen = None;
+    while start.elapsed() < Duration::from_secs(40) && unfinished(client, vm) > 0 {
+        match client.try_menu(Menu::Vm, "vm.force-shutdown") {
+            Err(reason) => seen = Some(json!({ "menu_item_disabled": reason })),
+            Ok(()) => match client.front().as_deref() {
+                Some("vm-recovery") => {
+                    let caution = client
+                        .node("recovery-migration-caution")
+                        .and_then(|node| node.text.or(node.label));
+                    let accepted = client
+                        .node("recovery-accept-migration")
+                        .and_then(|node| node.checked);
+                    let refused = client.disabled_reason(Some("vm-recovery"), "recovery-confirm");
+                    client.snap(evidence, "forced-shutdown-during-migration-review");
+                    client.press("recovery-close");
+                    assert_eq!(client.front(), None);
+                    if caution.is_some() {
+                        return Some(json!({
+                            "caution": caution, "acceptance_ticked": accepted,
+                            "confirm_refused_with": refused,
+                            "seconds_into_the_migration": seconds(start.elapsed()),
+                        }));
+                    }
+                    seen = Some(json!({ "review_without_a_migration_caution": refused }));
+                }
+                Some("power-confirm") => {
+                    // The inventory does not show the migration's task yet.
+                    client.press("power-confirm-cancel");
+                    assert_eq!(client.front(), None);
+                }
+                other => panic!("Force Shut Down opened {other:?}"),
+            },
+        }
+        client.pass(Duration::from_millis(500));
+    }
+    seen
+}
+
+/// P3.7: a live migration of the plain guest with its disks to the other
+/// server's local repository, and back. While the first move runs, the
+/// forced shutdown of the guest is asked for and its refusal recorded; the
+/// refusal is not overridden.
+#[test]
+#[ignore]
+fn lab_p3_migration_with_disks() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-7-migration-with-disks");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    let (coordinator, member) = servers(&mut client);
+    let home = local_repository(&mut client, coordinator.0);
+    let away = local_repository(&mut client, member.0);
+    client.select(&object);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    assert!(placed(&mut client, vm, Some(coordinator.0), home.0));
+    assert_eq!(
+        client.model(|m| m.inventory.as_ref().expect("inventory").snapshots.len()),
+        0,
+        "a snapshot exists: a move of disks would be refused"
+    );
+    wait_guest_ready(&mut client, vm, &mut evidence);
+    let mut refusal = None;
+    for (tag, host, repository) in [("there", &member, &away), ("back", &coordinator, &home)] {
+        let review = migration_to_review(
+            &mut client,
+            &mut evidence,
+            &object,
+            vm,
+            host.0,
+            Some(repository.0),
+            tag,
+        )
+        .expect("the wizard reaches its review");
+        assert!(
+            review.contains(&repository.1) && review.contains(&host.1),
+            "the review names the server and the repository: {review}"
+        );
+        assert_eq!(
+            client.disabled_reason(Some("migration-dialog"), "migration-apply"),
+            None
+        );
+        let started = std::time::Instant::now();
+        let operation = apply_migration(&mut client, &mut evidence, vm, tag);
+        if tag == "there" {
+            refusal = forced_shutdown_refused_during_migration(&mut client, &mut evidence, vm);
+            evidence.step(
+                "Force Shut Down during the migration",
+                json!(refusal.clone()),
+            );
+        }
+        client.wait("the migration ended", Duration::from_secs(1500), |client| {
+            operation_record(client, operation).0.terminal()
+        });
+        let (state, detail) = operation_record(&mut client, operation);
+        assert_eq!(state, OperationState::Succeeded, "{detail}");
+        client.wait(
+            "the guest and its disks are on the destination",
+            Duration::from_secs(120),
+            |client| {
+                placed(client, vm, Some(host.0), repository.0)
+                    && power_state(client, vm) == PowerState::Running
+            },
+        );
+        let took = seconds(started.elapsed());
+        assert!(
+            placed_outside(&outside, vm, Some(host.0), repository.0),
+            "another client reads the guest and its disks on the destination"
+        );
+        assert!(
+            client.says(&host.1),
+            "the General tab names the destination server"
+        );
+        client.snap(&mut evidence, &format!("{tag}-done"));
+        evidence.step(
+            "migrated with its disks",
+            json!({ "to": host.1, "repository": repository.1, "seconds": took, "review": review, "record": detail }),
+        );
+        evidence.note(&format!("{tag}_seconds"), json!(took));
+    }
+    evidence.note("guest", json!(name));
+    evidence.note("forced_shutdown_during_migration", json!(refusal.clone()));
+    let refusal = refusal.expect("the forced shutdown review was seen during the migration");
+    assert!(
+        refusal["caution"]
+            .as_str()
+            .is_some_and(|text| text.contains("migration")),
+        "{refusal}"
+    );
+    assert_eq!(refusal["acceptance_ticked"], json!(false), "{refusal}");
+    assert!(
+        refusal["confirm_refused_with"]
+            .as_str()
+            .is_some_and(|text| text.contains("accept")),
+        "{refusal}"
+    );
+    client.close();
+    evidence.finish();
+}
+
+/// P3.7: the same migration with disks, cancelled from the client while it
+/// runs, through the review of the cancellation on the General tab. The
+/// guest and its disks are verified on the source afterwards, by this
+/// client and by another.
+#[test]
+#[ignore]
+fn lab_p3_migration_cancelled() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-7-migration-cancelled");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    let (coordinator, member) = servers(&mut client);
+    let home = local_repository(&mut client, coordinator.0);
+    let away = local_repository(&mut client, member.0);
+    client.select(&object);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    assert!(placed(&mut client, vm, Some(coordinator.0), home.0));
+    wait_guest_ready(&mut client, vm, &mut evidence);
+    let away_before = disks_on(&outside, away.0);
+    migration_to_review(
+        &mut client,
+        &mut evidence,
+        &object,
+        vm,
+        member.0,
+        Some(away.0),
+        "to-cancel",
+    )
+    .expect("the wizard reaches its review");
+    let started = std::time::Instant::now();
+    let operation = apply_migration(&mut client, &mut evidence, vm, "to-cancel");
+    // Let the host begin the copy, then ask for the cancellation.
+    client.pass(Duration::from_secs(4));
+    let review = format!("recovery-cancel-{operation}");
+    let direct = format!("operation-cancel-{operation}");
+    let how = if client.element(&review).is_some() {
+        client.press(&review);
+        assert_eq!(client.front().as_deref(), Some("vm-recovery"));
+        client.snap(&mut evidence, "cancellation-review");
+        client.press("recovery-confirm");
+        if client.front().is_some() {
+            client.press("recovery-close");
+        }
+        "Review cancellation request… on the General tab, confirmed"
+    } else if client.element(&direct).is_some() {
+        client.press(&direct);
+        "Request cancellation on the General tab"
+    } else {
+        client.nav_view(NavView::Notifications);
+        client.tab(TabId::Events);
+        client.press("activity-History");
+        let row = history_row(&mut client, operation).expect("the Events tab has the migration");
+        client.press(&row.0);
+        client
+            .try_local("events.request-cancel")
+            .expect("Request cancellation for the running migration");
+        if client.front().is_some() {
+            client.snap(&mut evidence, "cancellation-review");
+            client.press("recovery-confirm");
+        }
+        "Request cancellation on the Events tab"
+    };
+    let asked = seconds(started.elapsed());
+    client.snap(&mut evidence, "cancellation-requested");
+    client.wait("the migration ended", Duration::from_secs(900), |client| {
+        operation_record(client, operation).0.terminal()
+    });
+    let (state, detail) = operation_record(&mut client, operation);
+    let took = seconds(started.elapsed());
+    client.nav_view(NavView::Infrastructure);
+    client.select(&object);
+    client.tab(TabId::General);
+    let shown = client
+        .node(&format!("vm-operation-{operation}"))
+        .map(|node| [node.label, node.text]);
+    client.snap(&mut evidence, "cancelled");
+    evidence.step(
+        "the migration was cancelled from the client",
+        json!({ "how": how, "asked_after_seconds": asked, "ended_after_seconds": took,
+            "state": format!("{state:?}"), "record": detail, "general_tab": shown }),
+    );
+    if state == OperationState::Succeeded {
+        // The request came too late: the guest moved. Bring it back before
+        // failing.
+        let review = migration_to_review(
+            &mut client,
+            &mut evidence,
+            &object,
+            vm,
+            coordinator.0,
+            Some(home.0),
+            "back",
+        );
+        if review.is_ok() {
+            let back = apply_migration(&mut client, &mut evidence, vm, "back");
+            client.wait("the guest is back", Duration::from_secs(1500), |client| {
+                operation_record(client, back).0.terminal()
+            });
+        }
+        panic!("the migration finished before it was cancelled: {detail}");
+    }
+    assert_eq!(state, OperationState::Cancelled, "{detail}");
+    client.wait(
+        "the guest runs on the source with its disks there",
+        Duration::from_secs(120),
+        |client| {
+            placed(client, vm, Some(coordinator.0), home.0)
+                && power_state(client, vm) == PowerState::Running
+        },
+    );
+    assert!(
+        placed_outside(&outside, vm, Some(coordinator.0), home.0),
+        "another client reads the guest and its disks on the source"
+    );
+    assert!(outside.settle(Duration::from_secs(10), |inventory| {
+        inventory.vms[&vm].power_state == PowerState::Running
+    }));
+    // What the cancelled copy left on the destination repository.
+    let cleared = outside.settle(Duration::from_secs(180), |inventory| {
+        inventory
+            .details
+            .vdis
+            .values()
+            .filter(|vdi| vdi.sr == Some(away.0))
+            .count()
+            <= away_before
+    });
+    let away_after = disks_on(&outside, away.0);
+    evidence.step(
+        "the destination repository after the cancellation",
+        json!({ "repository": away.1, "disks_before": away_before, "disks_after": away_after, "cleared": cleared }),
+    );
+    evidence.note("state", json!(format!("{state:?}")));
+    evidence.note("record", json!(detail));
+    evidence.note("cancelled_how", json!(how));
+    evidence.note("destination_disks", json!([away_before, away_after]));
+    evidence.note("guest", json!(name));
+    assert_eq!(
+        operation_states(&mut client, vm).len(),
+        1,
+        "one record, nothing sent twice"
+    );
+    assert!(cleared, "the cancelled copy left disks on {}", away.1);
+    client.close();
+    evidence.finish();
+}
+
+/// P3.7: the disks of the halted plain guest moved to the other server's
+/// local repository and back, through the same wizard; the guest stays
+/// halted through both moves and is started again at the end.
+#[test]
+#[ignore]
+fn lab_p3_halted_disk_move() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-7-halted-disk-move");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    let (coordinator, member) = servers(&mut client);
+    let home = local_repository(&mut client, coordinator.0);
+    let away = local_repository(&mut client, member.0);
+    let affinity = |client: &mut Client| {
+        client.model(|m| {
+            m.inventory
+                .as_ref()
+                .expect("inventory")
+                .details
+                .vms
+                .get(&vm)
+                .and_then(|details| details.affinity)
+                .map(|host| host.to_string())
+        })
+    };
+    client.select(&object);
+    client.tab(TabId::General);
+    assert_eq!(disk_repositories(&mut client, vm), vec![home.0; 2]);
+    assert_eq!(
+        client.model(|m| m.inventory.as_ref().expect("inventory").snapshots.len()),
+        0,
+        "a snapshot exists: a move of disks would be refused"
+    );
+    let home_before = affinity(&mut client);
+    if power_state(&mut client, vm) == PowerState::Running {
+        wait_guest_ready(&mut client, vm, &mut evidence);
+        let before = newest_operation(&mut client, vm).map(|(id, _)| id);
+        client
+            .try_toolbar("vm.shutdown")
+            .expect("the toolbar offers Shut Down");
+        let (shutdown, took) =
+            follow_new_operation(&mut client, vm, before, Duration::from_secs(360));
+        assert_eq!(
+            operation_record(&mut client, shutdown).0,
+            OperationState::Succeeded
+        );
+        client.wait("the guest is halted", Duration::from_secs(120), |client| {
+            power_state(client, vm) == PowerState::Halted
+        });
+        evidence.step("the guest was shut down", json!({ "seconds": took }));
+    }
+    for (tag, host, repository) in [("there", &member, &away), ("back", &coordinator, &home)] {
+        let review = migration_to_review(
+            &mut client,
+            &mut evidence,
+            &object,
+            vm,
+            host.0,
+            Some(repository.0),
+            tag,
+        )
+        .expect("the wizard reaches its review");
+        assert!(
+            review.contains("Remain halted") && review.contains(&repository.1),
+            "the review says the guest stays halted and names the repository: {review}"
+        );
+        let started = std::time::Instant::now();
+        let operation = apply_migration(&mut client, &mut evidence, vm, tag);
+        client.wait("the move ended", Duration::from_secs(1500), |client| {
+            operation_record(client, operation).0.terminal()
+        });
+        let (state, detail) = operation_record(&mut client, operation);
+        assert_eq!(state, OperationState::Succeeded, "{detail}");
+        client.wait(
+            "the disks are on the destination repository",
+            Duration::from_secs(120),
+            |client| {
+                disk_repositories(client, vm) == vec![repository.0; 2]
+                    && power_state(client, vm) == PowerState::Halted
+            },
+        );
+        let took = seconds(started.elapsed());
+        assert!(
+            placed_outside(&outside, vm, None, repository.0),
+            "another client reads the halted guest's disks on the destination"
+        );
+        client.snap(&mut evidence, &format!("{tag}-done"));
+        evidence.step(
+            "the halted guest's disks were moved",
+            json!({ "to": repository.1, "home_server": affinity(&mut client), "seconds": took, "review": review, "record": detail }),
+        );
+        evidence.note(&format!("{tag}_seconds"), json!(took));
+    }
+    // Start it where it belongs.
+    client.select(&object);
+    client.tab(TabId::General);
+    let before = newest_operation(&mut client, vm).map(|(id, _)| id);
+    client
+        .try_toolbar("vm.start")
+        .expect("the toolbar offers Start for the halted guest");
+    let (start, took) = follow_new_operation(&mut client, vm, before, Duration::from_secs(360));
+    let (state, detail) = operation_record(&mut client, start);
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    client.wait(
+        "the guest runs on the coordinator",
+        Duration::from_secs(120),
+        |client| {
+            power_state(client, vm) == PowerState::Running
+                && resident_host(client, vm) == Some(coordinator.0)
+        },
+    );
+    evidence.step("the guest was started again", json!({ "seconds": took }));
+    evidence.note("home_server_before", json!(home_before));
+    evidence.note("home_server_after", json!(affinity(&mut client)));
     evidence.note("guest", json!(name));
     client.close();
     evidence.finish();
