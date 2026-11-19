@@ -131,8 +131,9 @@ Rust panic text with exit status 101, of which the second line is quoted.
 | No Vulkan driver, but Mesa's EGL and GL present | Ubuntu | The window opens: the toolkit falls back to OpenGL. Mesa prints warnings |
 | A compositor without a seat (Weston's headless backend, 15.0.1) | Arch | A panic: `Wayland compositor does not provide wl_seat`. The same was seen with Weston 13 on Ubuntu, where the words were not kept. No desktop compositor is without a seat; this is why Sway was used |
 
-All but the first two are in the toolkit's start-up path. They are recorded as gaps; the
-packages were not changed.
+All but the first two are in the toolkit's start-up path, and none of them is changed in
+the packages that were checked. The client's own start was changed afterwards: see "What
+was changed in the client" below.
 
 Smaller things seen: the AppImage started with `--appimage-extract-and-run` leaves its
 `/tmp/appimage_extracted_*` directory behind when the client is ended by a signal;
@@ -164,6 +165,30 @@ and status 1. The failure is the verification of the certificate, which comes be
 request is written; the traffic itself was not captured. On
 Ubuntu one login with a wrong password and right pins was also made, to see the other
 error (`SESSION_AUTHENTICATION_FAILED`).
+
+### What was changed in the client
+
+After the check, `crates/xenadmin-desktop/src/app.rs` was changed so that these starts end
+with one plain line and status 1:
+
+- no display named: `xenadmin-rs: no display: neither WAYLAND_DISPLAY nor DISPLAY is set.
+  Start the client from a Wayland or X11 session.`, said before the state directory is
+  claimed;
+- a display that cannot be reached, a compositor without a seat, no font: the toolkit's
+  panic is caught while the main window is not yet open and said as `xenadmin-rs: the
+  display could not be reached: …`, `xenadmin-rs: the display cannot be used: …` or
+  `xenadmin-rs: no usable font is installed. The interface needs one of these families:
+  …`. With `RUST_BACKTRACE` set the panic is reported as before;
+- no graphics backend: a line about the Vulkan driver is added to the toolkit's words, and
+  the process now ends. It stayed because the toolkit forgets a quit that is asked for
+  before its event loop runs; the quit is now asked for from a task.
+
+The wording and the test for a named display are held by two unit tests of that file. That
+the process ends in each case is not held by any test: it was seen once, with a debug
+build of the workstation, in the Arch machine (no display, the two displays that cannot
+be reached, no font, no Vulkan driver, no seat, and an ordinary start that still opened
+its window under Sway; the case without a Vulkan loader was not repeated). That binary is not a package: CI
+has not built this change, and it was not tried on Ubuntu.
 
 ## An X session without Wayland (Ubuntu)
 

@@ -34,14 +34,17 @@ sudo pacman -S --needed vulkan-icd-loader vulkan-swrast wayland libxcb libxkbcom
 The client draws its text with a font of the system and looks for one of these families by
 name: Helvetica, Segoe UI, Ubuntu, Adwaita Sans, Cantarell, Noto Sans, DejaVu Sans, Arial.
 A desktop installation has one; a minimal system may have none, and then the client stops
-at once with `failed to resolve font`. Another family that fontconfig would substitute
-(Liberation Sans, FreeSans) does not serve. The fontconfig library is not needed.
+at once and says that no usable font is installed. Another family that fontconfig would
+substitute (Liberation Sans, FreeSans) does not serve. The fontconfig library is not
+needed.
 
 `mesa-vulkan-drivers` and `vulkan-swrast` supply the software Vulkan driver, which is
 enough on a machine with no GPU; a hardware driver replaces it where there is one. Without
-any Vulkan driver the client reports that its main window did not open, and where Mesa's
-OpenGL is installed it uses that instead. Started where no display is named it shows
-nothing and prints nothing; the report lists what it says in each such case. The window
+any Vulkan driver the client says that its main window did not open and ends, and where
+Mesa's OpenGL is installed it uses that instead. Started where no display is named, or
+where the named one cannot be reached, it says so in one line and ends. The packages CI
+built before 2026-11-19 do not yet have these messages: the report lists what they do in
+each case. The window
 has been opened in a compositor without a seat and, with scripted input, in an X session
 without Wayland, both in a virtual machine with software rendering; nobody has used the
 new front end in a window yet, on either. Screen readers are not supported and
