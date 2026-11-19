@@ -69,10 +69,9 @@ the Rune columns and the appendix again; the final pass was checked that way too
 | disposition | tests | meaning |
 | --- | --- | --- |
 | moved | 154 | a test that built no `rune::Runtime`, now a test of `xenadmin-ui` (or of the GPUI crate where its subject went) |
-| ported | 118 | a test that drove a `rune::Runtime`, rewritten against the model (the `Harness` presses the keys of the description) or as a headless GPUI test |
+| ported | 119 | a test that drove a `rune::Runtime`, rewritten against the model (the `Harness` presses the keys of the description) or as a headless GPUI test |
 | split | 94 | a model test and a headless window test in `crates/xenadmin-desktop/tests` |
 | retired | 4 | no successor is wanted; the reason is in the row |
-| open | 1 | half a successor: the row says what is not asserted |
 | total | 371 |  |
 
 Of the 371 Rune tests, 156 built no `rune::Runtime` (kind `pure`) and 215 drove one (kind
@@ -88,7 +87,7 @@ controls stay reachable or visible at its window sizes, and no window test names
 assigned from the name of the Rune test, not by reading each body. 14 split rows have a window half that
 was matched to them by area, scene and subject (their note says so) where the row of `wanted.rs` does
 not carry the Rune test's name. The assertions of a successor were not compared with those of the Rune
-test it succeeds. The 1 open row says in its note what is missing.
+test it succeeds. No row is open.
 
 ## Commands
 
@@ -503,7 +502,7 @@ the script; the others are named in a comment at the new test or in the header o
   the keys of the described surface, or as a headless GPUI test.
 - split: a model test and a headless window test in `crates/xenadmin-desktop/tests`.
 - retired: no successor is wanted. The reason is in the note.
-- open: half a successor. It is a defect of the port's test coverage, not a decision.
+- open: half a successor. It is a defect of the port's test coverage, not a decision. No row has it now.
 
 The note "model half" is explained under "Tests by disposition". A successor in
 `gpui:tests/wanted.rs` is the test of the row's area (`gpui:tests/wanted.rs::storage` runs every row of
@@ -674,7 +673,7 @@ python3 scripts/gpui_ledger_tables.py tests    # the first three columns and the
 | `main.rs` | `column_and_sidebar_widths_reach_the_preferences_and_survive_a_table_rebuild` | pure | moved | `ui:model_tests.rs::widths_are_kept_in_the_preferences_and_saved_once_they_rest` |  |
 | `main.rs` | `the_details_pane_width_reaches_the_preferences_and_the_next_start_uses_it` | pure | moved | `ui:prefs.rs::widths_a_file_holds_are_brought_inside_what_the_client_accepts` | what a preferences file may hold. The inspector half is retired: the new shell has no details pane |
 | `main.rs` | `widths_are_saved_shortly_after_they_stop_changing_without_waiting_for_close` | runtime | ported | `ui:model_tests.rs::widths_are_kept_in_the_preferences_and_saved_once_they_rest` |  |
-| `main.rs` | `search_clear_button_empties_the_search_and_restores_every_row` | runtime | open | `gpui:tests/shell.rs::the_view_switcher_and_the_search_box_drive_the_model` | half, still open: the successor types into the navigation search box and lets the model clear the filter. The click on that box's own clear button, which is what the Rune test guarded, is not asserted; the same Kit button is clicked on the filter fields of the Events tab in `gpui:tests/wanted_events.rs::clear_buttons_empty_the_activity_filters_and_restore_the_rows` |
+| `main.rs` | `search_clear_button_empties_the_search_and_restores_every_row` | runtime | ported | `gpui:tests/shell.rs::the_search_box_clear_button_empties_the_search_and_restores_every_row` | the pointer presses the box's own clear button (the Kit's, `Input::cleanable`): the text and the model's filter are empty and every row is back. Typing into the box is `gpui:tests/shell.rs::the_view_switcher_and_the_search_box_drive_the_model` |
 | `main.rs` | `narrow_window_keeps_connection_and_vm_details_reachable` | runtime | retired | `gpui:tests/shell.rs::the_pane_gives_way_to_a_toggle_in_a_narrow_window` | the compact details swap is gone and the minimum window is 800x600 (plan D3); what a narrow window does now is the test named |
 | `management_bond_ui.rs` | `management_guest_query_result_is_fenced_to_exact_form_and_pool` | pure | moved | `ui:areas/management_network/tests.rs::management_guest_query_result_is_fenced_to_exact_form_and_pool` |  |
 | `management_bond_ui.rs` | `management_guest_impact_review_lists_moved_retained_and_no_eligible_guests` | runtime | split | `ui:areas/management_network/tests.rs::management_guest_impact_review_lists_moved_retained_and_no_eligible_guests`; `gpui:tests/wanted.rs::management_network` |  |
