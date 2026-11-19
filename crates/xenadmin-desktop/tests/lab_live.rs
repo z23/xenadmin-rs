@@ -2213,3 +2213,301 @@ fn lab_state() {
     }
     println!("snapshots {}", inventory.snapshots.len());
 }
+
+// ---------------------------------------------------------------------------
+// The second run: the paths the first run left out
+// (docs/reports/2026-11-19-gpui-live-paths.md)
+// ---------------------------------------------------------------------------
+
+/// When the host says the guest was started, as the host writes it.
+fn started_at(client: &mut Client, vm: VmId) -> Option<String> {
+    client.model(|m| {
+        let inventory = m.inventory.as_ref()?;
+        let metrics = inventory.details.vms.get(&vm)?.metrics?;
+        inventory.details.vm_metrics.get(&metrics)?.start_time.clone()
+    })
+}
+
+/// The record of an operation of a guest: its state and what it says.
+fn operation_record(client: &mut Client, operation: OperationId) -> (OperationState, String) {
+    client.model(|m| {
+        m.operation_rows
+            .iter()
+            .find(|record| record.id == operation)
+            .map(|record| (record.state.clone(), record.detail.clone()))
+            .expect("the record")
+    })
+}
+
+/// Waits for a new operation record of the guest (one that is not `before`)
+/// and then for its end. The operation and the seconds from the press to
+/// its end.
+fn follow_new_operation(
+    client: &mut Client,
+    vm: VmId,
+    before: Option<OperationId>,
+    limit: Duration,
+) -> (OperationId, f64) {
+    let start = std::time::Instant::now();
+    client.wait(
+        "the operation is recorded",
+        Duration::from_secs(30),
+        |client| newest_operation(client, vm).is_some_and(|(id, _)| Some(id) != before),
+    );
+    let (operation, _) = newest_operation(client, vm).expect("the record");
+    client.wait("the operation ended", limit, |client| {
+        operation_record(client, operation).0.terminal()
+    });
+    (operation, seconds(start.elapsed()))
+}
+
+/// What the Events tab of the Notifications view shows of an operation:
+/// the cells of its row and, with the row chosen, the outcome. Leaves the
+/// Notifications view shown.
+fn events_outcome(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    operation: OperationId,
+    tag: &str,
+) -> (Vec<String>, String) {
+    client.nav_view(NavView::Notifications);
+    client.tab(TabId::Events);
+    client.press("activity-History");
+    let row = history_row(client, operation).expect("the Events tab has the operation");
+    client.press(&row.0);
+    let outcome = client.node("activity-outcome").expect("the outcome");
+    let details = client.node("activity-details");
+    let said = format!(
+        "{} {} {} {}",
+        outcome.label.clone().unwrap_or_default(),
+        outcome.value.clone().unwrap_or_default(),
+        outcome.text.clone().unwrap_or_default(),
+        details.and_then(|node| node.text).unwrap_or_default()
+    );
+    client.snap(evidence, tag);
+    (row.1, said)
+}
+
+/// A press on a command of the VM menu, the confirmation, and the guest
+/// followed to the power state. `restarted` asks that the host's start time
+/// of the guest changed (a reboot is a new start).
+fn power_through_confirmation(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    vm: VmId,
+    command: &str,
+    tag: &str,
+    expected: PowerState,
+    restarted: bool,
+) -> f64 {
+    let before = started_at(client, vm);
+    client.menu(Menu::Vm, command);
+    let title = client.model(|m| {
+        xenadmin_ui::areas::power::view::surfaces(m)
+            .first()
+            .map(|surface| surface.title.clone())
+    });
+    let (_, took) = confirm_and_follow(client, evidence, vm, tag, expected);
+    if restarted {
+        client.wait(
+            "the host reports a new start of the guest",
+            Duration::from_secs(120),
+            |client| started_at(client, vm) != before,
+        );
+    } else {
+        assert_eq!(started_at(client, vm), before, "the guest was not restarted");
+    }
+    evidence.step(
+        "power action through its confirmation",
+        json!({ "command": command, "confirmation": title, "seconds": took,
+            "start_time_before": before, "start_time_after": started_at(client, vm) }),
+    );
+    evidence.note(&format!("{tag}_seconds"), json!(took));
+    took
+}
+
+/// P3.1, what the first run left out for one guest: Suspend and Resume,
+/// Reboot, Force Reboot and Force Shut Down through their confirmations
+/// (the force actions are confirmed whatever the options say), and Start
+/// on Server: refused by the host for the server that cannot reach the
+/// guest's disks, with the host's reason shown, and accepted for the
+/// server that can.
+#[test]
+#[ignore]
+fn lab_p3_power_paths() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-1-power-paths");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    review_power_actions(&mut client, &mut evidence);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    let (coordinator, member) = servers(&mut client);
+    client.select(&object);
+    client.tab(TabId::General);
+    if power_state(&mut client, vm) == PowerState::Halted {
+        // An earlier run that failed left the guest halted.
+        client
+            .try_toolbar("vm.start")
+            .expect("the toolbar offers Start for a halted guest");
+        confirm_and_follow(&mut client, &mut evidence, vm, "start-first", PowerState::Running);
+    }
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    assert_eq!(resident_host(&mut client, vm), Some(coordinator.0));
+    wait_guest_ready(&mut client, vm, &mut evidence);
+
+    // Suspend and Resume.
+    power_through_confirmation(
+        &mut client,
+        &mut evidence,
+        vm,
+        "vm.suspend",
+        "suspend",
+        PowerState::Suspended,
+        false,
+    );
+    assert!(
+        client.try_menu(Menu::Vm, "vm.shutdown").is_err(),
+        "Shut Down is not offered for a suspended guest"
+    );
+    client
+        .try_toolbar("vm.resume")
+        .expect("the toolbar offers Resume for a suspended guest");
+    let (_, took) = confirm_and_follow(
+        &mut client,
+        &mut evidence,
+        vm,
+        "resume",
+        PowerState::Running,
+    );
+    evidence.note("resume_seconds", json!(took));
+    assert_eq!(resident_host(&mut client, vm), Some(coordinator.0));
+
+    // Reboot: the guest is asked, and starts anew.
+    client.wait(
+        "the host offers a clean reboot of the resumed guest",
+        Duration::from_secs(120),
+        |client| {
+            client.model(|m| {
+                m.inventory.as_ref().expect("inventory").vms[&vm]
+                    .allowed_actions
+                    .contains(&PowerAction::Reboot)
+            })
+        },
+    );
+    power_through_confirmation(
+        &mut client,
+        &mut evidence,
+        vm,
+        "vm.reboot",
+        "reboot",
+        PowerState::Running,
+        true,
+    );
+
+    // Force Reboot and Force Shut Down: each through its confirmation,
+    // which names the consequence. Review of routine actions is turned off
+    // first, to show that the force actions are confirmed regardless.
+    client.menu(Menu::Tools, "tools.options");
+    client.press("settings-review-power");
+    client.press("settings-apply");
+    if client.front().is_some() {
+        client.press("settings-close");
+    }
+    assert!(client.model(|m| !m.preferences.options.review_power));
+    evidence.step("Options: routine power actions are not reviewed", json!(true));
+    power_through_confirmation(
+        &mut client,
+        &mut evidence,
+        vm,
+        "vm.force-reboot",
+        "force-reboot",
+        PowerState::Running,
+        true,
+    );
+    power_through_confirmation(
+        &mut client,
+        &mut evidence,
+        vm,
+        "vm.force-shutdown",
+        "force-shut-down",
+        PowerState::Halted,
+        false,
+    );
+    assert!(
+        outside.settle(Duration::from_secs(60), |inventory| {
+            inventory.vms[&vm].power_state == PowerState::Halted
+        }),
+        "the host reports the guest halted to another client"
+    );
+
+    // Start on Server, the member: its review, and the host's refusal (the
+    // guest's disks are on the coordinator's local repository).
+    let place = |client: &mut Client, evidence: &mut Evidence, host: &(HostId, String), tag: &str| {
+        let before = newest_operation(client, vm).map(|(id, _)| id);
+        client.menu(Menu::Vm, "vm.start-on-server");
+        assert_eq!(client.front().as_deref(), Some("vm-placement"));
+        client.snap(evidence, &format!("{tag}-servers"));
+        client.press(&format!("placement-host-{}", host.0));
+        assert!(
+            client.describes(&format!("Destination: {}", host.1)),
+            "the review names the server"
+        );
+        client.snap(evidence, &format!("{tag}-review"));
+        client.press("placement-confirm");
+        let (operation, took) = follow_new_operation(client, vm, before, Duration::from_secs(360));
+        assert_eq!(client.front(), None, "the dialog closed");
+        (operation, took)
+    };
+    let (refused, took) = place(&mut client, &mut evidence, &member, "start-on-member");
+    let (state, detail) = operation_record(&mut client, refused);
+    assert_eq!(state, OperationState::Rejected, "{detail}");
+    assert_eq!(power_state(&mut client, vm), PowerState::Halted);
+    let shown = client
+        .node(&format!("vm-operation-{refused}"))
+        .expect("the General tab shows the operation");
+    client.snap(&mut evidence, "start-on-member-refused");
+    let (row, outcome) = events_outcome(&mut client, &mut evidence, refused, "start-on-member-refused-events");
+    evidence.step(
+        "Start on Server was refused by the host",
+        json!({ "server": member.1, "seconds": took, "record": detail,
+            "general_tab": [shown.label, shown.text], "events_row": row, "events_outcome": outcome }),
+    );
+    assert!(row.iter().any(|cell| cell == "Rejected"), "{row:?}");
+    assert!(
+        !detail.is_empty() && outcome.contains(&detail),
+        "the Events tab shows the host's reason: {outcome:?} does not hold {detail:?}"
+    );
+    evidence.note("start_on_member_refused_with", json!(detail));
+    assert!(
+        outside.settle(Duration::from_secs(10), |inventory| {
+            inventory.vms[&vm].power_state == PowerState::Halted
+        }),
+        "the guest stays halted after the refusal"
+    );
+
+    // Start on Server, the coordinator: accepted.
+    client.nav_view(NavView::Infrastructure);
+    client.select(&object);
+    client.tab(TabId::General);
+    let (accepted, took) = place(&mut client, &mut evidence, &coordinator, "start-on-coordinator");
+    let (state, detail) = operation_record(&mut client, accepted);
+    assert_eq!(state, OperationState::Succeeded, "{detail}");
+    client.wait(
+        "the guest runs on the chosen server",
+        Duration::from_secs(120),
+        |client| {
+            power_state(client, vm) == PowerState::Running
+                && resident_host(client, vm) == Some(coordinator.0)
+        },
+    );
+    client.snap(&mut evidence, "start-on-coordinator-done");
+    evidence.step(
+        "Start on Server was accepted",
+        json!({ "server": coordinator.1, "seconds": took, "record": detail }),
+    );
+    evidence.note("start_on_coordinator_seconds", json!(took));
+    evidence.note("operations", json!(operation_states(&mut client, vm)));
+    evidence.note("guest", json!(name));
+    client.close();
+    evidence.finish();
+}
