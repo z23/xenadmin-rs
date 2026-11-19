@@ -208,7 +208,7 @@ Made on `--demo` and on the scene `console-frame`, so that they are known before
 | Save Screenshot | the button opens the GTK file chooser of the desktop portal ("Save File", app id `xdg-desktop-portal-gtk`) with the name `vm-console.png`; Save writes the file with mode 600, a PNG of the console's 800x600 | injected; frame 031; `stat`, `file` |
 | Fullscreen | the button: sway reports `fullscreen_mode` 1 and no title bar; a second press: 0. In the protocol: `xdg_toplevel.set_fullscreen`, then `unset_fullscreen`. | injected; compositor; protocol; frames 028, 033 |
 | Open in Separate Window | a second top-level window "Database · XenAdmin RS console" with the same app id, tiled beside the first | injected; compositor; frame 034 |
-| A second start | see finding 1 | compositor; protocol |
+| A second start | the second process exits with status 0 and prints nothing; what the first window then shows is finding 1 | compositor; protocol; frame 046 |
 
 ### G. Accessibility
 
@@ -255,6 +255,124 @@ CI package): after a press and with the pointer over another window, the second 
 the first window urgent (two of two); with sway's policy set to `smart` and the second start
 made by sway's launcher (`swaymsg exec`, which exports a token) the first window is focused,
 where the CI package in the same case did nothing. Not shown: any other compositor.
+
+### 2. A held key did not repeat in a guest (fixed in this branch, confirmed on the lab)
+
+What was done: in the console of the Alpine guest, with the focus kept, the key `b` was held
+for two seconds.
+
+What was seen with the CI package: the guest's kernel recorded one press and, two seconds
+later, one release; the text has one `b`. Backspace, the arrows and every other key behave the
+same: holding does nothing more than one press.
+
+Cause: route A takes its keys from a second `wl_keyboard`, and a `wl_keyboard` reports a held
+key once. Repeating is the client's work, at the rate and after the delay the compositor
+announces (`repeat_info`). The guest does not repeat by itself either: QEMU's keyboard has no
+typematic repeat, a viewer is expected to send the repeats. The keystroke fallback repeats,
+because the toolkit repeats its keystrokes; so the route the decision chose had lost what the
+other had.
+
+Fix (`crates/xenadmin-desktop/src/console/keys.rs`, `Repeater`, and
+`wayland_keys.rs`, `SeatEvent::RepeatInfo`): the task that drains the listener every 8 ms
+while a console has the keyboard also presses the key held last again, after the announced
+delay and at the announced rate. Modifiers and lock keys do not repeat; the repeat stops when
+the key goes up, when another key goes down, and when the keyboard leaves. Three unit tests
+hold the timing rules.
+
+Confirmed on the lab with a release binary **built from this branch's commit** `8d6ec1d`: see
+the last row of section D. sway announces 25 repeats a second after 600 ms, and that is what
+the guest recorded.
+
+### 3. The certificate of a pool member: the client says what is wrong and offers no way to act
+
+What was done: connected with only the coordinator's pin, then the Console tab of the member
+h2 (and the same would meet anyone who opens the console of a guest that runs on it).
+
+What was seen (CI): "Console disconnected: TLS verification failed for
+https://192.168.254.12/. Verify this host's certificate and add its endpoint-specific
+fingerprint. Reconnect when the guest or host is available.", five reconnect attempts, and no
+control to review that certificate (frame 078). "Review this endpoint's certificate…" exists
+only in the context menu of a connection that failed and is not live
+(`can_review_certificate` in `crates/xenadmin-ui/src/areas/connections/home.rs`), and the
+model refuses to change trust on a live connection. The way that worked: disconnect the whole
+pool, "Connect…", open "Certificate options", type the member's address into "Certificate
+endpoint", "Inspect certificate", confirm, "Trust certificate", type the password again,
+connect. Nothing in the interface leads there.
+
+For the first connection the same holds in a milder form: the failure is one line in the
+status area, and the review is in the context menu of the tree row only; the General tab of
+the failed connection has no action for it (frames 051, 052).
+
+Not fixed here: where the action belongs is a decision about the command table and the model
+of the connections area, not a slip. It is listed for the owner.
+
+### 4. Smaller observations (CI package, not fixed)
+
+- **The password is asked again after every step.** After the refused first attempt and
+  again after the certificate review the password field is empty. Connecting to a pool of
+  two self-signed servers through the reviews took four typings of the password; with both
+  fingerprints typed up front it took one. This is the documented rule that a password lives
+  in the session only, met at its least convenient.
+- **No F10 and no Alt+letter for the menu bar.** The menus are reached by Tab (ten tab stops
+  before the toolbar) and by the pointer.
+- **Reasons cut off in menus.** In a context menu, an unavailable entry carries its reason
+  after a dash, and the menu has a fixed width: "Install Guest Tools — No CD drive is
+  available. Shut down the VM and add" ends there (frame 043).
+- **"Type the exact endpoint above"** in the certificate review, while the field "Confirm
+  exact endpoint" is below that sentence (frame 055).
+- **Two spellings of the console's buttons.** The tab says "Actual Size", "Save
+  Screenshot…", "Release Input"; the separate window says "Actual size", "Save screenshot…",
+  "Release input" (frames 087, 090).
+- **A stale tree keeps its last power states.** After Disconnect the pool is marked
+  "Disconnected" and its inventory "Stale", and the guests in the tree still read "Running"
+  (frame 074).
+- **sway never focuses on request.** With the fix of finding 1 a second start marks the first
+  window urgent under sway's default policy; it comes forward only under a policy that
+  allows it. That is the compositor's choice.
+
+## What the session says about the gates and about decision 0006
+
+This report does not edit the gate reports. For whoever does:
+
+- **Gate G2, criterion 1** ("connects to the lab pool with a pinned certificate and shows
+  live inventory updates"): done in a real window with the packaged client, section C.
+- **Gate G3, criterion 1, and gate G5, criterion 2** (the recovery gate with the packaged
+  AppImage on an empty state directory): done, section E, in a virtual machine with injected
+  input. The AppImage is the CI build of `e808a2f`, not a release artifact of a tag.
+- **Gate G3, criterion 3** ("one driven desktop session (nested compositor, AT-SPI, physical
+  key injection) covers connections, tables, search, console keyboard input and the host
+  console"): each of the five was covered, sections C, D and F. The compositor was not nested:
+  it ran on the display of a virtual machine. The keys were injected at the machine's
+  keyboard. With the CI package the console's keyboard input had the defect of finding 2.
+- **Decision 0006, the limits it lists.** "No guest recorded a key, and a second host layout
+  was not applied": a guest recorded every key, and a second layout was applied; route A did
+  what the decision expects of it. "Ctrl+Alt+F2 was not sent": Ctrl+Alt+F1 was sent through
+  the row's button and arrived; no such chord was pressed at the keyboard. "GPUI did not
+  deliver pointer motion or buttons": on sway the whole session was driven by pointer presses,
+  and the guest recorded the button presses made on its console; pointer motion inside a guest
+  was not examined. "Clipboard text was not offered": with the window focused, text was
+  copied out and pasted in; without focus it was not tried. "Fullscreen was reported once and
+  did not repeat. Exit was not observed": entered and left twice, on the main window and on a
+  console window. "Screencopy never completed": fit and actual size were looked at in frames
+  of the machine's display, not compared pixel by pixel. The hidden cursor and the guest's
+  cursor were not examined. Route A has now run on sway 1.12 as well as on Hyprland 0.56.2,
+  and on nothing else.
+- **Plan decision D11** (accessibility): the client is on the accessibility bus when the bus
+  is enabled, with a tree that matches the element tree, and Orca finds names and roles to
+  speak, section G. Only the demo's views were read this way.
+
+## Left undone
+
+- The portable archive (`.tar.gz`) was checked against its checksum and not run; only the
+  AppImage was.
+- "Send Ctrl+Alt+Del" (it would have restarted the guest), "Send Clipboard to VM", "Type
+  Clipboard as Keys" and "Copy VM Clipboard" were not pressed. Caps Lock and Num Lock were not
+  tried. Pointer motion inside a guest was not examined.
+- "Remember password in desktop keyring" and automatic connection at start: no keyring.
+- Time to the first frame: one measurement.
+- The two fixes ran on sway only, and the CI package does not have them until the branch is
+  merged and built.
+- Orca was run on the demo, not on views of the lab.
 
 ## What this does not show
 
