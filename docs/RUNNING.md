@@ -13,15 +13,18 @@ when you run Cargo from this checkout. The interface is built with GPUI Kit. Lin
 need a C compiler, pkg-config, and the development files of xcb, xkbcommon, xkbcommon-x11
 and fontconfig (which brings freetype's). The client is linked against `libxcb`,
 `libxkbcommon` and `libxkbcommon-x11` and does not start without them, in a Wayland
-session either. At run time it also needs fontconfig, `libwayland-client` in a Wayland
-session, a Vulkan loader and a Vulkan driver.
+session either. At run time it also needs `libwayland-client` in a Wayland session, a
+Vulkan loader and a Vulkan driver, and a font of one of the families it looks for by name
+(DejaVu Sans and Noto Sans among them); it does not load fontconfig. The
+[installation guide](INSTALLATION.md#runtime-requirements) has the run-time packages for
+Ubuntu 24.04 and Arch as a clean-system check confirmed them.
 
 On Debian or Ubuntu the build packages are the ones CI and the release workflow install:
 `build-essential`, `pkg-config`, `libxkbcommon-dev`, `libxkbcommon-x11-dev`, `libxcb1-dev`,
 `libfontconfig1-dev`, `libvulkan1` and `mesa-vulkan-drivers` (and `desktop-file-utils` for
 packaging). That list was derived from the link line and the build scripts on the
-development workstation (Arch); the workflows with it have not run yet, so it is not yet
-confirmed on Ubuntu 24.04. A real display session is required for a window. Headless
+development workstation (Arch); CI's check and its packaging pass with it on Ubuntu 24.04.
+A real display session is required for a window. Headless
 render checks still require a hardware or software Vulkan implementation (Mesa's lavapipe
 is enough). A release build of the client took about three minutes on the development
 workstation, and the binary is about 110 MB.
@@ -47,12 +50,16 @@ touching the state directory.
 The window is at least 800 by 600. Below a width of 1100 the navigation pane is behind
 its toggle.
 
-Status of the window itself: the GPUI Kit front end has not yet been run in a real window
-on any compositor. It passes its tests on the toolkit's headless test platform, every
-scene renders off screen, and it has been driven headless against the lab
-([report](reports/2026-11-19-gpui-live-headless.md)). Native Wayland presentation, the X11
-path, GPU selection on a hybrid machine, software rendering in a window and installation
-on a clean distribution all remain to be shown for it. What earlier versions of this guide
+Status of the window itself: nobody has used the GPUI Kit front end in a window yet. It
+passes its tests on the toolkit's headless test platform, every scene renders off screen,
+and it has been driven headless against the lab
+([report](reports/2026-11-19-gpui-live-headless.md)). The packaged client has been
+installed on untouched Ubuntu 24.04 and Arch systems in virtual machines and has opened its
+window there with software rendering: in a Wayland compositor that had no seat, and, with
+scripted input, in an X session without Wayland
+([clean-install report](reports/2026-11-19-gpui-clean-install.md)). A Wayland session with
+a person at it, a hardware GPU and GPU selection on a hybrid machine remain to be shown
+for it. What earlier versions of this guide
 recorded about them (native Wayland presentation working, an X11 smoke test through
 Xwayland that needed an explicit adapter) was observed with the Rune interface of the
 releases up to 0.19.0 and does not carry over.
