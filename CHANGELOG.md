@@ -68,6 +68,54 @@ again for that, because no published version reads format 5.
 
 ### Changed
 
+- The interface is rebuilt on a different toolkit, GPUI Kit, and laid out differently.
+  The Rune interface of 0.19.0 and earlier is gone from this version; nothing of the
+  backend changed for it (the core, the XAPI bindings, the journal and the profile store
+  are as they were). What someone who knows 0.19.0 meets:
+  - A menu bar (File, View, Pool, Server, VM, Storage, Templates, Tools, Window, Help) and
+    a toolbar, both filled from one table of commands, which also fills the context menus
+    and the row of actions at the top of a tab. A command that cannot be used now is shown
+    disabled with its reason. What the old window's toolbar buttons opened (Connections,
+    Options, Activity and the others) is reached from the menus, the Home tab and the
+    Notifications view.
+  - Navigation views on the left, chosen at the bottom of the pane: Infrastructure (the
+    tree of connections, pools, servers and guests), Objects (by type), Organization,
+    Saved Searches and Notifications. Below a window width of 1100 the pane is behind a
+    toggle.
+  - Tabs per object in place of the details pane: a guest has General, Memory, Storage,
+    Networking, Console, Performance, Snapshots and Search, and a server, a pool, a
+    repository and a network have their own sets. A surface that only shows state is a
+    tab; a dialog opens only for an action.
+  - Properties dialogs with pages for a guest, a template, a server, a pool, a
+    repository, a network and a disk, in place of the separate settings dialogs.
+  - Wizards with steps and a final review for the longer actions (New VM, New Storage,
+    New Network and Migrate to Server among them).
+  - The Notifications view with its Alerts and Events tabs in place of the Activity
+    dialog: progress, unknown outcomes, recheck, acknowledgement and history are on
+    Events. The members of a batch are folded under the batch, with a checkbox to show
+    them as rows.
+  - The window cannot be made smaller than 800 by 600. The compact layout of the old
+    window (down to 513 by 652) does not exist. A separate console window can be as small
+    as 480 by 640.
+  - Preferences are read from the existing file. The width of the old details pane is
+    read and no longer written, as there is no such pane.
+  - Accessibility: screen readers are not supported, as before. The new interface gives
+    its elements roles, names and descriptions, but no screen reader has been run with
+    it, and the statement stays "not supported" until such a run is recorded.
+
+  How far this is verified, which is less than for the interface it replaces: every area
+  of the old interface is ported, and the new one passes its model's tests, its window
+  tests with real pointer, key and text events on the toolkit's headless test platform,
+  and a render of every scene. On 2026-11-19 it was run against the lab without a window
+  through the supported areas: connecting with pinned certificates and following the
+  inventory, power singly and as a batch with their events, a guest's console with keys
+  typed through the canvas and a host's text console, a console screenshot saved,
+  snapshots, performance, host maintenance with a real evacuation, live migration both
+  ways, disconnecting and connecting again and a second start, and a client closed in the
+  middle of an operation
+  ([report](docs/reports/2026-11-19-gpui-live-headless.md)). See the known issues for
+  what has not been shown.
+
 - Host maintenance and moving a VM within its pool join the supported part
   ([feature scope](docs/FEATURES.md)): entering and leaving maintenance with evacuation,
   a toolstack restart, a reboot or shutdown through maintenance, a live migration with
@@ -196,6 +244,32 @@ again for that, because no published version reads format 5.
   from management (issue 5).
 
 ### Known issues
+
+The new interface has not been shown in a real window. In particular:
+
+- Nothing of it has run on a compositor. Typing into a console in a Wayland session goes
+  through a keyboard path (key codes read by a second listener on the display,
+  [decision 0006](docs/decisions/0006-console-key-codes.md)) that is compiled into the
+  client and has never run with a console; in the headless runs keys reached a guest
+  through the toolkit's test events. The clipboard, the file chooser of the desktop
+  portal, bringing the window forward by starting the client a second time, fullscreen
+  and the window's own decorations are established on the toolkit's test platform only.
+- Over a console the local pointer stays visible and the guest's own cursor is not drawn.
+- No screen reader has been run. The reason a menu item is disabled is in its name or a
+  tooltip, not in an accessible description.
+- No packaged build of it (archive or AppImage) has been installed or run, on the
+  development workstation or on a clean system, and the recovery gate (find the Xen
+  Orchestra VM, start it and use its console with Xen Orchestra down) has not been
+  repeated with one.
+- Recovery of a connection after a lost host, a restarted toolstack or a changed
+  coordinator has not been rerun through the new interface; the core's behaviour there is
+  unchanged and was recorded with earlier versions.
+- The experimental areas are verified in the new interface on fixtures and by rendering
+  only. The lab runs their entries in this changelog cite were made through the Rune
+  interface or through the core's own scenarios
+  ([ledger](docs/PARITY-IMPLEMENTATION.md)).
+- An open drop-down list and the tooltip of a disabled control cannot be captured by the
+  headless scene tool and have not been looked at.
 
 Those of 0.19.0 stand, with these from the lab on 2026-11-12:
 

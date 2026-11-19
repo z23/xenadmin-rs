@@ -60,13 +60,19 @@ XENADMIN_STATE_DIR=/path/to/private/state ./scripts/inspect.sh
 For standalone diagnosis when the desktop is not running, use the authenticated
 [read-only host probe](RUNNING.md#use-the-read-only-host-probe).
 
-## The GPUI build: scenes and inspection
+## The front end: scenes, tests and inspection
 
-The front end is being moved from Rune to GPUI Kit ([plan](GPUI-MIGRATION.md)). Until
-cutover the released client is the Rune binary `xenadmin-rs`, and the GPUI front end is
-built beside it from `crates/xenadmin-gpui` as two binaries: the client `xenadmin-gpui`
-and the scene tool `xenadmin-scenes`. Everything the GPUI client shows is described by
-the toolkit-free model in `crates/xenadmin-ui`.
+The front end is GPUI Kit, in `crates/xenadmin-desktop`, which builds two binaries: the
+client `xenadmin-rs` and the scene tool `xenadmin-scenes`. Everything the client shows is
+described by the toolkit-free model in `crates/xenadmin-ui`. (Until the cutover of the
+[migration](GPUI-MIGRATION.md) this crate was `crates/xenadmin-gpui` with the client
+`xenadmin-gpui`, beside the Rune client that the releases up to 0.19.0 were built from;
+reports of that time use those names.)
+
+Never start the client to try something out unless you mean to open a window on your own
+state: every start other than `--version` and the headless `--scene NAME --snap/--tree`
+form opens a real window, and without `--demo` or `--scene` it takes the state directory
+and restores its connections. Use the scene tool and the tests.
 
 ### Scenes
 
@@ -75,15 +81,20 @@ bar, toolbar, navigation pane, object header, tabs, tab body, status bar, and an
 dialog. The scene tool draws one without a display:
 
 ```sh
-cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes -- --list
-cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes -- \
+cargo run -p xenadmin-desktop --features scenes --locked --bin xenadmin-scenes -- --list
+cargo run -p xenadmin-desktop --features scenes --locked --bin xenadmin-scenes -- \
   demo --theme dark --size 1440x900 --scale 1 \
-  --snap artifacts/gpui/demo.png --tree artifacts/gpui/demo.json
+  --snap artifacts/ui/demo.png --tree artifacts/ui/demo.json
+cargo run -p xenadmin-desktop --features scenes --locked --bin xenadmin-scenes -- --commands
 ```
 
 - `--list` prints every scene: the registered scenes of the model
-  (`xenadmin_ui::scene::registry()`, under their Rune names), then the fixtures of the
-  renderer and of the shell (`gallery-*`, which are not product scenes). `gallery-shell`
+  (`xenadmin_ui::scene::registry()`, under the names they had in the Rune front end), then
+  the fixtures of the renderer and of the shell (`gallery-*`, which are not product
+  scenes).
+- `--commands` prints the command registry, one line per command (id, label, menu path,
+  toolbar slot, context kinds, local row, shortcut, area). The Commands table of the
+  [migration ledger](GPUI-MIGRATION-LEDGER.md) is checked against it. `gallery-shell`
   shows the toolbar and menus of the plan with commands that do nothing, and
   `gallery-empty` the window of a first start.
 - `--snap` writes the frame as a PNG and needs a graphics adapter; a software one (Mesa
@@ -110,18 +121,20 @@ The client takes the same flags, when it is built with the `scenes` feature, and
 before it opens a window, starts the backend or touches the state directory:
 
 ```sh
-cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-gpui -- \
-  --scene demo --snap artifacts/gpui/client-demo.png --tree artifacts/gpui/client-demo.json
+cargo run -p xenadmin-desktop --features scenes --locked --bin xenadmin-rs -- \
+  --scene demo --snap artifacts/ui/client-demo.png --tree artifacts/ui/client-demo.json
 ```
 
 Without `--snap` and `--tree`, `--demo` and `--scene NAME` open a real window on the
 fixture. A preview takes no lock on the state directory, restores no session, opens no
-inspection socket and writes nothing. `--version` is answered before anything else.
+inspection socket and writes nothing. `--version` is answered before anything else. The
+released client is built without the feature `scenes` and refuses `--snap` and `--tree`.
 
-`./scripts/check.sh` renders the scenes into `artifacts/gpui/`, and CI keeps them as the
-artifact `gpui-ui` beside `rune-ui`. A PNG depends on the fonts and the graphics adapter
-of the machine that made it: it is something to look at, and assertions belong on the
-tree and in the tests. As with Rune, a headless render does not establish Wayland
+`./scripts/check.sh` renders every scene into `artifacts/ui/` (with `scenes.txt` and
+`commands.txt`), and CI keeps them as the artifact `ui`. The script unsets `DISPLAY` and
+`WAYLAND_DISPLAY` itself: nothing in it opens a window. A PNG depends on the fonts and the
+graphics adapter of the machine that made it: it is something to look at, and assertions
+belong on the tree and in the tests. A headless render does not establish Wayland
 behaviour, the clipboard, keyboard input or a screen reader.
 
 ### The console view
@@ -129,7 +142,7 @@ behaviour, the clipboard, keyboard input or a screen reader.
 The console is the one view that is not a description. The model
 (`crates/xenadmin-ui/src/areas/console/`) owns every console and describes its tab and
 its detached windows as ordinary blocks, one of which is the element `console-canvas`;
-`crates/xenadmin-gpui/src/console/` draws that element and performs the windows.
+`crates/xenadmin-desktop/src/console/` draws that element and performs the windows.
 `canvas.rs` uploads the session's frame once per frame generation (it looks after every
 poll of the model, since a new frame alone redraws nothing else), paints it letterboxed
 (Fit) or one to one inside a view that scrolls on both axes (Actual size), and sends the
@@ -144,12 +157,16 @@ per detached console and tells the model when one is gone. The scene `console-wi
 renders detached window 1 instead of the main window, and `console-frame` and
 `console-actual-size` carry a synthetic frame. `tests/console.rs` drives all of it on the test platform, which has no
 Wayland seat: the listener's part, the guest's cursor (not drawn) and the wheel's
-direction in a guest are not established by any test here.
+direction in a guest are not established by any test here. The headless runs against the
+lab ([report](reports/2026-11-19-gpui-live-headless.md)) showed a real guest's frames on
+the canvas and keys reaching the guest through the Kit's test key events, which is the
+path without a listener; the listener has run on a real seat only in the spike
+([decision 0006](decisions/0006-console-key-codes.md)), never with a console.
 
 ### The performance charts
 
 The Performance tab describes one block `metrics-chart` per series, which only names the
-chart; `crates/xenadmin-gpui/src/charts/` draws it and reads its data from the model by
+chart; `crates/xenadmin-desktop/src/charts/` draws it and reads its data from the model by
 the block's key at every render (`xenadmin_ui::areas::performance::chart`), so it keeps
 no state and never waits. The element is bespoke because of the gap rule: the Kit's line
 chart joins the neighbours of a missing sample, and here every unbroken run of samples is
@@ -163,7 +180,7 @@ a tall size (`--size 1440x1700`) to see all four.
 
 The scene `large-inventory` (16 hosts, 2,000 guests) has a check and a measurement in
 `tests/large_inventory.rs`. The check counts the rows the tree and the grids build
-(`xenadmin_gpui::stats`) and holds that a frame, a turn of the wheel and a selection change
+(`xenadmin_desktop::stats`) and holds that a frame, a turn of the wheel and a selection change
 build the rows in view and never the inventory; it needs no adapter. The measurement is
 ignored and asserts nothing about speed: it prints the time of the first frame, of a scroll
 and a selection change in the tree and in the Search grid, and of a replaced inventory, as
@@ -171,41 +188,59 @@ p50 and p95, with the frame drawn by the offscreen renderer. Run it in a release
 an idle machine and record the numbers with the CPU and the adapter:
 
 ```sh
-cargo test --release -p xenadmin-gpui --features scenes --locked --test large_inventory -- --ignored --nocapture
+cargo test --release -p xenadmin-desktop --features scenes --locked --test large_inventory -- --ignored --nocapture
 ```
 
 ### Tests
 
 ```sh
 cargo test -p xenadmin-ui --locked                       # the model: no window, no toolkit
-cargo test -p xenadmin-gpui --features scenes --locked   # windows on the Kit's test platform
+cargo test -p xenadmin-desktop --features scenes --locked  # windows on the Kit's test platform
 ```
 
 `tests/renderer.rs` drives the generic renderer and `tests/shell.rs` the shell through
 real events (pointer, keys, text) on a headless window. A test finds an element by its
-id, which is the key the model gave it, or by its accessible label.
+id, which is the key the model gave it, or by its accessible label. `tests/wanted.rs` and
+`tests/wanted_events.rs` hold the window halves of the tests of the Rune front end, area by
+area; `tests/theme.rs` the contrast of controls against their surfaces; `tests/lab_live.rs`
+the ignored runs against the lab ([verification](VERIFICATION.md#live-lab-scenarios)).
+Without `--features scenes` the tests that need the Kit's test harness are not built.
+
+`python3 scripts/gpui_ledger_tables.py check` compares the
+[migration ledger](GPUI-MIGRATION-LEDGER.md) with the tree: every scene registered, every
+test the ledger names as a successor present, the counts of its summary, and, with
+`--commands artifacts/ui/commands.txt`, the Commands table against the registry. The
+sources of the removed Rune crate are read only when `XENADMIN_RUNE_SOURCES` names a
+directory that holds them (for example an export of commit `89d700c`, the last with the
+Rune crate: `git archive 89d700c crates/xenadmin-desktop | tar -x -C DIR`, then
+`XENADMIN_RUNE_SOURCES=DIR/crates/xenadmin-desktop`).
 
 ### Inspection
 
-The inspection socket belongs to the model, not to a front end: the GPUI client starts it
-under the same condition as the Rune client (this process owns the state directory and
-`XENADMIN_DEV_INSPECT=1`), prints the same `Read-only developer inspection:` line, and
-`./scripts/inspect.sh` reads it unchanged. `./scripts/dev.sh` still starts the Rune
-client. To start the GPUI client with inspection:
+The inspection socket belongs to the model, not to the front end: the client starts it
+when this process owns the state directory and `XENADMIN_DEV_INSPECT=1` is set, prints the
+`Read-only developer inspection:` line, and `./scripts/inspect.sh` reads it (the protocol
+is the one the Rune client served). `./scripts/dev.sh` starts the client that way:
 
 ```sh
-XENADMIN_DEV_INSPECT=1 cargo run -p xenadmin-gpui --locked --bin xenadmin-gpui
+./scripts/dev.sh            # XENADMIN_DEV_INSPECT=1 cargo run --locked --bin xenadmin-rs
 ```
 
-One client owns a state directory: started while the other front end runs on the same
-directory, the second start asks the first to show its window and exits. Give the GPUI
-build a directory of its own (`XENADMIN_STATE_DIR`) to run both, and pass the same
-variable to `./scripts/inspect.sh`.
+One client owns a state directory: a second start on the same directory asks the first to
+show its window and exits. To run a development build beside an installed client, give it
+a directory of its own (`XENADMIN_STATE_DIR`) and pass the same variable to
+`./scripts/inspect.sh`. The request to show the window is tested on the Kit's test
+platform; activation of a real window by a second start has not been shown.
 
 ## Verification
 
 `./scripts/check.sh` runs isolated protocol and UI fixtures. It does not connect to a
-production host. Protocol and trust fixtures wait for asynchronous publication with
+production host and opens no window. In order: formatting, Clippy, the guard that the
+model depends on no UI toolkit, the guard that no `rune` crate is in the workspace's
+dependency tree, the workspace's tests, Clippy and the tests of the front end with the
+feature `scenes`, the guard against `block_on` in the front end, a render of every scene,
+the view audit, the vendored RFB tests, the Python tests of `lab/` and `packaging/`, and a
+build that must report both executables. Protocol and trust fixtures wait for asynchronous publication with
 bounded polling deadlines; `XENADMIN_TEST_TIME_SCALE` (an integer from 1 to 20, default 1)
 multiplies those deadlines on slower shared runners and CI sets 4. The scale never changes
 what a fixture asserts. The inspector's Unix-socket tests cover private ownership and modes,

@@ -8,29 +8,37 @@ parts are supported and which are experimental.
 
 ## Runtime requirements
 
-Use a Linux desktop with Vulkan (hardware or Mesa software), libwayland-client,
-libxkbcommon, libxkbcommon-x11 and fontconfig. Python 3.11 or newer is required only for
-the optional installer. Native file selection uses the desktop portal; stored passwords
+Use a Linux desktop with Vulkan (hardware or Mesa software), libxcb, libxkbcommon,
+libxkbcommon-x11, libwayland-client and fontconfig. The client is linked against libxcb,
+libxkbcommon and libxkbcommon-x11 and does not start without them, in a Wayland session
+either; the packages bundle no desktop or graphics library. Python 3.11 or newer is
+required only for the optional installer. Native file selection uses the desktop portal; stored passwords
 use the session's Secret Service provider. A missing keyring leaves manual credentials
 available. GPU drivers and desktop libraries are supplied by the operating system.
 
 Ubuntu 24.04 is the build baseline in CI. A build made on a newer distribution can require
 its newer glibc; wrapping that build in an AppImage does not lower its runtime requirements.
-The CI-built packages have been installed and started on untouched Ubuntu 24.04 and Arch
-images with only these packages added
-([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-11-clean-install.md)):
+
+The packages of 0.19.0 and earlier, which carry the Rune interface, were installed and
+started on untouched Ubuntu 24.04 and Arch images with only a handful of packages added
+([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-11-clean-install.md)).
+That check has not been repeated for the GPUI Kit front end of the version in development:
+no package of it has been installed or run anywhere yet, and no AppImage of it has been
+built. The lists below are therefore expected, not confirmed: they are that report's lists
+with the xcb library the new client is linked against added.
 
 ```sh
 # Ubuntu 24.04
-sudo apt-get install libvulkan1 mesa-vulkan-drivers libwayland-client0 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1
+sudo apt-get install libvulkan1 mesa-vulkan-drivers libwayland-client0 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libfontconfig1
 # Arch
-sudo pacman -S --needed vulkan-icd-loader vulkan-swrast wayland libxkbcommon libxkbcommon-x11 fontconfig
+sudo pacman -S --needed vulkan-icd-loader vulkan-swrast wayland libxcb libxkbcommon libxkbcommon-x11 fontconfig
 ```
 
 `mesa-vulkan-drivers` and `vulkan-swrast` supply the software Vulkan driver, which is
-enough on a machine with no GPU; a hardware driver replaces it where there is one. Without
-any Vulkan driver the client stops with a message saying so. The client has been used as
-a Wayland application; an X session without Wayland has had a scripted check only, screen
+enough on a machine with no GPU; a hardware driver replaces it where there is one. What
+the new client does without any Vulkan driver has not been tried. The client of 0.19.0 and
+earlier has been used as a Wayland application, and an X session without Wayland has had a
+scripted check only; the new front end has not yet run in a real window in either. Screen
 readers are not supported and multi-monitor use is unverified.
 
 ## Portable archive
