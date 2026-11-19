@@ -5526,5 +5526,134 @@ fn lab_p3_recovery_changed_certificate() {
         json!({ "ended_after_seconds": ended.map(seconds), "front": client.front(), "says": said,
             "model": state, "status_bar": connection_status(&mut client) }),
     );
-    panic!("exploration: read the evidence and write the rest");
+    let refusal = state["connection_error"]
+        .as_str()
+        .or(state["error_line"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(ended.is_some(), "the attempt did not end");
+    assert_eq!(state["current"], json!(false), "{state}");
+    assert_eq!(state["has_inventory"], json!(false), "{state}");
+    assert!(
+        refusal.contains("TLS verification failed")
+            || refusal.to_lowercase().contains("certificate"),
+        "the attempt ended with the certificate's refusal: {refusal}"
+    );
+    assert!(
+        !refusal.to_lowercase().contains("password")
+            && !refusal.to_lowercase().contains("authentication")
+            && !refusal.contains("SESSION_"),
+        "the host was not asked to log in: {refusal}"
+    );
+    assert!(
+        client.says("Connection failed"),
+        "the window says the connection failed"
+    );
+    evidence.note("refusal", json!(refusal));
+    evidence.note(
+        "status_bar_when_refused",
+        json!(connection_status(&mut client)),
+    );
+
+    // Review this endpoint's certificate…, from the Home tab.
+    show_home(&mut client);
+    let rows = table_rows(&mut client, "connections");
+    assert_eq!(rows.len(), 1, "one saved connection: {rows:?}");
+    client.press(&rows[0].0);
+    client.snap(&mut evidence, "home-with-the-failed-connection");
+    client
+        .try_local("server.review-certificate")
+        .expect("Review this endpoint's certificate… for the failed connection");
+    assert_eq!(client.front().as_deref(), Some("connect-dialog"));
+    let preset = client.node("inspect-endpoint").and_then(|node| node.value);
+    let password_field = client.node("password").and_then(|node| node.value);
+    client.press("inspect-certificate");
+    client.wait(
+        "the certificate review",
+        Duration::from_secs(30),
+        |client| client.element("certificate-review").is_some(),
+    );
+    client.snap(&mut evidence, "certificate-changed-review");
+    let review = review_lines(&mut client, "certificate-review");
+    let previous = client
+        .nodes()
+        .into_iter()
+        .find(|node| node.label.as_deref() == Some("Previous SHA-256"))
+        .and_then(|node| node.value);
+    let shown = client
+        .nodes()
+        .into_iter()
+        .find(|node| node.label.as_deref() == Some("Presented SHA-256"))
+        .and_then(|node| node.value);
+    evidence.step(
+        "the review of the changed certificate",
+        json!({ "inspection_endpoint_preset": preset, "password_field": password_field,
+            "previous_sha256": previous, "presented_sha256": shown, "review": review }),
+    );
+    assert!(
+        client.describes("Certificate changed"),
+        "the review is headed Certificate changed"
+    );
+    assert_eq!(previous.as_deref(), Some(wrong.as_str()), "the saved pin");
+    assert_eq!(
+        shown.as_deref(),
+        Some(presented.as_str()),
+        "the fingerprint the host presents, as the core inspected it"
+    );
+    assert!(
+        password_field.as_deref().is_none_or(str::is_empty),
+        "the form opens without a password"
+    );
+    let refused = client
+        .try_press("accept-certificate")
+        .expect_err("the replacement needs the endpoint and the confirmation");
+    evidence.note("replacement_refused_until_confirmed", json!(refused));
+    let endpoint = client.model(|m| {
+        m.workspace
+            .trust
+            .observation
+            .as_ref()
+            .map(|observation| observation.endpoint.to_string())
+            .expect("the observation")
+    });
+    client.type_into("confirm-certificate-endpoint", &endpoint);
+    client.press("certificate-verified");
+    client.press("accept-certificate");
+    assert!(
+        client.element("certificate-review").is_none(),
+        "the form is back"
+    );
+    let pin = client
+        .node("certificate-fingerprint")
+        .and_then(|node| node.value);
+    evidence.step("the pin was replaced", json!({ "pin_field": pin }));
+    assert_eq!(pin.as_deref(), Some(presented.as_str()));
+
+    // With the right pin and the lab's password the connection comes up.
+    lab_support::type_password(&mut client, &lab, "password");
+    client.press("connect");
+    let took = client.wait(
+        "the connection is current",
+        Duration::from_secs(120),
+        |client| {
+            client.model(|m| {
+                m.inventory.is_some() && m.snapshot.as_ref().is_some_and(|s| s.is_current())
+            })
+        },
+    );
+    assert_eq!(client.front(), None, "the connect dialog closed");
+    client.snap(&mut evidence, "connected-after-the-review");
+    evidence.step(
+        "connected with the replaced pin",
+        json!({ "seconds": seconds(took), "status_bar": connection_status(&mut client) }),
+    );
+    let leaked: Vec<String> = std::fs::read_dir(lab_support::state_directory())
+        .expect("state directory")
+        .flatten()
+        .filter(|entry| lab_support::holds_password(&lab, &entry.path()))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(leaked.is_empty(), "the password is in {leaked:?}");
+    client.close();
+    evidence.finish();
 }
