@@ -3,9 +3,10 @@
 Note added after the cutover of the code, later the same day: the crate this report calls
 `crates/xenadmin-gpui` is `crates/xenadmin-desktop` now, and the tests are run with
 `cargo test -p xenadmin-desktop --features scenes --locked --test lab_live -- --ignored --exact NAME --nocapture --test-threads=1`.
-The runs themselves were made at commit `e2d4572`. The last round of fixes to the model and the renderer
-(branches `port/f1` and `port/f2`) and the cutover were merged after them, and the scenarios were not
-run again on a later tree. The text below is unchanged.
+The runs described below were made at commit `e2d4572`, before the last round of fixes to the model
+and the renderer (branches `port/f1` and `port/f2`) and before the cutover. Every scenario was run
+again after the cutover, at commit `56fedbd`, and passed: see
+[Repeated after the cutover](#repeated-after-the-cutover) at the end. The text between is unchanged.
 
 This report records what was run of the GPUI front end against the project's disposable
 lab for the gates G2 and G3 of [the migration plan](../GPUI-MIGRATION.md), with what
@@ -293,3 +294,61 @@ Read with `lab_state` after the last scenario: both servers enabled; `XOA` runni
 halted as it was found; no snapshot in the pool; the description of `lab-guest` as it was.
 The tools guest was found on h2 when the first runs began and is left on h1, the baseline
 named for this work.
+
+## Repeated after the cutover
+
+On 2026-11-19 between 01:24 and 01:36 UTC (12:24 to 12:36 local), after the two rounds of fixes
+and the cutover had been merged, every test above was run again at commit `56fedbd`: the tree of
+the merge `e808a2f` with the one test file changed that adds the utility named below. Each ran on
+a fresh state directory, one at a time, with no display (`DISPLAY` and `WAYLAND_DISPLAY` unset).
+All passed at the first attempt, and no scenario was changed for it.
+
+| Order | Test | Result | Duration | Evidence directory |
+| --- | --- | --- | --- | --- |
+| 1 | `lab_g2_add_server_and_follow_the_host` | passed | 18.7 s | `1795051461-g2-add-server-and-follow` |
+| 2 | `lab_p3_power_and_events` | passed | 44.5 s | `1795051480-p3-1-power-and-events` |
+| 3 | `lab_p3_console` | passed | 127.8 s | `1795051525-p3-3-console` |
+| 4 | `lab_p3_console_save_screenshot` | passed | 16.3 s | `1795051653-p3-3-console-save-screenshot` |
+| 5 | `lab_p3_snapshots` | passed | 42.8 s | `1795051670-p3-4-snapshots` |
+| 6 | `lab_p3_performance` | passed | 17.6 s | `1795051713-p3-5-performance` |
+| 7 | `lab_place_tools_guest_on_the_member` (new utility) | passed | 23.3 s | `1795051785-place-tools-guest-on-the-member` |
+| 8 | `lab_p3_host_maintenance` | passed | 34.9 s | `1795051808-p3-6-host-maintenance` |
+| 9 | `lab_baseline_tools_guest_on_the_coordinator` | passed | 22.6 s | `1795051854-baseline-tools-guest-on-the-coordinator` |
+| 10 | `lab_p3_migration` | passed | 33.5 s | `1795051877-p3-7-migration` |
+| 11 | `lab_p3_connection_recovery` | passed | 26.8 s | `1795051911-p3-8-connection-recovery` |
+| 12 | `lab_client_closed_in_the_middle_of_an_operation` | passed | 34.8 s | `1795051938-closed-in-the-middle-of-an-operation` |
+| 13 | `lab_p3_power_batch` | passed | 186.4 s | `1795051973-p3-1-power-batch` |
+
+`lab_state` was read before the first and after the last. Around the maintenance scenario the Xen
+Orchestra appliance was moved to the coordinator and back with the core's own scenario
+`lab_move_xo_appliance` (25.6 s and 10.6 s), as in the first run.
+
+One test is new. In the first run the tools guest happened to be on the member when the
+maintenance scenario began, which is what made its evacuation a real one; the baseline since then
+has the guest on the coordinator, where an evacuation of the member would have nothing to move.
+`lab_place_tools_guest_on_the_member` moves the guest to the member with the application's own
+Migrate to Server wizard (3.3 s here) when it is found on the coordinator, and the baseline test
+moves it back afterwards. In this run the member held `lab-tools-1794263807` before maintenance,
+the evacuation review named it, entering maintenance took 4.6 s with the guest moved to the
+coordinator and the member marked "Disabled" in the tree, leaving took 1.0 s, and the scenario
+moved the guest back (3.4 s).
+
+Other values of this run, from its summaries: Shut Down 10.5 s and Start 5.8 s in scenario 2, with
+Start refused for the running guest with the same reason as before; an 800 by 600 frame of the
+guest and a 640 by 384 frame of the host's text console, and the typed command painting 0.49 of
+the canvas red; the screenshot an 800 by 600 PNG with mode 600; the snapshot taken in 1.8 s,
+reverted to in 15.8 s and deleted in 0.3 s; 15 charts of the guest with samples 0.1 s after the tab
+opened, the first with 120 valid samples; the migration 3.4 s there and 3.2 s back; the reconnection
+and the connection of the second start 0.2 s each with no password in the state directory; the
+closed client's shutdown reconciled as one record, "Shut down", "Succeeded"; the two batches 11.5 s
+and 7.2 s, each one "Succeeded" entry on the Events tab. Three frames were looked at
+(`07-in-maintenance.png`, `09-console-command-echo.png` and `15-events-history.png` of their
+scenarios).
+
+What the repeat is and is not: the same as the first run. It shows the scenarios above for the
+tree after the cutover; it was headless, with no window, no compositor and no seat, and it adds no
+path that the first run left out (see "What was not run").
+
+The lab afterwards, read with `lab_state`: both servers enabled; `XOA` running on h2;
+`lab-tools-1794263807` and `lab-guest-1794316526` running on h1; `lab-desktop-1794365323` halted;
+no snapshot in the pool.

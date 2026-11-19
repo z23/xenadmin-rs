@@ -261,8 +261,9 @@ The new interface has not been shown in a real window. In particular:
   development workstation or on a clean system, and the recovery gate (find the Xen
   Orchestra VM, start it and use its console with Xen Orchestra down) has not been
   repeated with one.
-- The lab runs of 2026-11-19 were made before the last fixes to the interface and before
-  the old one was removed, and were not repeated afterwards.
+- The lab runs of 2026-11-19 were headless: the interface was driven without a window.
+  They were repeated, and passed, after the last fixes to the interface and after the old
+  one was removed.
 - Recovery of a connection after a lost host, a restarted toolstack or a changed
   coordinator has not been rerun through the new interface; the core's behaviour there is
   unchanged and was recorded with earlier versions.

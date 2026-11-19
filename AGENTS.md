@@ -87,7 +87,7 @@ and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
 - No packaged build (archive, AppImage) of the GPUI front end has been installed on a
   clean system, and the recovery gate of README.md has not been repeated with one.
 - Live evidence of the GPUI front end is the headless run of 2026-11-19 against the lab
-  ([report](docs/reports/2026-11-19-gpui-live-headless.md)), made at commit `e2d4572`, before
-  the last fixes and the cutover, and not repeated since. Connection recovery through a
-  lost host, a toolstack restart or a coordinator change was not rerun through it, and the
+  ([report](docs/reports/2026-11-19-gpui-live-headless.md)), repeated the same day after the
+  last fixes and the cutover, at commit `56fedbd`. Connection recovery through a lost host,
+  a toolstack restart or a coordinator change was not rerun through it, and the
   experimental areas were verified on fixtures and by rendering only.

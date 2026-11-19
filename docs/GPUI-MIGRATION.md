@@ -18,11 +18,12 @@ Done:
   disposition in the ledger (154 moved, 118 ported, 94 split, 4 retired, 1 open).
 - Verified on fixtures and headless: the model's tests, the front end's tests with real events on the
   Kit's headless test platform, and a render of every scene by `./scripts/check.sh`.
-- Verified live, headless, on the lab on 2026-11-19: the supported areas, by thirteen tests that run
-  the real shell and core without a window
-  ([report](reports/2026-11-19-gpui-live-headless.md)). Those runs were made at commit `e2d4572`, before the
-  last round of fixes to the model and the renderer and before the cutover, and were not repeated on
-  a later tree ([G3 report](reports/2026-11-19-gpui-gate-g3.md), criterion 2).
+- Verified live, headless, on the lab on 2026-11-19: the supported areas, by the ignored tests of
+  `crates/xenadmin-desktop/tests/lab_live.rs`, which run the real shell and core without a window
+  ([report](reports/2026-11-19-gpui-live-headless.md)). They were first run at commit `e2d4572` and
+  were all repeated, passing, after the last round of fixes and the cutover, at commit `56fedbd`.
+  The paths they leave out are listed in the [G3 report](reports/2026-11-19-gpui-gate-g3.md),
+  criterion 2.
 - The documents of "Repository and documentation changes", the gate reports and the ledger's final
   pass.
 
@@ -48,7 +49,7 @@ Gates. No gate is called passed unless every one of its criteria is met.
 | G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
 | G1 | Its subject is in place (the model, its guard against a toolkit, the ledger); its first criterion named the Rune front end, which is removed | [G2 report](reports/2026-11-19-gpui-gate-g2.md), "Gate G1, for the record" |
 | G2 | Not passed. Criteria 2, 3 and 4 met; 1 partly (the connection to the lab was shown headless, not by the built client in a window); 5 partly (a test and the construction, no review of the scenes) | [G2](reports/2026-11-19-gpui-gate-g2.md) |
-| G3 | Not passed. Criterion 2 partly met, headless; 4 partly met (one test row open); 1 (the recovery gate with the packaged AppImage) and 3 (a driven desktop session) not met; 5 can no longer be met (the Rune build is removed) | [G3](reports/2026-11-19-gpui-gate-g3.md) |
+| G3 | Not passed. Criterion 2 partly met, headless; 4 partly met (one test row open); 1 (the recovery gate with the packaged AppImage) and 3 (a driven desktop session) not met; 5 was met at the last commit that held the Rune build (`89d700c`) and cannot be run again | [G3](reports/2026-11-19-gpui-gate-g3.md) |
 | G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
 | G5 | Not passed. Criterion 1 met (`./scripts/check.sh` passes, no `rune` crate); 2 (the packaged recovery gate) and 3 (CI builds the packages) not met | [G5](reports/2026-11-19-gpui-gate-g5.md) |
 
