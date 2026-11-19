@@ -1,30 +1,34 @@
 # XenAdmin RS
 
 A Linux desktop client for direct management of XCP-ng hosts and pools.
-The UI uses Rune. The backend uses Rust and XAPI.
+The interface is built with GPUI Kit. The backend uses Rust and XAPI.
 
 The client must work when Xen Orchestra is unavailable. Connections, credentials,
 inventory, VM consoles, and host discovery must work without an XO service.
 The client requires a reachable XAPI service and the user's host permissions.
 
-![XenAdmin RS listing the virtual machines of a two-host XCP-ng pool, with the selected guest's details and actions beside the table](docs/images/lab-inventory.png)
+![XenAdmin RS connected to a two-host XCP-ng pool: the pool, its servers and guests in the navigation tree, and the General tab of the selected guest](docs/images/lab-inventory.png)
 
-*The inventory of a pool the client is connected to directly: its two hosts and their
-guests in the tree, each guest's state, host and size in the table, and the selected
-guest's details and actions on the right.*
+*A pool the client is connected to directly: the pool, its two servers and their guests in
+the tree, the tabs of the selected guest, and its General tab. The menu bar and the
+toolbar offer the commands that apply to the selection.*
 
-![A guest's graphical desktop shown in the client's console view, with a terminal open in the guest](docs/images/lab-console.png)
+![The Console tab of a guest, showing the guest's text console after a login](docs/images/lab-console.png)
 
 *A guest's console, opened through the host that runs the guest. Keyboard and pointer go
 to the guest, and text on the clipboard can be typed into it as key presses.*
 
-![Live CPU charts for one guest in the client's performance view](docs/images/lab-performance.png)
+![The Performance tab of a guest, with a CPU chart of the last ten minutes](docs/images/lab-performance.png)
 
 *A guest's performance, read from its host every five seconds, with longer ranges and a
 choice of data sources.*
 
-The pictures are of version 0.19.0 connected to the project's
-[disposable lab](lab/README.md), a pool of two nested XCP-ng 8.3 hosts.
+The pictures are headless frames, not photographs of a window: on 2026-11-19 the client's
+interface was run without a display against the project's
+[disposable lab](lab/README.md), a pool of two nested XCP-ng 8.3 hosts, and these are
+frames its renderer drew off screen during those runs
+([report](docs/reports/2026-11-19-gpui-live-headless.md)). They are of the development
+tree after the front end moved to GPUI Kit, which has not yet been shown in a real window.
 
 ## Project status
 
@@ -36,9 +40,26 @@ connections and certificate trust, the live inventory, VM power, the console, sn
 performance charts and activity; on the main branch, towards 0.20.0, host maintenance
 and moving a VM within its pool have joined it. Everything else below is experimental: implemented, in
 most cases with one recorded successful run, and marked with a notice in the client. The
-[feature scope](docs/FEATURES.md) draws that line. The Cargo workspace builds the Rune
-desktop application, a read-only host probe and a small sandbox helper. No Xen Orchestra
+[feature scope](docs/FEATURES.md) draws that line. The Cargo workspace builds the desktop
+application, a read-only host probe and a small sandbox helper. No Xen Orchestra
 service is used.
+
+The main branch differs from 0.19.0 in its whole front end. The released versions were
+built with the Rune toolkit; the main branch is built with GPUI Kit, with a new layout
+(a menu bar and toolbar, navigation views, tabs per object, Properties dialogs and
+wizards), by the [migration plan](docs/GPUI-MIGRATION.md), whose "Status" section says
+what is established. In short: every area of the old interface is ported; the model's
+tests, the interface's tests on the toolkit's headless test platform and a render of
+every scene pass; and on 2026-11-19 the new interface was driven headless against the lab
+through the supported areas
+([report](docs/reports/2026-11-19-gpui-live-headless.md)). Not established: nothing of the
+new front end has run in a real window on a compositor, so the Wayland keyboard path of
+the console, the clipboard, the file chooser, window activation, fullscreen and window
+decorations are untried outside the test platform; no screen reader has been run; no
+packaged build of it has been installed or run, and the recovery gate below has not been
+repeated with one. The qualification described in the rest of this section was obtained
+with the released versions, through the Rune interface or through the core's own lab
+scenarios.
 
 Implemented scope, as reviewed operations with durable partial and unknown outcomes:
 saved and concurrent connections with certificate trust, credentials and endpoint failover;
@@ -53,11 +74,13 @@ vApps and bulk actions; a portable archive and an AppImage. The
 the completion authority; an implemented row is not a qualified workflow until its live,
 failure and interruption paths are recorded.
 
-Verification so far. The offline suite (core, protocol, TLS and Rune fixtures) runs in CI.
+Verification so far. The offline suite (core, protocol and TLS fixtures, the interface's
+model and its headless window tests, and a render of every scene) runs in CI.
 Live qualification runs against a disposable nested XCP-ng 8.3.0 lab:
 the [live qualification report](docs/reports/2026-11-09-lab-qualification.md) records
 a hundred and eleven scenarios, including three driven desktop sessions, the last with the packaged
-AppImage, and the operator's sessions on a real seat, covering connections and recovery, power and consoles, snapshots and checkpoints,
+AppImage, and the operator's sessions on a real seat (all of them with the Rune interface
+of the released versions), covering connections and recovery, power and consoles, snapshots and checkpoints,
 devices, storage and networking, shared NFS and iSCSI repositories with HA, live migration
 and evacuation, host maintenance, reboots and power cycles, coordinator handover and
 endpoint failover, together with sixty-six numbered findings and observations: host
@@ -82,12 +105,13 @@ cargo build --locked --workspace
 Explore the interface using synthetic inventory:
 
 ```sh
-./target/debug/xenadmin-rs -- --demo
+./target/debug/xenadmin-rs --demo
 ```
 
-Use **Add connection** to enter a host endpoint and session-only credentials. On narrow
-windows, use **Connect** and **Details** in the compact controls. Self-signed installations
-can use independently verified, endpoint-specific certificate fingerprints.
+Use **Add Server…** (toolbar, Server menu, or the Home tab) to enter a host endpoint and
+session-only credentials. Self-signed installations can use independently verified,
+endpoint-specific certificate fingerprints, under **Certificate options**. The window is
+at least 800 by 600; below 1100 wide the navigation pane is behind its toggle.
 The demo cannot issue host actions.
 
 The [running guide](docs/RUNNING.md) covers Linux dependencies, certificate trust,
@@ -120,7 +144,10 @@ Orchestra appliance imported through the client and managing the pool: XO shut d
 unreachable, the VM located, started and consoled through the direct host connection, and XO
 answering again afterwards. It was run through the core facade and then through the packaged
 0.17.0 AppImage started on an empty state directory, with keyboard input in the appliance's
-console and the client's connections observed going to the two pool hosts only.
+console and the client's connections observed going to the two pool hosts only. That
+AppImage carried the Rune interface. The gate has not been repeated with a packaged build
+of the GPUI front end; it is what the operator's run in a real window has to show before a
+release (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
 
 ## Release history
 
@@ -163,10 +190,15 @@ The per-increment reports under `docs/reports/` are linked from the ledger rows 
 
 ## Development
 
-The workspace pins Rust 1.99.1 and Rune
-`f3d04f3f2069d177d04c963b0ba9f6b2065e46eb`; `Cargo.lock` pins the dependency graph.
-`xenadmin-core` owns protocol and operation behavior without Rune dependencies.
-`xenadmin-desktop` adapts snapshots and console frames to Rune. `xenadmin-xapi` holds the
+The workspace pins Rust 1.99.1 and `gpui-kit` at exactly 0.9.1 (which brings the GPUI
+crates `gpui-pre` 0.3.12); `Cargo.lock` pins the dependency graph and
+[sources](docs/SOURCES.md) lists the reviewed versions.
+`xenadmin-core` owns protocol and operation behavior without any UI toolkit.
+`xenadmin-ui` is the model of the interface, also without a toolkit: selection, tabs, the
+command table, editors, reviews and scenes, described as plain data.
+`xenadmin-desktop` is the GPUI Kit front end: it draws what the model describes, shows
+console frames and charts, and builds the client `xenadmin-rs` and the headless scene tool
+`xenadmin-scenes`. `xenadmin-xapi` holds the
 generated XAPI record views, enumerations and catalogue. `xenadmin-process` is the
 post-fork helper for the offline image sandbox. `host-probe` consumes the same core
 through its public facade.
@@ -179,4 +211,8 @@ embedded-font notices. This is an independent project, not an official
 XCP-ng or Vates application.
 
 Use `./scripts/dev.sh` to enable private local inspection of the running desktop, and
-`./scripts/inspect.sh` to query it. See [development diagnostics](docs/DEVELOPMENT.md).
+`./scripts/inspect.sh` to query it. See [development diagnostics](docs/DEVELOPMENT.md),
+which also covers the scene tool and the interface's tests. The released versions up to
+0.19.0 were built with the Rune toolkit; the [migration plan](docs/GPUI-MIGRATION.md) and
+its [ledger](docs/GPUI-MIGRATION-LEDGER.md) record the move and what became of every
+command, scene and test.

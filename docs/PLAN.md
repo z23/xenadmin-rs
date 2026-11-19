@@ -7,13 +7,22 @@ An operator can find, start, and open the console of the Xen Orchestra VM while 
 is unreachable. All application connections use XAPI and the advertised host endpoints.
 
 This is an authorized reimplementation. The reference client supplies behavioral evidence.
-The new UI uses Rune and the backend uses Rust. [Feature scope](FEATURES.md) owns the
+The interface uses GPUI Kit and the backend uses Rust. [Feature scope](FEATURES.md) owns the
 workflow list. [Architecture](ARCHITECTURE.md) owns the implementation boundaries.
-The front end is moving to GPUI Kit by the plan in [GPUI-MIGRATION.md](GPUI-MIGRATION.md).
-The Rune binary stays the released artifact until that migration's cutover gate.
-Phase 0 did not pass its gate as written; the evidence is in the spike reports, what stayed
-open is accepted in [decision 0006](decisions/0006-console-key-codes.md), and the operator
-directed on 2026-11-17 that the migration be finished.
+
+The interface was first built with the Rune toolkit, and every release up to 0.19.0 carries
+that interface. The front end was moved to GPUI Kit by the plan in
+[GPUI-MIGRATION.md](GPUI-MIGRATION.md): the Rune crate is removed and the client binary is
+built from the GPUI Kit front end. Phase 0 of that plan did not pass its gate as written;
+the evidence is in the spike reports, what stayed open is accepted in
+[decision 0006](decisions/0006-console-key-codes.md), and the operator directed on
+2026-11-17 that the migration be finished. The plan's "Status" section gives the state of
+each gate: the port is complete and verified on fixtures and headless, the supported areas
+were driven headless against the lab on 2026-11-19, and nothing of the new front end has
+yet run in a real window, with a screen reader or from a packaged build. Milestones M0 to
+M6 below are kept as they were written, with Rune as the toolkit they name; where one of
+them speaks of a Rune window or a Rune fixture it describes how that milestone was first
+met, not the present front end.
 
 ## Retained parity delivery
 
@@ -77,8 +86,9 @@ The development client includes direct concurrent pool connections, inventory an
 reviewed VM/device/snapshot administration, host/pool/storage/network workflows, metrics,
 activity, organization and bounded XVA/raw/VHD/OVF transfers. The
 [0.13 checkpoint](reports/2026-11-08-checkpoint-0.13.md) records its packaged subset.
-Further increments and outstanding workflows are tracked in the per-row ledger and their reports. Implemented behavior has protocol, journal, Rune and native synthetic-render
-checks, with remaining workflows explicitly open.
+Further increments and outstanding workflows are tracked in the per-row ledger and their reports. Implemented behavior has protocol, journal, interface-model and headless window checks and
+synthetic scene renders (made with the Rune front end when each increment landed, and with
+the GPUI Kit front end since the cutover), with remaining workflows explicitly open.
 
 Reviewed bulk deletion reuses the single-VM deletion worker under durable parent/child
 ownership. Its scope and recovery evidence are recorded in the
@@ -149,7 +159,9 @@ workflows and relevant acceptance checks pass.
 ## M0: Qualify the dependencies and host protocols
 
 Build the smallest real Rune application and direct-host probes before creating the full UI.
-M0 resolves the uncertainties that could force a redesign.
+M0 resolves the uncertainties that could force a redesign. (Written for the first toolkit,
+Rune, and kept as history; the same questions were asked of GPUI Kit by the spikes of
+[the migration plan](GPUI-MIGRATION.md), and those the spikes left open are listed there.)
 
 1. Create the Cargo workspace, pin a Rust toolchain compatible with the selected Rune
    revision, and commit `Cargo.lock`. Begin with Rune commit
@@ -177,8 +189,9 @@ and actual desktop results in a compatibility report. The window, read-only host
 and interactive console run from the local build. Supply sanitized protocol fixtures.
 Keep a written list of any unverified platform behavior.
 
-If a Rune platform gap blocks the required workflow, first test an application adapter or
-a pinned upstream fix. A framework change needs an updated design decision. If JSON-RPC is
+If a platform gap of the toolkit blocks the required workflow, first test an application adapter or
+a pinned upstream fix. A framework change needs an updated design decision (the change from
+Rune to GPUI Kit has one: [decision 0005](decisions/0005-gpui-kit-front-end.md)). If JSON-RPC is
 missing on a supported target, add XML-RPC behind the existing transport boundary and prove
 the same behavior there.
 
@@ -239,7 +252,7 @@ Finish connection editing, search, keyboard shortcuts, task details, error recov
 empty states, theme choices, HiDPI behavior, and accessible labels. Verify the file picker
 under Wayland and X11. A missing drag-and-drop capability must leave a working picker.
 
-Build CI jobs for formatting, Clippy, unit and protocol tests, Rune headless fixtures,
+Build CI jobs for formatting, Clippy, unit and protocol tests, headless interface fixtures,
 and Linux release artifacts. Hardware and lab jobs remain opt-in, use isolated fixtures,
 and report their target identity. Keep CI infrastructure separate from managed hosts.
 

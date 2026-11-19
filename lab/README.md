@@ -136,7 +136,11 @@ content. A completed fixture test is not evidence of a completed live scenario.
    keys, packet captures and guest disk images stay outside the repository. The
    pictures in the project's README are the exception the operator asked for: they are of
    this lab, and were checked to show nothing but its own names, identifiers and isolated
-   addresses.
+   addresses. Since 2026-11-19 they are three frames of the headless runs of the GPUI
+   front end against this lab (copied from the evidence of the G2, console and performance
+   scenarios), checked the same way: the pool, its two servers, its guests and
+   repositories, the coordinator's address on the isolated network, and nothing of the
+   workstation.
 
 Recovery utilities in the harness (ignored tests like the scenarios) put the lab back
 together through the client after a failed experiment: `lab_forget_dead_coordinator_through_survivor`

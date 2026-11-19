@@ -1,5 +1,12 @@
 # Choose one executable with a separate application core
 
+This decision was taken when the interface toolkit was Rune, and its text below is kept as
+it was written. The front end has since moved to GPUI Kit
+([decision 0005](decisions/0005-gpui-kit-front-end.md), [migration plan](GPUI-MIGRATION.md));
+the decision itself is unchanged by that: one executable, the toolkit on the main thread,
+the core on a background runtime, and no toolkit type in the core. Where the text says
+Rune, read the desktop front end.
+
 ## Problem
 
 The application must manage XCP-ng directly when XO is unavailable. Rune introduces a UI
@@ -72,6 +79,10 @@ M0 resolves these questions without changing the product goal:
 - Which RFB library passes XCP-ng's authenticated tunnel and keyboard negotiation checks?
 - Which machine-readable API export matches the chosen host lineage and supports reproducible Rust bindings?
 - Which Rune changes, if any, are needed for Wayland dialogs, physical console input, and Orca?
+  (Asked of Rune at the time. For GPUI Kit the same three are open in a different way:
+  the portal file chooser and the Wayland key path of the console have not run in a real
+  window, and no screen reader has been run; see the "Status" section of the
+  [migration plan](GPUI-MIGRATION.md).)
 - Which release format works on the target systems, including software-rendered workstations?
 
 ## Next implementation step

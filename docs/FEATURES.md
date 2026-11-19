@@ -16,7 +16,7 @@ Milestone order and dependencies are defined in the [implementation plan](PLAN.m
 
 | Workflow | Milestone | Required behavior |
 | --- | --- | --- |
-| Desktop and protocol qualification | M0 | Real Rune window, direct XAPI probe, interactive console, dependency pins |
+| Desktop and protocol qualification | M0 | Real desktop window (shown with the Rune toolkit of the releases up to 0.19.0; not yet shown with the GPUI Kit front end that replaced it), direct XAPI probe, interactive console, dependency pins |
 | Connection profiles | M1 | Multiple endpoints, credential lookup, session-only credentials, edit and remove |
 | TLS trust | M1 | System or custom CA verification, explicit per-endpoint trust, changed-certificate handling |
 | Pool discovery | M1 | Connect through a member, discover coordinator, remember verified members |
@@ -83,6 +83,20 @@ and several of these at once in a batch, which stays experimental. The other cha
 host dialog offers (remote power-on, control-domain memory, remote logging, multipathing,
 VM autostart, forgetting a dead host) stay experimental and keep their notice.
 
+The list above is unchanged by the move of the front end from Rune to GPUI Kit
+([migration plan](GPUI-MIGRATION.md)), but its evidence is not all of one kind any more.
+What the paragraphs of this section cite was recorded with the Rune interface of the
+versions up to 0.19.0 and of the main branch up to 2026-11-12, or through the core's own
+lab scenarios. With the GPUI Kit front end the successful path of every supported area
+above was run again on the lab on 2026-11-19, headless: the real shell and core without a
+window ([report](reports/2026-11-19-gpui-live-headless.md), which lists what was left out,
+among it recovery after a lost host or coordinator, a cancelled migration and the refused
+reviews). Nothing of that front end has run in a real window on a compositor, so its
+keyboard path into a console, its clipboard, file chooser, window activation, fullscreen
+and decorations are established on the toolkit's test platform only; and no packaged build
+of it has been installed or run. Until the operator's run in a real window is recorded, a
+build from the main branch is not yet what this list describes.
+
 Everything else in the [ledger](PARITY-IMPLEMENTATION.md) is experimental. It is
 implemented, in most cases with a recorded successful run on the lab, but how it fails is
 mostly unrecorded, and it may change or be withdrawn. The desktop shows a notice above
@@ -103,9 +117,13 @@ character; its refusal of text a US keyboard cannot type and its stopping are ve
 fixtures; the operator has used the desktop's button from their own seat on the lab's
 graphical guest and its plain guest and reported that it works (2026-11-12).
 
-Not supported: screen readers. The accessibility tree has known gaps (findings 6 and 22 of
-the [live report](reports/2026-11-09-lab-qualification.md)) and no screen reader has been
-used with the client. Hosts other than XCP-ng 8.3 are not qualified, and the client says so
+Not supported: screen readers. The accessibility tree of the Rune interface had known gaps
+(findings 6 and 22 of the [live report](reports/2026-11-09-lab-qualification.md)); the GPUI
+Kit front end has a different tree, whose roles, labels and descriptions are asserted in
+its tests and stored with every scene render, and which has known gaps of its own (the
+reason of a disabled menu item is in its name or a tooltip, not an accessible
+description). No screen reader has been used with either, and the statement stays "not
+supported" until a screen reader run is recorded. Hosts other than XCP-ng 8.3 are not qualified, and the client says so
 when it meets one.
 
 The four product decisions the live report had left open (findings 25, 29, 30 and 32) all
