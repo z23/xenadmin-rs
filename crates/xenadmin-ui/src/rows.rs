@@ -1,17 +1,13 @@
-//! Inventory rows for the current object-type page.
-//!
-//! The Rune table still owns sort direction and passes its natural name
-//! order in. This module owns the projection and the column comparison. The
-//! byte labels are in [`crate::format`].
+//! The row of one object: what the search result and the general tab say of
+//! a guest, a server, a storage repository or a network. The byte labels are
+//! in [`crate::format`].
 
-use xenadmin_core::{HostId, Inventory, VmId};
+use xenadmin_core::{Inventory, VmId};
 
 use crate::format::{memory_label, storage_bytes};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InventoryPage {
-    Guests,
-    Templates,
     Hosts,
     Storage,
     Networks,
@@ -47,24 +43,11 @@ pub fn vm_row(inventory: &Inventory, vm: &xenadmin_core::Vm) -> DisplayRow {
     }
 }
 
-pub fn project_rows(
-    inventory: &Inventory,
-    page: InventoryPage,
-    host_filter: Option<HostId>,
-    query: &str,
-) -> Vec<DisplayRow> {
-    let query = query.trim().to_lowercase();
+/// The rows of every object of one kind. A guest's or a template's row is
+/// [`vm_row`].
+pub fn project_rows(inventory: &Inventory, page: InventoryPage) -> Vec<DisplayRow> {
     let mut rows = Vec::new();
     match page {
-        InventoryPage::Guests | InventoryPage::Templates => {
-            for vm in inventory.vms.values().filter(|vm| {
-                !vm.is_control_domain
-                    && vm.is_template == (page == InventoryPage::Templates)
-                    && host_filter.is_none_or(|id| vm.host == Some(id))
-            }) {
-                rows.push(vm_row(inventory, vm));
-            }
-        }
         InventoryPage::Hosts => {
             for host in inventory.hosts.values() {
                 rows.push(DisplayRow {
@@ -111,31 +94,7 @@ pub fn project_rows(
             }
         }
     }
-    rows.retain(|row| {
-        query.is_empty()
-            || row.name.to_lowercase().contains(&query)
-            || row.id.contains(&query)
-            || row.location.to_lowercase().contains(&query)
-    });
     rows
-}
-
-pub fn compare_rows(
-    column: &str,
-    left: &DisplayRow,
-    right: &DisplayRow,
-    names: impl Fn(&str, &str) -> std::cmp::Ordering,
-) -> std::cmp::Ordering {
-    match column {
-        "state" => left.state.cmp(&right.state),
-        "location" => left.location.cmp(&right.location),
-        "cpu" => left
-            .cpu
-            .parse::<u64>()
-            .unwrap_or(0)
-            .cmp(&right.cpu.parse().unwrap_or(0)),
-        _ => names(&left.name, &right.name),
-    }
 }
 
 #[cfg(test)]
@@ -143,30 +102,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_name_query_keeps_matching_guests() {
+    fn every_object_of_a_kind_has_one_row_under_its_own_id() {
         let inventory = crate::demonstration(3, 48);
-        let rows = project_rows(&inventory, InventoryPage::Guests, None, "Xen Orchestra");
-        assert!(!rows.is_empty());
-        assert!(rows.iter().all(|row| row.name.contains("Xen Orchestra")));
-    }
-
-    // Rune: main.rs `search_and_host_filter_select_matching_objects`, the
-    // second half.
-    #[test]
-    fn a_host_filter_keeps_only_the_guests_on_that_host() {
-        let inventory = crate::demonstration(3, 48);
-        let host = inventory.hosts.keys().next().copied();
-        let rows = project_rows(&inventory, InventoryPage::Guests, host, "Xen Orchestra");
-        assert!(!rows.is_empty());
-        for row in &rows {
-            assert_eq!(inventory.vms[&row.vm.unwrap()].host, host);
+        let hosts = project_rows(&inventory, InventoryPage::Hosts);
+        assert_eq!(hosts.len(), inventory.hosts.len());
+        for host in inventory.hosts.values() {
+            let row = hosts
+                .iter()
+                .find(|row| row.id == host.id.to_string())
+                .expect("the host's row");
+            assert_eq!(row.name, host.name);
+            assert_eq!(row.vm, None);
         }
-        // One VM's row is the row the page shows for it.
-        let vm = inventory.vms.values().next().unwrap();
-        let all = project_rows(&inventory, InventoryPage::Guests, None, "");
         assert_eq!(
-            all.iter().find(|row| row.vm == Some(vm.id)),
-            Some(&vm_row(&inventory, vm))
+            project_rows(&inventory, InventoryPage::Storage).len(),
+            inventory.storage.len()
         );
+        assert_eq!(
+            project_rows(&inventory, InventoryPage::Networks).len(),
+            inventory.networks.len()
+        );
+        // A guest's row names the guest.
+        let vm = inventory.vms.values().next().unwrap();
+        let row = vm_row(&inventory, vm);
+        assert_eq!((row.vm, row.name.as_str()), (Some(vm.id), vm.name.as_str()));
     }
 }

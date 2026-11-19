@@ -33,8 +33,9 @@ impl SceneSpec {
     }
 }
 
-/// The 128 scenes of the Rune application (`AppSpec.scenes` in
-/// `crates/xenadmin-desktop/src/main.rs`), in its order.
+/// The 128 scenes of the Rune application (the `AppSpec.scenes` of its
+/// `main.rs`, removed with it), in its order. The record of what had to be
+/// carried over: every name is registered here or listed as not ported.
 pub const RUNE_APP_SCENES: [&str; 128] = [
     "demo",
     "large-inventory",
@@ -178,12 +179,6 @@ pub fn rune_scenes() -> impl Iterator<Item = &'static str> {
     RUNE_APP_SCENES
         .into_iter()
         .chain(std::iter::once(CONSOLE_WINDOW_SCENE))
-}
-
-/// The Rune application scene with this name. The Rune front end checks its
-/// own list against this one; new code uses [`find`].
-pub fn rune_app_scene(name: &str) -> Option<&'static str> {
-    RUNE_APP_SCENES.into_iter().find(|scene| *scene == name)
 }
 
 /// Every registered scene: the kernel's, then each area's in the order of
@@ -340,13 +335,13 @@ mod tests {
     #[test]
     fn the_rune_application_list_keeps_its_names() {
         assert_eq!(RUNE_APP_SCENES.len(), 128);
-        assert_eq!(rune_app_scene("demo"), Some("demo"));
-        assert_eq!(rune_app_scene("pool-join"), Some("pool-join"));
-        assert_eq!(rune_app_scene(CONSOLE_WINDOW_SCENE), None);
+        assert!(RUNE_APP_SCENES.contains(&"demo"));
+        assert!(RUNE_APP_SCENES.contains(&"pool-join"));
+        assert!(!RUNE_APP_SCENES.contains(&CONSOLE_WINDOW_SCENE));
         assert!(
             DEBUG_ONLY_SCENES
                 .iter()
-                .all(|name| rune_app_scene(name).is_some())
+                .all(|name| RUNE_APP_SCENES.contains(name))
         );
     }
 

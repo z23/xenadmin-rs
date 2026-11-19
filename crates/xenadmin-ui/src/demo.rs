@@ -320,7 +320,7 @@ mod tests {
             ]
         );
         for name in names {
-            assert!(crate::scene::rune_app_scene(name).is_some(), "{name}");
+            assert!(crate::scene::RUNE_APP_SCENES.contains(&name), "{name}");
             assert_eq!(
                 crate::scene::find(name).map(|scene| scene.area),
                 Some(KERNEL)
