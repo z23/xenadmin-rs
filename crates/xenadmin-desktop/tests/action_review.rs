@@ -34,7 +34,11 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use common::{WIDE, close, model, on, open, run};
+use common::{WIDE, close, model, on, open, open_scene, run};
+use xenadmin_core::{
+    OperationAction, OperationId, OperationRecord, OperationState, SnapshotOperation,
+    SnapshotWorkflow,
+};
 use xenadmin_desktop::console::windows as console_windows;
 use xenadmin_desktop::kit::testing::{TestAppContext, TestQueryExt as _, TestWindowExt as _};
 use xenadmin_desktop::kit::*;
@@ -42,6 +46,7 @@ use xenadmin_desktop::scene_view::{LOCAL_ROW_KEY, TAB_BASE, TAB_BODY_KEY, TABS_K
 use xenadmin_desktop::scenes::{self, Options, ShellWindow};
 use xenadmin_desktop::shell::{nav as pane, status, toolbar};
 use xenadmin_ui::areas::console::view as console_view;
+use xenadmin_ui::command::CommandId;
 use xenadmin_ui::intent::ConsoleWindowId;
 use xenadmin_ui::nav::{self, NavView};
 use xenadmin_ui::object::{ObjectKind, Target};
@@ -320,6 +325,56 @@ fn matches(pattern: &str, text: &str) -> bool {
     rest.ends_with(last)
 }
 
+/// States of a tab that no registered scene shows.
+fn further_states(cx: &mut TestAppContext, findings: &mut Findings) {
+    // The source picker of the Performance tab, which replaces the graphs.
+    let state = "performance, after Data Sources…";
+    let shell = open_scene(cx, "performance", WIDE);
+    cx.update(|cx| {
+        shell.store.update(cx, |store, cx| {
+            store.invoke(CommandId("performance.data-sources"), cx);
+        });
+    });
+    cx.run_until_parked();
+    let tab = model(cx, &shell, |m| m.active_tab().key());
+    on(cx, &shell, |window, _| drawn(window, tab, state, findings));
+    described_tabs(cx, &shell, state, findings);
+    close(cx, shell);
+    // A VM with operation records in every state that offers a control:
+    // its tabs list them, each with the controls of the record.
+    let state = "snapshots, with operation records";
+    let shell = open_scene(cx, "snapshots", WIDE);
+    run(cx, &shell, |m| {
+        let scope = m.scope().objects.first().cloned().expect("the VM of the scene");
+        let pool = scope.pool.expect("the pool of the VM");
+        let record = |state: OperationState| -> OperationRecord {
+            serde_json::from_value(serde_json::json!({
+                "id": OperationId::new(), "pool": pool, "vm": scope.id,
+                "action": OperationAction::Snapshot(SnapshotOperation::Workflow {
+                    operation: SnapshotWorkflow::Create {
+                        name: "Before upgrade".into(), description: String::new(), memory: false,
+                    },
+                }),
+                "state": state, "progress": null, "detail": "Synthetic record",
+            }))
+            .expect("operation record")
+        };
+        let mut running = record(OperationState::Tracking);
+        running.can_cancel = true;
+        m.operation_rows = vec![
+            running,
+            record(OperationState::OutcomeUnknown),
+            record(OperationState::Failed),
+            record(OperationState::PartiallyCompleted),
+            record(OperationState::Succeeded),
+        ];
+    });
+    let tab = model(cx, &shell, |m| m.active_tab().key());
+    on(cx, &shell, |window, _| drawn(window, tab, state, findings));
+    described_tabs(cx, &shell, state, findings);
+    close(cx, shell);
+}
+
 fn collect(cx: &mut TestAppContext) -> Findings {
     let mut findings = Findings::default();
     for spec in scene::registry() {
@@ -385,12 +440,14 @@ fn collect(cx: &mut TestAppContext) -> Findings {
             cx.run_until_parked();
         }
     }
+    further_states(cx, &mut findings);
     // The shell at its smallest size, where the navigation pane is behind a
     // toggle.
     let setup = scenes::setup("demo").expect("scene");
     let shell = open(cx, setup, common::SMALL);
+    let tab = model(cx, &shell, |m| m.active_tab().key());
     on(cx, &shell, |window, _| {
-        drawn(window, "general", "demo at 800 by 600", &mut findings);
+        drawn(window, tab, "demo at 800 by 600", &mut findings);
     });
     close(cx, shell);
     findings
