@@ -5244,11 +5244,23 @@ fn lab_p3_recovery_coordinator_toolstack_restart() {
     // While it is away: the frame, and what the window lets the user do.
     let mut while_away = serde_json::Value::Null;
     if away.is_some() {
+        // The buttons the toolbar has now, each with whether it is
+        // disabled and why.
         let toolbar = xenadmin_desktop::shell::toolbar::TOOLBAR_KEY;
-        let refused: Vec<serde_json::Value> = ["vm.shutdown", "vm.reboot", "vm.suspend"]
-            .into_iter()
-            .map(|command| json!([command, client.disabled_reason(Some(toolbar), command)]))
-            .collect();
+        let refused: Vec<serde_json::Value> = client.on(|window, _| {
+            use xenadmin_desktop::kit::testing::TestQueryExt as _;
+            window
+                .elements()
+                .into_iter()
+                .filter(|element| common::under(element, toolbar))
+                .filter_map(|element| {
+                    let key = common::key_of(&element)?.to_string();
+                    (key.contains('.')).then(|| {
+                        json!([key, element.disabled() == Some(true), element.description()])
+                    })
+                })
+                .collect()
+        });
         while_away = json!({
             "toolbar": refused,
             "header": client
@@ -5297,8 +5309,13 @@ fn lab_p3_recovery_coordinator_toolstack_restart() {
         "the connection did not become current again"
     );
     assert!(
-        while_away["toolbar"][0][1].is_string(),
-        "Shut Down is refused while the inventory is stale: {while_away}"
+        while_away["toolbar"].as_array().is_some_and(|buttons| {
+            buttons
+                .iter()
+                .filter(|button| button[0].as_str().is_some_and(|key| key.starts_with("vm.")))
+                .all(|button| button[1] == json!(true))
+        }),
+        "no VM action of the toolbar can be pressed while the inventory is stale: {while_away}"
     );
     assert_eq!(
         after["guest_selected"],
