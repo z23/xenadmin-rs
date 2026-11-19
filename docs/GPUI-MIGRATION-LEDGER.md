@@ -23,7 +23,7 @@ separately. For the GPUI front end, every status in this ledger means the follow
 | level | what it covers here |
 | --- | --- |
 | implemented | The 238 commands, the surfaces behind them and the 129 Rune scenes exist in the new crates |
-| fixture-verified | Model tests of `xenadmin-ui` (977 test functions) and headless tests of `xenadmin-desktop` (236 test functions, 15 of them ignored: the 14 live tests and one measurement) on synthetic inventories; a few tests connect the real backend to the local fixture server (`xenadmin_ui::testing`). Every registered scene renders in the headless scene tool. "Headless" means a window that is never shown: no compositor, no pointer or keyboard device, no clipboard, no portal dialog, no screen reader |
+| fixture-verified | Model tests of `xenadmin-ui` (978 test functions; four are ignored: three that print a table and the upgrade test, which needs a state directory of the released client) and headless tests of `xenadmin-desktop` (237 test functions, 15 of them ignored: the 14 live tests and one measurement) on synthetic inventories; a few tests connect the real backend to the local fixture server (`xenadmin_ui::testing`). Every registered scene renders in the headless scene tool. "Headless" means a window that is never shown: no compositor, no pointer or keyboard device, no clipboard, no portal dialog, no screen reader |
 | live-host-verified, headless | The supported areas, on the project's lab on 2026-11-19, by the ignored tests of `tests/lab_live.rs`, which run the real shell and core without a window: connecting with pinned certificates and following the inventory; power and events; a power batch; a guest's console with keys through the canvas and a host's text console; screenshot export; snapshots; performance; host maintenance with a real evacuation; live migration both ways; disconnect, connect and a second start; a client closed in the middle of an operation ([report](reports/2026-11-19-gpui-live-headless.md), which has every scenario's evidence file and what was left out). The runs were first made at commit `e2d4572` and were all repeated, passing, after the last round of fixes and the cutover, at commit `56fedbd`. Not rerun through the GPUI front end: connection recovery through a lost host, a toolstack restart or a coordinator change. The experimental areas: nothing live; their live evidence under `docs/reports/` was recorded through the core's own scenarios or through the Rune client |
 | verified in a real window | Nothing. The GPUI client has not been started in a Wayland or X11 session. The Wayland key path for console key codes (decision 0006, route A) only compiles in the client; clipboard, the portal file chooser, activation by a second start, fullscreen and client-side decorations are established on the Kit's test platform only; no screen reader has been run. The only seat run is the spike of gate G0, whose open points are the accepted limits of [decision 0006](decisions/0006-console-key-codes.md), listed under Deviations |
 | packaged | Nothing installed or run. The packaging script built an archive of the new client once on the development workstation; no AppImage was built, no package was installed on a clean system, and the recovery gate of `README.md` was not repeated |
@@ -69,10 +69,9 @@ the Rune columns and the appendix again; the final pass was checked that way too
 | disposition | tests | meaning |
 | --- | --- | --- |
 | moved | 154 | a test that built no `rune::Runtime`, now a test of `xenadmin-ui` (or of the GPUI crate where its subject went) |
-| ported | 118 | a test that drove a `rune::Runtime`, rewritten against the model (the `Harness` presses the keys of the description) or as a headless GPUI test |
+| ported | 119 | a test that drove a `rune::Runtime`, rewritten against the model (the `Harness` presses the keys of the description) or as a headless GPUI test |
 | split | 94 | a model test and a headless window test in `crates/xenadmin-desktop/tests` |
 | retired | 4 | no successor is wanted; the reason is in the row |
-| open | 1 | half a successor: the row says what is not asserted |
 | total | 371 |  |
 
 Of the 371 Rune tests, 156 built no `rune::Runtime` (kind `pure`) and 215 drove one (kind
@@ -88,7 +87,7 @@ controls stay reachable or visible at its window sizes, and no window test names
 assigned from the name of the Rune test, not by reading each body. 14 split rows have a window half that
 was matched to them by area, scene and subject (their note says so) where the row of `wanted.rs` does
 not carry the Rune test's name. The assertions of a successor were not compared with those of the Rune
-test it succeeds. The 1 open row says in its note what is missing.
+test it succeeds. No row is open.
 
 ## Commands
 
@@ -302,7 +301,7 @@ python3 scripts/gpui_commands_table.py artifacts/ui/commands.txt
 | `tools.inventory-report` | Inventory Report | Tools [3.20] | - | - | - | - | `search` |
 | `vm.export-selection` | Export | VM [5.20] | VM | - | - | - | `bulk_export` |
 | `templates.export-selection` | Export to File | Templates [2.10] | Template | - | - | - | `bulk_export` |
-| `snapshot.export` | Export selection… | - | - | - | - | - | `bulk_export` |
+| `snapshot.export` | Export selection… | - | - | - | Snapshots.60 | - | `bulk_export` |
 | `vm.delete-several` | Delete VM | VM [7.10] | VM | - | - | - | `bulk_edit` |
 | `templates.delete-several` | Delete Template | Templates [3.10] | Template | - | - | - | `bulk_edit` |
 | `tools.options` | Options | Tools [1.10] | - | - | - | - | `settings` |
@@ -503,7 +502,7 @@ the script; the others are named in a comment at the new test or in the header o
   the keys of the described surface, or as a headless GPUI test.
 - split: a model test and a headless window test in `crates/xenadmin-desktop/tests`.
 - retired: no successor is wanted. The reason is in the note.
-- open: half a successor. It is a defect of the port's test coverage, not a decision.
+- open: half a successor. It is a defect of the port's test coverage, not a decision. No row has it now.
 
 The note "model half" is explained under "Tests by disposition". A successor in
 `gpui:tests/wanted.rs` is the test of the row's area (`gpui:tests/wanted.rs::storage` runs every row of
@@ -674,7 +673,7 @@ python3 scripts/gpui_ledger_tables.py tests    # the first three columns and the
 | `main.rs` | `column_and_sidebar_widths_reach_the_preferences_and_survive_a_table_rebuild` | pure | moved | `ui:model_tests.rs::widths_are_kept_in_the_preferences_and_saved_once_they_rest` |  |
 | `main.rs` | `the_details_pane_width_reaches_the_preferences_and_the_next_start_uses_it` | pure | moved | `ui:prefs.rs::widths_a_file_holds_are_brought_inside_what_the_client_accepts` | what a preferences file may hold. The inspector half is retired: the new shell has no details pane |
 | `main.rs` | `widths_are_saved_shortly_after_they_stop_changing_without_waiting_for_close` | runtime | ported | `ui:model_tests.rs::widths_are_kept_in_the_preferences_and_saved_once_they_rest` |  |
-| `main.rs` | `search_clear_button_empties_the_search_and_restores_every_row` | runtime | open | `gpui:tests/shell.rs::the_view_switcher_and_the_search_box_drive_the_model` | half, still open: the successor types into the navigation search box and lets the model clear the filter. The click on that box's own clear button, which is what the Rune test guarded, is not asserted; the same Kit button is clicked on the filter fields of the Events tab in `gpui:tests/wanted_events.rs::clear_buttons_empty_the_activity_filters_and_restore_the_rows` |
+| `main.rs` | `search_clear_button_empties_the_search_and_restores_every_row` | runtime | ported | `gpui:tests/shell.rs::the_search_box_clear_button_empties_the_search_and_restores_every_row` | the pointer presses the box's own clear button (the Kit's, `Input::cleanable`): the text and the model's filter are empty and every row is back. Typing into the box is `gpui:tests/shell.rs::the_view_switcher_and_the_search_box_drive_the_model` |
 | `main.rs` | `narrow_window_keeps_connection_and_vm_details_reachable` | runtime | retired | `gpui:tests/shell.rs::the_pane_gives_way_to_a_toggle_in_a_narrow_window` | the compact details swap is gone and the minimum window is 800x600 (plan D3); what a narrow window does now is the test named |
 | `management_bond_ui.rs` | `management_guest_query_result_is_fenced_to_exact_form_and_pool` | pure | moved | `ui:areas/management_network/tests.rs::management_guest_query_result_is_fenced_to_exact_form_and_pool` |  |
 | `management_bond_ui.rs` | `management_guest_impact_review_lists_moved_retained_and_no_eligible_guests` | runtime | split | `ui:areas/management_network/tests.rs::management_guest_impact_review_lists_moved_retained_and_no_eligible_guests`; `gpui:tests/wanted.rs::management_network` |  |
@@ -1007,6 +1006,13 @@ are under Mirror fixes.
 | kernel | plan | Context menus nest. The power commands are under "Start/Shut Down", the organization commands under "Organize" and a server's management-interface commands under "Management Interface"; the top level has 19 entries for a VM, 20 for a server, 16 for a pool, 13 for a repository, 11 for a network, 9 for several VMs and 7 for a template. The keyboard reaches the submenus; a menu longer than the window still scrolls | A flat menu of every command of an object was longer than a small window |
 | kernel | plan | A command on a tab's row of local actions names the kinds of scope it is offered for (`CommandSpec::local_scopes`; 108 placements, each pinned by a test per tab and scope). So New Storage is on the Storage row of a pool and a server and not of a VM, and the disk commands are on the Storage row of a repository and a VM and not of a pool or a server. On a repository's Storage tab the repository commands come first and the disk commands after them (orders 82 to 88) | The menu and the toolbar share a command's eligibility, which cannot hide it on one row only |
 | `vm_lifecycle`, renderer | Rune | The four cloud-init fields for user data and network configuration are private text areas (`private_textarea`): the text an edit replaces is zeroized, in the model and in the copy the renderer hands to it, and the widget's buffer is emptied when the field is no longer drawn. The review omits the payload | The text may hold credentials (plan R11) |
+| G2, criterion 5 | plan | The review of the criterion is the window test `gpui:tests/action_review.rs`: every control that is outside the menu bar, a menu, the toolbar, the navigation pane, the tab strip, a tab's row of local actions, the status bar and the dialogs is in its table, as a control of the view or as an action that stays with its reason. One action moved: "Export selection…" of the Snapshots tab was a button of the body and is the command `snapshot.export` on the tab's row (Snapshots.60, scope VM). The actions that stay are the rows below | The review covers the states the registered scenes show, the description of every tab of their scopes, the source picker and a VM with operation records; a control that only another state shows is not covered |
+| `console` (G2, criterion 5) | plan | Seven buttons of the detached console window are actions outside a row of commands: Ctrl+Alt+Delete, Alt+Tab, Ctrl+Alt+F1, Reconnect, Save screenshot…, Send clipboard to VM, Type clipboard as keys | The window has no menu bar, toolbar or row of commands, and a command acts on the selection of the main window, while these act on the console of their own window. In the main window the same controls are commands of the Console tab's row |
+| `console` (G2, criterion 5) | plan | "Type it" of the typing review (`confirm-console-typing`) is a button of the Console tab's body | It confirms the text shown in the inline group it is in, which the command `console.type-clipboard` opens; the review stays an inline group as it was |
+| `power`, `general` (G2, criterion 5) | plan | The controls under an operation record of a VM are buttons of the tab's body: Stop remaining steps or cancel (`operation-cancel-*`), Recheck outcome, Review unknown outcome, Review cancellation request…, Explain outcome… | Their target is one operation record; a record is not an object of the selection, which is what a command acts on |
+| `performance` (G2, criterion 5) | plan | "Save current graph" and a preset's "Remove" are buttons of the presets body of the Performance tab | They act on the preset named in the field beside them or on the preset of their row, inside the body the command `performance.presets` opens; they write only the client's preferences |
+| `snapshots` (G2, criterion 5) | plan | "Load saved preview" is a button of the section "Snapshot information": it asks the host for the saved picture (a read) | It fills the section it is in and reports a refusal there, as in the old dialog |
+| `pool`, `connections` (G2, criterion 5) | plan | A double click or Enter on a row acts without a drawn control in two grids: on a VM of the HA tab it invokes the command `vm.ha.restart-priority`; on a connection of the Home tab it shows the pool of a connected one and opens the settings dialog of one that is not connected | The first is the command of the tab's row with its eligibility; the second is the row's own default action (the old "View pool" and edit) |
 
 ## Appendix: Rune controls without a key in the new crates
 

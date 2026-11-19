@@ -1199,7 +1199,7 @@ fn snapshot_rows_take_a_multi_selection_a_row_menu_and_escape(cx: &mut TestAppCo
     });
     assert!(has(cx, &scene, "snapshot-selection-count"));
     assert!(!has(cx, &scene, "snapshot-information"));
-    must(&mut *cx, &scene, Enabled("snapshot-batch-export-open"));
+    must(&mut *cx, &scene, Enabled("local:snapshot.export"));
     // Escape in the table clears the selection.
     must(&mut *cx, &scene, Key("escape"));
     assert!(!has(cx, &scene, "snapshot-selection-count"));
@@ -1282,7 +1282,7 @@ fn several_snapshots_selected_in_the_view_open_one_review_and_single_actions_tak
         press_on(cx, &scene, &first);
         must(&mut *cx, &scene, Key("shift-down"));
         assert!(has(cx, &scene, "snapshot-selection-count"), "{size:?}");
-        must(&mut *cx, &scene, Press("snapshot-batch-export-open"));
+        must(&mut *cx, &scene, Press("local:snapshot.export"));
         must(&mut *cx, &scene, Front("batch-export"));
         // Two of the three snapshots, in one wizard.
         let count = node(cx, &scene, "batch-export-count").expect("the count of targets");

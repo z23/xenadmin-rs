@@ -491,7 +491,7 @@ Keep every Kit import that views use behind one module, `crates/xenadmin-gpui/sr
 
 Six spikes run in parallel and gate everything else. S1 is the only one whose failure can cancel the migration.
 
-Spike code lives in `crates/xenadmin-gpui/examples/` on a branch. Each spike ends with a report at `docs/reports/<date>-gpui-spike-<id>.md` that states what was run, on which system, and what was not established.
+Spike code lives in `crates/xenadmin-gpui/examples/` on a branch (since the cutover `crates/xenadmin-desktop/examples/`: only `s1_seat` and `s1_surface` are kept, for a later seat run of the limits of [decision 0006](decisions/0006-console-key-codes.md); each opens windows and injects input on the session it is run in, and says so at its top; `s0_hello` and `s1_probe` were removed on 2026-11-19). Each spike ends with a report at `docs/reports/<date>-gpui-spike-<id>.md` that states what was run, on which system, and what was not established.
 
 | Spike | Question | Blocks |
 | --- | --- | --- |

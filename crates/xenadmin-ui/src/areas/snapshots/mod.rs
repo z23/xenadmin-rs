@@ -48,10 +48,9 @@
 //!
 //! What this area uses of others: `power::track_vm` (a VM command through
 //! the connection of the VM's pool), `power::request_cancellation` and
-//! `power::recheck` (controls of an operation record), and the command
-//! `snapshot.export` of `bulk_export`: the button
-//! `snapshot-batch-export-open` follows that command (disabled with its
-//! reason, absent where the command is hidden).
+//! `power::recheck` (controls of an operation record). The command
+//! `snapshot.export` of `bulk_export` is in this tab's row of local actions
+//! and reads [`selected_snapshots`].
 //! A search result that is a snapshot arrives as a grid selection of the
 //! snapshot object (`search::show`); the tab shows it as its selected row.
 //!

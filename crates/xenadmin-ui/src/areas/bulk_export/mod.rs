@@ -18,7 +18,7 @@
 //! | --- | --- |
 //! | "Export selection…" (`batch-export-open`) of the Guests selection bar and row menu | command `vm.export-selection`, label "Export", VM > Export (the place of `vm.export`) and the context menu of a VM; `Hidden` for one object, where `vm.export` of `transfers` shows |
 //! | "Export selection…" of the Templates page and its row menu | command `templates.export-selection`, label "Export to File", Templates > Export to File (the place of `templates.export`) and the context menu of a template; `Hidden` for one template |
-//! | "Export selection…" (`snapshot-batch-export-open`) and "Export…" (`export-xva`) of the Snapshots page | command `snapshot.export`, no menu: the button `snapshot-batch-export-open` of the Snapshots tab (the `snapshots` area draws it). One selected snapshot opens the single export of `transfers` (`transfer-dialog`), several open the batch |
+//! | "Export selection…" (`snapshot-batch-export-open`) and "Export…" (`export-xva`) of the Snapshots page | command `snapshot.export`, no menu: in the row of local actions of the Snapshots tab, after the commands of the `snapshots` area. One selected snapshot opens the single export of `transfers` (`transfer-dialog`), several open the batch |
 //! | the dialog "Selected VM exports" / "Selected snapshot exports" | wizard `batch-export`, steps Format, Destinations, Review exports. The Rune form is the first two steps, its review the last |
 //! | the pool history opened after the submission | the wizard closes and the History list of the Events tab is shown (`Model::show_operations`) |
 //!

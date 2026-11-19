@@ -1,4 +1,23 @@
-//! Frames, pointer, cursor, fullscreen, and clipboard for spike S1.
+//! Frames, pointer, cursor, fullscreen, and clipboard for spike S1, kept
+//! for a later seat run.
+//!
+//! RUNNING THIS OPENS UP TO EIGHT WINDOWS on the Wayland session it is
+//! started in, moves that session's pointer with a virtual pointer device,
+//! toggles fullscreen and writes to its clipboard (`hyprctl`, `wl-copy`,
+//! `wl-paste`; a compositor with the wlr virtual-pointer and screencopy
+//! protocols). Run it only on a seat whose owner asked for the run. No test
+//! and no script of the repository runs it; `cargo build --workspace` does
+//! not build it (`cargo build -p xenadmin-desktop --example s1_surface`
+//! does).
+//!
+//! What it is kept for: the limits that
+//! `docs/decisions/0006-console-key-codes.md` records as not shown on a
+//! real seat, in the toolkit alone and without the client: pointer motion,
+//! buttons and wheel delivered to a GPUI window; the pixels of fit and
+//! actual size read back by screencopy; clipboard text offered by a focused
+//! window; fullscreen entered and left. If the client fails at one of
+//! these in a real window, this probe tells the toolkit from the client.
+//! The first run is in `docs/reports/2026-11-14-gpui-spike-s1.md`.
 //!
 //! This is not the released binary and it does not open a console to a host.
 

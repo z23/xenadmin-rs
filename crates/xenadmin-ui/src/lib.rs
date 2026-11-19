@@ -34,6 +34,8 @@ pub mod surface;
 pub mod tabs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+#[cfg(test)]
+mod upgrade_tests;
 
 // What is named from the crate root. Everything else is reached through its
 // module.
