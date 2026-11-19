@@ -21,8 +21,7 @@ use std::time::Duration;
 use xenadmin_desktop::intents::{self, Hooks};
 use xenadmin_desktop::kit::testing::{
     ElementSnapshot, TestAppContext, TestAppContextExt as _, TestEventExt as _, TestQueryExt as _,
-    TestWindowExt as _,
-    VisualTestContext,
+    TestWindowExt as _, VisualTestContext,
 };
 use xenadmin_desktop::kit::*;
 use xenadmin_desktop::scenes::gallery::{DIALOG, Lab, LabRef, TABLE};
