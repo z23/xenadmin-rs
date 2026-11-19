@@ -130,7 +130,40 @@ Made on `--demo` and on the scene `console-frame`, so that they are known before
 
 ## Findings
 
-TODO (being filled)
+### 1. A second start often showed nothing at all (fixed in this branch, confirmed in the machine)
+
+What was done: the client runs; another window has the keyboard; the client is started a
+second time from a shell.
+
+What was seen with the CI package: the second process always exits with status 0 and prints
+nothing, and the first client always asks the compositor for activation
+(`xdg_activation_v1.get_activation_token`, then `activate`, in the protocol log). What the
+compositor then does depended on where the pointer was:
+
+- before any key or pointer press in the client: sway marks the window urgent (its window
+  event `urgent`; the default policy of sway never gives focus on a request);
+- after a press, with the pointer still over the client's window: urgent;
+- after a press, with the pointer over another window: **nothing**. The window is neither
+  focused nor urgent. Six of six second starts in that state.
+
+Cause: once a press has happened, the toolkit puts that press's serial and seat on the token
+it requests (`gpui-pre-linux` 0.3.12, `linux/wayland/window.rs`, `activate`, and
+`serial.rs`, `activation_context`). wlroots answers such a request with a token it will not
+honour unless the window has the keyboard or the pointer. The token that the second start
+received from its launcher was forwarded to the first client and not used: the toolkit's
+`activate_window` takes none.
+
+Fix (`crates/xenadmin-desktop/src/wayland_activate.rs`, used by the activation loop of
+`app.rs`): on Wayland the first client also asks on the window's own display, as the console
+key listener does for its keyboard. It passes the forwarded token to `activate` when there is
+one, then requests a token without a serial and activates with it. Its two pure parts have
+unit tests; the Wayland part can only be shown on a compositor.
+
+Confirmed in the machine with a release binary **built from this branch's commit** (not the
+CI package): after a press and with the pointer over another window, the second start marks
+the first window urgent (two of two); with sway's policy set to `smart` and the second start
+made by sway's launcher (`swaymsg exec`, which exports a token) the first window is focused,
+where the CI package in the same case did nothing. Not shown: any other compositor.
 
 ## What this does not show
 
