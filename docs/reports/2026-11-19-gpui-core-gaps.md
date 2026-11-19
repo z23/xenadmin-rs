@@ -1,5 +1,11 @@
 # GPUI migration: what the front end found missing in the core
 
+Note added later the same day: this report was written before the front end was run against the lab
+and before the cutover of the code. Its sentence that nothing of the GPUI front end has run against an
+XCP-ng host is superseded by the [live headless report](2026-11-19-gpui-live-headless.md); that
+nothing has run in a real window still holds. The crate it calls `xenadmin-gpui` is
+`crates/xenadmin-desktop` now. The gaps themselves are unchanged; the text below is as written.
+
 Date: 2026-11-19. Branch `gpui-migration`.
 
 The migration may not change `xenadmin-core`, `xenadmin-xapi` or `xenadmin-process` (`AGENTS.md`, "Front-end

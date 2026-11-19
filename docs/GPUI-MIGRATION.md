@@ -20,7 +20,9 @@ Done:
   Kit's headless test platform, and a render of every scene by `./scripts/check.sh`.
 - Verified live, headless, on the lab on 2026-11-19: the supported areas, by thirteen tests that run
   the real shell and core without a window
-  ([report](reports/2026-11-19-gpui-live-headless.md)).
+  ([report](reports/2026-11-19-gpui-live-headless.md)). Those runs were made at commit `e2d4572`, before the
+  last round of fixes to the model and the renderer and before the cutover, and were not repeated on
+  a later tree ([G3 report](reports/2026-11-19-gpui-gate-g3.md), criterion 2).
 - The documents of "Repository and documentation changes", the gate reports and the ledger's final
   pass.
 
