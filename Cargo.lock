@@ -9311,7 +9311,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xenadmin-gpui"
+name = "xenadmin-desktop"
 version = "0.20.0"
 dependencies = [
  "gpui-kit",

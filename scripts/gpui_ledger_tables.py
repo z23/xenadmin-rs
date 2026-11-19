@@ -5,9 +5,9 @@ usage:
   gpui_ledger_tables.py scenes     print the Scenes table: every Rune scene name of
                                    crates/xenadmin-ui/src/scene.rs with the area that registers it
   gpui_ledger_tables.py tests      print every #[test] of the Rune crate with its kind and the
-                                   tests of the new crates found by its name (needs the Rune crate)
+                                   tests of the new crates found by its name (needs the Rune sources)
   gpui_ledger_tables.py keys       print every element key of the Rune crate that is no string
-                                   literal of the new crates (needs the Rune crate)
+                                   literal of the new crates (needs the Rune sources)
   gpui_ledger_tables.py check [--commands FILE] [LEDGER]
                                    compare the ledger with the repository; exit 1 on a difference
 
@@ -18,31 +18,36 @@ What `check` compares, and what it needs:
                              every successor of the Tests table is a test function of the file
                              it names; a row without one is retired or open; the "Tests by
                              disposition" table counts the Tests table. A Rune test that a file
-                             of crates/xenadmin-gpui/tests names, while its row has no successor
+                             of crates/xenadmin-desktop/tests names, while its row has no successor
                              there, is printed "to review" (a window half that landed later)
   with --commands FILE       the Commands table is what scripts/gpui_commands_table.py prints
                              from FILE (the output of `xenadmin-scenes --commands`)
-  while crates/xenadmin-desktop exists
-                             the Tests table has exactly the tests of the Rune crate with their
+  with the Rune sources      the Tests table has exactly the tests of the Rune crate with their
                              kind, and every test found by name is among the row's successors;
                              the appendix of Rune controls has exactly the absent keys
 
-Once the Rune crate is deleted the last group cannot be checked any more: the Rune columns of
-the Tests table and the appendix are then a record, generated while the crate existed.
+The Rune crate was deleted at the cutover (it was crates/xenadmin-desktop, the path the GPUI
+front end has now), so the last group is not checked any more: the Rune columns of the Tests
+table and the appendix are a record, generated while the crate existed. To compare them again,
+check the `src` directory of the Rune crate out of the history and name it in
+XENADMIN_RUNE_SOURCES.
 
 Places are abbreviated as in the ledger: `ui:x` is crates/xenadmin-ui/src/x and `gpui:x` is
-crates/xenadmin-gpui/x. A successor is written `place::function`.
+crates/xenadmin-desktop/x (the GPUI front end, crates/xenadmin-gpui before the cutover). A
+successor is written `place::function`.
 """
 
 import collections
+import os
 import pathlib
 import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-RUNE = REPO / "crates/xenadmin-desktop/src"
+# Not in the tree any more: a directory only when the caller names one.
+RUNE = pathlib.Path(os.environ.get("XENADMIN_RUNE_SOURCES") or REPO / "target/no-rune-sources")
 UI = REPO / "crates/xenadmin-ui/src"
-GPUI = REPO / "crates/xenadmin-gpui"
+GPUI = REPO / "crates/xenadmin-desktop"
 LEDGER = REPO / "docs/GPUI-MIGRATION-LEDGER.md"
 
 TEST = re.compile(
@@ -62,8 +67,8 @@ def place(path):
     relative = path.relative_to(REPO).as_posix()
     if relative.startswith("crates/xenadmin-ui/src/"):
         return "ui:" + relative[len("crates/xenadmin-ui/src/") :]
-    if relative.startswith("crates/xenadmin-gpui/"):
-        return "gpui:" + relative[len("crates/xenadmin-gpui/") :]
+    if relative.startswith("crates/xenadmin-desktop/"):
+        return "gpui:" + relative[len("crates/xenadmin-desktop/") :]
     return relative
 
 
@@ -330,14 +335,14 @@ def check(ledger, commands):
             problems.append(f"Tests: {row[1]}: no successor and neither retired nor open")
     notes.append(f"tests: {len(rows)} rows; " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     functions = collections.Counter(where.split(":")[0] for places in tests.values() for where in places)
-    notes.append(f"test functions of the new crates: {functions['ui']} in xenadmin-ui, {functions['gpui']} in xenadmin-gpui")
+    notes.append(f"test functions of the new crates: {functions['ui']} in xenadmin-ui, {functions['gpui']} in xenadmin-desktop")
     window_tests = "".join(
         path.read_text(encoding="utf-8") for path in sorted((GPUI / "tests").rglob("*.rs"))
     )
     for row in rows:
         cited = re.search(r"\b" + re.escape(bare(row[1])) + r"\b", window_tests)
         if cited and not any(where.startswith("gpui:tests") for where, _ in successors(row[4])):
-            notes.append(f"to review: {row[1]} is named in crates/xenadmin-gpui/tests and its row has no successor there")
+            notes.append(f"to review: {row[1]} is named in crates/xenadmin-desktop/tests and its row has no successor there")
     _, summary = table_under(text, "Tests by disposition")
     stated = {row[0]: int(row[1]) for row in summary if row[1].isdigit()}
     wanted = dict(counts)
@@ -367,7 +372,7 @@ def check(ledger, commands):
             problems.append(f"Appendix: rows differ from the absent keys; missing {missing[:8]}, extra {extra[:8]}")
         notes.append(f"appendix: {len(want)} absent keys of the Rune crate")
     else:
-        notes.append("the Rune crate is gone: the Rune columns of Tests and the appendix were not compared")
+        notes.append("no Rune sources (XENADMIN_RUNE_SOURCES): the Rune columns of Tests and the appendix were not compared")
 
     # Commands
     if commands:
@@ -400,11 +405,11 @@ def main(arguments):
         sys.stdout.write(markdown(SCENE_HEADER, scene_rows()))
     elif mode == "tests":
         if not RUNE.is_dir():
-            raise SystemExit("crates/xenadmin-desktop is gone: the Rune tests cannot be listed any more")
+            raise SystemExit("the Rune crate is gone: name its sources in XENADMIN_RUNE_SOURCES to list its tests")
         sys.stdout.write(markdown(TEST_HEADER, test_rows()))
     elif mode == "keys":
         if not RUNE.is_dir():
-            raise SystemExit("crates/xenadmin-desktop is gone: the Rune keys cannot be listed any more")
+            raise SystemExit("the Rune crate is gone: name its sources in XENADMIN_RUNE_SOURCES to list its keys")
         sys.stdout.write(markdown(["Rune file", "key"], [[f"`{f}`", f"`{k}`"] for f, k in absent_keys()]))
     elif mode == "check":
         commands = None

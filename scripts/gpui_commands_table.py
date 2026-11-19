@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Print the registered commands as rows of the migration ledger's Commands table.
 
-usage: gpui_commands_table.py [artifacts/gpui/commands.txt]
+usage: gpui_commands_table.py [artifacts/ui/commands.txt]
 
 The input is what `xenadmin-scenes --commands` prints (scripts/check.sh writes it to
-artifacts/gpui/commands.txt): one line per command, eight fields separated by a tab: id,
+artifacts/ui/commands.txt): one line per command, eight fields separated by a tab: id,
 label, menu path, toolbar slot, context kinds, local row, shortcut, area. The output is a
 Markdown table with the ledger's columns; the columns the registry cannot know (Rune
 source, GPUI status, package) say where the command is registered instead.
