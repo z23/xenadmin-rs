@@ -1,4 +1,4 @@
-name: Rust and Rune checks
+name: Rust checks, scene renders and packages
 on:
   push:
   pull_request:
@@ -27,20 +27,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rune-ui
+          name: ui
           path: |
-            artifacts/*.png
-            artifacts/*.json
-          if-no-files-found: ignore
-      - name: Keep rendered GPUI artifacts
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: gpui-ui
-          path: |
-            artifacts/gpui/*.png
-            artifacts/gpui/*.json
-            artifacts/gpui/scenes.txt
+            artifacts/ui/*.png
+            artifacts/ui/*.json
+            artifacts/ui/scenes.txt
+            artifacts/ui/commands.txt
           if-no-files-found: ignore
       - name: Reuse verified AppImage packaging inputs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

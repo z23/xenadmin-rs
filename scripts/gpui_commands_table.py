@@ -43,7 +43,7 @@ def table(text):
 def main(arguments):
     if len(arguments) > 1 or (arguments and arguments[0] in ("-h", "--help")):
         raise SystemExit(__doc__)
-    path = arguments[0] if arguments else "artifacts/gpui/commands.txt"
+    path = arguments[0] if arguments else "artifacts/ui/commands.txt"
     with open(path, encoding="utf-8") as source:
         sys.stdout.write(table(source.read()))
 

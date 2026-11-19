@@ -1,5 +1,5 @@
 //! The command registry as text: what `xenadmin-scenes --commands` prints
-//! and `scripts/check.sh` writes to `artifacts/gpui/commands.txt`. The
+//! and `scripts/check.sh` writes to `artifacts/ui/commands.txt`. The
 //! Commands table of the migration ledger is made from that file
 //! (`scripts/gpui_commands_table.py`).
 //!
