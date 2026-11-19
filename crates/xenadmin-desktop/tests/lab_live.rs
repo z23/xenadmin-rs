@@ -4517,3 +4517,1013 @@ fn lab_baseline_plain_guest_on_the_coordinator() {
     client.close();
     evidence.finish();
 }
+
+/// What the client holds of a server and what its window shows of it: the
+/// state word of its row of the tree, the status bar, and of the inventory
+/// whether it is enabled, marked in maintenance and live, and when it and
+/// its toolstack started.
+fn host_shown(client: &mut Client, object: &ObjectRef, host: HostId) -> serde_json::Value {
+    let row = client.tree_row(object).map(|row| row.status);
+    let held = client.model(|m| {
+        let inventory = m.inventory.as_ref()?;
+        let details = inventory.details.hosts.get(&host)?;
+        let live = details
+            .metrics
+            .and_then(|id| inventory.details.host_metrics.get(&id))
+            .and_then(|metrics| metrics.live);
+        Some(json!({
+            "enabled": inventory.hosts.get(&host).map(|host| host.enabled),
+            "maintenance": details.maintenance_mode,
+            "live": live,
+            "boot_time": details.boot_time,
+            "toolstack_start": details.agent_start_time,
+        }))
+    });
+    json!({ "tree_row": row, "status_bar": connection_status(client), "held": held })
+}
+
+/// Waits until `done` holds, recording every change of what the window
+/// shows of the server on the way. The seconds it took, `None` when the
+/// limit passed.
+fn watch_host(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    what: &str,
+    object: &ObjectRef,
+    host: HostId,
+    limit: Duration,
+    mut done: impl FnMut(&mut Client) -> bool,
+) -> Option<f64> {
+    let start = std::time::Instant::now();
+    let mut last = serde_json::Value::Null;
+    let mut changes = Vec::new();
+    let took = client.wait_for(limit, &mut |client| {
+        let shown = host_shown(client, object, host);
+        if shown != last {
+            if changes.len() < 80 {
+                changes.push(
+                    json!({ "at_seconds": seconds(start.elapsed()), "shown": shown.clone() }),
+                );
+            }
+            last = shown;
+        }
+        done(client)
+    });
+    evidence.step(
+        what,
+        json!({ "seconds": took.map(seconds), "changes": changes }),
+    );
+    took.map(seconds)
+}
+
+fn host_detail<R>(
+    client: &mut Client,
+    host: HostId,
+    read: impl FnOnce(&xenadmin_core::HostDetails, Option<bool>) -> R,
+) -> Option<R> {
+    client.model(|m| {
+        let inventory = m.inventory.as_ref()?;
+        let details = inventory.details.hosts.get(&host)?;
+        let live = details
+            .metrics
+            .and_then(|id| inventory.details.host_metrics.get(&id))
+            .and_then(|metrics| metrics.live);
+        Some(read(details, live))
+    })
+}
+
+fn host_enabled(client: &mut Client, host: HostId) -> bool {
+    client.model(|m| {
+        m.inventory
+            .as_ref()
+            .and_then(|inventory| inventory.hosts.get(&host))
+            .is_some_and(|host| host.enabled)
+    })
+}
+
+fn resource_ids(client: &mut Client) -> Vec<OperationId> {
+    client.model(|m| m.resource_rows.iter().map(|record| record.id).collect())
+}
+
+/// A reviewed change of the selected server from the Server menu: the
+/// review, its confirmation, and its record followed until it ends. The
+/// record's state, what it says and its steps, the review's lines and the
+/// seconds it took.
+#[allow(clippy::too_many_arguments)]
+fn host_change(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    object: &ObjectRef,
+    host: HostId,
+    command: &str,
+    dialog: &str,
+    tag: &str,
+    limit: Duration,
+) -> (OperationState, String, Vec<String>, String) {
+    let before = resource_ids(client);
+    client.menu(Menu::Server, command);
+    assert_eq!(client.front().as_deref(), Some(dialog));
+    let review = review_lines(client, "host-review");
+    client.snap(evidence, &format!("{tag}-review"));
+    client.press("host-confirm");
+    client.wait(
+        "the operation is recorded",
+        Duration::from_secs(60),
+        |client| {
+            client.front().is_none() && resource_ids(client).iter().any(|id| !before.contains(id))
+        },
+    );
+    let operation = resource_ids(client)
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("the record");
+    client.snap(evidence, &format!("{tag}-in-progress"));
+    let took = watch_host(
+        client,
+        evidence,
+        &format!("{tag}: the record until it ended"),
+        object,
+        host,
+        limit,
+        |client| resource_record(client, operation).0.terminal(),
+    );
+    let (state, detail, steps) = resource_record(client, operation);
+    client.snap(evidence, &format!("{tag}-ended"));
+    evidence.step(
+        tag,
+        json!({ "command": command, "review": review, "state": format!("{state:?}"),
+            "record": detail, "steps": steps, "seconds": took }),
+    );
+    (state, detail, steps, review)
+}
+
+/// The guests of a server, by name.
+fn residents(client: &mut Client, host: HostId) -> Vec<String> {
+    client.model(|m| {
+        m.inventory
+            .as_ref()
+            .expect("inventory")
+            .guests()
+            .filter(|vm| vm.host == Some(host) && !vm.is_template)
+            .map(|vm| vm.name.clone())
+            .collect()
+    })
+}
+
+/// The member of the lab as a server of the window, after the checks every
+/// host scenario makes first: it is not the coordinator, it is the second
+/// host of the manifest, it is enabled and no guest runs on it.
+fn empty_member(client: &mut Client, lab: &Lab) -> (ObjectRef, HostId, String) {
+    let (coordinator, member) = servers(client);
+    assert_ne!(coordinator.0, member.0);
+    assert_eq!(
+        member.1, lab.hosts[1].name,
+        "the member is the second host of the manifest"
+    );
+    assert_ne!(member.1, lab.hosts[0].name);
+    let guests = residents(client, member.0);
+    assert!(
+        guests.is_empty(),
+        "guests run on the member ({guests:?}): move them to the coordinator first (core scenario lab_move_xo_appliance, lab_baseline_tools_guest_on_the_coordinator)"
+    );
+    let object = client
+        .model(|m| ObjectRef::host(m.inventory.as_ref().expect("inventory").pool_id, member.0));
+    (object, member.0, member.1)
+}
+
+/// P3.6: Restart Toolstack on the member from the Server menu. First with
+/// the member's text console open in the Console tab: the host counts an
+/// open console as a pending task, and the restart is refused with that
+/// reason. Then with the console closed: the review, its confirmation, the
+/// record until it succeeds, and the member enabled again with a newer
+/// toolstack start.
+#[test]
+#[ignore]
+fn lab_p3_member_toolstack_restart() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-6-member-toolstack-restart");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let window = client.window;
+    let (host, member, member_name) = empty_member(&mut client, &lab);
+    client.select(&host);
+    client.tab(TabId::General);
+    assert!(host_enabled(&mut client, member));
+    let start_before = host_detail(&mut client, member, |details, _| {
+        details.agent_start_time.clone()
+    })
+    .flatten();
+
+    // With a console open.
+    client.tab(TabId::Console);
+    let picture = client.wait_for(Duration::from_secs(90), &mut |client| {
+        console_frame(client).is_some()
+            && client
+                .canvas(window, Seat::Tab)
+                .is_some_and(|(uploaded, _, _)| uploaded > 0)
+    });
+    assert!(picture.is_some(), "the member's text console did not open");
+    client.snap(&mut evidence, "console-open");
+    // The host's list of tasks reaches the client a moment later.
+    client.pass(Duration::from_secs(5));
+    let refused = match client.try_menu(Menu::Server, "server.restart-toolstack") {
+        Err(reason) => json!({ "how": "the menu item is disabled", "reason": reason }),
+        Ok(()) => {
+            assert_eq!(client.front().as_deref(), Some("host-restart-toolstack"));
+            client.snap(&mut evidence, "restart-with-a-console-open");
+            let error = client
+                .node("host-error")
+                .and_then(|node| node.text.or(node.label));
+            match client.try_press("host-confirm") {
+                Err(reason) => {
+                    client.press("host-close");
+                    json!({ "how": "the review cannot be confirmed", "reason": reason, "says": error })
+                }
+                Ok(()) => {
+                    let before = resource_ids(&mut client);
+                    client.wait("the request ended", Duration::from_secs(300), |client| {
+                        client
+                            .model(|m| m.resource_rows.iter().all(|record| record.state.terminal()))
+                    });
+                    let said = client.model(|m| m.error.clone());
+                    let record = before
+                        .last()
+                        .map(|id| resource_record(&mut client, *id))
+                        .map(|(state, detail, _)| json!([format!("{state:?}"), detail]));
+                    if client.front().is_some() {
+                        client.snap(&mut evidence, "restart-refused-by-the-host");
+                        client.press("host-close");
+                    }
+                    json!({ "how": "the request was made", "says": said.or(error), "record": record })
+                }
+            }
+        }
+    };
+    assert_eq!(client.front(), None);
+    evidence.step(
+        "Restart Toolstack with a console open",
+        json!(refused.clone()),
+    );
+    evidence.note("refused_with_a_console_open", refused.clone());
+    let unchanged = host_detail(&mut client, member, |details, _| {
+        details.agent_start_time.clone()
+    })
+    .flatten();
+    assert_eq!(
+        unchanged, start_before,
+        "the toolstack was not restarted while the console was open: {refused}"
+    );
+    let reason = refused["reason"]
+        .as_str()
+        .or(refused["says"].as_str())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        reason.contains("console") || reason.contains("pending"),
+        "the refusal names the pending task: {refused}"
+    );
+
+    // The console closed: the restart goes through.
+    client
+        .try_local("console.close")
+        .expect("Close Console on the Console tab's row");
+    client.tab(TabId::General);
+    let offered = client.wait_for(Duration::from_secs(120), &mut |client| {
+        client.pass(Duration::from_secs(2));
+        match client.try_menu(Menu::Server, "server.restart-toolstack") {
+            Ok(()) => {
+                client.press("host-close");
+                true
+            }
+            Err(_) => false,
+        }
+    });
+    evidence.step(
+        "Restart Toolstack is offered after the console closed",
+        json!({ "seconds": offered.map(seconds) }),
+    );
+    assert!(
+        offered.is_some(),
+        "Restart Toolstack stayed refused after the console closed"
+    );
+    let (state, detail, steps, review) = host_change(
+        &mut client,
+        &mut evidence,
+        &host,
+        member,
+        "server.restart-toolstack",
+        "host-restart-toolstack",
+        "restart-toolstack",
+        Duration::from_secs(1200),
+    );
+    assert_eq!(state, OperationState::Succeeded, "{detail} {steps:?}");
+    assert!(review.contains("Restart XAPI"), "{review}");
+    let back = watch_host(
+        &mut client,
+        &mut evidence,
+        "the member after the restart, until it is enabled",
+        &host,
+        member,
+        Duration::from_secs(900),
+        |client| host_enabled(client, member),
+    );
+    assert!(back.is_some(), "the member did not come back enabled");
+    let start_after = host_detail(&mut client, member, |details, _| {
+        details.agent_start_time.clone()
+    })
+    .flatten();
+    assert_ne!(start_after, start_before, "the toolstack has a newer start");
+    assert!(
+        outside.settle(Duration::from_secs(120), |inventory| {
+            inventory.hosts[&member].enabled
+        }),
+        "another client reads the member enabled"
+    );
+    client.snap(&mut evidence, "after-the-restart");
+    evidence.note("server", json!(member_name));
+    evidence.note("toolstack_start", json!([start_before, start_after]));
+    evidence.note("record", json!(detail));
+    client.close();
+    evidence.finish();
+}
+
+/// Enter Maintenance Mode for the selected, empty member.
+fn enter_maintenance(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    host: &ObjectRef,
+    member: HostId,
+) {
+    assert_eq!(
+        client
+            .menu_label(Menu::Server, "server.maintenance")
+            .as_deref(),
+        Some("Enter Maintenance Mode")
+    );
+    let (state, detail, steps, _) = host_change(
+        client,
+        evidence,
+        host,
+        member,
+        "server.maintenance",
+        "host-enter-maintenance",
+        "enter-maintenance",
+        Duration::from_secs(600),
+    );
+    assert_eq!(state, OperationState::Succeeded, "{detail} {steps:?}");
+    client.wait(
+        "the member is in maintenance",
+        Duration::from_secs(120),
+        |client| !host_enabled(client, member),
+    );
+}
+
+/// Exit Maintenance Mode for the selected member, once the menu offers it.
+fn exit_maintenance(
+    client: &mut Client,
+    evidence: &mut Evidence,
+    outside: &Outside,
+    host: &ObjectRef,
+    member: HostId,
+) {
+    let offered = client.wait_for(Duration::from_secs(600), &mut |client| {
+        client
+            .menu_label(Menu::Server, "server.maintenance")
+            .as_deref()
+            == Some("Exit Maintenance Mode")
+            && host_detail(client, member, |_, live| live).flatten() == Some(true)
+    });
+    evidence.step(
+        "Exit Maintenance Mode is offered",
+        json!({ "seconds": offered.map(seconds), "shown": host_shown(client, host, member) }),
+    );
+    // The host answers again a little before it accepts changes.
+    let mut last = None;
+    for attempt in 0..6 {
+        let (state, detail, steps, _) = host_change(
+            client,
+            evidence,
+            host,
+            member,
+            "server.maintenance",
+            "host-exit-maintenance",
+            &format!("exit-maintenance-{attempt}"),
+            Duration::from_secs(600),
+        );
+        if state == OperationState::Succeeded {
+            last = None;
+            break;
+        }
+        last = Some(format!("{state:?}: {detail} {steps:?}"));
+        client.pass(Duration::from_secs(30));
+        if client
+            .menu_label(Menu::Server, "server.maintenance")
+            .as_deref()
+            != Some("Exit Maintenance Mode")
+        {
+            break;
+        }
+    }
+    let enabled = client.wait_for(Duration::from_secs(600), &mut |client| {
+        host_enabled(client, member)
+    });
+    assert!(
+        enabled.is_some(),
+        "the member is not enabled after Exit Maintenance Mode: {last:?}"
+    );
+    assert!(
+        outside.settle(Duration::from_secs(120), |inventory| {
+            inventory.hosts[&member].enabled
+        }),
+        "another client reads the member enabled"
+    );
+    evidence.note("exit_maintenance_refusals", json!(last));
+}
+
+/// P3.6: Reboot of the member through maintenance. Enter Maintenance Mode,
+/// Reboot from the Server menu through its review, the record followed
+/// until the server is back with a newer boot time (three to six minutes
+/// on this nested lab), Exit Maintenance Mode.
+#[test]
+#[ignore]
+fn lab_p3_member_reboot_through_maintenance() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-6-member-reboot-through-maintenance");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (host, member, member_name) = empty_member(&mut client, &lab);
+    client.select(&host);
+    client.tab(TabId::General);
+    assert!(host_enabled(&mut client, member));
+    enter_maintenance(&mut client, &mut evidence, &host, member);
+    let boot_before =
+        host_detail(&mut client, member, |details, _| details.boot_time.clone()).flatten();
+    let started = std::time::Instant::now();
+    let (state, detail, steps, review) = host_change(
+        &mut client,
+        &mut evidence,
+        &host,
+        member,
+        "server.reboot",
+        "host-reboot",
+        "reboot",
+        Duration::from_secs(2400),
+    );
+    let back = watch_host(
+        &mut client,
+        &mut evidence,
+        "the member after the reboot, until it is live with a newer boot time",
+        &host,
+        member,
+        Duration::from_secs(1800),
+        |client| {
+            host_detail(client, member, |details, live| {
+                live == Some(true)
+                    && details.boot_time.is_some()
+                    && details.boot_time != boot_before
+            }) == Some(true)
+        },
+    );
+    let boot_after =
+        host_detail(&mut client, member, |details, _| details.boot_time.clone()).flatten();
+    client.snap(&mut evidence, "back-after-the-reboot");
+    evidence.note("server", json!(member_name));
+    evidence.note("reboot_state", json!(format!("{state:?}")));
+    evidence.note("reboot_record", json!(detail));
+    evidence.note("boot_time", json!([boot_before, boot_after]));
+    evidence.note("reboot_seconds", json!(seconds(started.elapsed())));
+    // The server is brought out of maintenance whatever the record said.
+    exit_maintenance(&mut client, &mut evidence, &outside, &host, member);
+    client.snap(&mut evidence, "enabled-again");
+    assert_eq!(state, OperationState::Succeeded, "{detail} {steps:?}");
+    assert!(back.is_some(), "the member did not come back");
+    assert_ne!(boot_after, boot_before, "the member has a newer boot time");
+    assert!(review.contains("disabled and empty"), "{review}");
+    assert_eq!(
+        resource_states(&mut client)
+            .iter()
+            .filter(|state| *state != "Succeeded")
+            .count(),
+        0,
+        "{:?}",
+        resource_states(&mut client)
+    );
+    client.close();
+    evidence.finish();
+}
+
+/// What libvirt says of a domain of the lab.
+fn domain_state(domain: &str) -> String {
+    let output = std::process::Command::new("virsh")
+        .args(["-c", "qemu:///system", "domstate", domain])
+        .output()
+        .expect("virsh");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Starts a domain of the lab that is shut off: the power button of the
+/// member's machine.
+fn start_domain(domain: &str) {
+    let output = std::process::Command::new("virsh")
+        .args(["-c", "qemu:///system", "start", domain])
+        .output()
+        .expect("virsh");
+    assert!(
+        output.status.success(),
+        "virsh start: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// P3.6: Shut Down of the member through maintenance. Enter Maintenance
+/// Mode, Shut Down from the Server menu through its review, the record
+/// until it ends and the machine is off; then the machine is started as an
+/// operator presses its power button (libvirt), the window is watched
+/// until the server is live again, and Exit Maintenance Mode.
+#[test]
+#[ignore]
+fn lab_p3_member_shutdown_through_maintenance() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-6-member-shutdown-through-maintenance");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (host, member, member_name) = empty_member(&mut client, &lab);
+    let domain = lab.hosts[1].name.clone();
+    assert_eq!(domain_state(&domain), "running");
+    client.select(&host);
+    client.tab(TabId::General);
+    assert!(host_enabled(&mut client, member));
+    enter_maintenance(&mut client, &mut evidence, &host, member);
+    let boot_before =
+        host_detail(&mut client, member, |details, _| details.boot_time.clone()).flatten();
+    let (state, detail, steps, _) = host_change(
+        &mut client,
+        &mut evidence,
+        &host,
+        member,
+        "server.shutdown",
+        "host-shutdown",
+        "shut-down",
+        Duration::from_secs(1500),
+    );
+    let off = watch_host(
+        &mut client,
+        &mut evidence,
+        "the member until its machine is off and the client reads it not live",
+        &host,
+        member,
+        Duration::from_secs(900),
+        |client| {
+            domain_state(&domain) == "shut off"
+                && host_detail(client, member, |_, live| live).flatten() == Some(false)
+        },
+    );
+    let shown_off = host_shown(&mut client, &host, member);
+    client.snap(&mut evidence, "member-off");
+    let machine = domain_state(&domain);
+    evidence.step(
+        "the member is shut down",
+        json!({ "state": format!("{state:?}"), "record": detail, "machine": machine, "shown": shown_off }),
+    );
+    // Whatever was seen, the machine is started again if it is off.
+    if machine == "shut off" {
+        start_domain(&domain);
+    }
+    let back = watch_host(
+        &mut client,
+        &mut evidence,
+        "the member after its machine was started, until it is live with a newer boot time",
+        &host,
+        member,
+        Duration::from_secs(2400),
+        |client| {
+            host_detail(client, member, |details, live| {
+                live == Some(true)
+                    && details.boot_time.is_some()
+                    && details.boot_time != boot_before
+            }) == Some(true)
+        },
+    );
+    client.snap(&mut evidence, "member-back");
+    evidence.note("server", json!(member_name));
+    evidence.note("shutdown_state", json!(format!("{state:?}")));
+    evidence.note("shutdown_record", json!(detail));
+    evidence.note("off_after_seconds", json!(off));
+    evidence.note("back_after_seconds", json!(back));
+    exit_maintenance(&mut client, &mut evidence, &outside, &host, member);
+    client.snap(&mut evidence, "enabled-again");
+    assert_eq!(state, OperationState::Succeeded, "{detail} {steps:?}");
+    assert!(off.is_some(), "the member was not read as off");
+    assert!(back.is_some(), "the member did not come back");
+    client.close();
+    evidence.finish();
+}
+
+/// What another administrator of the lab does: `lab/other_admin.py`, pinned
+/// to the coordinator's certificate. The script reads the password from
+/// the file the environment names; no argument carries it. What it printed
+/// and whether it ended well.
+fn other_admin(lab: &Lab, arguments: &[&str]) -> (bool, String) {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../lab/other_admin.py");
+    let fingerprint = lab_support::inspect(&lab.endpoint(0))
+        .details
+        .fingerprint
+        .to_string();
+    let output = std::process::Command::new("python3")
+        .arg(script)
+        .arg(&lab.hosts[0].ip)
+        .arg(&fingerprint)
+        .args(arguments)
+        .output()
+        .expect("python3");
+    let mut said = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() {
+        said.push_str(String::from_utf8_lossy(&output.stderr).trim());
+    }
+    (output.status.success(), said)
+}
+
+/// What the window shows of the connection and of the selected guest.
+fn connection_shown(client: &mut Client, pool: &ObjectRef, guest: &ObjectRef) -> serde_json::Value {
+    let (current, state, error) = client.model(|m| {
+        (
+            m.snapshot.as_ref().map(|s| s.is_current()),
+            m.snapshot.as_ref().map(|s| format!("{:?}", s.state())),
+            m.snapshot
+                .as_ref()
+                .and_then(|s| s.error().map(str::to_owned)),
+        )
+    });
+    let shut_down = client.chrome("vm.shutdown").map(|element| {
+        (element.disabled() == Some(true))
+            .then(|| element.description().unwrap_or_default().to_owned())
+    });
+    json!({
+        "status_bar": connection_status(client),
+        "current": current,
+        "state": state,
+        "error": error,
+        "pool_row": client.tree_row(pool).map(|row| row.status),
+        "guest_row": client.tree_row(guest).map(|row| row.status),
+        "tab": client.model(|m| format!("{:?}", m.active_tab())),
+        "guest_selected": client.model(|m| m.scope().single().cloned()).as_ref() == Some(guest),
+        "has_inventory": client.model(|m| m.inventory.is_some()),
+        "shut_down_refused_with": shut_down,
+        "error_line": client.model(|m| m.error.clone()),
+    })
+}
+
+/// P3.8: the coordinator's toolstack restarted by another administrator
+/// while the window is connected, with a guest selected and its General
+/// tab open. What the status bar, the tree and the tab show while the host
+/// is away is recorded; the connection is current again without anything
+/// being asked of the user; the selection and the tab are kept; no record
+/// of an operation appears and the guest is not restarted. Afterwards a
+/// change made by another client is followed again.
+///
+/// The scenario ends with a wait: nothing is to start on this lab within
+/// two minutes of a toolstack restart of the coordinator.
+#[test]
+#[ignore]
+fn lab_p3_recovery_coordinator_toolstack_restart() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-8-coordinator-toolstack-restart");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, vm, name) = guest(&mut client, PLAIN_GUEST);
+    let (coordinator, _) = servers(&mut client);
+    assert_eq!(coordinator.1, lab.hosts[0].name);
+    let pool = client.model(|m| ObjectRef::pool(m.inventory.as_ref().expect("inventory").pool_id));
+    client.select(&object);
+    client.tab(TabId::General);
+    assert!(client.says(&name));
+    let start_before = started_at(&mut client, vm);
+    let records_before = (
+        client.model(|m| m.operation_rows.len()),
+        client.model(|m| m.resource_rows.len()),
+    );
+    let before = connection_shown(&mut client, &pool, &object);
+    client.snap(&mut evidence, "before");
+    evidence.step("before the restart", before.clone());
+    assert_eq!(before["current"], json!(true));
+
+    let (accepted, said) = other_admin(&lab, &["restart-toolstack", &coordinator.0.to_string()]);
+    evidence.step(
+        "another administrator restarted the coordinator's toolstack",
+        json!({ "accepted": accepted, "said": said }),
+    );
+    let asked = std::time::Instant::now();
+    let mut last = before;
+    let mut changes = Vec::new();
+    let mut away_at = None;
+    let mut snapped = false;
+    let returned = client.wait_for(Duration::from_secs(900), &mut |client| {
+        let shown = connection_shown(client, &pool, &object);
+        if shown != last {
+            if changes.len() < 60 {
+                changes.push(
+                    json!({ "at_seconds": seconds(asked.elapsed()), "shown": shown.clone() }),
+                );
+            }
+            last = shown.clone();
+        }
+        if shown["current"] != json!(true) && away_at.is_none() {
+            away_at = Some(seconds(asked.elapsed()));
+        }
+        if away_at.is_some() && !snapped && asked.elapsed().as_secs_f64() > away_at.unwrap() + 1.5 {
+            snapped = true;
+            return false;
+        }
+        away_at.is_some()
+            && shown["current"] == json!(true)
+            && shown["has_inventory"] == json!(true)
+    });
+    evidence.step(
+        "what the window showed from the restart until the connection was current again",
+        json!({ "away_after_seconds": away_at, "current_again_after_seconds": returned.map(|_| seconds(asked.elapsed())), "changes": changes }),
+    );
+    client.snap(&mut evidence, "current-again");
+    let after = connection_shown(&mut client, &pool, &object);
+    evidence.step("after the return", after.clone());
+    evidence.note("away_after_seconds", json!(away_at));
+    evidence.note(
+        "current_again_after_seconds",
+        json!(returned.map(|_| seconds(asked.elapsed()))),
+    );
+    evidence.note("shown_while_away", json!(changes));
+    // The lab's rule, kept whatever follows.
+    let rule = |client: &mut Client| {
+        let left = 130_f64 - asked.elapsed().as_secs_f64();
+        if left > 0. {
+            client.pass(Duration::from_secs_f64(left));
+        }
+    };
+    if !accepted || away_at.is_none() || returned.is_none() {
+        rule(&mut client);
+    }
+    assert!(accepted, "the restart was not accepted: {said}");
+    assert!(away_at.is_some(), "the window never showed the host away");
+    assert!(
+        returned.is_some(),
+        "the connection did not become current again"
+    );
+    assert_eq!(
+        after["guest_selected"],
+        json!(true),
+        "the selection is kept"
+    );
+    assert_eq!(after["tab"], json!("General"), "the tab is kept");
+    assert!(client.says(&name), "the General tab shows the guest");
+    assert_eq!(
+        (
+            client.model(|m| m.operation_rows.len()),
+            client.model(|m| m.resource_rows.len()),
+        ),
+        records_before,
+        "no operation was recorded: nothing was sent"
+    );
+    assert_eq!(
+        started_at(&mut client, vm),
+        start_before,
+        "the guest was not restarted"
+    );
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+
+    // The connection follows the host again: a change made by another
+    // client appears in the tab, and is put back.
+    let outside = Outside::connect(&lab);
+    let previous = outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .vms[&vm]
+        .description
+        .clone();
+    let changed = format!("Changed after the toolstack restart at {}", stamp());
+    describe_from_outside(&outside, vm, &changed);
+    let followed = client.wait_for(Duration::from_secs(90), &mut |client| client.says(&changed));
+    client.snap(&mut evidence, "follows-the-host-again");
+    describe_from_outside(&outside, vm, &previous);
+    let restored = client.wait_for(Duration::from_secs(90), &mut |client| {
+        !client.says(&changed)
+    });
+    evidence.step(
+        "a change from outside after the return",
+        json!({ "followed_after_seconds": followed.map(seconds), "put_back": restored.is_some() }),
+    );
+    evidence.note("guest", json!(name));
+    rule(&mut client);
+    assert!(
+        followed.is_some(),
+        "the General tab did not follow a change made after the return"
+    );
+    client.close();
+    evidence.finish();
+}
+
+/// Stops a domain of the lab at once, as a power cut does. Only the member
+/// may be given.
+fn cut_power(lab: &Lab, domain: &str) {
+    assert_eq!(domain, lab.hosts[1].name, "only the member may lose power");
+    assert_ne!(domain, lab.hosts[0].name);
+    let output = std::process::Command::new("virsh")
+        .args(["-c", "qemu:///system", "destroy", domain])
+        .output()
+        .expect("virsh");
+    assert!(
+        output.status.success(),
+        "virsh destroy: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// P3.8: the member lost and returned. With no guest on it, the member's
+/// machine loses power (libvirt); the tree, the status bar and the
+/// member's General tab are watched until the client reads it as not live
+/// (the pool takes up to ten minutes to declare a silent member dead);
+/// the machine is started; the window is watched until the member is live
+/// and enabled again. The connection to the pool stays current throughout
+/// and the selection is kept.
+#[test]
+#[ignore]
+fn lab_p3_recovery_member_lost_and_returned() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-8-member-lost-and-returned");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (host, member, member_name) = empty_member(&mut client, &lab);
+    let domain = lab.hosts[1].name.clone();
+    assert_eq!(domain_state(&domain), "running");
+    client.select(&host);
+    client.tab(TabId::General);
+    assert!(host_enabled(&mut client, member));
+    let boot_before =
+        host_detail(&mut client, member, |details, _| details.boot_time.clone()).flatten();
+    let before = host_shown(&mut client, &host, member);
+    client.snap(&mut evidence, "before");
+    evidence.step("before the power cut", before);
+
+    cut_power(&lab, &domain);
+    evidence.step(
+        "the member's machine lost power",
+        json!(domain_state(&domain)),
+    );
+    let lost = watch_host(
+        &mut client,
+        &mut evidence,
+        "the member after the power cut, until the client reads it as not live",
+        &host,
+        member,
+        Duration::from_secs(900),
+        |client| host_detail(client, member, |_, live| live).flatten() == Some(false),
+    );
+    let shown_lost = host_shown(&mut client, &host, member);
+    let general: Vec<String> = client
+        .nodes()
+        .into_iter()
+        .filter_map(|node| node.text.or(node.value))
+        .filter(|text| {
+            let text = text.to_lowercase();
+            text.contains("live") || text.contains("unreachable") || text.contains("disabled")
+        })
+        .take(8)
+        .collect();
+    client.snap(&mut evidence, "member-lost");
+    evidence.step(
+        "the member is lost",
+        json!({ "seconds": lost, "shown": shown_lost, "general_tab_says": general,
+            "pool_connection_current": client.model(|m| m.snapshot.as_ref().map(|s| s.is_current())) }),
+    );
+    evidence.note("read_as_lost_after_seconds", json!(lost));
+    evidence.note("shown_when_lost", shown_lost);
+
+    // The machine is started again whatever was seen.
+    start_domain(&domain);
+    let back = watch_host(
+        &mut client,
+        &mut evidence,
+        "the member after its machine was started, until it is live and enabled",
+        &host,
+        member,
+        Duration::from_secs(2400),
+        |client| {
+            host_enabled(client, member)
+                && host_detail(client, member, |details, live| {
+                    live == Some(true)
+                        && details.boot_time.is_some()
+                        && details.boot_time != boot_before
+                }) == Some(true)
+        },
+    );
+    let shown_back = host_shown(&mut client, &host, member);
+    client.snap(&mut evidence, "member-back");
+    evidence.step(
+        "the member is back",
+        json!({ "seconds": back, "shown": shown_back }),
+    );
+    evidence.note("back_after_seconds", json!(back));
+    evidence.note("server", json!(member_name));
+    if back.is_none() && !host_enabled(&mut client, member) {
+        // A member that came back disabled is enabled through the menu.
+        let label = client.menu_label(Menu::Server, "server.maintenance");
+        evidence.step("the member came back disabled", json!({ "menu": label }));
+        if label.as_deref() == Some("Exit Maintenance Mode") {
+            exit_maintenance(&mut client, &mut evidence, &outside, &host, member);
+        }
+    }
+    assert!(
+        back.is_some(),
+        "the member did not come back live and enabled"
+    );
+    assert!(
+        outside.settle(Duration::from_secs(120), |inventory| {
+            inventory.hosts[&member].enabled
+        }),
+        "another client reads the member enabled"
+    );
+    assert_eq!(
+        client.model(|m| m.scope().single().cloned()).as_ref(),
+        Some(&host),
+        "the selection is kept"
+    );
+    assert_eq!(
+        client.model(|m| m.snapshot.as_ref().map(|s| s.is_current())),
+        Some(true)
+    );
+    assert!(
+        lost.is_some(),
+        "the client never read the member as not live"
+    );
+    client.close();
+    evidence.finish();
+}
+
+/// P3.8: a certificate that is not the pinned one. Add Server is filled in
+/// with a pin that is not the coordinator's (the member's certificate
+/// fingerprint: a real one, of another host) and with a password that is
+/// NOT the lab's. Connect: the attempt ends with the certificate's refusal,
+/// not with a refused login, so nothing was authenticated before the
+/// certificate was checked. "Review this endpoint's certificate…" then
+/// gives the review of the changed certificate: the saved pin and the
+/// presented fingerprint side by side, the replacement refused until the
+/// exact endpoint is typed and the verification confirmed. With the pin
+/// replaced and the lab's password typed, the connection comes up.
+#[test]
+#[ignore]
+fn lab_p3_recovery_changed_certificate() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-8-changed-certificate");
+    lab_support::assert_fresh_state();
+    let mut client = Client::start(Platform::Rendered);
+    let presented = lab_support::inspect(&lab.endpoint(0))
+        .details
+        .fingerprint
+        .to_string();
+    let wrong = lab_support::inspect(&lab.endpoint(1))
+        .details
+        .fingerprint
+        .to_string();
+    assert_ne!(presented, wrong);
+    client
+        .try_local("server.add")
+        .expect("Add Server is on the Home tab");
+    assert_eq!(client.front().as_deref(), Some("connect-dialog"));
+    client.type_into("host-endpoint", &lab.address(0));
+    client.type_into("username", "root");
+    client.type_into("password", "not-the-password-of-the-lab");
+    client.press("certificate-options");
+    client.type_into("certificate-fingerprint", &wrong);
+    client.snap(&mut evidence, "form-with-another-pin");
+    client.press("connect");
+    let ended = client.wait_for(Duration::from_secs(90), &mut |client| {
+        client.model(|m| {
+            m.error.is_some()
+                || m.snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.error().is_some() || s.is_current())
+        }) || client.node("connect-error").is_some()
+    });
+    client.pass(Duration::from_secs(2));
+    client.snap(&mut evidence, "refused");
+    let said: Vec<String> = client
+        .nodes()
+        .into_iter()
+        .filter(|node| matches!(node.role, "alert" | "status") || node.tone.is_some())
+        .filter_map(|node| node.text.or(node.label))
+        .collect();
+    let state = client.model(|m| {
+        json!({
+            "error_line": m.error,
+            "connection_state": m.snapshot.as_ref().map(|s| format!("{:?}", s.state())),
+            "connection_error": m.snapshot.as_ref().and_then(|s| s.error().map(str::to_owned)),
+            "current": m.snapshot.as_ref().map(|s| s.is_current()),
+            "has_inventory": m.inventory.is_some(),
+        })
+    });
+    evidence.step(
+        "Connect with a pin that is not the host's and a password that is not the lab's",
+        json!({ "ended_after_seconds": ended.map(seconds), "front": client.front(), "says": said,
+            "model": state, "status_bar": connection_status(&mut client) }),
+    );
+    panic!("exploration: read the evidence and write the rest");
+}
