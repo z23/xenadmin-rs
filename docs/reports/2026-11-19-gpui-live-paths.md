@@ -63,7 +63,39 @@ frames, element trees and a `summary.json` with the steps, their times and the r
 gives the last run of each scenario, on 2026-11-19 local time (AEDT). Durations are of the whole
 test, connection included.
 
-@@TABLE@@
+| # | Path | Test | Result | Duration | Evidence directory |
+| --- | --- | --- | --- | --- | --- |
+| 1 | P3.1: reboot, suspend and resume, the force actions, Start on Server | `lab_p3_power_paths` | passed | 75.5 s | `1795066158-p3-1-power-paths` |
+| 1 | P3.1: a batch that stops on a failure | `lab_p3_power_batch_stops_on_a_failure` | passed | 90.1 s | `1795066234-p3-1-power-batch-stops-on-a-failure` |
+| 2 | Refused reviews | `lab_p3_refused_reviews` | passed | 52.1 s | `1795065756-p3-refused-reviews` |
+| 3 | P3.7: live migration with disks, there and back; forced shutdown during it refused | `lab_p3_migration_with_disks` | passed | 126.8 s | `1795066432-p3-7-migration-with-disks` |
+| 3 | P3.7: the same migration cancelled from the client | `lab_p3_migration_cancelled` | passed | 43.6 s | `1795066559-p3-7-migration-cancelled` |
+| 3 | P3.7: a halted VM's disks moved and back | `lab_p3_halted_disk_move` | passed | 109.6 s | `1795066603-p3-7-halted-disk-move` |
+| 4 | P3.4: snapshot with memory | `lab_p3_snapshot_with_memory` | passed | 202.2 s | `1795066713-p3-4-snapshot-with-memory` |
+| 5 | P3.3: separate window, Fullscreen, Type Clipboard as Keys, Ctrl+Alt+Del | `lab_p3_console_window_and_typing` | passed | 174.1 s | `1795066915-p3-3-console-window-and-typing` |
+| 6 | P3.6: Restart Toolstack on the member and its refusal | `lab_p3_member_toolstack_restart` | passed | 65.2 s | `1795064283-p3-6-member-toolstack-restart` |
+| 6 | P3.6: Reboot of the member through maintenance | `lab_p3_member_reboot_through_maintenance` | passed | 213.2 s | `1795064355-p3-6-member-reboot-through-maintenance` |
+| 6 | P3.6: Shut Down of the member through maintenance, and its return | `lab_p3_member_shutdown_through_maintenance` | passed | 195.1 s | `1795064584-p3-6-member-shutdown-through-maintenance` |
+| 7 | P3.8: the coordinator's toolstack restarted by another administrator | `lab_p3_recovery_coordinator_toolstack_restart` | passed | 144.3 s (130 s of it the wait the lab asks for after such a restart) | `1795066014-p3-8-coordinator-toolstack-restart` |
+| 7 | P3.8: a member lost and returned | `lab_p3_recovery_member_lost_and_returned` | passed | 783.5 s | `1795064787-p3-8-member-lost-and-returned` |
+| 7 | P3.8: a certificate that is not the pinned one | `lab_p3_recovery_changed_certificate` | passed | 15.5 s | `1795067090-p3-8-changed-certificate` |
+| base | G2: Add Server, inventory follows the host (run last) | `lab_g2_add_server_and_follow_the_host` | passed | 17.3 s | `1795067112-g2-add-server-and-follow` |
+| base | P3.1, P3.2: power and Events (run last) | `lab_p3_power_and_events` | passed | 37.7 s | `1795067130-p3-1-power-and-events` |
+
+The rows of paths 1 to 5 and 7 (except the lost member) and the two base rows are runs made
+between 16:23 and 16:46 at commit `a87d6b6`, the last commit that changed the tests. The three
+host scenarios and the lost member were run once each, between 15:59 and 16:19, at the commits at
+which they were written; the commits after them changed only the code of the recovery scenario of
+the coordinator's toolstack. They were not repeated: each is a restart, a reboot or a power cycle
+of the member.
+
+Runs that failed on the way, all kept under the evidence directory with `"outcome": "failed"`:
+11 runs of 8 scenarios, every one a matter of the test or of the harness and none a wrong result
+of the application (an operation refused by the host has the state `Rejected`, not `Failed`; a
+review is a group whose lines are described under it; a window of the test platform is active
+only when told; the toolbar has no power buttons while the inventory is stale; one run of the
+certificate scenario was an exploration that ends in a panic by design). Two of them left
+something to learn about the product: findings 1 and 2.
 
 Utilities, not scenarios: `lab_state` (read-only; run after every scenario),
 `lab_baseline_plain_guest_on_the_coordinator` (new: moves the plain guest home with the
@@ -76,17 +108,17 @@ scenarios and back to the member after them).
 `lab_p3_power_paths`, on `lab-guest`, with "review routine power actions" switched on in Options
 for the routine actions:
 
-- **Suspend and Resume** from the VM menu through "Confirm power operation": suspended in 13.7 s,
-  resumed in 6.3 s; the guest's start time is the same before and after (it did not boot).
-- **Reboot** through its confirmation: 8.4 s, with a newer start time.
+- **Suspend and Resume** from the VM menu through "Confirm power operation": suspended in 6.1 s,
+  resumed in 3.1 s; the guest's start time is the same before and after (it did not boot).
+- **Reboot** through its confirmation: 4.3 s, with a newer start time.
 - **Force Reboot and Force Shut Down** through "Confirm force operation", which is asked whatever
-  the option says: 2.9 s (newer start time) and 7.1 s (halted).
+  the option says: 2.1 s (newer start time) and 6.2 s (halted).
 - **Start on Server, refused.** The halted guest's disks are on the coordinator's local
   repository. Start on Server with the member chosen is submitted and the host refuses it: the
   record is `Start on host • Rejected` on the General tab and in the Events tab, whose outcome
   reads "XAPI refused the request: VM_REQUIRES_SR". The host's reason is shown to the user as the
   host gave it, by its error code.
-- **Start on Server, accepted** with the coordinator chosen: running there after 11.9 s.
+- **Start on Server, accepted** with the coordinator chosen: running there after 11.0 s.
 
 `lab_p3_power_batch_stops_on_a_failure`: Shut Down for `lab-guest` and `lab-tools` as a batch from
 the Search tab. While the host worked on the first guest, another administrator forced that guest
@@ -132,16 +164,16 @@ was made).
 - `lab_p3_migration_with_disks`: `lab-guest`, running, through the Migrate wizard with the other
   server, that server's local repository for both disks (the drop-downs driven by the keyboard)
   and the transfer network; the review names the server and both repositories by UUID. To the
-  member in 24.0 s and back in 24.0 s; after each leg this client and a second one read the guest
+  member in 22.9 s and back in 22.9 s; after each leg this client and a second one read the guest
   running on the destination with every disk on its local repository.
-- `lab_p3_migration_cancelled`: the same migration, cancelled from the client 8.9 s after Apply
+- `lab_p3_migration_cancelled`: the same migration, cancelled from the client 8.4 s after Apply
   with "Review cancellation request…" on the General tab and its confirmation. The record ended
-  `Cancelled`, "Host task cancelled; original placement verified", 20.7 s after Apply; the guest
+  `Cancelled`, "Host task cancelled; original placement verified", 11.7 s after Apply; the guest
   ran on the coordinator with its disks on its local repository as read by this client and by
-  another; the destination repository held no disk before and none after. One record, nothing
-  sent twice. See finding 1 for the review that was refused first.
+  another; the destination repository held after the cancellation what it held before
+  (finding 9). One record, nothing sent twice. See finding 1 for the review that was refused first.
 - `lab_p3_halted_disk_move`: `lab-guest` shut down, its two disks moved to the member's local
-  repository and back (23.9 s and 24.0 s), the review saying "Remain halted; change home host
+  repository and back (22.1 s and 22.9 s), the review saying "Remain halted; change home host
   after verified move"; the guest stayed halted through both and was started again on the
   coordinator. See finding 3 for the home server it is left with.
 
@@ -149,13 +181,13 @@ was made).
 
 `lab_p3_snapshot_with_memory`: at a root shell on the Console tab a file is made in `/dev/shm`
 (memory only) and a probe command paints the screen when the file exists. Take a Snapshot with
-"Include guest memory": in the Snapshots tab after 12.2 s, the snapshot's power state
+"Include guest memory": in the Snapshots tab after 10.9 s, the snapshot's power state
 `Suspended`. The file is removed (the probe paints nothing). Revert through its review with the
-shutdown and "Resume restored memory after restore" chosen: 16.4 s, records `Create memory
+shutdown and "Resume restored memory after restore" chosen: 14.9 s, records `Create memory
 snapshot`, `Restore snapshot`, both succeeded. The console then shows the shell that was logged in
 before the snapshot, no login is asked, and the probe paints again: the guest resumed with the
-snapshot's memory. The snapshot was deleted with its disks (0.5 s); a second client reads no
-snapshot of the guest.
+snapshot's memory. The snapshot was deleted with its two disks ("Also delete 2 exclusively owned
+snapshot disk(s)", 0.4 s); a second client reads no snapshot of the guest.
 
 ### 5. Console (P3.3)
 
@@ -180,10 +212,10 @@ snapshot of the guest.
   console is open for this VM.", Open Console on the tab's row brought the picture back in the
   tab and keys typed there reached the guest. Closing the window ends its console; it does not
   move back by itself.
-- **Send Ctrl+Alt+Del** from the tab's row: the guest's start time changed 5.6 s later and it ran
+- **Send Ctrl+Alt+Del** from the tab's row: the guest's start time changed 5.3 s later and it ran
   on the same server; no power record was added (the reboot is the guest's own). The tab said
   "Console disconnected: No RFB console is available for this VM. …" and "Waiting to reconnect to
-  this console (attempt 1 of 5)", and showed pictures of the new boot 4.3 s after that without
+  this console (attempt 1 of 5)", and its picture was changing again 2.2 s after that without
   being asked.
 
 ### 6. Hosts (P3.6)
@@ -213,11 +245,107 @@ Before these, the appliance was moved to the coordinator; no guest ran on the me
 In all three the tree marks the member "Disabled" from the moment it is disabled until it is
 enabled again, whether it is in maintenance, restarting or switched off (finding 5).
 
-@@RECOVERY@@
+### 7. Connection recovery in the interface (P3.8)
+
+- `lab_p3_recovery_coordinator_toolstack_restart`. `lab-guest` is selected with its General tab
+  open; another administrator restarts the coordinator's toolstack (`lab/other_admin.py
+  restart-toolstack`). What the window showed, in seconds after the request:
+  - 1.1 s: the pool's row of the tree says "Reconnecting…";
+  - 1.3 s: the status bar says "Connection lost • inventory is stale • reconnecting…" (the
+    connection's state is `Reconnecting`, "Cannot reach the XCP-ng management endpoint");
+  - while it is away (frame `06-while-away.png`): the header and the General tab still show the
+    guest from the last inventory, its row still says "Running", and the toolbar has no VM power
+    button at all (Back, Forward, Add Server, New Storage and a disabled New VM remain);
+  - 8.5 s: the pool's row says "Loading inventory…";
+  - 8.8 s: the status bar says "Connected directly • https://192.168.254.11/" and the connection
+    is current again, with nothing asked of the user.
+
+  That is the design of `docs/ARCHITECTURE.md` (keep the last snapshot visibly stale, build a
+  replacement inventory, then swap it). The selection and the tab were kept. No record of an
+  operation appeared and the guest's start time did not change. Then a description changed by a
+  second client appeared in the General tab 0.2 s later, and was put back: the connection follows
+  the host again. "Nothing is sent twice" is shown here only in this sense: nothing was in flight
+  when the toolstack went away, and the reconnection submitted nothing. An operation in flight
+  across a toolstack restart was not produced through the front end (the first report's "client
+  closed in the middle of an operation" and the core's own scenarios are the nearest evidence).
+- `lab_p3_recovery_member_lost_and_returned`. The member, with no guest on it and its General
+  tab open, loses power (`virsh destroy`). For 616 s the window showed no change at all: the
+  member's row unmarked, the header "Enabled", the status bar "Connected directly". That is the
+  time the pool takes to declare a silent member dead; the client shows what the pool says. After
+  it the General tab's property reads "Host live = No"; the row of the tree and the header still
+  show an enabled server (finding 5). The connection to the pool stayed current throughout. The
+  machine was started: 138 s later the member's row said "Disabled" (the host answers again and
+  is not yet enabled), at 141 s it had a newer boot time and at 150 s it was enabled and
+  unmarked, by itself. The selection was kept; a second client reads the member enabled.
+- `lab_p3_recovery_changed_certificate`. No host's certificate was reset. Add Server is filled in
+  with a pin that is not the coordinator's (the member's certificate fingerprint) and with a
+  password that is deliberately not the lab's. Connect: the attempt ended at once with "TLS
+  verification failed for https://192.168.254.11/. Verify this host's certificate and add its
+  endpoint-specific fingerprint", the connection saved and shown as "Connection failed". The
+  refusal is the certificate's and not a refused login, although the password was wrong too:
+  nothing was authenticated before the certificate was checked. (That no credential left the
+  client is the core's order of work, TLS before login; the test sees its effect, not the wire.)
+  "Review this endpoint's certificate…" on the Home tab opens the form with no password in it and
+  the inspection endpoint preset; Inspect certificate gives the review headed "Certificate
+  changed" with "Previous SHA-256" the saved pin and "Presented SHA-256" the fingerprint the core
+  inspected. The replacement is refused ("Type the exact endpoint to update only its certificate
+  pin.") until the exact endpoint is typed and the verification is confirmed; then the pin field
+  holds the presented fingerprint, and with the lab's password the connection came up. No file of
+  the state directory holds the password.
+- **A coordinator change** was not run: see "What was not run".
 
 ## Findings
 
-@@FINDINGS@@
+No defect of the product was found that had to be changed, and no product code was changed: the
+branch differs from `gpui-migration` in `tests/lab_live.rs`, `tests/lab_support/mod.rs` and two
+documents. What the runs showed that an owner of the product may want to decide on:
+
+1. **The review of a cancellation is overtaken by the progress of what it cancels.** "Review
+   cancellation request…" binds its review to the record's revision
+   (`areas/power/recovery.rs`, `cancellable`). The record of a running storage migration changed
+   about once a second (4 changes in 4 s, sampled in both runs). A review left open for about a
+   second (the time of one capture) refused its confirmation: "The operation or connection
+   changed. Close this dialog and review its current state before requesting cancellation."
+   Opened again and confirmed at once, it was accepted, in both runs at the second attempt. A
+   person who reads the review before confirming will usually be refused and has to be quicker
+   than the next progress report. The rule came with the port from Rune; it was not changed here,
+   because how tightly a review binds is a safety decision.
+2. **A migration goes on when its client is gone.** Once a test ended (a panic of the test)
+   seconds after Apply; the host finished the migration without a client, and the guest was found
+   on the member with its disks there. That agrees with the first report's closed-client scenario
+   and is not a defect; `lab_baseline_plain_guest_on_the_coordinator` moved the guest back
+   through the wizard.
+3. **A halted move leaves a home server.** `lab-guest` had no home server before the first run of
+   the halted move; the move there set it to the member and the move back to the coordinator, as
+   the review says ("change home host after verified move"). The guest is left with the
+   coordinator as its home server.
+4. **Why Restart Toolstack is refused is not said.** With a console open the item's reason is one
+   sentence for three conditions and does not name the console. It is the core's sentence:
+   recorded as gap 13 in [the core gaps](2026-11-19-gpui-core-gaps.md).
+5. **The tree has one word for a server that is not in service, and none for one that is lost.**
+   A member in maintenance, one whose toolstack restarts, one that reboots and one that is
+   switched off all show "Disabled". A member that lost power shows nothing for ten minutes (the
+   pool's own delay) and after that still nothing in the tree or the header: only the property
+   "Host live = No" on its General tab says it.
+6. **"inventory is stale" for a connection that never had one.** After the refused certificate
+   the status bar says "Connection failed • inventory is stale"; no inventory was ever loaded.
+7. **One sentence for two refusals of a revert.** When the snapshot under an open revert review
+   is deleted by another client, the disabled Confirm gives the same reason as for a missing
+   choice ("… explicitly select a permitted clean shutdown …") although the shutdown is chosen;
+   the review itself adds the notice that the object is no longer current.
+8. **A host's refusal is shown by its code.** Start on Server refused by the host reads "XAPI
+   refused the request: VM_REQUIRES_SR": the host's actual reason, untranslated.
+9. **A storage "base copy" stays for a while on the repository a VM was migrated away from.** The
+   member's local repository held none at 15:41 and one unmanaged "base copy" at 16:36, 40 s
+   after the round trip of the migration with disks; the cancelled migration left the count as
+   it found it both times. The host's storage layer removes these on its own schedule (it had,
+   by 15:41, after the first round trip of 15:36). Not looked at again after 16:36.
+
+Harness: `Client::activate`, `try_press_in`, `key_in`, `type_keys_in`, `pixels_in`,
+`is_fullscreen` and `copy_to_clipboard` were added to `tests/lab_support/mod.rs` for a second
+window and the clipboard; a drop-down is driven by the keyboard (`pick`); `review_lines` reads a
+review's lines (the first report's migration steps recorded an empty review text for that reason;
+nothing was asserted on it then).
 
 ## What was not run
 
@@ -240,8 +368,39 @@ enabled again, whether it is in maintenance, restarting or switched off (finding
 
 ## Checks
 
-@@CHECKS@@
+At the last commit that changed code (`a87d6b6`; the commits after it change this report only):
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy -p xenadmin-desktop --all-targets --features scenes --locked -- -D warnings`:
+  passed.
+- Not run, because nothing outside `tests/lab_live.rs` and `tests/lab_support` was changed but
+  two documents: the workspace clippy, `cargo test -p xenadmin-ui` and
+  `cargo test -p xenadmin-desktop --features scenes`.
+- `lab_state` after every scenario; the two base scenarios last (the table).
+
+The PNG frames of these runs were not looked at by a person. Every statement above rests on an
+assertion or a recorded value: the model's description, the element tree of the frame, or pixels
+of the captured frame (the colours a typed command painted in the guest).
 
 ## State of the lab afterwards
 
-@@STATE@@
+Read with `lab_state` at 16:46 AEDT, after the last scenario: both servers enabled, h1 the
+coordinator; `XOA` running on h2; `lab-tools-1794263807` and `lab-guest-1794316526` running on
+h1; `lab-desktop-1794365323` halted, not touched; no snapshot in the pool; no pending task
+(`lab/other_admin.py pending-tasks`); high availability not touched. libvirt: h1, h2 and the NAS
+running, h3 and dc shut off as before.
+
+What differs from how the lab was found:
+
+- `lab-guest` has the coordinator as its home server (finding 3); it had none.
+- The member was rebooted once, shut down and started once and lost power once; its toolstack
+  was restarted twice by the application (one of them in a run that failed afterwards on the
+  test's own check) and the coordinator's three times by `other_admin.py` (the last at 16:27).
+  Both guests were shut down, rebooted and started many times.
+- The appliance was moved to the coordinator at 15:55 and back to the member at 16:22 by the
+  core's `lab_move_xo_appliance`.
+- A "base copy" may still be on the member's local repository (finding 9).
+
+Evidence of every run, failed ones included, is under
+`/var/lib/libvirt/images/xenadmin-rs-lab/evidence/gpui/`, directories `1795052692-…` to
+`1795067130-…`. Nothing of it is in the repository.
