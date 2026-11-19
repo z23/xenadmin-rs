@@ -50,16 +50,20 @@ touching the state directory.
 The window is at least 800 by 600. Below a width of 1100 the navigation pane is behind
 its toggle.
 
-Status of the window itself: nobody has used the GPUI Kit front end in a window yet. It
+Status of the window itself: no person has used the GPUI Kit front end in a window yet. It
 passes its tests on the toolkit's headless test platform, every scene renders off screen,
 and it has been driven headless against the lab
 ([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-live-headless.md)). The packaged client has been
 installed on untouched Ubuntu 24.04 and Arch systems in virtual machines and has opened its
 window there with software rendering: in a Wayland compositor that had no seat, and, with
 scripted input, in an X session without Wayland
-([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-clean-install.md)). A Wayland session with
-a person at it, a hardware GPU and GPU selection on a hybrid machine remain to be shown
-for it. What earlier versions of this guide
+([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-clean-install.md)). The AppImage has also
+been driven through a Wayland session (sway 1.12) in a virtual machine, with software
+rendering and every key and pointer press injected at the machine's devices by a script:
+it connected to the lab, started a VM and typed into consoles there
+([session report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-vm-session.md)). A Wayland session with
+a person at it, any other compositor, a hardware GPU and GPU selection on a hybrid machine
+remain to be shown for it. What earlier versions of this guide
 recorded about them (native Wayland presentation working, an X11 smoke test through
 Xwayland that needed an explicit adapter) was observed with the Rune interface of the
 releases up to 0.19.0 and does not carry over.
@@ -212,7 +216,9 @@ passwords or API sessions. Preserve the journal when investigating an interrupte
 ```
 
 The check script uses isolated temporary state and local protocol fixtures and opens no
-window. It renders every scene under `artifacts/ui/`. Packaging writes a release archive
+window. It renders every scene under `artifacts/ui/`, and runs the built client once
+without a window (`packaging/smoke.py`), as the packaging script does with the client it
+stages and with the AppImage. Packaging writes a release archive
 under the same ignored directory `artifacts/`.
 Archives also include declared dependency licenses and supplied notices under
 `third-party/`. The application is under the MIT licence; its XAPI bindings
@@ -275,9 +281,14 @@ local pointer stays visible over the console and the guest's own cursor is not d
 In a Wayland session the console's keys are read by key code through a second keyboard
 listener on the display ([decision 0006](https://github.com/z23/xenadmin-rs/blob/main/docs/decisions/0006-console-key-codes.md)); elsewhere
 (X11) the toolkit's keystrokes are forwarded with codes looked up on the US layout, which
-is experimental. Neither path has been used with a console in a real window yet: the
-headless lab runs sent keys through the toolkit's test events. Native keyboard, layout,
-clipboard, fullscreen and compositor qualification remain open.
+is experimental. The Wayland path has carried keys to a lab guest once, in a virtual
+machine: keys injected at the machine's keyboard, on sway 1.12, arrived in the guest with
+the same key codes under a German layout of the compositor as under the US one
+([session report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-vm-session.md)). In the packages built before
+2026-11-19 a held key does not repeat in a console on that path. The X11 path has not been
+used with a console in a window, and the headless lab runs sent keys through the toolkit's
+test events. A person's keyboard, other compositors, clipboard exchange without focus and
+fullscreen on a real desktop remain open.
 
 ## Host networking
 

@@ -46,8 +46,11 @@ where the named one cannot be reached, it says so in one line and ends. The pack
 built before 2026-11-19 do not yet have these messages: the report lists what they do in
 each case. The window
 has been opened in a compositor without a seat and, with scripted input, in an X session
-without Wayland, both in a virtual machine with software rendering; nobody has used the
-new front end in a window yet, on either. Screen readers are not supported and
+without Wayland, both in a virtual machine with software rendering, and the AppImage has
+been driven through a Wayland session (sway) in another, with input injected at the
+machine's devices ([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-vm-session.md));
+no person has used the new front end in a window yet, and it has not drawn on a hardware
+GPU. Screen readers are not supported and
 multi-monitor use is unverified.
 
 ## Portable archive

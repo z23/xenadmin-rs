@@ -28,7 +28,8 @@ interface was run without a display against the project's
 [disposable lab](lab/README.md), a pool of two nested XCP-ng 8.3 hosts, and these are
 frames its renderer drew off screen during those runs
 ([report](docs/reports/2026-11-19-gpui-live-headless.md)). They are of the development
-tree after the front end moved to GPUI Kit, which has not yet been shown in a real window.
+tree after the front end moved to GPUI Kit, which no person has yet used in a window
+("Project status" says where it has run).
 
 ## Project status
 
@@ -50,15 +51,22 @@ built with the Rune toolkit; the main branch is built with GPUI Kit, with a new 
 wizards), by the [migration plan](docs/GPUI-MIGRATION.md), whose "Status" section says
 what is established. In short: every area of the old interface is ported; the model's
 tests, the interface's tests on the toolkit's headless test platform and a render of
-every scene pass; and on 2026-11-19 the new interface was driven headless against the lab
-through the supported areas
-([report](docs/reports/2026-11-19-gpui-live-headless.md)). Not established: nothing of the
-new front end has run in a real window on a compositor, so the Wayland keyboard path of
-the console, the clipboard, the file chooser, window activation, fullscreen and window
-decorations are untried outside the test platform; no screen reader has been run; no
-packaged build of it has been installed or run, and the recovery gate below has not been
-repeated with one. The qualification described in the rest of this section was obtained
-with the released versions, through the Rune interface or through the core's own lab
+every scene pass; on 2026-11-19 the new interface was driven headless (without a window)
+against the lab through the supported areas, their successful paths
+([report](docs/reports/2026-11-19-gpui-live-headless.md)) and their refusals,
+interruptions and recoveries
+([report](docs/reports/2026-11-19-gpui-live-paths.md)); and on the same day the packages
+CI built from the branch were run in windows for the first time, in virtual machines with
+software rendering and nobody at them: installed on clean Ubuntu 24.04 and Arch systems
+([report](docs/reports/2026-11-19-gpui-clean-install.md)), and driven in a Wayland session
+(sway) with keys and pointer injected at the machine's devices, where the client connected
+to the lab, passed the recovery gate below and typed into consoles through its Wayland
+keyboard path ([report](docs/reports/2026-11-19-gpui-vm-session.md)). Not established: no
+person has used the new front end in a window; it has not drawn on a hardware GPU; it has
+not run on Hyprland, GNOME or KDE, nor with a console on X11; no person has used a screen
+reader with it; no keyring was present in any run; and the fixes those runs led to are in
+no package yet. The qualification described in the rest of this section was obtained with
+the released versions, through the Rune interface or through the core's own lab
 scenarios.
 
 Implemented scope, as reviewed operations with durable partial and unknown outcomes:
@@ -145,9 +153,16 @@ unreachable, the VM located, started and consoled through the direct host connec
 answering again afterwards. It was run through the core facade and then through the packaged
 0.17.0 AppImage started on an empty state directory, with keyboard input in the appliance's
 console and the client's connections observed going to the two pool hosts only. That
-AppImage carried the Rune interface. The gate has not been repeated with a packaged build
-of the GPUI front end; it is what the operator's run in a real window has to show before a
-release (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
+AppImage carried the Rune interface. With the GPUI front end the gate was repeated once, on
+2026-11-19, with the AppImage CI built from the branch at commit `e808a2f`, started on an
+empty state directory in a virtual machine: a Wayland session with software rendering,
+every key and pointer press injected at the machine's devices by a script, nobody at it.
+Xen Orchestra was shut down and unreachable; the VM was found with the search box,
+started, and typed into at its login prompt; the client's connections went to the pool's
+coordinator only; XO answered again afterwards
+([report](docs/reports/2026-11-19-gpui-vm-session.md), section E). It has not been
+repeated by a person at a desk or with a release artifact, which is what a release still
+needs (gates G3 and G5 of the [migration plan](docs/GPUI-MIGRATION.md)).
 
 ## Release history
 

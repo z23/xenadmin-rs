@@ -78,16 +78,28 @@ Standing rules:
 Open, and to be said wherever the front end's status is given (the plan's "Status" section
 and the gate reports of 2026-11-19 under `docs/reports/` own the detail):
 
-- Nothing of the GPUI front end has been shown in a real window on a compositor. The
-  Wayland key path for console key codes (decision 0006, route A) compiles in the client
-  and has no test and no seat run in it. Clipboard, the portal file chooser, activation of
-  the window by a second start, fullscreen and client-side decorations are established on
-  the Kit's test platform only.
-- No screen reader has been run.
-- No packaged build (archive, AppImage) of the GPUI front end has been installed on a
-  clean system, and the recovery gate of README.md has not been repeated with one.
-- Live evidence of the GPUI front end is the headless run of 2026-11-19 against the lab
-  ([report](docs/reports/2026-11-19-gpui-live-headless.md)), repeated the same day after the
-  last fixes and the cutover, at commit `56fedbd`. Connection recovery through a lost host,
-  a toolstack restart or a coordinator change was not rerun through it, and the
-  experimental areas were verified on fixtures and by rendering only.
+- No person has used the GPUI front end in a window, and no hardware GPU has drawn it. It
+  has run in real windows only in virtual machines on 2026-11-19, with a software renderer
+  and nobody at them: a driven session with keys and pointer injected at the machine's
+  devices, on sway 1.12
+  ([report](docs/reports/2026-11-19-gpui-vm-session.md)), and the window opened on clean
+  Ubuntu 24.04 and Arch systems
+  ([report](docs/reports/2026-11-19-gpui-clean-install.md)). In that session the Wayland
+  key path for console key codes (decision 0006, route A) carried injected keys to a lab
+  guest, and the clipboard with the window focused, the portal file chooser, activation of
+  the window by a second start, fullscreen and server-side decorations were observed.
+  None of that is established for a real keyboard, for Hyprland, GNOME or KDE, or for X11
+  with a console; the listener of route A has no test.
+- No person has used a screen reader with it. In the same virtual machine the client was on
+  the accessibility bus and Orca wrote names and roles for the demo's views to its log;
+  nobody heard it. The accessibility statement stays "not supported".
+- The packaged builds that were installed and run are the archive and the AppImage CI built
+  at commit `e808a2f`, in those virtual machines only. The recovery gate of README.md was
+  repeated with that AppImage in the driven session, not by a person and not on a release
+  artifact. The fixes made on 2026-11-19 are in no package.
+- Live evidence of the GPUI front end is headless: the runs of 2026-11-19 against the lab
+  ([successful paths](docs/reports/2026-11-19-gpui-live-headless.md),
+  [refusals, interruptions and recoveries](docs/reports/2026-11-19-gpui-live-paths.md)).
+  A coordinator change and maintenance of the coordinator through the front end, the
+  host's own refusal of an evacuation, and a saved password in the keyring were not run
+  through it, and the experimental areas were verified on fixtures and by rendering only.

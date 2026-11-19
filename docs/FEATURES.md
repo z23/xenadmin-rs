@@ -89,13 +89,21 @@ What the paragraphs of this section cite was recorded with the Rune interface of
 versions up to 0.19.0 and of the main branch up to 2026-11-12, or through the core's own
 lab scenarios. With the GPUI Kit front end the successful path of every supported area
 above was run again on the lab on 2026-11-19, headless: the real shell and core without a
-window ([report](reports/2026-11-19-gpui-live-headless.md), which lists what was left out,
-among it recovery after a lost host or coordinator, a cancelled migration and the refused
-reviews). Nothing of that front end has run in a real window on a compositor, so its
-keyboard path into a console, its clipboard, file chooser, window activation, fullscreen
-and decorations are established on the toolkit's test platform only; and no packaged build
-of it has been installed or run. Until the operator's run in a real window is recorded, a
-build from the main branch is not yet what this list describes.
+window ([report](reports/2026-11-19-gpui-live-headless.md)). A second headless run of the
+same day added the paths the first left out: the refused reviews, a cancelled migration,
+migration with disks, a snapshot with memory, a host's toolstack restart, reboot and
+shutdown through maintenance, and recovery after a restart of the coordinator's toolstack,
+a lost member and a certificate that is not the pinned one
+([report](reports/2026-11-19-gpui-live-paths.md), which lists what is still left out,
+among it a coordinator change through the interface and the keyring). The packaged client
+has run in windows only in virtual machines, with software rendering and nobody at them:
+on clean Ubuntu 24.04 and Arch systems
+([report](reports/2026-11-19-gpui-clean-install.md)) and in a driven Wayland session on
+sway, where its keyboard path into a console, its clipboard, file chooser, window
+activation, fullscreen and decorations were observed with injected input
+([report](reports/2026-11-19-gpui-vm-session.md)). No person has used it in a window, on
+no hardware GPU and on no other compositor. Until the operator's run at a desk is
+recorded, a build from the main branch is not yet what this list describes.
 
 Everything else in the [ledger](PARITY-IMPLEMENTATION.md) is experimental. It is
 implemented, in most cases with a recorded successful run on the lab, but how it fails is
@@ -108,8 +116,9 @@ made from a snapshot.
 An X session without a Wayland compositor is experimental and is not being pursued, by
 the operator's decision of 2026-11-11. A scripted check under the X.Org server with a
 window manager passed for the window, input, clipboard, resizing and closing
-([report](reports/2026-11-11-clean-install.md)), but nobody has used the client there and
-no console was tried.
+([report](reports/2026-11-11-clean-install.md)), and passed again for the GPUI Kit front
+end on 2026-11-19 ([report](reports/2026-11-19-gpui-clean-install.md), "An X session
+without Wayland"), but nobody has used the client there and no console was tried.
 
 Typing clipboard text into a console as key presses is new in this release and is offered
 as part of the console. Through the core it reached a lab guest exactly, every printable
@@ -122,8 +131,11 @@ Not supported: screen readers. The accessibility tree of the Rune interface had 
 Kit front end has a different tree, whose roles, labels and descriptions are asserted in
 its tests and stored with every scene render, and which has known gaps of its own (the
 reason of a disabled menu item is in its name or a tooltip, not an accessible
-description). No screen reader has been used with either, and the statement stays "not
-supported" until a screen reader run is recorded. Hosts other than XCP-ng 8.3 are not qualified, and the client says so
+description). No person has used a screen reader with either. With the GPUI Kit front end
+Orca was started once in a virtual machine, on the demo's views, and what it would speak
+was read from its log: names and roles, heard by nobody
+([report](reports/2026-11-19-gpui-vm-session.md), section G). The statement stays "not
+supported" until a screen reader run by a person is recorded. Hosts other than XCP-ng 8.3 are not qualified, and the client says so
 when it meets one.
 
 The four product decisions the live report had left open (findings 25, 29, 30 and 32) all
