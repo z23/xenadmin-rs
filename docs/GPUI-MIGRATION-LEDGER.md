@@ -33,7 +33,7 @@ separately. For the GPUI front end, every status in this ledger means the follow
 The counts above are counts of test functions in the tree (`scripts/gpui_ledger_tables.py check` prints
 them; the functions two macros of the window tests write are counted). The suites were run as a whole
 by `scripts/check.sh` at the cutover (`581ba08`), during this ledger's final pass and, on the tree with
-the branches of 2026-11-19 merged, @@CHECK_LEDGER@@; the gate reports of
+the branches of 2026-11-19 merged, in a run started at commit `1c84ac5`, which passed; the gate reports of
 2026-11-19 (`docs/reports/2026-11-19-gpui-gate-g2.md` to `-g5.md`) say which run shows what.
 
 ## How this ledger is generated and checked

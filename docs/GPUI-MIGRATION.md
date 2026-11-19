@@ -25,7 +25,7 @@ Done:
   disposition in the ledger (154 moved, 119 ported, 94 split, 4 retired, none open).
 - Verified on fixtures and headless: the model's tests, the front end's tests with real events on the
   Kit's headless test platform, and a render of every scene by `./scripts/check.sh`
-  (@@CHECK_STATUS@@). A state directory of the released client (0.19 and 0.17) is read by the new one
+  (it passed on the merged tree on 2026-11-19, started at commit `1c84ac5`; [G5 report](reports/2026-11-19-gpui-gate-g5.md), criterion 1). A state directory of the released client (0.19 and 0.17) is read by the new one
   without loss, by an ignored test run on copies ([report](reports/2026-11-19-gpui-upgrade-state.md)).
 - Verified live, headless, on the lab on 2026-11-19, by the ignored tests of
   `crates/xenadmin-desktop/tests/lab_live.rs`, which run the real shell and core without a window:
