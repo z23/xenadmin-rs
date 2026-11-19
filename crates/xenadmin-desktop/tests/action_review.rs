@@ -428,7 +428,7 @@ const REVIEWED: &[Reviewed] = &[
         "snapshot-preview-load",
         "asks the host for the saved picture of the selected snapshot and shows it; it changes \
          nothing on the host",
-        "It fills the section it is in, \"Inspect snapshot\", for the snapshot that section \
+        "It fills the section it is in, \"Snapshot information\", for the snapshot that section \
          shows, and reports a refusal there; it is a read. It stays a button of the section, \
          as it was a button of the old dialog.",
     ),

@@ -2,7 +2,11 @@
 
 Status: runs recorded from 2026-11-09 to 2026-11-12 in the
 [live qualification report](../docs/reports/2026-11-09-lab-qualification.md); the Result
-column summarises them. All targets must belong to the local harness manifest.
+column summarises them. Those runs used the releases up to 0.19.0, whose window was the
+Rune interface: what the Result column says of the desktop, its window, its input and a
+real seat was observed with that interface and is not an observation of the GPUI Kit front
+end, whose own runs are in the [gate reports](../docs/reports/). All targets must belong to
+the local harness manifest.
 Use three hosts: two in the primary pool, one in a separate pool for transfer tests.
 The isolated network has no forwarding. Each host has a separate disposable data disk.
 Use lab-only credentials and synthetic guest names. No existing production VM is a target.
