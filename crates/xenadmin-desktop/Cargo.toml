@@ -14,6 +14,7 @@ raw-window-handle = "0.6"
 serde_json = { workspace = true, optional = true }
 uuid.workspace = true
 wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
 xenadmin-core = { path = "../xenadmin-core" }
 xenadmin-ui = { path = "../xenadmin-ui" }
 
