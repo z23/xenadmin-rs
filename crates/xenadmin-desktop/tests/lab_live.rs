@@ -1612,6 +1612,25 @@ fn resource_states(client: &mut Client) -> Vec<String> {
     })
 }
 
+/// The lines of a review of the surface in front, one per line: the review
+/// is a group, and each line is a text described under it.
+fn review_lines(client: &mut Client, key: &str) -> String {
+    let nodes = client.nodes();
+    let Some(group) = nodes
+        .iter()
+        .find(|node| node.key.as_deref() == Some(key))
+        .map(|node| format!("{}/", node.path))
+    else {
+        return String::new();
+    };
+    nodes
+        .iter()
+        .filter(|node| node.path.starts_with(&group))
+        .filter_map(|node| node.text.clone().or_else(|| node.label.clone()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Migrate to Server from the VM menu: the wizard's three steps with the
 /// destination chosen and the storage and networks as offered, its review,
 /// and the move followed until the host reports the guest on the
@@ -1639,10 +1658,7 @@ fn migrate(
         client.element("migration-review").is_some(),
         "the third step is the review"
     );
-    let review = client
-        .node("migration-review")
-        .and_then(|node| node.text)
-        .unwrap_or_default();
+    let review = review_lines(client, "migration-review");
     client.snap(evidence, &format!("{tag}-review"));
     let before = newest_operation(client, vm).map(|(id, _)| id);
     client.press("migration-apply");
@@ -2829,10 +2845,7 @@ fn migration_to_review(
         client.snap(evidence, &format!("{tag}-not-reviewed"));
         return Err(said);
     }
-    let review = client
-        .node("migration-review")
-        .and_then(|node| node.text)
-        .unwrap_or_default();
+    let review = review_lines(client, "migration-review");
     client.snap(evidence, &format!("{tag}-review"));
     Ok(review)
 }
@@ -3462,7 +3475,7 @@ fn lab_p3_migration_with_disks() {
         )
         .expect("the wizard reaches its review");
         assert!(
-            review.contains(&repository.1) && review.contains(&host.1),
+            review.contains(&format!("({})", repository.0)) && review.contains(&host.1),
             "the review names the server and the repository: {review}"
         );
         assert_eq!(
@@ -3739,7 +3752,7 @@ fn lab_p3_halted_disk_move() {
         )
         .expect("the wizard reaches its review");
         assert!(
-            review.contains("Remain halted") && review.contains(&repository.1),
+            review.contains("Remain halted") && review.contains(&format!("({})", repository.0)),
             "the review says the guest stays halted and names the repository: {review}"
         );
         let started = std::time::Instant::now();
