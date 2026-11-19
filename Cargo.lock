@@ -9337,6 +9337,7 @@ name = "xenadmin-ui"
 version = "0.20.0"
 dependencies = [
  "image",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",
