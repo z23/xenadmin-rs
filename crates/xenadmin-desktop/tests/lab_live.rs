@@ -1917,6 +1917,40 @@ fn lab_baseline_tools_guest_on_the_coordinator() {
     evidence.finish();
 }
 
+/// The maintenance scenario shows an evacuation only when a guest runs on
+/// the member. When the tools guest is found on the coordinator, this moves
+/// it to the member with the application's own Migrate to Server wizard;
+/// otherwise it only records where the guest is. The baseline test above
+/// moves it back after the maintenance scenario.
+#[test]
+#[ignore]
+fn lab_place_tools_guest_on_the_member() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "place-tools-guest-on-the-member");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let (object, vm, name) = guest(&mut client, TOOLS_GUEST);
+    let (_, member) = servers(&mut client);
+    if resident_host(&mut client, vm) == Some(member.0) {
+        evidence.note("moved", json!(false));
+    } else {
+        let took = migrate(
+            &mut client,
+            &mut evidence,
+            &object,
+            vm,
+            (member.0, &member.1),
+            "to-the-member",
+        );
+        evidence.note("moved", json!(true));
+        evidence.note("seconds", json!(took));
+    }
+    assert_eq!(resident_host(&mut client, vm), Some(member.0));
+    evidence.note("guest", json!(name));
+    evidence.note("ends_on", json!(member.1));
+    client.close();
+    evidence.finish();
+}
+
 /// Selects the two guests in the Search tab of their pool, with the grid
 /// narrowed to VMs by its Filters so that their rows are drawn: a press
 /// on the row of the first, a press with the secondary modifier on the row
