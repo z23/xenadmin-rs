@@ -35,7 +35,10 @@ Done:
   snapshot with memory, the console's second window and typed clipboard, a member's toolstack
   restart, reboot and shutdown through maintenance, and recovery after a restart of the
   coordinator's toolstack, a lost member and a certificate that is not the pinned one
-  ([report](reports/2026-11-19-gpui-live-paths.md)). @@LIVE_STATUS@@
+  ([report](reports/2026-11-19-gpui-live-paths.md)). The scenarios of the first report were all repeated, passing, after the cutover (commit
+  `56fedbd`) and again on the tree with the day's branches merged (commit `a6ccb33`), there with
+  three guest-level scenarios of the second report; the scenarios that restart, reboot or cut the
+  power of a server were run once each and not repeated.
 - Verified in virtual machines on 2026-11-19, with the archive and the AppImage that CI built at
   commit `e808a2f`, software rendering, nobody at them:
   - a clean installation on Ubuntu 24.04 and on Arch: checksums, installer, the window opened under

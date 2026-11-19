@@ -6,7 +6,9 @@ Note added after the cutover of the code, later the same day: the crate this rep
 The runs described below were made at commit `e2d4572`, before the last round of fixes to the model
 and the renderer (branches `port/f1` and `port/f2`) and before the cutover. Every scenario was run
 again after the cutover, at commit `56fedbd`, and passed: see
-[Repeated after the cutover](#repeated-after-the-cutover) at the end. The text between is unchanged.
+[Repeated after the cutover](#repeated-after-the-cutover) at the end; and a third time, passing, on
+the tree with the day's later branches merged: see
+[Repeated on the merged tree](#repeated-on-the-merged-tree). The text between is unchanged.
 
 This report records what was run of the GPUI front end against the project's disposable
 lab for the gates G2 and G3 of [the migration plan](../GPUI-MIGRATION.md), with what
@@ -350,5 +352,54 @@ tree after the cutover; it was headless, with no window, no compositor and no se
 path that the first run left out (see "What was not run").
 
 The lab afterwards, read with `lab_state`: both servers enabled; `XOA` running on h2;
+`lab-tools-1794263807` and `lab-guest-1794316526` running on h1; `lab-desktop-1794365323` halted;
+no snapshot in the pool.
+
+## Repeated on the merged tree
+
+On 2026-11-19 between 17:34 and 17:46 local time every test of the table above was run once more,
+in the same order and the same way (a fresh state directory each, one at a time, no display), on
+the tree with the day's four branches merged and the findings of the review of the cutover
+settled: commit `a6ccb33`, whose code is that of `1c84ac5` (documents only differ). The merge had
+changed the client's start, the console's key handling, the Snapshots tab's row of actions, how
+the options are applied and how preferences are saved. All passed at the first attempt.
+
+| Order | Test | Result | Duration | Evidence directory |
+| --- | --- | --- | --- | --- |
+| 1 | `lab_g2_add_server_and_follow_the_host` | passed | 17.6 s | `1795070079-g2-add-server-and-follow` |
+| 2 | `lab_p3_power_and_events` | passed | 38.1 s | `1795070097-p3-1-power-and-events` |
+| 3 | `lab_p3_console` | passed | 120.3 s | `1795070136-p3-3-console` |
+| 4 | `lab_p3_console_save_screenshot` | passed | 16.2 s | `1795070256-p3-3-console-save-screenshot` |
+| 5 | `lab_p3_snapshots` | passed | 43.5 s | `1795070273-p3-4-snapshots` |
+| 6 | `lab_p3_performance` | passed | 18.7 s | `1795070317-p3-5-performance` |
+| 7 | `lab_place_tools_guest_on_the_member` | passed | 23.5 s | `1795070388-place-tools-guest-on-the-member` |
+| 8 | `lab_p3_host_maintenance` | passed | 33.6 s | `1795070412-p3-6-host-maintenance` |
+| 9 | `lab_baseline_tools_guest_on_the_coordinator` | passed | 21.0 s | `1795070457-baseline-tools-guest-on-the-coordinator` |
+| 10 | `lab_p3_migration` | passed | 31.3 s | `1795070479-p3-7-migration` |
+| 11 | `lab_p3_connection_recovery` | passed | 25.1 s | `1795070510-p3-8-connection-recovery` |
+| 12 | `lab_client_closed_in_the_middle_of_an_operation` | passed | 33.7 s | `1795070536-closed-in-the-middle-of-an-operation` |
+| 13 | `lab_p3_power_batch` | passed | 182.6 s | `1795070570-p3-1-power-batch` |
+
+`lab_state` was read before the first and after the last. Around the maintenance scenario the Xen
+Orchestra appliance was moved to the coordinator and back with the core's own scenario
+`lab_move_xo_appliance`, as before. The maintenance scenario again showed a real evacuation: the
+member held `lab-tools-1794263807` before, entering maintenance took 4.5 s with one succeeded
+operation, the guest on the coordinator and the member marked "Disabled" in the tree (from the
+scenario's `summary.json`).
+
+Three scenarios of the [second report](2026-11-19-gpui-live-paths.md) that act on guests only, and
+whose paths the merge had touched, were then repeated on the same tree between 17:46 and 17:52,
+and passed at the first attempt: `lab_p3_refused_reviews` (49.6 s,
+`1795070760-p3-refused-reviews`), `lab_p3_snapshot_with_memory` (143.6 s,
+`1795070810-p3-4-snapshot-with-memory`) and `lab_p3_console_window_and_typing` (171.5 s,
+`1795070954-p3-3-console-window-and-typing`). The other eleven scenarios of that report were not
+repeated on the merged tree: among them the three that restart, reboot or shut down the member,
+the lost member and the restart of the coordinator's toolstack; the merge changed no code of
+theirs besides the client's start, which every scenario passes through.
+
+Nobody looked at a frame of these runs: every statement rests on the tests' own assertions and on
+their summaries. What the repeat is and is not: the same as before, headless, for the merged tree.
+
+The lab afterwards, read with `lab_state` at 17:52: both servers enabled; `XOA` running on h2;
 `lab-tools-1794263807` and `lab-guest-1794316526` running on h1; `lab-desktop-1794365323` halted;
 no snapshot in the pool.

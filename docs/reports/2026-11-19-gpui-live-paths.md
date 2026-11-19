@@ -1,5 +1,11 @@
 # GPUI front end: the remaining live paths, headless against the lab (2026-11-19)
 
+Note added later the same day, after this branch was merged with the day's others: three of the
+scenarios below (`lab_p3_refused_reviews`, `lab_p3_snapshot_with_memory` and
+`lab_p3_console_window_and_typing`) were run once more on the merged tree and passed; see
+"Repeated on the merged tree" in [the first report](2026-11-19-gpui-live-headless.md). The gate
+reports and the plan's Status section now use this report. The text below is unchanged.
+
 This report continues [the first live headless report](2026-11-19-gpui-live-headless.md). It
 records the paths that gate G3, criterion 2, of [the migration plan](../GPUI-MIGRATION.md) names
 and that the first run left out
