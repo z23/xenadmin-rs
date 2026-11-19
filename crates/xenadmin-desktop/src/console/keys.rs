@@ -236,7 +236,14 @@ impl Repeater {
             return None;
         }
         let period = Duration::from_secs(1) / self.rate;
-        self.held = Some((code, (next + period).max(now)));
+        // On time: keep the rhythm. Late: start it again from now.
+        let following = next + period;
+        let following = if following > now {
+            following
+        } else {
+            now + period
+        };
+        self.held = Some((code, following));
         Some(code)
     }
 }
@@ -496,6 +503,7 @@ mod tests {
         // A late call gives one repeat and does not make up for the rest.
         assert_eq!(repeater.due(ms(1000)), Some(30));
         assert_eq!(repeater.due(ms(1001)), None);
+        assert_eq!(repeater.due(ms(1050)), Some(30));
         repeater.key(30, false, ms(1010));
         assert_eq!(repeater.due(ms(2000)), None, "released");
     }
