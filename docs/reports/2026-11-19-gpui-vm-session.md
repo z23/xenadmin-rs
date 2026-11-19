@@ -235,7 +235,7 @@ compositor then does depended on where the pointer was:
   event `urgent`; the default policy of sway never gives focus on a request);
 - after a press, with the pointer still over the client's window: urgent;
 - after a press, with the pointer over another window: **nothing**. The window is neither
-  focused nor urgent. Six of six second starts in that state.
+  focused nor urgent. Eleven of eleven second starts made in that state.
 
 Cause: once a press has happened, the toolkit puts that press's serial and seat on the token
 it requests (`gpui-pre-linux` 0.3.12, `linux/wayland/window.rs`, `activate`, and
@@ -290,7 +290,8 @@ h2 (and the same would meet anyone who opens the console of a guest that runs on
 
 What was seen (CI): "Console disconnected: TLS verification failed for
 https://192.168.254.12/. Verify this host's certificate and add its endpoint-specific
-fingerprint. Reconnect when the guest or host is available.", five reconnect attempts, and no
+fingerprint. Reconnect when the guest or host is available.", automatic reconnect attempts
+("attempt 3 of 5"), and no
 control to review that certificate (frame 078). "Review this endpoint's certificate…" exists
 only in the context menu of a connection that failed and is not live
 (`can_review_certificate` in `crates/xenadmin-ui/src/areas/connections/home.rs`), and the
@@ -373,6 +374,24 @@ This report does not edit the gate reports. For whoever does:
 - The two fixes ran on sway only, and the CI package does not have them until the branch is
   merged and built.
 - Orca was run on the demo, not on views of the lab.
+- Whether the server closed the session when the window was closed could not be observed.
+- Chords the compositor or the kernel may take for itself (Ctrl+Alt+F1 at the keyboard,
+  Alt+Tab at the keyboard) were sent through the row's buttons only.
+
+## The lab afterwards, and the checks of the branch
+
+The lab was returned to its baseline and read back with the `lab_state` test and by another
+client: both servers enabled, `XOA` running on h2, the two Alpine guests running on h1, the
+desktop guest halted, no snapshot, HA off, and the description of `lab-guest-…` as it was
+found. Inside that guest, until its next boot, its network interface holds the address it
+was given for the reports, and it is logged out.
+
+After the two fixes, at the code of commit `8d6ec1d`: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`,
+`cargo clippy -p xenadmin-desktop --all-targets --features scenes --locked -- -D warnings`,
+`cargo test -p xenadmin-ui --locked` (977 passed) and
+`cargo test -p xenadmin-desktop --features scenes --locked` (226 passed, the live tests
+ignored) all passed. `./scripts/check.sh` was not run.
 
 ## What this does not show
 
