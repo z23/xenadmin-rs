@@ -25,10 +25,12 @@
 //!   one path that runs before the application quits.
 
 use std::cell::Cell;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use xenadmin_ui::launch::{self, Launch};
 use xenadmin_ui::model::APPLICATION_NAME;
@@ -358,6 +360,73 @@ pub fn start(
     Ok((window, shell))
 }
 
+/// What is said when the environment names no display. Without one the
+/// toolkit starts headless: no window, no word, and a process that stays.
+pub const NO_DISPLAY: &str = "xenadmin-rs: no display: neither WAYLAND_DISPLAY nor DISPLAY is set. \
+Start the client from a Wayland or X11 session.";
+
+/// Whether the environment names a display to open the window on: a
+/// Wayland socket by name or as an inherited descriptor, or an X server.
+pub fn names_a_display(variable: impl Fn(&str) -> Option<OsString>) -> bool {
+    ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY"]
+        .iter()
+        .any(|name| variable(name).is_some_and(|value| !value.is_empty()))
+}
+
+/// The plain words for a start the toolkit gave up with a panic: the
+/// display it could not reach, the font it could not find, or whatever
+/// else it said. Clean-install report of 2026-11-19 has the cases.
+pub fn start_failure(message: &str) -> String {
+    if message.contains("failed to resolve font") {
+        return "xenadmin-rs: no usable font is installed. The interface needs one of these \
+                families: Noto Sans, DejaVu Sans, Cantarell, Adwaita Sans, Ubuntu, Arial, \
+                Helvetica, Segoe UI."
+            .to_owned();
+    }
+    let what = if message.contains("failed to connect to") {
+        "the display could not be reached"
+    } else if message.contains("wl_seat") {
+        "the display cannot be used"
+    } else {
+        "the client could not start"
+    };
+    format!("xenadmin-rs: {what}: {message}")
+}
+
+/// What is added to the toolkit's words when no graphics backend took the
+/// window: they do not name the cause.
+pub fn window_failure(error: &str) -> String {
+    if error.contains("Failed to create surface") {
+        format!(
+            "{APPLICATION_NAME}: {error}\nNo Vulkan driver could be used. Install the Vulkan \
+             driver of the graphics card, or Mesa's software driver."
+        )
+    } else {
+        format!("{APPLICATION_NAME}: {error}")
+    }
+}
+
+/// Until the main window is open, a panic of the toolkit is a start that
+/// failed: it is said in one line and the process ends with status 1.
+/// With `RUST_BACKTRACE` set, and once `started` is set, a panic is
+/// reported as usual.
+fn say_start_failures_plainly(started: Arc<AtomicBool>) {
+    let usual = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if started.load(Ordering::SeqCst) || std::env::var_os("RUST_BACKTRACE").is_some() {
+            return usual(info);
+        }
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("the toolkit did not say why");
+        eprintln!("{}", start_failure(message));
+        std::process::exit(1);
+    }));
+}
+
 /// The whole program. Returns the exit status.
 pub fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -385,6 +454,11 @@ pub fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    // Before the state directory is claimed: nothing could be shown.
+    if !names_a_display(|name| std::env::var_os(name)) {
+        eprintln!("{NO_DISPLAY}");
+        return ExitCode::FAILURE;
     }
     let (sender, activations) = unbounded::<Option<String>>();
     let (model, activations) = match launch::prepare() {
@@ -417,16 +491,27 @@ pub fn main() -> ExitCode {
     let window_size = line.size.unwrap_or(DEFAULT_SIZE);
     let failed = Rc::new(Cell::new(false));
     let report = failed.clone();
+    let started = Arc::new(AtomicBool::new(false));
+    say_start_failures_plainly(started.clone());
     gpui_kit::application()
         .with_assets(AppAssets)
         // The main window closes the application through its close path;
         // a console window closing must not.
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx| {
-            if let Err(error) = start(model, window_size, activations, cx) {
-                eprintln!("{APPLICATION_NAME}: {error}");
-                report.set(true);
-                cx.quit();
+            match start(model, window_size, activations, cx) {
+                Ok(_) => started.store(true, Ordering::SeqCst),
+                Err(error) => {
+                    eprintln!("{}", window_failure(&error));
+                    report.set(true);
+                    // The toolkit forgets a quit asked for before its event
+                    // loop runs, and the process would stay: the quit is
+                    // asked for from a task, which the loop runs first.
+                    cx.spawn(async move |cx| {
+                        cx.update(|cx| cx.quit());
+                    })
+                    .detach();
+                }
             }
         });
     if failed.get() {
@@ -525,5 +610,65 @@ mod tests {
         let unknown = parse(&arguments("--scene no-such-scene")).expect("command line");
         let error = preview_model(&unknown).err().expect("refused");
         assert!(error.contains("no-such-scene") && error.contains("demo"));
+    }
+
+    #[test]
+    fn a_start_without_a_display_is_told_apart() {
+        let with = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            }
+        };
+        assert!(!names_a_display(with(&[])));
+        assert!(!names_a_display(with(&[
+            ("WAYLAND_DISPLAY", ""),
+            ("DISPLAY", "")
+        ])));
+        assert!(names_a_display(with(&[("WAYLAND_DISPLAY", "wayland-1")])));
+        assert!(names_a_display(with(&[("WAYLAND_SOCKET", "5")])));
+        assert!(names_a_display(with(&[("DISPLAY", ":0")])));
+        assert!(NO_DISPLAY.contains("WAYLAND_DISPLAY") && NO_DISPLAY.contains("DISPLAY is set"));
+    }
+
+    /// The words are the toolkit's, as the clean-install check recorded them.
+    #[test]
+    fn the_failures_of_a_start_are_said_in_one_plain_line() {
+        let wayland = start_failure(
+            "failed to connect to Wayland compositor at /run/user/1000/wayland-none: No such file or directory (os error 2)",
+        );
+        assert!(
+            wayland.starts_with("xenadmin-rs: the display could not be reached: failed to connect")
+        );
+        assert!(wayland.contains("/run/user/1000/wayland-none"));
+        let x11 = start_failure("failed to connect to X server \":99\": Unknown connection error");
+        assert!(
+            x11.starts_with("xenadmin-rs: the display could not be reached:")
+                && x11.contains(":99")
+        );
+        let font = start_failure(
+            "failed to resolve font '.SystemUIFont' or any of the fallbacks: .ZedMono, .ZedSans, Helvetica, Segoe UI, Ubuntu, Adwaita Sans, Cantarell, Noto Sans, DejaVu Sans, Arial",
+        );
+        assert!(font.starts_with("xenadmin-rs: no usable font is installed."));
+        assert!(font.contains("DejaVu Sans") && !font.contains(".ZedMono") && !font.contains('\n'));
+        let seat = start_failure("Wayland compositor does not provide wl_seat");
+        assert_eq!(
+            seat,
+            "xenadmin-rs: the display cannot be used: Wayland compositor does not provide wl_seat"
+        );
+        assert_eq!(
+            start_failure("anything else"),
+            "xenadmin-rs: the client could not start: anything else"
+        );
+        let surface = window_failure(
+            "The main window did not open: Failed to create surface: Failed to create surface for any enabled backend: {}",
+        );
+        assert!(
+            surface.starts_with(APPLICATION_NAME)
+                && surface.contains("No Vulkan driver could be used")
+        );
+        assert!(!window_failure("The main window did not open: something else").contains("Vulkan"));
     }
 }
