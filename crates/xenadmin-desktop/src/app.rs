@@ -43,6 +43,7 @@ use crate::intents::{self, Hook, Hooks};
 use crate::kit::*;
 use crate::shell::{self, ShellView};
 use crate::store::AppStore;
+use crate::wayland_activate::Activator;
 
 /// The application id of the main window. It must be the name of the
 /// installed desktop entry (`packaging/xenadmin-rs.desktop`), or the
@@ -51,6 +52,11 @@ pub const APP_ID: &str = "xenadmin-rs";
 
 /// The smallest size the main window can be given.
 pub const MINIMUM_SIZE: (f32, f32) = (800., 600.);
+
+/// How often, and how many times, the answers to a request to show the
+/// window are looked for.
+const ACTIVATION_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+const ACTIVATION_POLLS: usize = 40;
 
 /// The size the main window opens at.
 pub const DEFAULT_SIZE: (f32, f32) = (1440., 900.);
@@ -346,13 +352,38 @@ pub fn start(
     .detach();
     if let Some(activations) = activations {
         cx.spawn(async move |cx| {
-            // The token of the request cannot be handed to the toolkit: the
-            // window asks the compositor for activation itself.
-            while activations.recv().await.is_ok() {
+            // The token of the request cannot be handed to the toolkit, and
+            // the toolkit's own request is refused by some compositors
+            // (`wayland_activate`): on Wayland the request is made a second
+            // time, on the window's display, with the forwarded token.
+            let mut activator: Option<Result<Activator, String>> = None;
+            while let Ok(token) = activations.recv().await {
                 cx.update(|cx| {
                     cx.activate(true);
-                    let _ = cx.update_window(window, |_, window, _| window.activate_window());
+                    let _ = cx.update_window(window, |_, window, _| {
+                        window.activate_window();
+                        if activator.is_none() {
+                            activator = Some(Activator::from_window(window, APP_ID));
+                        }
+                    });
                 });
+                let Some(Ok(wayland)) = &mut activator else {
+                    continue;
+                };
+                wayland.request(token.as_deref());
+                // The compositor's answers arrive when the toolkit has read
+                // the display's socket: look a few times, for a second.
+                for _ in 0..ACTIVATION_POLLS {
+                    match wayland.poll() {
+                        Ok(true) => cx.background_executor().timer(ACTIVATION_POLL).await,
+                        Ok(false) => break,
+                        Err(error) => {
+                            eprintln!("The request to show the window failed: {error}");
+                            activator = Some(Err(error));
+                            break;
+                        }
+                    }
+                }
             }
         })
         .detach();

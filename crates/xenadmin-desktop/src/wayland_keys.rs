@@ -52,6 +52,13 @@ pub enum SeatEvent {
         locked: u32,
         group: u32,
     },
+    /// How the compositor wants a held key repeated: `rate` repeats a
+    /// second (0: none) after `delay` milliseconds. `wl_keyboard` reports a
+    /// held key once; repeating it is the client's work.
+    RepeatInfo {
+        rate: i32,
+        delay: i32,
+    },
 }
 
 struct KeyboardState {
@@ -156,6 +163,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for KeyboardState {
                     locked: mods_locked,
                     group,
                 });
+            }
+            wl_keyboard::Event::RepeatInfo { rate, delay } => {
+                state.events.push(SeatEvent::RepeatInfo { rate, delay });
             }
             _ => {}
         }

@@ -42,6 +42,7 @@ pub mod shell;
 pub mod stats;
 pub mod store;
 pub mod theme;
+mod wayland_activate;
 mod wayland_keys;
 pub mod widgets;
 
