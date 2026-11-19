@@ -3794,3 +3794,282 @@ fn lab_p3_halted_disk_move() {
     client.close();
     evidence.finish();
 }
+
+/// The share of the pixels of a picture that are clearly of one of the
+/// console's colours: magenta (`\033[45m`) or green (`\033[42m`).
+fn colour_share(picture: &image::RgbaImage, colour: &str) -> f64 {
+    let matches = |pixel: &image::Rgba<u8>| match colour {
+        "magenta" => pixel[0] > 120 && pixel[1] < 60 && pixel[2] > 120,
+        "green" => pixel[0] < 60 && pixel[1] > 120 && pixel[2] < 60,
+        _ => pixel[0] > 120 && pixel[1] < 60 && pixel[2] < 60,
+    };
+    picture.pixels().filter(|pixel| matches(pixel)).count() as f64
+        / (picture.width() * picture.height()).max(1) as f64
+}
+
+/// The Console tab of the selected guest with a picture and the keyboard
+/// on the canvas, and a root shell: the lab's plain guest lets root in
+/// without a password.
+fn console_root_shell(client: &mut Client, evidence: &mut Evidence, tag: &str) {
+    client.tab(TabId::Console);
+    if console_frame(client).is_none() && client.element(console::view::CANVAS).is_none() {
+        let _ = client.try_local("vm.console");
+    }
+    wait_console_picture(client, "the guest's console shows a picture");
+    client.press(console::view::CANVAS);
+    client.key("enter");
+    client.pass(Duration::from_secs(5));
+    client.key("enter");
+    client.pass(Duration::from_secs(1));
+    client.type_keys("root");
+    client.key("enter");
+    client.pass(Duration::from_secs(3));
+    client.snap(evidence, &format!("{tag}-logged-in"));
+}
+
+/// Types a command at the console of the tab and waits until the canvas
+/// shows the colour it paints.
+fn console_command_paints(
+    client: &mut Client,
+    command: &str,
+    colour: &str,
+    limit: Duration,
+) -> Option<f64> {
+    client.press(console::view::CANVAS);
+    client.type_keys(command);
+    client.key("enter");
+    client.wait_for(limit, &mut |client| {
+        client
+            .pixels_of(console::view::CANVAS)
+            .is_some_and(|now| colour_share(&now, colour) > 0.3)
+    })?;
+    client
+        .pixels_of(console::view::CANVAS)
+        .map(|now| colour_share(&now, colour))
+}
+
+/// P3.4: a snapshot with memory. A file is made in the guest's memory
+/// (`/dev/shm`) from a root shell at the console; the snapshot is taken
+/// with "Include guest memory"; the file is removed; Revert through its
+/// review, with the shutdown and "Resume restored memory" chosen. The guest
+/// resumes: the shell at the console is the one that was logged in, and
+/// the file is there again. The snapshot is deleted with its disks.
+#[test]
+#[ignore]
+fn lab_p3_snapshot_with_memory() {
+    let lab = Lab::load();
+    let mut evidence = Evidence::new(&lab, "p3-4-snapshot-with-memory");
+    let mut client = connected(&lab, &mut evidence, Platform::Rendered);
+    let outside = Outside::connect(&lab);
+    let (object, vm, guest_name) = guest(&mut client, PLAIN_GUEST);
+    client.select(&object);
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    wait_guest_ready(&mut client, vm, &mut evidence);
+    let before = outside
+        .connection
+        .latest()
+        .inventory()
+        .expect("inventory")
+        .snapshots
+        .for_vm(vm)
+        .count();
+    let started = started_at(&mut client, vm);
+
+    // A root shell at the console, and a file that exists in memory only.
+    console_root_shell(&mut client, &mut evidence, "before");
+    client.type_keys("rm -f /dev/shm/gm; cp /etc/hostname /dev/shm/gm");
+    client.key("enter");
+    client.pass(Duration::from_secs(2));
+    let probe = "if [ -e /dev/shm/gm ]; then printf '\\033[45m'; clear; fi";
+    let reset = "printf '\\033[0m'; clear";
+    let share = console_command_paints(&mut client, probe, "magenta", Duration::from_secs(30))
+        .expect("the file is there before the snapshot: the screen turns magenta");
+    client.snap(&mut evidence, "marker-present");
+    evidence.step(
+        "a file was made in the guest's memory",
+        json!({ "magenta_share": share }),
+    );
+    client.type_keys(reset);
+    client.key("enter");
+    client.pass(Duration::from_secs(2));
+
+    // Take a Snapshot with the guest's memory.
+    let name = format!("gpui-memory-{}", stamp());
+    client.menu(Menu::Vm, "vm.snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-create"));
+    client.type_into("snapshot-name", &name);
+    set_checkbox(&mut client, "snapshot-memory", true);
+    client.snap(&mut evidence, "snapshot-create-with-memory");
+    client.press("confirm-snapshot");
+    client.tab(TabId::Snapshots);
+    let took = client.wait(
+        "the snapshot with memory is in the Snapshots tab",
+        Duration::from_secs(900),
+        |client| {
+            client.front().is_none()
+                && table_row(client, "snapshots-table", &name).is_some()
+                && unfinished(client, vm) == 0
+        },
+    );
+    let checkpoint = client.model(|m| {
+        m.inventory
+            .as_ref()
+            .expect("inventory")
+            .snapshots
+            .for_vm(vm)
+            .find(|s| s.name == name)
+            .map(|s| format!("{:?}", s.power_state))
+    });
+    assert_eq!(
+        checkpoint.as_deref(),
+        Some("Suspended"),
+        "the snapshot holds memory"
+    );
+    assert_eq!(power_state(&mut client, vm), PowerState::Running);
+    let row = table_rows(&mut client, "snapshots-table")
+        .into_iter()
+        .find(|row| row.1.iter().any(|cell| cell.contains(&name)));
+    client.snap(&mut evidence, "snapshot-with-memory-taken");
+    evidence.step(
+        "the snapshot with memory was taken",
+        json!({ "seconds": seconds(took), "name": name, "row": row.map(|row| row.1), "operations": operation_states(&mut client, vm) }),
+    );
+    evidence.note("take_seconds", json!(seconds(took)));
+
+    // After the snapshot the file is removed: the guest now differs from it.
+    client.tab(TabId::Console);
+    wait_console_picture(&mut client, "the console after the snapshot");
+    client.press(console::view::CANVAS);
+    client.type_keys("rm /dev/shm/gm");
+    client.key("enter");
+    client.pass(Duration::from_secs(2));
+    client.type_keys(probe);
+    client.key("enter");
+    client.pass(Duration::from_secs(4));
+    let share = client
+        .pixels_of(console::view::CANVAS)
+        .map(|now| colour_share(&now, "magenta"))
+        .unwrap_or(1.);
+    assert!(
+        share < 0.05,
+        "the file is gone and the probe paints nothing: {share}"
+    );
+    client.snap(&mut evidence, "marker-removed");
+
+    // Revert, through its review: shut down first, resume the memory.
+    client.tab(TabId::Snapshots);
+    let row = table_row(&mut client, "snapshots-table", &name).expect("the row");
+    client.press(&row);
+    client
+        .try_local("snapshot.revert")
+        .expect("Revert for the selected snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-restore"));
+    assert!(
+        client.describes("Resume restored memory after restore"),
+        "the review offers to resume the memory"
+    );
+    set_checkbox(&mut client, "restore-shutdown", true);
+    set_checkbox(&mut client, "restore-start", true);
+    client.snap(&mut evidence, "revert-review");
+    client.press("confirm-snapshot");
+    client.wait("the revert started", Duration::from_secs(30), |client| {
+        client.front().is_none() && unfinished(client, vm) > 0
+    });
+    let took = client.wait(
+        "the revert finished and the guest runs again",
+        Duration::from_secs(900),
+        |client| unfinished(client, vm) == 0 && power_state(client, vm) == PowerState::Running,
+    );
+    let states = operation_states(&mut client, vm);
+    client.snap(&mut evidence, "reverted");
+    evidence.step(
+        "the revert finished",
+        json!({ "seconds": seconds(took), "operations": states,
+            "start_time_before": started, "start_time_after": started_at(&mut client, vm) }),
+    );
+    assert!(
+        states.iter().all(|state| state.ends_with("Succeeded")),
+        "an operation did not succeed: {states:?}"
+    );
+    evidence.note("revert_seconds", json!(seconds(took)));
+
+    // The guest resumed: no login is asked, and the file is in memory
+    // again. Typed straight away, without a login: at a login prompt the
+    // probe would paint nothing.
+    client.tab(TabId::Console);
+    if client
+        .wait_for(Duration::from_secs(60), &mut |client| {
+            console_frame(client).is_some() && client.element(console::view::CANVAS).is_some()
+        })
+        .is_none()
+    {
+        let reconnect = client
+            .try_local("console.reconnect")
+            .or_else(|_| client.try_local("vm.console"));
+        evidence.step(
+            "the console was opened again",
+            json!(format!("{reconnect:?}")),
+        );
+    }
+    wait_console_picture(&mut client, "the console after the revert");
+    client.pass(Duration::from_secs(3));
+    let share = console_command_paints(&mut client, probe, "magenta", Duration::from_secs(60));
+    client.snap(&mut evidence, "marker-back-after-resume");
+    evidence.step(
+        "the resumed guest has the memory of the snapshot",
+        json!({ "magenta_share": share }),
+    );
+    evidence.note("resumed_with_memory_state", json!(share.is_some()));
+    if share.is_some() {
+        client.type_keys("printf '\\033[0m'; clear; rm /dev/shm/gm; exit");
+        client.key("enter");
+        client.pass(Duration::from_secs(3));
+    }
+    client.snap(&mut evidence, "console-left");
+
+    // Delete the snapshot, with its disks.
+    client.tab(TabId::Snapshots);
+    let row = table_row(&mut client, "snapshots-table", &name).expect("the row after the revert");
+    client.press(&row);
+    client
+        .try_local("snapshot.delete")
+        .expect("Delete for the selected snapshot");
+    assert_eq!(client.front().as_deref(), Some("snapshot-delete"));
+    if client.node("snapshot-delete-disks").is_some() {
+        set_checkbox(&mut client, "snapshot-delete-disks", true);
+    }
+    client.snap(&mut evidence, "delete-review");
+    client.press("confirm-snapshot");
+    let took = client.wait(
+        "the snapshot is gone from the Snapshots tab",
+        Duration::from_secs(600),
+        |client| {
+            client.front().is_none()
+                && table_row(client, "snapshots-table", &name).is_none()
+                && unfinished(client, vm) == 0
+        },
+    );
+    client.snap(&mut evidence, "deleted");
+    evidence.step(
+        "the snapshot was deleted",
+        json!({ "seconds": seconds(took), "operations": operation_states(&mut client, vm) }),
+    );
+    assert!(
+        outside.settle(Duration::from_secs(60), |inventory| {
+            inventory.snapshots.for_vm(vm).count() == before
+                && !inventory
+                    .snapshots
+                    .iter()
+                    .any(|snapshot| snapshot.name == name)
+        }),
+        "the host still has the snapshot"
+    );
+    evidence.note("delete_seconds", json!(seconds(took)));
+    evidence.note("guest", json!(guest_name));
+    assert!(
+        share.is_some(),
+        "after the revert the probe did not paint: the guest did not resume with the snapshot's memory"
+    );
+    client.close();
+    evidence.finish();
+}

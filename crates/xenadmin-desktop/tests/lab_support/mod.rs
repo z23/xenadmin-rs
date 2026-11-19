@@ -1072,6 +1072,90 @@ impl Client {
         }
     }
 
+    // -- Another window of the application ------------------------------------
+
+    /// Puts text on the platform's clipboard, as copying it in another
+    /// application does. On this platform the clipboard is the test
+    /// platform's own, not a desktop's.
+    pub fn copy_to_clipboard(&mut self, text: &str) {
+        let item = ClipboardItem::new_string(text.to_owned());
+        self.cx.update(|cx| cx.write_to_clipboard(item));
+    }
+
+    /// The element with a key in a window of the application.
+    pub fn element_in(&mut self, handle: AnyWindowHandle, key: &str) -> Option<ElementSnapshot> {
+        self.cx
+            .window(handle, |window, _| window.try_find(id(key)))
+            .flatten()
+    }
+
+    /// A press of the primary button on the element with the key in a
+    /// window of the application (a console window).
+    pub fn try_press_in(&mut self, handle: AnyWindowHandle, key: &str) -> Result<(), String> {
+        let element = self
+            .element_in(handle, key)
+            .ok_or_else(|| format!("the window has no `{key}`"))?;
+        if element.disabled() == Some(true) {
+            return Err(format!(
+                "`{key}` is disabled: {}",
+                element.description().unwrap_or("no reason is given")
+            ));
+        }
+        let at = element.bounds().center();
+        self.on_window(handle, |window, cx| {
+            common::click_at(window, cx, at, MouseButton::Left)
+        });
+        Ok(())
+    }
+
+    /// A keystroke to whatever has the keyboard in a window.
+    pub fn key_in(&mut self, handle: AnyWindowHandle, key: &str) {
+        self.on_window(handle, |window, cx| window.press(key, cx));
+    }
+
+    /// [`Self::type_keys`] in a window of the application.
+    pub fn type_keys_in(&mut self, handle: AnyWindowHandle, text: &str) {
+        for character in text.chars() {
+            let key = match character {
+                ' ' => "space".to_owned(),
+                other => other.to_string(),
+            };
+            self.cx.window(handle, |window, cx| window.press(&key, cx));
+            self.cx.park();
+            self.turn();
+        }
+    }
+
+    /// Whether a window of the application is fullscreen, as the platform
+    /// holds it.
+    pub fn is_fullscreen(&mut self, handle: AnyWindowHandle) -> bool {
+        self.cx
+            .window(handle, |window, _| window.is_fullscreen())
+            .unwrap_or(false)
+    }
+
+    /// What a window draws inside the element with the key: the pixels of
+    /// its captured frame within the element's bounds.
+    pub fn pixels_in(&mut self, handle: AnyWindowHandle, key: &str) -> Option<image::RgbaImage> {
+        for _ in 0..3 {
+            self.draw(handle);
+        }
+        let bounds = self.element_in(handle, key)?.bounds();
+        let full = self.cx.capture(handle)?;
+        let (x, y) = (f32::from(bounds.origin.x), f32::from(bounds.origin.y));
+        let (width, height) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+        Some(
+            image::imageops::crop_imm(
+                &full,
+                x.max(0.) as u32,
+                y.max(0.) as u32,
+                width as u32,
+                height as u32,
+            )
+            .to_image(),
+        )
+    }
+
     /// The last frame of the main window as pixels, for a comparison.
     pub fn frame(&mut self) -> Option<image::RgbaImage> {
         self.settle();
