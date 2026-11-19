@@ -1,5 +1,7 @@
 # GPUI spike S0: build and policy
 
+Note added on 2026-11-19, after the cutover: the example `s0_hello`, the hello window of this spike, has been removed from the repository; the crate is `crates/xenadmin-desktop` now. The text below is unchanged.
+
 Result: **not passed**. The spike crate builds on Ubuntu 24.04, locally and in the GitHub `check` job. Arch was not available. `gpui-fast` is not enabled.
 
 ## What was reviewed

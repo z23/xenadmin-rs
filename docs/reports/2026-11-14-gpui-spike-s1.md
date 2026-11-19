@@ -1,5 +1,7 @@
 # GPUI spike S1: console input
 
+Note added on 2026-11-19, after the cutover: the example `s1_probe`, the probe with a Wayland connection of its own (with `ForeignKeyboard::connect_own` and `roundtrip_own`, which only it used), has been removed from the repository; the crate is `crates/xenadmin-desktop` now. `examples/s1_seat` and `examples/s1_surface` are kept for a later seat run of the limits that [decision 0006](../decisions/0006-console-key-codes.md) leaves open. The text below is unchanged.
+
 Result: **requirements 3 to 5 passed on a real Hyprland seat. Eight windows mapped. Gate G0 did not pass.**
 
 Route A, a second `wl_keyboard` on the GPUI window's display, delivered evdev codes and distinct left and right modifiers into `ConsoleInput::PhysicalKey`. Those values are the XT make codes and X keysyms the core sends as a QEMU extended key event. Route B was not vendored. Route C was not adopted. No guest was used. Requirements 1, 8, 9, and 11 were attempted on this seat and are not shown. Requirement 10 mapped eight windows; fullscreen did not hold.

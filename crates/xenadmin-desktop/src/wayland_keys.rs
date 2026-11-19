@@ -178,14 +178,6 @@ pub struct ForeignKeyboard {
 }
 
 impl ForeignKeyboard {
-    /// Connect with `WAYLAND_DISPLAY`. This is a separate client, not route A.
-    /// It can show whether a compositor emits `wl_keyboard::Key` at all.
-    pub fn connect_own() -> Result<Self, String> {
-        let connection = Connection::connect_to_env()
-            .map_err(|error| format!("WAYLAND_DISPLAY connection failed: {error}"))?;
-        Self::from_connection(connection)
-    }
-
     /// Bind a second keyboard on the Wayland display a GPUI window already uses.
     ///
     /// The window must be a live Wayland window for the life of this value.
@@ -259,18 +251,6 @@ impl ForeignKeyboard {
             .map_err(|error| format!("Wayland flush failed: {error}"))
     }
 
-    /// Read this connection's socket until the seat keyboard is bound.
-    /// Foreign displays must not call this.
-    pub fn roundtrip_own(&mut self) -> Result<(), String> {
-        self.queue
-            .roundtrip(&mut self.state)
-            .map_err(|error| format!("Wayland roundtrip failed: {error}"))?;
-        self.queue
-            .roundtrip(&mut self.state)
-            .map_err(|error| format!("Wayland roundtrip failed: {error}"))?;
-        Ok(())
-    }
-
     pub fn keyboard_bound(&self) -> bool {
         self.state.keyboard.is_some()
     }
@@ -305,20 +285,6 @@ impl ForeignKeyboard {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_missing_wayland_display_is_an_error() {
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            return;
-        }
-        let Err(error) = ForeignKeyboard::connect_own() else {
-            panic!("an absent WAYLAND_DISPLAY must fail");
-        };
-        assert!(
-            error.contains("WAYLAND_DISPLAY"),
-            "unexpected error: {error}"
-        );
-    }
 
     #[test]
     #[allow(unsafe_code)]
