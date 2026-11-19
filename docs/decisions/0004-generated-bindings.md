@@ -339,7 +339,7 @@ What the reading found, besides the moves:
    The supported part was run again on the lab on this code the same day: 21 of the
    core's 22 scenarios, host maintenance and moves within a pool, all passing, with the
    coordinator's power cut left out
-   ([live report](reports/2026-11-09-lab-qualification.md)).
+   ([live report](../reports/2026-11-09-lab-qualification.md)).
 3. Calls: generated descriptions of each message's parameters, so that a call's
    arguments are checked where it is made. For the calls written with their arguments
    this is done.

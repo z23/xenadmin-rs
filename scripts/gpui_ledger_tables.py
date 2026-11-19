@@ -5,9 +5,9 @@ usage:
   gpui_ledger_tables.py scenes     print the Scenes table: every Rune scene name of
                                    crates/xenadmin-ui/src/scene.rs with the area that registers it
   gpui_ledger_tables.py tests      print every #[test] of the Rune crate with its kind and the
-                                   tests of the new crates found by its name (needs the Rune crate)
+                                   tests of the new crates found by its name (needs the Rune sources)
   gpui_ledger_tables.py keys       print every element key of the Rune crate that is no string
-                                   literal of the new crates (needs the Rune crate)
+                                   literal of the new crates (needs the Rune sources)
   gpui_ledger_tables.py check [--commands FILE] [LEDGER]
                                    compare the ledger with the repository; exit 1 on a difference
 
@@ -18,31 +18,40 @@ What `check` compares, and what it needs:
                              every successor of the Tests table is a test function of the file
                              it names; a row without one is retired or open; the "Tests by
                              disposition" table counts the Tests table. A Rune test that a file
-                             of crates/xenadmin-gpui/tests names, while its row has no successor
-                             there, is printed "to review" (a window half that landed later)
+                             of crates/xenadmin-desktop/tests names, while its row has no successor
+                             there, is printed "to review" (a window half that landed later);
+                             a Rune test whose name begins a row of tests/wanted.rs has that
+                             row's area test among its successors. Test functions written by
+                             the macros `areas!` and `submits_nothing!` of the window tests
+                             count as test functions
   with --commands FILE       the Commands table is what scripts/gpui_commands_table.py prints
                              from FILE (the output of `xenadmin-scenes --commands`)
-  while crates/xenadmin-desktop exists
-                             the Tests table has exactly the tests of the Rune crate with their
+  with the Rune sources      the Tests table has exactly the tests of the Rune crate with their
                              kind, and every test found by name is among the row's successors;
                              the appendix of Rune controls has exactly the absent keys
 
-Once the Rune crate is deleted the last group cannot be checked any more: the Rune columns of
-the Tests table and the appendix are then a record, generated while the crate existed.
+The Rune crate was deleted at the cutover (it was crates/xenadmin-desktop, the path the GPUI
+front end has now), so the last group is not checked any more: the Rune columns of the Tests
+table and the appendix are a record, generated while the crate existed. To compare them again,
+check the `src` directory of the Rune crate out of the history and name it in
+XENADMIN_RUNE_SOURCES.
 
 Places are abbreviated as in the ledger: `ui:x` is crates/xenadmin-ui/src/x and `gpui:x` is
-crates/xenadmin-gpui/x. A successor is written `place::function`.
+crates/xenadmin-desktop/x (the GPUI front end, crates/xenadmin-gpui before the cutover). A
+successor is written `place::function`.
 """
 
 import collections
+import os
 import pathlib
 import re
 import sys
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
-RUNE = REPO / "crates/xenadmin-desktop/src"
+# Not in the tree any more: a directory only when the caller names one.
+RUNE = pathlib.Path(os.environ.get("XENADMIN_RUNE_SOURCES") or REPO / "target/no-rune-sources")
 UI = REPO / "crates/xenadmin-ui/src"
-GPUI = REPO / "crates/xenadmin-gpui"
+GPUI = REPO / "crates/xenadmin-desktop"
 LEDGER = REPO / "docs/GPUI-MIGRATION-LEDGER.md"
 
 TEST = re.compile(
@@ -62,8 +71,8 @@ def place(path):
     relative = path.relative_to(REPO).as_posix()
     if relative.startswith("crates/xenadmin-ui/src/"):
         return "ui:" + relative[len("crates/xenadmin-ui/src/") :]
-    if relative.startswith("crates/xenadmin-gpui/"):
-        return "gpui:" + relative[len("crates/xenadmin-gpui/") :]
+    if relative.startswith("crates/xenadmin-desktop/"):
+        return "gpui:" + relative[len("crates/xenadmin-desktop/") :]
     return relative
 
 
@@ -80,12 +89,49 @@ def new_sources():
         yield from sorted(root.rglob("*.rs"))
 
 
+# Two macros of the window tests write test functions the pattern above cannot see:
+# `areas!(a, b, ..)` of tests/wanted.rs makes one test per area, named as the area, and
+# `submits_nothing! { name: "scene", "key"; .. }` of tests/wanted_events.rs one per entry.
+AREAS_MACRO = re.compile(r"^areas!\((.*?)\);", re.S | re.M)
+SUBMITS_MACRO = re.compile(r"^submits_nothing! \{(.*?)^\}", re.S | re.M)
+
+
+def macro_tests(path, text):
+    """The names of the test functions the two macros make in the window tests."""
+    names = []
+    if path.parent != GPUI / "tests":
+        return names
+    for body in AREAS_MACRO.findall(text):
+        names += re.findall(r"\b([a-z][a-z0-9_]*)\b", body)
+    for body in SUBMITS_MACRO.findall(text):
+        names += re.findall(r"^\s*([a-z][a-z0-9_]*):\s*\"", body, re.M)
+    return names
+
+
 def new_tests():
     """Test function name -> places, over the new crates."""
     found = collections.defaultdict(list)
     for path in new_sources():
-        for name in TEST.findall(path.read_text(encoding="utf-8")):
+        text = path.read_text(encoding="utf-8")
+        for name in TEST.findall(text) + macro_tests(path, text):
             found[name].append(place(path))
+    return found
+
+
+def wanted_rows():
+    """Rune test name -> the area tests of tests/wanted.rs whose rows are its window half.
+
+    A row of that table is `row("area", "about", "scene", ..)`; where `about` begins with the
+    name of a Rune test, the test of the row's area is a successor of that Rune test.
+    """
+    path = GPUI / "tests/wanted.rs"
+    found = collections.defaultdict(list)
+    if path.is_file():
+        for area, about in re.findall(r'row\(\s*"([a-z_]+)",\s*"([^"]+)"', path.read_text(encoding="utf-8")):
+            name = re.match(r"[a-z0-9_]+", about)
+            successor = f"{place(path)}::{area}"
+            if name and successor not in found[name.group(0)]:
+                found[name.group(0)].append(successor)
     return found
 
 
@@ -330,14 +376,19 @@ def check(ledger, commands):
             problems.append(f"Tests: {row[1]}: no successor and neither retired nor open")
     notes.append(f"tests: {len(rows)} rows; " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     functions = collections.Counter(where.split(":")[0] for places in tests.values() for where in places)
-    notes.append(f"test functions of the new crates: {functions['ui']} in xenadmin-ui, {functions['gpui']} in xenadmin-gpui")
+    notes.append(f"test functions of the new crates: {functions['ui']} in xenadmin-ui, {functions['gpui']} in xenadmin-desktop")
     window_tests = "".join(
         path.read_text(encoding="utf-8") for path in sorted((GPUI / "tests").rglob("*.rs"))
     )
+    wanted = wanted_rows()
     for row in rows:
+        named = {f"{where}::{function}" for where, function in successors(row[4])}
+        for successor in wanted.get(bare(row[1]), []):
+            if successor not in named:
+                problems.append(f"Tests: {row[1]}: `{successor}` runs its row of tests/wanted.rs and is not a successor")
         cited = re.search(r"\b" + re.escape(bare(row[1])) + r"\b", window_tests)
         if cited and not any(where.startswith("gpui:tests") for where, _ in successors(row[4])):
-            notes.append(f"to review: {row[1]} is named in crates/xenadmin-gpui/tests and its row has no successor there")
+            notes.append(f"to review: {row[1]} is named in crates/xenadmin-desktop/tests and its row has no successor there")
     _, summary = table_under(text, "Tests by disposition")
     stated = {row[0]: int(row[1]) for row in summary if row[1].isdigit()}
     wanted = dict(counts)
@@ -367,7 +418,7 @@ def check(ledger, commands):
             problems.append(f"Appendix: rows differ from the absent keys; missing {missing[:8]}, extra {extra[:8]}")
         notes.append(f"appendix: {len(want)} absent keys of the Rune crate")
     else:
-        notes.append("the Rune crate is gone: the Rune columns of Tests and the appendix were not compared")
+        notes.append("no Rune sources (XENADMIN_RUNE_SOURCES): the Rune columns of Tests and the appendix were not compared")
 
     # Commands
     if commands:
@@ -400,11 +451,11 @@ def main(arguments):
         sys.stdout.write(markdown(SCENE_HEADER, scene_rows()))
     elif mode == "tests":
         if not RUNE.is_dir():
-            raise SystemExit("crates/xenadmin-desktop is gone: the Rune tests cannot be listed any more")
+            raise SystemExit("the Rune crate is gone: name its sources in XENADMIN_RUNE_SOURCES to list its tests")
         sys.stdout.write(markdown(TEST_HEADER, test_rows()))
     elif mode == "keys":
         if not RUNE.is_dir():
-            raise SystemExit("crates/xenadmin-desktop is gone: the Rune keys cannot be listed any more")
+            raise SystemExit("the Rune crate is gone: name its sources in XENADMIN_RUNE_SOURCES to list its keys")
         sys.stdout.write(markdown(["Rune file", "key"], [[f"`{f}`", f"`{k}`"] for f, k in absent_keys()]))
     elif mode == "check":
         commands = None

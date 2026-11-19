@@ -4,7 +4,7 @@
 //! areas with their editors, the vocabulary an area describes its surfaces
 //! and tab bodies with ([`surface`]), the command table ([`command`]), the
 //! tab matrix ([`tabs`]), the scenes ([`mod@scene`]) and the [`Harness`] that
-//! drives all of it in tests. Rune and GPUI types do not live here.
+//! drives all of it in tests. No type of a toolkit lives here.
 //!
 //! `notes/briefs/MODEL-API.md` is the reference for area ports.
 
@@ -34,39 +34,22 @@ pub mod surface;
 pub mod tabs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-mod tree;
 
-pub use areas::{AreaSpec, Areas};
-pub use command::{
-    CommandId, CommandSpec, Eligibility, LocalRow, Menu, MenuEntry, MenuItem, MenuPath, MenuView,
-    Refused, ToolbarGroup, ToolbarSlot,
-};
+// What is named from the crate root. Everything else is reached through its
+// module.
+pub use command::CommandId;
 pub use demo::demonstration;
 pub use demo_details::populate as populate_demo_details;
-pub use format::{bytes, memory_label, natural_cmp, storage_bytes};
+pub use format::{bytes, memory_label, natural_cmp};
 pub use harness::Harness;
-pub use intent::{
-    ConsoleWindowId, ConsoleWindowRequest, FileAnswer, FileFilter, FileMode, FileRequest, Intent,
-    WindowRef,
-};
-pub use model::{Header, Model, Status, Waker};
-pub use nav::{NavRow, NavView};
-pub use object::{ObjectKind, ObjectRef, Target};
-pub use prefs::{Appearance, Options, Preferences};
-pub use properties::{PageEvent, PageView, PropertiesKind, PropertyPage};
-pub use rows::{DisplayRow, InventoryPage, compare_rows, project_rows};
-pub use scene::SceneSpec;
+pub use intent::{FileMode, FileRequest, Intent};
+pub use model::Model;
+pub use object::{ObjectKind, Target};
+// The row `Model::selected_row` and `Model::object_row` answer with.
+pub use rows::DisplayRow;
 pub use secret::SecretText;
-pub use selection::{MenuOrigin, Selection};
-pub use surface::{Act, ActText, Block, Surface, SurfaceKind, SurfaceSize};
-pub use tabs::{TabBody, TabId, tabs_for};
-// The infrastructure tree rows of the Rune front end. `Node` here is the
-// tree node; the node of a flattened description is `surface::Node`.
-pub use tree::{Node, TreeInsert, infrastructure_nodes};
-
-// What the frozen Rune front end checks its scene list against: the 128
-// application scene names and a lookup by name. New code uses `scene::find`.
-pub use scene::{RUNE_APP_SCENES as SCENES, rune_app_scene as scene};
+pub use selection::MenuOrigin;
+pub use tabs::TabId;
 
 /// Everything an area module needs: `use crate::prelude::*;`.
 pub mod prelude {

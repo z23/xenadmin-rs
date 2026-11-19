@@ -1,6 +1,6 @@
 # Console protocol adapter
 
-XenAdmin keeps the Rune UI independent of the RFB wire protocol. The Rust console
+XenAdmin keeps the UI (Rune when this was decided, GPUI Kit since the cutover) independent of the RFB wire protocol. The Rust console
 worker owns the authenticated host tunnel, capability negotiation, input release,
 framebuffer, cursor and in-app clipboard state. A console's pool and VM identity
 remain fixed while it is open. Opening or reconnecting assigns a fresh UI epoch
@@ -36,6 +36,18 @@ The vendored library tests run independently with
 `cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --offline`.
 
 ## Rune behavior and remaining gaps
+
+Superseded by [decision 0006](0006-console-key-codes.md) and the move of the front end to
+GPUI Kit. This section describes the Rune front end, which was removed at the cutover, and
+is kept as history. What changed: the console's keys come by evdev code from a second
+keyboard listener on the Wayland display (route A of decision 0006) instead of from the
+toolkit's physical-key events; the canvas receives the secondary button's press and
+release separately, so the **Hold right button** workaround described below is gone;
+separate console windows exist. The local pointer stays visible over the console and the
+guest's cursor is not drawn (an accepted limit of decision 0006). None of this has been
+shown in a real window yet: the listener compiles in the client and has no test, and the
+headless runs of 2026-11-19 sent keys through the toolkit's test events
+([report](../reports/2026-11-19-gpui-live-headless.md)).
 
 The pinned Rune revision exposes fullscreen, local wheel coordinates, physical
 keys and middle-button dragging. Its secondary-button callback reports a complete

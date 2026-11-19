@@ -275,6 +275,21 @@ fn the_local_row_of_each_tab_holds_only_commands_for_its_scope() {
             );
         }
     }
+    // A repository's own Storage tab lists its disks and has both sets:
+    // the repository's commands first, then the disk's, neither between
+    // the other's.
+    let row = declared(TabId::Storage, ObjectKind::StorageRepository);
+    let first_disk = row
+        .iter()
+        .position(|id| id.starts_with("disk."))
+        .expect("a disk command");
+    assert!(
+        row[..first_disk]
+            .iter()
+            .all(|id| id.starts_with("storage."))
+            && row[first_disk..].iter().all(|id| id.starts_with("disk.")),
+        "{row:?}"
+    );
 }
 
 use ObjectKind as K;
@@ -367,8 +382,8 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
     ]),
     (T::Storage, K::Vm, &[
         "vm.disk.new", "vm.disk.attach", "vm.cd.add", "vm.disk.detach", "vm.disk.activate",
-        "vm.disk.deactivate", "vm.cd.insert", "vm.cd.eject", "vm.disk.properties", "disk.grow",
-        "disk.copy", "disk.cleanup", "vm.disk.delete", "vm.cloud-init-drive",
+        "vm.disk.deactivate", "vm.cd.insert", "vm.cd.eject", "vm.disk.properties",
+        "vm.disk.delete", "vm.cloud-init-drive", "disk.grow", "disk.copy", "disk.cleanup",
         "vm.install-guest-tools",
     ]),
     (T::Networking, K::Vm, &[
@@ -400,10 +415,10 @@ const ROWS: &[(TabId, ObjectKind, &[&str])] = &[
         "storage.properties",
     ]),
     (T::Storage, K::StorageRepository, &[
-        "storage.repair", "storage.set-default", "disk.grow", "disk.copy", "storage.rescan",
-        "disk.cleanup", "storage.trim", "storage.detach", "storage.reattach",
-        "storage.attachment.create", "storage.attachment.remove", "storage.forget",
-        "disk.export-image", "storage.destroy",
+        "storage.repair", "storage.set-default", "storage.rescan", "storage.trim",
+        "storage.detach", "storage.reattach", "storage.attachment.create",
+        "storage.attachment.remove", "storage.forget", "storage.destroy", "disk.grow",
+        "disk.copy", "disk.cleanup", "disk.export-image",
     ]),
     (T::General, K::Network, &[
         "network.properties",

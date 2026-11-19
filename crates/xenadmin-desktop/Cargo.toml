@@ -4,27 +4,41 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-
-[[bin]]
-name = "xenadmin-rs"
-path = "src/main.rs"
+description = "The desktop client: the GPUI Kit front end. Its binary is xenadmin-rs."
+publish = false
 
 [dependencies]
+gpui-kit.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+raw-window-handle = "0.6"
+serde_json = { workspace = true, optional = true }
+uuid.workspace = true
+wayland-client = "0.31"
 xenadmin-core = { path = "../xenadmin-core" }
 xenadmin-ui = { path = "../xenadmin-ui" }
-rune.workspace = true
-rune-kit.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-uuid.workspace = true
-libc = "0.2"
-zeroize.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
-tempfile = "3"
-flate2 = "=1.1.11"
-tar = { version = "=0.4.46", default-features = false }
+gpui-kit = { workspace = true, features = ["test-support"] }
+# The model fixture and the local fixture server, for tests of a live session.
+xenadmin-ui = { path = "../xenadmin-ui", features = ["test-support"] }
+serde_json.workspace = true
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
 
-[lints]
-workspace = true
+[[bin]]
+name = "xenadmin-scenes"
+required-features = ["scenes"]
+
+[features]
+# The scene tool (PNG and element tree of any scene) and the renderer tests
+# need the Kit test harness and its headless renderer. A build without this
+# feature leaves both out.
+scenes = ["gpui-kit/test-support", "dep:serde_json"]
+
+# Not `workspace = true`: the workspace forbids unsafe, and the console's
+# foreign-display wrapper is the one place that uses it. The allow is on
+# `ForeignKeyboard::from_foreign_display`. xenadmin-core keeps `forbid`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"

@@ -4,319 +4,78 @@ cd "$(dirname "$0")/.."
 check_state_dir="$(mktemp -d "${TMPDIR:-/tmp}/xenadmin-rs-check.XXXXXXXX")"
 trap 'rm -rf -- "$check_state_dir"' EXIT
 export XENADMIN_STATE_DIR="$check_state_dir"
+# Nothing here opens a window: the tests run on the Kit's test platform and the scenes are
+# drawn off screen. Without a display a step that tried to would fail instead.
+unset DISPLAY WAYLAND_DISPLAY
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-# The shared model must stay free of both front ends.
+# The model must stay free of any toolkit.
 if cargo tree -p xenadmin-ui -e normal --locked | grep -E '(^|[^A-Za-z0-9_-])(rune|rune-kit|gpui)([^A-Za-z0-9_-]|$)'; then
     echo "xenadmin-ui depends on a UI toolkit" >&2
+    exit 1
+fi
+# Gate G5 of docs/GPUI-MIGRATION.md: no crate of the Rune toolkit is in the workspace's
+# dependency tree, by any edge.
+if cargo tree --workspace --locked | grep -iE '(^|[^A-Za-z0-9_])rune([^A-Za-z0-9_]|$)'; then
+    echo "the workspace depends on a rune crate" >&2
     exit 1
 fi
 # Debug builds report, when asked to, every record a view was given that carries a key the
 # view's class lacks: a record read as another class, or a fixture with a field the API
 # does not have. Only what the tests mean may be reported.
 XENADMIN_XAPI_VIEW_AUDIT="$check_state_dir/view-audit.tsv" cargo test --workspace --locked
-cargo clippy -p xenadmin-gpui --all-targets --features scenes --locked -- -D warnings
-cargo test -p xenadmin-gpui --features scenes --locked
-# The GPUI front end never blocks on a future: the core's runtime is the only one, and the
+# The front end's renderer tests and its scene tool need the Kit's test harness, which is
+# behind the crate feature scenes: the workspace steps above build without it.
+cargo clippy -p xenadmin-desktop --all-targets --features scenes --locked -- -D warnings
+cargo test -p xenadmin-desktop --features scenes --locked
+# The front end never blocks on a future: the core's runtime is the only one, and the
 # interface reads the latest state when it is woken.
-if grep -rn 'block_on' crates/xenadmin-gpui/src; then
-    echo "crates/xenadmin-gpui/src names block_on" >&2
+if grep -rn 'block_on' crates/xenadmin-desktop/src; then
+    echo "crates/xenadmin-desktop/src names block_on" >&2
     exit 1
 fi
-# The GPUI front end's scene tool renders scenes without a display, each as the whole window:
-# the model's registered scenes, the renderer's own fixtures and the shell's (gallery-*). A PNG
-# needs a graphics adapter (a software one will do); the tool fails when a frame lacks an
-# element its description has. The files are the CI artifact gpui-ui.
-mkdir -p artifacts/gpui
-cargo build -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes
-gpui_scenes() {
-    cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-scenes -- "$@"
+# The scene tool renders scenes without a display, each as the whole window: the model's
+# registered scenes, the renderer's own fixtures and the shell's (gallery-*). A PNG needs a
+# graphics adapter (a software one will do); the tool fails when a frame lacks an element its
+# description has. The files are the CI artifact ui.
+mkdir -p artifacts/ui
+cargo build -p xenadmin-desktop --features scenes --locked --bin xenadmin-scenes
+scenes() {
+    cargo run -p xenadmin-desktop --features scenes --locked --quiet --bin xenadmin-scenes -- "$@"
 }
-gpui_scenes --list > artifacts/gpui/scenes.txt
+scenes --list > artifacts/ui/scenes.txt
 # The command registry, one line per command (id, label, menu path, toolbar slot, context
 # kinds, local row, shortcut, area): what the Commands table of the migration ledger is made
 # from (scripts/gpui_commands_table.py).
-gpui_scenes --commands > artifacts/gpui/commands.txt
+scenes --commands > artifacts/ui/commands.txt
 # Every scene the tool lists is rendered once: an area's scenes are in the list from the moment
 # the area registers them.
-while IFS= read -r gpui_scene; do
-    gpui_scenes "$gpui_scene" --snap "artifacts/gpui/${gpui_scene}.png" --tree "artifacts/gpui/${gpui_scene}.json" --theme dark --size 1440x900 --scale 1
-done < artifacts/gpui/scenes.txt
-gpui_scenes demo --snap artifacts/gpui/demo-light.png --tree artifacts/gpui/demo-light.json --theme light --size 1440x900 --scale 1
+while IFS= read -r scene; do
+    scenes "$scene" --snap "artifacts/ui/${scene}.png" --tree "artifacts/ui/${scene}.json" --theme dark --size 1440x900 --scale 1
+done < artifacts/ui/scenes.txt
+scenes demo --snap artifacts/ui/demo-light.png --tree artifacts/ui/demo-light.json --theme light --size 1440x900 --scale 1
 # The artifact of console-window is detached console window 1, not the main window: at the
 # size it opens with and at the smallest it can be given.
-gpui_scenes console-window --snap artifacts/gpui/console-window-default.png --tree artifacts/gpui/console-window-default.json --theme dark --size 1100x800 --scale 1
-gpui_scenes console-window --snap artifacts/gpui/console-window-compact.png --tree artifacts/gpui/console-window-compact.json --theme dark --size 480x640 --scale 1
+scenes console-window --snap artifacts/ui/console-window-default.png --tree artifacts/ui/console-window-default.json --theme dark --size 1100x800 --scale 1
+scenes console-window --snap artifacts/ui/console-window-compact.png --tree artifacts/ui/console-window-compact.json --theme dark --size 480x640 --scale 1
 # 800x600 is the smallest size the main window can be given.
-gpui_scenes demo --snap artifacts/gpui/demo-compact.png --tree artifacts/gpui/demo-compact.json --theme dark --size 800x600 --scale 1
-gpui_scenes gallery-shell --snap artifacts/gpui/gallery-shell-light-compact.png --tree artifacts/gpui/gallery-shell-light-compact.json --theme light --size 800x600 --scale 1
-gpui_scenes gallery-dialog --snap artifacts/gpui/gallery-dialog-light-compact.png --tree artifacts/gpui/gallery-dialog-light-compact.json --theme light --size 800x600 --scale 1
-gpui_scenes gallery-tab --snap artifacts/gpui/gallery-tab-light-2x.png --theme light --size 800x600 --scale 2
+scenes demo --snap artifacts/ui/demo-compact.png --tree artifacts/ui/demo-compact.json --theme dark --size 800x600 --scale 1
+scenes gallery-shell --snap artifacts/ui/gallery-shell-light-compact.png --tree artifacts/ui/gallery-shell-light-compact.json --theme light --size 800x600 --scale 1
+scenes gallery-dialog --snap artifacts/ui/gallery-dialog-light-compact.png --tree artifacts/ui/gallery-dialog-light-compact.json --theme light --size 800x600 --scale 1
+scenes gallery-tab --snap artifacts/ui/gallery-tab-light-2x.png --theme light --size 800x600 --scale 2
 # What is below the fold, scrolled into a frame of the real size: the last chart of the
 # performance tab at the smallest window, and the confirmation at the end of a long dialog.
-gpui_scenes performance --reveal metrics-chart-3-plot --snap artifacts/gpui/performance-last-chart-compact.png --tree artifacts/gpui/performance-last-chart-compact.json --theme light --size 800x600 --scale 1
-gpui_scenes pool-join --reveal join-confirmation --snap artifacts/gpui/pool-join-confirmation.png --tree artifacts/gpui/pool-join-confirmation.json --theme dark --size 1440x900 --scale 1
-# The client binary itself draws a scene to files with the same flags, without opening a window.
-cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-gpui -- --scene demo --snap artifacts/gpui/client-demo.png --tree artifacts/gpui/client-demo.json --theme dark --size 1440x900 --scale 1
+scenes performance --reveal metrics-chart-3-plot --snap artifacts/ui/performance-last-chart-compact.png --tree artifacts/ui/performance-last-chart-compact.json --theme light --size 800x600 --scale 1
+scenes pool-join --reveal join-confirmation --snap artifacts/ui/pool-join-confirmation.png --tree artifacts/ui/pool-join-confirmation.json --theme dark --size 1440x900 --scale 1
+# The client binary itself draws a scene to files with the same flags, without opening a
+# window, when it is built with the feature scenes. The packaged binary is built without it.
+cargo run -p xenadmin-desktop --features scenes --locked --quiet --bin xenadmin-rs -- --scene demo --snap artifacts/ui/client-demo.png --tree artifacts/ui/client-demo.json --theme dark --size 1440x900 --scale 1
 python3 scripts/view_audit.py "$check_state_dir/view-audit.tsv"
 cargo test --manifest-path vendor/vnc-rs/Cargo.toml --lib --locked --offline
 python3 -m unittest discover -s lab -p 'test_*.py'
 python3 -m unittest discover -s packaging -p 'test_*.py'
+# The build the packages are staged from reports both executables: the client and the probe.
 cargo build --workspace --locked --message-format=json-render-diagnostics > "$check_state_dir/build.jsonl"
-mkdir -p artifacts
-check_binary="$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --print-path xenadmin-rs)"
-"$check_binary" --snap artifacts/demo.png --tree artifacts/demo.json --scene demo --theme dark --size 1440x900 --scale 1
-"$check_binary" --snap artifacts/connect.png --tree artifacts/connect.json --scene connect --theme dark --size 1440x900 --scale 1
-"$check_binary" --snap artifacts/compact.png --tree artifacts/compact.json --scene demo --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/demo-light.png --tree artifacts/demo-light.json --scene demo --theme light --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-version-notice.png --tree artifacts/host-version-notice.json --scene host-version-notice --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/interface-large.png --tree artifacts/interface-large.json --scene interface-large --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/interface-large-compact.png --tree artifacts/interface-large-compact.json --scene interface-large --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/connect-insecure.png --tree artifacts/connect-insecure.json --scene connect-insecure --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/snapshots.png --tree artifacts/snapshots.json --scene snapshots --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-create.png --tree artifacts/snapshot-create.json --scene snapshot-create --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-restore.png --tree artifacts/snapshot-restore.json --scene snapshot-restore --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshots-compact.png --tree artifacts/snapshots-compact.json --scene snapshots --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/unavailable-actions.png --tree artifacts/unavailable-actions.json --scene unavailable-actions --theme dark --size 1440x1200 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/properties.png --tree artifacts/properties.json --scene properties --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/properties-running.png --tree artifacts/properties-running.json --scene properties-running --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/connections.png --tree artifacts/connections.json --scene connections --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/connection-settings.png --tree artifacts/connection-settings.json --scene connection-settings --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/connection-trust.png --tree artifacts/connection-trust.json --scene connection-trust --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/connection-trust-compact.png --tree artifacts/connection-trust-compact.json --scene connection-trust --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/certificate-review.png --tree artifacts/certificate-review.json --scene certificate-review --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/certificate-review-compact.png --tree artifacts/certificate-review-compact.json --scene certificate-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-devices.png --tree artifacts/vm-devices.json --scene vm-devices --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-create.png --tree artifacts/network-create.json --scene network-create --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/pool-administration.png --tree artifacts/pool-administration.json --scene pool-administration --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/performance.png --tree artifacts/performance.json --scene performance --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/performance-compact.png --tree artifacts/performance-compact.json --scene performance --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-create.png --tree artifacts/vm-create.json --scene vm-create --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/activity.png --tree artifacts/activity.json --scene activity --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/activity-compact.png --tree artifacts/activity-compact.json --scene activity --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-interfaces.png --tree artifacts/network-interfaces.json --scene network-interfaces --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/storage-create.png --tree artifacts/storage-create.json --scene storage-create --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/storage-review.png --tree artifacts/storage-review.json --scene storage-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-recovery-force.png --tree artifacts/vm-recovery-force.json --scene vm-recovery-force --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-recovery-force-compact.png --tree artifacts/vm-recovery-force-compact.json --scene vm-recovery-force --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-recovery.png --tree artifacts/vm-recovery.json --scene vm-recovery --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-recovery-compact.png --tree artifacts/vm-recovery-compact.json --scene vm-recovery --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-migration.png --tree artifacts/vm-migration.json --scene vm-migration --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/vm-migration-compact.png --tree artifacts/vm-migration-compact.json --scene vm-migration --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-monitoring-catalog.png --tree artifacts/host-monitoring-catalog.json --scene host-monitoring-catalog --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-monitoring-catalog-compact.png --tree artifacts/host-monitoring-catalog-compact.json --scene host-monitoring-catalog --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-monitoring.png --tree artifacts/host-monitoring.json --scene host-monitoring --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-monitoring-compact.png --tree artifacts/host-monitoring-compact.json --scene host-monitoring --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-administration.png --tree artifacts/host-administration.json --scene host-administration --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-administration-compact.png --tree artifacts/host-administration-compact.json --scene host-administration --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-power-settings.png --tree artifacts/host-power-settings.json --scene host-power-settings --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-power-settings-compact.png --tree artifacts/host-power-settings-compact.json --scene host-power-settings --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/organization.png --tree artifacts/organization.json --scene organization --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/organization-compact.png --tree artifacts/organization-compact.json --scene organization --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/pool-policies.png --tree artifacts/pool-policies.json --scene pool-policies --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/pool-policy-review.png --tree artifacts/pool-policy-review.json --scene pool-policy-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/cloud-init-review.png --tree artifacts/cloud-init-review.json --scene cloud-init-review --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/cloud-init-review-compact.png --tree artifacts/cloud-init-review-compact.json --scene cloud-init-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/cloud-init.png --tree artifacts/cloud-init.json --scene cloud-init --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/cloud-init-compact.png --tree artifacts/cloud-init-compact.json --scene cloud-init --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/archive-export.png --tree artifacts/archive-export.json --scene archive-export --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/archive-export-compact.png --tree artifacts/archive-export-compact.json --scene archive-export --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/appliances.png --tree artifacts/appliances.json --scene appliances --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/appliance-review.png --tree artifacts/appliance-review.json --scene appliance-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/pool-security.png --tree artifacts/pool-security.json --scene pool-security --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/pool-security-review.png --tree artifacts/pool-security-review.json --scene pool-security-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/disk-export.png --tree artifacts/disk-export.json --scene disk-export --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/disk-export-compact.png --tree artifacts/disk-export-compact.json --scene disk-export --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/snapshot-schedules.png --tree artifacts/snapshot-schedules.json --scene snapshot-schedules --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-schedules-compact.png --tree artifacts/snapshot-schedules-compact.json --scene snapshot-schedules --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/device-properties.png --tree artifacts/device-properties.json --scene device-properties --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/device-properties-compact.png --tree artifacts/device-properties-compact.json --scene device-properties --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/home-host.png --tree artifacts/home-host.json --scene home-host --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/root-password.png --tree artifacts/root-password.json --scene root-password --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/root-password-compact.png --tree artifacts/root-password-compact.json --scene root-password --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/pool-join.png --tree artifacts/pool-join.json --scene pool-join --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/pool-join-compact.png --tree artifacts/pool-join-compact.json --scene pool-join --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/snapshot-restore-compact.png --tree artifacts/snapshot-restore-compact.json --scene snapshot-restore --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-edit.png --tree artifacts/snapshot-edit.json --scene snapshot-edit --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-edit-compact.png --tree artifacts/snapshot-edit-compact.json --scene snapshot-edit --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/ovf-import.png --tree artifacts/ovf-import.json --scene ovf-import --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/ovf-import-compact.png --tree artifacts/ovf-import-compact.json --scene ovf-import --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/ovf-export.png --tree artifacts/ovf-export.json --scene ovf-export --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/ovf-export-compact.png --tree artifacts/ovf-export-compact.json --scene ovf-export --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/search-pools.png --tree artifacts/search-pools.json --scene search-pools --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/search-pools-compact.png --tree artifacts/search-pools-compact.json --scene search-pools --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/storage-discovery.png --tree artifacts/storage-discovery.json --scene storage-discovery --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/storage-discovery-compact.png --tree artifacts/storage-discovery-compact.json --scene storage-discovery --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/firmware-create.png --tree artifacts/firmware-create.json --scene firmware-create --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/firmware-create-compact.png --tree artifacts/firmware-create-compact.json --scene firmware-create --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/secure-boot.png --tree artifacts/secure-boot.json --scene secure-boot --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/secure-boot-compact.png --tree artifacts/secure-boot-compact.json --scene secure-boot --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-power.png --tree artifacts/batch-power.json --scene batch-power --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-power-compact.png --tree artifacts/batch-power-compact.json --scene batch-power --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/cross-pool.png --tree artifacts/cross-pool.json --scene cross-pool --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/cross-pool-compact.png --tree artifacts/cross-pool-compact.json --scene cross-pool --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/storage-auth-review.png --tree artifacts/storage-auth-review.json --scene storage-auth-review --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/storage-auth-review-compact.png --tree artifacts/storage-auth-review-compact.json --scene storage-auth-review --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/console-recovery.png --tree artifacts/console-recovery.json --scene console-recovery --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/console-frame.png --tree artifacts/console-frame.json --scene console-frame --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/console-typing-review.png --tree artifacts/console-typing-review.json --scene console-typing-review --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/console-actual-size.png --tree artifacts/console-actual-size.json --scene console-actual-size --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/console-actual-size-compact.png --tree artifacts/console-actual-size-compact.json --scene console-actual-size --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/console-recovery-compact.png --tree artifacts/console-recovery-compact.json --scene console-recovery --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/host-console.png --tree artifacts/host-console.json --scene host-console --theme dark --size 1440x900 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/host-console-compact.png --tree artifacts/host-console-compact.json --scene host-console --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/options.png --tree artifacts/options.json --scene options --theme dark --size 1440x900 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/options-compact.png --tree artifacts/options-compact.json --scene options --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/help.png --tree artifacts/help.json --scene help --theme dark --size 1440x900 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/help-compact.png --tree artifacts/help-compact.json --scene help --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/console-details-compact.png --tree artifacts/console-details-compact.json --scene console-details --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/network-ipv6.png --tree artifacts/network-ipv6.json --scene network-ipv6 --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-ipv6-compact.png --tree artifacts/network-ipv6-compact.json --scene network-ipv6 --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/metric-presets.png --tree artifacts/metric-presets.json --scene metric-presets --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/metric-presets-compact.png --tree artifacts/metric-presets-compact.json --scene metric-presets --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/general-information.png --tree artifacts/general-information.json --scene general-information --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/general-information-compact.png --tree artifacts/general-information-compact.json --scene general-information --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-topology.png --tree artifacts/network-topology.json --scene network-topology --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-topology-compact.png --tree artifacts/network-topology-compact.json --scene network-topology --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/snapshot-ancestry.png --tree artifacts/snapshot-ancestry.json --scene snapshot-ancestry --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-ancestry-compact.png --tree artifacts/snapshot-ancestry-compact.json --scene snapshot-ancestry --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-information.png --tree artifacts/snapshot-information.json --scene snapshot-information --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-information-compact.png --tree artifacts/snapshot-information-compact.json --scene snapshot-information --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/guest-tools.png --tree artifacts/guest-tools.json --scene guest-tools --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/guest-tools-compact.png --tree artifacts/guest-tools-compact.json --scene guest-tools --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/guest-tools-review.png --tree artifacts/guest-tools-review.json --scene guest-tools-review --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/guest-tools-review-compact.png --tree artifacts/guest-tools-review-compact.json --scene guest-tools-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-network.png --tree artifacts/management-network.json --scene management-network --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-network-compact.png --tree artifacts/management-network-compact.json --scene management-network --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-support.png --tree artifacts/host-support.json --scene host-support --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-support-compact.png --tree artifacts/host-support-compact.json --scene host-support --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/creation-cloud.png --tree artifacts/creation-cloud.json --scene creation-cloud --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/creation-cloud-compact.png --tree artifacts/creation-cloud-compact.json --scene creation-cloud --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/creation-cloud-pending.png --tree artifacts/creation-cloud-pending.json --scene creation-cloud-pending --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/creation-cloud-pending-compact.png --tree artifacts/creation-cloud-pending-compact.json --scene creation-cloud-pending --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-dhcp.png --tree artifacts/management-dhcp.json --scene management-dhcp --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-dhcp-compact.png --tree artifacts/management-dhcp-compact.json --scene management-dhcp --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/host-restore.png --tree artifacts/host-restore.json --scene host-restore --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-restore-compact.png --tree artifacts/host-restore-compact.json --scene host-restore --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/alarms.png --tree artifacts/alarms.json --scene alarms --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/alarms-compact.png --tree artifacts/alarms-compact.json --scene alarms --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/alarms-review.png --tree artifacts/alarms-review.json --scene alarms-review --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/alarms-review-compact.png --tree artifacts/alarms-review-compact.json --scene alarms-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/alarms-email.png --tree artifacts/alarms-email.json --scene alarms-email --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/alarms-email-compact.png --tree artifacts/alarms-email-compact.json --scene alarms-email --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-vlan.png --tree artifacts/management-vlan.json --scene management-vlan --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-vlan-compact.png --tree artifacts/management-vlan-compact.json --scene management-vlan --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/host-crashdump-delete.png --tree artifacts/host-crashdump-delete.json --scene host-crashdump-delete --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/host-crashdump-delete-compact.png --tree artifacts/host-crashdump-delete-compact.json --scene host-crashdump-delete --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/disk-grow.png --tree artifacts/disk-grow.json --scene disk-grow --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/disk-grow-compact.png --tree artifacts/disk-grow-compact.json --scene disk-grow --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/disk-copy.png --tree artifacts/disk-copy.json --scene disk-copy --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/disk-copy-compact.png --tree artifacts/disk-copy-compact.json --scene disk-copy --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/disk-cleanup.png --tree artifacts/disk-cleanup.json --scene disk-cleanup --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/disk-cleanup-compact.png --tree artifacts/disk-cleanup-compact.json --scene disk-cleanup --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-bond.png --tree artifacts/management-bond.json --scene management-bond --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-bond-compact.png --tree artifacts/management-bond-compact.json --scene management-bond --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/snapshot-capture.png --tree artifacts/snapshot-capture.json --scene snapshot-capture --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/snapshot-capture-compact.png --tree artifacts/snapshot-capture-compact.json --scene snapshot-capture --theme dark --size 513x652 --scale 1 --at 1
-
-for storage_scene in storage-repair storage-cache storage-maintenance storage-hba storage-hba-review storage-local storage-local-review storage-graph storage-multipath; do
-  for storage_size in 1440x900 513x652; do
-    "$check_binary" --snap "artifacts/${storage_scene}-${storage_size}.png" --tree "artifacts/${storage_scene}-${storage_size}.json" --scene "$storage_scene" --theme dark --size "$storage_size" --scale 1 --at 1
-  done
+for check_executable in xenadmin-rs host-probe; do
+    test -x "$(python3 packaging/artifacts.py "$check_state_dir/build.jsonl" --print-path "$check_executable")"
 done
-
-"$check_binary" --window console-1 --snap artifacts/console-window.png --tree artifacts/console-window.json --scene console-window --theme dark --size 1100x800 --scale 1 --at 1
-"$check_binary" --window console-1 --snap artifacts/console-window-compact.png --tree artifacts/console-window-compact.json --scene console-window --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/console-window-manager.png --tree artifacts/console-window-manager.json --scene multiple-consoles --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-vlan-bond.png --tree artifacts/management-vlan-bond.json --scene management-vlan-bond --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-vlan-bond-compact.png --tree artifacts/management-vlan-bond-compact.json --scene management-vlan-bond --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/guest-connections.png --tree artifacts/guest-connections.json --scene guest-connections --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/guest-connections-compact.png --tree artifacts/guest-connections-compact.json --scene guest-connections --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/external-tools.png --tree artifacts/external-tools.json --scene external-tools --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/external-tools-compact.png --tree artifacts/external-tools-compact.json --scene external-tools --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-bond-guests.png --tree artifacts/management-bond-guests.json --scene management-bond-guests --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-bond-guests-compact.png --tree artifacts/management-bond-guests-compact.json --scene management-bond-guests --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/inventory-context.png --tree artifacts/inventory-context.json --scene inventory-context --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/inventory-context-compact.png --tree artifacts/inventory-context-compact.json --scene inventory-context --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/checkpoint-export.png --tree artifacts/checkpoint-export.json --scene checkpoint-export --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/checkpoint-export-compact.png --tree artifacts/checkpoint-export-compact.json --scene checkpoint-export --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/batch-properties.png --tree artifacts/batch-properties.json --scene batch-properties --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-properties-compact.png --tree artifacts/batch-properties-compact.json --scene batch-properties --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/ha-policy.png --tree artifacts/ha-policy.json --scene ha-policy --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/ha-policy-compact.png --tree artifacts/ha-policy-compact.json --scene ha-policy --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/failure-help.png --tree artifacts/failure-help.json --scene failure-help --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/failure-help-compact.png --tree artifacts/failure-help-compact.json --scene failure-help --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-services.png --tree artifacts/network-services.json --scene network-services --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-services-compact.png --tree artifacts/network-services-compact.json --scene network-services --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-ipv6-bond.png --tree artifacts/management-ipv6-bond.json --scene management-ipv6-bond --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/management-ipv6-bond-compact.png --tree artifacts/management-ipv6-bond-compact.json --scene management-ipv6-bond --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-delete.png --tree artifacts/batch-delete.json --scene batch-delete --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-delete-compact.png --tree artifacts/batch-delete-compact.json --scene batch-delete --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/xva-compression.png --tree artifacts/xva-compression.json --scene xva-compression --theme dark --size 1440x900 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/xva-compression-compact.png --tree artifacts/xva-compression-compact.json --scene xva-compression --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/lifecycle-permissions.png --tree artifacts/lifecycle-permissions.json --scene lifecycle-permissions --theme dark --size 1440x900 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/lifecycle-permissions-compact.png --tree artifacts/lifecycle-permissions-compact.json --scene lifecycle-permissions --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-move.png --tree artifacts/batch-move.json --scene batch-move --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-move-compact.png --tree artifacts/batch-move-compact.json --scene batch-move --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-cross-pool.png --tree artifacts/batch-cross-pool.json --scene batch-cross-pool --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-cross-pool-compact.png --tree artifacts/batch-cross-pool-compact.json --scene batch-cross-pool --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/snapshot-schedule-review.png --scene snapshot-schedule-review --theme dark --size 513x652 --scale 1 --at 1
-"$check_binary" --snap artifacts/organization-review.png --scene organization-review --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-fabric.png --tree artifacts/network-fabric.json --scene network-fabric --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-fabric-compact.png --tree artifacts/network-fabric-compact.json --scene network-fabric --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/network-sriov.png --tree artifacts/network-sriov.json --scene network-sriov --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-sriov-compact.png --tree artifacts/network-sriov-compact.json --scene network-sriov --theme dark --size 513x652 --scale 1 --at 1
-for conversion_scene in local-conversion local-conversion-review; do
-  for conversion_size in 1440x900 513x652; do
-    "$check_binary" --snap "artifacts/${conversion_scene}-${conversion_size}.png" --tree "artifacts/${conversion_scene}-${conversion_size}.json" --scene "$conversion_scene" --theme dark --size "$conversion_size" --scale 1 --at 1
-  done
-done
-"$check_binary" --snap artifacts/batch-export.png --tree artifacts/batch-export.json --scene batch-export --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/batch-export-compact.png --tree artifacts/batch-export-compact.json --scene batch-export --theme dark --size 513x652 --scale 1 --at 1
-
-for dissolve_size in 1440x900 513x652; do
-  "$check_binary" --snap "artifacts/pool-dissolve-${dissolve_size}.png" --tree "artifacts/pool-dissolve-${dissolve_size}.json" --scene pool-dissolve --theme dark --size "$dissolve_size" --scale 1 --at 1
-done
-
-"$check_binary" --snap artifacts/network-fabric-pool.png --tree artifacts/network-fabric-pool.json --scene network-fabric-pool --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-fabric-pool-compact.png --tree artifacts/network-fabric-pool-compact.json --scene network-fabric-pool --theme dark --size 513x652 --scale 1 --at 1
-
-"$check_binary" --snap artifacts/network-fabric-pool-select.png --tree artifacts/network-fabric-pool-select.json --scene network-fabric-pool-select --theme dark --size 1440x900 --scale 1 --at 1
-"$check_binary" --snap artifacts/network-fabric-pool-select-compact.png --tree artifacts/network-fabric-pool-select-compact.json --scene network-fabric-pool-select --theme dark --size 513x652 --scale 1 --at 1

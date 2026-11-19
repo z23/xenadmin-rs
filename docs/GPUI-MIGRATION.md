@@ -2,6 +2,71 @@
 
 Nov 13, 2026 · @Brendan Hiley
 
+## Status
+
+Written on 2026-11-19, after the cutover of the code. The plan below is kept as it was written on
+2026-11-13 and is not updated: where it says `crates/xenadmin-gpui`, "the Rune binary" or "until
+cutover", it describes the time before this status. The [ledger](GPUI-MIGRATION-LEDGER.md) records
+where the port differs from it.
+
+Done:
+
+- The port. All 29 areas of the Rune front end are in the toolkit-free model `crates/xenadmin-ui`;
+  the GPUI Kit front end is `crates/xenadmin-desktop` (it was `crates/xenadmin-gpui`) and builds the
+  client `xenadmin-rs` and the scene tool `xenadmin-scenes`; the Rune crate and its dependencies are
+  removed. 238 commands; 129 of the 129 scenes; each of the 371 tests of the old front end has its
+  disposition in the ledger (154 moved, 118 ported, 94 split, 4 retired, 1 open).
+- Verified on fixtures and headless: the model's tests, the front end's tests with real events on the
+  Kit's headless test platform, and a render of every scene by `./scripts/check.sh`.
+- Verified live, headless, on the lab on 2026-11-19: the supported areas, by thirteen tests that run
+  the real shell and core without a window
+  ([report](reports/2026-11-19-gpui-live-headless.md)). Those runs were made at commit `e2d4572`, before the
+  last round of fixes to the model and the renderer and before the cutover, and were not repeated on
+  a later tree ([G3 report](reports/2026-11-19-gpui-gate-g3.md), criterion 2).
+- The documents of "Repository and documentation changes", the gate reports and the ledger's final
+  pass.
+
+Not established, and to be said wherever the front end's status is given:
+
+- Nothing ran in a real window on a compositor. The Wayland key path for console key codes
+  ([decision 0006](decisions/0006-console-key-codes.md), route A) only compiles in the client;
+  clipboard, the portal file chooser, window activation by a second start, fullscreen and client-side
+  decorations are established on the test platform only.
+- No screen reader run.
+- No packaged build of the new front end has been installed or run (an archive was built once to
+  check the packaging script; no AppImage), none on a clean system, and the recovery gate of
+  `README.md` was not repeated with one.
+- Connection recovery through a lost host, a toolstack restart or a coordinator change was not rerun
+  through the new front end.
+- The experimental areas were verified on fixtures and by rendering only; their live qualification of
+  earlier dates was obtained through the Rune interface or through the core's own lab scenarios.
+
+Gates. No gate is called passed unless every one of its criteria is met.
+
+| Gate | State | Report |
+| --- | --- | --- |
+| G0 | Did not pass as written. The operator directed on 2026-11-17 that the migration be finished, with the limits of the seat run accepted | [decision 0006](decisions/0006-console-key-codes.md), spike reports `reports/2026-11-14-gpui-spike-s0.md` to `-s5.md` |
+| G1 | Its subject is in place (the model, its guard against a toolkit, the ledger); its first criterion named the Rune front end, which is removed | [G2 report](reports/2026-11-19-gpui-gate-g2.md), "Gate G1, for the record" |
+| G2 | Not passed. Criteria 2, 3 and 4 met; 1 partly (the connection to the lab was shown headless, not by the built client in a window); 5 partly (a test and the construction, no review of the scenes) | [G2](reports/2026-11-19-gpui-gate-g2.md) |
+| G3 | Not passed. Criterion 2 partly met, headless; 4 partly met (one test row open); 1 (the recovery gate with the packaged AppImage) and 3 (a driven desktop session) not met; 5 can no longer be met (the Rune build is removed) | [G3](reports/2026-11-19-gpui-gate-g3.md) |
+| G4 | Not passed. All three criteria partly met: everything is ported and fixture-verified, nothing experimental was run live or in a window | [G4](reports/2026-11-19-gpui-gate-g4.md) |
+| G5 | Not passed. Criterion 1 met (`./scripts/check.sh` passes, no `rune` crate); 2 (the packaged recovery gate) and 3 (CI builds the packages) not met | [G5](reports/2026-11-19-gpui-gate-g5.md) |
+
+What remains, and is the operator's:
+
+1. A run of the packaged build in a real window, with the recovery gate of `README.md` (with Xen
+   Orchestra shut down: locate the XO VM, start it, use its console). It is also the first run of the
+   client on a compositor.
+2. The driven desktop session (nested compositor, AT-SPI, physical key injection), whose harness
+   needs its element lookups rewritten for the new tree.
+3. The clean-install check on Arch and Ubuntu 24.04 with the archive and the AppImage, after a first
+   CI run of the changed workflows.
+4. The release, with its version (decision D10), its report and its tag.
+5. The repository description on GitHub ("with Rune UI").
+
+A screen reader run is what would allow the accessibility statement to change (decision D11); until
+one is recorded it stays "not supported".
+
 ## Summary
 
 `xenadmin-desktop` moves from Rune to GPUI Kit in six gated phases (0 to 5). The interface is rebuilt around XCP-ng Center's model: tree selection sets scope, a per-object tab strip shows its views, and one command table feeds the menu bar, toolbar and context menus. `xenadmin-core`, `xenadmin-xapi` and `xenadmin-process` do not change.

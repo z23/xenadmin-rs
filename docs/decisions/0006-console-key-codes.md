@@ -1,5 +1,15 @@
 # Console key codes on GPUI
 
+Status on 2026-11-19, after the cutover of the code: the decision and its accepted limits stand as
+written below, and no later run has closed or confirmed any of them. Route A is in the client
+(`crates/xenadmin-desktop/src/wayland_keys.rs` and `console/keys.rs`): it compiles there and has no
+test, and it has never run with a console, because nothing of the GPUI front end has run in a real
+window since the spike. In the headless lab runs of 2026-11-19 keys reached a guest through the
+Kit's test key events, which is the path without the listener
+([report](../reports/2026-11-19-gpui-live-headless.md)). Where the text below speaks of the Rune
+console or the Rune binary in the present tense, it is of 2026-11-14: the Rune crate has since been
+removed, and the crate `xenadmin-gpui` it names is `crates/xenadmin-desktop`.
+
 Route A is the route for physical key codes. Gate G0 did not pass. Decision
 D2 still stands: keysym-only input is not adopted.
 

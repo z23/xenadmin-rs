@@ -820,7 +820,7 @@ impl Model {
         self.selection.target().single()
     }
 
-    /// The Rune `DisplayRow` of [`Model::selected`]: name, state, location,
+    /// The row of [`Model::selected`]: name, state, location,
     /// vCPUs, memory and description of a VM, a template, a host, a storage
     /// repository or a network.
     pub fn selected_row(&self) -> Option<DisplayRow> {
@@ -858,7 +858,7 @@ impl Model {
             ObjectKind::Network => crate::rows::InventoryPage::Networks,
             _ => return None,
         };
-        crate::rows::project_rows(&inventory, page, None, "")
+        crate::rows::project_rows(&inventory, page)
             .into_iter()
             .find(|row| row.id == object.id)
     }

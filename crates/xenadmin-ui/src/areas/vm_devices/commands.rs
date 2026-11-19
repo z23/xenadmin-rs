@@ -137,20 +137,23 @@ pub fn commands() -> Vec<CommandSpec> {
                     properties::open(m, c.pool, c.vm, Some(row.id), None);
                 }
             }),
+        // These three are also on a repository's own Storage tab, whose
+        // repository commands have the orders 20 to 80: they stand after
+        // them, together, and before the export of a disk (88).
         CommandSpec::new(GROW.0, "Resize", area)
-            .local(TabId::Storage, 32)
+            .local(TabId::Storage, 82)
             .local_scopes(&[ObjectKind::Vm, ObjectKind::StorageRepository])
             .context(&[ObjectKind::VirtualDisk])
             .eligibility(|m, t| disk_eligibility(m, t, Mode::Grow))
             .invoke(|m, t| open_disk(m, t, Mode::Grow)),
         CommandSpec::new(COPY.0, "Copy", area)
-            .local(TabId::Storage, 34)
+            .local(TabId::Storage, 84)
             .local_scopes(&[ObjectKind::Vm, ObjectKind::StorageRepository])
             .context(&[ObjectKind::VirtualDisk])
             .eligibility(|m, t| disk_eligibility(m, t, Mode::Copy))
             .invoke(|m, t| open_disk(m, t, Mode::Copy)),
         CommandSpec::new(CLEANUP.0, "Delete Owned Disk", area)
-            .local(TabId::Storage, 36)
+            .local(TabId::Storage, 86)
             .local_scopes(&[ObjectKind::Vm, ObjectKind::StorageRepository])
             .context(&[ObjectKind::VirtualDisk])
             .eligibility(|m, t| disk_eligibility(m, t, Mode::Cleanup))

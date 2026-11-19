@@ -578,7 +578,7 @@ pub fn project(sheet: &mut Sheet) {
         for (pool, source) in &sheet.sources {
             pages.insert(
                 *pool,
-                crate::rows::project_rows(&source.inventory, page, None, "")
+                crate::rows::project_rows(&source.inventory, page)
                     .into_iter()
                     .map(|row| (row.id.clone(), row))
                     .collect(),

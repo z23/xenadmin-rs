@@ -1,12 +1,11 @@
 //! `Preferences`: what the client remembers on this computer.
 //!
 //! The stored file is `preferences.json` in the application state directory,
-//! and its format is that of the Rune front end, unchanged: a file written
-//! by either front end is read by the other. `sidebar_width` and `columns`
-//! are used by the new shell. `inspector_width` belonged to the Rune details
-//! pane, which the new shell does not have: it is read, kept as it is and
-//! written back, so the Rune front end still finds its width while both
-//! exist (the plan drops it at cutover, Phase 5 step 3).
+//! in the format the Rune client wrote: a file of its last release is read
+//! whole. `sidebar_width` and `columns` are used by the shell.
+//! `inspector_width`, the width of the Rune details pane, which this shell
+//! does not have, is accepted in a file, ignored whatever it holds, and not
+//! written any more.
 //!
 //! `Options` is the data of the Options dialog (`settings.rs` in Rune). The
 //! dialog itself is the `settings` area's.
@@ -109,9 +108,6 @@ pub struct Preferences {
     pub accept_invalid_certificates: bool,
     /// The width of the navigation pane.
     pub sidebar_width: f32,
-    /// The width of the Rune details pane. Not used by the new shell; kept
-    /// so the file round-trips.
-    pub inspector_width: f32,
     /// Widths the user gave to columns of the inventory grid, by column id.
     pub columns: BTreeMap<String, f32>,
 }
@@ -130,7 +126,6 @@ impl Default for Preferences {
             host_certificates: String::new(),
             accept_invalid_certificates: false,
             sidebar_width: 260.0,
-            inspector_width: 300.0,
             columns: BTreeMap::new(),
         }
     }
@@ -174,10 +169,6 @@ impl Preferences {
         prefs.sidebar_width = prefs
             .sidebar_width
             .clamp(Self::SIDEBAR_RANGE.0, Self::SIDEBAR_RANGE.1);
-        if !prefs.inspector_width.is_finite() {
-            prefs.inspector_width = 300.0;
-        }
-        prefs.inspector_width = prefs.inspector_width.clamp(230.0, 480.0);
         prefs.hidden_history.truncate(5000);
         if prefs.metric_presets.validate().is_err() {
             prefs.metric_presets = Default::default();
@@ -239,7 +230,7 @@ mod tests {
     use super::*;
     use crate::areas::events::hidden::Family;
 
-    /// A `preferences.json` as the Rune front end writes it, with every
+    /// A `preferences.json` as the last Rune release wrote it, with every
     /// field present: two external tools, a graph preset, options, a saved
     /// search, a hidden history entry, the legacy connection fields, the
     /// pane widths and two column widths.
@@ -327,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rune_preferences_file_is_read_whole_and_written_back_unchanged() {
+    fn a_rune_preferences_file_is_read_whole_and_written_back_without_the_details_pane_width() {
         let file = rune_file();
         let read: Preferences = serde_json::from_str(&file).expect("the Rune file is read");
         let read = read.normalized();
@@ -350,15 +341,19 @@ mod tests {
         assert_eq!(read.sidebar_width, 312.5);
         assert_eq!(read.columns.get("name"), Some(&321.0));
         assert_eq!(read.columns.get("state"), Some(&150.0));
-        // The Rune details pane is gone, and its width is kept for the Rune
-        // front end, which reads the same file.
-        assert_eq!(read.inspector_width, 412.0);
 
-        // Written back, the file says the same thing, field for field.
+        // Written back, the file says the same thing, field for field,
+        // except for the width of the Rune details pane: the file had it,
+        // nothing reads it, and it is not written.
         let written = serde_json::to_value(&read).expect("encoded");
-        let original: serde_json::Value = serde_json::from_str(&file).expect("sample");
+        let mut original: serde_json::Value = serde_json::from_str(&file).expect("sample");
+        let dropped = original
+            .as_object_mut()
+            .expect("an object")
+            .remove("inspector_width");
+        assert_eq!(dropped, Some(serde_json::json!(412.0)));
         assert_eq!(written, original);
-        // The fourteen fields of the Rune struct, no more and no fewer. The
+        // The fields of the Rune struct but that one, no more and no fewer. The
         // order of an object's keys depends on a serde_json feature that
         // another crate of the workspace may turn on, so it is not compared.
         let mut names: Vec<_> = written
@@ -378,7 +373,6 @@ mod tests {
                 "fingerprint",
                 "hidden_history",
                 "host_certificates",
-                "inspector_width",
                 "last_profile",
                 "metric_presets",
                 "options",
@@ -466,20 +460,29 @@ mod tests {
     // the part about what a file may hold.
     #[test]
     fn widths_a_file_holds_are_brought_inside_what_the_client_accepts() {
-        // A file written before the width was kept starts at the declared width, and a
-        // width outside what the pane allows is brought inside it.
+        // A width inside what the pane allows is kept, and one outside it is
+        // brought inside.
         let earlier = serde_json::from_str::<Preferences>(r#"{"sidebar_width":300.0}"#)
             .unwrap()
             .normalized();
-        assert_eq!(earlier.inspector_width, 300.0);
         assert_eq!(earlier.sidebar_width, 300.0);
         let wide = serde_json::from_str::<Preferences>(
             r#"{"inspector_width":9000.0,"sidebar_width":9000.0}"#,
         )
         .unwrap()
         .normalized();
-        assert_eq!(wide.inspector_width, 480.0);
         assert_eq!(wide.sidebar_width, 420.0);
+        // The width of the Rune details pane is ignored whatever the file
+        // holds for it: the rest of the file is read.
+        for held in ["null", "\"wide\"", "-1e999", "{\"a\":[1]}"] {
+            let file = format!(r#"{{"inspector_width":{held},"sidebar_width":333.0}}"#);
+            let read = serde_json::from_str::<Preferences>(&file)
+                .unwrap_or_else(|error| panic!("{held}: {error}"))
+                .normalized();
+            assert_eq!(read.sidebar_width, 333.0, "{held}");
+            let written = serde_json::to_value(&read).expect("encoded");
+            assert!(written.get("inspector_width").is_none(), "{held}");
+        }
         let columns = serde_json::from_str::<Preferences>(
             r#"{"columns":{"name":321.0,"state":4.0,"cpu":90000.0}}"#,
         )

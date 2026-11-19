@@ -1,5 +1,12 @@
 # GPUI front end: live headless runs against the lab (2026-11-19)
 
+Note added after the cutover of the code, later the same day: the crate this report calls
+`crates/xenadmin-gpui` is `crates/xenadmin-desktop` now, and the tests are run with
+`cargo test -p xenadmin-desktop --features scenes --locked --test lab_live -- --ignored --exact NAME --nocapture --test-threads=1`.
+The runs themselves were made at commit `e2d4572`. The last round of fixes to the model and the renderer
+(branches `port/f1` and `port/f2`) and the cutover were merged after them, and the scenarios were not
+run again on a later tree. The text below is unchanged.
+
 This report records what was run of the GPUI front end against the project's disposable
 lab for the gates G2 and G3 of [the migration plan](../GPUI-MIGRATION.md), with what
 method, and what that method cannot show. It is evidence for "live-host-verified, headless";

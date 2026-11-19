@@ -4,11 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Toolkit-free UI model shared by the desktop front ends."
+description = "Toolkit-free UI model of the desktop client."
 publish = false
 
 [dependencies]
-# Snapshot previews and console screenshots; the version the Rune front end uses.
+# Snapshot previews and console screenshots; the version the front end uses.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Opening a file without following a link (files.rs); the version the core pins.
 rustix = { version = "=1.1.6", features = ["fs"] }
