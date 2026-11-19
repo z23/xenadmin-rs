@@ -203,6 +203,24 @@ checked for this report.
 
 A core change would allow: a VM-level operation would let the page match the plan.
 
+## 13. One sentence for every reason a toolstack restart is unavailable
+
+Met in `host_admin`, in the live run of 2026-11-19
+([live paths report](2026-11-19-gpui-live-paths.md), `lab_p3_member_toolstack_restart`). The server's
+text console was open in the Console tab, which the host counts as a pending task. The core's
+availability of `HostOperation::RestartToolstack` then says "Pool HA must be known disabled, a current
+toolstack start marker must be supplied and pool tasks must be finished": one sentence for three
+conditions, without saying which one holds. The sentence that names the cause ("Finish pending pool
+tasks before restarting the toolstack. An open VM or host console counts as one") exists in the core
+only as the refusal of a submitted operation, which the front end never reaches because the
+availability already refused.
+
+Instead: the Server menu shows Restart Toolstack disabled with the core's sentence as its reason. The
+user is told that pool tasks must be finished and is not told that their own open console is one.
+
+A core change would allow: an availability that names the condition that failed (or exposes the
+pending tasks it counted) would let the menu say "close the open console first".
+
 ## Not gaps of the core
 
 Reported beside the above, and belonging to the front end:
