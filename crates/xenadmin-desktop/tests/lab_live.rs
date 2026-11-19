@@ -4350,6 +4350,7 @@ fn lab_p3_console_window_and_typing() {
     client.snap(&mut evidence, "tab-after-the-window-closed");
 
     // The console is the tab's to open again.
+    client.activate(main);
     let reopened = client.try_local("vm.console");
     let took = wait_console_picture(&mut client, "the tab shows the console again");
     client.press(console::view::CANVAS);

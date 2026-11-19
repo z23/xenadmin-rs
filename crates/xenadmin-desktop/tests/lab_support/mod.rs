@@ -1102,10 +1102,23 @@ impl Client {
             ));
         }
         let at = element.bounds().center();
+        // A press in a window of a desktop makes it the active one first;
+        // the test platform activates a window only when it is told.
+        self.activate(handle);
         self.on_window(handle, |window, cx| {
             common::click_at(window, cx, at, MouseButton::Left)
         });
         Ok(())
+    }
+
+    /// Makes a window of the application the active one, as a press in it
+    /// or the window switcher of a desktop does.
+    pub fn activate(&mut self, handle: AnyWindowHandle) {
+        self.cx.window(handle, |window, _| window.activate_window());
+        self.cx.park();
+        for _ in 0..2 {
+            self.draw(handle);
+        }
     }
 
     /// A keystroke to whatever has the keyboard in a window.
