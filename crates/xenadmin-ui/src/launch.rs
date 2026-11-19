@@ -21,8 +21,10 @@ pub enum Launch {
 }
 
 /// Whether the command line asks for a preview or a headless run, which
-/// never restores saved sessions. The flags are those of the Rune front end;
-/// `--demo` and `--scene` are the ones the new binary keeps.
+/// never restores saved sessions: `--demo`, `--scene`, and the files a scene
+/// is drawn to (`--snap`, `--tree`), each alone or as `--flag=value`. These
+/// are the ones the client's own parser accepts; it refuses every other
+/// option before the launch is prepared (the Rune front end had more).
 pub fn preview_arguments(arguments: impl Iterator<Item = String>) -> bool {
     fn matches(argument: &str, flag: &str) -> bool {
         argument == flag
@@ -30,40 +32,12 @@ pub fn preview_arguments(arguments: impl Iterator<Item = String>) -> bool {
                 .strip_prefix(flag)
                 .is_some_and(|tail| tail.starts_with('='))
     }
-    let mut native = false;
-    let mut preview = false;
-    let mut unless_native = false;
-    for argument in arguments {
-        if argument == "--native" {
-            native = true;
-            continue;
-        }
-        if [
-            "--demo",
-            "--scene",
-            "--snap",
-            "--tree",
-            "--html",
-            "--video",
-            "--strip",
-            "--list-scenes",
-            "--first-pixels",
-            "--list-windows",
-            "--desktop",
-        ]
-        .into_iter()
-        .any(|flag| matches(&argument, flag))
-        {
-            preview = true;
-        // Rune's headless() is false for these when --native is set.
-        } else if ["--script", "--trace", "--frames", "--duration", "--out"]
+    let mut arguments = arguments;
+    arguments.any(|argument| {
+        ["--demo", "--scene", "--snap", "--tree"]
             .into_iter()
             .any(|flag| matches(&argument, flag))
-        {
-            unless_native = true;
-        }
-    }
-    preview || (unless_native && !native)
+    })
 }
 
 pub fn preview(arguments: &[String]) -> bool {
@@ -171,59 +145,36 @@ mod tests {
     // needs no second process).
     #[test]
     fn headless_flags_are_previews_unless_native_is_asked_for() {
-        for flag in ["--demo", "--scene=connect", "--snap", "--tree"] {
-            assert!(preview_arguments([flag.to_owned()].into_iter()));
-        }
-        assert!(!preview_arguments(
-            ["--theme".into(), "dark".into()].into_iter()
-        ));
         for flag in [
-            "--html",
-            "--html=out.html",
-            "--video",
-            "--video=clip.mp4",
-            "--strip",
-            "--strip=out.png",
-            "--list-scenes",
-            "--first-pixels",
-            "--list-windows",
-            "--desktop",
-            "--desktop=backdrop.png",
-            "--script",
-            "--script=replay.json",
-            "--trace",
-            "--trace=motion.jsonl",
-            "--frames",
-            "--frames=1",
-            "--duration",
-            "--duration=auto",
-            "--out",
-            "--out=frames",
+            "--demo",
+            "--scene",
+            "--scene=connect",
+            "--snap",
+            "--snap=x.png",
+            "--tree",
+            "--tree=x.json",
         ] {
             let args = vec![flag.to_string()];
             assert!(preview_arguments(args.iter().cloned()), "{flag}");
             assert!(preview(&args), "{flag}");
         }
+        assert!(!preview_arguments(
+            ["--theme".into(), "dark".into()].into_iter()
+        ));
+        // The options of the Rune front end that the client no longer has
+        // are not previews: its parser refuses them before this is asked.
         for flag in [
-            "--script",
-            "--script=replay.json",
-            "--trace",
+            "--html",
+            "--html=out.html",
+            "--list-scenes",
             "--frames=1",
-            "--duration=auto",
-            "--out",
+            "--native",
+            "--scenery",
+            "--snapshot=x.png",
         ] {
-            let args = vec![flag.to_string(), "--native".to_string()];
-            assert!(!preview_arguments(args.iter().cloned()), "{flag} --native");
-            assert!(!preview(&args), "{flag} --native");
+            let args = vec![flag.to_string()];
+            assert!(!preview_arguments(args.iter().cloned()), "{flag}");
+            assert!(!preview(&args), "{flag}");
         }
-        for args in [
-            vec!["--html-template".to_string()],
-            vec!["--html-template=page.html".to_string()],
-            vec!["--html-widths=360,640".to_string()],
-        ] {
-            assert!(!preview_arguments(args.iter().cloned()), "{args:?}");
-        }
-        let html_and_native = ["--native".to_string(), "--html=out.html".to_string()];
-        assert!(preview_arguments(html_and_native.iter().cloned()));
     }
 }

@@ -17,8 +17,8 @@ updated hash; no signature or application check prohibits a modified runtime/lib
 The other statically linked components are musl, mimalloc, zstd and zlib. Their notices
 are included alongside the runtime, libfuse and squashfuse licenses. The upstream build
 uses Alpine 3.21 and its development packages. See the pinned upstream source and
-`inputs.json` for the originating repositories. The application's Rust dependencies
-and font notices are in the parent `third-party` directory.
+`inputs.json` for the originating repositories. The notices of the application's Rust
+dependencies are in the parent `third-party` directory.
 
 The image holds the application's two executables and no desktop or graphics library. The
 client is linked against libxcb, libxkbcommon and libxkbcommon-x11 and does not start without

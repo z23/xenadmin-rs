@@ -213,7 +213,7 @@ test the ledger names as a successor present, the counts of its summary, and, wi
 sources of the removed Rune crate are read only when `XENADMIN_RUNE_SOURCES` names a
 directory that holds them (for example an export of commit `89d700c`, the last with the
 Rune crate: `git archive 89d700c crates/xenadmin-desktop | tar -x -C DIR`, then
-`XENADMIN_RUNE_SOURCES=DIR/crates/xenadmin-desktop`).
+`XENADMIN_RUNE_SOURCES=DIR/crates/xenadmin-desktop/src`).
 
 ### Inspection
 

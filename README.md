@@ -206,8 +206,8 @@ through its public facade.
 The project uses the MIT license for original work, with one exception:
 `crates/xenadmin-xapi`, the XAPI bindings generated from the upstream API description, is
 under the LGPL 2.1 with a linking exception, as its `LICENSE` and `NOTICE` say. Binary
-archives include that crate's licence and notice with the supplied dependency and
-embedded-font notices. This is an independent project, not an official
+archives include that crate's licence and notice with the supplied dependency
+notices. This is an independent project, not an official
 XCP-ng or Vates application.
 
 Use `./scripts/dev.sh` to enable private local inspection of the running desktop, and

@@ -53,11 +53,11 @@ its toggle.
 Status of the window itself: nobody has used the GPUI Kit front end in a window yet. It
 passes its tests on the toolkit's headless test platform, every scene renders off screen,
 and it has been driven headless against the lab
-([report](reports/2026-11-19-gpui-live-headless.md)). The packaged client has been
+([report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-live-headless.md)). The packaged client has been
 installed on untouched Ubuntu 24.04 and Arch systems in virtual machines and has opened its
 window there with software rendering: in a Wayland compositor that had no seat, and, with
 scripted input, in an X session without Wayland
-([clean-install report](reports/2026-11-19-gpui-clean-install.md)). A Wayland session with
+([clean-install report](https://github.com/z23/xenadmin-rs/blob/main/docs/reports/2026-11-19-gpui-clean-install.md)). A Wayland session with
 a person at it, a hardware GPU and GPU selection on a hybrid machine remain to be shown
 for it. What earlier versions of this guide
 recorded about them (native Wayland presentation working, an X11 smoke test through
@@ -214,8 +214,8 @@ passwords or API sessions. Preserve the journal when investigating an interrupte
 The check script uses isolated temporary state and local protocol fixtures and opens no
 window. It renders every scene under `artifacts/ui/`. Packaging writes a release archive
 under the same ignored directory `artifacts/`.
-Archives also include declared dependency licenses, supplied notices, and embedded-font
-notices under `third-party/`. The application is under the MIT licence; its XAPI bindings
+Archives also include declared dependency licenses and supplied notices under
+`third-party/`. The application is under the MIT licence; its XAPI bindings
 (`xenadmin-xapi`) are under the LGPL 2.1 with a linking exception, with that licence and
 a notice of their source in `third-party/xenadmin-xapi-VERSION/`. The complete source of
 every release is at <https://github.com/z23/xenadmin-rs> under the release's tag. `./scripts/package.sh --appimage` also downloads the pinned
@@ -273,7 +273,7 @@ selection changes. Up to eight separate console windows keep their original targ
 local pointer stays visible over the console and the guest's own cursor is not drawn.
 
 In a Wayland session the console's keys are read by key code through a second keyboard
-listener on the display ([decision 0006](decisions/0006-console-key-codes.md)); elsewhere
+listener on the display ([decision 0006](https://github.com/z23/xenadmin-rs/blob/main/docs/decisions/0006-console-key-codes.md)); elsewhere
 (X11) the toolkit's keystrokes are forwarded with codes looked up on the US layout, which
 is experimental. Neither path has been used with a console in a real window yet: the
 headless lab runs sent keys through the toolkit's test events. Native keyboard, layout,

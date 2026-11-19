@@ -1366,6 +1366,26 @@ fn the_theme_follows_the_appearance_preference_and_keeps_the_accent(cx: &mut Tes
 }
 
 #[gpui_kit::test]
+fn the_applications_window_applies_the_option_reduce_animation(cx: &mut TestAppContext) {
+    let scene = open(cx);
+    // A scene's window leaves what its harness asked for, whatever the
+    // option says: a capture shows the final state.
+    assert!(cx.update(|cx| cx.reduce_motion()));
+    assert!(!model(cx, &scene, |m| m.preferences.options.reduced_motion));
+    // The application's window is the one that follows the desktop.
+    on(&mut *cx, &scene, |window, cx| {
+        scene
+            .view
+            .update(cx, |shell, cx| shell.follow_system_appearance(window, cx))
+    });
+    assert!(!cx.update(|cx| cx.reduce_motion()));
+    model_side(cx, &scene, |m| m.preferences.options.reduced_motion = true);
+    assert!(cx.update(|cx| cx.reduce_motion()));
+    model_side(cx, &scene, |m| m.preferences.options.reduced_motion = false);
+    assert!(!cx.update(|cx| cx.reduce_motion()));
+}
+
+#[gpui_kit::test]
 fn the_zoom_shortcuts_apply_while_a_dialog_is_open(cx: &mut TestAppContext) {
     let scene = open(cx);
     let scale =

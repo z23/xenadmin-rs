@@ -105,13 +105,15 @@ pub struct ShellView {
     focus: FocusHandle,
     /// The menus last given to the platform and to the Kit's bar.
     installed: Vec<MenuView>,
-    /// The appearance and the interface scale the theme was last set from.
-    look: Option<(Appearance, u16)>,
+    /// The appearance, the interface scale and the option "Reduce
+    /// animation" that the theme and the application were last set from.
+    look: Option<(Appearance, u16, bool)>,
     title: String,
     /// In a narrow window: whether the user opened the navigation pane.
     nav_open: bool,
-    /// Whether the appearance `System` means the desktop's (the
-    /// application) or whatever the theme is (a scene, a test).
+    /// Whether this is the application's window: the appearance `System`
+    /// then means the desktop's, and the option "Reduce animation" is
+    /// applied. In a scene or a test both stay as the harness set them.
     follows_system: bool,
     menu: Option<OpenMenu>,
     menu_anchor: MenuAnchor,
@@ -214,8 +216,9 @@ impl ShellView {
 
     /// Makes the theme follow the desktop's light or dark appearance while
     /// the preference says `System`: now, and whenever the desktop changes
-    /// it. The application calls this; a scene or a test does not, so the
-    /// theme it asked for stays.
+    /// it. From then on the option "Reduce animation" is applied as well.
+    /// The application calls this; a scene or a test does not, so the theme
+    /// and the reduced motion it asked for stay.
     pub fn follow_system_appearance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.follows_system = true;
         let follow = |shell: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
@@ -272,16 +275,28 @@ impl ShellView {
                 store.menu_bar(),
             )
         };
-        let look = (options.appearance, options.interface_scale);
+        let look = (
+            options.appearance,
+            options.interface_scale,
+            options.reduced_motion,
+        );
         if self.look != Some(look) {
             let scaled = self
                 .look
-                .is_some_and(|(_, scale)| scale != options.interface_scale);
+                .is_some_and(|(_, scale, _)| scale != options.interface_scale);
             self.look = Some(look);
             if self.follows_system && options.appearance == Appearance::System {
                 Theme::sync_system_appearance(Some(window), cx);
             }
             theme::apply_options(options, cx);
+            // The option "Reduce animation", which the Kit keeps on the
+            // application. Only the application's window sets it: a scene
+            // or a test keeps what its harness asked for (a capture is
+            // taken with it on). The desktop's own setting is not followed:
+            // the Kit reads none.
+            if self.follows_system {
+                cx.set_reduce_motion(options.reduced_motion);
+            }
             if scaled {
                 self.rescale_pane(window, cx);
             }

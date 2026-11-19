@@ -152,7 +152,8 @@ impl Preferences {
             .unwrap_or_default()
     }
     /// Reads `preferences.json` of a state directory. A missing, unreadable
-    /// or unparsable file gives the defaults.
+    /// or unparsable file gives the defaults; the first save keeps a file
+    /// that did not parse beside the new one (`set_aside_unreadable`).
     pub fn load_from(directory: &std::path::Path) -> Self {
         std::fs::read(directory.join("preferences.json"))
             .ok()
@@ -188,8 +189,26 @@ impl Preferences {
         let dir = directory().ok_or("No application state directory is available")?;
         self.save_to(&dir)
     }
+    /// The name a `preferences.json` this build cannot read is kept under.
+    pub const UNREADABLE: &'static str = "preferences.json.unreadable";
+
+    /// A `preferences.json` that does not parse was read as the defaults
+    /// (`load_from`): one value this build rejects, a truncated file. Before
+    /// the defaults are written over it, it is moved beside itself, so that
+    /// the saved searches, tools and presets it held are not lost for good.
+    /// The latest such file is the one kept.
+    fn set_aside_unreadable(dir: &std::path::Path) {
+        let path = dir.join("preferences.json");
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        if serde_json::from_slice::<Self>(&bytes).is_err() {
+            let _ = std::fs::rename(&path, dir.join(Self::UNREADABLE));
+        }
+    }
     /// Writes `preferences.json` into a state directory: a private
-    /// temporary file renamed over the old one.
+    /// temporary file renamed over the old one. An old one that does not
+    /// parse is kept as `preferences.json.unreadable`.
     pub fn save_to(&self, dir: &std::path::Path) -> Result<(), String> {
         use std::{
             io::Write,
@@ -215,6 +234,7 @@ impl Preferences {
             .map_err(|_| "Cannot write application preferences")?;
             file.sync_all()
                 .map_err(|_| "Cannot persist application preferences")?;
+            Self::set_aside_unreadable(dir);
             std::fs::rename(&temporary, dir.join("preferences.json"))
                 .map_err(|_| "Cannot replace application preferences")
         })();
@@ -315,6 +335,39 @@ mod tests {
             "SAVED_SEARCHES",
             &serde_json::to_string(&searches).expect("search catalog"),
         )
+    }
+
+    #[test]
+    fn a_preferences_file_that_does_not_parse_is_kept_beside_the_one_written_over_it() {
+        let dir = std::env::temp_dir().join(format!("xenadmin-prefs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("directory");
+        let path = dir.join("preferences.json");
+        let kept = dir.join(Preferences::UNREADABLE);
+        // One value of the wrong type: the whole file reads as the defaults.
+        let damaged = rune_file().replacen(
+            "\"sidebar_width\": ",
+            "\"sidebar_width\": \"wide\", \"was\": ",
+            1,
+        );
+        assert!(serde_json::from_str::<Preferences>(&damaged).is_err());
+        std::fs::write(&path, &damaged).expect("damaged file");
+        let read = Preferences::load_from(&dir);
+        assert_eq!(read.sidebar_width, Preferences::default().sidebar_width);
+        assert!(read.saved_searches.searches.is_empty() && read.hidden_history.is_empty());
+        assert!(!kept.exists(), "reading moves nothing");
+        read.save_to(&dir).expect("first save");
+        assert_eq!(std::fs::read_to_string(&kept).expect("kept"), damaged);
+        let written = std::fs::read(&path).expect("written");
+        assert!(serde_json::from_slice::<Preferences>(&written).is_ok());
+        // A later save of a file that parses leaves the kept one alone.
+        read.save_to(&dir).expect("second save");
+        assert_eq!(std::fs::read_to_string(&kept).expect("kept"), damaged);
+        // A file that parses is written over as before, with nothing kept.
+        std::fs::remove_file(&kept).expect("remove");
+        std::fs::write(&path, rune_file()).expect("valid file");
+        Preferences::load_from(&dir).save_to(&dir).expect("save");
+        assert!(!kept.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

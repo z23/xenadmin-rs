@@ -22,6 +22,9 @@ cargo build --release --locked --workspace --message-format=json-render-diagnost
 target_dir="$(cargo metadata --locked --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
 mkdir -p "$stage_dir/$package_name/bin" "$stage_dir/$package_name/share/applications" "$stage_dir/$package_name/share/icons/hicolor/scalable/apps" artifacts
 python3 packaging/artifacts.py "$stage_dir/build.jsonl" "$stage_dir/$package_name/bin"
+# The staged client is run once, without a window, before anything is published
+# (packaging/smoke.py): a client that does not load ends the packaging here.
+python3 packaging/smoke.py "$stage_dir/$package_name/bin/xenadmin-rs"
 install -m755 packaging/install.py "$stage_dir/$package_name/"
 install -m644 packaging/xenadmin-rs.desktop "$stage_dir/$package_name/share/applications/"
 install -m644 packaging/xenadmin-rs.svg "$stage_dir/$package_name/share/icons/hicolor/scalable/apps/"
@@ -49,4 +52,6 @@ PY
 
 if [[ -n "$with_appimage" ]]; then
     python3 packaging/appimage.py "$stage_dir/$package_name" "artifacts/$package_name.AppImage" --cache "$target_dir/package-tools"
+    # The same once through the image's runtime and AppRun, extracted, so that no FUSE is needed.
+    python3 packaging/smoke.py "artifacts/$package_name.AppImage" --appimage
 fi

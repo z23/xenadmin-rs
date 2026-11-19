@@ -929,21 +929,6 @@ fn headless_flags_do_not_restore_a_saved_session() {
     if !restore_queues_connect(&["--theme", "dark"]) {
         missed.push("non-preview argv did not queue a Connect load");
     }
-    if !restore_queues_connect(&["--native", "--frames", "1"]) {
-        missed.push("--native with --frames did not queue a Connect load");
-    }
-    if restore_queues_connect(&["--html", "out.html"]) {
-        missed.push("headless argv --html queued a Connect load");
-    }
-    if restore_queues_connect(&["--html=out.html"]) {
-        missed.push("headless argv --html=out.html queued a Connect load");
-    }
-    if restore_queues_connect(&["--frames", "1"]) {
-        missed.push("headless argv --frames queued a Connect load");
-    }
-    if restore_queues_connect(&["--frames=1"]) {
-        missed.push("headless argv --frames=1 queued a Connect load");
-    }
     for flag in ["--demo", "--scene=connect", "--snap=x.png", "--tree=x.json"] {
         if restore_queues_connect(&[flag]) {
             missed.push(flag);
