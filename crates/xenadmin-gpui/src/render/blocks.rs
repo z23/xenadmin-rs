@@ -53,7 +53,19 @@ pub fn blocks(
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
-    let filling = filling_table(pass, blocks);
+    blocks_filling(pass, base, blocks, filling_table(pass, blocks), window, cx)
+}
+
+/// [`blocks`] with the table that takes the remaining height named by the
+/// caller: a tab body lays out a table that only sections follow so.
+pub fn blocks_filling(
+    pass: &Pass<'_>,
+    base: &str,
+    blocks: &[Block],
+    filling: Option<usize>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
     blocks
         .iter()
         .enumerate()

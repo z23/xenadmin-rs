@@ -67,7 +67,28 @@ pub struct Geometry {
     pub marks: Vec<[f32; 2]>,
     /// The top of each horizontal grid line, which is one pixel high.
     pub grid: Vec<f32>,
+    /// Where a grid line is left out, so that a gap of the series reads as
+    /// a gap.
+    pub breaks: Vec<Break>,
 }
+
+/// A stretch of a grid line that is not drawn: a gap of the series whose
+/// line runs along that grid line on one side of the gap or on both. A
+/// constant series at the highest value lies on the top grid line, and in
+/// its gaps the grid line would show through and read as a dim
+/// continuation of the series.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Break {
+    /// The top of the grid line, as in [`Geometry::grid`].
+    pub top: f32,
+    /// The columns the line is left out in.
+    pub from: f32,
+    pub to: f32,
+}
+
+/// How far from the middle of a grid line the middle of the series' line
+/// can be and still be drawn on it.
+const ON_GRID: f32 = STROKE / 2.0 + 1.0;
 
 /// Scales the box of a plot's points to a plot of this size. A run stays a
 /// run: nothing is joined and nothing is added.
@@ -90,16 +111,81 @@ pub fn geometry(plot: &Plot, width: f32, height: f32) -> Geometry {
             _ => lines.push(points),
         }
     }
+    // A whole pixel row, so the line is crisp, and inside the plot.
+    let grid: Vec<f32> = GRID_LINES
+        .iter()
+        .map(|line| (y(*line) - 0.5).round().clamp(0.0, (height - 1.0).max(0.0)))
+        .collect();
+    // The gaps of the series, in columns: before its first run, between
+    // two runs, after its last. Each with the heights of the series at its
+    // two sides.
+    let runs: Vec<([f32; 2], [f32; 2])> = plot
+        .segments
+        .iter()
+        .filter_map(|segment| {
+            let mut points = segment
+                .iter()
+                .filter(|point| point[0].is_finite() && point[1].is_finite())
+                .map(|point| [x(point[0]), y(point[1])]);
+            let first = points.next()?;
+            Some((first, points.next_back().unwrap_or(first)))
+        })
+        .collect();
+    let mut gaps: Vec<(f32, f32, Vec<f32>)> = Vec::new();
+    if let (Some((first, _)), Some((_, last))) = (runs.first(), runs.last()) {
+        gaps.push((0.0, first[0], vec![first[1]]));
+        gaps.extend(
+            runs.windows(2)
+                .map(|pair| (pair[0].1[0], pair[1].0[0], vec![pair[0].1[1], pair[1].0[1]])),
+        );
+        gaps.push((last[0], width, vec![last[1]]));
+    }
+    // The line is left out from the last sample before the gap to the
+    // first after it.
+    let mut breaks = Vec::new();
+    for (from, to, heights) in &gaps {
+        if to - from < 1.0 {
+            continue;
+        }
+        let on = |top: f32| {
+            heights
+                .iter()
+                .any(|height| (height - (top + 0.5)).abs() <= ON_GRID)
+        };
+        breaks.extend(grid.iter().filter(|top| on(**top)).map(|top| Break {
+            top: *top,
+            from: *from,
+            to: *to,
+        }));
+    }
     Geometry {
         width,
         height,
         lines,
         marks,
-        // A whole pixel row, so the line is crisp, and inside the plot.
-        grid: GRID_LINES
-            .iter()
-            .map(|line| (y(*line) - 0.5).round().clamp(0.0, (height - 1.0).max(0.0)))
-            .collect(),
+        grid,
+        breaks,
+    }
+}
+
+impl Geometry {
+    /// The stretches of the grid line at `top` that are drawn: the width
+    /// of the plot without the [`Break`]s of that line.
+    pub fn grid_stretches(&self, top: f32) -> Vec<(f32, f32)> {
+        let mut breaks: Vec<&Break> = self.breaks.iter().filter(|b| b.top == top).collect();
+        breaks.sort_by(|left, right| left.from.total_cmp(&right.from));
+        let mut stretches = Vec::new();
+        let mut from = 0.0_f32;
+        for gap in breaks {
+            if gap.from > from {
+                stretches.push((from, gap.from));
+            }
+            from = from.max(gap.to);
+        }
+        if self.width > from {
+            stretches.push((from, self.width));
+        }
+        stretches
     }
 }
 
@@ -305,10 +391,12 @@ fn paint(
 ) {
     let at = |[x, y]: [f32; 2]| bounds.origin + point(px(x), px(y));
     for top in &geometry.grid {
-        window.paint_quad(fill(
-            Bounds::new(at([0.0, *top]), size(bounds.size.width, px(1.))),
-            grid,
-        ));
+        for (from, to) in geometry.grid_stretches(*top) {
+            window.paint_quad(fill(
+                Bounds::new(at([from, *top]), size(px(to - from), px(1.))),
+                grid,
+            ));
+        }
     }
     // One path per run: two runs are never one stroke.
     for line in &geometry.lines {
@@ -443,6 +531,54 @@ mod tests {
         let g = geometry(&plot, 204.0, 124.0);
         assert!(g.lines.is_empty());
         assert_eq!(g.marks, vec![[2.0, 2.0], [202.0, 122.0]]);
+    }
+
+    #[test]
+    fn a_grid_line_the_series_runs_along_is_left_out_in_the_gaps_of_the_series() {
+        // A constant series at the highest value, with a gap in the middle:
+        // it lies on the top grid line.
+        let constant = plot(vec![
+            vec![[0.0, 0.0], [400.0, 0.0]],
+            vec![[600.0, 0.0], [1000.0, 0.0]],
+        ]);
+        let g = geometry(&constant, 1004.0, 124.0);
+        assert_eq!(g.grid, vec![2.0, 62.0, 122.0]);
+        // The top line is not drawn between the two strokes (nor in the
+        // inset before the first sample and after the last). The other
+        // lines are whole.
+        assert_eq!(g.grid_stretches(2.0), vec![(2.0, 402.0), (602.0, 1002.0)]);
+        assert!(g.breaks.contains(&Break {
+            top: 2.0,
+            from: 402.0,
+            to: 602.0
+        }));
+        assert_eq!(g.grid_stretches(62.0), vec![(0.0, 1004.0)]);
+        assert_eq!(g.grid_stretches(122.0), vec![(0.0, 1004.0)]);
+
+        // A series that starts late and ends early on the bottom line: the
+        // line is left out before its first and after its last sample.
+        let late = plot(vec![vec![[300.0, 120.0], [700.0, 120.0]]]);
+        let g = geometry(&late, 1004.0, 124.0);
+        assert_eq!(g.grid_stretches(122.0), vec![(302.0, 702.0)]);
+        assert_eq!(g.grid_stretches(2.0), vec![(0.0, 1004.0)]);
+
+        // One side of the gap on the line is enough: the line would read
+        // as the continuation of that side.
+        let step = plot(vec![
+            vec![[0.0, 60.0], [400.0, 60.0]],
+            vec![[600.0, 30.0], [1000.0, 30.0]],
+        ]);
+        let g = geometry(&step, 1004.0, 124.0);
+        assert_eq!(g.grid_stretches(62.0), vec![(2.0, 402.0), (602.0, 1004.0)]);
+
+        // A series that is on no grid line at its gaps breaks none.
+        let between = plot(vec![
+            vec![[0.0, 30.0], [400.0, 20.0]],
+            vec![[600.0, 90.0], [1000.0, 30.0]],
+        ]);
+        assert!(geometry(&between, 1004.0, 124.0).breaks.is_empty());
+        // And a plot without a series has its three whole lines.
+        assert!(geometry(&plot(Vec::new()), 300.0, 120.0).breaks.is_empty());
     }
 
     #[test]

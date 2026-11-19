@@ -27,7 +27,7 @@ use std::rc::Rc;
 use xenadmin_ui::Model;
 use xenadmin_ui::surface::{Act, Custom};
 
-pub use blocks::{Pass, blocks, button, button_row, filling_table};
+pub use blocks::{Pass, blocks, blocks_filling, button, button_row, filling_table};
 pub use cache::{TAB_SCOPE, WidgetCache, surface_scope};
 pub use dialogs::{DialogHost, surface_width};
 

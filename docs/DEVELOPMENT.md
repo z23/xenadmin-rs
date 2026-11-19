@@ -88,6 +88,12 @@ cargo run -p xenadmin-gpui --features scenes --locked --bin xenadmin-scenes -- \
   `gallery-empty` the window of a first start.
 - `--snap` writes the frame as a PNG and needs a graphics adapter; a software one (Mesa
   lavapipe) is enough. `--tree` alone needs none.
+- `--scroll KEY=PIXELS` and `--reveal KEY` (both repeatable, run in the order given) scroll
+  before the capture, so that what is below the fold is looked at in a frame of the real
+  size instead of a tall one. `--scroll` turns the wheel over the element with that key
+  (`tab-scroll` is the body of a tab, `<surface>-body` of a dialog; a grid and the tree
+  scroll under their own keys); `--reveal` scrolls an element into view. The frame's
+  completeness (`missing`) is judged before the first step.
 - `--tree` writes JSON: `elements` (every element with an id, in reading order, with its
   id path, role, accessible label, value, description, bounds, and focused, checked,
   selected, expanded and disabled state), `missing` (elements the description has and the
@@ -151,8 +157,22 @@ a stroke of its own, a lone sample is a dot, and nothing is drawn where data is 
 The card carries the chart as text for the element tree and a screen reader (title,
 summary, the labels of the top and bottom edge, the first and last time; the plot is an
 image named by the series and its summary). `tests/charts.rs` checks what each plot
-painted and, in a captured frame, that the gap has no ink. The scene tool does not
-scroll: render `performance` at a tall size (`--size 1440x1700`) to see all four cards.
+painted and, in a captured frame, that the gap has no ink. The last cards are below the
+fold: bring one into view with `--reveal metrics-chart-3-plot`, or render `performance` at
+a tall size (`--size 1440x1700`) to see all four.
+
+The scene `large-inventory` (16 hosts, 2,000 guests) has a check and a measurement in
+`tests/large_inventory.rs`. The check counts the rows the tree and the grids build
+(`xenadmin_gpui::stats`) and holds that a frame, a turn of the wheel and a selection change
+build the rows in view and never the inventory; it needs no adapter. The measurement is
+ignored and asserts nothing about speed: it prints the time of the first frame, of a scroll
+and a selection change in the tree and in the Search grid, and of a replaced inventory, as
+p50 and p95, with the frame drawn by the offscreen renderer. Run it in a release build on
+an idle machine and record the numbers with the CPU and the adapter:
+
+```sh
+cargo test --release -p xenadmin-gpui --features scenes --locked --test large_inventory -- --ignored --nocapture
+```
 
 ### Tests
 

@@ -390,7 +390,11 @@ fn wizard(lab: &LabRef) -> Surface {
                 blocks![
                     choice(
                         "lab-view",
-                        [option("list", "2 vCPUs"), option("tree", "4 vCPUs")],
+                        [
+                            option("list", "2 vCPUs"),
+                            option("tree", "4 vCPUs"),
+                            option("wide", "8 vCPUs").disabled_if(true, "The host has four cores."),
+                        ],
                         Some(state.view.as_str()),
                         move |_, id| l1.borrow_mut().view = id.to_owned(),
                     )

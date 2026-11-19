@@ -324,7 +324,19 @@ async fn checkbox_select_and_choices_write_the_model(cx: &mut TestAppContext) {
     on(cx, &scene, |window, cx| {
         assert_eq!(window.find("lab-mode-fast").checked(), Some(true));
         assert_eq!(window.find("lab-mode-full").checked(), Some(false));
-        // An option that cannot be picked.
+        // An option that cannot be picked. The Kit's radio has no
+        // description: the reason is that of a group around the option,
+        // named like it.
+        assert_eq!(window.find("lab-mode-linked").disabled(), Some(true));
+        let reason = window.find("lab-mode-linked-reason");
+        assert_eq!(reason.role(), Some(Role::Group));
+        assert_eq!(reason.label(), Some("Linked clone"));
+        assert_eq!(
+            reason.description(),
+            Some("The storage repository cannot link disks.")
+        );
+        // An option that can be picked has no such group.
+        assert!(window.try_find("lab-mode-fast-reason").is_none());
         window.click("lab-mode-linked", cx);
     });
     assert_eq!(lab(&scene, |lab| lab.mode.clone()), "fast");
@@ -335,6 +347,16 @@ async fn checkbox_select_and_choices_write_the_model(cx: &mut TestAppContext) {
         window.within("lab-template").click("input", cx);
     });
     on(cx, &scene, |window, cx| {
+        // The open list: the option that cannot be picked is in a group
+        // that says why, the others are not.
+        let reason = window.find("lab-template-windows-reason");
+        assert_eq!(reason.role(), Some(Role::Group));
+        assert_eq!(reason.label(), Some("Windows Server 2022"));
+        assert_eq!(
+            reason.description(),
+            Some("The template has no disk on shared storage.")
+        );
+        assert!(window.try_find("lab-template-alma-reason").is_none());
         window.press("down", cx);
         window.press("enter", cx);
     });
@@ -368,6 +390,15 @@ async fn segmented_and_drop_down_choices_write_the_model(cx: &mut TestAppContext
     on(cx, &scene, |window, cx| {
         assert_eq!(window.find("lab-view-tree").checked(), Some(true));
         assert_eq!(window.find("lab-view-list").checked(), Some(false));
+        // A segment that cannot be picked is a button: its reason is its
+        // description.
+        let wide = window.find("lab-view-wide");
+        assert_eq!(wide.disabled(), Some(true));
+        assert_eq!(wide.description(), Some("The host has four cores."));
+        window.click("lab-view-wide", cx);
+    });
+    assert_eq!(lab(&scene, |lab| lab.view.clone()), "tree");
+    on(cx, &scene, |window, cx| {
         window.within("lab-storage").click("input", cx);
     });
     on(cx, &scene, |window, cx| {

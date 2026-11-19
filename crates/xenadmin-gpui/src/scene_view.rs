@@ -8,10 +8,11 @@
 //! owns a [`DialogHost`] as this view does.
 
 use xenadmin_ui::command::MenuItem;
+use xenadmin_ui::surface::Block;
 use xenadmin_ui::tabs::{TabBody, TabId};
 
 use crate::kit::*;
-use crate::render::{DialogHost, Pass, Ui, blocks, pressable};
+use crate::render::{DialogHost, Pass, Ui, blocks, blocks_filling, pressable};
 use crate::shell::icons::row_icon;
 use crate::store::{AppStore, dispatch};
 use crate::widgets;
@@ -24,9 +25,15 @@ pub const TABS_KEY: &str = "object-tabs";
 pub const LOCAL_ROW_KEY: &str = "local-actions";
 /// The id of the tab body.
 pub const TAB_BODY_KEY: &str = "tab-body";
-/// The element a tab body that scrolls is seen through. A body that ends in
-/// a table has none: the table scrolls its own rows.
+/// The element a tab body that scrolls is seen through. Of a body that ends
+/// in a table it is the part above the table.
 pub const TAB_SCROLL_KEY: &str = "tab-scroll";
+/// The id of the column the two parts of a tab body that ends in a table
+/// stand in. It scrolls when a short table is followed by sections.
+pub const TAB_COLUMN_KEY: &str = "tab-column";
+/// The key of the part of a tab body its last table is seen through, when
+/// the body ends in one: the table, and the sections about its selection.
+pub const TAB_RESULTS_KEY: &str = "tab-results-body";
 /// The id of the text shown when nothing provides the active tab.
 pub const TAB_EMPTY_KEY: &str = "tab-empty";
 /// The path prefix of the tab body in the flattened description.
@@ -231,6 +238,43 @@ pub fn local_actions(ui: &Ui, tab: TabId, cx: &App) -> Option<AnyElement> {
 ///
 /// A body that ends in a table gives the table the height that is left;
 /// any other body scrolls.
+/// The table a tab body ends in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Results {
+    /// The index of the table among the blocks of the body.
+    pub start: usize,
+    /// The table has more rows than the least a grid shows: it gets at
+    /// least half of the body.
+    pub long: bool,
+    /// Sections follow the table.
+    pub followed: bool,
+}
+
+/// The rows a table needs before it is given half of a tab body: the least
+/// a grid that fills shows.
+const LONG_TABLE_ROWS: usize = 4;
+
+/// The table a tab body ends in, if it does: its last table, when it is
+/// the last block or only sections follow it (what the tab says about the
+/// selected rows).
+pub fn results_start(items: &[Block]) -> Option<Results> {
+    let start = items
+        .iter()
+        .rposition(|block| matches!(block, Block::Table(_)))?;
+    let Block::Table(table) = &items[start] else {
+        return None;
+    };
+    let after = &items[start + 1..];
+    after
+        .iter()
+        .all(|block| matches!(block, Block::Group(_)))
+        .then_some(Results {
+            start,
+            long: table.rows.len() > LONG_TABLE_ROWS,
+            followed: !after.is_empty(),
+        })
+}
+
 pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> AnyElement {
     let (tab, body) = {
         let store = ui.store.read(cx);
@@ -279,14 +323,95 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
             };
             div().size_full().p_4().child(element).into_any_element()
         }
-        Some(TabBody::Blocks(items)) => {
-            let children = blocks(&pass, TAB_BASE, &items, window, cx);
-            // The element with the id is what a scrolling body is seen
-            // through. A body whose last table fills the height scrolls as
-            // well: where the window is too short for what stands above the
-            // table and the table's least height, the table would otherwise
-            // be drawn below the window, out of reach.
-            div()
+        Some(TabBody::Blocks(items)) => match results_start(&items) {
+            // A body that ends in a table is two parts, so that the table
+            // is in view however long what stands above it is (the query
+            // of the Search tab and its filters). Each part's element with
+            // the id is what it is seen through.
+            //
+            // A table of more rows than the least a grid shows gets at
+            // least half of the body: the part above takes its own height
+            // but never more than the other half, and scrolls by itself
+            // beyond that. The sections after the table (what the tab says
+            // about the selected rows) are under it in its part.
+            //
+            // A shorter table is as high as its rows and needs no half:
+            // the part above gives way only as far as the table needs.
+            // When sections follow a short table, neither part gives way
+            // and the body scrolls as one column, so that the sections
+            // have the height of the body to be read in.
+            //
+            // The elements are the same in all three cases: a row that is
+            // selected adds a section after the table, and the table (and
+            // a menu that the same press opened on it) must stay the
+            // element it was.
+            Some(results) => {
+                let Results {
+                    start,
+                    long,
+                    followed,
+                } = results;
+                // Only a long table takes the height that is left; a short
+                // one is as high as its rows.
+                let fills = long.then_some(start);
+                let mut above = blocks_filling(&pass, TAB_BASE, &items, fills, window, cx);
+                let results = above.split_off(start);
+                let one_column = !long && followed;
+                let above = v_flex()
+                    .id(TAB_SCROLL_KEY)
+                    .test_support()
+                    .w_full()
+                    .map(|part| match one_column {
+                        true => part.flex_none(),
+                        false => part.flex_shrink(1.).min_h_0(),
+                    })
+                    .when(long, |part| part.max_h(relative(0.5)))
+                    .overflow_hidden()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .flex_shrink(1.)
+                            .min_h_0()
+                            .overflow_y_scrollbar()
+                            .px_4()
+                            .pt_4()
+                            .pb_2()
+                            .gap_3()
+                            .children(above),
+                    );
+                let results = div()
+                    .id(TAB_RESULTS_KEY)
+                    .test_support()
+                    .w_full()
+                    .map(|part| match long {
+                        true => part.flex_1().min_h_0(),
+                        false => part.flex_none(),
+                    })
+                    .overflow_hidden()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .when(long, |column| column.h_full())
+                            .overflow_y_scrollbar()
+                            .px_4()
+                            .pb_4()
+                            .when(start == 0, |column| column.pt_4())
+                            .when(start > 0, |column| column.pt_1())
+                            .gap_3()
+                            .children(results),
+                    );
+                v_flex()
+                    .id(TAB_COLUMN_KEY)
+                    .size_full()
+                    .overflow_y_scroll()
+                    .test_support()
+                    .when(start > 0, |column| column.child(above))
+                    .child(results)
+                    .into_any_element()
+            }
+            // Anything else is one column that scrolls. The element with
+            // the id is what it is seen through.
+            None => div()
                 .id(TAB_SCROLL_KEY)
                 .test_support()
                 .size_full()
@@ -297,10 +422,10 @@ pub fn tab_body(ui: &Ui, width: Pixels, window: &mut Window, cx: &mut App) -> An
                         .overflow_y_scrollbar()
                         .p_4()
                         .gap_3()
-                        .children(children),
+                        .children(blocks(&pass, TAB_BASE, &items, window, cx)),
                 )
-                .into_any_element()
-        }
+                .into_any_element(),
+        },
     };
     ui.cache.borrow_mut().end(&scope, window, cx);
     v_flex()

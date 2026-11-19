@@ -613,7 +613,16 @@ fn the_line_is_the_accent_and_the_grid_the_border_of_the_theme_in_use(cx: &mut T
 /// A captured frame of the scene's model and the chart of its first
 /// series. `None` without a graphics adapter.
 fn capture(setup: Setup, options: &Options) -> Option<(image::RgbaImage, Value)> {
-    match scenes::render_setup("performance", setup, options, true) {
+    capture_scrolled(setup, options, &[])
+}
+
+/// [`capture`] after steps of scrolling: a chart below the fold.
+fn capture_scrolled(
+    setup: Setup,
+    options: &Options,
+    scrolls: &[scenes::Scroll],
+) -> Option<(image::RgbaImage, Value)> {
+    match scenes::render_scrolled("performance", setup, options, scrolls, true) {
         Ok(output) => Some((output.image.expect("a frame"), output.tree)),
         Err(error) => {
             eprintln!("no frame was captured, the pixels were not checked: {error}");
@@ -699,6 +708,56 @@ fn the_frame_has_no_ink_in_the_gap_but_the_grid() {
         assert!(inked(end - 4.0, end - 1.0) > 0 && inked(start + 1.0, start + 4.0) > 0);
         // The ink is the accent: a blue.
         assert!(ink[2] > ink[0].saturating_add(60), "{mode:?}: {ink:?}");
+    }
+}
+
+// A constant series at the highest value lies on the top grid line. In its
+// gap that grid line is left out: no row of the plot has ink there, so the
+// gap reads as a gap and not as a dim continuation of the series.
+#[test]
+fn the_gap_of_a_constant_series_at_the_top_edge_has_no_ink_at_all() {
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        let setup = performance();
+        // The scene's second chart is the constant `memory` series.
+        let chart = area::chart(&setup.model, KEYS[1]).expect("the chart");
+        let reveal = [scenes::Scroll::Reveal("metrics-chart-1-plot".into())];
+        let Some((frame, tree)) = capture_scrolled(setup, &options(WIDE, mode), &reveal) else {
+            return;
+        };
+        let bounds = bounds_of(&tree, "metrics-chart-1-plot");
+        let g = charts::geometry(chart.plot.as_ref().expect("a plot"), bounds[2], bounds[3]);
+        let (end, start) = gap(&g);
+        assert_eq!(g.lines[0][0][1], g.lines[1][0][1], "a constant series");
+        assert!(
+            g.breaks
+                .iter()
+                .any(|b| b.top == g.grid[0] && b.from <= end + 3.0 && b.to >= start - 3.0),
+            "{mode:?}: {:?}",
+            g.breaks
+        );
+        // Every row counts here, the grid lines too: the two other lines
+        // are the only ink in the columns of the gap.
+        let (left, top) = (bounds[0] as u32, bounds[1] as u32);
+        let background = frame
+            .get_pixel(left + bounds[2] as u32 * 41 / 100, top + 30)
+            .0;
+        let differs =
+            |pixel: [u8; 4]| (0..3).any(|channel| pixel[channel].abs_diff(background[channel]) > 8);
+        let rows_with_ink = |x: u32| -> Vec<u32> {
+            (0..bounds[3] as u32)
+                .filter(|y| differs(frame.get_pixel(left + x, top + y).0))
+                .collect()
+        };
+        for x in (end + 4.0).ceil() as u32..=(start - 4.0).floor() as u32 {
+            assert_eq!(
+                rows_with_ink(x),
+                [g.grid[1] as u32, g.grid[2] as u32],
+                "{mode:?}: column {x} of the gap"
+            );
+        }
+        // Outside the gap the series is drawn on the top line.
+        let beside = rows_with_ink((end - 8.0) as u32);
+        assert!(beside.contains(&(g.grid[0] as u32)), "{mode:?}: {beside:?}");
     }
 }
 

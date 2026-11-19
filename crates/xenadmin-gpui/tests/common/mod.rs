@@ -13,7 +13,7 @@ use xenadmin_gpui::kit::testing::{
     TestWindowExt as _,
 };
 use xenadmin_gpui::kit::*;
-use xenadmin_gpui::scene_view::{LOCAL_ROW_KEY, TAB_SCROLL_KEY};
+use xenadmin_gpui::scene_view::LOCAL_ROW_KEY;
 use xenadmin_gpui::scenes::{self, Options, Setup, ShellWindow};
 use xenadmin_ui::Model;
 use xenadmin_ui::surface::Node;
@@ -223,10 +223,7 @@ fn clips(window: &Window, element: &ElementSnapshot) -> Vec<ElementSnapshot> {
     let mut clips = Vec::new();
     for (index, id) in path.iter().enumerate().take(path.len().saturating_sub(1)) {
         let Some(name) = name(id) else { continue };
-        let scrolls = name == TAB_SCROLL_KEY
-            || name.ends_with("-page")
-            || (name.ends_with("-body") && name != xenadmin_gpui::scene_view::TAB_BODY_KEY);
-        if !scrolls {
+        if !scenes::scroll::is_scroll_body(name) {
             continue;
         }
         if let Some(clip) = all.iter().find(|other| other.path() == &path[..=index]) {
@@ -311,27 +308,31 @@ pub fn reach(
     scope: Option<&str>,
     key: &str,
 ) -> Result<ElementSnapshot, String> {
-    for _ in 0..8 {
-        let element = locate(window, scope, key)?;
-        let Some(clip) = clips(window, &element).pop() else {
-            break;
-        };
-        let (bounds, seen) = (element.bounds(), clip.bounds());
-        let down = bounds.bottom() - seen.bottom();
-        let up = seen.top() - bounds.top();
-        let delta = if down > px(0.5) && up < px(0.) {
-            // Not further than its top: a tall element shows its start.
-            -(down + px(4.)).min(-up)
-        } else if up > px(0.5) {
-            up + px(4.)
-        } else {
-            break;
-        };
-        let Some(id) = clip.path().last().cloned() else {
-            break;
-        };
-        window.scroll(id, ScrollDelta::Pixels(point(px(0.), delta)), cx);
-        window.render_frame(cx);
+    // The innermost body first, then the bodies that one is seen through.
+    let depth = clips(window, &locate(window, scope, key)?).len();
+    for level in (0..depth).rev() {
+        for _ in 0..8 {
+            let element = locate(window, scope, key)?;
+            let Some(clip) = clips(window, &element).into_iter().nth(level) else {
+                break;
+            };
+            let (bounds, seen) = (element.bounds(), clip.bounds());
+            let down = bounds.bottom() - seen.bottom();
+            let up = seen.top() - bounds.top();
+            let delta = if down > px(0.5) && up < px(0.) {
+                // Not further than its top: a tall element shows its start.
+                -(down + px(4.)).min(-up)
+            } else if up > px(0.5) {
+                up + px(4.)
+            } else {
+                break;
+            };
+            let Some(id) = clip.path().last().cloned() else {
+                break;
+            };
+            window.scroll(id, ScrollDelta::Pixels(point(px(0.), delta)), cx);
+            window.render_frame(cx);
+        }
     }
     let element = locate(window, scope, key)?;
     reached(window, &element)?;

@@ -20,6 +20,7 @@
 
 pub mod chrome;
 pub mod gallery;
+pub mod scroll;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -42,6 +43,7 @@ use crate::scene_view::{SceneView, TAB_BASE};
 use crate::shell::ShellView;
 use crate::store::{AppStore, Describe};
 use gallery::{Lab, LabRef};
+pub use scroll::Scroll;
 
 /// How a scene is rendered.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -314,6 +316,9 @@ pub struct Output {
     /// The frame, when a capture was asked for.
     pub image: Option<image::RgbaImage>,
     pub tree: Value,
+    /// The keys the description has and the frame lacks, before anything
+    /// was scrolled (a scrolled grid no longer shows its first row).
+    pub missing: Vec<String>,
 }
 
 /// One platform text system per thread: building a platform starts worker
@@ -323,6 +328,22 @@ fn text_system() -> Arc<dyn PlatformTextSystem> {
         static TEXT_SYSTEM: Arc<dyn PlatformTextSystem> = current_platform(true).text_system();
     }
     TEXT_SYSTEM.with(Arc::clone)
+}
+
+/// The application context of the scene tool: the Kit's deterministic
+/// platform with the machine's text system and the application's icons.
+/// With `capture` its windows can be drawn by the offscreen renderer, which
+/// needs a graphics adapter; without it no adapter is asked for.
+pub fn headless(capture: bool) -> HeadlessAppContext {
+    if capture {
+        HeadlessAppContext::with_platform(
+            text_system(),
+            Arc::new(AppAssets),
+            current_headless_renderer,
+        )
+    } else {
+        HeadlessAppContext::with_platform(text_system(), Arc::new(AppAssets), || Ok(None))
+    }
 }
 
 /// Renders a scene. With `capture` the frame is drawn by the offscreen
@@ -340,18 +361,22 @@ pub fn render_setup(
     options: &Options,
     capture: bool,
 ) -> Result<Output, String> {
+    render_scrolled(name, setup, options, &[], capture)
+}
+
+/// [`render_setup`] with the steps of scrolling that come before the
+/// capture, in their order.
+pub fn render_scrolled(
+    name: &str,
+    setup: Setup,
+    options: &Options,
+    scrolls: &[Scroll],
+    capture: bool,
+) -> Result<Output, String> {
     if options.scale != 1. && options.scale != 2. {
         return Err(format!("the scale is 1 or 2, not {}", options.scale));
     }
-    let mut cx = if capture {
-        HeadlessAppContext::with_platform(
-            text_system(),
-            Arc::new(AppAssets),
-            current_headless_renderer,
-        )
-    } else {
-        HeadlessAppContext::with_platform(text_system(), Arc::new(AppAssets), || Ok(None))
-    };
+    let mut cx = headless(capture);
     // The artifact of the console window scene is that window. The views
     // are kept until the frame is captured.
     let detached = (name == CONSOLE_WINDOW_SCENE).then_some(ConsoleWindowId(1));
@@ -378,6 +403,31 @@ pub fn render_setup(
             window.render_frame(cx);
         })
         .map_err(|error| format!("the scene did not draw: {error}"))?;
+        cx.run_until_parked();
+    }
+    let mut missing = None;
+    if !scrolls.is_empty() {
+        missing = Some(
+            cx.update_window(window, |_, window, cx| match detached {
+                Some(id) => missing_keys(&console_window_tree_json(window, cx, &store, id)),
+                None => missing_keys(&tree_json(window, cx, &store)),
+            })
+            .map_err(|error| format!("the scene did not draw: {error}"))?,
+        );
+        for step in scrolls {
+            cx.update_window(window, |_, window, cx| {
+                let front = store
+                    .read(cx)
+                    .surfaces()
+                    .last()
+                    .map(|surface| surface.id.to_string());
+                scroll::apply(window, cx, front.as_deref(), step)
+            })
+            .map_err(|error| format!("the scene did not draw: {error}"))??;
+            cx.run_until_parked();
+        }
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .map_err(|error| format!("the scene did not draw: {error}"))?;
         cx.run_until_parked();
     }
     let tree = cx
@@ -411,7 +461,12 @@ pub fn render_setup(
     } else {
         None
     };
-    Ok(Output { image, tree })
+    let missing = missing.unwrap_or_else(|| missing_keys(&tree));
+    Ok(Output {
+        image,
+        tree,
+        missing,
+    })
 }
 
 /// Renders a scene and writes what was asked for: the frame as a PNG, the
@@ -423,7 +478,20 @@ pub fn write(
     snap: Option<&std::path::Path>,
     tree: Option<&std::path::Path>,
 ) -> Result<(), String> {
-    let output = render(name, options, snap.is_some())?;
+    write_scrolled(name, options, &[], snap, tree)
+}
+
+/// [`write`] after the steps of scrolling. The completeness of the frame is
+/// judged before the first step.
+pub fn write_scrolled(
+    name: &str,
+    options: &Options,
+    scrolls: &[Scroll],
+    snap: Option<&std::path::Path>,
+    tree: Option<&std::path::Path>,
+) -> Result<(), String> {
+    let setup = setup(name).ok_or_else(|| format!("no scene is named `{name}`"))?;
+    let output = render_scrolled(name, setup, options, scrolls, snap.is_some())?;
     if let (Some(path), Some(image)) = (snap, &output.image) {
         image
             .save(path)
@@ -435,7 +503,7 @@ pub fn write(
         std::fs::write(path, text + "\n")
             .map_err(|error| format!("{} was not written: {error}", path.display()))?;
     }
-    let missing = missing_keys(&output.tree);
+    let missing = output.missing;
     if !missing.is_empty() {
         return Err(format!(
             "the frame of `{name}` lacks elements its description has: {}",

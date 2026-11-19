@@ -52,6 +52,10 @@ gpui_scenes demo --snap artifacts/gpui/demo-compact.png --tree artifacts/gpui/de
 gpui_scenes gallery-shell --snap artifacts/gpui/gallery-shell-light-compact.png --tree artifacts/gpui/gallery-shell-light-compact.json --theme light --size 800x600 --scale 1
 gpui_scenes gallery-dialog --snap artifacts/gpui/gallery-dialog-light-compact.png --tree artifacts/gpui/gallery-dialog-light-compact.json --theme light --size 800x600 --scale 1
 gpui_scenes gallery-tab --snap artifacts/gpui/gallery-tab-light-2x.png --theme light --size 800x600 --scale 2
+# What is below the fold, scrolled into a frame of the real size: the last chart of the
+# performance tab at the smallest window, and the confirmation at the end of a long dialog.
+gpui_scenes performance --reveal metrics-chart-3-plot --snap artifacts/gpui/performance-last-chart-compact.png --tree artifacts/gpui/performance-last-chart-compact.json --theme light --size 800x600 --scale 1
+gpui_scenes pool-join --reveal join-confirmation --snap artifacts/gpui/pool-join-confirmation.png --tree artifacts/gpui/pool-join-confirmation.json --theme dark --size 1440x900 --scale 1
 # The client binary itself draws a scene to files with the same flags, without opening a window.
 cargo run -p xenadmin-gpui --features scenes --locked --quiet --bin xenadmin-gpui -- --scene demo --snap artifacts/gpui/client-demo.png --tree artifacts/gpui/client-demo.json --theme dark --size 1440x900 --scale 1
 python3 scripts/view_audit.py "$check_state_dir/view-audit.tsv"

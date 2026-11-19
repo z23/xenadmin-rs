@@ -287,6 +287,7 @@ impl NavPane {
 
     /// Gives the tree the rows again and puts the cursor back by id.
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+        crate::stats::count(|counts| counts.tree_rebuilds += 1);
         let items = self.items();
         self.recompute_visible();
         let cursor = self.cursor.clone();
@@ -692,6 +693,7 @@ fn tree_row(
     selected: bool,
     cx: &App,
 ) -> ListItem {
+    crate::stats::count(|counts| counts.tree_rows += 1);
     let item = entry.item();
     let id = item.id.clone();
     let row = meta.get(&id);

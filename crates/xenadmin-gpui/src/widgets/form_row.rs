@@ -1,6 +1,9 @@
 //! A form row: label, control, help text, validation message.
 
+use xenadmin_ui::surface::Tone;
+
 use crate::kit::*;
+use crate::render::tone_color;
 
 /// The parts of a form row.
 pub struct FormRow {
@@ -57,7 +60,6 @@ pub fn form_row(row: FormRow, cx: &App) -> AnyElement {
 /// The validation message of a field. The Kit's inputs have no error
 /// display; this line is it. It takes the alert role.
 pub fn field_error(key: String, message: &str, cx: &App) -> AnyElement {
-    let theme = cx.theme();
     let message = SharedString::from(message.to_owned());
     h_flex()
         .id(SharedString::from(key))
@@ -67,7 +69,7 @@ pub fn field_error(key: String, message: &str, cx: &App) -> AnyElement {
         .items_start()
         .gap_1()
         .text_xs()
-        .text_color(theme.danger)
+        .text_color(tone_color(Tone::Danger, cx))
         .child(
             div()
                 .pt_0p5()

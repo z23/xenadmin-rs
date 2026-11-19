@@ -24,7 +24,9 @@
 //!   that object (`Model::open_context_menu(object, MenuOrigin::Grid)`),
 //!   which the shell presents; the Menu key and Shift+F10 do the same for
 //!   the row the keyboard is on. Any other row gets the table's own
-//!   commands, resolved on the model's target, in the Kit's popup.
+//!   commands, resolved on the model's target, in a popup: the Kit's own
+//!   under the pointer, and for the Menu key and Shift+F10 (the Kit's
+//!   opens under the pointer only) one the grid shows at the row.
 //! - **Escape** in a table of a surface closes the surface; in a tab it
 //!   runs the table's `on_clear`.
 
@@ -39,6 +41,7 @@ use xenadmin_ui::surface::{self as s, Align, TableSelection as Selection};
 
 use crate::kit::*;
 use crate::render::{ColumnWidths, MenuRequest, Pass, tone_color};
+use crate::shell::menus;
 use crate::store::{AppStore, dispatch};
 
 gpui_kit::actions!(object_grid, [ActivateRow]);
@@ -101,6 +104,15 @@ struct Shared {
     menu_request: Option<MenuRequest>,
     /// Where the secondary button was last pressed in the grid.
     secondary_press: Option<Point<Pixels>>,
+    /// The menu of a row that is no object, opened from the keyboard.
+    own_menu: Option<OwnMenu>,
+}
+
+/// A row menu the grid shows itself, at the row the keyboard is on.
+struct OwnMenu {
+    menu: Entity<PopupMenu>,
+    position: Point<Pixels>,
+    _dismiss: Subscription,
 }
 
 impl Shared {
@@ -118,6 +130,7 @@ impl Shared {
     }
 
     fn reindex(&mut self) {
+        crate::stats::count(|counts| counts.grid_reindexes += 1);
         self.index = self
             .table
             .rows
@@ -287,6 +300,110 @@ impl GridDelegate {
         true
     }
 
+    /// Fills the popup of a row that is no object with the table's own
+    /// commands, after making the row the selection. Nothing is added for
+    /// a row that stands for an object (its menu is the kernel's, which
+    /// the model opens) and for a table without row commands.
+    fn row_menu(
+        shared: &Rc<RefCell<Shared>>,
+        store: &Entity<AppStore>,
+        row_ix: usize,
+        menu: PopupMenu,
+        cx: &mut App,
+    ) -> PopupMenu {
+        let (commands, id, object) = {
+            let shared = shared.borrow();
+            (
+                shared.table.row_menu.clone(),
+                shared.row_id(row_ix),
+                shared.row_object(row_ix),
+            )
+        };
+        let Some(id) = id else {
+            return menu;
+        };
+        if commands.is_empty() || object.is_some() {
+            return menu;
+        }
+        // The menu is for this row: it is the selection before the
+        // commands are resolved.
+        Self::select_for_menu(shared, store, &id, cx);
+        let items = {
+            let store = store.read(cx);
+            let model = store.model();
+            command::resolve(model, &commands, &model.target())
+        };
+        items.into_iter().fold(menu, |menu, item| {
+            let store = store.clone();
+            let command = item.id;
+            // The Kit's item has no tooltip and no description: one that
+            // cannot be chosen says why in its name, as in every menu.
+            let mut entry = PopupMenuItem::new(SharedString::from(menus::item_name(&item)))
+                .disabled(item.disabled.is_some());
+            if let Some(checked) = item.checked {
+                entry = entry.checked(checked);
+            }
+            menu.item(entry.on_click(move |_, _, cx| {
+                dispatch(&store, cx, move |m| {
+                    let target = m.target();
+                    m.invoke(command, &target);
+                });
+            }))
+        })
+    }
+
+    /// Shows the menu of a row that is no object at the row: what the Menu
+    /// key and Shift+F10 ask for. False when the row has no such menu.
+    fn open_row_menu(
+        shared: &Rc<RefCell<Shared>>,
+        store: &Entity<AppStore>,
+        state: &Entity<TableState<Self>>,
+        row_ix: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        {
+            let shared = shared.borrow();
+            if shared.table.row_menu.is_empty()
+                || shared.row_id(row_ix).is_none()
+                || shared.row_object(row_ix).is_some()
+            {
+                return false;
+            }
+        }
+        let position = row_position(state, row_ix, cx);
+        let restore = window.focused(cx);
+        let menu = PopupMenu::build(window, cx, {
+            let (shared, store) = (Rc::clone(shared), store.clone());
+            move |menu, _, cx| Self::row_menu(&shared, &store, row_ix, menu, cx)
+        });
+        // Escape, a press outside it or a chosen item ends the menu. The
+        // keyboard goes back to where it was, unless the press or the
+        // command has already moved it on.
+        let dismiss = window.subscribe(&menu, cx, {
+            let shared = Rc::clone(shared);
+            move |menu, _: &DismissEvent, window, cx| {
+                let open = shared.borrow_mut().own_menu.take();
+                let held = menu.focus_handle(cx).contains_focused(window, cx);
+                if open.is_some()
+                    && (held || window.focused(cx).is_none())
+                    && let Some(restore) = &restore
+                {
+                    restore.focus(window, cx);
+                }
+                window.refresh();
+            }
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        shared.borrow_mut().own_menu = Some(OwnMenu {
+            menu,
+            position,
+            _dismiss: dismiss,
+        });
+        window.refresh();
+        true
+    }
+
     fn open_object_menu(
         shared: &Rc<RefCell<Shared>>,
         store: &Entity<AppStore>,
@@ -408,6 +525,7 @@ impl TableDelegate for GridDelegate {
         let Some(row) = shared.table.rows.get(row_ix) else {
             return div().id(("filler", row_ix));
         };
+        crate::stats::count(|counts| counts.grid_rows += 1);
         let key = s::Table::row_key(&shared.table.key, &row.id);
         let multi = shared.multi();
         let marked = multi && shared.table.selection.contains(&row.id);
@@ -534,45 +652,7 @@ impl TableDelegate for GridDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        let (commands, id, object) = {
-            let shared = self.shared.borrow();
-            (
-                shared.table.row_menu.clone(),
-                shared.row_id(row_ix),
-                shared.row_object(row_ix),
-            )
-        };
-        let Some(id) = id else {
-            return menu;
-        };
-        // A row that stands for an object has the kernel's menu, which the
-        // model opens (`RightClickedRow`): no popup of the table's own.
-        if commands.is_empty() || object.is_some() {
-            return menu;
-        }
-        // The menu is for the row under the pointer: it is the selection
-        // before the commands are resolved.
-        Self::select_for_menu(&self.shared, &self.store, &id, cx);
-        let items = {
-            let store = self.store.read(cx);
-            let model = store.model();
-            command::resolve(model, &commands, &model.target())
-        };
-        items.into_iter().fold(menu, |menu, item| {
-            let store = self.store.clone();
-            let command = item.id;
-            let mut entry = PopupMenuItem::new(SharedString::from(item.label.clone()))
-                .disabled(item.disabled.is_some());
-            if let Some(checked) = item.checked {
-                entry = entry.checked(checked);
-            }
-            menu.item(entry.on_click(move |_, _, cx| {
-                dispatch(&store, cx, move |m| {
-                    let target = m.target();
-                    m.invoke(command, &target);
-                });
-            }))
-        })
+        Self::row_menu(&self.shared, &self.store, row_ix, menu, cx)
     }
 
     fn render_empty(
@@ -630,6 +710,7 @@ impl ObjectGrid {
             column_widths: None,
             menu_request: None,
             secondary_press: None,
+            own_menu: None,
         }));
         shared.borrow_mut().reindex();
         let state = cx.new(|cx| {
@@ -764,7 +845,7 @@ impl ObjectGrid {
                 let shared = Rc::clone(&grid.inner.shared);
                 let state = state.clone();
                 let store = ui.store.clone();
-                move |event: &KeyDownEvent, _, cx| {
+                move |event: &KeyDownEvent, window, cx| {
                     let keystroke = &event.keystroke;
                     let modifiers = keystroke.modifiers;
                     let shift_only = modifiers.shift
@@ -801,11 +882,18 @@ impl ObjectGrid {
                             .and_then(|id| shared.index.get(id).copied())
                             .or_else(|| shared.table.rows.iter().position(|row| selected(&row.id)))
                     });
-                    let request = row.and_then(|ix| {
+                    let Some(ix) = row else {
+                        return;
+                    };
+                    let request = {
                         let shared = shared.borrow();
-                        Some((ix, shared.row_id(ix)?, shared.row_object(ix)?))
-                    });
-                    let Some((ix, id, object)) = request else {
+                        shared.row_id(ix).zip(shared.row_object(ix))
+                    };
+                    let Some((id, object)) = request else {
+                        // A row that is no object: the table's own commands.
+                        if GridDelegate::open_row_menu(&shared, &store, &state, ix, window, cx) {
+                            cx.stop_propagation();
+                        }
                         return;
                     };
                     let position = row_position(&state, ix, cx);
@@ -838,6 +926,15 @@ impl ObjectGrid {
                     .stripe(false)
                     .accessibility_label(SharedString::from(table.key.clone())),
             )
+            .children(grid.inner.shared.borrow().own_menu.as_ref().map(|open| {
+                deferred(
+                    anchored()
+                        .position(open.position)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(open.menu.clone()),
+                )
+                .with_priority(1)
+            }))
             .into_any_element()
     }
 
