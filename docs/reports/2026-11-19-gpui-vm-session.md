@@ -18,8 +18,12 @@ are used strictly:
   is, and to read state; never to act).
 - **guest effect**: what a lab guest itself recorded and reported.
 
-WORK IN PROGRESS: the sections below are filled as the steps are run. A step without a result
-has not been run.
+Two defects found here were fixed in this branch, and each fix was confirmed in the machine
+with a binary built from the branch. Every row says which binary it was made with: **CI**
+(the packaged AppImage) unless it says **branch build**.
+
+Everything in this report is "verified in a virtual machine with injected input". None of it
+is a person's use of the client on a desk; the last section says what that leaves open.
 
 ## The machine
 
@@ -100,6 +104,93 @@ Each row: what was done, the result, how it was observed.
 | Move, resize, minimum | floating, the window is dragged by sway's title bar; it asks for a minimum of 800x600 (`set_min_size`) and at 796x600 of content the sidebar folds and nothing overlaps | injected; frames 015 to 018; protocol |
 | Close by the compositor | `swaymsg kill` (the compositor's close request): the process ends, the activation socket is removed, `preferences.json` is written | compositor; the files |
 
+### C. Connections (gate G2, criterion 1)
+
+Lab pool: coordinator h1 at 192.168.254.11, member h2 at 192.168.254.12, both with
+self-signed certificates. Independent inspection of the certificates: Python's TLS on the
+workstation and `openssl s_client | openssl x509 -fingerprint -sha256` in the machine gave the
+same two SHA-256 values; h2 also prints its fingerprint on its own text console.
+
+| Step | Result | Observed by |
+| --- | --- | --- |
+| Add Server, focus in the password field | endpoint `https://192.168.254.11` typed, user name `root` was prefilled; a press on Password: the field has the focus ring and the state `focused`, role `password text` | injected; frame 049 (looked at); AT-SPI |
+| The password | typed from its file by injected keys; drawn as dots (frame 050). No frame shows it; the frames of the filled field show its length in dots. | injected; frames |
+| First Connect | refused, as it must be: "TLS verification failed for https://192.168.254.11/. Verify this host's certificate and add its endpoint-specific fingerprint"; the connection is listed as "Connection failed" | frame 051 |
+| Certificate review of h1 | the tree row's context menu has "Review this endpoint's certificate…" (frame 052). It opens the connect form with the certificate options; "Inspect certificate" shows validation "Certificate issuer is not trusted by the configured CA store", "No saved pin" and the presented SHA-256 (frame 055). The value copied by the form's copy button equals the independent inspection, compared by a script. "Confirm exact endpoint" typed, "I verified this SHA-256 through a trusted channel" ticked, "Trust certificate" pressed: "Certificate pin added to unsaved connection settings". | injected; frames 052 to 057; clipboard (`wl-paste`) |
+| Connect with the pin | the password field was empty again and was typed a second time (frames 058, 059). Connected: "Connected directly • https://192.168.254.11/"; the tree shows the pool, both servers, the four guests under their servers, and the nine repositories; General shows "2 hosts · 4 guests · 39 templates · 0 snapshots · 9 storage repositories · 8 networks", inventory "Current" | frame 060 (looked at); AT-SPI |
+| A change from outside | with `lab-guest-…` selected, another client set its description through XAPI. The General tab showed the new text within the four seconds waited, with no action in the client, and the selection and the tab stayed (frames 061, 062, looked at) | another client; frames; AT-SPI |
+| Connections of the client | `ss -tn` in the machine: two connections to 192.168.254.11:443 and nothing else | `ss` |
+| Close through the compositor | the process ends, no connection to the lab remains, `preferences.json` and `profiles.json` are written with mode 600 | compositor; `ss`; the files |
+| No password on disk | a script that reads the password from its file searched every file of the state directory for it (raw, base64, hex, percent-encoded, UTF-16): **no**. Repeated at the end of the session: no. | script |
+| Start again | the saved connection is listed on Home as "Disconnected"; eight seconds after the start the machine has no connection to the lab: nothing connects by itself | frame 070; AT-SPI; `ss` |
+| Connect from the saved connection | "Connect…" in the row's context menu, password typed: connected with no certificate question (the pin was kept) | injected; frames 071, 072 |
+| Disconnect, connect again | "Disconnect" in the pool's context menu: badge "Disconnected", inventory "Stale", status "No host connected", no connection in `ss` (frame 074). "Connect…" and the password: connected again (frames 076, 077) | injected; frames; `ss` |
+| Certificate review of h2 | see finding 3 for how it has to be reached. The presented SHA-256 equals the independent inspection (and what h2 prints on its console); trusted the same way; connected | injected; frames 080 to 086; clipboard |
+| Both pins typed up front (section E) | on an empty state directory, with the coordinator's fingerprint in "Certificate SHA-256" and `https://192.168.254.12=…` in "Additional host certificates": one Connect, no review, consoles on both servers work | injected; frame 094 |
+
+Not observable: whether the server closed the client's session when the window was closed.
+XAPI offers no list of sessions (`session.get_all_records` is refused as unknown).
+
+### D. Console keyboard input (gate G3, criterion 3; route A of decision 0006)
+
+The guest is `lab-guest-…` (Alpine, root without a password, US layout, on h1). What the guest
+received is proved by the guest: before each test it starts recording its kernel's key events
+(`/dev/input/event*`) and the test text is typed into `cat > /tmp/k`; afterwards the guest
+sends the key events and the file's bytes to a listener on the lab bridge. Only the short
+command that fetches these two scripts is typed. (The guest's network was down after its
+last boot and was brought up by typed commands, which is itself keyboard input that worked.)
+
+| Step | Result | Observed by |
+| --- | --- | --- |
+| The Console tab | the guest's console is drawn, fitted into the tab (frame 063, looked at) | frame |
+| The keyboard by a pointer press | a press on the picture: `root`, Enter logs in; the guest's pointer device recorded the button presses | injected; frame 064; guest effect |
+| A line with capitals, digits and every US punctuation sign | typed: ``The Quick Brown fox 0123456789 `~!@#$%^&*()-_=+[]{}\|;:'",.<>/? zyZY``. The guest's file holds exactly these bytes. Its key events show each character's key, with Left Shift down and up as a key of its own around each shifted one. | injected; guest effect; frame 066 |
+| The same physical keys under another layout | sway's layout set to `de` (where the text field of section F receives `yzßYö` for `zy-Z;`). The guest's file holds **the same bytes** as under `us`, and the same key codes. The guest received key codes, not the symbols of the local layout, which is what decision 0006 asks of route A. | injected; guest effect; frame 067 |
+| Modifiers alone, both sides | Left and Right Shift, Ctrl, Alt and Super, pressed and released one after the other: the guest recorded each with its own code (Right Shift 54, Right Ctrl 97, Right Alt 100, Left and Right Meta 125 and 126), down then up | injected; guest effect |
+| Modifiers held | Left Shift held over `a b c` gives `ABC` and one Shift down and up; Right Shift over `x` gives `X` | injected; guest effect |
+| Application keys | Tab, Escape, F10, Alt+F and Ctrl+W reach the guest (the file holds a tab, ESC, the F10 sequence, ESC f, Ctrl+W). In the client nothing happened: the focus stayed on the console, no menu opened, nothing closed. | injected; guest effect; AT-SPI; frame 068 |
+| Ctrl+Alt+F1 and Alt+Tab | only through the row's buttons, as the brief asks: the guest recorded Left Ctrl, Left Alt, F1 down and up in order, then Left Alt, Tab | injected (pointer); guest effect |
+| A key held while the focus leaves | `a` held; one second later another window took the focus; the key stayed down at the machine for three more seconds. The guest recorded the release 1.2 s after the press, that is when the focus left. | injected; compositor; guest effect (timed) |
+| A key held, focus kept | **CI: one press and no repeat.** `b` held for two seconds arrived as one `b` (down at 6.27 s, up at 8.29 s). Finding 2. **Branch build:** down, first repeat after 0.61 s, then one every 40 ms until the release; the guest's file holds 37 `b`. The key held while the focus leaves repeats until the focus leaves and no longer; a held Shift does not repeat. | injected; guest effect (timed) |
+
+How it is known that the keys took route A and not the keystroke fallback, without reading a
+log of key codes: the fallback derives a key code from the name of the symbol the toolkit
+reports, by the US layout, and sends every modifier as the left key
+(`crates/xenadmin-desktop/src/console/keys.rs`). Under the `de` layout it would have sent `y`
+for the physical Z key, and it cannot send a right modifier at all. The guest received Z and
+the five right-hand codes. The listener's second `wl_keyboard` is also visible in the protocol
+log of a run without a password (a second `wl_seat` bind and `get_keyboard` 0.8 s after the
+start).
+
+### E. The recovery gate (gate G3, criterion 1; gate G5, criterion 2)
+
+With the CI AppImage on an empty state directory.
+
+| Step | Result | Observed by |
+| --- | --- | --- |
+| XO shut down | another client shut the appliance VM `XOA` down cleanly: power state Halted. XO does not answer: the workstation's probe fails to connect and `curl` from the machine times out. | another client; `curl` |
+| The client connects | state directory removed, AppImage started, Add Server with both pins and the password (frames 094 to 096): connected | injected; frames |
+| Locate the XO VM | `XOA` typed in the sidebar's search box: the tree shows the pool and `XOA` only (frame 097); a press selects it: General shows it halted (frame 098) | injected; frames; AT-SPI |
+| Start it | "Start" in the toolbar. Another client then read: Running, on h1 (XAPI's own choice of server for a plain start). | injected; another client |
+| Its console | the Console tab shows GRUB (frame 100, looked at), then the boot, then `Debian GNU/Linux 12 xoa tty1` and `xoa login:` (frame 102) | frames |
+| Use the console | a press on the picture, then `P2-Keys_ok` typed: the prompt reads `xoa login: P2-Keys_ok` (frame 103 at actual size, looked at). Erased with ten Backspaces (frame 104). Nobody logged in; no password was typed. | injected; frames |
+| Where the client's connections go | `ss -tn` in the machine during all of this: three connections to 192.168.254.11:443 and none to anything else. Nothing to the appliance's address. | `ss` |
+| XO answers again | the workstation's probe: HTTPS 200; `curl` from the machine: 302 | another client; `curl` |
+| Afterwards | another client moved the running appliance back to h2 (live migration, 6.4 s). The client's tree moved `XOA` from under h1 to under h2 by itself, the selection stayed on it, and its console reconnected: two connections to h1 and one to 192.168.254.12:443 (frames 105, 106). | another client; AT-SPI; frames; `ss` |
+
+### F (on the lab). The host console and the rest
+
+| Step | Result | Observed by |
+| --- | --- | --- |
+| The host's text console | h2 selected, Console tab: the server's text console is drawn, with its XCP-ng banner and the fingerprint it prints (frame 087, looked at). Nothing was typed into it; nobody logged in. | injected; frame |
+| Save Screenshot of it | the portal's file chooser proposes `host-console.png`; saved with mode 600, a PNG of 640x384; the tab says "Console screenshot saved to /home/tester/host-console.png" | injected; frame 088; `stat` |
+| Open in Separate Window | a second top-level window "… · XenAdmin RS console" (frame 089) | injected; compositor |
+| Fullscreen of that window | sway reports `fullscreen_mode` 1 and the picture fills the display (frame 090, looked at); a second press: 0 | injected; compositor; frame |
+| Closing that window through the compositor | only that window closes; the main window stays connected; the console's connection to h2 is gone | compositor; `ss` |
+| Copy a live UUID | "Copy VM UUID" on XOA's General tab: `wl-paste` gives the UUID another client reads for that VM | injected; clipboard; another client |
+| Search by a pasted UUID | Ctrl+V in the search box: the tree shows the pool, h2 and XOA only (frame 092) | injected; AT-SPI |
+| A live grid | the pool's Search tab: sorted by name both ways, scrolled with the wheel, a row chosen by a press and moved by Down (frame 093) | injected; AT-SPI |
+
 ### F (without the lab). Tables, search, clipboard, file chooser, windows
 
 Made on `--demo` and on the scene `console-frame`, so that they are known before the lab is used.
@@ -115,7 +206,7 @@ Made on `--demo` and on the scene `console-frame`, so that they are known before
 | Paste from the clipboard | text put there with `wl-copy` (with two non-ASCII letters) is pasted into the search box by Ctrl+V | injected; frame 036 |
 | Text follows the layout | with sway's layout set to `de`, the physical keys Z Y - Shift+Z ; give `yzßYö` in the search box (`zy-Z;` under `us`). This is the control for the console test of section D. | injected; frames 037, 038 |
 | Save Screenshot | the button opens the GTK file chooser of the desktop portal ("Save File", app id `xdg-desktop-portal-gtk`) with the name `vm-console.png`; Save writes the file with mode 600, a PNG of the console's 800x600 | injected; frame 031; `stat`, `file` |
-| Fullscreen | the button: sway reports `fullscreen_mode` 1 and no title bar; a second press: 0. In the protocol: `xdg_toplevel.set_fullscreen`, then `unset_fullscreen`. | injected; compositor; protocol; frames 028, 029 |
+| Fullscreen | the button: sway reports `fullscreen_mode` 1 and no title bar; a second press: 0. In the protocol: `xdg_toplevel.set_fullscreen`, then `unset_fullscreen`. | injected; compositor; protocol; frames 028, 033 |
 | Open in Separate Window | a second top-level window "Database · XenAdmin RS console" with the same app id, tiled beside the first | injected; compositor; frame 034 |
 | A second start | see finding 1 | compositor; protocol |
 
